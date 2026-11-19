@@ -1,10 +1,13 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { createMemoryAuthStore, createServiceToken } from "@armada/auth";
+import { githubCallbackOperations } from "@armada/core/contract";
 import { createSqlVaultStore } from "@armada/core/server";
 import { captureGitHubAuditLogs } from "../../../scripts/test-support/github-audit.ts";
 import { type ControlOptions, handleControlRequest } from "../src/control.ts";
 import { createGitHubAccountApi } from "../src/github-account.ts";
 import { migratedDatabase } from "./migrated-database.ts";
+
+const { githubOAuthCallback, githubOAuthRelay } = githubCallbackOperations;
 
 const auditEvents = captureGitHubAuditLogs();
 
@@ -161,7 +164,7 @@ test("authenticated GitHub handoff binds owner, encrypts grants, rejects replay 
     for (const raw of invalid) {
       const response = await relay(raw);
       expect(response.status).toBe(400);
-      expect(await response.json()).toEqual({ ok: false, status: "failed" });
+      expect(githubOAuthRelay.errorOutput.parse(await response.json())).toEqual({ ok: false, status: "failed" });
       expect(await pending()).toBe("pending");
     }
     expect((await relay(JSON.stringify({ state, code: "test" }), "text/plain")).status).toBe(400);
@@ -173,6 +176,7 @@ test("authenticated GitHub handoff binds owner, encrypts grants, rejects replay 
       options,
     );
     expect(duplicateGet?.status).toBe(400);
+    githubOAuthCallback.errorOutput.parse(await duplicateGet?.json());
     for (const length of ["999999", "1", "bad"])
       expect(
         (await relay(JSON.stringify({ state, code: "test" }), "application/json", "", { "content-length": length }))
@@ -211,7 +215,7 @@ test("authenticated GitHub handoff binds owner, encrypts grants, rejects replay 
         observedRemainingLifetimeMs: expect.any(Number),
       },
     ]);
-    expect(await completed.json()).toEqual({ ok: true, status: "connected" });
+    expect(githubOAuthRelay.output.parse(await completed.json())).toEqual({ ok: true, status: "connected" });
     expect(completed.headers.get("location")).toBeNull();
     expect(completed.headers.get("referrer-policy")).toBe("no-referrer");
     const status = await (await command("status", { flowId: started.flowId })).json();
@@ -241,7 +245,9 @@ test("authenticated GitHub handoff binds owner, encrypts grants, rejects replay 
         owner,
       ])
     ).rows[0]?.connection_epoch;
-    expect((await callback(replacement.authorizationUrl, "GET")).status).toBe(200);
+    const browserCallback = await callback(replacement.authorizationUrl, "GET");
+    expect(browserCallback.status).toBe(200);
+    githubOAuthCallback.output.parse(await browserCallback.json());
     const nextEpoch = (
       await db.query<{ connection_epoch: string }>("select connection_epoch from github_connections where user_id=$1", [
         owner,
