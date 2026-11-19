@@ -522,6 +522,44 @@ test("bound bootstrap requires ACKed creation and the exact pending capability, 
   await denied(store.enqueueSandbox(a.owner, a.sandboxId, { ...selection, requestId: randomUUID() }));
 });
 
+test.each(["account", "docker"] as const)("idle-only stop leaves an accepted %s turn intact", async (queue) => {
+  const db = database();
+  const a = await boundFixture();
+  await store.enqueueSandbox(a.owner, a.sandboxId, a.create);
+  await db.query("update public.sandboxes set status='ready' where id=$1", [a.sandboxId]);
+  const turn = randomUUID();
+  const sealed = await encryptSecret("queued turn", key);
+  if (queue === "account") {
+    const credential = randomUUID();
+    await db.query(
+      "insert into public.credentials(id,scope,owner_id,kind,value_enc) values($1,'user',$2,'openai',$3)",
+      [credential, a.owner.userId, sealed],
+    );
+    await db.query(
+      `insert into public.account_turn_queue
+        (sandbox_id,request_id,account_id,owner_id,org_id,actor_epoch,credential_version,input_hash,input_enc,conversation_id)
+       values($1,$2,$3,$4,$5,1,1,$6,$7,'first')`,
+      [a.sandboxId, turn, credential, a.owner.userId, a.owner.orgId, "a".repeat(64), sealed],
+    );
+  } else {
+    await db.query(
+      `insert into public.docker_queued_prompts
+        (sandbox_id,request_id,prompt_id,owner_id,actor_epoch,lifecycle_generation,input_hash,input_enc)
+       select id,$2,$3,owner_id,1,lifecycle_generation,$4,$5 from public.sandboxes where id=$1`,
+      [a.sandboxId, turn, randomUUID(), "a".repeat(64), sealed],
+    );
+  }
+  const stop = { requestId: randomUUID(), operation: "stop" as const };
+  await denied(store.enqueueSandbox(a.owner, a.sandboxId, { ...stop, onlyIfIdle: true }));
+  expect(
+    (await db.query("select status,stop_requested_at from public.sandboxes where id=$1", [a.sandboxId])).rows,
+  ).toEqual([{ status: "ready", stop_requested_at: null }]);
+  expect((await db.query("select 1 from public.docker_host_jobs where request_id=$1", [stop.requestId])).rows).toEqual(
+    [],
+  );
+  await store.enqueueSandbox(a.owner, a.sandboxId, stop);
+});
+
 test("stop commits runtime revocation once; cleanup retains the create deadline and ACKs only terminal transitions", async () => {
   const db = database();
   const a = await boundFixture();
