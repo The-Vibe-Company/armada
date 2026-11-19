@@ -35,6 +35,7 @@ export function createRuntimeLaunch(options: RuntimeLaunchOptions, provider: "bo
     input: LaunchInput;
     configure(): Promise<LaunchPlan>;
     bootstrap(): Bootstrap;
+    expectedGeneration?: number;
     commandGrantDeadline?(logicalExpiresAt: number): Promise<number>;
   }): Promise<Started> => {
     const { input } = request;
@@ -61,6 +62,7 @@ export function createRuntimeLaunch(options: RuntimeLaunchOptions, provider: "bo
       providerSandboxId: sandbox.providerSandboxId,
       serverUrl: server.origin,
       ...plan,
+      ...(request.expectedGeneration === undefined ? {} : { expectedGeneration: request.expectedGeneration }),
       ...(commandGrantExpiresAt !== undefined ? { commandGrantExpiresAt } : {}),
       signal,
     });

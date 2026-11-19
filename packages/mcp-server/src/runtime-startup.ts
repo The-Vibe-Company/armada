@@ -43,6 +43,7 @@ export function createRuntimeStartup(
     artifact: { sha256: string; bytes: number };
     configuration: Record<string, unknown>;
     commandGrantExpiresAt?: number;
+    expectedGeneration?: number;
     signal?: AbortSignal;
     /** Readiness budget AFTER the bounded host bootstrap returns. */
     readinessTimeoutMs?: number;
@@ -88,6 +89,7 @@ export function createRuntimeStartup(
         ownerId,
         sandboxId,
         configuration: input.configuration,
+        ...(input.expectedGeneration === undefined ? {} : { expectedGeneration: input.expectedGeneration }),
         ...(input.commandGrantExpiresAt !== undefined ? { commandGrantExpiresAt: input.commandGrantExpiresAt } : {}),
       });
       epoch = ticket.epoch;

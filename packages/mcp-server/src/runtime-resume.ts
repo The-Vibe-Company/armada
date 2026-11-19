@@ -13,7 +13,12 @@ import { createRuntimeEnrolments } from "./runtime-enrolment.ts";
 import type { RuntimeGitHub } from "./runtime-github.ts";
 import type { RuntimeMcp } from "./runtime-mcp.ts";
 import { refuseConversationSelector, SINGLE_CONVERSATION_GUIDANCE } from "./sandbox-conversation.ts";
-import { deferAmbiguousBoatResume, requestFailedRuntimeResumeStop } from "./sandbox-lifecycle.ts";
+import {
+  confirmRuntimeResumeActivation,
+  deferAmbiguousBoatResume,
+  requestFailedRuntimeResumeStop,
+  restoreModalResumeSchedule,
+} from "./sandbox-lifecycle.ts";
 
 export interface RuntimeResumeInput {
   id: string;
@@ -256,6 +261,7 @@ export function createRuntimeResume(
           if (scope.epoch !== admitted.op.target_epoch || !receipt)
             throw new VaultError("conflict", "Resume epoch changed before publication.");
           await createSqlData(tx)(caller).sandboxes.update(id, patch);
+          if (found.runtimeTransport === "dialout") await restoreModalResumeSchedule(tx, id);
           const saved = await tx.query(
             "update public.runtime_resumes set phase='complete',receipt=$3::jsonb where sandbox_id=$1 and request_id=$2 and phase='dispatched' returning request_id",
             [found.id, requestId, JSON.stringify(receipt)],
@@ -272,24 +278,12 @@ export function createRuntimeResume(
         async (signal) => {
           if (admitted.first) {
             placement = await prepare!(caller, admitted.current);
-            const confirmActivation =
-              found.provider === "boat"
-                ? async () => {
-                    const saved = await sql.query(
-                      `with active as (
-                  select id from public.sandboxes where id=$1 and status='starting'
-                    and activity_lease_id=$2 and lifecycle_generation=$3 and activity_until>clock_timestamp()
-                    and (reconcile_lease_until is null or reconcile_lease_until<=clock_timestamp())
-                    and stop_requested_at is null and deleted_at is null for update
-                )
-                update public.runtime_resumes r set activated_at=coalesce(r.activated_at,clock_timestamp())
-                from active where r.sandbox_id=active.id and r.request_id=$2 and r.phase='dispatched'
-                returning r.request_id`,
-                      [found.id, requestId, admitted.current.lifecycleGeneration],
-                    );
-                    if (!saved.rows.length) throw new VaultError("conflict", "Resume activation authority changed.");
-                  }
-                : undefined;
+            const confirmActivation = async () => {
+              if (
+                !(await confirmRuntimeResumeActivation(sql, found.id, requestId, admitted.current.lifecycleGeneration))
+              )
+                throw new VaultError("conflict", "Resume activation authority changed.");
+            };
             const ready = await placement.start(signal, restore, confirmActivation);
             if (ready.epoch !== admitted.op.target_epoch) throw new VaultError("conflict", "Unexpected resume epoch.");
           }
@@ -377,12 +371,13 @@ export function createRuntimeResume(
           if (!member.rows.length) return;
           await tx.query("select id from public.sandboxes where id=$1 for update", [found.id]);
           const runtime = (
-            await tx.query<{ epoch: string; live: boolean; activation_confirmed: boolean }>(
+            await tx.query<{ epoch: string; live: boolean; ticket_issued: boolean; activation_confirmed: boolean }>(
               `select epoch::text,(runtime_hash is not null) as live,
-                  ((enrolment_hash is not null and lifecycle_generation=$2) or exists(
+                  (enrolment_hash is not null and lifecycle_generation=$2) as ticket_issued,
+                  exists(
                     select 1 from public.runtime_resumes where sandbox_id=$1 and request_id=$3
                       and phase='dispatched' and activated_at is not null
-                  )) as activation_confirmed
+                  ) as activation_confirmed
                from public.runtime_enrolments where sandbox_id=$1 for update`,
               [found.id, admitted.current.lifecycleGeneration, requestId],
             )
@@ -390,7 +385,13 @@ export function createRuntimeResume(
           if (runtime?.live && runtime.epoch === admitted.op.target_epoch) return;
           const boatSourceEpoch =
             found.provider === "boat" && runtime && !runtime.live && runtime.epoch === admitted.op.source_epoch;
-          const retained = Boolean(boatSourceEpoch && (runtime.activation_confirmed || preActivationArchive));
+          const retained = Boolean(
+            (boatSourceEpoch && (runtime.ticket_issued || runtime.activation_confirmed || preActivationArchive)) ||
+              (found.runtimeTransport === "dialout" &&
+                runtime?.activation_confirmed &&
+                !runtime.live &&
+                runtime.epoch === admitted.op.source_epoch),
+          );
           if (boatSourceEpoch && !retained && error instanceof BoatResumeActivationUncertain) {
             await deferAmbiguousBoatResume(tx, found.id, requestId, admitted.current.lifecycleGeneration);
             return;

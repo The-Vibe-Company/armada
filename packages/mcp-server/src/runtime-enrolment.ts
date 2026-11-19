@@ -140,6 +140,7 @@ export function createRuntimeEnrolments(sql: Sql, encryptionKey: string, options
     ownerId: string;
     configuration: Record<string, unknown>;
     commandGrantExpiresAt?: number;
+    expectedGeneration?: number;
   }) {
     const serialized = JSON.stringify(input.configuration);
     if (Buffer.byteLength(serialized) > 1048576) throw new RuntimeEnrolmentDenied();
@@ -148,6 +149,8 @@ export function createRuntimeEnrolments(sql: Sql, encryptionKey: string, options
     const hash = await sha256Hex(enrolmentToken);
     const receipt = await transaction(async (tx) => {
       const sandbox = await lockSandbox(tx, input.sandboxId, input.ownerId);
+      if (input.expectedGeneration !== undefined && sandbox.lifecycle_generation !== String(input.expectedGeneration))
+        throw new RuntimeEnrolmentDenied();
       if (sandbox.provider === "docker" && options.allowDockerIssue !== true) throw new RuntimeEnrolmentDenied();
       const parent = (
         await tx.query<{ id: string }>(
