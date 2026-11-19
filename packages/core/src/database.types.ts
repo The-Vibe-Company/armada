@@ -4378,6 +4378,8 @@ export type Database = {
           pricing_context: Json | null;
           correlation_id: string | null;
           runtime_protocol_version: number;
+          command_grant_epoch: number | null;
+          command_grant_expires_at: string | null;
         };
         Insert: {
           sandbox_id: string;
@@ -4391,6 +4393,8 @@ export type Database = {
           pricing_context?: Json | null;
           correlation_id?: string | null;
           runtime_protocol_version?: number;
+          command_grant_epoch?: number | null;
+          command_grant_expires_at?: string | null;
         };
         Update: {
           sandbox_id?: string;
@@ -4404,6 +4408,8 @@ export type Database = {
           pricing_context?: Json | null;
           correlation_id?: string | null;
           runtime_protocol_version?: number;
+          command_grant_epoch?: number | null;
+          command_grant_expires_at?: string | null;
         };
         Relationships: [
           {

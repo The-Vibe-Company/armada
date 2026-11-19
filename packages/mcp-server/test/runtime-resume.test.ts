@@ -480,9 +480,11 @@ test("retained Modal resume enrols through bootstrap using the current deploymen
     let artifact = retainedArtifact;
     let activated = false;
     let enrolled: Awaited<ReturnType<typeof f.authority.enrol>> | undefined;
+    const physicalDeadline = new Date(Date.now() + 86_400_000);
     const host = {
       id: "modal",
-      get: async () => ({ state: "stopped" }),
+      get: async () =>
+        activated ? { state: "ready", providerState: "active", expiresAt: physicalDeadline } : { state: "stopped" },
       async resumeRuntime() {
         activated = true;
       },
@@ -518,6 +520,7 @@ test("retained Modal resume enrols through bootstrap using the current deploymen
     expect(artifact).toEqual(currentArtifact);
     expect(enrolled?.epoch).toBe("2");
     const configuration = enrolled?.configuration as Record<string, unknown> | undefined;
+    expect(configuration?.grant).toEqual({ expiresAt: physicalDeadline.getTime() });
     expect(configuration?.artifactManifest).toMatchObject({ runtime: currentArtifact });
     expect(configuration?.restoreCheckpoint).toMatchObject({
       epoch: f.cp.runtime.epoch,

@@ -464,11 +464,19 @@ test("Modal subscription launch enrols only access-broker selection and replaces
     };
     const sandbox = (await createSqlData(f.sql)(caller).sandboxes.get(f.id))!;
     let enrolled: Awaited<ReturnType<typeof f.enrol>> | undefined;
+    const physicalDeadline = new Date(Date.parse(sandbox.expiresAt!) + 900_000);
     const host = {
       id: "modal",
+      async get() {
+        return { state: "ready", providerState: "active", expiresAt: physicalDeadline };
+      },
       async startRuntime(request: { enrolmentToken: string }) {
         enrolled = await f.authority.enrol(request.enrolmentToken);
-        expect(enrolled.configuration).toMatchObject({ selectedHarness: "codex", runtimeSubscription: true });
+        expect(enrolled.configuration).toMatchObject({
+          selectedHarness: "codex",
+          runtimeSubscription: true,
+          grant: { expiresAt: physicalDeadline.getTime() },
+        });
         const wire = JSON.stringify(enrolled.configuration);
         expect(wire).not.toContain("offline-refresh-");
         expect(wire).not.toContain("offline-access-");
