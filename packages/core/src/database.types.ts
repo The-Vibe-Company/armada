@@ -217,7 +217,7 @@ export type Database = {
           harness: string;
           credential_id?: string | null;
           model?: string | null;
-          credential_ids?: string[];
+          credential_ids: string[];
         };
         Update: {
           user_id?: string;

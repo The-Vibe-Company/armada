@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, expect, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, beforeEach, expect, test } from "bun:test";
 import { join } from "node:path";
 import { migrationsDir, openDatabase } from "../../../scripts/db/apply.ts";
 
@@ -32,6 +32,8 @@ beforeAll(async () => {
   await db.exec(await Bun.file(join(migrationsDir, "20261119113923_agent_default_account_order.sql")).text());
 });
 
+beforeEach(() => db.exec("begin"));
+afterEach(() => db.exec("rollback"));
 afterAll(() => db.close());
 
 async function order(harness: string) {
@@ -70,4 +72,30 @@ test("explicit pool writes preserve account order independently of the scalar de
     [user, second, first],
   );
   expect(await order("claude")).toEqual([second, first]);
+});
+
+test("an explicitly empty pool remains empty when a scalar default is present on insert", async () => {
+  await db.query(
+    "insert into public.agent_defaults(user_id,harness,credential_id,credential_ids) values ($1,'opencode',$2,'{}')",
+    [user, first],
+  );
+  expect(await order("opencode")).toEqual([]);
+});
+
+test("deleting the scalar default preserves surviving ordered accounts", async () => {
+  await db.query(
+    "update public.agent_defaults set credential_id=$2, credential_ids=array[$2::uuid,$3::uuid] where user_id=$1 and harness='codex'",
+    [user, second, first],
+  );
+  await db.query("delete from public.credentials where id=$1", [second]);
+  expect(await order("codex")).toEqual([first]);
+});
+
+test("a pool writer can restore an unchanged array after updating the scalar mirror", async () => {
+  await db.query("update public.agent_defaults set credential_id=$2 where user_id=$1 and harness='claude'", [
+    user,
+    first,
+  ]);
+  await db.query("update public.agent_defaults set credential_ids='{}' where user_id=$1 and harness='claude'", [user]);
+  expect(await order("claude")).toEqual([]);
 });
