@@ -1,11 +1,4 @@
-<p align="center">
-  <a href="https://armada.thevibecompany.co">
-    <picture>
-      <source media="(max-width: 600px)" srcset="docs/images/armada-masthead-mobile.svg">
-      <img src="docs/images/armada-masthead.svg" width="100%" alt="Armada. Run a fleet of coding agents. See every move. Claude Code, Codex and OpenCode on Boat, Modal and Docker.">
-    </picture>
-  </a>
-</p>
+# Armada
 
 <p align="center">
   <a href="https://armada.thevibecompany.co"><b>Open Armada in your browser</b></a>
@@ -40,13 +33,6 @@ Open source, MIT. Sandboxes run on a connected Boat or Modal account or on a reg
 - **Bring your tools and your team.** Attach the MCP servers you connected, share snapshots with your org or keep them private, and give bots a service token.
 
 ## How it works
-
-<p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/images/armada-how-it-works-dark.svg">
-    <img src="docs/images/armada-how-it-works-light.svg" width="720" alt="How Armada works, in four steps. 1 Snapshot: your repositories and setup script, a fail-closed secret scan, a snapshot per provider. 2 Launch: Claude Code or Codex with your model and reasoning effort, on Boat or Modal, with your connected MCP servers. 3 Sandbox: a fresh fork with repositories pulled, git and gh acting as you, and only that agent's keys. 4 Drive: follow live events, send, steer, interrupt, stop and resume. The web dashboard, the armada CLI and MCP clients use the same server and rules.">
-  </picture>
-</p>
 
 For your own compute, [register a Docker host and choose fresh launch or a host-local snapshot](docs/own-machine-quickstart.md) instead of the cloud path below.
 
