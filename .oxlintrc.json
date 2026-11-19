@@ -14,19 +14,6 @@
   },
   "overrides": [
     {
-      "files": ["scripts/post-deploy-smoke.test.ts"],
-      "rules": {
-        "landmines-testing/no-fixed-sleep": [
-          "error",
-          {
-            "allow": {
-              "scripts/post-deploy-smoke.test.ts": 1
-            }
-          }
-        ]
-      }
-    },
-    {
       "files": [
         "packages/core/src/routine-schedule.ts",
         "packages/core/test/github-reconnect-postgres.release.ts",
