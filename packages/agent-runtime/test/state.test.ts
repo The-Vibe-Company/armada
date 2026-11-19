@@ -139,14 +139,14 @@ test("checkpoint transcript copies mask embedded short application values and pr
     const toolDir = join(root, "claude/projects/fixture/tool-results");
     await mkdir(toolDir, { recursive: true });
     const toolFile = join(toolDir, "result.txt");
-    await writeFile(toolFile, JSON.stringify({ type: "prefixvalue" }));
+    await writeFile(toolFile, JSON.stringify({ type: "prefixvalue", prefixvalue: 123 }));
     await state.checkpoint();
     await state.restore();
     expect(JSON.parse(await readFile(file, "utf8"))).toEqual({
       ...frame,
       payload: { ...frame.payload, text: "prefix[REDACTED]", result: { type: { id: "prefix[REDACTED]" } } },
     });
-    expect(JSON.parse(await readFile(toolFile, "utf8"))).toEqual({ type: "prefix[REDACTED]" });
+    expect(JSON.parse(await readFile(toolFile, "utf8"))).toEqual({ type: "prefix[REDACTED]", "prefix[REDACTED]": 123 });
   } finally {
     journal.close();
     await rm(root, { recursive: true, force: true });

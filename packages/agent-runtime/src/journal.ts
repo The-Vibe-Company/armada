@@ -192,7 +192,8 @@ const maskJsonText: (
   return Object.fromEntries(
     Object.entries(scrubbed).map(([key, value]) => {
       const segment = key.replaceAll("/", "~1").replaceAll("#", "~2");
-      return [key, maskJsonText(source[key], value, mask, context, path ? `${path}/${segment}` : segment)];
+      const name = context === undefined && mask ? mask(key) : key;
+      return [name, maskJsonText(source[key], value, mask, context, path ? `${path}/${segment}` : segment)];
     }),
   );
 };
