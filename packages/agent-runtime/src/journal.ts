@@ -90,14 +90,14 @@ export class Journal {
   private eventBody(event: AgentEvent, appending: boolean) {
     const mask = this.redactShortApplicationText;
     const body = this.redact(JSON.stringify(event));
-    if (!mask) return body;
     if (event.kind === "message") {
       const scrubbed = JSON.parse(body) as typeof event;
+      scrubbed.kind = event.kind;
+      scrubbed.textMode = event.textMode;
+      scrubbed.responseKind = event.responseKind;
+      if (!mask) return JSON.stringify(scrubbed);
       return JSON.stringify({
         ...scrubbed,
-        kind: event.kind,
-        textMode: event.textMode,
-        responseKind: event.responseKind,
         text: appending && event.textMode === "delta" ? "" : maskText(event.text, scrubbed.text, mask),
         tools: scrubbed.tools.map((tool, index) => ({
           ...tool,
@@ -108,7 +108,7 @@ export class Journal {
         })),
       });
     }
-    if (event.kind !== "other" || event.type !== "harness_stderr") return body;
+    if (!mask || event.kind !== "other" || event.type !== "harness_stderr") return body;
     const masked = JSON.parse(body) as { data?: { text?: unknown } | null };
     const original = (event.data as { text?: unknown } | null)?.text;
     if (typeof original === "string" && typeof masked.data?.text === "string")
@@ -122,9 +122,7 @@ export class Journal {
     } catch {
       return this.redact(body);
     }
-    return event?.kind === "message" && this.redactShortApplicationText
-      ? this.eventBody(event, false)
-      : this.redact(body);
+    return event?.kind === "message" ? this.eventBody(event, false) : this.redact(body);
   }
   transition(prompt: StoredPrompt, status: PromptStatus, reason?: string) {
     this.db.transaction(() => {
