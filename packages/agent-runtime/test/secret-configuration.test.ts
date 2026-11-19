@@ -209,7 +209,24 @@ test.each([
       result: { output: "prefix[REDACTED]", isError: false },
     },
   },
-])("masks typed $type proof content at each journal boundary", async ({ type, data, masked }) => {
+  {
+    type: "result",
+    data: {
+      subtype: "success",
+      result: "prefixvalue",
+      errors: ["prefixvalue"],
+      structured_output: { prefixlongfixture: "prefixvalue" },
+      modelUsage: { fixture: { inputTokens: 3 } },
+    },
+    masked: {
+      subtype: "success",
+      result: "prefix[REDACTED]",
+      errors: ["prefix[REDACTED]"],
+      structured_output: { "prefix[REDACTED]": "prefix[REDACTED]" },
+      modelUsage: { fixture: { inputTokens: 3 } },
+    },
+  },
+])("masks typed $type output at each journal boundary", async ({ type, data, masked }) => {
   const journal = new Journal(":memory:", (text) => text);
   const runner = new Runner(journal, grant, {});
   try {

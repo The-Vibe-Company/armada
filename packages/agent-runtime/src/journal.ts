@@ -53,6 +53,20 @@ const maskPayload: (value: unknown, mask: (text: string) => string) => unknown =
   return value;
 };
 
+function maskPayloadField(
+  source: Record<string, unknown>,
+  data: Record<string, unknown>,
+  key: string,
+  mask: (text: string) => string,
+) {
+  if (source[key] === undefined) return;
+  const replacement = maskPayload(source[key], mask);
+  const before = JSON.stringify(source[key]);
+  const after = JSON.stringify(data[key]);
+  const masked = JSON.stringify(replacement);
+  if (masked !== before && masked !== after) data[key] = before === after ? replacement : "[REDACTED]";
+}
+
 function maskProofData(
   original: unknown,
   scrubbed: unknown,
@@ -68,13 +82,7 @@ function maskProofData(
     if (mask && typeof before === "string" && typeof after === "string") data[key] = maskText(before, after, mask);
   }
   if (source.tool === "bash" || source.tool === "shell") data.tool = source.tool;
-  if (source.input !== undefined) {
-    const input = maskPayload(source.input, maskInput);
-    const before = JSON.stringify(source.input);
-    const after = JSON.stringify(data.input);
-    const masked = JSON.stringify(input);
-    if (masked !== before && masked !== after) data.input = before === after ? input : "[REDACTED]";
-  }
+  maskPayloadField(source, data, "input", maskInput);
   if (mask && source.result && data.result) {
     const before = (source.result as { output?: unknown }).output;
     const result = data.result as { output?: unknown };
@@ -187,14 +195,24 @@ export class Journal {
         ? redacted
         : JSON.stringify({ ...diagnostic, data: { truncated: true } });
     }
-    if (isToolProof(event.type)) {
+    if (isToolProof(event.type) || event.type === "result") {
       scrubbed.type = event.type;
-      scrubbed.data = maskProofData(event.data, scrubbed.data, mask, (text) => {
+      const maskField = (text: string) => {
         const literal = this.redactLiteralText(text);
         return mask ? maskText(text, literal, mask) : literal;
-      });
-      const proof = JSON.stringify(scrubbed);
-      return !appending && Buffer.byteLength(proof) > MAX_EVENT_BYTES ? truncatedEvent(scrubbed, proof.length) : proof;
+      };
+      if (event.type === "result") {
+        if (event.data && typeof event.data === "object" && scrubbed.data && typeof scrubbed.data === "object") {
+          for (const key of ["result", "errors", "structured_output"])
+            maskPayloadField(event.data as Record<string, unknown>, scrubbed.data, key, maskField);
+        }
+      } else {
+        scrubbed.data = maskProofData(event.data, scrubbed.data, mask, maskField);
+      }
+      const diagnostic = JSON.stringify(scrubbed);
+      return !appending && Buffer.byteLength(diagnostic) > MAX_EVENT_BYTES
+        ? truncatedEvent(scrubbed, diagnostic.length)
+        : diagnostic;
     }
     return JSON.stringify(scrubbed);
   }
@@ -206,7 +224,8 @@ export class Journal {
       return this.redact(body);
     }
     return event?.kind === "message" ||
-      (event?.kind === "other" && (isToolProof(event.type) || event.type === "harness_stderr"))
+      (event?.kind === "other" &&
+        (isToolProof(event.type) || event.type === "harness_stderr" || event.type === "result"))
       ? this.eventBody(event, false)
       : this.redact(body);
   }
