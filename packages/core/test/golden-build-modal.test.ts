@@ -393,15 +393,17 @@ test("an older retained recovery queue head does not starve an interrupted build
   );
   const builder = await f.provider.createGolden({ idempotencyKey: recoverable.jobId });
   await f.db.query(
-    "update golden_build_jobs set state='recovery_required',error_code='build_failed',fence=$2,phase='snapshot',builder_id='retained-builder',updated_at='2000-01-01' where id=$1",
+    "update golden_build_jobs set state='recovery_required',error_code='build_failed',fence=$2,phase='snapshot',builder_id='retained-builder' where id=$1",
     [retained.jobId, crypto.randomUUID()],
   );
   await f.db.query(
-    "update golden_build_jobs set state='recovery_required',error_code='build_failed',fence=$2,phase='builder',updated_at='2001-01-01' where id=$1",
+    "update golden_build_jobs set state='recovery_required',error_code='build_failed',fence=$2,phase='builder' where id=$1",
     [recoverable.jobId, crypto.randomUUID()],
   );
-  await f.tick();
-  await f.tick();
+  await f.db.query("update public.jobs set run_after='2000-01-01' where id=$1", [retained.jobId]);
+  expect(await f.tick()).toBe(true);
+  expect(f.deleted).toEqual([]);
+  expect(await f.tick()).toBe(true);
   expect(await f.jobs.status(f.actor.userId, retained.jobId)).toMatchObject({
     state: "recovery_required",
     phase: "snapshot",
