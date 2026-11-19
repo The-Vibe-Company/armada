@@ -100,7 +100,12 @@ function reconcile(version: string, sha: string) {
     command("gh", "api", "--method", "POST", endpoint, "-f", "labels[]=autorelease: tagged");
   }
   if (pr.labels.some(({ name }) => name === "autorelease: pending")) {
-    command("gh", "api", "--method", "DELETE", `${endpoint}/autorelease%3A%20pending`);
+    try {
+      command("gh", "api", "--method", "DELETE", `${endpoint}/autorelease%3A%20pending`);
+    } catch (error) {
+      // Preparation may have removed the label after publication created the release.
+      if (releasePr(sha).pr.labels.some(({ name }) => name === "autorelease: pending")) throw error;
+    }
   }
 }
 
