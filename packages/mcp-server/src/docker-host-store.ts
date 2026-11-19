@@ -132,6 +132,9 @@ function notRunning(n: number): string {
     where r.host_id=j.host_id and r.request_id=any($${n}::uuid[]) and r.outcome is null
     and (r.bound_sandbox_id=j.bound_sandbox_id or (r.snapshot_id is not null and j.snapshot_id is not null)))`;
 }
+function supportsJob(n: number) {
+  return `($${n}::boolean or j.bound_operation is distinct from 'deletePhysical')`;
+}
 function input(job: Job): string {
   try {
     return canonicalDockerHostJob(job);
@@ -681,19 +684,20 @@ export function createDockerHostStore(sql: Sql, key: string) {
       skipSnapshots: boolean,
       running: readonly string[],
       resumeClaims: boolean,
+      supportsPhysicalDelete = false,
     ): Promise<boolean> {
       return transaction(async (tx) => {
         const result = await tx.query<{ found: boolean }>(
           `select exists(select 1 from public.docker_host_jobs j join public.docker_hosts h on h.id=j.host_id
              where h.hash=$1 and h.installation_id=$2 and h.revoked_at is null and j.outcome is null
-               and (not $3::boolean or j.snapshot_id is null) and ${notRunning(4)})
+               and (not $3::boolean or j.snapshot_id is null) and ${notRunning(4)} and ${supportsJob(6)})
            or ($5::boolean and exists(select 1 from public.docker_resume_claims c
              join public.docker_hosts h on h.id=c.host_id join public.sandboxes s on s.id=c.sandbox_id
              where h.hash=$1 and h.installation_id=$2 and h.revoked_at is null
                and c.installation_id=$2 and c.accepted is null
                and s.docker_generation=c.generation and s.lifecycle_generation=c.lifecycle_generation
                and s.status='stopped' and s.deleted_at is null and s.expires_at>now())) as found`,
-          [hash(hostToken), installationId, skipSnapshots, running, resumeClaims],
+          [hash(hostToken), installationId, skipSnapshots, running, resumeClaims, supportsPhysicalDelete],
         );
         return result.rows[0]?.found === true;
       });
@@ -1208,6 +1212,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
       /** Request IDs the daemon reports as still executing (#2561). */
       running: readonly string[] = [],
       protocol?: number | null,
+      supportsPhysicalDelete = false,
     ): Promise<Job | null> {
       // A revoked host or a removed owner can never authenticate again. Retire its
       // undispatchable work in its own committed transaction before the normal
@@ -1246,8 +1251,8 @@ export function createDockerHostStore(sql: Sql, key: string) {
         const hint = (
           await tx.query<StoredJob>(
             `select j.* from public.docker_host_jobs j join public.docker_hosts h on h.id=j.host_id
-           where h.hash=$1 and h.installation_id=$2 and j.outcome is null and (not $3::boolean or j.snapshot_id is null) and ${notRunning(4)} order by case when j.bound_operation in ('stop','delete') then 0 else 1 end,(j.snapshot_id is not null),j.position limit 1`,
-            [hash(hostToken), installationId, skipSnapshots, running],
+           where h.hash=$1 and h.installation_id=$2 and j.outcome is null and (not $3::boolean or j.snapshot_id is null) and ${notRunning(4)} and ${supportsJob(5)} order by case when j.bound_operation in ('stop','delete') then 0 else 1 end,(j.snapshot_id is not null),j.position limit 1`,
+            [hash(hostToken), installationId, skipSnapshots, running, supportsPhysicalDelete],
           )
         ).rows[0];
         const host =
@@ -1327,8 +1332,8 @@ export function createDockerHostStore(sql: Sql, key: string) {
         }
         const row = (
           await tx.query<StoredJob>(
-            `select j.* from public.docker_host_jobs j where j.host_id=$1 and j.outcome is null and (not $2::boolean or j.snapshot_id is null) and ${notRunning(3)} order by case when j.bound_operation in ('stop','delete') then 0 else 1 end,(j.snapshot_id is not null),j.position limit 1`,
-            [host.id, skipSnapshots, running],
+            `select j.* from public.docker_host_jobs j where j.host_id=$1 and j.outcome is null and (not $2::boolean or j.snapshot_id is null) and ${notRunning(3)} and ${supportsJob(4)} order by case when j.bound_operation in ('stop','delete') then 0 else 1 end,(j.snapshot_id is not null),j.position limit 1`,
+            [host.id, skipSnapshots, running, supportsPhysicalDelete],
           )
         ).rows[0];
         if (!row || row.request_id !== hint?.request_id) return null;
@@ -1402,7 +1407,8 @@ export function createDockerHostStore(sql: Sql, key: string) {
             return null;
           }
         }
-        return readJob(row);
+        const job = await readJob(row);
+        return job.operation === "deletePhysical" && !supportsPhysicalDelete ? null : job;
       });
     },
     cleaned(
