@@ -53,6 +53,7 @@ export class Runner {
   private mcp: McpConfiguration | undefined;
   private nativeEpoch: NativeEpoch;
   private execEnvironment: Readonly<Record<string, string>>;
+  private workspaceEnvironment: Readonly<Record<string, string>>;
   private credentialFreeBuilder: boolean;
   private exclusiveNativeAuth = false;
   private publishNativeAuth: (() => Promise<void>) | undefined;
@@ -87,18 +88,19 @@ export class Runner {
     this.publishNativeAuth = execution.publishNativeAuth;
     this.exclusiveNativeAuth = execution.exclusiveNativeAuth ?? false;
     const execEnv = validateExecEnvironment(execution.execEnv, this.credentialFreeBuilder);
+    const workspaceReadables = validateExecReadables(execution.readableVariables, this.credentialFreeBuilder);
     journal.registerSecrets(execCredentialValues(execEnv));
     this.execEnvironment = Object.freeze({
       PATH: process.env.PATH ?? "/usr/bin:/bin",
       HOME: process.env.HOME ?? "/tmp",
       GIT_TERMINAL_PROMPT: "0",
-      ...validateExecReadables(execution.readableVariables, this.credentialFreeBuilder),
       ...execEnv,
       ...(execution.ghConfigDir ? { GH_CONFIG_DIR: execution.ghConfigDir } : {}),
       ...(execution.githubToolsRoot
         ? githubRuntimeEnvironment({ PATH: execEnv.PATH ?? process.env.PATH }, execution.githubToolsRoot)
         : {}),
     });
+    this.workspaceEnvironment = Object.freeze({ ...workspaceReadables, ...this.execEnvironment });
     journal.assertRestoreSource(grant);
     this.barrier = journal.checkpointPending(grant);
     journal.bindIdentity(grant);
@@ -570,7 +572,7 @@ export class Runner {
       workspaceEvent("running");
       const work = (async () => {
         await this.execution.prepareWorkspace?.();
-        return executeWorkspace(input, this.journal, this.execEnvironment, signal, this.execution.workspaceHost);
+        return executeWorkspace(input, this.journal, this.workspaceEnvironment, signal, this.execution.workspaceHost);
       })();
       this.commands.add(work);
       try {
