@@ -10,6 +10,7 @@ import { recordLaunchStage } from "./launch-stage-record.ts";
 import { recordOperatorDiagnostic } from "./request-observability.ts";
 import { type createRuntimeEnrolments, RuntimeEnrolmentDenied, type RuntimeSessionScope } from "./runtime-enrolment.ts";
 import { runtimeHttpFailure } from "./runtime-http-failure.ts";
+import { recordRuntimeStartupFailure } from "./sandbox-lifecycle.ts";
 
 const bootstrap = new Set(["bootstrap_started", "artifact_verified", "bootstrap_failed"]);
 const runtime = new Set(["enrolled", "harness_started", "runtime_failed"]);
@@ -92,31 +93,39 @@ export function createRuntimeProgress(authority: ReturnType<typeof createRuntime
       };
       const reason = (body as { reason?: unknown }).reason;
       if (reason !== undefined && (stage !== "runtime_failed" || !isRuntimeStartupFailure(reason))) throw Error();
-      const message = isRuntimeStartupFailure(reason)
-        ? RUNTIME_STARTUP_FAILURES[reason]
-        : "Armada runtime process failed. Ask the server operator to inspect runtime startup before launching again.";
+      const recordFailure = async (
+        tx: import("@armada/core/server").Sql,
+        scope: RuntimeSessionScope,
+        generation: string,
+      ) => {
+        const code = isRuntimeStartupFailure(reason) ? reason : stage;
+        const message =
+          stage === "bootstrap_failed"
+            ? "Armada runtime bootstrap failed."
+            : isRuntimeStartupFailure(reason)
+              ? RUNTIME_STARTUP_FAILURES[reason]
+              : "Armada runtime process failed. Ask the server operator to inspect runtime startup before launching again.";
+        const result = await recordRuntimeStartupFailure(tx, scope.sandboxId, generation, code, message);
+        if (result.kind === "conflict") throw new RuntimeEnrolmentDenied();
+      };
       const token = request.headers.get("authorization")?.match(/^Bearer (\S+)$/)?.[1] ?? "";
       const observedAtMs = Date.now();
       const { scope, correlationId } = await (bootstrap.has(stage)
-        ? authority.withBootstrap(token, async (tx, scope) => {
+        ? authority.withBootstrap(token, async (tx, scope, generation) => {
             for (const launch of launchStages[stage] ?? []) await recordLaunchStage(tx, scope.sandboxId, launch);
-            if (stage === "bootstrap_failed")
-              await tx.query(
-                "update public.sandboxes set status='failed',status_reason='Armada runtime bootstrap failed.' where id=$1",
-                [scope.sandboxId],
-              );
+            if (stage === "bootstrap_failed") await recordFailure(tx, scope, generation);
             return { scope, correlationId: stage === "bootstrap_failed" ? await correlation(tx, scope) : null };
           })
-        : authority.withSession(token, request.headers.get("x-armada-runtime-epoch") ?? "", async (tx, scope) => {
-            for (const launch of launchStages[stage] ?? []) await recordLaunchStage(tx, scope.sandboxId, launch);
-            const correlationId = stage === "runtime_failed" || harnessFailure ? await correlation(tx, scope) : null;
-            if (stage === "runtime_failed")
-              await tx.query("update public.sandboxes set status='failed',status_reason=$2 where id=$1", [
-                scope.sandboxId,
-                message,
-              ]);
-            return { scope, correlationId };
-          }));
+        : authority.withSession(
+            token,
+            request.headers.get("x-armada-runtime-epoch") ?? "",
+            async (tx, scope, generation) => {
+              for (const launch of launchStages[stage] ?? []) await recordLaunchStage(tx, scope.sandboxId, launch);
+              const correlationId = stage === "runtime_failed" || harnessFailure ? await correlation(tx, scope) : null;
+              if (stage === "runtime_failed") await recordFailure(tx, scope, generation);
+              return { scope, correlationId };
+            },
+          ));
       if (stage === "runtime_failed" || stage === "bootstrap_failed" || harnessFailure) {
         const safe = isRuntimeOperatorDiagnostic(diagnostic) ? diagnostic : undefined;
         recordOperatorDiagnostic(

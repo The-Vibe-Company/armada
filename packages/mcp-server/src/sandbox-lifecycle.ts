@@ -28,7 +28,7 @@ interface SandboxTransitionEffect {
 
 interface SandboxTransition {
   sandboxId: string;
-  expectedGeneration: number;
+  expectedGeneration: number | string;
   fromStates: readonly SandboxStatus[];
   toState: SandboxStatus;
   actor:
@@ -69,6 +69,32 @@ export async function transitionSandbox(tx: Sql, input: SandboxTransition) {
   if (!result.applied) return { kind: "conflict" } satisfies SandboxTransitionResult;
   if (result.generation === null) throw new Error("Applied sandbox transition did not return a generation.");
   return { kind: "applied", generation: Number(result.generation) } satisfies SandboxTransitionResult;
+}
+
+export async function recordRuntimeStartupFailure(
+  tx: Sql,
+  sandboxId: string,
+  generation: string,
+  code: string,
+  message: string,
+) {
+  const result = await transitionSandbox(tx, {
+    sandboxId,
+    expectedGeneration: generation,
+    fromStates: ["starting", "ready", "running"],
+    toState: "failed",
+    actor: "lifecycle_runner",
+    code,
+    effects: [],
+  });
+  if (result.kind === "applied") {
+    await tx.query("update public.sandboxes set status_reason=$2 where id=$1 and lifecycle_generation=$3", [
+      sandboxId,
+      message,
+      generation,
+    ]);
+  }
+  return result;
 }
 
 export async function deferAmbiguousBoatResume(
