@@ -1,9 +1,10 @@
+import { readLogsOperation } from "@armada/core/contract";
 import { type Provider, VaultError } from "@armada/core/server";
+import type { z } from "zod";
 import type { Caller } from "./caller.ts";
 import type { ControlOptions } from "./control.ts";
 import { readBody } from "./control-body.ts";
 import { scopedOrg, selectedCaller } from "./control-caller.ts";
-import { optional, required } from "./control-input.ts";
 import { readEventPages, validateLogPagination } from "./event-pagination.ts";
 import { publicLogEvents } from "./model-usage.ts";
 import { measureRequestPhase } from "./request-timing.ts";
@@ -11,6 +12,15 @@ import { defineRoutes } from "./routes.ts";
 import { latestPromptEvent } from "./turns.ts";
 
 type LogControlOptions = Pick<ControlOptions, "dockerControls" | "logs" | "timing" | "accountTurns">;
+
+const { body: logsInput } = readLogsOperation.input;
+const nativePageInput = logsInput.omit({ id: true, org: true });
+
+function parseLogInput<T extends z.ZodType>(schema: T, input: unknown) {
+  const parsed = schema.safeParse(input);
+  if (!parsed.success) throw new VaultError("invalid", parsed.error.issues[0]!.message);
+  return parsed.data;
+}
 
 export async function readLogs(
   options: LogControlOptions,
@@ -54,16 +64,8 @@ export async function readLogs(
   }
   if (!options.logs) throw new VaultError("unavailable", "Sandbox logs are not configured on the server.");
   const target = await measureRequestPhase(options.timing, "logs_target", () => options.logs!(caller, id));
-  if (body.direction !== undefined && body.direction !== "forward" && body.direction !== "backward")
-    throw new VaultError("invalid", "Invalid event direction.");
-  for (const key of ["limit", "maxBytes"])
-    if (body[key] !== undefined && typeof body[key] !== "number")
-      throw new VaultError("invalid", "Invalid event pagination.");
-  if (body.coalesce !== undefined && typeof body.coalesce !== "boolean")
-    throw new VaultError("invalid", "Invalid coalesce option.");
-  const backward = body.direction === "backward";
-  const all = body.all === true;
-  const follow = body.follow === true;
+  const page = parseLogInput(nativePageInput, { ...body, all: body.all === true, follow: body.follow === true });
+  const backward = page.direction === "backward";
   const { events, cursor, hasMore, source, runtimeFailure, olderCursor } = await readEventPages(
     (cursor) =>
       measureRequestPhase(options.timing, "events", () =>
@@ -71,24 +73,24 @@ export async function readLogs(
           sandboxId: target.providerSandboxId,
           ...(cursor ? { cursor } : {}),
           ...(backward ? { direction: "backward" as const } : {}),
-          ...(typeof body.limit === "number" ? { limit: body.limit } : {}),
-          ...(typeof body.maxBytes === "number" ? { maxBytes: body.maxBytes } : {}),
-          ...(typeof body.coalesce === "boolean" ? { coalesce: body.coalesce } : {}),
+          ...(page.limit !== undefined ? { limit: page.limit } : {}),
+          ...(page.maxBytes !== undefined ? { maxBytes: page.maxBytes } : {}),
+          ...(page.coalesce !== undefined ? { coalesce: page.coalesce } : {}),
         }),
       ),
-    optional(body, "cursor"),
-    all,
+    page.cursor ?? undefined,
+    page.all === true,
   );
   // Ordinary history reads need only the authorized event stream. Live compute is
   // consulted solely to decide whether a follow request should keep waiting.
   const info =
-    follow && !runtimeFailure
+    page.follow && !runtimeFailure
       ? await measureRequestPhase(options.timing, "state", () => target.provider.get(target.providerSandboxId))
       : null;
   const latest = latestPromptEvent(events)?.promptId ?? null;
   // A live sandbox with no turn is idle, so following has nothing to wait for.
   const prompt =
-    follow && !runtimeFailure && latest && info?.state !== "stopped" && info?.state !== "failed"
+    page.follow && !runtimeFailure && latest && info?.state !== "stopped" && info?.state !== "failed"
       ? await measureRequestPhase(options.timing, "prompt", () =>
           target.provider.getPrompt({ sandboxId: target.providerSandboxId, promptId: latest }),
         )
@@ -103,7 +105,7 @@ export async function readLogs(
     cursor,
     hasMore,
     settled:
-      !follow ||
+      !page.follow ||
       runtimeFailure !== undefined ||
       info?.state === "stopped" ||
       info?.state === "failed" ||
@@ -112,13 +114,14 @@ export async function readLogs(
 }
 
 export const logRoutes = defineRoutes("logs", {
-  "logs/read": {
-    methods: ["POST"],
+  [readLogsOperation.route.path.slice("/api/v1/".length)]: {
+    methods: [readLogsOperation.route.method],
     readBody: (request) => readBody(request, 512 * 1024),
     handler: async ({ caller, body, options }) => {
-      const org = optional(body, "org");
+      const org = parseLogInput(logsInput.shape.org, body.org) ?? undefined;
       scopedOrg(caller, org);
-      return readLogs(options, await selectedCaller(options, caller, org), required(body, "id"), body);
+      const scoped = await selectedCaller(options, caller, org);
+      return readLogs(options, scoped, parseLogInput(logsInput.shape.id, body.id), body);
     },
   },
 });

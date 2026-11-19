@@ -1,8 +1,9 @@
 import { type Provider, VaultError } from "@armada/core";
 
+import { MAX_LOG_PAGES } from "@armada/core/contract";
+
 type Page = Awaited<ReturnType<Provider["events"]>>;
 type ReadPage = (cursor: string | undefined) => Promise<Page>;
-export const MAX_LOG_PAGES = 100;
 
 export function validateLogPagination({ direction, all }: { direction?: unknown; all?: unknown }): void {
   if (direction === "backward" && all === true)

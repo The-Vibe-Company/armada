@@ -22,7 +22,9 @@ import {
   type TaskOutcome,
   withUsageTotals,
 } from "@armada/core";
+import { readLogsOperation } from "@armada/core/contract";
 import { decryptSecret, type Sql } from "@armada/core/server";
+import { z } from "zod";
 import type { Caller } from "./caller.ts";
 import { createSqlData } from "./data.ts";
 import type { createDockerBootstrapService } from "./docker-bootstrap-service.ts";
@@ -81,6 +83,11 @@ function failure(code: "not_found" | "invalid_request" | "conflict" | "unavailab
   return new ProviderError({ provider: "docker", code, message, retryable: code === "unavailable" });
 }
 const denied = () => failure("not_found", "Sandbox not found.");
+const dockerLogsInput = readLogsOperation.input.body.pick({ direction: true, all: true, coalesce: true }).extend({
+  limit: z.number().int().min(1).max(500).optional(),
+  since_cursor: z.string().optional(),
+});
+
 const invalid = () => failure("invalid_request", "Invalid Docker sandbox request.");
 const terminal = (row: Row) => ["stopped", "deleted", "failed"].includes(row.status);
 /** Controls that reach the Docker host (jobs, launch-time runtime admission) beyond the runtime command boundary. */
@@ -501,16 +508,9 @@ export function createDockerSandboxControls(
     };
   }
   async function logs(caller: Caller, row: Row, args: Record<string, unknown>) {
-    if (
-      (args.direction !== undefined && !["forward", "backward"].includes(args.direction as string)) ||
-      (args.all !== undefined && typeof args.all !== "boolean") ||
-      (args.limit !== undefined &&
-        (typeof args.limit !== "number" || !Number.isInteger(args.limit) || args.limit < 1 || args.limit > 500)) ||
-      (args.coalesce !== undefined && typeof args.coalesce !== "boolean") ||
-      (args.direction === "backward" && args.all) ||
-      (args.since_cursor !== undefined && typeof args.since_cursor !== "string")
-    )
-      throw invalid();
+    const parsed = dockerLogsInput.safeParse(args);
+    if (!parsed.success || (parsed.data.direction === "backward" && parsed.data.all)) throw invalid();
+    const { direction, all, coalesce, limit, since_cursor } = parsed.data;
     const snapshot: { row: Row; queued?: QueuedPrompt[]; final?: QueuedPrompt[] } = { row };
     const {
       events: rawEvents,
@@ -524,15 +524,15 @@ export function createDockerSandboxControls(
           row.id,
           {
             ...(cursor !== undefined ? { cursor } : {}),
-            ...(args.limit !== undefined ? { limit: args.limit as number } : {}),
-            ...(args.direction !== undefined ? { direction: args.direction as "forward" | "backward" } : {}),
+            ...(limit !== undefined ? { limit } : {}),
+            ...(direction !== undefined ? { direction } : {}),
             ...(args.maxBytes !== undefined ? { maxBytes: args.maxBytes as number } : {}),
-            ...(args.coalesce !== undefined ? { coalesce: args.coalesce as boolean } : {}),
+            ...(coalesce !== undefined ? { coalesce } : {}),
           },
           snapshot,
         ),
-      args.since_cursor as string | undefined,
-      args.all === true,
+      since_cursor,
+      all === true,
     );
     const events = new Map<string, AgentEvent>();
     for (const event of rawEvents) if (!isPrivateModelEvent(event)) events.set(event.id, event);

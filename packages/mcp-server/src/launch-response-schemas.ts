@@ -1,6 +1,5 @@
 import { goldenCompatibilityIds, launchGitHubResponse, SANDBOX_PROVIDERS, sandboxIdentity } from "@armada/core";
 import type { LaunchEnvelope } from "@armada/core/contract";
-import { LOGS_OUTPUT } from "@armada/core/contract";
 import type { LaunchResult } from "@armada/core/server";
 import { z } from "zod";
 
@@ -86,61 +85,6 @@ export const GOLDEN_LIST_RESPONSE = z.object({
     }),
   ),
 });
-
-const versions = z
-  .record(z.string(), z.union([z.number(), z.boolean(), z.string()]))
-  .describe("Server feature versions for this provider path. Clients must tolerate unknown keys.");
-
-/**
- * `launch/options` (core `LaunchOptionsResponse`): what a launch can ask for on this server.
- * Identifiers stay plain strings so clients tolerate providers, harnesses and sizes added later.
- */
-export const LAUNCH_OPTIONS_RESPONSE = z
-  .object({
-    harnesses: z.array(
-      z
-        .object({
-          id: z.string(),
-          credentialKinds: z.array(z.string()),
-          defaultModel: z.string(),
-          defaultReasoningEffort: z.string(),
-          reasoningEfforts: z.array(z.string()),
-          models: z.array(
-            z.object({ id: z.string(), label: z.string(), reasoningEfforts: z.array(z.string()) }).passthrough(),
-          ),
-        })
-        .passthrough(),
-    ),
-    machineSizes: z.array(z.string()),
-    ttl: z
-      .object({ defaultSeconds: z.number(), maxSeconds: z.record(z.string(), z.number()) })
-      .passthrough()
-      .describe("Launch TTL default and per-provider maximums, in seconds."),
-    providers: z.array(
-      z
-        .object({
-          id: z.string(),
-          enabled: z.boolean(),
-          launchSources: z
-            .array(z.string())
-            .describe('"golden" launches by golden name; "image" launches on a Docker host.'),
-          harnesses: z.array(z.string()),
-          capabilities: z.record(z.string(), z.boolean()),
-          unsupportedReasons: z.record(z.string(), z.string()),
-        })
-        .passthrough(),
-    ),
-    modalRuntime: versions.optional(),
-    dockerRuntime: versions.optional(),
-    boatRuntime: versions,
-  })
-  .passthrough();
-
-/**
- * `logs/read`: the MCP `logs` output, including the Docker `queuedPrompt`. The REST record
- * stays open: providers and later releases add fields.
- */
-export const REST_LOGS_RESPONSE = z.object(LOGS_OUTPUT).passthrough();
 
 export function responseJsonSchema(schema: z.ZodType): Record<string, unknown> {
   return z.toJSONSchema(schema, { target: "draft-7", io: "output" }) as Record<string, unknown>;

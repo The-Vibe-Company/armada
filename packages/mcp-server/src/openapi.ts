@@ -11,7 +11,7 @@ import {
   VERSION,
   vaultControlRoute,
 } from "@armada/core";
-import { launch, sandboxOperations, sandboxRestOperations, templateLaunchResponse } from "@armada/core/contract";
+import { launch, operations, templateLaunchResponse } from "@armada/core/contract";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { z } from "zod";
@@ -23,37 +23,24 @@ import {
   GOLDEN_CAPABILITIES_REQUEST,
   GOLDEN_CAPABILITIES_RESPONSE,
 } from "./golden-rest-schemas.ts";
-import {
-  GOLDEN_LIST_RESPONSE,
-  LAUNCH_OPTIONS_RESPONSE,
-  REST_LOGS_RESPONSE,
-  requestJsonSchema,
-  responseJsonSchema,
-} from "./launch-response-schemas.ts";
+import { GOLDEN_LIST_RESPONSE, requestJsonSchema, responseJsonSchema } from "./launch-response-schemas.ts";
 import { PUBLISHED_REST_GET_ROUTES, PUBLISHED_REST_ROUTES } from "./public-rest-routes.ts";
 import { deleteSandboxAliasContract } from "./sandbox-rest-controls.ts";
 import { DRAIN_REFUSAL } from "./server-request-drain.ts";
 import { createRestToolServer, type ToolContext } from "./tools.ts";
 
-/** MCP input names that the REST adapters (`control.ts`, `control-logs.ts`) accept under another name. */
-export const REST_FIELD_NAMES: Readonly<Record<string, Readonly<Record<string, string>>>> = {
-  "logs/read": { since_cursor: "cursor" },
-};
 /** REST routes whose contract is the named MCP tool, beyond the dispatcher's shared-tool table. */
 const REST_TOOL_ROUTES: Readonly<Record<string, string>> = {
   "sandbox/launch": "launch",
-  "logs/read": "logs",
 };
 /** HTTP 200 bodies that differ from the MCP tool output (or that have no tool). */
 const REST_RESPONSES: Readonly<Record<string, z.ZodType>> = {
-  "launch/options": LAUNCH_OPTIONS_RESPONSE,
   "golden/list": GOLDEN_LIST_RESPONSE,
   "sandbox/delete": deleteSandboxAliasContract.output,
   "golden/adopt": GOLDEN_ADOPTION_RESPONSE,
   "golden/capabilities": GOLDEN_CAPABILITIES_RESPONSE,
   "sandbox/launch": launch.output,
   "templates/launch": templateLaunchResponse,
-  "logs/read": REST_LOGS_RESPONSE,
 };
 /** Handled directly by the REST dispatcher, not through an MCP tool. */
 const REST_ONLY: Readonly<
@@ -97,15 +84,9 @@ const REST_ONLY: Readonly<
       }),
     ),
   },
-  "launch/options": {
-    description:
-      "What a launch can ask for on this server: harnesses with their models and credential kinds, machine sizes, TTL limits, and each provider's launch sources and capabilities. Read it before offering launch choices.",
-    input: { type: "object", properties: {} },
-  },
 };
 /** Additional request fields published for REST. */
 const REST_EXTRA_FIELDS: Readonly<Record<string, Readonly<Record<string, object>>>> = {
-  "logs/read": { follow: { type: "boolean", description: "Follow events within the bounded HTTP request." } },
   "templates/launch": {
     modelAccount: {
       type: "object",
@@ -136,19 +117,6 @@ function boundByBody(schema: Record<string, unknown>, field: string, maxBytes: n
   property.maxLength = Math.min(typeof property.maxLength === "number" ? property.maxLength : maxBytes, maxBytes);
   if (description) property.description = description;
 }
-/** Rewrites every string (prose and `required` entries); object keys are renamed by the caller. */
-function restNames<T>(value: T, rename: Readonly<Record<string, string>>): T {
-  if (typeof value === "string")
-    return Object.entries(rename).reduce(
-      (text, [from, to]) => text.replace(new RegExp(`\\b${from}\\b`, "g"), to),
-      value as string,
-    ) as T;
-  if (Array.isArray(value)) return value.map((item) => restNames(item, rename)) as T;
-  if (value && typeof value === "object")
-    return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, restNames(item, rename)])) as T;
-  return value;
-}
-
 /** Failures of the outputs routes: the server's bare code, or the dashboard endpoint's typed failure. */
 const OUTPUT_FAILURE = {
   "application/json": {
@@ -315,9 +283,7 @@ export async function generateOpenApi() {
     const paths: Record<string, unknown> = {};
     for (const route of PUBLISHED_REST_ROUTES) {
       const github = isGitHubRestControl(route) ? GITHUB_REST_CONTRACTS[route] : undefined;
-      const sandbox = Object.values({ ...sandboxOperations, ...sandboxRestOperations }).find(
-        (entry) => entry.route.path === `/api/v1/${route}`,
-      );
+      const sandbox = Object.values(operations).find((entry) => entry.route.path === `/api/v1/${route}`);
       const restOnly: (typeof REST_ONLY)[string] | undefined = github
         ? {
             description: github.description,
@@ -328,17 +294,8 @@ export async function generateOpenApi() {
           : REST_ONLY[route];
       const tool = tools.find((tool) => tool.name === REST_TOOL_ROUTES[route]);
       if (!tool && !restOnly) throw new Error(`No registered contract for ${route}`);
-      const rename = REST_FIELD_NAMES[route] ?? {};
-      // REST handlers read their own field names (an unknown name is ignored, not
-      // refused), so schema keys, required lists and prose must all use them.
-      const input = restNames(structuredClone(tool?.inputSchema ?? restOnly!.input), rename);
-      let description = restNames(tool?.description ?? restOnly!.description, rename);
-      for (const [from, to] of Object.entries(rename)) {
-        if (input.properties?.[from]) {
-          input.properties[to] = input.properties[from];
-          delete input.properties[from];
-        }
-      }
+      const input = structuredClone(tool?.inputSchema ?? restOnly!.input);
+      let description = tool?.description ?? restOnly!.description;
       if (REST_EXTRA_FIELDS[route]) input.properties = { ...input.properties, ...REST_EXTRA_FIELDS[route] };
       // REST selects org scope before calling shared tools.
       if (tool) input.properties = { ...input.properties, org: { type: "string" } };

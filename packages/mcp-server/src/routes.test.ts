@@ -220,3 +220,35 @@ test.each([
   expect(response.status).toBe(400);
   expect(await response.json()).toMatchObject({ error: { code } });
 });
+
+test.each([
+  [{ id: null }, "id is required."],
+  [{ id: 42 }, "id must be text."],
+  [{ org: 42 }, "org must be text."],
+  [{ direction: "sideways" }, "Invalid event direction."],
+  [{ direction: "backward", all: true }, "Backward reads cannot drain all pages."],
+  [{ limit: "1" }, "Invalid event pagination."],
+  [{ maxBytes: "256" }, "Invalid event pagination."],
+  [{ coalesce: "true" }, "Invalid coalesce option."],
+  [{ cursor: 42 }, "cursor must be text."],
+] as const)("REST logs preserve the invalid refusal for %j", async (body, message) => {
+  const error = await dispatchControlCommand(
+    "logs/read",
+    caller,
+    { id: "sandbox", ...body },
+    {
+      ...options,
+      logs: async () => ({
+        providerSandboxId: "provider-sandbox",
+        provider: {
+          events: async () => {
+            throw new Error("Invalid pagination must not read events.");
+          },
+        } as never,
+      }),
+    },
+  ).catch((reason) => reason);
+  const response = controlFailureResponse(error);
+  expect(response.status).toBe(400);
+  expect(await response.json()).toMatchObject({ error: { code: "invalid", message } });
+});

@@ -3,13 +3,14 @@ import {
   DEFAULT_WAIT_SECONDS,
   sandboxIdInput as id,
   LOGS_OUTPUT,
+  MAX_LOG_PAGES,
   SANDBOX_STATUSES,
   sandboxOperations,
 } from "@armada/core/contract";
 import { type Provider, ProviderError, type SandboxStatus } from "@armada/core/server";
 import * as z from "zod";
 import type { SandboxView } from "./data.ts";
-import { MAX_LOG_PAGES, readEventPages } from "./event-pagination.ts";
+import { readEventPages } from "./event-pagination.ts";
 import { publicLogEvents } from "./model-usage.ts";
 import { ToolError } from "./tool-error.ts";
 import type { ToolRegistrar } from "./tool-registration.ts";
