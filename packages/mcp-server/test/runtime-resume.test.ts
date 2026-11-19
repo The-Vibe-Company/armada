@@ -298,6 +298,50 @@ test("an unenrolled Boat resume returns to a confirmed retained stop before anot
   }
 });
 
+test.each(["activation receipt", "pending ticket"])(
+  "the worker recovers an interrupted Boat resume with %s evidence",
+  async (proof) => {
+    const f = await stopped();
+    try {
+      const first = input(f.row.id);
+      let ticket: string | undefined;
+      let started = false;
+      const resume = createRuntimeResume(f.sql, ENCRYPTION_KEY, f.bridge, async () => ({
+        async start(_signal, restore, confirmActivation) {
+          if (started) return f.reboot(restore);
+          started = true;
+          if (proof === "activation receipt") await confirmActivation!();
+          else {
+            ticket = (await f.authority.issue({ sandboxId: f.row.id, ownerId: f.caller.userId, configuration: {} }))
+              .enrolmentToken;
+          }
+          await f.db.query("update sandboxes set activity_until=now()-interval '1 second' where id=$1", [f.row.id]);
+          throw Error("Owner lost its lease before it could hand off");
+        },
+        async stop() {
+          throw Error("The request has no cleanup authority");
+        },
+      }));
+      await expect(resume(f.caller, first)).rejects.toMatchObject({ code: "conflict" });
+      const store = createSqlData(f.sql)(f.caller).sandboxes;
+      expect((await store.get(f.row.id))?.status).toBe("starting");
+      const { provider } = fakeBoat({
+        body: { sandbox: sdkSandbox({ id: f.row.providerSandboxId, state: "archived", snapshotAvailable: true }) },
+      });
+      const worker = createSandboxLifecycle(f.sql, async () => provider);
+      expect(await worker.reconcileOne()).toBe(true);
+      expect((await store.get(f.row.id))?.status).toBe("stopping");
+      if (ticket) await expect(f.authority.enrol(ticket)).rejects.toThrow("runtime_enrolment_denied");
+      expect(await worker.reconcileOne()).toBe(true);
+      expect((await store.get(f.row.id))?.status).toBe("stopped");
+      await expect(resume(f.caller, first)).rejects.toMatchObject({ code: "conflict" });
+      expect((await resume(f.caller, input(f.row.id))).sourceCheckpoint.epoch).toBe(f.cp.runtime.epoch);
+    } finally {
+      await f.close();
+    }
+  },
+);
+
 test("retained Modal resume enrols through bootstrap using the current deployment artifact", async () => {
   const f = await stopped("codex", "modal");
   try {

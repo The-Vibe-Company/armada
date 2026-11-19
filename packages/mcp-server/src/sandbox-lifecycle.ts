@@ -41,6 +41,37 @@ export async function requestFailedRuntimeResumeStop(
   return changed.rows[0]?.status;
 }
 
+async function recoverInterruptedBoatResume(tx: Sql, sandboxId: string, lease: string, generation: number) {
+  const result = await tx.query(
+    `with handoff as (
+      update public.sandboxes s set status='stopping',
+        transition_context=jsonb_build_object('actor','runtime_resume','code',$4::text),
+        stop_requested_at=clock_timestamp(),stop_generation=s.stop_generation+1,status_reason=null,
+        activity_lease_id=null,activity_until=null,lifecycle_generation=s.lifecycle_generation+1,
+        reconcile_after='infinity'::timestamptz,reconcile_lease=null,reconcile_lease_until=null
+      from public.runtime_resumes r
+      join public.runtime_enrolments e on e.sandbox_id=r.sandbox_id and e.epoch=r.source_epoch
+      join public.runtime_checkpoints c on c.sandbox_id=r.sandbox_id and c.epoch=r.source_epoch
+      where s.id=$1 and s.reconcile_lease=$2 and s.lifecycle_generation=$3
+        and s.reconcile_lease_until>clock_timestamp() and s.activity_until<=clock_timestamp()
+        and s.provider='boat' and s.boat_runtime and s.status='starting'
+        and s.stop_requested_at is null and s.deleted_at is null and s.expires_at>clock_timestamp()
+        and not s.application_secret_tainted
+        and exists(select 1 from public.members m where m.org_id=s.org_id and m.user_id=s.owner_id)
+        and r.sandbox_id=s.id and r.request_id=s.activity_lease_id and r.phase='dispatched' and r.receipt is null
+        and e.runtime_hash is null
+        and (r.activated_at is not null or (e.enrolment_hash is not null and e.lifecycle_generation=$3))
+        and c.watermark=r.watermark
+        and c.watermark=(select coalesce(max(sequence),0) from public.runtime_events where sandbox_id=s.id)
+      returning s.id,r.request_id
+    )
+    update public.runtime_resumes r set phase='abandoned' from handoff
+    where r.sandbox_id=handoff.id and r.request_id=handoff.request_id returning r.request_id`,
+    [sandboxId, lease, generation, UNENROLLED_RESUME_STOP],
+  );
+  return result.rows.length > 0;
+}
+
 /** One bounded batch in the existing server loop. SQL leases serialize replicas; generation
  * fencing prevents an old observation from publishing over a newly admitted resume. */
 export function createSandboxLifecycle(
@@ -95,6 +126,7 @@ export function createSandboxLifecycle(
           credential_version: number | null;
           owner_is_member: boolean;
           retained_resume: boolean;
+          interrupted_resume: boolean;
           work_merged: boolean | null;
           preservation_note: string | null;
           stop_requested_at: Date | string | null;
@@ -124,11 +156,29 @@ export function createSandboxLifecycle(
         where s.id=due.id
         returning s.id,s.provider_sandbox_id,s.runtime_transport,s.boat_runtime,s.lifecycle_generation,s.expires_at,s.status::text as status,s.status_reason,s.task_prompt_id,s.activity_lease_id,s.application_secret_tainted,s.credential_id,s.credential_version,s.stop_requested_at,s.preservation_note,
           ${mergedWorkProof("s")} as work_merged,due.retained_resume,
+          (s.provider='boat' and s.boat_runtime and s.status='starting' and exists(
+            select 1 from public.runtime_resumes r where r.sandbox_id=s.id and r.request_id=s.activity_lease_id
+              and r.phase='dispatched' and r.receipt is null
+          )) as interrupted_resume,
           exists(select 1 from public.members m where m.org_id=s.org_id and m.user_id=s.owner_id) as owner_is_member`,
           [token, providerId, UNENROLLED_RESUME_STOP, `${OPERATOR_CLEANUP_PREFIX}%`],
         )
       ).rows[0];
       if (!row) return false;
+      if (row.interrupted_resume) {
+        if (!sql.transaction) throw Error("Boat resume recovery requires a SQL transaction.");
+        const handedOff = await sql.transaction(async (tx) => {
+          const owned = await tx.query(
+            `select id from public.sandboxes where id=$1 and reconcile_lease=$2 and lifecycle_generation=$3
+               and reconcile_lease_until>clock_timestamp() for update`,
+            [row.id, token, row.lifecycle_generation],
+          );
+          return (
+            owned.rows.length > 0 && (await recoverInterruptedBoatResume(tx, row.id, token, row.lifecycle_generation))
+          );
+        });
+        if (handedOff) return true;
+      }
       // Only an already-requested stop may enter operator custody. This is not
       // provider authority: the worker never substitutes credentials or allocates.
       const operatorStop = row.status === "stopping" && row.stop_requested_at !== null;
