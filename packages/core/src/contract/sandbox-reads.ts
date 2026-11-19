@@ -69,6 +69,12 @@ const paginationNumber = z
 
 export const readLogsOperation = {
   name: "readLogs",
+  toolName: "logs",
+  mcpDescription:
+    "The agent's events oldest first: prompts (with status and failure reason), messages and tool calls, " +
+    "steers. The default is one bounded page (100 events). Set all to read every available page (up to " +
+    `${MAX_LOG_PAGES} pages) in one response. Pass the returned cursor as since_cursor to read only what is new. ` +
+    "An event read twice has the same id and the newer body; each id appears once per response.",
   route: { method: "POST", path: "/api/v1/logs/read" },
   input: {
     body: z.object({

@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, expect, spyOn, test } from "bun:test";
-import { createHash, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { createSqlAuthStore } from "@armada/auth";
 import {
   type AgentEvent,
@@ -124,20 +124,35 @@ async function fixture(
     adminId = randomUUID(),
     otherId = randomUUID(),
     credentialId = randomUUID();
-  await db.query(`insert into auth.users(id) values($1),($2),($3)`, [userId, adminId, otherId]);
-  await db.query(`insert into public.orgs(id,name) values($1,$2)`, [orgId, `normal-launch-${orgId}`]);
+  const installationId = randomUUID();
+  const host = { hostId: randomUUID(), hostToken: randomBytes(32).toString("hex") };
   await db.query(
-    `insert into public.members(org_id,user_id,role) values($1,$2,'member'),($1,$3,'admin'),($1,$4,'member')`,
-    [orgId, userId, adminId, otherId],
+    `with users as (
+       insert into auth.users(id) values($2),($3),($4)
+     ), org as (
+       insert into public.orgs(id,name) values($1,$5)
+     ), members as (
+       insert into public.members(org_id,user_id,role) values($1,$2,'member'),($1,$3,'admin'),($1,$4,'member')
+     )
+     insert into public.docker_hosts(
+       id,org_id,owner_id,registration_expires_at,installation_id,hash,last_seen_at,daemon_version,daemon_protocol
+     ) values($6,$1,$3,now()+interval '5 minutes',$7,$8,now(),$9,$10)`,
+    [
+      orgId,
+      userId,
+      adminId,
+      otherId,
+      `normal-launch-${orgId}`,
+      host.hostId,
+      installationId,
+      createHash("sha256").update(host.hostToken).digest("hex"),
+      options.daemonVersion ?? "2.28.0",
+      DOCKER_HOST_PROTOCOL - 1,
+    ],
   );
   const actor = { userId, orgId },
     admin = { userId: adminId, orgId };
   const caller: Caller = { userId, orgs: [{ orgId, role: "member" }], via: "supabase" };
-  const registration = await hosts.issueRegistration(admin),
-    installationId = randomUUID();
-  const host = await hosts.exchangeRegistration(registration.registrationToken, installationId);
-  await hosts.poll(host.hostToken, installationId, options.daemonVersion ?? "2.28.0");
-  await db.query("update docker_hosts set daemon_protocol=$2 where id=$1", [host.hostId, DOCKER_HOST_PROTOCOL - 1]);
   const secret = `offline-normal-launch-${randomUUID()}`;
   // Omitted version must select the current pin, not fabricate version one.
   await db.query(

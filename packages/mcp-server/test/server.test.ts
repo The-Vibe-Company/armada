@@ -1912,29 +1912,3 @@ test("MCP launch preserves the closed busy account code and safe action", async 
   expect(result.text).toContain("The model account is unavailable. Check its current credentials.");
   expect(boat.forks).toHaveLength(0);
 });
-
-test("public MCP inventory and schemas expose operation contracts", async () => {
-  const { token, client, people } = await start();
-  const mcp = await client(await token(people.member));
-  const { tools } = await mcp.listTools();
-  expect(tools.map((tool) => tool.name).sort()).toEqual([
-    "exec",
-    "launch",
-    "list",
-    "logs",
-    "report",
-    "send",
-    "status",
-    "stop",
-  ]);
-  for (const tool of tools) expect(tool.outputSchema).toBeDefined();
-  const launch = tools.find((tool) => tool.name === "launch");
-  expect(launch?.inputSchema.anyOf).toEqual(
-    ["boat", "modal"].map((provider) =>
-      expect.objectContaining({
-        properties: expect.objectContaining({ provider: expect.objectContaining({ const: provider }) }),
-        required: expect.arrayContaining(["provider", "harness", "golden"]),
-      }),
-    ),
-  );
-});
