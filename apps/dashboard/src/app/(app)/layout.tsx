@@ -88,7 +88,7 @@ export default async function AppLayout({ children }: { children: ReactNode }) {
           />
         </Suspense>
       </AppSidebar>
-      <CommandMenu />
+      <CommandMenu organizationAdmin={selected?.role === "admin"} />
       <Toaster />
       <main className="w-full min-w-0 flex-1 space-y-6 px-4 py-6 md:px-6 md:py-6">
         <ShellBreadcrumb organization={selected?.org.name ?? "Armada"} />

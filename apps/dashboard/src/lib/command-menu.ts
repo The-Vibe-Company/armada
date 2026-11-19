@@ -12,6 +12,7 @@ export type Command = {
   group: "Go to" | "Actions";
   /** Other words a person might type for it. */
   keywords?: readonly string[];
+  adminOnly?: boolean;
 };
 
 const CATALOG: readonly Command[] = [
@@ -43,6 +44,7 @@ const CATALOG: readonly Command[] = [
     group: "Go to",
     keywords: ["schedule", "interval", "pause", "runs"],
   },
+  { id: "triggers", label: "Inbound triggers", href: "/triggers", group: "Go to", keywords: ["webhook"] },
   { id: "sandboxes", label: "Sandboxes", href: "/sandboxes", group: "Go to", keywords: ["agents", "logs", "running"] },
   {
     id: "environments",
@@ -92,6 +94,7 @@ export const COMMANDS: readonly Command[] = CATALOG.map((command) => {
     ? {
         ...command,
         label: destination.label,
+        adminOnly: destination.adminOnly === true,
         keywords: [
           ...(command.keywords ?? []),
           command.label.toLowerCase(),
@@ -100,6 +103,10 @@ export const COMMANDS: readonly Command[] = CATALOG.map((command) => {
       }
     : command;
 });
+
+export function commandsForOrganization(isAdmin: boolean) {
+  return COMMANDS.filter((command) => isAdmin || !command.adminOnly);
+}
 
 /**
  * The commands that match `query`, best first: a label that starts with it, then a word of the label that does, then
