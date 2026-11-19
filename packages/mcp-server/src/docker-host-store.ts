@@ -1572,7 +1572,12 @@ export function createDockerHostStore(sql: Sql, key: string) {
           )
         ).rows[0];
         const host = peek?.bound_sandbox_id
-          ? await reconcileHost(tx, hostToken, installationId)
+          ? await reconcileHost(
+              tx,
+              hostToken,
+              installationId,
+              peek.bound_operation === "resume" ? (peek.bound_actor_id ?? undefined) : undefined,
+            )
           : await authenticate(
               tx,
               hostToken,
