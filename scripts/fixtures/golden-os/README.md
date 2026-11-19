@@ -4,7 +4,7 @@ Opt-in, networked Docker test; it installs the project-pinned Bun and Playwright
 
 ```sh
 docker build -t armada-golden-os-review scripts/fixtures/golden-os
-ARMADA_GOLDEN_OS_IMAGE=armada-golden-os-review bun test packages/core/test/golden-os.test.ts
+ARMADA_GOLDEN_OS_IMAGE=armada-golden-os-review bun packages/core/test/golden-os.probe.ts
 ```
 
 The fixture uses the approved Node/Debian digest and exact apt versions, including sudo `1.9.13p3-1+deb12u4`. It runs the production pinned-host-key SSH stdin checkout transport and the complete generated golden recipe as the unprivileged `user`, then invokes the production scanner through that user's exec channel. Passwordless sudo is inside this disposable container only. Host Git configuration is never changed; fixture Git identity is repository-local.
@@ -21,7 +21,7 @@ CI does **not** use the repaired standalone fixture above to certify the provide
 bun scripts/prepare-runtime.ts
 bun scripts/golden-os-image.ts
 docker build -t armada-golden-os dist/golden-os-fixture
-ARMADA_GOLDEN_OS_IMAGE=armada-golden-os bun test packages/core/test/golden-os.test.ts
+ARMADA_GOLDEN_OS_IMAGE=armada-golden-os bun packages/core/test/golden-os.probe.ts
 ```
 
 The added source-fixture script deliberately never installs sudo, grants sudoers, replaces a runner binary, or bypasses model/credential policy. Missing privileges/private runtime therefore fail the real SSH recipe instead of being repaired by test setup. Actual Modal public-SDK provisioning/SSH/network and stop/restore recipe conformance still require the coordinator's credentialed live gate.
