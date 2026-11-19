@@ -1,6 +1,6 @@
 import { BodyTooLargeError } from "@armada/auth";
 import { HARNESS_KINDS } from "@armada/core";
-import { type CreatedInboundTrigger, createInboundTriggerBody } from "@armada/core/contract";
+import { type CreatedInboundTrigger, createInboundTrigger } from "@armada/core/contract";
 import {
   createTemplateService,
   EncryptionKeyError,
@@ -31,7 +31,7 @@ interface DeliverySummary {
   jobState: "queued" | "leased" | "done" | "failed";
 }
 
-const basePath = "/api/v1/triggers";
+const basePath = createInboundTrigger.route.path;
 const deliveriesPath = /^\/api\/v1\/triggers\/([^/]+)\/deliveries$/;
 const mutationPath = /^\/api\/v1\/triggers\/([^/]+)\/(rotate|disable)$/;
 const noStore = { "cache-control": "no-store" };
@@ -56,7 +56,7 @@ async function create(sql: Sql, org: string, actor: Caller, request: Request, en
       return fail(400, "invalid_request", "Supply a JSON trigger configuration of at most 4096 bytes.");
     throw error;
   }
-  const parsed = createInboundTriggerBody.safeParse(body);
+  const parsed = createInboundTrigger.input.body.safeParse(body);
   if (!parsed.success) {
     return fail(
       400,
@@ -104,8 +104,9 @@ async function create(sql: Sql, org: string, actor: Caller, request: Request, en
       return trigger.id;
     });
   } catch (error) {
-    if (error && typeof error === "object" && "code" in error && error.code === "55P03")
-      return fail(503, "dependency_unavailable", "The template's Docker host is being updated. Try again.");
+    const fields = error && typeof error === "object" ? (error as Record<string, unknown>) : {};
+    if ((fields.errno ?? fields.code) === "55P03")
+      return fail(503, "dependency_unavailable", "The template's Docker host membership is being updated. Try again.");
     if (!(error instanceof VaultError)) throw error;
     if (error.code === "forbidden") return fail(403, "forbidden", "Organization admin access is required.");
     if (!["invalid", "not_found", "conflict"].includes(error.code)) throw error;
@@ -192,7 +193,7 @@ export function inboundTriggerAdminRoute(
     if (!auth.caller.orgs.some((membership) => membership.orgId === org && membership.role === "admin")) {
       return fail(403, "forbidden", "Organization admin access is required.");
     }
-    const creating = url.pathname === basePath && request.method === "POST";
+    const creating = url.pathname === basePath && request.method === createInboundTrigger.route.method;
     const method = mutationMatch || creating ? "POST" : "GET";
     if (request.method !== method) {
       const response = fail(405, "method_not_allowed", `Use ${method} for this inbound trigger operation.`);

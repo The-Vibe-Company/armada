@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
-import { createdInboundTrigger } from "@armada/core/contract";
+import { createInboundTrigger } from "@armada/core/contract";
 import { decryptSecret, type Sql } from "@armada/core/server";
 import { PGlite } from "@electric-sql/pglite";
 import { AuthUnavailable, type CallerResult } from "./caller.ts";
@@ -274,7 +274,7 @@ test("creates an audited trigger and discloses the signing key once", async () =
   const response = await manage(createRequest());
   expect(response?.status).toBe(201);
   expect(response?.headers.get("cache-control")).toBe("no-store");
-  const { triggerId, signingSecret } = createdInboundTrigger.parse(await response?.json());
+  const { triggerId, signingSecret } = createInboundTrigger.output.parse(await response?.json());
   const key = await ingress.signingKey(triggerId);
   expect(key?.revision).toBe(1);
   expect(key?.key.byteLength).toBe(32);
@@ -349,4 +349,25 @@ test("a failed creation audit leaves no new trigger", async () => {
   } finally {
     await db.exec("alter table public.trigger_admin_audit drop constraint block_creation");
   }
+});
+
+test("returns a retryable refusal when issuer membership is locked", async () => {
+  const sql: Sql = {
+    query: db.query.bind(db),
+    async transaction() {
+      throw Object.assign(new Error("Issuer membership is locked"), {
+        code: "ERR_POSTGRES_SERVER_ERROR",
+        errno: "55P03",
+      });
+    },
+  };
+  const route = inboundTriggerAdminRoute(sql, async () => ({ ok: true, caller: admin }), encryptionKey);
+  const response = await route(createRequest());
+  expect(response?.status).toBe(503);
+  expect(await response?.json()).toEqual({
+    error: {
+      code: "dependency_unavailable",
+      message: "The template's Docker host membership is being updated. Try again.",
+    },
+  });
 });

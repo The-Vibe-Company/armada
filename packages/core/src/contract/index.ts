@@ -1,11 +1,8 @@
 import type { z } from "zod";
+import { createdInboundTrigger, createInboundTriggerBody } from "./inbound-trigger.ts";
 import { launchInput } from "./launch.ts";
 
-export {
-  type CreatedInboundTrigger,
-  createdInboundTrigger,
-  createInboundTriggerBody,
-} from "./inbound-trigger.ts";
+export type { CreatedInboundTrigger } from "./inbound-trigger.ts";
 export type { LaunchInput } from "./launch.ts";
 
 export interface Operation<Input extends z.ZodType, Output extends z.ZodType | undefined = undefined> {
@@ -33,4 +30,16 @@ export const launch = {
   errors: ["invalid"],
 } as const satisfies Operation<typeof launchInput>;
 
-export const operations = { launch } as const;
+export const createInboundTrigger = {
+  name: "createInboundTrigger",
+  route: { method: "POST", path: "/api/v1/triggers" },
+  input: { body: createInboundTriggerBody },
+  output: createdInboundTrigger,
+  readOnly: false,
+  destructive: false,
+  audience: "admin",
+  description: "Create an inbound trigger in the selected organization and return its signing key once.",
+  errors: ["invalid_request", "unauthorized", "forbidden", "conflict", "dependency_unavailable"],
+} as const satisfies Operation<typeof createInboundTriggerBody, typeof createdInboundTrigger>;
+
+export const operations = { launch, createInboundTrigger } as const;
