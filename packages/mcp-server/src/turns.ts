@@ -10,7 +10,6 @@ import {
   readPromptEvents,
   reportedTurnUsage,
   type SandboxInfo,
-  type SandboxPatch,
   type SandboxPullRequest,
   type SandboxStatus,
   type SandboxUsage,
@@ -22,7 +21,7 @@ import {
 } from "@armada/core";
 import { nativeExhaustionEvidence } from "./account-exhaustion.ts";
 import { completedUsageTurns } from "./account-spend.ts";
-import { DataError, type SandboxView, type ServerSandboxStore } from "./data.ts";
+import { DataError, type SandboxView, type ServerSandboxPatch, type ServerSandboxStore } from "./data.ts";
 import { runtimeBridgeTarget } from "./provider-runtime-admission.ts";
 
 export const INTERRUPTED_LAUNCH_REASON =
@@ -300,7 +299,7 @@ export async function readStatus(
   // concurrent admission. The existing lifecycle worker refreshes physical state.
   if (options.stored) return report({ ...sandbox, statusReason: reason }, next, info, prompt, info.expiresAt ?? null);
   if (next !== sandbox.status || reason !== sandbox.statusReason) {
-    const patch: SandboxPatch = {
+    const patch: ServerSandboxPatch = {
       status: next,
       statusReason: reason,
       ...(sandbox.lifecycleGeneration === undefined ? {} : { expectedGeneration: sandbox.lifecycleGeneration }),
@@ -310,6 +309,12 @@ export async function readStatus(
     } else if (next === "stopped") {
       patch.stoppedAt = (info.stoppedAt ?? options.now).toISOString();
     } else if (sandbox.stoppedAt !== null && next !== "failed") patch.stoppedAt = null;
+    if (
+      next === "failed" &&
+      (sandbox.status === "ready" || sandbox.status === "running") &&
+      runtimeBridgeTarget(sandbox)
+    )
+      patch.runtimeFailureFrom = sandbox.status;
     try {
       await store.update(sandbox.id, patch);
     } catch (error) {
