@@ -41,8 +41,8 @@ import { authorizeSnapshotBuild, resolveDockerSnapshot } from "./docker-snapshot
 import { recordLaunchStageForActivation } from "./launch-stage-record.ts";
 import { collectOutputTransfers, DOCKER_RETAINED_OUTPUT_STOP } from "./output-transfers.ts";
 import { noteAdmission } from "./request-observability.ts";
-import { unsettledRuntimeCommands } from "./runtime-commands.ts";
 import { createRuntimeEnrolments, scopedRuntimeSql } from "./runtime-enrolment.ts";
+import { unsettledRuntimeCommands } from "./runtime-idle-evidence.ts";
 import { failDockerResumeActivation } from "./sandbox-lifecycle.ts";
 import { deferTransactionWake } from "./wake-bus.ts";
 

@@ -569,6 +569,14 @@ test.each(["account", "docker", "runtime"] as const)("idle-only stop leaves acce
   expect((await db.query("select 1 from public.docker_host_jobs where request_id=$1", [stop.requestId])).rows).toEqual(
     [],
   );
+  if (queue === "runtime") {
+    await db.query(
+      "update public.runtime_commands set request_id='outputs_9999999999999_sample' where sandbox_id=$1 and request_id=$2",
+      [a.sandboxId, turn],
+    );
+    await store.enqueueSandbox(a.owner, a.sandboxId, { ...stop, onlyIfIdle: true });
+    return;
+  }
   await store.enqueueSandbox(a.owner, a.sandboxId, stop);
 });
 
