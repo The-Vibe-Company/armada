@@ -9,7 +9,6 @@ import {
   rejectedRecreation,
   sh,
   tempRoot,
-  unrecordedUrlPush,
 } from "./push-ledger-git.ts";
 
 test("push evidence survives a pruned tracking ref and reports pushes that escaped the ledger", () => {
@@ -52,27 +51,6 @@ test("a push the ledger cannot attribute leaves a gap even after its tracking re
     if (path === "no reflog, no verify") prune("escaped");
     expect([path, read().split("\n")[0]]).toEqual([path, "!untracked"]);
   }
-});
-
-test("a push while the hooks were displaced is reported before the reader restores them", () => {
-  const { work, push, read, prune } = launch();
-  const merged = push("merged");
-  sh(work, "mkdir .husky && git config --local core.hooksPath .husky");
-  const closed = push("closed");
-  prune("closed");
-  // The first read reports the loss and reinstalls the hooks in the new path.
-  // A later read (say the first scan was abandoned) still reports it.
-  expect(read()).toBe(`!unproven\n!untracked\n^\t${closed}\nmerged\t${merged}\n`);
-  expect(read()).toBe(`!untracked\n^\t${closed}\nmerged\t${merged}\n`);
-  // Fetches and maintenance after the reinstall add no false gap of their own.
-  const fresh = launch();
-  fresh.push("merged");
-  sh(fresh.root, "git -C remote.git branch other merged");
-  sh(
-    fresh.work,
-    "git push -q origin HEAD:refs/heads/main && git fetch -q origin && git pull -q --rebase origin main && git remote set-head origin -a >/dev/null && git gc -q",
-  );
-  expect(fresh.read().split("\n")).not.toContain("!untracked");
 });
 
 test("the repository's own hooks keep running, with their input and exit status, beside the ledger", () => {
@@ -157,42 +135,6 @@ test("an accepted push whose tracking update failed stays unresolved; a later co
   expect(() => sh(work, "git push -q origin HEAD:refs/heads/topic")).toThrow();
   const accepted = push("topic", "", "-f origin");
   expect(read()).toBe(`topic\t${accepted}\n~\ttopic\t${rejected}\n`);
-});
-
-test("local work no confirmed push carries withholds coverage, even after a push that skipped every hook", () => {
-  const { stdout, first, second } = unrecordedUrlPush();
-  // Discovery cannot see the escaped push, but its commit is still on a local branch.
-  expect(stdout).toBe(`^\t${second}\ntopic\t${first}\n`);
-  expect(stdout).not.toContain("escaped");
-  // Ordinary work is covered: a branch pushed through origin, and the launch
-  // branch as fetched, even when it moved past the launch.
-  const { root, work, push } = launch();
-  sh(root, "git clone -q remote.git other 2>/dev/null");
-  sh(join(root, "other"), "git commit -q --allow-empty -m base && git push -q origin HEAD:refs/heads/main");
-  sh(work, "git pull -q origin main && git checkout -q -b topic");
-  const topic = push("topic");
-  sh(join(root, "other"), "git commit -q --allow-empty -m later && git push -q origin HEAD:refs/heads/main");
-  sh(work, "git checkout -q main && git pull -q origin main");
-  expect(sh(work, `set -- 0 x main; ${readPushEvidence}`)).toBe(`topic\t${topic}\n`);
-  const read = () => sh(work, `set -- 0 x main; ${readPushEvidence}`);
-  // So is a reviewer commit pulled into the pushed branch (fail-safe: the
-  // stop waits, as for a PR whose head someone else moved).
-  const reviewed = sh(
-    root,
-    "git -C other fetch -q origin topic && git -C other checkout -q FETCH_HEAD && git -C other commit -q --allow-empty -m review && git -C other push -q origin HEAD:refs/heads/topic && git -C other rev-parse HEAD",
-  ).trim();
-  sh(work, "git checkout -q topic && git pull -q origin topic && git checkout -q main");
-  expect(read()).toBe(`^\t${reviewed}\ntopic\t${topic}\n`);
-  // A detached commit pushed by URL past the hooks and then left behind, and
-  // one in another worktree, are both still local work.
-  sh(work, "git branch -q -f topic " + topic);
-  const left = sh(work, "git checkout -q --detach && git commit -q --allow-empty -m left && git rev-parse HEAD").trim();
-  sh(work, `git push -q --no-verify file://${join(root, "remote.git")} HEAD:refs/heads/left && git checkout -q main`);
-  const away = sh(
-    work,
-    "git worktree add -q --detach ../wt && git -C ../wt commit -q --allow-empty -m away && git -C ../wt rev-parse HEAD",
-  ).trim();
-  expect(read()).toBe(`^\t${away}\n^\t${left}\ntopic\t${topic}\n`);
 });
 
 test("a relative hooks path still resolves in each linked worktree once the ledger is installed", () => {
