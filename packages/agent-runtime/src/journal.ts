@@ -34,6 +34,7 @@ function isStructuredDiagnostic(type: string) {
     type === "armada/opencodeMcp" ||
     type === "armada/turnUsage" ||
     type === "result" ||
+    type === "usage_report" ||
     type === "model/rerouted" ||
     isCodexQuotaDiagnostic(type)
   );
@@ -140,6 +141,46 @@ const claudeUsage = {
     server_tool_use: { fields: { web_fetch_requests: null, web_search_requests: null } },
     service_tier: null,
     speed: null,
+  },
+};
+
+const claudeUsageReport = {
+  fields: {
+    session: {
+      fields: {
+        total_cost_usd: null,
+        total_api_duration_ms: null,
+        total_duration_ms: null,
+        total_lines_added: null,
+        total_lines_removed: null,
+        model_usage: claudeModelUsage,
+      },
+    },
+    rate_limits: {
+      fields: {
+        limits: {
+          items: {
+            fields: {
+              kind: null,
+              group: null,
+              percent: null,
+              resets_at: null,
+              scope: {
+                fields: {
+                  model: { fields: { display_name: null } },
+                  surface: { fields: { display_name: null } },
+                },
+              },
+              severity: null,
+              is_active: null,
+            },
+          },
+        },
+        extra_usage: {
+          fields: { is_enabled: null, monthly_limit: null, used_credits: null, utilization: null, currency: null },
+        },
+      },
+    },
   },
 };
 
@@ -407,6 +448,8 @@ export class Journal {
             }
           }
         }
+      } else if (event.type === "usage_report") {
+        scrubbed.data = maskShapedPayload(event.data, scrubbed.data, maskField, claudeUsageReport);
       } else if (isCodexQuotaDiagnostic(event.type)) {
         scrubbed.data = maskShapedPayload(event.data, scrubbed.data, maskField, quotaPayload);
       } else if (event.type === "armada/turnUsage") {

@@ -229,6 +229,25 @@ test.each([
     },
   },
   {
+    type: "usage_report",
+    data: {
+      rate_limits: {
+        limits: [{ group: "plan-prefixvalue", percent: 25, scope: { model: { display_name: "model-prefixvalue" } } }],
+        extra_usage: { is_enabled: true, currency: "EUR" },
+      },
+      session: { model_usage: { prefixlongfixture: { prefixvalue: "model-prefixvalue" } } },
+    },
+    masked: {
+      rate_limits: {
+        limits: [
+          { group: "plan-prefix[REDACTED]", percent: 25, scope: { model: { display_name: "model-prefix[REDACTED]" } } },
+        ],
+        extra_usage: { is_enabled: true, currency: "EUR" },
+      },
+      session: { model_usage: { "prefix[REDACTED]": { "prefix[REDACTED]": "model-prefix[REDACTED]" } } },
+    },
+  },
+  {
     type: "armada/turnUsage",
     data: {
       model: "model-prefixvalue",
@@ -336,6 +355,7 @@ test.each([
       type,
       "bash",
       "longfixture",
+      ...(type === "usage_report" ? ["limits"] : []),
       ...(type.startsWith("account/") ? ["rateLimits", "42"] : []),
       ...(type === "result" || type === "armada/turnUsage" ? ["Tokens", "tokens", "42"] : []),
     ]);
