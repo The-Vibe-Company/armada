@@ -1,6 +1,7 @@
 import { z } from "zod";
 import {
   OUTPUT_DIRECTORY,
+  OUTPUT_MAX_BYTES,
   OUTPUT_MAX_FILE_BYTES,
   OUTPUT_MAX_FILES,
   OUTPUT_MAX_ORG_BYTES,
@@ -17,9 +18,12 @@ const access =
 const errors = ["unauthorized", "not_found", "Use GET"] as const;
 const binary = "application/octet-stream";
 
+export const MCP_OUTPUT_MAX_BYTES = OUTPUT_MAX_BYTES;
+
 export const sandboxOutputOperations = {
   listSandboxOutputs: {
     name: "listSandboxOutputs",
+    toolName: "outputs_list",
     route: { method: "GET", path: "/api/v1/sandboxes/{id}/outputs" },
     input: { body: z.undefined(), path: { id } },
     output: z.strictObject({
@@ -52,6 +56,9 @@ export const sandboxOutputOperations = {
   },
   readSandboxOutput: {
     name: "readSandboxOutput",
+    toolName: "output_read",
+    mcpDescription: `Read one file of the sandbox's last output snapshot as base64 (up to ${MCP_OUTPUT_MAX_BYTES} bytes). For larger files, use the REST download.${access}`,
+    mcpOutput: z.strictObject({ base64: z.string() }),
     route: { method: "GET", path: "/api/v1/sandboxes/{id}/outputs/{name}" },
     input: { body: z.undefined(), path: { id, name }, headers: { Range: range, "If-Range": z.string() } },
     output: z.instanceof(ReadableStream).nullable(),
@@ -63,4 +70,4 @@ export const sandboxOutputOperations = {
     errors: [...errors, "invalid_name", "unavailable"],
     errorOutput: z.object({ error: z.enum([...errors, "invalid_name", "unavailable"]) }),
   },
-} as const satisfies Record<string, Operation<z.ZodType, z.ZodType>>;
+} as const satisfies Record<string, Operation<z.ZodType, z.ZodType> & { mcpOutput?: z.ZodObject }>;

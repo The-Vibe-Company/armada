@@ -28,7 +28,7 @@ interface SandboxTransitionEffect {
 
 interface SandboxTransition {
   sandboxId: string;
-  expectedGeneration: number;
+  expectedGeneration: number | string;
   fromStates: readonly SandboxStatus[];
   toState: SandboxStatus;
   actor:
@@ -69,6 +69,32 @@ export async function transitionSandbox(tx: Sql, input: SandboxTransition) {
   if (!result.applied) return { kind: "conflict" } satisfies SandboxTransitionResult;
   if (result.generation === null) throw new Error("Applied sandbox transition did not return a generation.");
   return { kind: "applied", generation: Number(result.generation) } satisfies SandboxTransitionResult;
+}
+
+export async function recordRuntimeStartupFailure(
+  tx: Sql,
+  sandboxId: string,
+  generation: string,
+  code: string,
+  message: string,
+) {
+  const result = await transitionSandbox(tx, {
+    sandboxId,
+    expectedGeneration: generation,
+    fromStates: ["starting", "ready", "running"],
+    toState: "failed",
+    actor: "lifecycle_runner",
+    code,
+    effects: [],
+  });
+  if (result.kind === "applied") {
+    await tx.query("update public.sandboxes set status_reason=$2 where id=$1 and lifecycle_generation=$3", [
+      sandboxId,
+      message,
+      generation,
+    ]);
+  }
+  return result;
 }
 
 export async function deferAmbiguousBoatResume(
@@ -170,7 +196,8 @@ export async function failDockerResumeActivation(
 export async function requestRefusedDockerResumeStop(tx: Sql, sandboxId: string, generation: string) {
   const stopped = await tx.query(
     `update public.sandboxes set status='stopping',status_reason=null,
-       stop_requested_at=now(),lifecycle_generation=lifecycle_generation+1
+       stop_requested_at=now(),lifecycle_generation=lifecycle_generation+1,
+       transition_context=jsonb_build_object('actor','docker_host','code','docker_resume_refusal_stop')
      where id=$1 and provider='docker' and stop_requested_at is null and deleted_at is null
        and expires_at>now()
        and ((status='starting' and lifecycle_generation=$2::bigint)
@@ -183,6 +210,65 @@ export async function requestRefusedDockerResumeStop(tx: Sql, sandboxId: string,
     [sandboxId, generation],
   );
   return stopped.rows.length > 0;
+}
+
+export async function confirmRefusedDockerResumeRetention(
+  tx: Sql,
+  sandboxId: string,
+  generation: string | number,
+  requestId: string,
+) {
+  const retained = await tx.query(
+    `select s.id from public.sandboxes s
+     where s.id=$1 and s.lifecycle_generation=$2 and s.provider='docker' and s.status='stopping'
+       and s.status_reason is null and s.stopped_at is null and s.deleted_at is null and s.expires_at>clock_timestamp()
+       and not s.application_secret_tainted and cardinality(s.conversation_ids)=1
+       and exists (
+         select 1 from public.docker_host_jobs stop
+         join public.docker_hosts h on h.id=stop.host_id
+         join public.mcp_actor_epochs e on e.org_id=s.org_id and e.user_id=stop.bound_actor_id
+         join public.members m on m.org_id=e.org_id and m.user_id=e.user_id
+         join lateral (
+           select r.* from public.docker_host_jobs r
+           where r.bound_sandbox_id=s.id and r.bound_operation='resume' and r.position<stop.position
+           order by r.position desc limit 1
+         ) resume on resume.host_id=stop.host_id and resume.bound_actor_id=stop.bound_actor_id
+             and resume.bound_actor_epoch=stop.bound_actor_epoch
+         where stop.request_id=$3 and stop.bound_sandbox_id=s.id and stop.bound_operation='stop'
+           and stop.host_id=s.docker_host_id and h.installation_id=s.docker_installation_id and h.revoked_at is null
+           and stop.bound_actor_id=s.owner_id and stop.bound_actor_epoch=e.epoch
+           and stop.created_at=s.stop_requested_at and stop.cancelled_at is null
+           and resume.outcome is not null and resume.cancelled_at is null
+           and exists (
+             select 1 from public.sandbox_transitions t where t.sandbox_id=s.id
+               and t.generation=s.lifecycle_generation and t.to_status='stopping'
+               and t.actor='docker_host' and t.code='docker_resume_refusal_stop'
+               and t.generation=resume.refused_resume_generation+
+                 case t.from_status when 'starting' then 1 when 'failed' then 2 end
+           )
+           and not exists (
+             select 1 from public.docker_host_jobs earlier where earlier.bound_sandbox_id=s.id
+               and earlier.bound_operation='stop' and earlier.position between resume.position+1 and stop.position-1
+           )
+       )
+       and exists (
+         select 1 from public.runtime_enrolments r
+         join public.runtime_checkpoints p on p.sandbox_id=r.sandbox_id and p.epoch=r.epoch
+         where r.sandbox_id=s.id and p.completed_at is not null
+           and p.watermark=(select coalesce(max(sequence),0) from public.runtime_events where sandbox_id=s.id)
+       )`,
+    [sandboxId, generation, requestId],
+  );
+  if (!retained.rows.length) return;
+  await transitionSandbox(tx, {
+    sandboxId,
+    expectedGeneration: generation,
+    fromStates: ["stopping"],
+    toState: "stopped",
+    actor: "lifecycle_runner",
+    code: "docker_resume_retention_confirmed",
+    effects: [],
+  });
 }
 
 async function recoverInterruptedRuntimeResume(

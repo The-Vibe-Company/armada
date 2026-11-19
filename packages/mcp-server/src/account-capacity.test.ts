@@ -34,12 +34,18 @@ test("account capacity refuses a full account and admits available or unlimited 
 
 // Real SQL at the admission boundary: row locking/count predicates are the
 // behavior under test, not a mock implementation of those predicates.
-const db = new PGlite();
+let connection: PGlite | undefined;
+
+function database() {
+  if (!connection) throw new Error("Database fixture is not open");
+  return connection;
+}
 const account = "10000000-0000-4000-8000-000000000001";
 const ids = [1, 2, 3].map((id) => `20000000-0000-4000-8000-${String(id).padStart(12, "0")}`);
-const sql = { query: (q: string, values?: unknown[]) => db.query(q, values) } as Sql;
+const sql = { query: (q: string, values?: unknown[]) => database().query(q, values) } as Sql;
 beforeAll(async () => {
-  await db.exec(`create table credentials(id uuid primary key,name text,max_agents integer,version integer not null default 2);
+  connection = new PGlite();
+  await database().exec(`create table credentials(id uuid primary key,name text,max_agents integer,version integer not null default 2);
     create table account_exhaustion(account_id uuid primary key,account_version integer,resets_at timestamptz);
     create table sandboxes(id uuid primary key,credential_id uuid,deleted_at timestamptz,stopped_at timestamptz,
       status text,activity_lease_id uuid,task_prompt_id text,lifecycle_generation bigint default 1);
@@ -47,47 +53,53 @@ beforeAll(async () => {
     create table runtime_commands(sandbox_id uuid,request_id text,result_enc bytea);
     create table runtime_idle_turns(sandbox_id uuid,prompt_id text,settled boolean,primary key(sandbox_id,prompt_id));
     create table account_agent_reservations(sandbox_id uuid primary key,account_id uuid);`);
-  await db.query("insert into credentials(id,name,max_agents) values($1,'Shared account',2)", [account]);
-  await db.exec(
+  await database().query("insert into credentials(id,name,max_agents) values($1,'Shared account',2)", [account]);
+  await database().exec(
     "alter table credentials add column model_limits jsonb not null default '{}'::jsonb; alter table sandboxes add column model text; alter table account_turn_queue add column model text; alter table account_turn_queue add column sequence bigint; alter table account_agent_reservations add column model text",
   );
   for (const id of ids)
-    await db.query("insert into sandboxes(id,credential_id,status) values($1,$2,'ready')", [id, account]);
+    await database().query("insert into sandboxes(id,credential_id,status) values($1,$2,'ready')", [id, account]);
 });
-afterAll(() => db.close());
+afterAll(async () => {
+  const db = connection;
+  connection = undefined;
+  await db?.close();
+});
 test("simultaneous admission serializes and terminal, failure, and stop evidence free only their work slot", async () => {
   const admit = (id: string) =>
-    db.transaction((tx) => admitAccountCapacity({ query: (q, v) => tx.query(q, v) } as Sql, account, id));
+    database().transaction((tx) => admitAccountCapacity({ query: (q, v) => tx.query(q, v) } as Sql, account, id));
   // Three live but idle machines do not occupy any account slots.
   const starts = await Promise.allSettled(ids.map(admit));
   expect(starts.map((result) => result.status)).toEqual(["fulfilled", "fulfilled", "rejected"]);
   for (const [i, id] of ids.slice(0, 2).entries()) {
-    await db.query("update sandboxes set task_prompt_id=$2,status='running' where id=$1", [id, `turn_${i}`]);
-    await db.query("delete from account_agent_reservations where sandbox_id=$1", [id]);
+    await database().query("update sandboxes set task_prompt_id=$2,status='running' where id=$1", [id, `turn_${i}`]);
+    await database().query("delete from account_agent_reservations where sandbox_id=$1", [id]);
   }
   await expect(admit(ids[2]!)).rejects.toThrow("2/2 agents working");
   // Requesting stop is not evidence that the old turn stopped computing.
-  await db.query("update sandboxes set status='stopping' where id=$1", [ids[0]]);
+  await database().query("update sandboxes set status='stopping' where id=$1", [ids[0]]);
   await expect(admit(ids[2]!)).rejects.toThrow("2/2 agents working");
   // Every harness final status (including failure/interruption) projects settled.
-  await db.query("insert into runtime_idle_turns values($1,'turn_0',true)", [ids[0]]);
+  await database().query("insert into runtime_idle_turns values($1,'turn_0',true)", [ids[0]]);
   await admit(ids[2]!);
-  await db.query("delete from account_agent_reservations where sandbox_id=$1", [ids[2]]);
-  await db.query("update sandboxes set status='stopped',stopped_at=now() where id=$1", [ids[1]]);
+  await database().query("delete from account_agent_reservations where sandbox_id=$1", [ids[2]]);
+  await database().query("update sandboxes set status='stopped',stopped_at=now() where id=$1", [ids[1]]);
   await admit(ids[0]!);
-  await db.query("delete from account_agent_reservations");
-  await db.query("update sandboxes set status='failed' where id=$1", [ids[2]]);
+  await database().query("delete from account_agent_reservations");
+  await database().query("update sandboxes set status='failed' where id=$1", [ids[2]]);
   await admitAccountCapacity(sql, account, ids[1]!);
 });
 
 test("pending Docker prompt retains capacity until its receipt transfers ownership to the turn", async () => {
-  await db.exec("truncate sandboxes,account_agent_reservations,runtime_idle_turns,account_turn_queue,runtime_commands");
+  await database().exec(
+    "truncate sandboxes,account_agent_reservations,runtime_idle_turns,account_turn_queue,runtime_commands",
+  );
   const migration = readFileSync(
     new URL("../../../supabase/migrations/20261115123000_account_turn_queue.sql", import.meta.url),
     "utf8",
   );
   // Install the actual production trigger policy rather than recreating its logic.
-  await db.exec(
+  await database().exec(
     migration
       .slice(migration.indexOf("create or replace function public.release_account_agent_reservation"))
       .replace(
@@ -95,39 +107,42 @@ test("pending Docker prompt retains capacity until its receipt transfers ownersh
         "drop trigger if exists release_account_agent_reservation",
       ),
   );
-  await db.query("update credentials set max_agents=1 where id=$1", [account]);
+  await database().query("update credentials set max_agents=1 where id=$1", [account]);
   for (const id of ids)
-    await db.query("insert into sandboxes(id,credential_id,status) values($1,$2,'ready')", [id, account]);
+    await database().query("insert into sandboxes(id,credential_id,status) values($1,$2,'ready')", [id, account]);
   await admitAccountCapacity(sql, account, ids[0]!);
-  await db.query("insert into account_turn_queue(sandbox_id,state,dispatch_generation) values($1,'dispatching',1)", [
-    ids[0],
-  ]);
-  await db.query("update sandboxes set status='ready' where id=$1", [ids[0]]);
+  await database().query(
+    "insert into account_turn_queue(sandbox_id,state,dispatch_generation) values($1,'dispatching',1)",
+    [ids[0]],
+  );
+  await database().query("update sandboxes set status='ready' where id=$1", [ids[0]]);
   await expect(admitAccountCapacity(sql, account, ids[1]!)).rejects.toThrow("1/1 agents working");
   // A queued paused Docker wake advances its generation before ready/prompt.
-  await db.query("update sandboxes set lifecycle_generation=2,status='ready' where id=$1", [ids[0]]);
+  await database().query("update sandboxes set lifecycle_generation=2,status='ready' where id=$1", [ids[0]]);
   await expect(admitAccountCapacity(sql, account, ids[1]!)).rejects.toThrow("1/1 agents working");
-  await db.query("insert into runtime_commands values($1,'docker_prompt_pending',null)", [ids[0]]);
-  await db.query("update sandboxes set task_prompt_id=null,status='running' where id=$1", [ids[0]]);
+  await database().query("insert into runtime_commands values($1,'docker_prompt_pending',null)", [ids[0]]);
+  await database().query("update sandboxes set task_prompt_id=null,status='running' where id=$1", [ids[0]]);
   await expect(admitAccountCapacity(sql, account, ids[1]!)).rejects.toThrow("1/1 agents working");
-  await db.query("update runtime_commands set result_enc='\\x01' where sandbox_id=$1", [ids[0]]);
-  await db.query("update sandboxes set task_prompt_id='native_turn' where id=$1", [ids[0]]);
-  expect((await db.query("select * from account_agent_reservations")).rows).toHaveLength(0);
+  await database().query("update runtime_commands set result_enc='\\x01' where sandbox_id=$1", [ids[0]]);
+  await database().query("update sandboxes set task_prompt_id='native_turn' where id=$1", [ids[0]]);
+  expect((await database().query("select * from account_agent_reservations")).rows).toHaveLength(0);
   await expect(admitAccountCapacity(sql, account, ids[1]!)).rejects.toThrow("1/1 agents working");
-  await db.query("insert into runtime_idle_turns values($1,'native_turn',true)", [ids[0]]);
+  await database().query("insert into runtime_idle_turns values($1,'native_turn',true)", [ids[0]]);
   await admitAccountCapacity(sql, account, ids[1]!);
-  await db.query("delete from account_agent_reservations where sandbox_id=$1", [ids[1]]);
+  await database().query("delete from account_agent_reservations where sandbox_id=$1", [ids[1]]);
   await admitAccountCapacity(sql, account, ids[0]!);
-  await db.query("update sandboxes set status='running' where id=$1", [ids[0]]);
+  await database().query("update sandboxes set status='running' where id=$1", [ids[0]]);
   await expect(admitAccountCapacity(sql, account, ids[1]!)).rejects.toThrow("1/1 agents working");
 });
 
 test("model admission shares account locking but enforces each model independently", async () => {
-  await db.exec(
+  await database().exec(
     'truncate sandboxes,account_agent_reservations,runtime_idle_turns,account_turn_queue; update credentials set max_agents=3,model_limits=\'{"armada/morph-kimik31":1,"deepseek":2}\'',
   );
   const admit = (id: string, model: string) =>
-    db.transaction((tx) => admitAccountCapacity({ query: (q, v) => tx.query(q, v) } as Sql, account, id, model));
+    database().transaction((tx) =>
+      admitAccountCapacity({ query: (q, v) => tx.query(q, v) } as Sql, account, id, model),
+    );
   const outcomes = await Promise.allSettled([
     admit(ids[0]!, "armada/morph-kimik31"),
     admit(ids[1]!, "armada/morph-kimik31"),
@@ -136,9 +151,9 @@ test("model admission shares account locking but enforces each model independent
   await admit(ids[1]!, "deepseek");
   await admit(ids[2]!, "deepseek");
   await expect(admit("20000000-0000-4000-8000-000000000004", "other")).rejects.toThrow("3/3 agents working");
-  await db.query("delete from account_agent_reservations where sandbox_id=$1", [ids[0]]);
+  await database().query("delete from account_agent_reservations where sandbox_id=$1", [ids[0]]);
   await admit(ids[0]!, "armada/morph-kimik31");
-  await db.exec("update credentials set max_agents=null");
+  await database().exec("update credentials set max_agents=null");
   await expect(admit("20000000-0000-4000-8000-000000000004", "armada/morph-kimik31")).rejects.toThrow(
     "1/1 agents working",
   );
@@ -149,17 +164,19 @@ test("new launch admission refuses an exhausted revision until its reset", async
   const reset = Date.parse(resetsAt);
   const binding = { credentialId: account, credentialVersion: 2 };
   const admit = (now: number) =>
-    db.transaction((tx) =>
+    database().transaction((tx) =>
       admitLaunchAccount({ query: (q, v) => tx.query(q, v) } as Sql, binding, ids[0]!, undefined, () => now),
     );
 
-  await db.exec("truncate sandboxes,account_agent_reservations");
-  await db.query("insert into account_exhaustion values($1,2,$2)", [account, resetsAt]);
+  await database().exec("truncate sandboxes,account_agent_reservations");
+  await database().query("insert into account_exhaustion values($1,2,$2)", [account, resetsAt]);
   await expect(admit(reset - 1)).rejects.toThrow(`Account Shared account is exhausted until ${resetsAt}.`);
-  expect((await db.query("select sandbox_id from account_agent_reservations")).rows).toEqual([]);
+  expect((await database().query("select sandbox_id from account_agent_reservations")).rows).toEqual([]);
   await admit(reset);
-  expect((await db.query("select sandbox_id from account_agent_reservations")).rows).toEqual([{ sandbox_id: ids[0] }]);
-  await db.query("delete from account_agent_reservations where sandbox_id=$1", [ids[0]]);
-  await db.query("update account_exhaustion set account_version=1 where account_id=$1", [account]);
+  expect((await database().query("select sandbox_id from account_agent_reservations")).rows).toEqual([
+    { sandbox_id: ids[0] },
+  ]);
+  await database().query("delete from account_agent_reservations where sandbox_id=$1", [ids[0]]);
+  await database().query("update account_exhaustion set account_version=1 where account_id=$1", [account]);
   await expect(admit(reset - 1)).resolves.toBeUndefined();
 });
