@@ -25,7 +25,7 @@ export async function SandboxAttention({ sandbox, viewer }: { sandbox: SandboxDe
   if (gateway) {
     try {
       const page = parseEventPage(await gateway.logs(sandbox.id, null, { all: true, limit: 500 }));
-      if (!page.hasMore) turn = summarizeEvents(page.events);
+      if (!page.hasMore) turn = summarizeEvents(page.events, sandbox.conversation_ids.at(-1));
     } catch (error) {
       if (!(error instanceof GatewayError)) throw error;
     }

@@ -663,6 +663,7 @@ export async function startServer(
                 }),
               {
                 placement: dockerLaunchEnabled,
+                ...(options.log ? { log: options.log } : {}),
                 configureArchiveTimeout: (request) => configureDockerArchiveTimeout?.(request),
                 publicUrl: config.publicUrl,
                 snapshots: createDockerSnapshots(sql, config.encryptionKey, {

@@ -95,7 +95,17 @@ export async function recordOutputFailure(
 function failureReason(error: unknown, signal?: AbortSignal): OutputFailureReason {
   if (error instanceof OutputCollectionError) return error.reason;
   if (signal?.aborted) return "output_timeout";
+  if (collectorErrorKind(error) === "output_limit") return "output_limit";
   return "collector_failed";
+}
+
+function collectorErrorKind(error: unknown) {
+  if (error instanceof OutputCollectionError)
+    return error.reason === "output_limit" ? "collector_reported_limit" : "collector_reported_failure";
+  if (error instanceof SyntaxError) return "syntax_error";
+  if (!(error instanceof Error)) return "non_error";
+  if (error.message === "invalid_output" || error.message === "output_limit") return error.message;
+  return "error";
 }
 
 type OutputPhase =
@@ -125,7 +135,8 @@ async function outputPhase<T>(phase: OutputPhase, work: () => Promise<T>): Promi
     return await work();
   } catch (error) {
     // Preserve closed collector reasons so callers can still handle missing directories and protocol skew.
-    if (error instanceof OutputPhaseError || failureReason(error) !== "collector_failed") throw error;
+    const reason = failureReason(error);
+    if (error instanceof OutputPhaseError || (reason !== "collector_failed" && reason !== "output_limit")) throw error;
     throw new OutputPhaseError(phase, error);
   }
 }
@@ -142,16 +153,9 @@ function reportCaptureFailure(
 ) {
   const failure = error instanceof OutputPhaseError ? error.failure : error;
   const reason = failureReason(failure, signal);
-  if (reason === "collector_failed" && error instanceof OutputPhaseError) {
+  if (error instanceof OutputPhaseError && (reason === "collector_failed" || reason === "output_limit")) {
     // Use a closed vocabulary because exceptions may carry command output, SQL, or credentials.
-    const errorKind =
-      failure instanceof OutputCollectionError
-        ? "collector_reported_failure"
-        : failure instanceof SyntaxError
-          ? "syntax_error"
-          : failure instanceof Error
-            ? "error"
-            : "non_error";
+    const errorKind = collectorErrorKind(failure);
     // Existing rows may already have claimed collector_failed. Bound the new diagnostic
     // independently by provider, path, phase and error kind, never by sandbox or exception text.
     const key = JSON.stringify([provider, path, error.phase, errorKind]);

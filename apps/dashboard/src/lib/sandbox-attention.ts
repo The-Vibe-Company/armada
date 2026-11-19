@@ -20,18 +20,21 @@ export const CONTINUE_PROMPT =
 
 /** What the events say about the agent's work. */
 export type TurnSummary = {
-  /** The latest turn's status, or `running` while any conversation has a turn in flight. Null before the first. */
   status: PromptStatus | null;
   /** Why the latest turn failed, as the server reported it. */
   reason: string | null;
   /** The latest turn's prompt id: an acknowledgement holds for this turn, not the next. */
   promptId?: string | null;
   /** The latest prompt as sent, for a one-click resend; null when it is too long to carry or has no text. */
-  prompt?: { text: string; conversationId: string | null } | null;
+  prompt?: string | null;
 };
 
-export function summarizeEvents(events: readonly ChatEvent[]): TurnSummary {
-  const { items, running } = projectChat(events);
+export function summarizeEvents(events: readonly ChatEvent[], currentConversation?: string) {
+  const { items, running } = projectChat(
+    currentConversation
+      ? events.filter((event) => !event.conversationId || event.conversationId === currentConversation)
+      : events,
+  );
   let status: PromptStatus | null = null;
   let reason: string | null = null;
   let promptId: string | null = null;
@@ -42,7 +45,7 @@ export function summarizeEvents(events: readonly ChatEvent[]): TurnSummary {
       reason = item.reason ?? null;
       promptId = item.promptId ?? null;
       const text = item.text.trim();
-      prompt = text && text.length <= RESEND_MAX_CHARS ? { text, conversationId: item.conversationId ?? null } : null;
+      prompt = text && text.length <= RESEND_MAX_CHARS ? text : null;
     }
   }
   if (running) {
@@ -254,10 +257,7 @@ export function attentionLabel(attention: Attention, status: SandboxStatus): str
 export function sandboxAttention(
   sandbox: Pick<Sandbox, "id" | "status"> &
     Partial<
-      Pick<
-        Sandbox,
-        "status_reason" | "task_outcome" | "preservation_note" | "conversation_ids" | "expires_at" | "lifecycle_error"
-      >
+      Pick<Sandbox, "status_reason" | "task_outcome" | "preservation_note" | "expires_at" | "lifecycle_error">
     > & { pull_requests?: unknown },
   turn: TurnSummary | null,
   now: Date,
@@ -287,16 +287,7 @@ export function sandboxAttention(
       state.failure?.title ?? "",
       sandbox.preservation_note ?? "",
     ]),
-    resend:
-      attention === "interrupted" && turn?.prompt
-        ? {
-            text: turn.prompt.text,
-            conversationId:
-              turn.prompt.conversationId && sandbox.conversation_ids?.includes(turn.prompt.conversationId)
-                ? turn.prompt.conversationId
-                : null,
-          }
-        : null,
+    resend: attention === "interrupted" ? (turn?.prompt ?? null) : null,
   };
 }
 

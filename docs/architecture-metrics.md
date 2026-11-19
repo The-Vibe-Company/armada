@@ -80,7 +80,32 @@ percentiles. The program targets 8 s p50 and 12 s p95.
 
 For successful staging launches, record the deployed SHA, date, path, sample
 count, and workload. Calculate nearest-rank p50 and p95 from `totalMs` and
-compare the summed intervals with an independently measured wall time using the
-same admission and readiness boundary. Report request-to-ready wall time
-separately to show work outside that boundary. Per-launch SQL counts and separate
-download/verification, enrolment wait, and first-event measurements are pending.
+compare the sum of `modal_launch_timing.stages[].ms` with an independently
+measured wall time using the same admission and readiness boundary. Report request-to-ready wall time
+separately to show work outside that boundary. Per-launch SQL counts are pending.
+
+### Enrolled runtime timing
+
+For a fresh enrolled Modal launch, join `modal_launch_timing` by `sandboxId`
+to the successful `armada.runtime.startup_timing` sample for epoch `1`.
+Select `armada.runtime.stage` records from that same epoch. The monotonic startup
+intervals cover ticket issuance, host bootstrap, the remaining enrolment wait
+after bootstrap returns, and health including the final owner/epoch fence. A
+runtime that enrols during host bootstrap can have little or no remaining
+enrolment wait. These intervals break down part of `runtime_startup`. The
+artifact preparation estimate overlaps host bootstrap. Keep both measurements
+out of the outer launch stage sum.
+
+Subtract the first `bootstrap_started` observation from the first
+`artifact_verified` observation in the same epoch to estimate the bootstrap
+cache check, any download, and artifact verification together. Use
+`observedAtMs` from the authenticated, committed progress logs. Progress can be
+missing, and the difference includes reporting latency. A negative difference
+must be treated as unavailable because the observations use server wall clocks.
+
+The `first_event` observation records the first committed archive batch for
+the sandbox across all epochs. For epoch `1`, subtract the persisted
+`accepted` timestamp for activation `1` from the log's `observedAtMs`.
+This estimate depends on clock alignment between the database and server.
+Mark missing or negative intervals unavailable. The estimate includes any time
+waiting for a prompt and is separate from accepted-to-ready launch time.

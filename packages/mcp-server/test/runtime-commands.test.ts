@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import type { RunnerRequest } from "@armada/agent-runtime";
 import type { Sql } from "@armada/core/server";
 import { encryptSecret } from "@armada/core/server";
@@ -747,6 +747,7 @@ test("runtime startup privately issues configuration, awaits enrolment and fence
   const f = await fixture();
   const root = await mkdtemp(join(tmpdir(), "runtime-startup-"));
   const journal = new Journal(join(root, "journal"), (value) => value);
+  const logger = spyOn(console, "info");
   try {
     const previous = await f.enrol();
     const agent = createRuntimeAgent(f.bridge(), {
@@ -761,10 +762,18 @@ test("runtime startup privately issues configuration, awaits enrolment and fence
     let now = 0;
     const configuration = { selectedHarness: "codex", privateMarker: "startup-private-configuration" };
     const start = createRuntimeStartup(
-      f.authority,
+      {
+        ...f.authority,
+        async issue(input) {
+          const ticket = await f.authority.issue(input);
+          now += 10;
+          return ticket;
+        },
+      },
       {
         async bootstrap(input) {
           token = input.enrolmentToken;
+          now += 40;
           expect(Object.keys(input).sort()).toEqual([
             "artifact",
             "cacheDir",
@@ -783,7 +792,10 @@ test("runtime startup privately issues configuration, awaits enrolment and fence
             false,
           );
         },
-        health: (signal) => agent.health(signal),
+        async health(signal) {
+          now += 30;
+          return agent.health(signal);
+        },
       },
       {
         now: () => now,
@@ -839,8 +851,25 @@ test("runtime startup privately issues configuration, awaits enrolment and fence
         configuration,
       }),
     ).toEqual({ runtime: "armada", epoch: "2" });
+    const samples = logger.mock.calls.flatMap(([line]) =>
+      String(line).includes('"event":"armada.runtime.startup_timing"') ? [JSON.parse(String(line))] : [],
+    );
+    expect(samples).toEqual([
+      {
+        event: "armada.runtime.startup_timing",
+        sandboxId: f.id,
+        epoch: "2",
+        stages: [
+          { stage: "issue_ticket", ms: 10 },
+          { stage: "bootstrap", ms: 40 },
+          { stage: "enrolment_wait", ms: 250 },
+          { stage: "health", ms: 30 },
+        ],
+      },
+    ]);
     expect(journal.prompts()).toEqual([]);
   } finally {
+    logger.mockRestore();
     journal.close();
     await rm(root, { recursive: true, force: true });
   }

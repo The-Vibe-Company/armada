@@ -10,23 +10,8 @@ import {
 import { flag, parseArgs, single } from "./args.ts";
 import { createArmadaApiClient, resolveArmadaOrigin } from "./armada-api.ts";
 import type { AuthIo } from "./auth-commands.ts";
-import { commandWords, optionWords } from "./command-catalog.ts";
 import { control } from "./control.ts";
 import { listHosts, resolveHostOrganization } from "./host-commands.ts";
-export function completion(argv: readonly string[], auth: Pick<AuthIo, "out">): number {
-  if (argv.length !== 1 || !["bash", "zsh", "fish"].includes(argv[0] ?? ""))
-    throw new AuthError("Run armada completion bash|zsh|fish, then source the generated script.", "usage");
-  const words = [...commandWords, ...optionWords].join(" ");
-  auth.out(
-    argv[0] === "bash"
-      ? `complete -W '${words}' armada\n`
-      : argv[0] === "zsh"
-        ? `#compdef armada\n_armada() { compadd -- ${words}; }\ncompdef _armada armada\n`
-        : `complete -c armada -f -a '${commandWords.join(" ")}'\n${optionWords.map((word) => `complete -c armada -l '${word.slice(2)}'`).join("\n")}\n`,
-  );
-  return 0;
-}
-
 /** Interactive discovery only fills missing choices; ordinary scripted launches retain their exact API contract. */
 export async function prepareLaunch(argv: readonly string[], auth: AuthIo): Promise<readonly string[]> {
   if (!auth.interactive || !auth.chooseLaunch || argv.includes("--json") || argv.includes("--")) return argv;
