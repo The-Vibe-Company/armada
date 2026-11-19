@@ -18,11 +18,7 @@ import { FUTURE_WINDOW_MS, formatVersion, guardNow, migrations, versionDate } fr
 
 export type MigrationRename = { from: string; to: string };
 
-export function planRenumber(
-  base: ReadonlyMap<string, string>,
-  head: ReadonlyMap<string, string>,
-  now: number,
-): MigrationRename[] {
+export function planRenumber(base: ReadonlyMap<string, string>, head: ReadonlyMap<string, string>, now: number) {
   for (const path of base.keys()) {
     if (!head.has(path)) throw new Error(`Base migration missing from HEAD: ${path}`);
   }
@@ -52,7 +48,7 @@ export function planRenumber(
   });
 }
 
-function git(...args: string[]): string {
+function git(...args: string[]) {
   return execFileSync("git", args, { encoding: "utf8" });
 }
 
@@ -110,7 +106,7 @@ async function generatePlannedTypes(
   head: ReadonlyMap<string, string>,
   plan: MigrationRename[],
   references: ReferenceEdit[],
-): Promise<string> {
+) {
   const directory = mkdtempSync(join(tmpdir(), "armada-renumber-"));
   try {
     const destinations = new Map(plan.map(({ from, to }) => [from, to]));
@@ -131,7 +127,6 @@ async function generatePlannedTypes(
 function applyPlan(plan: MigrationRename[], references: ReferenceEdit[], generated: string) {
   const undo: (() => void)[] = [];
   try {
-    // Update references before renaming because a pending SQL file can contain a reference too.
     for (const { path, original, updated } of references) {
       undo.push(() => writeFileSync(path, original));
       writeFileSync(path, updated);

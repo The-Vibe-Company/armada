@@ -15,8 +15,7 @@ export async function openDatabase(): Promise<PGlite> {
   return db;
 }
 
-/** Applies the Supabase prerequisites and every migration, in filename order. */
-export async function applyMigrations(db: PGlite, directory = migrationsDir): Promise<string[]> {
+export async function applyMigrations(db: PGlite, directory = migrationsDir) {
   const files = readdirSync(directory)
     .filter((name) => name.endsWith(".sql"))
     .sort();

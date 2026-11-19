@@ -138,8 +138,7 @@ const ENUM_ALIASES: Record<string, string> = {
   sandbox_status: "SandboxStatus",
 };
 
-/** Renders `packages/core/src/database.types.ts` from the migrations on a fresh database. */
-export async function generateDatabaseTypes(directory?: string): Promise<string> {
+export async function generateDatabaseTypes(directory?: string) {
   const db = await openDatabase();
   try {
     await applyMigrations(db, directory);
