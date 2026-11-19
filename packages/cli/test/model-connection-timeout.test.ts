@@ -18,7 +18,6 @@ test("CLI receives the runtime's 15-second outcome rather than timing out at the
   }) as typeof fetch;
   jest.useFakeTimers();
   try {
-    // Negative control: the old call without a probe-specific signal expires.
     await expect(
       control(auth, "sandbox/test-model-connection", { id: "sandbox", model: "deployment" }),
     ).rejects.toThrow();
