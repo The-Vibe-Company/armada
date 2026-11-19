@@ -53,11 +53,7 @@ function TriggerAction({ org, id, action }: TriggerRef & { action: "rotate" | "d
         if (next.error || next.signingSecret) setResult(next);
         else close();
       } catch {
-        setResult({
-          error: rotate
-            ? "Could not retrieve the new key. Rotate again to get a usable key."
-            : "Could not confirm that the trigger was disabled. Reload to check its status.",
-        });
+        setResult({ error: "Could not confirm the change. Reload to check the trigger." });
       }
     });
   }

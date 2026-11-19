@@ -66,3 +66,8 @@ describe("organization switch destination", () => {
     expect(organizationSwitchDestination(pathname, "org_new")).toBe(expected);
   });
 });
+
+test("organization switches retain triggers only for target organization admins", () => {
+  expect(organizationSwitchDestination("/triggers", "org_new", true)).toBe("/triggers");
+  expect(organizationSwitchDestination("/triggers", "org_new", false)).toBe("/sandboxes");
+});

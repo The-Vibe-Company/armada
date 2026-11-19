@@ -2933,37 +2933,21 @@ function inboundTriggers(request: Request, url: URL, path: RegExpMatchArray) {
   const [, triggerId, operation] = path;
   const headers = { "cache-control": "no-store" };
   if (request.method === "GET" && !triggerId) {
-    const triggers =
-      org === ACME
-        ? [
-            {
-              id: trigger,
-              templateId: id(90),
-              poolHarness: "codex",
-              enabled: state.inboundTriggerEnabled,
-              ratePerMinute: 25,
-              concurrency: 2,
-              rateRefusals: 1,
-            },
-          ]
-        : [];
-    return json({ triggers }, 200, headers);
+    const summary = {
+      id: trigger,
+      templateId: id(90),
+      poolHarness: "codex",
+      enabled: state.inboundTriggerEnabled,
+      ratePerMinute: 25,
+      concurrency: 2,
+      rateRefusals: 1,
+    };
+    return json({ triggers: org === ACME ? [summary] : [] }, 200, headers);
   }
   if (org !== ACME || triggerId !== trigger) return controlFail(404, "not_found", "Trigger not found.");
   if (request.method === "GET" && operation === "deliveries") {
-    return json(
-      {
-        deliveries: [
-          {
-            deliveryId: "fixture_delivery",
-            receivedAt: "2026-11-19T10:00:00Z",
-            jobState: "done",
-          },
-        ],
-      },
-      200,
-      headers,
-    );
+    const delivery = { deliveryId: "fixture_delivery", receivedAt: "2026-11-19T10:00:00Z", jobState: "done" };
+    return json({ deliveries: [delivery] }, 200, headers);
   }
   if (request.method === "POST" && operation === "disable") {
     state.inboundTriggerEnabled = false;

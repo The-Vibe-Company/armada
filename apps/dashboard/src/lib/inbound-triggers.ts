@@ -36,12 +36,7 @@ function parseTrigger(value: unknown) {
   };
 }
 
-const processingLabels = {
-  queued: "Queued",
-  leased: "Processing",
-  done: "Processed",
-  failed: "Failed",
-} as const;
+const processingLabels = { queued: "Queued", leased: "Processing", done: "Processed", failed: "Failed" } as const;
 
 function parseDelivery(value: unknown) {
   const { deliveryId, receivedAt, jobState } = record(value);

@@ -76,7 +76,11 @@ export const showsOrganizations = (memberships: number, selected: boolean) => !s
  * Switch at section level, never carrying item IDs or filters into another organization.
  * Canonical sections come from the navigation catalog; older entry points stay supported.
  */
-export function organizationSwitchDestination(section: string, organizationId: string): string {
+export function organizationSwitchDestination(
+  section: string,
+  organizationId: string,
+  organizationAdmin = false,
+): string {
   const pathname = section.startsWith("/") ? section : `/${section}`;
   const aliases: Record<string, string> = {
     setup: "/providers/cloud",
@@ -89,6 +93,9 @@ export function organizationSwitchDestination(section: string, organizationId: s
   const key = pathname.split("/")[1] ?? "";
   const alias = Object.hasOwn(aliases, key) ? aliases[key] : undefined;
   const destination =
-    alias ?? NAV_GROUPS.flatMap((group) => group.links).find((link) => isActiveLink(pathname, link.href))?.href;
+    alias ??
+    NAV_GROUPS.flatMap((group) => group.links).find(
+      (link) => (!link.adminOnly || organizationAdmin) && isActiveLink(pathname, link.href),
+    )?.href;
   return destination === "/orgs" ? `/orgs/${encodeURIComponent(organizationId)}` : (destination ?? "/sandboxes");
 }
