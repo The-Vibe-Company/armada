@@ -160,7 +160,9 @@ export function createSandboxChildren(sql: Sql, authority: ChildAuthority, execu
       if (prior) {
         if (prior.request_digest !== digest) throw new Error("Idempotency conflict.");
         const recovery =
-          input.action === "stop" && prior.state === "uncertain" && prior.recoverable ? prior : undefined;
+          input.action === "stop" && ["pending", "uncertain"].includes(prior.state) && prior.recoverable
+            ? prior
+            : undefined;
         return { id: prior.id, state: prior.state, sandboxId: prior.target_id, fresh: false, recovery };
       }
       const parent = (
@@ -304,7 +306,7 @@ export function createSandboxChildren(sql: Sql, authority: ChildAuthority, execu
                   `select c.id from public.orchestrator_child_operations c
                  join public.armada_access_parents o on o.id=c.orchestrator_id
                  join public.sandboxes s on s.id=o.sandbox_id
-                 where c.id=$1 and c.state='uncertain' and o.authority_epoch=c.parent_epoch
+                 where c.id=$1 and c.state in ('pending','uncertain') and o.authority_epoch=c.parent_epoch
                  and (case when o.kind='sandbox' then o.generation else s.lifecycle_generation end)=c.parent_generation`,
                   [operation.id],
                 )

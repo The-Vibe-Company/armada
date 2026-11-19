@@ -918,7 +918,10 @@ test("registered failed child with confirmed stopped compute releases explicit c
   }
 });
 
-test.each([false, true])("scoped Modal stop replay (compute reply lost: %s)", async (loseStopReply) => {
+test.each(["checkpoint", "handler", "compute"])("scoped Modal stop replay after loss of %s response", async (loss) => {
+  const loseStopReply = loss === "compute";
+  const checkpointWritten = Promise.withResolvers<void>();
+  const releaseCheckpoint = Promise.withResolvers<void>();
   const { close, sql, p, id, token, selection } = await fixture("running", "anthropic", "modal");
   try {
     const fake = fakeBoat();
@@ -985,6 +988,8 @@ test.each([false, true])("scoped Modal stop replay (compute reply lost: %s)", as
             request.id,
             request.request_id,
           ]);
+          checkpointWritten.resolve();
+          if (loss === "handler") await releaseCheckpoint.promise;
           throw Error("synthetic lost response after checkpoint intent");
         }
         await sql.query(
@@ -1075,11 +1080,29 @@ test.each([false, true])("scoped Modal stop replay (compute reply lost: %s)", as
       ).rows,
     ).toEqual([{ orchestrator_id: id, owner_id: p.owner, org_id: p.org, task_prompt_id: "runtime-prompt" }]);
     expect((await services.childWorker.extend(token, "extend", receipt.sandboxId, 15_000)).state).toBe("succeeded");
-    const first = await services.childWorker.stop(token, "stop", receipt.sandboxId);
-    expect(first.state).toBe("uncertain");
-    expect(fake.stops).toHaveLength(0);
-    const stopped = await services.childWorker.stop(token, "stop", receipt.sandboxId);
-    expect(stopped.id).toBe(first.id);
+    const firstStop = services.childWorker.stop(token, "stop", receipt.sandboxId);
+    let stopped: Awaited<typeof firstStop>;
+    try {
+      if (loss === "handler") {
+        await Promise.race([
+          checkpointWritten.promise,
+          firstStop.then(() => {
+            throw Error("Initial stop completed before writing the checkpoint.");
+          }),
+        ]);
+        expect(fake.stops).toHaveLength(0);
+        stopped = await services.childWorker.stop(token, "stop", receipt.sandboxId);
+      } else {
+        const first = await firstStop;
+        expect(first.state).toBe("uncertain");
+        expect(fake.stops).toHaveLength(0);
+        stopped = await services.childWorker.stop(token, "stop", receipt.sandboxId);
+        expect(stopped.id).toBe(first.id);
+      }
+    } finally {
+      releaseCheckpoint.resolve();
+      await firstStop;
+    }
     expect(stopped.state).toBe(loseStopReply ? "uncertain" : "succeeded");
     expect(checkpointRequest).toBe(stopped.id);
     expect(await services.childWorker.stop(token, "stop", receipt.sandboxId)).toEqual(stopped);
