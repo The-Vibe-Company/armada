@@ -22,6 +22,25 @@ it unset for the Foundry v1 route shown above. For organization scope, pass
 fields and new key again. At launch, use the account ID with `--credential-id`
 and its deployment name with `--model`.
 
+The CLI also accepts connection JSON from stdin or a private file when you
+omit `--base-url`. Include the deployment names in the `models` array and keep
+the key out of command arguments.
+
+```sh
+armada creds set openai --name foundry --file /path/to/private-connection.json
+```
+
+```json
+{
+  "endpoint": {
+    "version": 1,
+    "baseUrl": "https://RESOURCE.services.ai.azure.com/api/projects/PROJECT/openai/v1"
+  },
+  "apiKey": "<supply privately>",
+  "models": ["my-deployment"]
+}
+```
+
 ## Create or replace an account in the dashboard
 
 Under **What agents have → Models**, open **Add account** and expand **Other
@@ -30,13 +49,18 @@ endpoint for Codex** and enter a name. Enter the HTTPS URL, exact deployment
 or model IDs, and API key. Leave the API version empty for the Foundry v1
 route. Official Azure addresses receive a small billable request per deployment
 before saving. If a check fails, the dashboard does not save the account.
-Save with **Add account**, then select the account and deployment at launch.
+Choose **Test and add account** for the Foundry preset or **Add account** for
+the custom endpoint. Select the saved account and deployment at launch.
 
 To rotate a key, open the account menu and choose **Replace key**. Select the
 provider preset or **Custom endpoint (Modal)** and re-enter the connection
 details and key. Select **OpenAI default endpoint** when switching to the vendor
 endpoint. The current custom endpoint label includes “Modal” even when you use
 the saved account on Docker or runtime-backed Boat.
+
+Replacing a key creates a new account revision. Sandboxes bound to the previous
+revision keep their files and conversations, but refuse new messages. Launch
+a new sandbox to use the new revision.
 
 ## Runtime delivery
 

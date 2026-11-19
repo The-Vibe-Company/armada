@@ -52,6 +52,10 @@ To rotate a gateway key, open the account menu and choose **Replace key**.
 Select **Custom gateway (Modal)** and re-enter the URL, auth method, and key.
 Choose **Anthropic default endpoint** when switching to the vendor endpoint.
 
+Replacing a key creates a new account revision. Sandboxes bound to the previous
+revision keep their files and conversations, but refuse new messages. Launch
+a new sandbox to use the new revision.
+
 ## Runtime delivery
 
 The runtime sets `ANTHROPIC_BASE_URL` and selects `ANTHROPIC_AUTH_TOKEN` or
