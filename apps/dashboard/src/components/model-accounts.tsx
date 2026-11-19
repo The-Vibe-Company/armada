@@ -1257,7 +1257,7 @@ function ClaudeReplacementFields({ idPrefix }: { idPrefix: string }) {
             Choose a destination
           </option>
           <option value="anthropic">Anthropic default endpoint</option>
-          <option value="custom">Custom gateway (Modal)</option>
+          <option value="custom">Custom gateway</option>
         </NativeSelect>
       </div>
       {mode === "custom" && (
@@ -1392,7 +1392,7 @@ function CustomEndpointFields({
               Choose a destination
             </option>
             <option value="openai">OpenAI default endpoint</option>
-            <option value="custom">Custom endpoint (Modal)</option>
+            <option value="custom">Custom endpoint</option>
             {replacementPresets(kind).map((option) => (
               <option key={option.id} value={option.id}>
                 {option.label}
@@ -1411,7 +1411,7 @@ function CustomEndpointFields({
             checked={custom}
             onCheckedChange={(value) => setCustom(value === true)}
           />
-          Use a custom endpoint (Modal)
+          Use a custom endpoint
         </Label>
       )}
       {custom && (
@@ -1434,7 +1434,7 @@ function CustomEndpointFields({
           </div>
           <p id={`${idPrefix}-endpoint-hint`} className="text-xs text-muted-foreground">
             {codex
-              ? "Azure AI Foundry or a Responses-compatible gateway. A pasted URL ending in /responses is accepted. Custom endpoints use the Armada runtime on Boat. Codex cannot use chat-completions-only endpoints such as DeepSeek."
+              ? "Available on Modal, Docker hosts and runtime-backed Boat. Use Azure AI Foundry or a Responses-compatible gateway. A pasted URL ending in /responses is accepted. Codex cannot use chat-completions-only endpoints such as DeepSeek."
               : "Available on Modal, Docker hosts and runtime-backed Boat. Claude Code supports Claude models only. Use the gateway base URL, not /v1/messages. The gateway must support Anthropic Messages, streaming and tool use."}
           </p>
           {codex ? (

@@ -45,6 +45,10 @@ export async function admitAccountCapacity(tx: Sql, accountId: string, sandboxId
   if (account) await reserveAccountCapacity(tx, account, accountId, sandboxId, model);
 }
 
+export async function releaseAccountCapacity(sql: Sql, sandboxId: string) {
+  await sql.query("delete from public.account_agent_reservations where sandbox_id=$1", [sandboxId]);
+}
+
 async function reserveAccountCapacity(
   tx: Sql,
   account: CapacityAccount,

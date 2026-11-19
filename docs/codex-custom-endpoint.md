@@ -55,10 +55,9 @@ Choose **Test and add account** for the Foundry preset or **Add account** for
 the custom endpoint. Select the saved account and deployment at launch.
 
 To rotate a key, open the account menu and choose **Replace key**. Select the
-provider preset or **Custom endpoint (Modal)** and re-enter the connection
+provider preset or **Custom endpoint** and re-enter the connection
 details and key. Select **OpenAI default endpoint** when switching to the vendor
-endpoint. The current custom endpoint label includes “Modal” even when you use
-the saved account on Docker or runtime-backed Boat.
+endpoint.
 
 Replacing a key creates a new account revision. Sandboxes bound to the previous
 revision keep their files and conversations, but refuse new messages. Launch

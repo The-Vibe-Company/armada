@@ -18,7 +18,7 @@ import {
   type Store,
   tick,
 } from "../src/daemon.ts";
-import { fileStore, httpApi, readDockerOutputArchive } from "../src/native.ts";
+import { fileStore, httpApi, observeRetainedStop, readDockerOutputArchive } from "../src/native.ts";
 
 function fail(): never {
   throw new Error("missing receipt");
@@ -738,6 +738,119 @@ test("resume starts the retained container before fresh runtime bootstrap and ne
   expect(calls).toEqual(["start", "bootstrap"]);
   expect(f.acknowledgements).toEqual(["completed", "completed"]);
 });
+
+test.each([
+  ["verified retention", true, true, "exited false", true],
+  ["workspace lost after acknowledgement is lost", true, true, "reclaimed", true],
+  ["volume without a container", true, true, "", false],
+  ["container without its owned workspace", true, false, "exited false", false],
+  ["container still running", true, true, "running true", false],
+  ["container with a foreign workspace mount", true, true, "foreign", false],
+  ["container never started", true, true, "created", false],
+  ["server without the capability", false, true, "exited false", false],
+] as const)(
+  "failed stop reports %s through the negotiated results route",
+  async (_, supported, owned, status, proof) => {
+    const f = fixture("stop");
+    let delivered = false;
+    let workspacePresent = owned;
+    const results: unknown[] = [];
+    const api = httpApi((async (url, options) => {
+      if (String(url).endsWith("/poll")) {
+        const job = delivered ? null : f.job;
+        delivered = true;
+        return Response.json(
+          { job },
+          {
+            headers: supported ? { "x-armada-docker-retained-stop": "1" } : {},
+          },
+        );
+      }
+      const receipt = (await f.store.load()).receipts[0];
+      expect(receipt?.outcome).toBe("failed");
+      results.push(JSON.parse(String(options?.body)));
+      if (proof && results.length === 1) {
+        if (status === "reclaimed") workspacePresent = false;
+        throw new Error("lost response");
+      }
+      return new Response(null, { status: 204 });
+    }) as typeof fetch);
+    let stops = 0;
+    const state = f.state();
+    const request = f.job.request;
+    const name = `armada-${state.installationId}-${state.hostId}-${request.sandboxId}-${request.generation}`;
+    const labels = Object.fromEntries(
+      Object.entries({
+        host: state.hostId,
+        installation: state.installationId,
+        sandbox: request.sandboxId,
+        generation: request.generation,
+        image: request.image,
+        "ttl-seconds": String(request.ttlSeconds),
+        "created-at": "1000",
+        "expires-at": "61000",
+      }).map(([key, value]) => [`dev.armada.machine.${key}`, value]),
+    );
+    const cli: Parameters<typeof observeRetainedStop>[0]["cli"] = {
+      async run(args) {
+        const container = args[0] === "container";
+        const resourceName = container ? name : `${name}-home`;
+        if (args[1] === "ls") {
+          const exists = container ? status !== "" : workspacePresent;
+          return { exitCode: 0, stdout: exists ? JSON.stringify(resourceName) : "" };
+        }
+        expect(args.at(-1)).toBe(resourceName);
+        const resource = container
+          ? {
+              Id: "a".repeat(64),
+              Name: `/${name}`,
+              Config: { Image: request.image, User: "1000:1000", Labels: labels },
+              HostConfig: { Privileged: false },
+              Mounts: [
+                {
+                  Type: "volume",
+                  Name: status === "foreign" ? "unrelated" : `${name}-home`,
+                  Destination: "/home/user",
+                  RW: true,
+                },
+              ],
+              State: { Running: status === "running true", Status: status === "created" ? "created" : "exited" },
+            }
+          : { Name: resourceName, Driver: "local", Options: {}, Labels: labels };
+        return { stdout: JSON.stringify([resource]), exitCode: 0 };
+      },
+    };
+    const executor: Executor = {
+      ...f.executor,
+      async stop() {
+        stops++;
+        throw new Error("stop response unknown");
+      },
+      isRetainedStop(request) {
+        return observeRetainedStop(
+          { hostId: state.hostId, installationId: state.installationId, cli, now: () => 1000 },
+          request,
+        );
+      },
+    };
+    if (proof) {
+      await expect(tick(f.store, api, executor)).rejects.toThrow("lost response");
+      await tick(f.store, api, executor);
+      await tick(f.store, api, executor);
+    } else {
+      await tick(f.store, api, executor);
+    }
+    const result = {
+      installationId: f.state().installationId,
+      requestId: f.job.requestId,
+      outcome: "failed",
+      ...(proof ? { retained: true } : {}),
+    };
+    const { retained: _retained, ...ordinaryFailure } = result;
+    expect(results).toEqual(proof ? [result, status === "reclaimed" ? ordinaryFailure : result] : [result]);
+    expect(stops).toBe(1);
+  },
+);
 
 test("unregister distinguishes a pending drain from confirmed revocation and rejects unknown responses", async () => {
   const state = fixture().state();

@@ -135,7 +135,7 @@ test("published launch request keeps golden, pinned Modal template and Docker so
     org,
     id: org,
     revision: 1,
-    requestKey: "probe",
+    idempotencyKey: "probe".padEnd(16, "_"),
     provider: "modal",
     harness: "codex",
     runtimeTransport: "dialout",

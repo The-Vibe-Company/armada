@@ -13,6 +13,11 @@ export interface Job {
   outcome: unknown;
 }
 
+export interface GenerationHandoff {
+  lockPrerequisites(tx: Sql): Promise<void>;
+  advance(tx: Sql): Promise<void>;
+}
+
 export type JobResult = (
   | { status: "done"; outcome?: unknown }
   | { status: "retry"; after: Date; outcome?: unknown }
@@ -23,14 +28,22 @@ export interface JobStore {
   claim(kind: string, owner: string, seconds: number, concurrency: number): Promise<Job | undefined>;
   inspect(job: Job, owner: string, tx?: Sql): Promise<"dispatch" | "reconcile" | "stale" | "lost">;
   retireStale(job: Job, owner: string): Promise<void>;
+  handoffGeneration(job: Job, owner: string, handoff: GenerationHandoff): Promise<string>;
   renew(job: Job, owner: string, seconds: number): Promise<boolean>;
   complete(job: Job, owner: string, result: JobResult): Promise<boolean>;
 }
 
-interface JobKind {
+interface JobContext {
+  signal: AbortSignal;
+  canDispatch(tx?: Sql): Promise<boolean>;
+  handoffGeneration(handoff: GenerationHandoff): Promise<string>;
+}
+
+export interface JobKind {
+  prepare?(): Promise<boolean>;
   concurrency: number;
   timeoutMs?: number;
-  run(job: Job, context: { signal: AbortSignal; canDispatch(tx?: Sql): Promise<boolean> }): Promise<JobResult>;
+  run(job: Job, context: JobContext): Promise<JobResult>;
 }
 
 const LEASE_SECONDS = 30;
@@ -98,6 +111,19 @@ export function createJobsRunner(
         async canDispatch(tx) {
           return !signal.aborted && (await store.inspect(job, owner, tx)) === "dispatch" && !signal.aborted;
         },
+        async handoffGeneration(handoff) {
+          signal.throwIfAborted();
+          const generation = await store.handoffGeneration(job, owner, {
+            lockPrerequisites: handoff.lockPrerequisites,
+            async advance(tx) {
+              signal.throwIfAborted();
+              await handoff.advance(tx);
+              signal.throwIfAborted();
+            },
+          });
+          signal.throwIfAborted();
+          return generation;
+        },
       });
       if (!signal.aborted && !(await store.complete(job, owner, result))) await store.retireStale(job, owner);
     } finally {
@@ -116,6 +142,8 @@ export function createJobsRunner(
         nextKind = (nextKind + 1) % registrations.length;
         const { kind, handler } = registration;
         if (handler.timeoutMs !== undefined && registration.active >= handler.concurrency) continue;
+        if (handler.prepare && !(await handler.prepare())) continue;
+        if (signal.aborted || shutdown.signal.aborted) return false;
         const lease = new AbortController();
         const cancelExpiry = schedule(LEASE_SECONDS * 1000, () => lease.abort());
         let claimed = false;

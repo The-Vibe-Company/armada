@@ -312,41 +312,88 @@ test.each([
   }
 });
 
+async function templateReference(
+  db: Sql,
+  f: Awaited<ReturnType<typeof fixture>>,
+  input: { state: string; childStatus?: string; fenceId?: string },
+) {
+  const template = crypto.randomUUID();
+  const revision = crypto.randomUUID();
+  const sandbox = crypto.randomUUID();
+  await db.query("insert into launch_templates(id,org_id,owner_id,scope,name) values($1,$2,$3,'org','web')", [
+    template,
+    f.actor.orgId,
+    f.actor.userId,
+  ]);
+  await db.query(
+    "insert into launch_template_revisions(id,template_id,revision,definition,digest,created_by) values($1,$2,1,'{}',repeat('a',64),$3)",
+    [revision, template, f.actor.userId],
+  );
+  if (input.childStatus)
+    await db.query(
+      `insert into sandboxes(id,golden_id,org_id,owner_id,boat_id,harness,status,stopped_at)
+       values($1,$2,$3,$4,'template-child','claude',$5::sandbox_status,case when $5::sandbox_status='stopped' then now() end)`,
+      [sandbox, f.golden.id, f.actor.orgId, f.actor.userId, input.childStatus],
+    );
+  await db.query(
+    `insert into template_launch_requests(org_id,actor_id,client_key,digest,template_id,revision_id,manifest,sandbox_id,state,golden_operation_fence_id)
+     values($1,$2,'launch',repeat('a',64),$3,$4,$5::jsonb,$6,$7,$8)`,
+    [
+      f.actor.orgId,
+      f.actor.userId,
+      template,
+      revision,
+      JSON.stringify({ golden: { id: f.golden.id, provider: f.golden.provider, providerSnapshotId: f.old } }),
+      sandbox,
+      input.state,
+      input.fenceId ?? null,
+    ],
+  );
+  return sandbox;
+}
+
+test("retirement defers for a fence-free template allocation until absence is settled", async () => {
+  const db = database();
+  const f = await fixture(db);
+  const sandbox = await templateReference(db, f, { state: "allocating" });
+  await f.publish();
+
+  await f.retirement.runOne();
+  expect(f.deleted).toEqual([]);
+
+  await db.query("update template_launch_requests set state='reconciling' where sandbox_id=$1", [sandbox]);
+  await f.due();
+  await f.retirement.runOne();
+  expect(f.deleted).toEqual([]);
+
+  await db.query("update template_launch_requests set state='failed' where sandbox_id=$1", [sandbox]);
+  await f.due();
+  await f.retirement.runOne();
+  expect(f.deleted).toEqual([f.old]);
+});
+
+test("golden removal refuses while a fence-free template allocation is unresolved", async () => {
+  const db = database();
+  const f = await fixture(db);
+  const sandbox = await templateReference(db, f, { state: "allocating" });
+  await db.query("select set_config('request.jwt.claim.sub',$1,false)", [f.actor.userId]);
+
+  await expect(db.query("select remove_golden($1)", [f.golden.id])).rejects.toThrow("unresolved");
+
+  await db.query("update template_launch_requests set state='failed' where sandbox_id=$1", [sandbox]);
+  await expect(db.query("select remove_golden($1)", [f.golden.id])).resolves.toBeDefined();
+});
+
 test.each(["ready", "stopped", "failed"])(
   "retirement protects a registered template snapshot while the child is %s",
   async (status) => {
     const db = database();
     const f = await fixture(db);
-    const template = crypto.randomUUID();
-    const revision = crypto.randomUUID();
-    const sandbox = crypto.randomUUID();
-    await db.query("insert into launch_templates(id,org_id,owner_id,scope,name) values($1,$2,$3,'org','web')", [
-      template,
-      f.actor.orgId,
-      f.actor.userId,
-    ]);
-    await db.query(
-      "insert into launch_template_revisions(id,template_id,revision,definition,digest,created_by) values($1,$2,1,'{}',repeat('a',64),$3)",
-      [revision, template, f.actor.userId],
-    );
-    await db.query(
-      `insert into sandboxes(id,golden_id,org_id,owner_id,boat_id,harness,status,stopped_at)
-     values($1,$2,$3,$4,'template-child','claude',$5::sandbox_status,case when $5::sandbox_status='stopped' then now() end)`,
-      [sandbox, f.golden.id, f.actor.orgId, f.actor.userId, status],
-    );
-    await db.query(
-      `insert into template_launch_requests(org_id,actor_id,client_key,digest,template_id,revision_id,manifest,sandbox_id,state,golden_operation_fence_id)
-     values($1,$2,'launch',repeat('a',64),$3,$4,$5::jsonb,$6,$7,gen_random_uuid())`,
-      [
-        f.actor.orgId,
-        f.actor.userId,
-        template,
-        revision,
-        JSON.stringify({ golden: { id: f.golden.id, provider: "boat", providerSnapshotId: f.old } }),
-        sandbox,
-        status === "failed" ? "reconciling" : "succeeded",
-      ],
-    );
+    const sandbox = await templateReference(db, f, {
+      childStatus: status,
+      state: status === "failed" ? "reconciling" : "succeeded",
+      fenceId: crypto.randomUUID(),
+    });
     await f.publish();
 
     await runRetirementJob(f.sql, f.retirement, f.now);

@@ -8,7 +8,8 @@ A skipped declaration is not evidence of its contract.
 
 The existing publishing release `check` job owns a disposable PostgreSQL service
 and native build. It runs `scripts/validate-release-contracts.py` after migrations.
-Every selected file must report at least one testcase and zero skips/errors/failures.
+Each Bun test suite must report at least one testcase and zero skips, errors,
+or failures. Standalone probes must exit successfully.
 Missing PostgreSQL/native prerequisites fail closed. No PR job/service is added.
 
 | File under `packages/*/test` (now `.release.ts`) | Retained proof |
@@ -23,7 +24,6 @@ Missing PostgreSQL/native prerequisites fail closed. No PR job/service is added.
 | mcp-server/runtime-enrolment-postgres | membership revocation lock order |
 | mcp-server/runtime-native-auth-postgres | credential publication/lifecycle replacement |
 | mcp-server/sql | advisory lock exclusion across commit/rollback |
-| provider-modal/artifact | built native artifact bootstrap, checkpoint, journal reopening |
 | cli/binary | compiled CLI packaging and argument/environment boundaries |
 
 `scripts/build-migration.release.ts` retains the standalone compiled migration
@@ -82,14 +82,66 @@ Repository-wide search includes `skipIf`, `test.skip`, conditional test aliases,
   build the local image using the [golden OS fixture recipe](../scripts/fixtures/golden-os/README.md)
   and run `bun scripts/prepare-runtime.ts` after installing dependencies. Then run
   `ARMADA_GOLDEN_OS_IMAGE=<fixture-image> bun packages/mcp-server/test/github-boat-os.probe.ts`.
-- `provider-boat/integration.coordinator.ts` is no longer automatically
-  discovered at all. Only the coordinator may explicitly invoke its documented
-  billed-compute opt-in command. It is not part of release/staging acceptance:
-  `boat: not part of the release gate`.
+- The Boat integration probe is coordinator-only and spends sandbox and model
+  credits. With `BOAT_API_KEY` exported and Claude Code configured on the Boat
+  account, run
+  `ARMADA_RUN_LIVE_BOAT_TESTS=1 bun packages/provider-boat/test/integration.coordinator.probe.ts`.
+  Set `BOAT_TEST_SNAPSHOT` to fork an existing snapshot or leave it unset to
+  build a disposable one (snapshot creation requires a paid account).
+  `BOAT_BASE_URL` can select a different Boat API. The probe is outside unit
+  discovery, CI, staging acceptance, and the release gate.
 - PostgreSQL skips and artifact portable-manifest skips were replaced by
   explicit release prerequisites. The native `mcp-codex-bridge` release
   probe (`packages/mcp-server/test/mcp-codex-bridge.release.probe.ts`) requires
-  the pinned binary and a successful process exit.
+  the pinned binary and a successful process exit. The Modal artifact probe
+  (`bun packages/provider-modal/test/artifact.release.probe.ts`) requires the
+  Linux native runtime build and waits for the runtime's HTTP listen signal.
+  The publishing validator requires both probes to exit successfully.
+
+## Process-spawning unit cases in the Agent Runtime allowlist
+
+The six Agent Runtime entries in the [process-test allowlist](../scripts/ci/process-tests.txt)
+contain nine cases that reach a subprocess. Timings are for whole cases from a
+focused Linux run using Bun 1.4.2 on main at `62a28af3`, after
+`bun scripts/prepare-runtime.ts`.
+
+| File under `packages/agent-runtime/test` | Case | Local subprocess boundary | Local |
+| --- | --- | --- | ---: |
+| `exec-env.test.ts` | private exec env authenticates the real core Git helper without model keys, argv credentials or journal token bytes | Locates Git and sends commands through Runner to Bash and the real Git credential helper. | 40.36 ms |
+| `exec-env.test.ts` | exec close sanitizes output before replying, recording the process or replaying the command | Runner starts Bash to write synthetic auth state and emit output for redaction. | 5.89 ms |
+| `github-bootstrap.test.ts` | actual Boat broker artifact consumes only private stdin and installs credential-free tool files | Bun starts the built broker with a private stdin pipe and checks the local Unix socket. | 56.58 ms |
+| `github-parent.test.ts` | actual Boat Claude and Codex parent pipes redact arbitrary current and retired leaves before forwarding | Runs the local installer with sudo and Bun, then Bash launches the installed proxy around Python fixtures for both harnesses. | 205.96 ms |
+| `github-parent.test.ts` | native proxy forwards termination signals and reaps its actual original child | Uses the same installer and launches the proxy around a waiting Python fixture for each signal. | 217.06 ms |
+| `github-parent.test.ts` | native proxy preserves large newline-free binary output and redacts chunk-spanning leaves | Uses the same installer and launches the proxy around a Python stdin-to-stdout fixture. | 181.71 ms |
+| `github-selection.test.ts` | managed gh resolves positional repository shapes without Git or network | Python evaluates the repository selection logic with stubbed Git and HTTP calls. | 16.79 ms |
+| `harness-cache.test.ts` | only regular archive entries become files: symlinks neither appear in cache nor affect outside paths | Runs tar to build the archive with symlink entries. Extraction runs in process. | 8.46 ms |
+| `skills.test.ts` | aborting private installation terminates its owned process group before returning | The Bash installer runs a local Bun fixture that owns a child. A Unix socket signals readiness and ps checks process state after abort. | 32.85 ms |
+
+The other cases in these six files run in process. The corrupt Skillpack
+download fails digest verification before any tool self-test or installer
+shell starts. The Boat broker and parent cases use local fixtures and no
+deployed Boat service.
+
+### Indirect Agent Runtime subprocess calls
+
+These three files reach real subprocesses through Runner, the Codex driver,
+or the runtime tool installer. Timings measure whole cases from a focused
+Linux run using Bun 1.4.2 on main at `5b591243`, after
+`bun scripts/prepare-runtime.ts`.
+
+| File under `packages/agent-runtime/test` | Case | Local subprocess boundary | Local |
+| --- | --- | --- | ---: |
+| `runtime.test.ts` | real exec timeout reconciles missing birth evidence and detached PID retains terminal output | Runner starts Bash for the timed-out and detached commands. | 19.17 ms |
+| `runtime.test.ts` | revoking a dial-out request kills its synchronous exec before returning | Runner starts Bash. The command writes a readiness file before `exec sleep`. The file watcher revokes the request and Runner terminates the process group. | 6.29 ms |
+| `readable-variables.test.ts` | readable bootstrap reaches only intended native harness, not init/exec or request journal | Runner starts Bash for the environment checks. The real Codex driver starts the local app-server fixture. | 37.27 ms |
+| `tool-cache.test.ts` | pinned runtime tool download prepares verified foreground binaries with clean env and repairs a corrupt warm cache | The installer starts local shell-script version and help probes on cold install, warm-cache use and cache repair. Fetch is stubbed. | 43.11 ms |
+| `tool-cache.test.ts` | runtime tool preparation refuses unsafe redirects, changed bytes and failed version self-tests | The bad-version fixture reaches a real shell-script probe. Redirect and digest rejection happen before any probe starts. | 8.57 ms |
+
+The other five cases in `runtime.test.ts` run in process. The delayed detached
+close case replaces `ChildOwner.spawn` with a synthetic child. Other indirect
+runtime paths still need case-level timings, including native harness fixtures
+in `codex.test.ts`, `claude.test.ts`, `native-resume.test.ts` and
+`driver-rate-limit.test.ts`.
 
 ## Process-spawning unit cases in `provider-modal`
 
@@ -114,11 +166,26 @@ The CLI boundary in `conformance-app.test.ts` injects its command runner, and
 the guest process in `runtime-bootstrap.test.ts` is simulated in a VM.
 Explicit release, conformance and probe files are outside unit discovery.
 
+## Process-spawning unit cases in Dashboard
+
+The three Dashboard entries in the [process-test allowlist](../scripts/ci/process-tests.txt)
+each contain one case that reaches a subprocess. The times below measure each
+whole case in a focused Linux run using Bun 1.4.2 on main at `67d096dd`.
+
+| File under `apps/dashboard/test` | Case | Local subprocess boundary | Local |
+| --- | --- | --- | ---: |
+| `routine-staging-transport.test.ts` | routine cleanup DELETE reaches the configured control API through the public origin | Python runs the routine staging checker's request construction with a fake opener. The test forwards the captured request through the Dashboard proxy in process. | 75.06 ms |
+| `staging-check-route-parity.test.ts` | staging checker status and stop preserve CLI public-proxy routes, identity and org | Python sends the staging checker's requests to a loopback Dashboard proxy fixture with a fake upstream. | 65.40 ms |
+| `stats-db.test.ts` | stats client omits pooler-incompatible startup parameters | A Bun subprocess isolates the `postgres` module mock and captures the stats client's connection options. | 5.31 ms |
+
+The missing-database-URL case in `stats-db.test.ts` runs in process. Both
+staging-checker cases use local fixtures and make no calls to deployed services.
+
 ## Evidence owed after merge
 
 Run the existing publishing release validation on the exact release SHA. Verify
 routed Bun suites print executed testcase counts with zero skips, the native
-Codex probe reports success, and native version
-validation and checkpoint process boundaries pass. No production action or
+Codex and Modal artifact probes report success, and native version validation
+and checkpoint process boundaries pass. No production action or
 Boat lifecycle is required for this test-routing change. OS/container checks
 remain separately opt-in, not an implied pass from green unit CI.

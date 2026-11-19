@@ -1,7 +1,6 @@
 import { createInterface } from "node:readline";
 import { Writable } from "node:stream";
 
-/** Read a single secret without echoing it, including through readline redraws. */
 export function promptSecret(input = process.stdin, output = process.stderr): Promise<string> {
   if (!input.isTTY || !output.isTTY) return Promise.reject(new Error("A terminal is required"));
   const muted = new Writable({

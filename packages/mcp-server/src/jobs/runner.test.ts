@@ -41,6 +41,9 @@ function fixture() {
       return job.attempts <= job.max_attempts ? "dispatch" : "reconcile";
     },
     async retireStale() {},
+    async handoffGeneration() {
+      throw new Error("Unexpected turn admission.");
+    },
     async renew(job, owner, seconds) {
       if (renewalGate) await renewalGate;
       const row = current(job, owner);
