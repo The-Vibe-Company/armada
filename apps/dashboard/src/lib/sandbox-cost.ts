@@ -9,7 +9,7 @@ import {
 } from "@armada/core";
 
 /** The usage columns of a sandbox row, as row level security returns them to its owner and the org's admins. */
-export type UsageColumns = {
+type UsageColumns = {
   usage_turns?: unknown;
   usage_runtime_seconds?: number | null;
   usage_running_since?: string | null;
@@ -67,7 +67,7 @@ export function formatTokens(tokens: number | null): string {
   return tokens === null ? "Not reported" : COMPACT.format(tokens);
 }
 
-export type CostFigure =
+type CostFigure =
   | { kind: "none"; text: "No usage recorded yet" }
   | { kind: "unknown"; text: "Price unknown" | "Tokens not reported" }
   | { kind: "priced"; text: string; partial: boolean };
