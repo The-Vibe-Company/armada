@@ -10,7 +10,9 @@ import {
   resolveModelChoice,
   type Sql,
 } from "@armada/core/server";
+import * as boatProvider from "@armada/provider-boat";
 import { createAccountTurnQueue } from "../src/account-turn-queue.ts";
+import { boatRuntimeLaunch } from "../src/boat-runtime-launch.ts";
 import { type ControlOptions, dispatchControlCommand, handleControlRequest } from "../src/control.ts";
 import { createSqlData } from "../src/data.ts";
 import { createGoldenRuntimeEnvironment } from "../src/golden-runtime-environment.ts";
@@ -24,6 +26,7 @@ import {
 } from "../src/runtime-readable-variables.ts";
 import { createRuntimeResume } from "../src/runtime-resume.ts";
 import { sqlOver } from "../src/sql.ts";
+import { runtimeWakes } from "../src/wake-bus.ts";
 import { publishedFailure, publishedResponse } from "./published-response.ts";
 import { rowOnlyDatabase } from "./row-only-database.ts";
 import { ENCRYPTION_KEY, fakeBoat } from "./support.ts";
@@ -397,6 +400,73 @@ test("Modal template selection rejects foreign provider/harness, invalid pins an
   expect(f.starts).toEqual([]);
 });
 
+function fakeBoatRuntimeSink(f: Awaited<ReturnType<typeof fixture>>) {
+  f.options.launch!.boatRuntimeDefault!.policy = boatRuntimeLaunch({
+    sql: f.sql,
+    encryptionKey: ENCRYPTION_KEY,
+    serverUrl: "https://armada.test",
+    architecture: "x64",
+    manifest: {
+      protocol: 1,
+      platform: "linux",
+      libc: "glibc",
+      architecture: "x64",
+      runtime: { sha256: "a".repeat(64), bytes: 1 },
+      harnesses: { codex: { files: [{ path: "bin/codex" }] } },
+    },
+  });
+  const commands = createRuntimeCommands(f.authority, ENCRYPTION_KEY);
+  const handled: RunnerRequest["op"][] = [];
+  let unsubscribe = () => {};
+  let work = Promise.resolve();
+  const bootstrap = spyOn(boatProvider, "startBoatRuntime").mockImplementation(async (_host, request) => {
+    const active = await f.authority.enrol(request.enrolmentToken);
+    expect(JSON.stringify(active.configuration).includes("APP_TOKEN")).toBe(false);
+    unsubscribe = runtimeWakes.subscribe(`socket:${active.sandboxId}`, () => {
+      work = work.then(async () => {
+        const { command } = await commands.next(active.runtimeToken, active.epoch);
+        if (!command) return;
+        let result: Record<string, unknown>;
+        switch (command.op) {
+          case "health":
+            result = { ready: true, generation: active.epoch, workspaceVersion: 1 };
+            break;
+          case "configureReadableVariables":
+            f.deliveries.push(command);
+            result = { acknowledged: true };
+            break;
+          case "workspaceExec":
+            result = { detached: false, exitCode: 0, stdout: "", stderr: "" };
+            break;
+          case "prompt":
+            result = { promptId: "prompt-1", conversationId: "conversation", status: "queued" };
+            break;
+          case "getPrompt":
+            result = { promptId: command.promptId, status: "finished", done: true };
+            break;
+          default:
+            throw Error("Unexpected fake runtime command.");
+        }
+        await commands.complete(active.runtimeToken, active.epoch, {
+          epoch: active.epoch,
+          requestId: command.requestId,
+          status: 200,
+          body: { version: 1, requestId: command.requestId, result },
+        });
+        handled.push(command.op);
+      });
+    });
+  });
+  return {
+    handled,
+    async close() {
+      bootstrap.mockRestore();
+      unsubscribe();
+      await work;
+    },
+  };
+}
+
 test.each(["modal", "boat"] as const)(
   "%s delivers a short raw binding only through the encrypted runtime command and preserves its receipt",
   async (provider) => {
@@ -412,59 +482,70 @@ test.each(["modal", "boat"] as const)(
       ...f.definition,
       secrets: [{ key: "APP_TOKEN", secretId: secret.id, version: 1 }],
     });
-    const { prompt: _prompt, ...request } = f.request(template.id);
-    const reply = await f.api(request);
-    expect(reply.status).toBe(200);
-    const receipt = await reply.text();
-    expect(receipt.includes(canary)).toBe(false);
-    const { id, state } = JSON.parse(receipt);
-    expect(state).toBe("succeeded");
-    expect(f.deliveries).toHaveLength(1);
-    const command = f.deliveries[0];
-    expect(command).toMatchObject({
-      op: "configureReadableVariables",
-      sandboxId: id,
-      harness: "codex",
-      secretKeys: ["APP_TOKEN"],
-    });
-    if (command?.op !== "configureReadableVariables") throw Error("Missing configuration");
-    expect(command.variables.APP_TOKEN === canary).toBe(true);
-    expect(command.variables.APP_REGION).toBe("original\n$(not-a-command)");
-    const stored = (
-      await f.db.query<{ request_enc: Uint8Array; result_enc: Uint8Array }>(
-        "select request_enc,result_enc from runtime_commands where request_id=$1",
-        [command.requestId],
-      )
-    ).rows[0]!;
-    expect(Buffer.from(stored.request_enc).includes(canary)).toBe(false);
-    expect(Buffer.from(stored.result_enc).includes(canary)).toBe(false);
-    expect((await f.api(request)).status).toBe(200);
-    expect(f.deliveries).toHaveLength(1);
+    const boat = provider === "boat" ? fakeBoatRuntimeSink(f) : undefined;
+    try {
+      const { prompt, ...args } = f.request(template.id);
+      const request = boat ? { ...args, prompt } : args;
+      const reply = await f.api(request);
+      expect(reply.status).toBe(200);
+      const receipt = await reply.text();
+      expect(receipt.includes(canary)).toBe(false);
+      const { id, state } = JSON.parse(receipt);
+      expect(state).toBe("succeeded");
+      if (boat) {
+        expect(boat.handled.slice(0, 3)).toEqual(["health", "configureReadableVariables", "health"]);
+        expect(boat.handled.at(-1)).toBe("prompt");
+        expect(f.physical.forks[0]?.env).toEqual({});
+      }
+      expect(f.deliveries).toHaveLength(1);
+      const command = f.deliveries[0];
+      expect(command).toMatchObject({
+        op: "configureReadableVariables",
+        sandboxId: id,
+        harness: "codex",
+        secretKeys: ["APP_TOKEN"],
+      });
+      if (command?.op !== "configureReadableVariables") throw Error("Missing configuration");
+      expect(command.variables.APP_TOKEN === canary).toBe(true);
+      expect(command.variables.APP_REGION).toBe("original\n$(not-a-command)");
+      const stored = (
+        await f.db.query<{ request_enc: Uint8Array; result_enc: Uint8Array }>(
+          "select request_enc,result_enc from runtime_commands where request_id=$1",
+          [command.requestId],
+        )
+      ).rows[0]!;
+      expect(Buffer.from(stored.request_enc).includes(canary)).toBe(false);
+      expect(Buffer.from(stored.result_enc).includes(canary)).toBe(false);
+      expect((await f.api(request)).status).toBe(200);
+      expect(f.deliveries).toHaveLength(1);
 
-    await f.db.query("update application_secrets set status='revoked',value_enc=null where id=$1", [secret.id]);
-    const send = f.options.runtimeSend!;
-    await expect(send(f.caller, { id, request_id: crypto.randomUUID(), prompt: "do work" })).rejects.toMatchObject({
-      code: "conflict",
-      message: "Template launch refused: secret_unavailable.",
-    });
-    expect((await f.db.query("select activity_lease_id from sandboxes where id=$1", [id])).rows).toEqual([
-      { activity_lease_id: null },
-    ]);
-    await f.db.query("update sandboxes set status='stopped',stopped_at=now() where id=$1", [id]);
-    const queue = createAccountTurnQueue(f.sql, ENCRYPTION_KEY);
-    const commands = createRuntimeCommands(f.authority, ENCRYPTION_KEY);
-    const resume = createRuntimeResume(f.sql, ENCRYPTION_KEY, commands);
-    const runtimeSend = createRuntimeFollowup(f.sql, ENCRYPTION_KEY, commands, undefined, resume);
-    queue.setDispatch((caller, input) =>
-      dispatchControlCommand("sandbox/send", caller, { ...input }, { ...f.options, runtimeSend }),
-    );
-    const requestId = crypto.randomUUID();
-    expect(await queue.accept(f.caller, { id, request_id: requestId, prompt: "do work" })).toMatchObject({
-      status: "queued",
-    });
-    expect(await queue.reconcileOne(new AbortController().signal)).toBe(true);
-    await queue.drain();
-    expect(await queue.status(f.caller, id, requestId)).toMatchObject({ failed: true });
+      await f.db.query("update application_secrets set status='revoked',value_enc=null where id=$1", [secret.id]);
+      const send = f.options.runtimeSend!;
+      await expect(send(f.caller, { id, request_id: crypto.randomUUID(), prompt: "do work" })).rejects.toMatchObject({
+        code: "conflict",
+        message: "Template launch refused: secret_unavailable.",
+      });
+      expect((await f.db.query("select activity_lease_id from sandboxes where id=$1", [id])).rows).toEqual([
+        { activity_lease_id: null },
+      ]);
+      await f.db.query("update sandboxes set status='stopped',stopped_at=now() where id=$1", [id]);
+      const queue = createAccountTurnQueue(f.sql, ENCRYPTION_KEY);
+      const commands = createRuntimeCommands(f.authority, ENCRYPTION_KEY);
+      const resume = createRuntimeResume(f.sql, ENCRYPTION_KEY, commands);
+      const runtimeSend = createRuntimeFollowup(f.sql, ENCRYPTION_KEY, commands, undefined, resume);
+      queue.setDispatch((caller, input) =>
+        dispatchControlCommand("sandbox/send", caller, { ...input }, { ...f.options, runtimeSend }),
+      );
+      const requestId = crypto.randomUUID();
+      expect(await queue.accept(f.caller, { id, request_id: requestId, prompt: "do work" })).toMatchObject({
+        status: "queued",
+      });
+      expect(await queue.reconcileOne(new AbortController().signal)).toBe(true);
+      await queue.drain();
+      expect(await queue.status(f.caller, id, requestId)).toMatchObject({ failed: true });
+    } finally {
+      await boat?.close();
+    }
   },
 );
 
