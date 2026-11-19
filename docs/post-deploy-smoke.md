@@ -1956,8 +1956,10 @@ ten-minute default when there are too few samples. Inventory can identify
 allocations for cleanup after an ambiguous response. Snapshot, default-skill,
 scoped-parent and template-install checks still require their launch-specific
 proof before they can pass. Scoped child evidence comes from the parent's
-keyed tool receipt, and scheduled routine evidence comes from occurrence
-history.
+keyed tool receipt when its delivery is delayed, and scheduled routine
+evidence comes from occurrence history. The generated table also records
+measured deadlines for other steps. Only the launch consumers described here
+currently apply the table to request and observation timeouts.
 
 Ordinary provider parity records launch latency as `parity_modal_launch` and
 `parity_docker_launch`. It uses the corresponding entry for its response and

@@ -59,6 +59,9 @@ export interface TemplateSkillIo {
   sleep(ms: number): Promise<void>;
   deadline: number;
   launchTimeout(step: string): number;
+  trackLaunch<T>(
+    action: (submit: (body: object, timeoutMs: number) => Promise<T>, claim: (id: string) => void) => Promise<T>,
+  ): Promise<T>;
   recordSandbox?(id: string, requestKey: string): Promise<void>;
   isAmbiguousLaunch(error: unknown): boolean;
   poll<T>(read: () => Promise<T>, done: (value: T) => boolean): Promise<T>;
@@ -183,41 +186,37 @@ export async function runTemplateSkillCase(item: TemplateSkillCase, io: Template
         if (typeof result?.item?.id === "string" && result.item.id) record.resource = result.item;
         if (!record.resource || !positive(record.resource.currentRevision)) fail("invalid_response");
       });
-      const result = await io.step(`${label}_launch`, async () => {
-        record.launchAttempted = true;
-        record.uncertain = true;
-        type LaunchReceipt = {
-          state: string;
-          reason?: unknown;
-          requestId?: string;
-          id?: string;
-          promptId?: string;
-          provider?: string;
-          manifest?: { skillReceipts?: unknown };
-        };
-        const body = {
-          org: item.org,
-          id: record.resource!.id,
-          revision: record.resource!.currentRevision,
-          requestKey: record.requestKey,
-          ...(item.provider === "modal" ? { externalRef: record.requestKey } : {}),
-          ttlSeconds: 900,
-          // Explicit template pins are isolated from the separate defaults probe.
-          skipSkillDefaults: true,
-          prompt: `Read the environment variable ${key} using your terminal tool. Reply with only its exact value, with no formatting or other text. Do not modify files.`,
-        };
-        const timeout = io.launchTimeout(`${label}_launch`);
-        let result: LaunchReceipt;
-        try {
-          result = await io.request<LaunchReceipt>("templates/launch", body, timeout);
-        } catch (error) {
-          if (item.provider === "modal" && io.isAmbiguousLaunch(error)) {
+      type LaunchReceipt = {
+        state: string;
+        reason?: unknown;
+        requestId?: string;
+        id?: string;
+        promptId?: string;
+        provider?: string;
+        manifest?: { skillReceipts?: unknown };
+      };
+      const result = await io.step(`${label}_launch`, () =>
+        io.trackLaunch<LaunchReceipt>(async (submit, claim) => {
+          record.launchAttempted = true;
+          record.uncertain = true;
+          const body = {
+            org: item.org,
+            id: record.resource!.id,
+            revision: record.resource!.currentRevision,
+            requestKey: record.requestKey,
+            ...(item.provider === "modal" ? { externalRef: record.requestKey } : {}),
+            ttlSeconds: 900,
+            // Explicit template pins are isolated from the separate defaults probe.
+            skipSkillDefaults: true,
+            prompt: `Read the environment variable ${key} using your terminal tool. Reply with only its exact value, with no formatting or other text. Do not modify files.`,
+          };
+          const timeout = io.launchTimeout(`${label}_launch`);
+          async function observeAllocation(expectedId?: string) {
+            if (item.provider !== "modal") return;
             const until = Math.min(io.deadline, io.now() + timeout);
             const sandboxId = await observeSmokeLaunch(until, io, async (remaining) => {
               const inventory = await io
-                .request<{
-                  sandboxes: { id: string; provider: string; externalRef: string }[];
-                }>(
+                .request<{ sandboxes: { id: string; provider: string; externalRef: string }[] }>(
                   "sandbox/list",
                   { org: item.org, owner: "me", externalRef: record.requestKey },
                   Math.min(5_000, remaining),
@@ -232,31 +231,40 @@ export async function runTemplateSkillCase(item: TemplateSkillCase, io: Template
                 sandboxes?.length === 1 &&
                 sandbox?.provider === item.provider &&
                 sandbox.externalRef === record.requestKey &&
-                /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(sandbox.id)
+                (expectedId === undefined || sandbox.id === expectedId) &&
+                /^[a-f0-9]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(sandbox.id)
               )
                 return sandbox.id;
             });
             if (sandboxId) {
               record.sandboxId = sandboxId;
+              claim(sandboxId);
               await io.recordSandbox?.(sandboxId, record.requestKey);
             }
           }
-          throw error;
-        }
-        if (typeof result?.id === "string" && result.id) record.sandboxId = result.id;
-        if (typeof result?.requestId === "string" && /^[A-Za-z0-9._:-]{1,128}$/.test(result.requestId))
-          record.requestId = result.requestId;
-        record.uncertain = result?.state !== "failed" && (result?.state !== "succeeded" || !record.sandboxId);
-        if (result?.state !== "succeeded") launchFailure(result?.state, result?.reason);
-        if (
-          !record.sandboxId ||
-          result.provider !== item.provider ||
-          typeof result.promptId !== "string" ||
-          !result.promptId
-        )
-          fail("invalid_response");
-        return result;
-      });
+          let result: LaunchReceipt;
+          try {
+            result = await submit(body, timeout);
+          } catch (error) {
+            if (io.isAmbiguousLaunch(error)) await observeAllocation();
+            throw error;
+          }
+          if (typeof result?.id === "string" && result.id) record.sandboxId = result.id;
+          if (typeof result?.requestId === "string" && /^[A-Za-z0-9._:-]{1,128}$/.test(result.requestId))
+            record.requestId = result.requestId;
+          record.uncertain = result?.state !== "failed" && (result?.state !== "succeeded" || !record.sandboxId);
+          if (record.uncertain) await observeAllocation(record.sandboxId);
+          if (result?.state !== "succeeded") launchFailure(result?.state, result?.reason);
+          if (
+            !record.sandboxId ||
+            result.provider !== item.provider ||
+            typeof result.promptId !== "string" ||
+            !result.promptId
+          )
+            fail("invalid_response");
+          return result;
+        }),
+      );
       if (pin)
         await io.step(`${kind}_skill_receipt`, async () => {
           verifyReceipts(result.manifest?.skillReceipts, [pin]);

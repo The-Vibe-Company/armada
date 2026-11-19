@@ -656,6 +656,13 @@ async function runPostDeploySmoke(
         sleep: io.sleep,
         deadline,
         launchTimeout: (name) => (deadlines as Record<string, number>)[name] ?? TEMPLATE_LAUNCH_TIMEOUT_MS,
+        trackLaunch: (action) =>
+          launches.track("templates/launch", (record) =>
+            action(
+              (body, timeout) => transport(false, "templates/launch", body, undefined, timeout, record),
+              (id) => record({ id }),
+            ),
+          ),
         recordSandbox: (id, key) => io.recordSandbox?.(item.org, id, key, item.provider) ?? Promise.resolve(),
         isAmbiguousLaunch: (error) =>
           error instanceof SmokeFailure &&

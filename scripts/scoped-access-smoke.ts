@@ -364,16 +364,20 @@ export function createScopedProbe(item: ScopedProbeCase, enabled: boolean, io: S
         evidenceUnknown = false;
         adopt();
         let tools = calls(true);
-        if (
-          enabled &&
-          launchUnknown &&
-          tools.some((call) => call.name === "launch" && call.input.idempotencyKey === launchKey)
-        ) {
+        const hasLaunchResult = (seen: Call[]) =>
+          seen.some(
+            (call) =>
+              call.name === "launch" &&
+              call.input.idempotencyKey === launchKey &&
+              (call.error || Object.keys(call.result).length > 0),
+          );
+        if (enabled && !hasLaunchResult(tools)) {
           const until = Math.min(io.deadline, io.now() + 10_000);
           const updated = await observeSmokeLaunch(until, io, async () => {
             await logs(id, until);
             adopt();
-            return launchUnknown ? undefined : calls(true);
+            const seen = calls(true);
+            return hasLaunchResult(seen) ? seen : undefined;
           });
           if (updated) tools = updated;
         }
