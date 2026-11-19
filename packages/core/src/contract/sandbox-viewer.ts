@@ -11,6 +11,12 @@ const cursor = z
 const pageInput = z.object({ cursor });
 export const VIEWER_ACCESS_DENIED = "viewer_access_denied";
 const viewerAccessErrors = [VIEWER_ACCESS_DENIED] as const;
+const providerDispatchErrors = [
+  "provider_mismatch",
+  "provider_routing_unavailable",
+  "provider_unavailable",
+  "credential_refused",
+] as const;
 const viewerDenial = z.object({ error: z.literal(VIEWER_ACCESS_DENIED) });
 const viewerDispatchFailure = z.union([
   viewerDenial,
@@ -53,7 +59,7 @@ export const sandboxViewerOperations = {
     destructive: false,
     audience: "public",
     description: "Read status for the sandbox bound to the viewer grant.",
-    errors: [...viewerAccessErrors, ...sandboxOperations.sandboxStatus.errors, "provider_routing_unavailable"],
+    errors: [...viewerAccessErrors, ...sandboxOperations.sandboxStatus.errors, ...providerDispatchErrors],
     errorOutput: viewerDispatchFailure,
   },
   send: {
@@ -70,12 +76,7 @@ export const sandboxViewerOperations = {
     destructive: false,
     audience: "public",
     description: "Send a prompt to the sandbox bound to the viewer grant.",
-    errors: [
-      ...viewerAccessErrors,
-      ...sandboxOperations.sendPrompt.errors,
-      "credential_refused",
-      "provider_routing_unavailable",
-    ],
+    errors: [...viewerAccessErrors, ...sandboxOperations.sendPrompt.errors, ...providerDispatchErrors],
     errorOutput: viewerDispatchFailure,
   },
   events: {
