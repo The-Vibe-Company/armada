@@ -543,12 +543,13 @@ test("an old runtime without verified restore health cannot receive a resumed pr
   }
 });
 
-test.each(["confirmed", "tainted", "lease expired", "archive unverified"])(
+test.each(["confirmed", "tainted", "lease expired", "archive unverified", "response lost"])(
   "Boat resume activation and recovery respect retained disk and lease authority (%s)",
   async (condition) => {
     const taint = condition === "tainted";
     const expired = condition === "lease expired";
     const unverified = condition === "archive unverified";
+    const responseLost = condition === "response lost";
     const f = await stopped();
     const requests: string[] = [];
     let activated = false;
@@ -558,6 +559,7 @@ test.each(["confirmed", "tainted", "lease expired", "archive unverified"])(
       requests.push(url);
       if (url.endsWith("/resume")) {
         activated = true;
+        if (responseLost) return new Response(null, { status: 504 });
         if (expired)
           await f.db.query("update sandboxes set activity_until=now()-interval '1 second' where id=$1", [f.row.id]);
       }
@@ -586,7 +588,7 @@ test.each(["confirmed", "tainted", "lease expired", "archive unverified"])(
       });
       const request = input(f.row.id);
       await expect(createRuntimeResume(f.sql, ENCRYPTION_KEY, f.bridge, prepare)(f.caller, request)).rejects.toThrow();
-      expect(canIssueTicket).toBe(!taint && !expired && !unverified);
+      expect(canIssueTicket).toBe(!taint && !expired && !unverified && !responseLost);
       const { rows } = await f.db.query(
         `select l.stage, case when l.stage='accepted' then l.at=r.created_at else l.at>=r.created_at end as dated_correctly
            from public.sandbox_launch_stages l
@@ -596,7 +598,7 @@ test.each(["confirmed", "tainted", "lease expired", "archive unverified"])(
       );
       expect(rows).toEqual([
         { stage: "accepted", dated_correctly: true },
-        ...(taint || unverified
+        ...(taint || unverified || responseLost
           ? []
           : [
               ...(expired ? [] : [{ stage: "machine_started", dated_correctly: true }]),
@@ -605,8 +607,31 @@ test.each(["confirmed", "tainted", "lease expired", "archive unverified"])(
       ]);
       expect(requests.some((path) => path.endsWith("/resume"))).toBe(!taint && !unverified);
       const store = createSqlData(f.sql)(f.caller).sandboxes;
-      expect((await store.get(f.row.id))?.status).toBe(taint ? "failed" : expired ? "starting" : "stopping");
+      expect((await store.get(f.row.id))?.status).toBe(
+        taint ? "failed" : expired || responseLost ? "starting" : "stopping",
+      );
       if (!taint) expect(requests.some((path) => path.endsWith("/stop"))).toBe(false);
+      if (responseLost) {
+        const running = { body: { sandbox: sdkSandbox({ id: f.row.providerSandboxId, state: "running" }) } };
+        const archive = { body: { sandbox: retainedSandbox({ id: f.row.providerSandboxId }) } };
+        const { provider } = fakeBoat(running, running, {}, archive);
+        const worker = createSandboxLifecycle(f.sql, async () => provider);
+        expect(await worker.reconcileOne()).toBe(true);
+        expect((await store.get(f.row.id))?.status).toBe("stopping");
+        expect(await worker.reconcileOne()).toBe(true);
+        expect((await store.get(f.row.id))?.status).toBe("stopped");
+        await expect(
+          createRuntimeResume(f.sql, ENCRYPTION_KEY, f.bridge, prepare)(f.caller, request),
+        ).rejects.toThrow();
+        expect(
+          (
+            await createRuntimeResume(f.sql, ENCRYPTION_KEY, f.bridge, async () => ({
+              start: (_signal, restore) => f.reboot(restore),
+              stop: async () => {},
+            }))(f.caller, input(f.row.id))
+          ).sourceCheckpoint.epoch,
+        ).toBe(f.cp.runtime.epoch);
+      }
       if (condition === "confirmed" || unverified) {
         const { provider } = fakeBoat({
           body: { sandbox: retainedSandbox({ id: f.row.providerSandboxId }) },

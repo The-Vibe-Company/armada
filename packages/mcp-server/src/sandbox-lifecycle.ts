@@ -16,6 +16,22 @@ import { preserveBeforeStop, recordStopDispatch } from "./work-preservation.ts";
 export const UNENROLLED_RESUME_STOP = "runtime_resume_unenrolled";
 const OPERATOR_CLEANUP_PREFIX = "Operator cleanup required:";
 
+export async function deferAmbiguousBoatResume(
+  tx: Sql,
+  sandboxId: string,
+  requestId: string,
+  generation: number | undefined,
+) {
+  await tx.query(
+    `update public.sandboxes set activity_until=clock_timestamp(),reconcile_after=clock_timestamp()
+     where id=$1 and provider='boat' and boat_runtime and status='starting'
+       and activity_lease_id=$2 and lifecycle_generation=$3 and activity_until>clock_timestamp()
+       and stop_requested_at is null and deleted_at is null and expires_at>clock_timestamp()
+       and (reconcile_lease_until is null or reconcile_lease_until<=clock_timestamp())`,
+    [sandboxId, requestId, generation],
+  );
+}
+
 export async function requestFailedRuntimeResumeStop(
   tx: Sql,
   sandboxId: string,

@@ -2,6 +2,7 @@ import { PROVIDER_LIMITS, resolveBoatKey } from "@armada/core/server";
 import { BoatRetentionUnconfirmed } from "@armada/provider-boat";
 import type { ModelAuthOwnership } from "./model-auth.ts";
 import { createObservedBoatProvider } from "./observed-boat.ts";
+import { BoatResumeActivationUncertain } from "./runtime-resume.ts";
 import { type RuntimeResumeOptions, runtimeResumePlacement } from "./runtime-resume-placement.ts";
 
 /** Compute activation is isolated from legacy native harness/GitHub/MCP hooks. */
@@ -22,8 +23,13 @@ export function boatRuntimeResume(options: RuntimeResumeOptions & { modelAuth: M
     },
     admissionError: "runtime_resume_admission_changed",
     maxTtlSeconds: PROVIDER_LIMITS.boat.maxTtlSeconds,
-    restore: (host, sandbox, ttl, signal, _checkpoint, observe) =>
-      host.resumeRuntime(sandbox.providerSandboxId, ttl, signal, observe),
+    async restore(host, sandbox, ttl, signal, _checkpoint, observe) {
+      try {
+        await host.resumeRuntime(sandbox.providerSandboxId, ttl, signal, observe);
+      } catch (error) {
+        throw new BoatResumeActivationUncertain(error);
+      }
+    },
     stop: (host, sandbox) => host.stopBestEffort(sandbox.providerSandboxId),
   });
 }
