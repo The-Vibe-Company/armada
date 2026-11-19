@@ -42,6 +42,7 @@ export function createRuntimeStartup(
     cacheDir: string;
     artifact: { sha256: string; bytes: number };
     configuration: Record<string, unknown>;
+    commandGrantExpiresAt?: number;
     signal?: AbortSignal;
     /** Readiness budget AFTER the bounded host bootstrap returns. */
     readinessTimeoutMs?: number;
@@ -83,7 +84,12 @@ export function createRuntimeStartup(
     try {
       signal?.throwIfAborted();
       entering("ticket", startedAt);
-      const ticket = await authority.issue({ ownerId, sandboxId, configuration: input.configuration });
+      const ticket = await authority.issue({
+        ownerId,
+        sandboxId,
+        configuration: input.configuration,
+        ...(input.commandGrantExpiresAt !== undefined ? { commandGrantExpiresAt: input.commandGrantExpiresAt } : {}),
+      });
       epoch = ticket.epoch;
       signal?.throwIfAborted();
       diagnosticPhase = "bootstrap";
