@@ -29,27 +29,32 @@ import {
   type TestServer,
 } from "./support.ts";
 
-let sharedDatabase: Awaited<ReturnType<typeof migratedDatabase>> | undefined;
-let server: TestServer | undefined;
+let sharedDatabase: ReturnType<typeof migratedDatabase> | undefined;
+let pendingServer: Promise<TestServer> | undefined;
 
 beforeAll(async () => {
-  sharedDatabase = await migratedDatabase();
+  sharedDatabase = migratedDatabase();
+  await sharedDatabase;
 });
 
 afterAll(async () => {
-  const db = sharedDatabase;
+  const pending = sharedDatabase;
   sharedDatabase = undefined;
+  const db = await pending?.catch(() => undefined);
   await db?.close();
 });
 
 afterEach(async () => {
+  const pending = pendingServer;
+  pendingServer = undefined;
+  const server = await pending?.catch(() => undefined);
   await server?.close();
-  server = undefined;
 });
 
-async function start(options: Parameters<typeof harness>[0] = {}) {
+function start(options: Parameters<typeof harness>[0] = {}) {
   if (!sharedDatabase) throw new Error("Server database is not open");
-  await sharedDatabase.exec(`
+  pendingServer = sharedDatabase.then(async (db) => {
+    await db.exec(`
     reset role;
     reset all;
     set search_path=public;
@@ -64,8 +69,9 @@ async function start(options: Parameters<typeof harness>[0] = {}) {
     delete from auth.users;
     delete from mcp_invalidations;
   `);
-  server = await harness(options, await seedDatabase(sharedDatabase));
-  return server;
+    return harness(options, await seedDatabase(db));
+  });
+  return pendingServer;
 }
 
 const allSecrets = Object.values(SECRETS);
