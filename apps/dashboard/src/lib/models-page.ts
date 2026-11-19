@@ -11,7 +11,7 @@ export function modelsPageStatus(account: ModelAccount, now: number) {
   return { ...state, label: "Connected" };
 }
 
-export function modelsPageExhaustion(account: ModelAccount, now: number): string | null {
+export function modelsPageExhaustion(account: ModelAccount, now: number) {
   const reset = Date.parse(account.exhaustedUntil ?? "");
   if (!(reset > now)) return null;
   const time = new Date(reset).toISOString().slice(0, 16).replace("T", " ");
