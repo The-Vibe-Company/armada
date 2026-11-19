@@ -1956,7 +1956,8 @@ deployment logs before replacing it. The check uses the staging project,
 environment and service already configured for deployment. Modal and Docker
 each need a complete reaper observation within five minutes. Every observed
 source must have a fresh, complete latest observation. Missing, incomplete or
-truncated evidence fails the preflight.
+truncated evidence fails the smoke before any probe launches. The staging server
+can still be replaced so a new deployment can restore missing observations.
 
 The check reports physical machine IDs observed overdue in the last 15 minutes,
 even if the Modal reaper subsequently deleted the machine. Docker's inventory

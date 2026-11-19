@@ -154,14 +154,16 @@ jobs:
         if: (steps.evidence.outputs.reused != 'true')
         run: npm install --global @railway/cli@5.71.0 vercel@65.14.0
       - name: Check previous staging reaper evidence
+        id: reaper
+        continue-on-error: true
         shell: bash
         if: (steps.evidence.outputs.reused != 'true')
         run: |
           [[ "$ARMADA_URL" == 'https://armada-mcp-staging.up.railway.app' ]]
           timeout 30s railway logs --deployment --json --since 15m --lines 500 \
             --project "$RAILWAY_PROJECT_ID" --environment "$RAILWAY_ENVIRONMENT_ID" --service "$RAILWAY_SERVICE_ID" \
-            --filter '(@provider:modal OR @provider:docker) AND (@metric:reaper_unknown_machines OR @event:reaper_overdue_machines) OR (@event:provider_reaper_retry AND @phase:discovery)' \
-            | env -i PATH="$PATH" bun scripts/smoke-reaper-evidence.ts
+            --filter '((@provider:modal OR @provider:docker) AND (@metric:reaper_unknown_machines OR @event:reaper_overdue_machines)) OR (@event:provider_reaper_retry AND @phase:discovery)' \
+            | env -i PATH="$PATH" bun .release-tools/scripts/release/smoke-reaper-evidence.ts
       # Stamp the checked-out SHA in ordinary wakeup evidence. GitHub run metadata
       # can describe an older main tip than the source resolved under the lock.
       - name: Migrate then deploy pinned server and dashboard${{ github.event_name == 'workflow_run' && inputs.source_sha == '' && format(' ({0})', env.RELEASE_SHA) || '' }}
@@ -212,6 +214,11 @@ jobs:
           ARMADA_SMOKE: create_real_compute
           ARMADA_SMOKE_JOURNAL: .smoke/sandboxes.json
         run: |
+          if [[ "${{ steps.reaper.outcome }}" != success ]]; then
+            printf '%s\n' '{"step":"smoke_reaper_evidence","pass":false,"code":"reaper_preflight_failed"}' > "$RUNNER_TEMP/armada-smoke.jsonl"
+            : > "$RUNNER_TEMP/dashboard-smoke.jsonl"
+            exit 1
+          fi
           # Read probes receive only the existing staging bearer, never deployment secrets.
           env -i PATH="$PATH" HOME="$HOME" ARMADA_URL="$ARMADA_URL" ARMADA_TOKEN="$ARMADA_TOKEN" \
             ARMADA_SMOKE_CASES="$ARMADA_SMOKE_CASES" bun scripts/dashboard-read-smoke.ts | tee "$RUNNER_TEMP/dashboard-smoke.jsonl" &

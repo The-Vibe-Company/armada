@@ -1,4 +1,3 @@
-// The workflow fetches filtered logs from the previous live staging server.
 export const reaperLogLimit = 500;
 const windowMs = 15 * 60_000;
 const freshMs = 5 * 60_000;
@@ -10,10 +9,9 @@ export function checkReaperEvidence(jsonl: string, now: number) {
   const lines = jsonl.split("\n").filter((line) => line.trim());
   const problems = new Set<string>();
   const machineIds = { modal: new Set<string>(), docker: new Set<string>() };
-  const latest = new Map<string, { provider: Provider; timestamp: number; healthy: boolean }>();
-  const seen = new Set<Provider>();
+  type Observation = { timestamp: number; healthy: boolean };
+  const latest = { modal: new Map<string, Observation>(), docker: new Map<string, Observation>() };
   let discoveryFailure = -Infinity;
-  let latestModal = -Infinity;
 
   if (lines.length >= reaperLogLimit) problems.add("log_limit_reached");
   for (const line of lines) {
@@ -36,8 +34,8 @@ export function checkReaperEvidence(jsonl: string, now: number) {
       discoveryFailure = Math.max(discoveryFailure, timestamp);
       continue;
     }
-    const provider = record.provider;
-    if (provider !== "modal" && provider !== "docker") continue;
+    const provider = providers.find((candidate) => candidate === record.provider);
+    if (!provider) continue;
     if (record.event === "reaper_overdue_machines") {
       if (
         !Array.isArray(record.machineIds) ||
@@ -60,21 +58,22 @@ export function checkReaperEvidence(jsonl: string, now: number) {
       continue;
     }
     if (overdue > 0) problems.add(`overdue_machines:${provider}`);
-    const key = `${provider}:${record.source}`;
     const healthy = record.complete === true && overdue === 0;
-    const previous = latest.get(key);
+    const previous = latest[provider].get(record.source);
     if (!previous || timestamp > previous.timestamp || (timestamp === previous.timestamp && !healthy)) {
-      latest.set(key, { provider, timestamp, healthy });
+      latest[provider].set(record.source, { timestamp, healthy });
     }
-    if (provider === "modal" && healthy) latestModal = Math.max(latestModal, timestamp);
   }
-  if (discoveryFailure >= latestModal && Number.isFinite(discoveryFailure)) problems.add("modal_discovery_incomplete");
-  for (const [key, { provider, timestamp, healthy }] of latest) {
-    seen.add(provider);
-    if (timestamp < now - freshMs || !healthy) problems.add(`incomplete_reaper_evidence:${key}`);
-  }
+  if (
+    Number.isFinite(discoveryFailure) &&
+    ![...latest.modal.values()].some((observation) => observation.healthy && observation.timestamp > discoveryFailure)
+  )
+    problems.add("modal_discovery_incomplete");
   for (const provider of providers) {
-    if (!seen.has(provider)) problems.add(`missing_reaper_evidence:${provider}`);
+    if (latest[provider].size === 0) problems.add(`missing_reaper_evidence:${provider}`);
+    for (const [source, { timestamp, healthy }] of latest[provider]) {
+      if (timestamp < now - freshMs || !healthy) problems.add(`incomplete_reaper_evidence:${provider}:${source}`);
+    }
   }
   return {
     step: "smoke_reaper_evidence",
