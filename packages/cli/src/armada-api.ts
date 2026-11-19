@@ -33,9 +33,7 @@ interface ArmadaApiIo {
 }
 
 interface ArmadaApiOptions {
-  /** The CLI --url value. It takes precedence over ARMADA_URL and the default origin. */
   url?: string;
-  /** Retain safe server error codes for versioned API clients. */
   preserveServerErrors?: boolean;
   rawJson?: boolean;
 }
@@ -66,17 +64,10 @@ export class ArmadaApiError extends AuthError {
 
 export type ArmadaCommandClient = ReturnType<typeof commandClient>;
 
-/**
- * Create an authenticated client for Armada's own API.
- *
- * ARMADA_TOKEN is intentionally checked before the saved session, allowing automation with a
- * clean HOME. A saved login is the fallback. The token is never retained in thrown errors.
- */
 export async function createArmadaApiClient(
   io: ArmadaApiIo,
   options: ArmadaApiOptions = {},
 ): Promise<ArmadaCommandClient> {
-  // An explicit environment token needs no HOME/session read and never inherits a stale session origin.
   const environmentToken = io.env.ARMADA_TOKEN;
   let saved = environmentToken ? null : await io.session.read();
   const origin = await resolveArmadaOrigin(io, options.url, saved);
@@ -94,7 +85,6 @@ export async function createArmadaApiClient(
   return commandClient(
     origin,
     {
-      // Bun has an independent idle deadline. The explicit signal owns the request budget.
       fetch: async (input, options) => {
         const response = await io.fetch(input, { ...options, ...{ timeout: false } });
         if (rawResponses && response.ok && response.body) rawResponses.set(response, response.clone());
@@ -170,8 +160,6 @@ export async function createArmadaApiClient(
           409,
           "The selected Docker host is full. Stop a sandbox on that host or raise its limit before retrying.",
         );
-      // Older control servers used not_found for both resource misses and route misses.
-      // Compare only the fixed legacy sentinel; never echo untrusted response text.
       const legacyUnknownRoute =
         failureCode === "not_found" &&
         (payload as { error?: { message?: unknown } }).error?.message === "Unknown route.";
@@ -181,7 +169,6 @@ export async function createArmadaApiClient(
           response.status,
           `This Armada deployment at ${origin} does not serve ${url.pathname}; the dashboard or server may be out of date. Ask an administrator to verify the deployment.`,
         );
-      // Vault writes can be echoed by an upstream failure. Only closed local text is safe.
       if (path.startsWith("/api/v1/variables/") || path.startsWith("/api/v1/secrets/")) {
         const known: Record<string, string> = {
           [APPLICATION_VAULT_CONFLICT_MESSAGES.versionChanged]:
@@ -217,7 +204,6 @@ export async function createArmadaApiClient(
             "Application vault unavailable. Check entry status before retrying.",
         );
       }
-      // Routine errors can contain echoed prompt/configuration. Keep output closed and local.
       if (path.startsWith("/api/v1/routines/")) {
         const messages: Record<number, string> = {
           400: "Invalid routine request. Check the configuration, IDs, integer limits and expected version.",
@@ -328,7 +314,6 @@ export async function createArmadaApiClient(
           sandboxError.legacyCode,
           sandboxError.exitCode,
         );
-      // A provider without refresh is a closed answer, not an unknown failure. Compare fixed text only.
       if (path === "/api/v1/github/refresh" && failureCode === "unsupported")
         throw new ArmadaApiError(
           "unsupported",
@@ -340,7 +325,6 @@ export async function createArmadaApiClient(
           undefined,
           1,
         );
-      // Interior responses may contain provider failures or guest secrets. Never relay raw text.
       if (isSandboxInteriorPath(path) && response.status !== 401) {
         const denied = response.status === 403;
         throw new AuthError(
@@ -354,7 +338,6 @@ export async function createArmadaApiClient(
           denied || response.status === 404 ? "conflict" : "unavailable",
         );
       }
-      // Invitation tokens can be present in a rejected body. Never trust server error text here.
       if (path.startsWith("/api/v1/org/invitations/")) {
         const messages: Record<number, string> = {
           400: "Invalid invitation request. Check the email, role or invitation token.",
@@ -415,8 +398,6 @@ async function refresh(
   safeErrors = false,
 ): Promise<NonNullable<Awaited<ReturnType<SessionStore["read"]>>>> {
   const operation = async (store: SessionStore) => {
-    // The caller may have loaded this token before another process rotated it.
-    // Read again only after acquiring the shared lock, and reuse that winner.
     const current = await store.read();
     if (
       !current ||
@@ -491,11 +472,6 @@ async function refreshLocked(
   return updated;
 }
 
-/**
- * Resolve all saved-login consumers against the same server binding.
- * Legacy logins without a binding belong only to the historical default server.
- * Environment tokens are independent of saved logins.
- */
 export async function resolveArmadaOrigin(
   io: Pick<ArmadaApiIo, "env" | "session">,
   url?: string,
@@ -513,7 +489,6 @@ export async function resolveArmadaOrigin(
   return login ? bound : armadaApiUrl(explicit);
 }
 
-/** Accept only an HTTP(S) origin; this prevents provider URLs from becoming API targets. */
 export function armadaApiUrl(value: string | undefined): string {
   const address = value || DEFAULT_ARMADA_API_URL;
   try {
@@ -533,7 +508,6 @@ function apiMessage(payload: unknown, fallback: string): string {
   return typeof message === "string" && message.length > 0 ? message : fallback;
 }
 
-/** Read pre-provider Boat golden lists during a rolling server/CLI upgrade. */
 function normalizeProviderDto(path: string, payload: unknown): unknown {
   if (path !== "/api/v1/golden/list" || !payload || typeof payload !== "object") return payload;
   const body = payload as Record<string, unknown>;
@@ -555,7 +529,6 @@ function normalizeProviderDto(path: string, payload: unknown): unknown {
   };
 }
 
-/** Untrusted responses may echo the request; only recognized reason names select local text. */
 function invitationReasonMessage(payload: unknown): string | undefined {
   if (!payload || typeof payload !== "object" || !("error" in payload)) return undefined;
   const error = payload.error;
