@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { dockerLaunchOption } from "../src/lib/docker-launch.ts";
+import { dockerLaunchOption } from "./docker-launch.ts";
 import {
   hasDockerHost,
   snapshotBuildHostBlocker,
@@ -7,7 +7,7 @@ import {
   snapshotLaunchEnabled,
   snapshotRebuildAvailable,
   snapshotState,
-} from "../src/lib/docker-snapshots.ts";
+} from "./docker-snapshots.ts";
 
 test("host-only orgs skip cloud onboarding even while their host is offline, but not after revocation", () => {
   expect(hasDockerHost([])).toBe(false);
@@ -25,7 +25,6 @@ test("only published snapshots on an available installation offer launch; pendin
     bucket: "rest",
     label: "Host unavailable",
   });
-  // A draining host is named as draining, not as merely unavailable.
   expect(snapshotState({ status: "ready", hostAvailable: false }, true, "draining")).toMatchObject({
     bucket: "rest",
     label: "Host draining",
@@ -54,7 +53,6 @@ test("snapshot affordances require enabled discovery, placement and the golden s
     harnesses: ["codex" as const],
     capabilities: { launch: true, goldens: true },
   };
-  // Parsing owns all other capability defaults, as it does for the ordinary host launch.
   const parsed = dockerLaunchOption({ providers: [option] });
   expect(snapshotLaunchEnabled(parsed, true)).toBe(true);
   expect(snapshotLaunchEnabled(null, true)).toBe(false);

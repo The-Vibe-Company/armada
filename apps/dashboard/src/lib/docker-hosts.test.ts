@@ -15,24 +15,25 @@ import {
   parseHostRegistration,
   revokeWarning,
   sandboxHostLabel,
-} from "../src/lib/docker-hosts.ts";
+} from "./docker-hosts.ts";
 
 const ID = "70bde9cd-36c9-40af-b15e-65b2f9d3c2a2";
 const OTHER = "11111111-1111-4111-8111-111111111111";
 const NOW = Date.parse("2026-11-13T12:00:00Z");
-const host = (overrides: Partial<DockerHost> = {}): DockerHost => ({
-  id: ID,
-  name: null,
-  state: "online",
-  createdAt: "2026-11-13T08:00:00Z",
-  lastSeenAt: "2026-11-13T11:59:50Z",
-  revokedAt: null,
-  protocol: 1,
-  upgradeRequired: false,
-  sandboxes: 2,
-  version: "1.4.0",
-  ...overrides,
-});
+const host = (overrides: Partial<DockerHost> = {}) =>
+  ({
+    id: ID,
+    name: null,
+    state: "online",
+    createdAt: "2026-11-13T08:00:00Z",
+    lastSeenAt: "2026-11-13T11:59:50Z",
+    revokedAt: null,
+    protocol: 1,
+    upgradeRequired: false,
+    sandboxes: 2,
+    version: "1.4.0",
+    ...overrides,
+  }) satisfies DockerHost;
 
 test("one malformed host is left out and counted; a bad envelope or a duplicated host refuses the answer", () => {
   expect(parseDockerHostList({ placement: true, hosts: [host()] })).toEqual({
@@ -61,7 +62,6 @@ test("a registration is a host ID, a one-line command and an expiry, nothing sto
   const command = "curl -fsSL https://armada.example.com/install-host.sh | sh -s -- --token abc";
   const expiresAt = "2026-11-13T12:05:00Z";
   expect(parseHostRegistration({ hostId: ID, command, expiresAt })).toEqual({ hostId: ID, command, expiresAt });
-  // Surrounding whitespace is trimmed; the command itself may not span lines.
   expect(parseHostRegistration({ hostId: ID, command: `  ${command}  `, expiresAt })?.command).toBe(command);
   for (const bad of [
     { hostId: "x", command, expiresAt },

@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { lifecycleFailure } from "../src/lib/sandbox-lifecycle.ts";
+import { lifecycleFailure } from "./sandbox-lifecycle.ts";
 
 test("unconfirmed lifecycle operations direct observation before retry, never assert mutation failed", () => {
   for (const status of [undefined, 408, 409, 502]) {
@@ -25,7 +25,6 @@ test("definite lifecycle refusals retain their cause without exposing diagnostic
   }
 });
 
-// Only known pre-dispatch refusals are definite; unknown conflicts can be pending cleanup.
 test("delete conflicts retain known pre-dispatch recovery without echoing unknown messages", () => {
   for (const message of ["Stop the sandbox before deleting it.", "Stop the Docker sandbox before deleting it."])
     expect(lifecycleFailure("delete", { code: "conflict", message })).toContain("Stop the sandbox, then delete it.");

@@ -1,10 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import {
-  accountChoiceReadFailure,
-  bindableStatus,
-  bindFailure,
-  compatibleAccounts,
-} from "../src/lib/account-recovery.ts";
+import { accountChoiceReadFailure, bindableStatus, bindFailure, compatibleAccounts } from "./account-recovery.ts";
 
 const ORG = "00000000-0000-4000-8000-000000000010";
 const now = new Date("2026-11-10T12:00:00Z");
@@ -63,7 +58,6 @@ describe("legacy account recovery", () => {
     expect(bindableStatus("ready")).toBe("ready");
     expect(bindableStatus("stopping")).toBe("wait");
     for (const status of ["starting", "running"] as const) expect(bindableStatus(status)).toBe("stop-first");
-    // Stop does not apply to a failed sandbox and the server refuses to bind one: never offer a doomed choice.
     expect(bindableStatus("failed")).toBe("failed");
   });
 });

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { launchArgs, OTHER_MODEL, sendOverride } from "../src/lib/model-choice.ts";
+import { launchArgs, OTHER_MODEL, sendOverride } from "./model-choice.ts";
 
 const ORG = "11111111-1111-4111-8111-111111111111";
 const form = { golden: "web", provider: "boat", org: ORG, prompt: "", model: "", otherModel: "", reasoningEffort: "" };
@@ -51,7 +51,6 @@ describe("model choice from the dashboard forms", () => {
       ok: true,
       args: { provider: "boat", harness: "opencode", model: "armada/deepseek-flash", reasoning_effort: "default" },
     });
-    // Native default is compatible with automatic OpenCode admission; malformed discovery fails closed.
     for (const discovery of [
       null,
       {},

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { editDefaults, goldenRequest, goldenRowState, providerCapacity, repoSlug } from "../src/lib/golden-form.ts";
+import { editDefaults, goldenRequest, goldenRowState, providerCapacity, repoSlug } from "./golden-form.ts";
 
 const ORG = "11111111-1111-4111-8111-111111111111";
 const base = { mode: "create", name: "web", org: ORG, provider: "boat", visibility: "org", init: "", setup: "" };
@@ -136,7 +136,6 @@ describe("what the page offers", () => {
     expect(goldenRowState(golden("a", "private", "bob"), [], viewer).reason).toContain("owner");
     expect(goldenRowState(golden("a", "org"), [], viewer).reason).toContain("admin");
     expect(goldenRowState(golden("a", "org"), [], { ...viewer, isAdmin: true }).canRebuild).toBe(true);
-    // A Modal golden follows the same rule; the same name on the other provider is not a duplicate.
     expect(goldenRowState(golden("a", "org", "alice", "modal"), [], { ...viewer, isAdmin: true }).canRebuild).toBe(
       true,
     );
