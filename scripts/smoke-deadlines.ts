@@ -1,10 +1,9 @@
 import { join } from "node:path";
 
-/** Each input is one successful staging run's JSONL receipt stream, newest first. */
-export function smokeDeadlines(journals: readonly string[]): Record<string, number> {
+export function smokeDeadlines(greenJournalsNewestFirst: readonly string[]) {
   const samples = new Map<string, number[]>();
   const runsPerStep = new Map<string, number>();
-  for (const journal of journals.slice(0, 20)) {
+  for (const journal of greenJournalsNewestFirst.slice(0, 20)) {
     const seen = new Set<string>();
     for (const line of journal.split("\n")) {
       if (!line.trimStart().startsWith("{")) continue;
@@ -30,7 +29,7 @@ export function smokeDeadlines(journals: readonly string[]): Record<string, numb
       .flatMap(([step, values]) => {
         if (runsPerStep.get(step) !== 20) return [];
         values.sort((a, b) => a - b);
-        return [[step, Math.ceil(1.5 * values[Math.ceil(values.length * 0.99) - 1]!)]];
+        return [[step, Math.ceil(1.5 * values[Math.ceil(values.length * 0.99) - 1]!)] as const];
       }),
   );
 }
