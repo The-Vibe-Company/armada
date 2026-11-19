@@ -31,6 +31,25 @@ type Occurrence = { index: number; text: string };
 function registrations(path: string, content: string) {
   const source = ts.createSourceFile(path, content, ts.ScriptTarget.Latest);
   const entries: ts.Node[] = [];
+  function addMounts(expression: ts.Expression) {
+    if (ts.isArrayLiteralExpression(expression)) {
+      for (const element of expression.elements) addMounts(element);
+    } else if (ts.isSpreadElement(expression) || ts.isParenthesizedExpression(expression)) {
+      addMounts(expression.expression);
+    } else if (ts.isCallExpression(expression) && ts.isPropertyAccessExpression(expression.expression)) {
+      const callee = expression.expression;
+      if (callee.getText(source) === "assembly.mounts") return;
+      if (callee.name.text === "concat") {
+        addMounts(callee.expression);
+        for (const argument of expression.arguments) addMounts(argument);
+      } else {
+        entries.push(expression);
+      }
+    } else {
+      entries.push(expression);
+    }
+  }
+
   function visit(node: ts.Node) {
     if (path === controlPath) {
       if (ts.isCaseClause(node) && ts.isStringLiteralLike(node.expression)) entries.push(node.expression);
@@ -53,12 +72,8 @@ function registrations(path: string, content: string) {
       }
     }
     if (path === servePath) {
-      if (
-        ts.isPropertyAssignment(node) &&
-        node.name.getText(source).replace(/["']/g, "") === "routes" &&
-        ts.isArrayLiteralExpression(node.initializer)
-      ) {
-        entries.push(...node.initializer.elements);
+      if (ts.isPropertyAssignment(node) && node.name.getText(source).replace(/["']/g, "") === "routes") {
+        addMounts(node.initializer);
       }
       if (ts.isCallExpression(node)) {
         const callee = node.expression.getText(source);

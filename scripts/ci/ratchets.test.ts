@@ -83,7 +83,13 @@ const registration = 'defineRoutes("sandbox", { "sandbox/info": handler });';
 test.each([
   ["a control case", control, "", `switch (route) { case ${route}: break; }`, route],
   ["a control route key", control, "", registration, route],
-  ["a server mount", server + "serve.ts", "", "mounts.push(mount);", "mount"],
+  [
+    "a server mount",
+    server + "serve.ts",
+    "createHandler({ routes: assembly.mounts(configureTimeout) });",
+    "createHandler({ routes: assembly.mounts(configureTimeout).concat(mount) });",
+    "mount",
+  ],
   ["a server worker", server + "serve.ts", "", 'workers.managed.set("idle", factory);', '"idle"'],
   [
     "a core barrel export",
@@ -112,4 +118,15 @@ test("allows a route defined in its owning module", () => {
     ({ name }) => name === "append-point",
   );
   expect(result).toMatchObject({ before: 0, after: 0, added: [] });
+});
+
+test("allows spreading assembled mounts without adding a central registration", () => {
+  const path = server + "serve.ts";
+  const base = new Map([[path, "createHandler({ routes: assembly.mounts(configureTimeout) });"]]);
+  const head = new Map([[path, "createHandler({ routes: [...assembly.mounts(configureTimeout)] });"]]);
+  expect(compare(base, head).find(({ name }) => name === "append-point")).toMatchObject({
+    before: 0,
+    after: 0,
+    added: [],
+  });
 });
