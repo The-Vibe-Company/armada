@@ -22,6 +22,8 @@ const env = {
   ARMADA_SMOKE: "create_real_compute",
   ARMADA_SMOKE_CASES: JSON.stringify([selected]),
 };
+const sandboxFixtureId = "f0000000-0000-4000-8000-000000000000";
+const lifecycleId = (sequence: number) => `f0000000-0000-4000-8000-${String(sequence).padStart(12, "0")}`;
 const json = (body: unknown, status = 200) => Response.json(body, { status });
 type Call = { path: string; body: Record<string, unknown>; init: RequestInit };
 function fixture(handler?: (call: Call) => Response | undefined | Promise<Response | undefined>) {
@@ -70,7 +72,7 @@ function fixture(handler?: (call: Call) => Response | undefined | Promise<Respon
       }
       switch (call.path) {
         case "sandbox/launch":
-          return json({ sandbox: { id: "sandbox-id", provider: call.body.provider } });
+          return json({ sandbox: { id: sandboxFixtureId, provider: call.body.provider } });
         case "sandbox/send":
           return json({ promptId: "prompt-id" });
         case "sandbox/wait":
@@ -159,7 +161,7 @@ test("smokes each configured provider/harness through the real API wire contract
   });
   expect(await postDeploySmoke({ ...env, ARMADA_SMOKE_CASES: JSON.stringify(cases) }, [], fake.io)).toBe(true);
   const launches = fake.calls.filter((call) => call.path === "sandbox/launch");
-  expect(launches.map((call) => call.body)).toEqual(
+  expect(launches.map(({ body: { idempotencyKey: _, externalRef: __, ...body } }) => body)).toEqual(
     cases.map((item) => ({
       org: item.org,
       golden: item.golden,
@@ -175,7 +177,7 @@ test("smokes each configured provider/harness through the real API wire contract
     const mine = fake.calls.filter((call) => call.body.org === item.org);
     expect(mine.find((call) => call.path === "sandbox/wait")?.body).toEqual({
       org: item.org,
-      id: "sandbox-id",
+      id: sandboxFixtureId,
       prompt_id: "prompt-id",
       timeout_seconds: 0,
     });
@@ -218,7 +220,7 @@ test("failure paths retain cleanup handles and never emit remote bodies, arbitra
   const failures = [
     {
       path: "sandbox/launch",
-      response: () => json({ sandbox: { id: "sandbox-id", provider: "modal" }, promptId: "unexpected" }),
+      response: () => json({ sandbox: { id: sandboxFixtureId, provider: "modal" }, promptId: "unexpected" }),
       code: "invalid_response",
     },
     {
@@ -1096,13 +1098,13 @@ test.each(["configured", "no_pins", "refused"])(
           if (mode === "refused")
             return json({
               state: "failed",
-              id: "sandbox-id",
+              id: sandboxFixtureId,
               reason: "skillpack_registry_unavailable",
               manifest: { value: "secret-unreported", definition: { provider: "modal" } },
             });
           return json({
             state: "succeeded",
-            id: "sandbox-id",
+            id: sandboxFixtureId,
             provider: "modal",
             promptId: "prompt-id",
             manifest: { skillReceipts: [receipt] },
@@ -1350,7 +1352,8 @@ type LifecycleFault =
   | "list_mismatch"
   | "lost_resume"
   | "stop_failed"
-  | "lost_launch";
+  | "lost_launch"
+  | "recovered_launch";
 function lifecycleFixture(fault: LifecycleFault = "none", handler?: (call: Call) => Response | undefined) {
   // Per-sandbox state: concurrent case lanes interleave their calls.
   interface Life {
@@ -1365,6 +1368,7 @@ function lifecycleFixture(fault: LifecycleFault = "none", handler?: (call: Call)
   }
   const lives = new Map<string, Life>();
   let launches = 0;
+  let observations = 0;
   const fake = fixture((call) => {
     const override = handler?.(call);
     if (override) return override;
@@ -1372,7 +1376,7 @@ function lifecycleFixture(fault: LifecycleFault = "none", handler?: (call: Call)
       launches++;
       fake.advance(500);
       const life: Life = {
-        id: `life-${launches}`,
+        id: lifecycleId(launches),
         provider: String(call.body.provider),
         harness: String(call.body.harness),
         sends: 0,
@@ -1382,8 +1386,21 @@ function lifecycleFixture(fault: LifecycleFault = "none", handler?: (call: Call)
         expiry: new Date(fake.io.now() + 1800_000).toISOString(),
       };
       lives.set(life.id, life);
-      if (fault === "lost_launch") throw new Error("secret launch outcome");
+      if (fault === "lost_launch" || fault === "recovered_launch") {
+        fake.advance(600_000);
+        throw new DOMException("secret launch outcome", "TimeoutError");
+      }
       return json({ sandbox: { id: life.id, provider: life.provider } });
+    }
+    if (call.path === "sandbox/list" && call.body.externalRef) {
+      expect(call.body.owner).toBe("me");
+      if (fault !== "recovered_launch" || ++observations === 1) return json({ sandboxes: [] });
+      const launch = fake.calls.find((entry) => entry.path === "sandbox/launch")!;
+      return json({
+        sandboxes: [
+          { id: lifecycleId(1), provider: "modal", status: "ready", externalRef: launch.body.idempotencyKey },
+        ],
+      });
     }
     const life =
       call.path === "sandbox/list"
@@ -1594,14 +1611,32 @@ test("lifecycle failures reject false receipts and report unknown launches or le
     }
     if (fault === "stop_failed") {
       expect(summary.pass).toBe(false);
-      expect(summary.leftoverSandboxIds).toEqual(["life-1"]);
+      expect(summary.leftoverSandboxIds).toEqual([lifecycleId(1)]);
     }
     if (fault === "lost_launch") {
       expect(summary.pass).toBe(false);
       expect(summary.launchOutcomeUnknown).toBe(true);
+      expect(fake.receipts().find((line) => line.step === "launch")).toMatchObject({
+        launchResponse: { requestKey: fake.calls.find((call) => call.path === "sandbox/launch")!.body.idempotencyKey },
+      });
     }
     expect(fake.lines.join("")).not.toContain("secret");
   }
+});
+
+test("an ordinary lifecycle launch continues on the sandbox observed after a response timeout", async () => {
+  const fake = lifecycleFixture("recovered_launch");
+  expect(await fake.run()).toBe(true);
+  const starts = fake.calls.filter((call) => call.path === "sandbox/launch");
+  expect(starts).toHaveLength(1);
+  const key = starts[0]!.body.idempotencyKey;
+  expect(key).toEqual(expect.any(String));
+  expect(starts[0]!.body.externalRef).toBe(key);
+  expect(fake.calls.filter((call) => call.path === "sandbox/list" && call.body.externalRef === key)).toHaveLength(2);
+  expect(fake.calls.find((call) => call.path === "sandbox/send")?.body.id).toBe(lifecycleId(1));
+  expect(fake.lines.map((line) => (line === boatNotice ? null : JSON.parse(line)))).toContainEqual(
+    expect.objectContaining({ step: "launch", pass: true, elapsedMs: 601_500 }),
+  );
 });
 
 // The merged staging command combines these independently runnable families.
@@ -1846,7 +1881,7 @@ test("independent sandbox lanes run concurrently: the expiry wait overlaps every
   // Both cases' lifecycle sandboxes are launched before either one stops.
   const lifecycleCalls = fake.calls.filter(
     (call) =>
-      String(call.body.id ?? "").startsWith("life-") ||
+      [lifecycleId(1), lifecycleId(2)].includes(String(call.body.id)) ||
       (call.path === "sandbox/launch" && call.body.ttlSeconds === 1800),
   );
   expect(lifecycleCalls.filter((call) => call.path === "sandbox/launch")).toHaveLength(2);
@@ -1888,7 +1923,7 @@ test("lanes sharing a one-slot model account take turns, and the expiry wait sti
           conflicts++;
           return json({ error: { code: "conflict", message: "secret account at its limit" } }, 409);
         }
-        working.add(call.body.ttlSeconds === 180 ? expiryId(call.body.harness) : `life-${++lifecycleLaunches}`);
+        working.add(call.body.ttlSeconds === 180 ? expiryId(call.body.harness) : lifecycleId(++lifecycleLaunches));
       }
       if (call.path === "sandbox/stop") working.delete(String(call.body.id));
       return expiry(call);
