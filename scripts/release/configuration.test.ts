@@ -3,10 +3,16 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
-type Step = { id?: string; name?: string; run?: string };
+type Step = { id?: string; name?: string; run?: string; env?: Record<string, string>; with?: Record<string, string> };
+type Job = {
+  steps: Step[];
+  needs?: string | string[];
+  outputs?: Record<string, string>;
+  env?: Record<string, string>;
+};
 const workflow = Bun.YAML.parse(
   readFileSync(resolve(import.meta.dir, "../../.github/workflows/release.yml"), "utf8"),
-) as { jobs: Record<string, { steps: Step[] }> };
+) as { jobs: Record<string, Job> };
 
 function script(step: Step | undefined): string {
   if (!step?.run) throw new Error("The selected workflow step must execute its preflight");
@@ -236,11 +242,62 @@ test("the production consumer rechecks its configuration in its actual first ste
   }
 });
 
-test("npm publication installs workspace dependencies without lifecycle scripts before staging bundles the SDK", () => {
-  const steps = workflow.jobs.publish?.steps ?? [];
-  const install = steps.findIndex((step) => step.run === "bun install --frozen-lockfile --ignore-scripts");
-  const stage = steps.findIndex((step) => step.name === "Stage and pack every package");
-  expect(stage).toBeGreaterThan(-1);
-  expect(install).toBeGreaterThan(-1);
-  expect(install).toBeLessThan(stage);
+test("binary and publish jobs use the validated release version for npm artifacts", () => {
+  const binary = workflow.jobs.binary;
+  const publish = workflow.jobs.publish;
+  if (!binary || !publish) throw new Error("Missing binary or publish job");
+
+  const collection = binary.steps.find((step) => step.name === "Collect smoke-tested npm tarballs");
+  const artifact = binary.steps.find((step) => step.with?.path === "dist/npm-artifact");
+  const download = publish.steps.find((step) => step.with?.path === "dist/tarballs");
+  const version = `\${{ needs.release-metadata.outputs.version }}`;
+
+  expect(workflow.jobs["release-metadata"]?.outputs?.version).toBeTruthy();
+  expect(binary.needs).toContain("release-metadata");
+  expect(publish.needs).toContain("release-metadata");
+  expect(collection?.env?.VERSION).toBe(version);
+  expect(publish.env?.VERSION).toBe(version);
+  expect(artifact?.with?.name).toBe(`npm-tarballs-${version}-\${{ matrix.target }}`);
+  expect(download?.with?.pattern).toBe(`npm-tarballs-${version}-*`);
+});
+
+const verifiedPublish = workflow.jobs.publish?.steps.find((step) => step.id === "verified-npm-publish");
+
+test.each(["intact", "tampered", "incomplete artifact"])("npm verifies tarballs before publish (%s)", (scenario) => {
+  const directory = mkdtempSync(join(tmpdir(), "release-tarballs-"));
+  try {
+    const tarballDir = join(directory, "dist/tarballs");
+    mkdirSync(tarballDir, { recursive: true });
+    const toolsDir = join(directory, ".release-tools/scripts");
+    mkdirSync(toolsDir, { recursive: true });
+    writeFileSync(join(toolsDir, "publish-npm.sh"), 'printf "publish %s\\n" "$@"\n');
+
+    const version = "1.2.3";
+    const prefix = "the-vibe-company-armada";
+    for (const target of ["darwin-arm64", "darwin-x64", "linux-arm64", "linux-x64"]) {
+      const packages =
+        target === "linux-x64" ? [`${prefix}-${target}`, prefix, `${prefix}-sdk`] : [`${prefix}-${target}`];
+      const entries = packages.flatMap((name) => {
+        const filename = `${name}-${version}.tgz`;
+        if (name === prefix && scenario === "incomplete artifact") return [];
+        writeFileSync(join(tarballDir, filename), name === prefix && scenario === "tampered" ? "changed" : name);
+        return [`${new Bun.CryptoHasher("sha256").update(name).digest("hex")}  ${filename}\n`];
+      });
+      writeFileSync(join(tarballDir, `SHA256SUMS-${target}`), entries.join(""));
+    }
+
+    const result = Bun.spawnSync(["bash", "-c", script(verifiedPublish)], {
+      cwd: directory,
+      env: { PATH: "/usr/bin:/bin", VERSION: version },
+    });
+    if (scenario === "intact") {
+      expect(result.exitCode).toBe(0);
+      expect(result.stdout.toString().trim().split("\n")).toHaveLength(6);
+    } else {
+      expect(result.exitCode).not.toBe(0);
+      expect(result.stdout.toString()).not.toContain("publish ");
+    }
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
 });

@@ -22,14 +22,13 @@ so the package has no dependencies.
    release-only contracts and the named sentinel files in parallel with sandbox image preparation.
    Once the image pin is ready, the binary jobs and exact-SHA staging smoke run in parallel while
    `check` can continue. The merge queue runs the ordinary unit suite for the same source tree.
-5. Four native runners compile and smoke-test the binaries. The publisher stages and packs the
-   six npm packages, saves their tarballs and SHA-256 checksums as an Actions artifact, runs the
-   installation smoke test (including an isolated install, Node import and TypeScript check of the SDK),
-   and publishes platform packages before the main package, then the SDK.
-   `scripts/publish-npm.sh` then retrieves each exact platform version from npm before publishing
-   the launcher. Newly uploaded tarballs must match the staged bytes; existing immutable versions
-   are checked for availability without requiring a rebuild to be byte-identical. Registry retries
-   share a five-minute budget (`NPM_PUBLISH_WAIT_SECONDS`, poll interval `NPM_PUBLISH_POLL_SECONDS`).
+5. Four native runners compile the binaries, pack npm tarballs and run the installation smoke
+   test, including the SDK's Node import and TypeScript checks. Each runner uploads its tested
+   platform tarball with a SHA-256 manifest, and linux-x64 also uploads the launcher and SDK
+   tarballs. After production, the npm job verifies the full set against those manifests and
+   publishes the exact tarballs. It retrieves each platform version from npm before publishing the
+   launcher, then publishes the SDK. Newly uploaded platform tarballs must match the tested bytes.
+   Recovery checks already-published versions for availability and skips uploading them.
 
 Production publication supports stable versions only, sent to `latest`. The
 mandatory production chain retains its existing latest-stable-tag guard, so a
@@ -66,7 +65,7 @@ resume the release to publish the main package using OIDC. Subsequent releases n
 
 The SDK package `@the-vibe-company/armada-sdk` is bootstrapped the same way before the first release
 that contains it: publish the exact `the-vibe-company-armada-sdk-<version>.tgz` from that release's
-`npm-tarballs-<version>` artifact with a maintainer session, then run `npm trust github` for it.
+`npm-tarballs-<version>-linux-x64` artifact with a maintainer session, then run `npm trust github` for it.
 Until then that release's npm job fails after the CLI packages are published; rerunning it after the
 bootstrap skips the already-published versions and publishes nothing twice.
 
@@ -94,7 +93,8 @@ missing versions are published. Publication tooling is loaded from the executing
 revision so tags predating the registry guard can still be recovered; all package artifacts remain
 pinned to the selected release tag. A run without an existing version tag cannot publish.
 
-The `npm-tarballs-<version>` Actions artifact contains the exact packed packages and `SHA256SUMS`.
+The `npm-tarballs-<version>-<target>` Actions artifacts contain the exact packed packages and
+per-target `SHA256SUMS-<target>` manifests.
 Do not rebuild or substitute tarballs during a bootstrap or recovery.
 
 ## Installation and migration
