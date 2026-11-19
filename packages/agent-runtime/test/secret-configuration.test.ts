@@ -209,7 +209,24 @@ test.each([
       result: { output: "prefix[REDACTED]", isError: false },
     },
   },
-])("masks typed $type proof content at each journal boundary", async ({ type, data, masked }) => {
+  {
+    type: "result",
+    data: {
+      subtype: "success",
+      result: "prefixvalue",
+      errors: ["prefixvalue"],
+      structured_output: { prefixlongfixture: "prefixvalue" },
+      modelUsage: { fixture: { inputTokens: 3 } },
+    },
+    masked: {
+      subtype: "success",
+      result: "prefix[REDACTED]",
+      errors: ["prefix[REDACTED]"],
+      structured_output: { "prefix[REDACTED]": "prefix[REDACTED]" },
+      modelUsage: { fixture: { inputTokens: 3 } },
+    },
+  },
+])("masks typed $type output at each journal boundary", async ({ type, data, masked }) => {
   const journal = new Journal(":memory:", (text) => text);
   const runner = new Runner(journal, grant, {});
   try {
@@ -227,6 +244,29 @@ test.each([
     expect(journal.events().map(({ event }) => event)).toEqual([expected, newer]);
   } finally {
     await runner.close();
+    journal.close();
+  }
+});
+
+test("expanding Claude result output is dropped while usage survives", () => {
+  const journal = new Journal(":memory:", (text) => text);
+  try {
+    const event = {
+      id: "result-event",
+      at: 1,
+      kind: "other",
+      type: "result",
+      data: { result: "x".repeat(30_000), modelUsage: { fixture: { inputTokens: 3 } } },
+    } satisfies AgentEvent;
+    journal.append(event);
+    journal.registerApplicationSecrets(["x"]);
+    journal.append(event);
+    const expected = { ...event, data: { modelUsage: { fixture: { inputTokens: 3 } }, outputTruncated: true } };
+    expect(journal.redactEvent(journal.events()[0]!.event)).toEqual(expected);
+    expect(journal.events()[1]!.event).toEqual(expected);
+    journal.sanitize();
+    expect(journal.events().map(({ event }) => event)).toEqual([expected, expected]);
+  } finally {
     journal.close();
   }
 });
