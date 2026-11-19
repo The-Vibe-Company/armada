@@ -15,7 +15,6 @@ type SeedRequest = ModalArtifactBinding & {
 };
 
 async function seedVolume(request: SeedRequest, signal?: AbortSignal) {
-  // The pinned Python SDK implements large-file uploads for both Volume versions.
   const process = Bun.spawn(["/opt/armada/modal/bin/python", "/opt/armada/modal-artifact-seed.py"], {
     stdin: new Blob([JSON.stringify(request)]),
     stdout: "ignore",
@@ -37,8 +36,7 @@ export function createModalArtifactCache(
   if (!set) throw Error("Invalid Modal runtime artifact set.");
   const pins = [set.runtime, ...set.artifacts];
   const warmed = new Map<string, Promise<void>>();
-  return (binding: ModalArtifactBinding, signal?: AbortSignal): Promise<void> => {
-    // Bind success to the verified App, environment and current credential.
+  return (binding: ModalArtifactBinding, signal?: AbortSignal) => {
     const key = createHash("sha256")
       .update(JSON.stringify([binding.appId, binding.environment, binding.tokenId, binding.tokenSecret]))
       .digest("hex");

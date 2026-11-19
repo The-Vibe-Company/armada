@@ -50,7 +50,8 @@ if __name__ == "__main__":
 
     request = json.load(sys.stdin)
     environment = request["environment"]
-    with modal.Client.from_credentials(request["tokenId"], request["tokenSecret"]) as client:
+    client = modal.Client.from_credentials(request["tokenId"], request["tokenSecret"])
+    try:
         app = modal.App.lookup(request["appName"], environment_name=environment, client=client)
         if app.app_id != request["appId"]:
             raise ValueError("Modal app binding mismatch")
@@ -61,3 +62,5 @@ if __name__ == "__main__":
             client=client,
         )
         seed(volume, request["directory"], request["pins"])
+    finally:
+        client.close()

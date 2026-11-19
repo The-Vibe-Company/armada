@@ -177,9 +177,8 @@ export async function createModalIntegration(options: {
     }>(
       "select distinct app_id, app_name, environment, authority_scope, authority_owner_id from public.modal_server_apps",
     );
-    // Share the startup budget across workspaces and leave time for the server's health check.
-    const signal = AbortSignal.timeout(120_000);
-    for (let offset = 0; offset < rows.length && !signal.aborted; offset += 4) {
+    const startupBudget = AbortSignal.timeout(120_000);
+    for (let offset = 0; offset < rows.length && !startupBudget.aborted; offset += 4) {
       await Promise.all(
         rows.slice(offset, offset + 4).map(async (row) => {
           try {
@@ -187,10 +186,10 @@ export async function createModalIntegration(options: {
               credentialScope: row.authority_scope,
               credentialOwnerId: row.authority_owner_id,
             });
-            signal.throwIfAborted();
+            startupBudget.throwIfAborted();
             await warm(
               { appId: row.app_id, appName: row.app_name, environment: row.environment, tokenId, tokenSecret },
-              signal,
+              startupBudget,
             );
           } catch {
             logError("Modal startup artifact warming failed for a registered App. Retrying on enrolled allocation.");
@@ -373,7 +372,7 @@ export async function createModalIntegration(options: {
                     (signal): signal is AbortSignal => signal !== undefined,
                   ),
                 ]);
-                signal.throwIfAborted();
+                startupBudget.throwIfAborted();
                 return yield* call.next(call.request, { ...options, signal });
               },
             ],
