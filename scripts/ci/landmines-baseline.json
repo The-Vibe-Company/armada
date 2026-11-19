@@ -1666,7 +1666,7 @@
     "packages/cli/src/mcp-commands.ts": 2,
     "packages/cli/src/native-login-protocol.ts": 6,
     "packages/cli/src/native-model-login.ts": 1,
-    "packages/cli/src/onboarding-help.ts": 11,
+    "packages/cli/src/onboarding-help.ts": 8,
     "packages/cli/src/operations.ts": 2,
     "packages/cli/src/preferences.ts": 2,
     "packages/cli/src/profiles.ts": 1,

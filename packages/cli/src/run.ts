@@ -29,11 +29,9 @@ import { type LocalHostIo, localHostCommand, productionLocalHostIo } from "./loc
 import { onboardingHelp } from "./onboarding-help.ts";
 import { operation } from "./operations.ts";
 import { profileStores, selectProfile } from "./profiles.ts";
-import { routineCommand } from "./routine-commands.ts";
 import { sizePolicyCommand } from "./size-policy-command.ts";
 import { skillCommand } from "./skill-install.ts";
 import { snapshotText } from "./snapshot-text.ts";
-import { templateCommand } from "./template-commands.ts";
 import { credsCommand, vaultIo } from "./vault-commands.ts";
 
 export interface Io {
@@ -76,9 +74,7 @@ export async function run(argv: readonly string[], io: Io, deps: Deps = {}): Pro
       );
     if (
       localArgs.length === 1 &&
-      ["snapshot", "golden", "template", "routine", "vars", "secrets", "mcp", "creds", "github", "skill"].includes(
-        localArgs[0] ?? "",
-      )
+      ["snapshot", "golden", "vars", "secrets", "mcp", "creds", "github", "skill"].includes(localArgs[0] ?? "")
     ) {
       const family = localArgs[0] === "golden" ? "snapshot" : (localArgs[0] ?? "");
       if (family === "skill") return skillCommand(["--help"], io);
@@ -277,10 +273,6 @@ async function dispatch(argv: readonly string[], io: Io, deps: Deps): Promise<nu
       );
     case "github":
       return accountCommand(command, rest, authOf(io, deps));
-    case "routine":
-      return routineCommand(rest, vaultIo(authOf(io, deps), deps, true));
-    case "template":
-      return templateCommand(rest, vaultIo(authOf(io, deps), deps, true));
     case "vars":
     case "secrets":
       return applicationVaultCommand(command, rest, vaultIo(authOf(io, deps), deps, true));
