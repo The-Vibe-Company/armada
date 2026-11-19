@@ -103,7 +103,9 @@ returned sandbox ID. Replaying the same identifier and body starts at most one l
   worker has published the launch receipt and the launch sent a prompt. It
   never carries them before.
 
-After a dropped response, poll `sandbox/status` with the `requestId` as `id`.
+After a dropped response, reissue the same request with the original replay
+identifier to recover the receipt. If you used `requestId`, you can also query
+`sandbox/status` with that UUID as `id`.
 For a launch that sent a prompt, read the prompt receipt by replaying the same
 request and checking the response for `promptId` and `conversationId`, not its
 status. A `starting` response without
