@@ -260,8 +260,20 @@ test.each([
   },
   {
     type: "armada/modelRateLimit",
-    data: { retryCount: 2, delayMs: 42000, totalWaitMs: 43000, message: "Retrying in 42 s" },
-    masked: { retryCount: 2, delayMs: "[REDACTED]", totalWaitMs: 43000, message: "Retrying in [REDACTED] s" },
+    data: {
+      retryCount: 2,
+      delayMs: 41000,
+      totalWaitMs: 43000,
+      reason: "model_provider_retry",
+      message: "Model provider request retrying in 41 s",
+    },
+    masked: {
+      retryCount: 2,
+      delayMs: 41000,
+      totalWaitMs: 43000,
+      reason: "model_provider_retry",
+      message: "Model [REDACTED] request retrying in 41 s",
+    },
   },
   {
     type: "usage_report",
@@ -390,7 +402,8 @@ test.each([
       type,
       "bash",
       "longfixture",
-      ...(["turn/completed", "usage_limit", "armada/modelRateLimit"].includes(type) ? ["42"] : []),
+      ...(["turn/completed", "usage_limit"].includes(type) ? ["42"] : []),
+      ...(type === "armada/modelRateLimit" ? ["provider"] : []),
       ...(type === "usage_report" ? ["limits"] : []),
       ...(type.startsWith("account/") ? ["rateLimits", "42"] : []),
       ...(type === "result" || type === "armada/turnUsage" ? ["Tokens", "tokens", "42"] : []),

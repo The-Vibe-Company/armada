@@ -480,6 +480,11 @@ export class Journal {
         if (event.type === "usage_limit") {
           const limit = planLimitData(event.data);
           if (limit) scrubbed.data.code = limit.code;
+        } else if (
+          event.type === "armada/modelRateLimit" &&
+          (event.data as { reason?: unknown } | null | undefined)?.reason === "model_provider_retry"
+        ) {
+          scrubbed.data.reason = "model_provider_retry";
         }
       } else if (event.type === "model/rerouted") {
         maskPayloadField({ data: event.data }, scrubbed, "data", maskField);
