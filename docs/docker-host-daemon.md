@@ -117,8 +117,8 @@ snapshot with `--golden SNAPSHOT_UUID` (the retained flag spelling, not a cloud
 golden). Boat/Modal snapshots and machine-size policy do not apply.
 The server composes durable create, existing enrolment
 and artifact bootstrap, runtime health and first-prompt admission. It returns the
-shared launch envelope with `sandbox`, null `golden` and `helper`, unavailable
-`github`, TTL and expiry. The `runtime` field contains `{kind:"armada",epoch}`
+shared launch envelope with `sandbox`, null `golden` and `helper`, GitHub
+status, TTL and expiry. The `runtime` field contains `{kind:"armada",epoch}`
 when runtime information is available and is null otherwise. The `promptId` and
 `conversationId` fields are null when their IDs are unavailable. Read the prompt
 output through `/api/v1/logs/read` and status through `/api/v1/sandbox/detail`.
