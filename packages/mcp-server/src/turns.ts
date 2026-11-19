@@ -281,8 +281,14 @@ export async function readStatus(
     if (refreshed?.usage) sandbox = { ...sandbox, usage: refreshed.usage };
   }
 
-  const runtime = runtimeBridgeTarget(sandbox);
-  const next = nextStatus(sandbox.status, info, prompt, runtime);
+  if (
+    runtimeBridgeTarget(sandbox) &&
+    (sandbox.status === "ready" || sandbox.status === "running") &&
+    (info.state === "ready" || info.state === "running")
+  )
+    return report(sandbox, sandbox.status, info, prompt, info.expiresAt ?? null);
+
+  const next = nextStatus(sandbox.status, info, prompt);
   const reason =
     next === "failed"
       ? (failureReason(info) ?? sandbox.statusReason)
@@ -290,10 +296,9 @@ export async function readStatus(
           ["expired", "idle_paused", "agent_finished", "work_merged"].includes(sandbox.statusReason ?? "")
         ? sandbox.statusReason
         : null;
-  // The lifecycle worker owns runtime machine writes. Stored projections also
-  // leave publication to the worker, regardless of the agent path.
-  if (runtime || options.stored)
-    return report({ ...sandbox, statusReason: reason }, next, info, prompt, info.expiresAt ?? null);
+  // Stored projections never acquire activity/lifecycle leases or publish over a
+  // concurrent admission. The existing lifecycle worker refreshes physical state.
+  if (options.stored) return report({ ...sandbox, statusReason: reason }, next, info, prompt, info.expiresAt ?? null);
   if (next !== sandbox.status || reason !== sandbox.statusReason) {
     const patch: SandboxPatch = {
       status: next,
@@ -338,18 +343,12 @@ function failureReason(info: SandboxInfo): string | null {
   return null;
 }
 
-function nextStatus(
-  current: SandboxStatus,
-  info: SandboxInfo,
-  prompt: PromptReport | null,
-  runtime: boolean,
-): SandboxStatus {
+function nextStatus(current: SandboxStatus, info: SandboxInfo, prompt: PromptReport | null): SandboxStatus {
   if (info.state === "stopped") return current === "failed" && !prompt ? "failed" : "stopped";
   if (info.state === "stopping") return current === "failed" && !prompt ? "failed" : "stopping";
   if (info.state === "failed") return "failed";
   if (current === "stopping") return "stopping";
   if (info.state === "starting") return current === "running" ? "running" : "starting";
-  if (runtime) return current;
   if (!prompt) return current === "starting" ? "ready" : current === "running" ? "running" : current;
   switch (prompt.state) {
     case "running":

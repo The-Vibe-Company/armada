@@ -4,9 +4,13 @@ import type { SandboxView, ServerSandboxStore } from "../src/data.ts";
 import { readStatus } from "../src/turns.ts";
 import { fakeBoat } from "./support.ts";
 
-test.each([true, false])(
-  "live status preserves the finish reason and gates a Boat stop on retention (%s)",
-  async (usable) => {
+test.each([
+  { usable: true, runtime: false },
+  { usable: false, runtime: false },
+  { usable: true, runtime: true },
+])(
+  "live status preserves the finish reason and gates a Boat stop on retention ($usable, runtime=$runtime)",
+  async ({ usable, runtime }) => {
     const boat = fakeBoat();
     const provider = boat.providerFor("placeholder");
     const native = await provider.fork({ from: "snapshot" });
@@ -14,6 +18,9 @@ test.each([true, false])(
     if (!usable) boat.sandbox(native.id).info.retainedSnapshot = "pending";
     const sandbox = {
       id: "sandbox",
+      provider: "boat",
+      boatRuntime: runtime,
+      harness: "codex",
       providerSandboxId: native.id,
       status: "ready",
       statusReason: "agent_finished",
