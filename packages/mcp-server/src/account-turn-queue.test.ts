@@ -12,7 +12,7 @@ import { createAccountTurnQueue } from "./account-turn-queue.ts";
 import type { Caller } from "./caller.ts";
 import { currentRequestId, observeRequest } from "./request-observability.ts";
 
-import { callSharedTool } from "./tool-api.ts";
+import { callSharedTool, ToolApiError } from "./tool-api.ts";
 import type { ToolContext } from "./tools.ts";
 
 let connection: PGlite | undefined;
@@ -772,7 +772,8 @@ test("a proven pre-dispatch rejection requeues without leaking the account reser
     calls++;
     if (calls === 1) {
       await database().query("insert into runtime_commands values($1,1,'readonly_get_prompt')", [input.id]);
-      throw new VaultError("conflict", "reconcile lease won admission after getPrompt probe");
+      const cause = new VaultError("conflict", "reconcile lease won admission after getPrompt probe");
+      throw new ToolApiError("conflict", cause.message, undefined, { cause });
     }
     return { promptId: "accepted_after_retry", conversationId: "history", status: "running" };
   });
