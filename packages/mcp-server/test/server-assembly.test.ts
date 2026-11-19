@@ -32,7 +32,7 @@ test("server assembly preserves worker lane order and isolation", () => {
     webhooks: { run: neverCall },
     delegatedAccess: { childWorker: passiveLane },
     accountTurns: passiveLane,
-    langfuse: passiveLane,
+    langfuse: { exportJob: { concurrency: 1 } },
     modal: { inventoryReaper: () => ({ ...passiveLane, isolatedSweep: true }) },
   } as unknown as ServerServices;
 
@@ -46,10 +46,6 @@ test("server assembly preserves worker lane order and isolation", () => {
         {
           "name": "golden-builds",
           "sweep": true,
-        },
-        {
-          "name": "langfuse",
-          "sweep": false,
         },
         {
           "name": "steer-recovery",
@@ -88,14 +84,17 @@ test("server assembly preserves worker lane order and isolation", () => {
 });
 
 test("the shared jobs lane claims only configured job kinds", async () => {
+  const neverCalled = async () => {
+    throw new Error("An empty claim must not run a job.");
+  };
   const managed = new Map<string, LaneFactory>();
   jobsModule({ workers: { managed } } as Parameters<typeof jobsModule>[0]);
   const createLane = managed.get("jobs")!;
   for (const { githubApp, encryptionKey, expected } of [
-    { githubApp: null, encryptionKey: undefined, expected: ["webhook"] },
-    { githubApp: {}, encryptionKey: undefined, expected: ["webhook", "pr_scan"] },
-    { githubApp: null, encryptionKey: "test", expected: ["webhook", "outputs_capture"] },
-    { githubApp: {}, encryptionKey: "test", expected: ["webhook", "pr_scan", "outputs_capture"] },
+    { githubApp: null, encryptionKey: undefined, expected: ["langfuse_export", "webhook"] },
+    { githubApp: {}, encryptionKey: undefined, expected: ["langfuse_export", "webhook", "pr_scan"] },
+    { githubApp: null, encryptionKey: "test", expected: ["langfuse_export", "webhook", "outputs_capture"] },
+    { githubApp: {}, encryptionKey: "test", expected: ["langfuse_export", "webhook", "pr_scan", "outputs_capture"] },
   ]) {
     const claimed = new Set<string>();
     const lane = createLane({
@@ -108,6 +107,7 @@ test("the shared jobs lane claims only configured job kinds", async () => {
           claimed.add(kind);
         },
       },
+      langfuse: { exportJob: { concurrency: 1, run: neverCalled } },
       webhooks: { run: async () => ({ status: "done" }) },
       outputs: {
         captureJob: { concurrency: 4, run: async () => ({ status: "done" }) },
