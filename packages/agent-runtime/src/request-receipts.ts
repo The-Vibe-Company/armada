@@ -71,7 +71,6 @@ export async function executeWithReceipt(
   return new Response(body, { headers: { "content-type": "application/json" } });
 }
 
-// Use the live registry after dispatch settles, before persisting or returning any output.
 function workspaceReceipt(journal: Journal, requestId: string, output: Awaited<ReturnType<typeof executeWorkspace>>) {
   const stdout = journal.redactCommandOutput(output.stdout, commandOutputLimit);
   const stderr = journal.redactCommandOutput(output.stderr, commandOutputLimit);
