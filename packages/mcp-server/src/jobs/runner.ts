@@ -23,13 +23,21 @@ export interface JobStore {
   claim(kind: string, owner: string, seconds: number, concurrency: number): Promise<Job | undefined>;
   inspect(job: Job, owner: string): Promise<"dispatch" | "reconcile" | "stale" | "lost">;
   retireStale(job: Job, owner: string): Promise<void>;
+  handoffGeneration(job: Job, owner: string, advance: (tx: Sql) => Promise<void>): Promise<string>;
   renew(job: Job, owner: string, seconds: number): Promise<boolean>;
   complete(job: Job, owner: string, result: JobResult): Promise<boolean>;
 }
 
+interface JobContext {
+  signal: AbortSignal;
+  canDispatch(): Promise<boolean>;
+  /** Run the turn's durable admission and move its job fence in the same transaction. */
+  handoffGeneration(advance: (tx: Sql) => Promise<void>): Promise<string>;
+}
+
 interface JobKind {
   concurrency: number;
-  run(job: Job, context: { signal: AbortSignal; canDispatch(): Promise<boolean> }): Promise<JobResult>;
+  run(job: Job, context: JobContext): Promise<JobResult>;
 }
 
 const LEASE_SECONDS = 30;
@@ -94,6 +102,16 @@ export function createJobsRunner(
         signal,
         async canDispatch() {
           return !signal.aborted && (await store.inspect(job, owner)) === "dispatch" && !signal.aborted;
+        },
+        async handoffGeneration(advance) {
+          signal.throwIfAborted();
+          const generation = await store.handoffGeneration(job, owner, async (tx) => {
+            signal.throwIfAborted();
+            await advance(tx);
+            signal.throwIfAborted();
+          });
+          signal.throwIfAborted();
+          return generation;
         },
       });
       if (!signal.aborted && !(await store.complete(job, owner, result))) await store.retireStale(job, owner);
