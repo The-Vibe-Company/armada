@@ -77,6 +77,7 @@ export function createProviderReaperLane(
   async function sweep(source: ProviderReaperSource, signal: AbortSignal) {
     const labels = { provider: source.provider, source: source.sourceId };
     const seen = new Set<string>();
+    const candidates: Record<DeleteReason, number> = { unknown: 0, terminal: 0 };
     const deleted: Record<DeleteReason, number> = { unknown: 0, terminal: 0 };
     let unknown = 0;
     let overdue = 0;
@@ -94,11 +95,9 @@ export function createProviderReaperLane(
           const decision = decideInventoryMachine(machine, source.deploymentId, ownership, observedAt);
           if (ownership.kind === "absent") unknown++;
           if (decision === "unknown") overdue++;
-          if (
-            (decision === "unknown" || decision === "terminal") &&
-            (await source.deleteMachine?.(machine, decision, signal))
-          ) {
-            deleted[decision]++;
+          if (decision === "unknown" || decision === "terminal") {
+            candidates[decision]++;
+            if (await source.deleteMachine?.(machine, decision, signal)) deleted[decision]++;
           }
           if (signal.aborted) return;
         } catch {
@@ -120,7 +119,17 @@ export function createProviderReaperLane(
         }),
       );
       for (const reason of ["unknown", "terminal"] as const) {
-        log(JSON.stringify({ metric: "reaper_deleted", ...labels, reason, count: deleted[reason] }));
+        log(
+          JSON.stringify({
+            metric: "reaper_deleted",
+            ...labels,
+            reason,
+            candidates: candidates[reason],
+            count: deleted[reason],
+            reportOnly: source.deleteMachine === undefined,
+            complete,
+          }),
+        );
       }
       if (errors > 0) {
         log(JSON.stringify({ event: "provider_reaper_retry", ...labels, errors }));
@@ -133,7 +142,16 @@ export function createProviderReaperLane(
     async reconcileOne(signal) {
       if (active || signal.aborted || now() < nextSweepAt) return false;
       active = (async () => {
-        for (const source of await discover(signal)) {
+        let sources: readonly ProviderReaperSource[];
+        try {
+          sources = await discover(signal);
+        } catch {
+          if (!signal.aborted) {
+            log(JSON.stringify({ event: "provider_reaper_retry", phase: "discovery", errors: 1, complete: false }));
+          }
+          return;
+        }
+        for (const source of sources) {
           if (signal.aborted) return;
           await sweep(source, signal);
         }

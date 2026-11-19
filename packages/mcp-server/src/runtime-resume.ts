@@ -11,7 +11,7 @@ import type { createRuntimeCommands } from "./runtime-commands.ts";
 import { createRuntimeEnrolments } from "./runtime-enrolment.ts";
 import type { RuntimeGitHub } from "./runtime-github.ts";
 import type { RuntimeMcp } from "./runtime-mcp.ts";
-import { UNENROLLED_RESUME_STOP } from "./sandbox-lifecycle.ts";
+import { requestFailedRuntimeResumeStop } from "./sandbox-lifecycle.ts";
 
 export interface RuntimeResumeInput {
   id: string;
@@ -47,6 +47,7 @@ export interface RuntimeResumePlacement {
   start(
     signal: AbortSignal,
     restore: { epoch: string; watermark: number; conversationId: string | null },
+    confirmActivation?: () => Promise<void>,
   ): Promise<{ epoch: string }>;
   /** Exact previously authorized compute identity; no activation/reissue on failure. */
   stop(): Promise<void>;
@@ -262,7 +263,25 @@ export function createRuntimeResume(
         async (signal) => {
           if (admitted.first) {
             placement = await prepare!(caller, admitted.current);
-            const ready = await placement.start(signal, restore);
+            const confirmActivation =
+              found.provider === "boat"
+                ? async () => {
+                    const saved = await sql.query(
+                      `with active as (
+                  select id from public.sandboxes where id=$1 and status='starting'
+                    and activity_lease_id=$2 and lifecycle_generation=$3 and activity_until>clock_timestamp()
+                    and (reconcile_lease_until is null or reconcile_lease_until<=clock_timestamp())
+                    and stop_requested_at is null and deleted_at is null for update
+                )
+                update public.runtime_resumes r set activated_at=coalesce(r.activated_at,clock_timestamp())
+                from active where r.sandbox_id=active.id and r.request_id=$2 and r.phase='dispatched'
+                returning r.request_id`,
+                      [found.id, requestId, admitted.current.lifecycleGeneration],
+                    );
+                    if (!saved.rows.length) throw new VaultError("conflict", "Resume activation authority changed.");
+                  }
+                : undefined;
+            const ready = await placement.start(signal, restore, confirmActivation);
             if (ready.epoch !== admitted.op.target_epoch) throw new VaultError("conflict", "Unexpected resume epoch.");
           }
           await agent.health(signal, restore); // Also required on reconciliation; old binaries cannot echo an unverified restore.
@@ -348,36 +367,30 @@ export function createRuntimeResume(
           if (!member.rows.length) return;
           await tx.query("select id from public.sandboxes where id=$1 for update", [found.id]);
           const runtime = (
-            await tx.query<{ epoch: string; live: boolean; pending: boolean }>(
+            await tx.query<{ epoch: string; live: boolean; activation_confirmed: boolean }>(
               `select epoch::text,(runtime_hash is not null) as live,
-                  (enrolment_hash is not null and lifecycle_generation=$2) as pending
+                  ((enrolment_hash is not null and lifecycle_generation=$2) or exists(
+                    select 1 from public.runtime_resumes where sandbox_id=$1 and request_id=$3
+                      and phase='dispatched' and activated_at is not null
+                  )) as activation_confirmed
                from public.runtime_enrolments where sandbox_id=$1 for update`,
-              [found.id, admitted.current.lifecycleGeneration],
+              [found.id, admitted.current.lifecycleGeneration, requestId],
             )
           ).rows[0];
           if (runtime?.live && runtime.epoch === admitted.op.target_epoch) return;
           const retained = Boolean(
             found.provider === "boat" &&
-              runtime?.pending &&
+              runtime?.activation_confirmed &&
               !runtime.live &&
               runtime.epoch === admitted.op.source_epoch,
           );
-          const changed = await tx.query<{ status: "stopping" | "failed" }>(
-            `update public.sandboxes set
-          status=case when $4 and not application_secret_tainted then 'stopping'::public.sandbox_status else 'failed'::public.sandbox_status end,
-          transition_context=jsonb_build_object('actor','runtime_resume','code',
-            case when $4 and not application_secret_tainted then $5::text else 'restore_unconfirmed' end),
-          status_reason=case when $4 and not application_secret_tainted then null
-            else 'Runtime resume failed before a restored worker was confirmed; cleanup requested.' end,
-          stop_requested_at=now(),stop_generation=stop_generation+1,
-          activity_lease_id=null,activity_until=null,lifecycle_generation=lifecycle_generation+1,
-          reconcile_after=case when $4 and not application_secret_tainted then 'infinity'::timestamptz else now() end
-          where id=$1 and activity_lease_id=$2 and lifecycle_generation=$3
-            and stop_requested_at is null and deleted_at is null
-            and (reconcile_lease_until is null or reconcile_lease_until<now()) returning status`,
-            [found.id, requestId, admitted.current.lifecycleGeneration, retained, UNENROLLED_RESUME_STOP],
+          const status = await requestFailedRuntimeResumeStop(
+            tx,
+            found.id,
+            requestId,
+            admitted.current.lifecycleGeneration,
+            retained,
           );
-          const status = changed.rows[0]?.status;
           if (status)
             await tx.query(
               "update public.runtime_resumes set phase=$3 where sandbox_id=$1 and request_id=$2 and receipt is null",

@@ -4419,6 +4419,7 @@ export type Database = {
           receipt: Json | null;
           created_at: string;
           empty_checkpoint: boolean;
+          activated_at: string | null;
         };
         Insert: {
           sandbox_id: string;
@@ -4435,6 +4436,7 @@ export type Database = {
           receipt?: Json | null;
           created_at?: string;
           empty_checkpoint?: boolean;
+          activated_at?: string | null;
         };
         Update: {
           sandbox_id?: string;
@@ -4451,6 +4453,7 @@ export type Database = {
           receipt?: Json | null;
           created_at?: string;
           empty_checkpoint?: boolean;
+          activated_at?: string | null;
         };
         Relationships: [
           {

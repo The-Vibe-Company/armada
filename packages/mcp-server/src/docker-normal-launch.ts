@@ -97,6 +97,7 @@ type Manifest = {
   variables?: Record<string, string>;
   snapshotConfig?: import("@armada/core").GoldenConfig;
   request: Request;
+  accountModelDefaulted?: true;
   /** Resolved pin stays separate from the caller identity used by retries. */
   credentialId?: string;
   credentialVersion: number;
@@ -312,7 +313,13 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
     if (!membership) throw failure("not_found");
     return membership;
   }
-  async function load(tx: Sql, actor: { userId: string; orgId: string }, request: Request, hash: string) {
+  async function load(
+    tx: Sql,
+    actor: { userId: string; orgId: string },
+    request: Request,
+    hash: string,
+    explicitModel = false,
+  ) {
     const membership = await member(tx, actor);
     const row = (
       await tx.query<Row>(
@@ -341,6 +348,7 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
       !manifest.request ||
       !matchesDockerLaunchRequestHash(manifest.request, claim.request_hash) ||
       dockerLaunchRequestHash(manifest.request) !== hash ||
+      (explicitModel && manifest.accountModelDefaulted) ||
       (manifest.credentialId !== undefined && !UUID.test(manifest.credentialId)) ||
       (!claim.result_enc &&
         (row.credential_version !== manifest.credentialVersion ||
@@ -507,9 +515,10 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
       if (!caller.orgs.some((org) => org.orgId.toLowerCase() === request.org)) throw failure("not_found");
       const hash = dockerLaunchRequestHash(request);
       reason = "membership_and_launch_state";
-      const state = await transaction((tx) => load(tx, actor, request, hash));
+      const explicitModel = workerId === undefined && input.model !== undefined;
+      const state = await transaction((tx) => load(tx, actor, request, hash, explicitModel));
       dispatchPossible ||= Boolean(state.row);
-      const plan = { request, actor, hash, state };
+      const plan = { request, actor, hash, state, explicitModel };
       if (state.row && state.receipt)
         return { ...plan, kind: "retained" as const, row: state.row, receipt: state.receipt };
       reason = "runtime_configuration";
@@ -521,10 +530,11 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
       );
       // Resolve outside the reservation transaction; only the binding is retained.
       reason = "credential_resolution";
-      const { resolved, binding } = await resolveDockerLaunchAccount(
+      const { resolved, binding, modelChoice } = await resolveDockerLaunchAccount(
         options.credentials,
         { ...actor, role: state.membership.role },
         request,
+        selected,
       );
       const launchActor = { ...actor, role: state.membership.role };
       if (needsRepositoryPreflight) {
@@ -555,6 +565,9 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
       const manifest: Manifest = {
         ...(source ? { snapshotConfig: source.config } : {}),
         request,
+        ...(selected.model === undefined && modelChoice && modelChoice.model !== request.model
+          ? { accountModelDefaulted: true }
+          : {}),
         credentialId: binding.credentialId,
         credentialVersion: binding.credentialVersion,
         bootstrapId: randomUUID(),
@@ -564,14 +577,15 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
         preparation: { skills, connections },
         ...(correlationId ? { correlationId } : {}),
       };
-      return { ...plan, kind: "active" as const, bootstrap, fresh: { resolved, binding, manifest } };
+      return { ...plan, kind: "active" as const, bootstrap, fresh: { resolved, binding, manifest, modelChoice } };
     };
 
     const dockerPlacement = {
       async admit(plan: Awaited<ReturnType<typeof resolve>>, launchAdmission: typeof admission) {
-        const { actor, request, hash, state } = plan;
+        const { actor, request, hash, state, explicitModel } = plan;
         if (plan.kind === "retained" || !plan.fresh) return state;
-        const { resolved, binding, manifest } = plan.fresh;
+        const { resolved, binding, manifest, modelChoice } = plan.fresh;
+        const choice = modelChoice ?? request;
         // The transaction queues host work atomically; a lost commit reply is ambiguous.
         reason = "reservation";
         return transaction(async (connection) => {
@@ -585,7 +599,7 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
             (await tx.query(`select id from public.sandboxes where id=$1`, [request.requestId])).rows.length > 0;
           if (exists) {
             dispatchPossible = true;
-            return load(tx, actor, request, hash);
+            return load(tx, actor, request, hash, explicitModel);
           }
           await createDockerSandboxService(scopedRuntimeSql(tx), key, { enabled: true }).reserve(
             actor,
@@ -596,8 +610,8 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
               harness: request.harness,
               credentialId: binding.credentialId,
               credentialVersion: manifest.credentialVersion,
-              model: request.model,
-              reasoningEffort: request.reasoningEffort,
+              model: choice.model,
+              reasoningEffort: choice.reasoningEffort,
               ...(request.stopWhenWorkMerged === undefined ? {} : { stopWhenWorkMerged: request.stopWhenWorkMerged }),
               ...(body.ttlSeconds === undefined ? {} : { ttlSeconds: request.ttlSeconds }),
             },
@@ -656,6 +670,7 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
       const manifest = state.manifest;
       diagnosticSandboxId = state.row?.id;
       if (!manifest || !state.row) throw failure("unavailable");
+      const defaults = { model: state.row.model, reasoningEffort: state.row.reasoning_effort };
       if (options.deferLaunch && !admission && !workerId) return envelope(state.row);
       // From here this call drives the host itself, even when it resumes a retried launch.
       noteAdmission();
@@ -750,7 +765,7 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
               sandboxId: request.requestId,
               providerSandboxId: request.requestId,
               cwd: "/home/user",
-              defaults: { model: request.model, reasoningEffort: request.reasoningEffort },
+              defaults,
             },
           );
           const warnings = await prepareLaunchWorkspace(
@@ -846,7 +861,7 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
               sandboxId: request.requestId,
               providerSandboxId: request.requestId,
               cwd: "/home/user",
-              defaults: { model: request.model, reasoningEffort: request.reasoningEffort },
+              defaults,
             },
           );
           const receipts = await agent.installSkills(selections.skills, skillKey, receipt.epoch);

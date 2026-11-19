@@ -72,8 +72,69 @@ export function measureRequestPhase<T>(
   return timing ? timing.measure(phase, work) : work();
 }
 
+type GoldenLaunchPhase =
+  | "admission"
+  | "account_resolution"
+  | "provider_resolution"
+  | "receipt_admission"
+  | "shared_launcher"
+  | "response_publication";
+
+export type GoldenLaunchTiming = {
+  checkpoint(phase: GoldenLaunchPhase): void;
+  launched(sandbox: { id: string; provider: string }): void;
+};
+
+const launchSql = new AsyncLocalStorage<{ statements: number }>();
+
+export async function observeGoldenLaunch<T>(
+  surface: "rest" | "mcp",
+  work: (timing: GoldenLaunchTiming) => Promise<T>,
+) {
+  const sql = { statements: 0 };
+  const started = performance.now();
+  let previous = started;
+  let previousStatements = 0;
+  const stages: { name: GoldenLaunchPhase; ms: number; sqlStatements: number }[] = [];
+  let sandboxId: string | undefined;
+  const checkpoint: GoldenLaunchTiming["checkpoint"] = (name) => {
+    const now = performance.now();
+    stages.push({ name, ms: now - previous, sqlStatements: sql.statements - previousStatements });
+    previous = now;
+    previousStatements = sql.statements;
+  };
+  const result = await launchSql.run(sql, () =>
+    work({
+      checkpoint,
+      launched: (sandbox) => {
+        if (sandbox.provider === "modal") sandboxId = sandbox.id;
+      },
+    }),
+  );
+  if (sandboxId) {
+    checkpoint("response_publication");
+    try {
+      console.info(
+        JSON.stringify({
+          event: "modal_golden_launch_timing",
+          surface,
+          sandboxId,
+          totalMs: previous - started,
+          sqlStatements: previousStatements,
+          stages,
+        }),
+      );
+    } catch {
+      return result;
+    }
+  }
+  return result;
+}
+
 /** Includes pool queue and database round trip, but never SQL text or parameters. */
 export function measureSqlQuery<T>(work: () => Promise<T>): Promise<T> {
+  const launch = launchSql.getStore();
+  if (launch) launch.statements++;
   return measureRequestPhase(current.getStore(), "sql", work);
 }
 
