@@ -14,7 +14,7 @@ const pinned = {
   runtimeTransport: "dialout",
   id,
   revision: 1,
-  requestKey: "launch-1",
+  idempotencyKey: key,
 };
 const docker = { provider: "docker", hostId: id, harness: "opencode", idempotencyKey: key };
 

@@ -58,7 +58,12 @@ test("reports authentication outages without exposing the dependency error", asy
   });
 });
 
-const db = new PGlite();
+let connection: PGlite | undefined;
+
+function database() {
+  if (!connection) throw new Error("Database fixture is not open");
+  return connection;
+}
 const templateOwner = "949426bc-9c76-49eb-beba-e8e271d012da";
 const template = "124fb448-6103-47ee-8f51-80e080217237";
 const sharedTemplate = "29578de5-ee88-4f11-b170-c4b28813aa7b";
@@ -71,7 +76,8 @@ const rotationTrigger = "221401da-7f7e-42a6-87bc-f6a55047983d";
 const disableTrigger = "3dfcb001-e5bb-4a9d-8c8a-dfa8427c6346";
 const foreignTrigger = "21c61603-5156-4d2f-ad35-15bf65840f7d";
 beforeAll(async () => {
-  await db.exec(`
+  connection = new PGlite();
+  await database().exec(`
     create table public.launch_templates (id uuid, org_id uuid, scope text, owner_id uuid,
       current_revision int default 1, status text default 'active');
     create table public.launch_template_revisions (id uuid, template_id uuid, revision int, definition jsonb, digest text);
@@ -112,10 +118,17 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
-  await db.close();
+  const db = connection;
+  connection = undefined;
+  await db?.close();
 });
 
-const inspect = inboundTriggerAdminRoute(db, async () => ({ ok: true, caller: admin }));
+const sql: Sql = {
+  query: (statement, params) => database().query(statement, params),
+  transaction: (work) =>
+    database().transaction((tx) => work({ query: (statement, params) => tx.query(statement, params) })),
+};
+const inspect = inboundTriggerAdminRoute(sql, async () => ({ ok: true, caller: admin }));
 
 test("lists only the organization's trigger metadata and redacts private template identifiers from other admins", async () => {
   const response = await inspect(request());
@@ -130,7 +143,7 @@ test("lists only the organization's trigger metadata and redacts private templat
   };
   expect(response?.headers.get("cache-control")).toBe("no-store");
   expect(await response?.json()).toEqual({ triggers: [summary] });
-  const inspectAsOwner = inboundTriggerAdminRoute(db, async () => ({
+  const inspectAsOwner = inboundTriggerAdminRoute(sql, async () => ({
     ok: true,
     caller: { ...admin, userId: templateOwner },
   }));
@@ -154,11 +167,11 @@ test("returns 404 for a trigger in a different organization", async () => {
 });
 
 const encryptionKey = Buffer.alloc(32, 42).toString("base64");
-const manage = inboundTriggerAdminRoute(db, async () => ({ ok: true, caller: admin }), encryptionKey);
+const manage = inboundTriggerAdminRoute(sql, async () => ({ ok: true, caller: admin }), encryptionKey);
 
 const now = Date.UTC(2026, 10, 19);
 const ingress = createInboundTriggerStore(
-  db,
+  sql,
   {
     async enqueue() {
       throw new Error("An invalidated delivery reached enqueue");
@@ -183,7 +196,7 @@ function post(triggerId: string, action: string) {
 }
 
 async function addManagedTrigger(triggerId: string) {
-  await db.query("insert into public.triggers values ($1, $2, $3, 'codex', true, 25, 2, 0, 'opaque', 7)", [
+  await database().query("insert into public.triggers values ($1, $2, $3, 'codex', true, 25, 2, 0, 'opaque', 7)", [
     triggerId,
     org,
     template,
@@ -199,7 +212,7 @@ test("rotation advances ingress key revision and returns the new key only in its
   expect(Object.keys(payload)).toEqual(["signingSecret"]);
   const { signingSecret } = payload;
   expect(Buffer.from(signingSecret, "base64")).toHaveLength(32);
-  const { rows } = await db.query<{ key_revision: number; ciphertext: string }>(
+  const { rows } = await database().query<{ key_revision: number; ciphertext: string }>(
     "select key_revision, encode(secret_enc, 'hex') as ciphertext from public.triggers where id = $1",
     [rotationTrigger],
   );
@@ -220,7 +233,7 @@ test("rotation advances ingress key revision and returns the new key only in its
   ]);
   expect(
     (
-      await db.query("select org_id, actor_id, action from public.trigger_admin_audit where trigger_id = $1", [
+      await database().query("select org_id, actor_id, action from public.trigger_admin_audit where trigger_id = $1", [
         rotationTrigger,
       ])
     ).rows,
@@ -234,10 +247,11 @@ test("disable stops admission and writes one audit event across repeated calls",
   expect(await staleAdmission(disableTrigger)).toEqual({ status: "unauthorized" });
   expect((await manage(post(disableTrigger, "rotate")))?.status).toBe(404);
   expect(
-    (await db.query("select enabled, key_revision from public.triggers where id = $1", [disableTrigger])).rows,
+    (await database().query("select enabled, key_revision from public.triggers where id = $1", [disableTrigger])).rows,
   ).toEqual([{ enabled: false, key_revision: 7 }]);
   expect(
-    (await db.query("select action from public.trigger_admin_audit where trigger_id = $1", [disableTrigger])).rows,
+    (await database().query("select action from public.trigger_admin_audit where trigger_id = $1", [disableTrigger]))
+      .rows,
   ).toEqual([{ action: "disable" }]);
 });
 
@@ -246,12 +260,12 @@ test("rotation cannot target a trigger in another organization", async () => {
 });
 
 test("a stale admin claim cannot mutate a trigger after membership revocation", async () => {
-  const stale = inboundTriggerAdminRoute(db, async () => ({
+  const stale = inboundTriggerAdminRoute(sql, async () => ({
     ok: true,
     caller: { ...admin, userId: templateOwner },
   }));
   expect((await stale(post(trigger, "disable")))?.status).toBe(404);
-  expect((await db.query("select enabled from public.triggers where id = $1", [trigger])).rows).toEqual([
+  expect((await database().query("select enabled from public.triggers where id = $1", [trigger])).rows).toEqual([
     { enabled: true },
   ]);
 });
@@ -259,9 +273,9 @@ test("a stale admin claim cannot mutate a trigger after membership revocation", 
 test("an audit write failure rolls back the trigger change", async () => {
   await addManagedTrigger(rollbackTrigger);
   await expect(manage(post(rollbackTrigger, "disable"))).rejects.toMatchObject({ code: "23514" });
-  expect((await db.query("select enabled from public.triggers where id = $1", [rollbackTrigger])).rows).toEqual([
-    { enabled: true },
-  ]);
+  expect((await database().query("select enabled from public.triggers where id = $1", [rollbackTrigger])).rows).toEqual(
+    [{ enabled: true }],
+  );
 });
 
 const configuration = { templateId: sharedTemplate, poolHarness: "codex", ratePerMinute: 10, concurrency: 2 };
@@ -281,7 +295,7 @@ test("creates an audited trigger and discloses the signing key once", async () =
   expect(Buffer.from(key!.key).toString("base64") === signingSecret).toBe(true);
   expect(
     (
-      await db.query(
+      await database().query(
         `select t.launch_owner_id, a.actor_id, a.action from public.triggers t
          join public.trigger_admin_audit a on a.trigger_id = t.id and a.org_id = t.org_id where t.id = $1`,
         [triggerId],
@@ -308,26 +322,26 @@ test.each([
 });
 
 test("refuses trigger creation after its bound Docker host is revoked", async () => {
-  await db.query("update public.docker_hosts set revoked_at = now() where id = $1", [host]);
+  await database().query("update public.docker_hosts set revoked_at = now() where id = $1", [host]);
   try {
     expect((await manage(createRequest()))?.status).toBe(409);
   } finally {
-    await db.query("update public.docker_hosts set revoked_at = null where id = $1", [host]);
+    await database().query("update public.docker_hosts set revoked_at = null where id = $1", [host]);
   }
 });
 
 test("refuses trigger creation with an account outside the organization's pool", async () => {
-  await db.query("update public.credentials set owner_id = $1 where id = $2", [otherOrg, credential]);
+  await database().query("update public.credentials set owner_id = $1 where id = $2", [otherOrg, credential]);
   try {
     expect((await manage(createRequest()))?.status).toBe(409);
   } finally {
-    await db.query("update public.credentials set owner_id = $1 where id = $2", [org, credential]);
+    await database().query("update public.credentials set owner_id = $1 where id = $2", [org, credential]);
   }
 });
 
 test("a stale admin claim cannot create a trigger after membership revocation", async () => {
   const stale = inboundTriggerAdminRoute(
-    db,
+    sql,
     async () => ({
       ok: true,
       caller: { ...admin, userId: templateOwner },
@@ -338,22 +352,22 @@ test("a stale admin claim cannot create a trigger after membership revocation", 
 });
 
 test("a failed creation audit leaves no new trigger", async () => {
-  const count = () => db.query("select count(*)::int as count from public.triggers");
+  const count = () => database().query("select count(*)::int as count from public.triggers");
   const before = await count();
-  await db.exec(
+  await database().exec(
     "alter table public.trigger_admin_audit add constraint block_creation check (action <> 'create') not valid",
   );
   try {
     await expect(manage(createRequest())).rejects.toMatchObject({ code: "23514" });
     expect(await count()).toEqual(before);
   } finally {
-    await db.exec("alter table public.trigger_admin_audit drop constraint block_creation");
+    await database().exec("alter table public.trigger_admin_audit drop constraint block_creation");
   }
 });
 
 test("returns a retryable refusal when issuer membership is locked", async () => {
   const sql: Sql = {
-    query: db.query.bind(db),
+    query: (statement, params) => database().query(statement, params),
     async transaction() {
       throw Object.assign(new Error("Issuer membership is locked"), {
         code: "ERR_POSTGRES_SERVER_ERROR",

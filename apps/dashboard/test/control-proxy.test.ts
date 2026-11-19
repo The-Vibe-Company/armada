@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
-import { CONTROL_BODY_MAX_BYTES, PUBLIC_CONTROL_ROUTES } from "@armada/core";
+import { CONTROL_BODY_MAX_BYTES } from "@armada/core";
+import { PUBLIC_CONTROL_ROUTES } from "@armada/core/contract";
 import { forwardControl } from "../src/app/api/v1/[...path]/control-proxy.ts";
 import { POST } from "../src/app/api/v1/[...path]/route.ts";
 

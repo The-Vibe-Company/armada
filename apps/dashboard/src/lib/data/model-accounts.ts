@@ -58,7 +58,7 @@ export async function readAuthCapabilities(org: string): Promise<AuthCapabilitie
 }
 
 /** A usage read is metadata: the page does not wait on it for long. */
-export const USAGE_TIMEOUT_MS = 5_000;
+const USAGE_TIMEOUT_MS = 5_000;
 
 /**
  * The usage of each subscription account, read in parallel and bounded in time. API-key accounts are not asked:

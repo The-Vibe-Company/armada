@@ -424,7 +424,7 @@ async function settledBoatTurn(prompt: string, mode: "metadata" | "full" = "full
 test("cutover transfers pending receipts and fences a legacy worker that already claimed one", async () => {
   const { db } = await settledBoatTurn("turn");
   const migration = await Bun.file(
-    new URL("../../../supabase/migrations/20261119165817_langfuse_export_jobs.sql", import.meta.url),
+    new URL("../../../supabase/migrations/20261119175832_langfuse_export_jobs.sql", import.meta.url),
   ).text();
   const lease = crypto.randomUUID();
   const leaseUntil = new Date("2050-01-01T00:00:00.000Z");
