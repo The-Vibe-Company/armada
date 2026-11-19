@@ -1201,7 +1201,6 @@
     "packages/provider-modal/test/os-build-conformance.ts": 2,
     "packages/provider-modal/test/process-scope-conformance.ts": 3,
     "packages/provider-modal/test/snapshot.conformance.ts": 3,
-    "packages/provider-modal/test/ssh-os.test.ts": 3,
     "packages/provider-modal/test/stop-retention.test.ts": 8,
     "packages/sdk/src/commands.ts": 1,
     "packages/sdk/src/index.ts": 8,
