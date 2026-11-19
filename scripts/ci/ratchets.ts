@@ -28,11 +28,12 @@ const appendPoints = new Set([controlPath, servePath, barrelPath, commandsPath])
 
 type Occurrence = { index: number; text: string };
 
-function* registrations(path: string, content: string): Generator<Occurrence> {
-  const source = ts.createSourceFile(path, content, ts.ScriptTarget.Latest, true);
-  function* visit(node: ts.Node): Generator<ts.Node> {
+function registrations(path: string, content: string) {
+  const source = ts.createSourceFile(path, content, ts.ScriptTarget.Latest);
+  const entries: ts.Node[] = [];
+  function visit(node: ts.Node) {
     if (path === controlPath) {
-      if (ts.isCaseClause(node) && ts.isStringLiteralLike(node.expression)) yield node.expression;
+      if (ts.isCaseClause(node) && ts.isStringLiteralLike(node.expression)) entries.push(node.expression);
       if (ts.isCallExpression(node)) {
         const callee = node.expression.getText(source);
         const routeMap = callee === "defineRoutes" ? node.arguments[1] : node.arguments[0];
@@ -41,13 +42,13 @@ function* registrations(path: string, content: string): Generator<Occurrence> {
           routeMap &&
           ts.isObjectLiteralExpression(routeMap)
         ) {
-          yield* routeMap.properties.map((property) => property.name ?? property);
+          entries.push(...routeMap.properties.map((property) => property.name ?? property));
         }
-        if (/^(?:controlRoutes|routes)\.set$/.test(callee) && node.arguments[0]) yield node.arguments[0];
+        if (/^(?:controlRoutes|routes)\.set$/.test(callee) && node.arguments[0]) entries.push(node.arguments[0]);
       }
       if (ts.isVariableDeclaration(node) && /^(?:controlRoutes|routes|routeMap)$/.test(node.name.getText(source))) {
         if (node.initializer && ts.isObjectLiteralExpression(node.initializer)) {
-          yield* node.initializer.properties.map((property) => property.name ?? property);
+          entries.push(...node.initializer.properties.map((property) => property.name ?? property));
         }
       }
     }
@@ -57,20 +58,20 @@ function* registrations(path: string, content: string): Generator<Occurrence> {
         node.name.getText(source).replace(/["']/g, "") === "routes" &&
         ts.isArrayLiteralExpression(node.initializer)
       ) {
-        yield* node.initializer.elements;
+        entries.push(...node.initializer.elements);
       }
       if (ts.isCallExpression(node)) {
         const callee = node.expression.getText(source);
-        if (/^(?:[\w$.]+\.)?(?:mounts|workers\.beforeListen)\.push$/.test(callee)) yield* node.arguments;
+        if (/^(?:[\w$.]+\.)?(?:mounts|workers\.beforeListen)\.push$/.test(callee)) entries.push(...node.arguments);
         if (/^(?:[\w$.]+\.)?workers\.(?:managed|isolated|background)\.set$/.test(callee) && node.arguments[0]) {
-          yield node.arguments[0];
+          entries.push(node.arguments[0]);
         }
-        if (callee === "startServerWorkers") yield node.expression;
+        if (/^start\w*Workers?$|\.startBackground$/.test(callee)) entries.push(node.expression);
       }
     }
     if (path === barrelPath && ts.isExportDeclaration(node)) {
-      if (node.exportClause && ts.isNamedExports(node.exportClause)) yield* node.exportClause.elements;
-      else yield node;
+      if (node.exportClause && ts.isNamedExports(node.exportClause)) entries.push(...node.exportClause.elements);
+      else entries.push(node);
     }
     if (
       path === commandsPath &&
@@ -79,11 +80,12 @@ function* registrations(path: string, content: string): Generator<Occurrence> {
       node.initializer &&
       ts.isArrayLiteralExpression(node.initializer)
     ) {
-      yield* node.initializer.elements;
+      entries.push(...node.initializer.elements);
     }
-    for (const child of node.getChildren(source)) yield* visit(child);
+    node.forEachChild(visit);
   }
-  for (const node of visit(source)) yield { index: node.getStart(source), text: node.getText(source) };
+  visit(source);
+  return entries.map((node) => ({ index: node.getStart(source), text: node.getText(source) }));
 }
 
 type Counter = {
@@ -125,11 +127,12 @@ function inScope(path: string) {
 function* matches(counter: Counter, files: Files) {
   for (const [path, content] of files) {
     if (!inScope(path) || !counter.includes(path)) continue;
-    const occurrences =
-      "scan" in counter
-        ? counter.scan(path, content)
-        : Array.from(content.matchAll(counter.pattern), (match) => ({ index: match.index, text: match[0] }));
-    for (const occurrence of occurrences) yield { path, content, ...occurrence };
+    if ("scan" in counter) {
+      for (const occurrence of counter.scan(path, content)) yield { path, content, ...occurrence };
+    } else {
+      for (const match of content.matchAll(counter.pattern))
+        yield { path, content, index: match.index, text: match[0] };
+    }
   }
 }
 
