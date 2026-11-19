@@ -95,8 +95,12 @@ export async function settleRuntimeTurn(tx: Sql, sandboxId: string, generation: 
        and s.stop_requested_at is null and s.stopped_at is null and s.deleted_at is null
        and s.expires_at>clock_timestamp() and r.runtime_hash is not null
        and case when s.provider='docker' then
-         exists(select 1 from public.runtime_commands c where c.sandbox_id=s.id and c.epoch=r.epoch
-           and starts_with(c.request_id,'docker_prompt_'))
+         (coalesce((
+           select c.accepted_prompt_id is not null from public.runtime_commands c
+           where c.sandbox_id=s.id and c.epoch=r.epoch and starts_with(c.request_id,'docker_prompt_')
+           order by c.sequence desc limit 1
+         ),false) or exists(select 1 from public.runtime_idle_turns t where t.sandbox_id=s.id
+           and t.prompt_id=s.task_prompt_id and t.settled))
          and not exists(
            select 1 from public.runtime_commands c where c.sandbox_id=s.id and c.epoch=r.epoch
              and starts_with(c.request_id,'docker_prompt_')

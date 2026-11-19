@@ -1180,20 +1180,25 @@ test("the normal HTTP route accepts the dashboard body and returns a launched sa
       status: "finished",
     },
   ];
-  const journal = await createRuntimeEvents(authority, key).route(
-    new Request("https://armada.example/api/runtime/events", {
-      method: "POST",
-      headers: { authorization: `Bearer ${session.runtimeToken}`, "x-armada-runtime-epoch": session.epoch },
-      body: JSON.stringify({
-        sandboxId: f.body.requestId,
-        generation: session.epoch,
-        events: events.map((event, index) => ({ sequence: index + 1, event })),
+  const scope = { org: f.actor.orgId };
+  const complete = (batch: AgentEvent[], sequence: number) =>
+    createRuntimeEvents(authority, key).route(
+      new Request("https://armada.example/api/runtime/events", {
+        method: "POST",
+        headers: { authorization: `Bearer ${session.runtimeToken}`, "x-armada-runtime-epoch": session.epoch },
+        body: JSON.stringify({
+          sandboxId: f.body.requestId,
+          generation: session.epoch,
+          events: batch.map((event, index) => ({ sequence: sequence + index, event })),
+        }),
       }),
-    }),
-  );
+    );
+  await sql.query("update runtime_commands set accepted_prompt_id=null where sandbox_id=$1", [f.body.requestId]);
+  expect(await (await complete(events.slice(0, 2), 1))?.json()).toEqual({ acknowledgedSequence: 2 });
+  expect(await post("sandbox/status", { ...scope, id: f.body.requestId })).toMatchObject({ status: "running" });
+  const journal = await complete(events.slice(2), 3);
   expect(journal?.status).toBe(200);
   expect(await journal?.json()).toEqual({ acknowledgedSequence: 3 });
-  const scope = { org: f.actor.orgId };
   const listed = (await post("sandbox/list", { ...scope, status: ["ready"] })) as {
     sandboxes: SandboxListMetadata[];
   };
