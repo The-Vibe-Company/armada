@@ -15,6 +15,32 @@ interface Grant {
   expires: number;
 }
 
+export function isViewerAuthorization(authorization: string | null): authorization is string {
+  return authorization?.startsWith(`Bearer ${PREFIX}`) ?? false;
+}
+
+export async function readViewerGrant(authorization: string, options: ControlOptions) {
+  if (!isViewerAuthorization(authorization) || authorization.length > 8192) return;
+  const now = (options.now?.() ?? new Date()).getTime();
+  try {
+    const grant: Grant = JSON.parse(
+      await decryptSecret(
+        new Uint8Array(Buffer.from(authorization.slice(7 + PREFIX.length), "base64url")),
+        options.encryptionKey,
+      ),
+    );
+    if (
+      grant.purpose === "sandbox-viewer-v1" &&
+      Number.isFinite(grant.expires) &&
+      grant.expires > now &&
+      grant.expires <= now + TTL
+    )
+      return grant;
+  } catch {
+    return;
+  }
+}
+
 type ViewerAction = keyof typeof sandboxViewerOperations;
 
 function viewerRoute(action: ViewerAction) {
@@ -39,7 +65,7 @@ export const viewerRoutes = defineRoutes("viewer", {
 /** Viewer grants are never principals for ordinary control routes. */
 export function rejectUnroutedViewerRequest(request: Request, options: ControlOptions, dispatch: Dispatch) {
   const path = new URL(request.url).pathname;
-  if (path.startsWith("/api/v1/viewer/") || request.headers.get("authorization")?.startsWith(`Bearer ${PREFIX}`))
+  if (path.startsWith("/api/v1/viewer/") || isViewerAuthorization(request.headers.get("authorization")))
     return viewerControl(request, options, dispatch);
 }
 
@@ -81,28 +107,12 @@ async function viewerControl(
     }
     if (
       !url.pathname.startsWith("/api/v1/viewer/") ||
-      !authorization.startsWith(`Bearer ${PREFIX}`) ||
+      !isViewerAuthorization(authorization) ||
       authorization.length > 8192
     )
       return fail(403);
-    let grant: Grant;
-    try {
-      grant = JSON.parse(
-        await decryptSecret(
-          new Uint8Array(Buffer.from(authorization.slice(7 + PREFIX.length), "base64url")),
-          options.encryptionKey,
-        ),
-      );
-    } catch {
-      return fail(401);
-    }
-    if (
-      grant.purpose !== "sandbox-viewer-v1" ||
-      !Number.isFinite(grant.expires) ||
-      grant.expires <= now() ||
-      grant.expires > now() + TTL
-    )
-      return fail(401);
+    const grant = await readViewerGrant(authorization, options);
+    if (!grant) return fail(401);
     if (!action) return fail(403);
     const operation = sandboxViewerOperations[action];
     if (request.method !== operation.route.method) return fail(405);

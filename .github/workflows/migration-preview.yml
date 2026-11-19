@@ -2,7 +2,12 @@ name: Migration preview
 
 on:
   pull_request:
-    paths: ['supabase/migrations/**']
+    paths:
+      - '.github/workflows/migration-preview.yml'
+      - 'scripts/db/supabase-prereq.sql'
+      - 'supabase/config.toml'
+      - 'supabase/migrations/**'
+      - 'supabase/templates/**'
 
 permissions:
   contents: read
@@ -22,9 +27,9 @@ jobs:
         env:
           POSTGRES_HOST_AUTH_METHOD: trust
         ports:
-          - 5432:5432
+          - '127.0.0.1:5432:5432'
         options: >-
-          --health-cmd "pg_isready -U postgres"
+          --health-cmd "pg_isready -h 127.0.0.1 -U postgres"
           --health-interval 5s --health-timeout 5s --health-retries 10
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -33,7 +38,11 @@ jobs:
       - uses: supabase/setup-cli@1dedf2c611547ede7232d26866dd3c56ab903bbb # v1
         with:
           version: 2.75.0
-      - name: Preview migration plan without production credentials
+      - name: Bootstrap Supabase prerequisites
         env:
-          PGSSLMODE: disable # Disposable service only; production retains TLS.
-        run: supabase db push --db-url postgresql://postgres@127.0.0.1:5432/postgres --dry-run
+          POSTGRES_CONTAINER: ${{ job.services.postgres.id }}
+        run: docker exec -i "$POSTGRES_CONTAINER" psql -X -U postgres -v ON_ERROR_STOP=1 < scripts/db/supabase-prereq.sql
+      - name: Apply migrations to the disposable database
+        env:
+          PGSSLMODE: disable # The CLI rebuilds the connection URL for this port.
+        run: supabase db push --db-url postgresql://postgres@127.0.0.1:5432/postgres --yes

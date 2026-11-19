@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
-import { run } from "../../../packages/cli/src/run.ts";
-import { memorySessionStore } from "../../../packages/cli/src/session.ts";
-import { forwardControl } from "../src/app/api/v1/[...path]/control-proxy.ts";
+import { run } from "../../../../../../../packages/cli/src/run.ts";
+import { memorySessionStore } from "../../../../../../../packages/cli/src/session.ts";
+import { forwardControl } from "./control-proxy.ts";
 
 test("GitHub repair crosses the dashboard proxy with only the sandbox id and bearer", async () => {
   const previous = process.env.ARMADA_MCP_URL;

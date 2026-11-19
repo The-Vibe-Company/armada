@@ -2,7 +2,10 @@ import { expect, test } from "bun:test";
 import { createSqlVaultStore } from "@armada/core/server";
 import { type ControlOptions, handleControlRequest } from "../src/control.ts";
 import { createSqlData } from "../src/data.ts";
+import { rowOnlyDatabase } from "./row-only-database.ts";
 import { ENCRYPTION_KEY, harness, PUBLIC_URL } from "./support.ts";
+
+const database = rowOnlyDatabase();
 
 test("REST adoption reject hidden ids and visible non-admin selection before provider access", async () => {
   let attempts = 0;
@@ -10,7 +13,7 @@ test("REST adoption reject hidden ids and visible non-admin selection before pro
     attempts++;
     throw new Error("must not adopt");
   };
-  const server = await harness();
+  const server = await harness({}, await database());
   try {
     const token = await server.token(server.people.member);
     const rows = await server.db.query<{ id: string; name: string }>(
@@ -62,7 +65,7 @@ test("REST adoption reject hidden ids and visible non-admin selection before pro
 });
 
 test("REST adoption passes the scoped golden, actor and confirmation to the adoption service", async () => {
-  const server = await harness();
+  const server = await harness({}, await database());
   try {
     const { auth, boat, db, people } = server;
     const golden = (await db.query<{ id: string }>("select id from goldens where name='shared'")).rows[0]!;

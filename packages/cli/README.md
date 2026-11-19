@@ -21,6 +21,64 @@ provider-specific GitHub refresh refusal. Typed commands validate success receip
 before reporting success. Their control routes use JSON objects, including `{}`
 for empty acknowledgements.
 
+## Command dispatch
+
+Help and command discovery work before login and organization selection.
+Native Docker host commands do not require an Armada API session. Interactive
+session recovery can retry a command once after sign-in. API passthrough,
+explicit login and logout, JSON mode, and explicit API tokens do not trigger
+an interactive recovery prompt.
+
+Global options are read only up to `--` to preserve prompt and command payloads.
+Interactive launch discovery fills missing choices and leaves explicit placement
+and agent choices to the usual validation.
+
+For Boat and Modal snapshots, `snapshot update --add-repo` validates the
+additions and appends on the server, preserving stored repositories and init
+commands. On create or update, `--setup` reads a local file to send as setup
+content. Use `--init` for literal initialization commands.
+
+Sandbox `wait` and `exec` requests get the server budget plus 15 seconds of
+transport grace. `send`, `stop`, and `bind-credential` use a 660-second
+request deadline. That budget gives `send` time to restore paused compute
+before admitting the turn. A transport timeout does not trigger a write retry.
+
+## Organization resource commands
+
+Invitation management resolves organization names through the authenticated
+organization list. Pass acceptance tokens through stdin or `--file`. The CLI
+omits rejected arguments from diagnostics and prints only approved invitation
+fields, so extra response fields such as tokens and acceptance URLs stay private.
+
+Select an organization with `armada org use` or `--org UUID` before using MCP
+registry commands. Explicit CLI selectors take precedence over imported JSON
+definitions. The server owns endpoint validation, discovery, and authorization.
+For the sandbox connection list, the CLI sends both the public `sandboxId`
+selector and the control handler's required `id`.
+
+Routine schedules require both a cron expression and a timezone. The API
+validates their values. A golden size-policy file replaces the entire policy.
+The command prints the server's response, including its version and repository
+selectors.
+
+## Docker host commands and launches
+
+Host names resolve within the selected organization through the host API.
+Local host commands with an explicit server can select an instance even if
+another server's daemon is unhealthy. If a registered daemon's server origin
+cannot be read, inspect the instance with `armada host status` before retrying
+installation. The new registration token remains unused.
+
+The wrapper uses fixed failure diagnostics to keep native output and private
+state out of CLI errors. See [Docker host installation and recovery](../../docs/docker-host-daemon.md)
+for installation path checks, registration preservation, and service repair.
+
+A plain-image Docker launch uses the Armada API without a golden or a Docker
+provider credential. If the CLI reports an unknown outcome and prints a launch key,
+retry with the same `--idempotency-key` and request body to recover the
+original launch. Transport failures, uncertain server responses, and malformed
+receipts can leave the outcome unknown.
+
 ## Login and session storage
 
 Armada browser sign-in uses PKCE through the Armada server and keeps provider

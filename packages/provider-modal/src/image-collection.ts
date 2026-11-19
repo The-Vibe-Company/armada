@@ -18,7 +18,7 @@ export function createImageCollection(
   managementAuthority: ModalManagementProvenance,
   detachCollection: (work: () => Promise<void>) => void,
 ) {
-  async function collectImages(skipBusy = false, sources?: string[], name?: string) {
+  async function collectImages(sources?: string[], name?: string) {
     let failure: { error: unknown } | undefined;
     for (const sourceId of sources ?? (await store.tombstoneSources())) {
       const source = await store.get(sourceId);
@@ -37,16 +37,15 @@ export function createImageCollection(
           break;
         }
       if (claimable) {
-        const claim = store.lease(source.info.id, async () => {
-          for (const image of await retired())
-            if (!image.collecting && !(await store.imageReferenced(image.imageId)))
-              await store.claimImage(image.info.name, image.sourceId, image.imageId);
-        });
-        await (skipBusy
-          ? claim.catch((error) => {
-              if (modalError(error).providerCode !== "lifecycle_lease_busy") throw error;
-            })
-          : claim);
+        await store
+          .lease(source.info.id, async () => {
+            for (const image of await retired())
+              if (!image.collecting && !(await store.imageReferenced(image.imageId)))
+                await store.claimImage(image.info.name, image.sourceId, image.imageId);
+          })
+          .catch((error) => {
+            if (modalError(error).providerCode !== "lifecycle_lease_busy") throw error;
+          });
       }
       for (const image of await retired()) {
         if (!image.collecting || (await store.imageReferenced(image.imageId))) continue;
@@ -80,8 +79,8 @@ export function createImageCollection(
     };
   }
   async function collectAfterRetirement(snapshot: string, sourceId?: string) {
-    await collectImages(true, sourceId ? [sourceId] : undefined, snapshot).catch(logDeferredCollection({ snapshot }));
-    detachCollection(() => collectImages(true).catch(logDeferredCollection({ snapshot, scope: "unrelated" })));
+    await collectImages(sourceId ? [sourceId] : undefined, snapshot).catch(logDeferredCollection({ snapshot }));
+    detachCollection(() => collectImages().catch(logDeferredCollection({ snapshot, scope: "unrelated" })));
   }
   async function collectRetiredSnapshot(name: string) {
     const owner = async () => {
@@ -90,7 +89,7 @@ export function createImageCollection(
     };
     const sourceId = await owner();
     if (!sourceId) return "collected" as const;
-    await collectImages(true, [sourceId], name);
+    await collectImages([sourceId], name);
     return (await owner()) ? ("pending" as const) : ("collected" as const);
   }
   return { collectAfterRetirement, collectImages, collectRetiredSnapshot };

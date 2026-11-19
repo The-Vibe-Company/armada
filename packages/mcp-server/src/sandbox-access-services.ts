@@ -193,8 +193,11 @@ export function createSandboxAccessServices(input: {
   }
   const executor: SandboxChildExecutor = {
     async launch(operation, chosen) {
-      const golden = (await stores.goldens.list(operation.orgId)).find((g) => g.id === chosen.goldenId);
-      if (!golden) throw new ChildLaunchNotAllocated("preallocation_rejected");
+      const goldens = await stores.goldens.list(operation.orgId).catch((error) => {
+        throw new ChildLaunchNotAllocated("preallocation_rejected", "golden_lookup", error);
+      });
+      const golden = goldens.find((g) => g.id === chosen.goldenId);
+      if (!golden) throw new ChildLaunchNotAllocated("preallocation_rejected", "golden_lookup");
       const placement = input.runtimePlacements?.[golden.provider];
       const actor = { userId: operation.ownerId, orgId: operation.orgId, role: "member" as const };
       const credentials = placement?.credentials ?? input.credentials;
@@ -202,8 +205,8 @@ export function createSandboxAccessServices(input: {
       const provider = await (placement
         ? placement.provider(actor, privateTarget)
         : input.providers.resolve(golden, { userId: actor.userId })
-      ).catch(() => {
-        throw new ChildLaunchNotAllocated("preallocation_rejected");
+      ).catch((error) => {
+        throw new ChildLaunchNotAllocated("preallocation_rejected", "provider_placement", error);
       });
       return launchSandboxChild({
         sql,
@@ -375,5 +378,6 @@ export function createSandboxAccessServices(input: {
       createRuntimeSelfFinish(sql, input.encryptionKey, input.outputs),
     ),
     childWorker: children,
+    authority,
   };
 }

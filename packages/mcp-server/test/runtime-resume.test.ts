@@ -124,6 +124,8 @@ describe("Modal user stop and wake-on-send", () => {
       accountTurns.setDispatch((caller, request) =>
         dispatchControlCommand("sandbox/send", caller, { ...request }, controls),
       );
+      const outcome = Promise.withResolvers<"finished" | "interrupted">();
+      f.hold(outcome.promise);
       const request = f.input();
       expect(
         await dispatchControlCommand("sandbox/send", f.caller, request, { ...controls, accountTurns }),
@@ -138,6 +140,15 @@ describe("Modal user stop and wake-on-send", () => {
       expect((await controls.data(f.caller).sandboxes.get(f.row.id))?.conversationIds).toEqual([
         f.first.conversationId,
       ]);
+      const status = () =>
+        dispatchControlCommand("sandbox/status", f.caller, { id: request.id, recorded: true }, controls);
+      expect(await status()).toMatchObject({ status: "running" });
+      outcome.resolve(recover ? "interrupted" : "finished");
+      await outcome.promise;
+      await f.runner.flushOutbox();
+      expect(await status()).toMatchObject({ status: "ready" });
+      const list = await dispatchControlCommand("sandbox/list", f.caller, { status: ["ready"] }, controls);
+      expect(list).toMatchObject({ sandboxes: [expect.objectContaining({ id: request.id, status: "ready" })] });
       expect(retained).toMatchObject({ epoch: "1", watermark: expect.any(Number) });
       expect(f.starts).toEqual([undefined, "native-thread"]);
     },
@@ -158,6 +169,7 @@ describe.each([
   test("explicit resume wakes a checkpointed runtime in the same conversation; replay never activates or starts a turn twice", async () => {
     const f = await fixture();
     const old = f.active;
+    f.deliverPromptEventsBeforeReply();
     let activations = 0;
     let preparations = 0;
     let githubPreparations = 0;
@@ -237,7 +249,7 @@ describe.each([
     if (provider === "modal") expect(preparations).toBe(1);
     expect(f.starts).toEqual([undefined, "native-thread"]);
     const row = (await createSqlData(f.sql)(f.caller).sandboxes.get(f.row.id))!;
-    expect(row.status).toBe("running");
+    expect(row.status).toBe("ready");
     expect(row.expiresAt).toBe(before?.expiresAt);
     expect(row.stoppedAt).toBeNull();
     expect(row.taskPromptId).toBe(result.promptId);
@@ -259,16 +271,24 @@ test("an already enrolled uncertain resume reconciles on a fresh server without 
     const resume = createRuntimeResume(f.sql, ENCRYPTION_KEY, f.bridge, async () => ({
       async start(_signal, restore) {
         activations++;
-        const ready = await f.reboot(restore);
-        f.lose();
-        return ready;
+        f.deliverPromptEventsBeforeReply();
+        return f.reboot(restore);
       },
       async stop() {
         throw Error("Live enrolled uncertainty must remain reconcilable");
       },
     }));
-    await expect(resume(f.caller, request)).rejects.toMatchObject({ code: "conflict" });
+    await f.db.exec(
+      "alter table sandbox_transitions add constraint test_reject_settlement check (code <> 'runtime_turn_settled') not valid",
+    );
+    try {
+      await expect(resume(f.caller, request)).rejects.toMatchObject({ code: "conflict" });
+      expect((await createSqlData(f.sql)(f.caller).sandboxes.get(f.row.id))?.status).toBe("starting");
+    } finally {
+      await f.db.exec("alter table sandbox_transitions drop constraint test_reject_settlement");
+    }
     const recovered = await createRuntimeResume(f.sql, ENCRYPTION_KEY, f.bridge)(f.caller, request);
+    expect((await createSqlData(f.sql)(f.caller).sandboxes.get(f.row.id))?.status).toBe("ready");
     expect(recovered.runtime.epoch).toBe("2");
     expect(activations).toBe(1);
     expect(f.starts).toHaveLength(2);

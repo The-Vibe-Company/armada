@@ -1044,6 +1044,16 @@ test("expiry accepts only this installation's bound frozen startup machine, neve
   expect((await lifecycle(a.sandboxId))?.stopped_at).toBeNull();
 });
 
+async function failureJournal(sandboxId: string) {
+  return (
+    await database().query(
+      `select from_status,actor,code,generation::text from public.sandbox_transitions
+       where sandbox_id=$1 and to_status='failed'`,
+      [sandboxId],
+    )
+  ).rows;
+}
+
 test("failed startup ACK or rejected admission fails logical startup without claiming a physical stop", async () => {
   const db = database();
   for (const operation of ["create", "bootstrap"] as const) {
@@ -1074,6 +1084,14 @@ test("failed startup ACK or rejected admission fails logical startup without cla
       if (failure === "historical-ack") expect(await store.poll(a.hostToken, a.installationId)).toBeNull();
       else await store.complete(a.hostToken, a.installationId, { requestId: a.startup.requestId, outcome: "failed" });
       expect(await lifecycle(a.sandboxId)).toEqual(failed);
+      expect(await failureJournal(a.sandboxId)).toEqual([
+        {
+          from_status: before?.status,
+          actor: "docker_host",
+          code: "docker_startup_failed",
+          generation: String(failed.lifecycle_generation),
+        },
+      ]);
       // Only a subsequent physical fact may populate stopped_at; failed is retained.
       const stop = { requestId: randomUUID(), operation: "stop" as const };
       await store.enqueueSandbox(a.actor, a.sandboxId, stop);
@@ -1113,14 +1131,35 @@ test("a host that could not fetch the image fails the sandbox in plain words; a 
   }
 });
 
-test("a raced disk-floor refusal records an actionable startup failure", async () => {
+test("a disk-floor refusal rolls back with its journal and preserves its actionable reason on replay", async () => {
   const a = await boundStartup("create");
-  await store.complete(a.hostToken, a.installationId, {
-    requestId: a.startup.requestId,
-    outcome: "failed",
-    reason: "disk_full",
-  });
+  const receipt = { requestId: a.startup.requestId, outcome: "failed", reason: "disk_full" } as const;
+  const before = await lifecycle(a.sandboxId);
+  const db = database();
+  await db.query(
+    "alter table public.sandbox_transitions add constraint refuse_startup_journal check (code <> 'docker_startup_failed') not valid",
+  );
+  try {
+    await expect(store.complete(a.hostToken, a.installationId, receipt)).rejects.toMatchObject({
+      cause: { constraint: "refuse_startup_journal" },
+    });
+    expect(await lifecycle(a.sandboxId)).toEqual(before);
+    expect((await store.poll(a.hostToken, a.installationId))?.requestId).toBe(receipt.requestId);
+  } finally {
+    await db.query("alter table public.sandbox_transitions drop constraint refuse_startup_journal");
+  }
+  await store.complete(a.hostToken, a.installationId, receipt);
   expect((await lifecycle(a.sandboxId))?.status_reason).toContain("10 GB floor");
+});
+
+test("a failed startup receipt cannot replace durable stop intent", async () => {
+  const a = await boundStartup("create");
+  await store.enqueueSandbox(a.actor, a.sandboxId, { requestId: randomUUID(), operation: "stop" });
+  const stopping = await lifecycle(a.sandboxId);
+  expect(stopping?.status).toBe("stopping");
+  await store.complete(a.hostToken, a.installationId, { requestId: a.startup.requestId, outcome: "failed" });
+  expect(await lifecycle(a.sandboxId)).toEqual(stopping);
+  expect(await failureJournal(a.sandboxId)).toEqual([]);
 });
 
 // Real migrated mailbox/ACK flow protects drain order and lost-revocation-response recovery.
@@ -1194,7 +1233,7 @@ test("a completed Docker delete proves exit and journals deletion of a failed sa
   expect(
     (
       await database().query(
-        `select from_status, to_status, generation::text from public.sandbox_transitions where sandbox_id=$1`,
+        `select from_status, to_status, generation::text from public.sandbox_transitions where sandbox_id=$1 and to_status='deleted'`,
         [a.sandboxId],
       )
     ).rows,
@@ -1626,14 +1665,25 @@ test("removing the host owner retires queued startup before the denied poll", as
   await denied(store.poll(a.hostToken, a.installationId));
   const failed = await lifecycle(a.sandboxId);
   expect(failed?.status).toBe("failed");
+  expect(await failureJournal(a.sandboxId)).toEqual([
+    {
+      from_status: "starting",
+      actor: "docker_host",
+      code: "docker_host_retired",
+      generation: String(failed?.lifecycle_generation),
+    },
+  ]);
   expect(failed?.status_reason).toBe(DOCKER_LAUNCH_FAILURE_MESSAGES.hostUnavailable);
   expect(failed?.stopped_at).toBeNull();
   expect((await store.list({ ...a.actor, userId: a.backupAdmin }))[0]?.running).toBe(0);
 });
 
-test("revoking a host terminalizes a queued snapshot build without a machine fact", async () => {
+test("revocation rolls back queued startups, snapshot and mailbox cancellation together before commit", async () => {
   const db = database();
-  const a = await fixture();
+  const a = await boundFixture();
+  const second = await boundFixture(a);
+  await store.enqueueSandbox(a.owner, a.sandboxId, a.create);
+  await store.enqueueSandbox(second.owner, second.sandboxId, second.create);
   const snapshotId = randomUUID(),
     ownerId = a.memberId,
     generation = randomUUID(),
@@ -1676,7 +1726,31 @@ test("revoking a host terminalizes a queued snapshot build without a machine fac
       bound_actor_epoch,bound_operation,snapshot_id) values($1,$2,$3,null,$4,1,'buildSnapshot',$5)`,
     [requestId, a.hostId, await encryptSecret(JSON.stringify({ bound: 1, job }), key), ownerId, snapshotId],
   );
+  const { faultingStore, failure } = failDockerJobCommit(a.create.requestId, "failed");
+  await expect(faultingStore.revoke(a.actor, a.hostId)).rejects.toMatchObject({ cause: failure });
+  for (const startup of [a, second]) {
+    expect((await lifecycle(startup.sandboxId))?.status).toBe("starting");
+    expect(await failureJournal(startup.sandboxId)).toEqual([]);
+  }
+  expect(
+    (
+      await db.query(`select count(*)::int as pending from docker_host_jobs where host_id=$1 and outcome is null`, [
+        a.hostId,
+      ])
+    ).rows[0],
+  ).toEqual({ pending: 3 });
+  expect((await db.query("select status from docker_snapshots where id=$1", [snapshotId])).rows[0]).toEqual({
+    status: "building",
+  });
+  expect((await db.query("select revoked_at from docker_hosts where id=$1", [a.hostId])).rows[0]).toEqual({
+    revoked_at: null,
+  });
+
   await store.revoke(a.actor, a.hostId);
+  for (const startup of [a, second]) {
+    expect((await lifecycle(startup.sandboxId))?.status).toBe("failed");
+    expect(await failureJournal(startup.sandboxId)).toHaveLength(1);
+  }
   expect(
     (
       await db.query<{ status: string; failure_reason: string | null }>(
@@ -1738,6 +1812,36 @@ test("retirement cancels undispatchable startup without claiming physical cleanu
       await store.complete(a.hostToken, a.installationId, { requestId: job.request_id, outcome: "completed" });
     expect(await store.unregister(a.hostToken, a.installationId)).toBe(true);
   }
+});
+
+test("failed bootstrap history cannot fence a newer Docker resume", async () => {
+  const a = await boundStartup("bootstrap");
+  const stop = { requestId: randomUUID(), operation: "stop" as const };
+  await store.enqueueSandbox(a.owner, a.sandboxId, stop);
+  await store.complete(a.hostToken, a.installationId, { requestId: stop.requestId, outcome: "completed" });
+  expect(await store.poll(a.hostToken, a.installationId)).toBeNull();
+  expect((await lifecycle(a.sandboxId))?.status).toBe("stopped");
+
+  await database().query(
+    `update public.sandboxes set status='starting',stopped_at=null,stop_requested_at=null,
+       lifecycle_generation=lifecycle_generation+1 where id=$1`,
+    [a.sandboxId],
+  );
+  const ticket = await a.authority.issue({ sandboxId: a.sandboxId, ownerId: a.owner.userId, configuration: {} });
+  const resume = { requestId: randomUUID(), operation: "resume" as const };
+  await store.enqueueSandbox(a.owner, a.sandboxId, {
+    ...resume,
+    bootstrapDescriptor: {
+      serverUrl: "https://armada.example",
+      artifact: { sha256: "b".repeat(64), bytes: 123 },
+      enrolmentToken: ticket.enrolmentToken,
+    },
+  });
+
+  const admitted = await lifecycle(a.sandboxId);
+  expect((await store.poll(a.hostToken, a.installationId))?.requestId).toBe(resume.requestId);
+  expect(await lifecycle(a.sandboxId)).toEqual(admitted);
+  expect(await failureJournal(a.sandboxId)).toEqual([]);
 });
 
 test("a stale cleaned ACK cannot delete a sandbox with a later admitted resume", async () => {

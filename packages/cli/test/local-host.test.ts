@@ -202,7 +202,6 @@ test.each([true, false])(
     }
     const result = await m.capture();
     expect(result.code).toBe(0);
-    // Upgrade uses only verified temporary bytes; no second machine registration.
     expect(m.requests).toEqual([
       "https://armada.example/api/docker-host/install.json",
       `https://armada.example/api/runtime/artifacts/${digest}`,

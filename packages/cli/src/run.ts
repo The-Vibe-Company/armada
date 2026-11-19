@@ -39,15 +39,11 @@ export interface Deps {
   fetch?: typeof fetch;
   sleep?: (ms: number) => Promise<void>;
   readFile?: (path: string) => Promise<string>;
-  /** Values for credential/application vault writes. By default hidden terminal input, or stdin when piped. */
   readStdin?: () => Promise<string>;
-  /** Separate native Docker host binary boundary; no Armada session required. */
   localHost?: LocalHostIo;
-  /** Set by auth tests. Otherwise login stores an Armada API session on this machine. */
   auth?: AuthIo;
 }
 
-/** Runs one command line and returns the process exit code. */
 export async function run(argv: readonly string[], io: Io, deps: Deps = {}): Promise<number> {
   let signingIn = false;
   let auth: AuthIo | undefined;
@@ -55,7 +51,6 @@ export async function run(argv: readonly string[], io: Io, deps: Deps = {}): Pro
     error instanceof AuthError &&
     (error.code === "unauthorized" || (error instanceof ArmadaApiError && error.status === 401));
   try {
-    // Native host management is login-free, including when a global profile flag is present.
     const localArgs = selectProfile(argv, {}).args;
     if (localArgs[0] === "host" && ["install", "status", "uninstall"].includes(localArgs[1] ?? ""))
       return await localHostCommand(
@@ -126,7 +121,6 @@ export async function run(argv: readonly string[], io: Io, deps: Deps = {}): Pro
         signingIn = true;
         await loginCommand(auth);
         signingIn = false;
-        // Retry the original operation once; a failed retry never starts another login.
         return await dispatch(argv, io, { ...deps, auth });
       }
       if (argv.length === 0) {
@@ -188,7 +182,6 @@ export async function run(argv: readonly string[], io: Io, deps: Deps = {}): Pro
   }
 }
 
-/** Stable script contract, shared by human and JSON diagnostics. */
 function failureExitCode(error: { code: string }): number {
   if (["invalid_config", "invalid_request", "invalid", "usage", "no_credentials"].includes(error.code)) return 2;
   return error.code === "unauthorized" || (error instanceof ArmadaApiError && error.status === 401) ? 3 : 1;
@@ -197,7 +190,6 @@ function failureExitCode(error: { code: string }): number {
 async function dispatch(argv: readonly string[], io: Io, deps: Deps): Promise<number> {
   const [command, ...original] = argv;
   if (command === "skill") return skillCommand(original, io);
-  // Command discovery must work before login or organization selection.
   if (
     command &&
     commandWords.includes(command) &&
@@ -581,8 +573,7 @@ async function update(positionals: string[], args: ReturnType<typeof parseArgs>,
     );
   let config: GoldenConfig<string | undefined> | undefined;
   try {
-    if (additions.length)
-      configFromFlags(additions, []); // Never reconstruct the stored list.
+    if (additions.length) configFromFlags(additions, []);
     else config = await readConfig(args, deps);
   } catch (error) {
     if (error instanceof GoldenError)
@@ -730,8 +721,6 @@ function jsonGolden(row: GoldenRecord) {
 async function readConfig(args: ReturnType<typeof parseArgs>, deps: Deps): Promise<GoldenConfig<string | undefined>> {
   const file = single(args, "--config");
   const repos = values(args, "--repo");
-  // --setup is its own field now (create() reads it as a local file and sends its content),
-  // not a legacy alias folded into --init: a value here must not also become a literal init command.
   const init = values(args, "--init");
   if (file && (repos.length > 0 || init.length > 0)) {
     throw new GoldenError("invalid_config", "Pass either --config or --repo and --init, not both.");

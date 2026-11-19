@@ -105,6 +105,16 @@ async function complete(session: Awaited<ReturnType<Fixture["enrol"]>>, payload:
   });
   return next.command;
 }
+async function readinessJournal(sandboxId: string) {
+  return (
+    await database().query(
+      `select from_status,to_status,actor,code from public.sandbox_transitions
+       where sandbox_id=$1 and to_status='ready' order by id`,
+      [sandboxId],
+    )
+  ).rows;
+}
+
 async function ready(f: Fixture) {
   const session = await f.enrol(),
     requestId = randomUUID();
@@ -127,6 +137,7 @@ test("Docker readiness rejects an ACK read against an older lifecycle generation
   ).rows[0]!;
   await denied(service.ready(f.actor, f.sandbox.id, randomUUID(), true, row.older_generation));
   expect((await commands.next(session.runtimeToken, session.epoch)).command).toBeNull();
+  expect(await readinessJournal(f.sandbox.id)).toEqual([]);
 });
 
 test("ACK is not readiness: current epoch health proof alone publishes ready without revoking itself", async () => {
@@ -160,6 +171,10 @@ test("ACK is not readiness: current epoch health proof alone publishes ready wit
   await service.ready(f.actor, f.sandbox.id, healthId);
   await complete(session, { ready: true, generation: session.epoch });
   expect(await service.ready(f.actor, f.sandbox.id, healthId)).toEqual({ state: "ready", epoch: session.epoch });
+  await service.ready(f.actor, f.sandbox.id, healthId);
+  expect(await readinessJournal(f.sandbox.id)).toEqual([
+    { from_status: "starting", to_status: "ready", actor: "runtime_enrolment", code: "runtime_enrolled" },
+  ]);
   // The concrete authority still accepts the same live epoch after publication.
   expect(await authority.withSession(session.runtimeToken, session.epoch, async (_tx, scope) => scope.epoch)).toBe(
     session.epoch,
@@ -222,6 +237,16 @@ test("one durable conversation survives lost responses and admits only exact ret
   const f = await fixture(),
     session = await ready(f),
     input = { requestId: randomUUID(), text: "Report the current directory" };
+  await db.exec(
+    "alter table sandbox_transitions add constraint test_reject_enqueue check (code <> 'docker_prompt_enqueued') not valid",
+  );
+  try {
+    await denied(service.prompt(f.actor, f.sandbox.id, input));
+    expect((await commands.next(session.runtimeToken, session.epoch)).command).toBeNull();
+    expect((await reservations.get(f.actor, f.sandbox.id)).status).toBe("ready");
+  } finally {
+    await db.exec("alter table sandbox_transitions drop constraint test_reject_enqueue");
+  }
   let lost = true;
   const lostSql: Sql = {
     ...sql,

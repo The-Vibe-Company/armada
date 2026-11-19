@@ -35,12 +35,15 @@ idle timer. Poll failures never resubmit builds. Resume with:
 Admission adds a `golden_build` job in the same transaction as the receipt.
 The shared jobs runner dispatches one golden build at a time using the receipt UUID
 and the current job lease epoch. Dispatch locks the receipt to arbitrate with
-cancellation and older replicas during deployment overlap. Execution still uses
-the receipt's unique fence, renewable 60-second lease and fixed 60-minute deadline.
-An active receipt still occupies the build slot if the shared lease expires.
-The isolated recovery worker expires and reconciles those receipts. A successor
-shared claim can dispatch a still-queued receipt after a pre-dispatch crash.
-It waits for active receipts and completes terminal ones without provider calls.
+cancellation and older replicas during deployment overlap. The runner renews the only execution lease.
+The receipt records its dispatch epoch as the attempt fence and retains a fixed
+60-minute deadline. During deployment overlap, a live finite receipt lease from
+the previous revision still occupies the build slot.
+The shared handler expires and reconciles the receipt by UUID. A successor claim
+can dispatch a still-queued receipt after a pre-dispatch crash. The handler waits
+for active receipts, retries unresolved recovery, and completes terminal receipts
+without provider calls. Recovery that exceeds 30 seconds yields the shared slot
+and is requeued. The server tracks outstanding provider calls through shutdown.
 The receipt ID is the buildId in existing allowlisted phase/failure logs.
 
 Execution resolves current credentials, revalidates membership/role and verifies
