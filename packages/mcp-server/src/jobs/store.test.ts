@@ -210,16 +210,15 @@ test("a failed recurring completion rolls back its schedule and the next lease r
   );
   expect(await crashed.reconcileOne(signal)).toBe(true);
   await crashed.drain();
-  expect((await db.query("select state, attempts from jobs where id = $1", [id])).rows).toEqual([
-    { state: "leased", attempts: 1 },
-  ]);
+  const schedule = async () => (await db.query("select state, attempts, run_after from jobs where id = $1", [id])).rows;
+  const beforeExpiry = await schedule();
+  expect(beforeExpiry).toMatchObject([{ state: "leased", attempts: 1 }]);
   await db.query("update jobs set lease_until = '-infinity' where id = $1", [id]);
   expect(await retryExpiredCompletion?.()).toBe(false);
+  expect(await schedule()).toEqual(beforeExpiry);
   const successor = createJobsRunner(store, { maintenance: handler });
   expect(await successor.reconcileOne(signal)).toBe(true);
   await successor.drain();
   expect(purges).toBe(2);
-  expect((await db.query("select state, attempts, run_after from jobs where id = $1", [id])).rows).toEqual([
-    { state: "queued", attempts: 0, run_after: new Date(time.getTime() + 600_000) },
-  ]);
+  expect(await schedule()).toEqual([{ state: "queued", attempts: 0, run_after: new Date(time.getTime() + 600_000) }]);
 });
