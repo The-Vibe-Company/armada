@@ -34,7 +34,7 @@ test("account capacity refuses a full account and admits available or unlimited 
 
 // Real SQL at the admission boundary: row locking/count predicates are the
 // behavior under test, not a mock implementation of those predicates.
-let connection: PGlite | undefined = new PGlite();
+let connection: PGlite | undefined;
 
 function database() {
   if (!connection) throw new Error("Database fixture is not open");
@@ -44,6 +44,7 @@ const account = "10000000-0000-4000-8000-000000000001";
 const ids = [1, 2, 3].map((id) => `20000000-0000-4000-8000-${String(id).padStart(12, "0")}`);
 const sql = { query: (q: string, values?: unknown[]) => database().query(q, values) } as Sql;
 beforeAll(async () => {
+  connection = new PGlite();
   await database().exec(`create table credentials(id uuid primary key,name text,max_agents integer,version integer not null default 2);
     create table account_exhaustion(account_id uuid primary key,account_version integer,resets_at timestamptz);
     create table sandboxes(id uuid primary key,credential_id uuid,deleted_at timestamptz,stopped_at timestamptz,

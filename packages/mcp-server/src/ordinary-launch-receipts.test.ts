@@ -4,13 +4,14 @@ import { GoldenError, LaunchError, ProviderError, VaultError } from "@armada/cor
 import { PGlite } from "@electric-sql/pglite";
 import { createOrdinaryLaunchReceipts } from "./ordinary-launch-receipts.ts";
 
-let connection: PGlite | undefined = new PGlite();
+let connection: PGlite | undefined;
 
 function database() {
   if (!connection) throw new Error("Database fixture is not open");
   return connection;
 }
 beforeAll(async () => {
+  connection = new PGlite();
   await database().waitReady;
 });
 afterAll(async () => {

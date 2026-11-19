@@ -58,7 +58,7 @@ test("reports authentication outages without exposing the dependency error", asy
   });
 });
 
-let connection: PGlite | undefined = new PGlite();
+let connection: PGlite | undefined;
 
 function database() {
   if (!connection) throw new Error("Database fixture is not open");
@@ -76,6 +76,7 @@ const rotationTrigger = "221401da-7f7e-42a6-87bc-f6a55047983d";
 const disableTrigger = "3dfcb001-e5bb-4a9d-8c8a-dfa8427c6346";
 const foreignTrigger = "21c61603-5156-4d2f-ad35-15bf65840f7d";
 beforeAll(async () => {
+  connection = new PGlite();
   await database().exec(`
     create table public.launch_templates (id uuid, org_id uuid, scope text, owner_id uuid,
       current_revision int default 1, status text default 'active');

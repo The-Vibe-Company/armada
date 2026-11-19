@@ -11,7 +11,7 @@ import { createAccountTurnQueue } from "./account-turn-queue.ts";
 import type { Caller } from "./caller.ts";
 import { currentRequestId, observeRequest } from "./request-observability.ts";
 
-let connection: PGlite | undefined = new PGlite();
+let connection: PGlite | undefined;
 
 function database() {
   if (!connection) throw new Error("Database fixture is not open");
@@ -30,6 +30,7 @@ const sql = {
 } as Sql;
 const queue = createAccountTurnQueue(sql, btoa("x".repeat(32)));
 beforeAll(async () => {
+  connection = new PGlite();
   await database().exec(`create table credentials(id uuid primary key,name text,max_agents int,version int,status text,expires_at timestamptz,scope text,owner_id uuid);
     create table orgs(id uuid primary key);
     create table members(org_id uuid,user_id uuid,role text);

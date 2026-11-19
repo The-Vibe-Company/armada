@@ -13,7 +13,7 @@ const machine = {
 } satisfies ProviderInventoryMachine;
 const binding = { workspace: "work", environment: "env", appId: "ap-bound" };
 const signal = new AbortController().signal;
-let connection: PGlite | undefined = new PGlite();
+let connection: PGlite | undefined;
 
 function database() {
   if (!connection) throw new Error("Database fixture is not open");
@@ -25,6 +25,7 @@ const lookup = createModalReaperOwnership(
 );
 
 beforeAll(async () => {
+  connection = new PGlite();
   await database().exec(`
     create table modal_server_apps (
       app_id text, app_name text, environment text, authority_scope text, authority_owner_id uuid, org_id uuid

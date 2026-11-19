@@ -5,7 +5,7 @@ import { PGlite } from "@electric-sql/pglite";
 import { admitAccountCapacity } from "./account-capacity.ts";
 import { repairHistoricalTurnModels } from "./account-model-upgrade.ts";
 
-let connection: PGlite | undefined = new PGlite();
+let connection: PGlite | undefined;
 
 function database() {
   if (!connection) throw new Error("Database fixture is not open");
@@ -21,6 +21,7 @@ const sql = {
     database().transaction((tx) => fn({ query: (q: string, v?: unknown[]) => tx.query(q, v) } as Sql)),
 } as Sql;
 beforeAll(async () => {
+  connection = new PGlite();
   await database().exec(`create role authenticated;
     create table credentials(id uuid primary key,name text,max_agents integer);
     create table sandboxes(id uuid primary key,credential_id uuid,model text,status text,
