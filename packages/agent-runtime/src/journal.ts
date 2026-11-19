@@ -207,7 +207,6 @@ export class Journal {
           for (const key of CLAUDE_RESULT_OUTPUT_FIELDS)
             maskPayloadField(event.data as Record<string, unknown>, scrubbed.data, key, maskField);
 
-          // Output can grow during masking. Keep accounting metadata whenever it fits on its own.
           const result = JSON.stringify(scrubbed);
           if (Buffer.byteLength(result) <= MAX_EVENT_BYTES) return result;
           for (const key of CLAUDE_RESULT_OUTPUT_FIELDS) delete scrubbed.data[key];
