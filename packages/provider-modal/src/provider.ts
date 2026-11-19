@@ -887,10 +887,13 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
       });
     },
     interrupt: (r) => call(r.sandboxId, "interrupt", r),
-    async exec(r) {
-      if (r.onlyIfRunning)
+    async exec({ expectedPhysicalGeneration, ...r }) {
+      if (r.onlyIfRunning || expectedPhysicalGeneration !== undefined)
         return admit(r.sandboxId, async (row) => {
+          r.signal?.throwIfAborted();
           if (row.commonRuntime) throw refusal("invalid_request", "Enrolled runtime exec is not enabled.");
+          if (expectedPhysicalGeneration !== undefined && expectedPhysicalGeneration !== String(row.generation))
+            throw refusal("conflict", "Native exec physical incarnation changed.");
           if (row.phase !== "active") throw refusal("sandbox_not_ready", "Recovery capture requires active compute.");
           return runner.call<ExecResult>(row, "exec", { input: r });
         });

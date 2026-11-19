@@ -436,6 +436,7 @@ export interface ExecRequest {
   signal?: AbortSignal;
   /** Private lifecycle sampler: refuse rather than resuming stopped compute. */
   onlyIfRunning?: boolean;
+  expectedPhysicalGeneration?: string;
   /** Trusted diagnostic phase only; not shell input. Boat omits it from the HTTP command body. */
   preservationStage?: "collect_exec" | "chunk_exec";
   /** Fixed private output collection, logged by the server once per reason. */
