@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { expect } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -11,20 +11,26 @@ import {
   type Scope,
 } from "../src/index.ts";
 
-// Uses the real Linux-built runtime, native toolchain, setsid and /proc-backed private state.
-// Ordinary PR CI prepares only a portable bundle. Publishing release validation builds
-// and validates native resources, and requires this contract to execute without skips.
-// A portable manifest proves only that the JS bundle exists, not that native tools were built.
 const dist = join(import.meta.dir, "../../agent-runtime/dist");
 const manifest = Bun.file(join(dist, "manifest.json"));
 const nativeBuild = (await manifest.exists()) && (await manifest.json()).artifact !== "portable-bundle";
 if (process.platform !== "linux" || !nativeBuild)
   throw new Error("Release conformance requires the Linux native runtime build");
-test("actual runtime artifact accepts private bootstrap and scoped RPC, checkpoints and reopens journal", async () => {
+async function verifyArtifact(root: string) {
+  const deadline = AbortSignal.timeout(15_000);
   const artifact = await loadRunnerArtifact(dist);
   expect(artifact.bundle.length).toBeGreaterThan(1000);
-  const root = await mkdtemp(join(tmpdir(), "armada-artifact-"));
+  const preload = join(root, "readiness.js");
   await Bun.write(join(root, "main.js"), artifact.bundle);
+  await Bun.write(
+    preload,
+    `const serve = Bun.serve;
+Bun.serve = (options) => {
+  const server = serve(options);
+  if (options.hostname === "0.0.0.0" && options.port === 0) process.send(server.port);
+  return server;
+};`,
+  );
   for (const [name, version] of [
     ["claude", "2.1.322"],
     ["codex", "0.167.0"],
@@ -33,6 +39,7 @@ test("actual runtime artifact accepts private bootstrap and scoped RPC, checkpoi
     const native = Bun.spawn([join(dist, name ?? ""), "--version"], {
       stdout: "pipe",
       stderr: "ignore",
+      signal: deadline,
       env: {
         PATH: "/usr/bin:/bin",
         HOME: root,
@@ -97,28 +104,30 @@ test("actual runtime artifact accepts private bootstrap and scoped RPC, checkpoi
       return Response.json({ acknowledgedSequence: 0 });
     },
   });
-  let port = 0;
-  // Start runtime with OS-assigned port reserved below, no model credentials, argv or bootstrap file.
-  const reserve = Bun.serve({ port: 0, fetch: () => new Response() });
-  port = reserve.port ?? 0;
-  await reserve.stop(true);
   let process: ReturnType<typeof Bun.spawn> | undefined;
   let orphan: ReturnType<typeof Bun.spawn> | undefined;
-  async function start(expectBootFailure = false) {
+  async function bootRuntime() {
     const grant = grants.issue(row);
-    process = Bun.spawn(["setsid", Bun.which("bun") ?? "bun", join(root, "main.js")], {
+    const readiness = Promise.withResolvers<number>();
+    const child = Bun.spawn(["setsid", Bun.which("bun") ?? "bun", "--preload", preload, join(root, "main.js")], {
+      signal: deadline,
+      ipc(port: unknown) {
+        if (typeof port === "number" && Number.isInteger(port) && port > 0 && port <= 65535) readiness.resolve(port);
+        else readiness.reject(Error("runtime sent an invalid listening port"));
+      },
       stdin: "pipe",
       stdout: "ignore",
       stderr: "ignore",
       env: { PATH: "/usr/local/bin:/usr/bin:/bin", HOME: root },
     });
-    const input = process.stdin;
+    process = child;
+    const input = child.stdin;
     if (typeof input === "number" || !input) throw Error("missing private pipe");
     input.write(
       JSON.stringify({
         root,
         cwd: root,
-        port,
+        port: 0,
         grant,
         claudeExecutable: join(dist, "claude"),
         codexExecutable: join(dist, "codex"),
@@ -139,29 +148,30 @@ test("actual runtime artifact accepts private bootstrap and scoped RPC, checkpoi
       }),
     );
     input.end();
-    if (expectBootFailure) {
-      expect(await process.exited).not.toBe(0);
-      throw Error("expected_boot_failure");
-    }
+    const boot = await Promise.race([
+      readiness.promise.then((port) => ({ port })),
+      child.exited.then((exitCode) => ({ exitCode })),
+    ]);
+    deadline.throwIfAborted();
+    return { boot, grant };
+  }
+  async function start() {
+    const { boot, grant } = await bootRuntime();
+    if ("exitCode" in boot) throw Error(`runtime exited before listening (exit ${boot.exitCode})`);
+    const url = `http://127.0.0.1:${boot.port}`;
     const transport = createRunnerTransport(async () => ({
-      url: `http://127.0.0.1:${port}`,
+      url,
       connectToken: "proxy-fixture",
       grant: grant.token,
       expiresAt: grant.expiresAt,
     }));
-    for (let attempt = 0; attempt < 1500; attempt++) {
-      try {
-        await transport.call(row, "health", {});
-        return transport;
-      } catch {
-        await Bun.sleep(10);
-      }
-    }
-    throw Error("actual runtime failed readiness");
+    await transport.call(row, "health", {});
+    return { transport, url };
   }
   try {
-    let transport = await start();
-    const denied = await fetch(`http://127.0.0.1:${port}`, { method: "POST", body: "{}" });
+    const first = await start();
+    let { transport } = first;
+    const denied = await fetch(first.url, { method: "POST", body: "{}", signal: deadline });
     expect(denied.status).toBe(401);
     const result = await transport.call<{ stdout: string; exitCode: number }>(row, "exec", {
       input: { sandboxId: row.info.id, command: "printf actual-runtime" },
@@ -203,24 +213,21 @@ case "$credentials" in *"password=$GH_TOKEN"*) printf helper-ok;; *) exit 1;; es
       },
     });
     expect(rotated).toMatchObject({ exitCode: 0, stdout: "[REDACTED]" });
-    // Simulate a detached native writer surviving its crashed parent. Readiness
-    // comes from its pipe, not a clock sleep; startup must quiesce its group.
     orphan = Bun.spawn(["setsid", Bun.which("bun")!, "-e", "process.stdout.write('ready');setInterval(()=>{},1000)"], {
       stdout: "pipe",
       stderr: "ignore",
+      signal: deadline,
       env: { PATH: "/usr/local/bin:/usr/bin:/bin", CODEX_HOME: join(root, "codex") },
     });
     await (orphan.stdout as ReadableStream<Uint8Array>).getReader().read();
-    // An unclean same-generation restart must reconcile the unpublished rotation
-    // before restore destroys the native home or bootstrap replays an old seed.
     process?.kill();
     await process?.exited;
-    await expect(start(true)).rejects.toThrow("expected_boot_failure");
+    expect((await bootRuntime()).boot).toEqual({ exitCode: 1 });
     await orphan.exited;
     expect(orphan.exitCode).not.toBe(0);
     expect(await Bun.file(join(root, "codex/auth.json")).text()).toBe(JSON.stringify(rotatedNative));
     acknowledgeNative = true;
-    transport = await start();
+    ({ transport } = await start());
     expect(await Bun.file(join(root, "codex/auth.json")).text()).toBe(JSON.stringify(rotatedNative));
     expect(publishedNative).toBe(JSON.stringify(rotatedNative));
     acknowledgeNative = false;
@@ -236,12 +243,10 @@ case "$credentials" in *"password=$GH_TOKEN"*) printf helper-ok;; *) exit 1;; es
     expect(checkpoint).toMatchObject({ generation: "1", watermark: 0, acknowledgedSequence: 0 });
     expect(publishedNative).toBe(JSON.stringify(rotatedNative));
     expect(await Bun.file(join(root, "codex/auth.json")).exists()).toBe(false);
-    // A lost successful checkpoint response is retried after auth was scrubbed,
-    // including after a restart of the same fenced generation.
     expect(await transport.call<typeof checkpoint>(row, "checkpoint", {})).toEqual(checkpoint);
     process?.kill();
     await process?.exited;
-    transport = await start();
+    ({ transport } = await start());
     expect(await transport.call<typeof checkpoint>(row, "checkpoint", {})).toEqual(checkpoint);
     await expect(
       transport.call(row, "exec", { input: { sandboxId: row.info.id, command: "echo forbidden" } }),
@@ -249,7 +254,7 @@ case "$credentials" in *"password=$GH_TOKEN"*) printf helper-ok;; *) exit 1;; es
     process?.kill();
     await process?.exited;
     row.generation = 2;
-    transport = await start();
+    ({ transport } = await start());
     expect(await transport.call(row, "health", {})).toMatchObject({ generation: "2", ready: true });
     const nativeRestored = await transport.call<{ stdout: string; exitCode: number }>(row, "exec", {
       input: {
@@ -263,12 +268,19 @@ case "$credentials" in *"password=$GH_TOKEN"*) printf helper-ok;; *) exit 1;; es
       input: { sandboxId: row.info.id, command: "printf restored" },
     });
     expect(resumed.stdout).toBe("restored");
+    deadline.throwIfAborted();
   } finally {
     orphan?.kill();
     await orphan?.exited;
     process?.kill();
     await process?.exited;
     await privateIngest.stop(true);
-    await rm(root, { recursive: true, force: true });
   }
-}, 30_000);
+}
+
+const root = await mkdtemp(join(tmpdir(), "armada-artifact-"));
+try {
+  await verifyArtifact(root);
+} finally {
+  await rm(root, { recursive: true, force: true });
+}

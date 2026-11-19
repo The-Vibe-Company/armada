@@ -10,6 +10,7 @@ import { sandboxCheckOperations } from "@armada/core/contract";
 import { VaultError } from "@armada/core/server";
 import type { Caller } from "./caller.ts";
 import type { CredentialBindingRecovery } from "./credential-binding-recovery.ts";
+import { runtimeBridgeTarget } from "./provider-runtime-admission.ts";
 
 const bindingIds = sandboxCheckOperations.bindSandboxCredential.input.body.pick({ id: true, credentialId: true });
 export const ACCOUNT_CHANGE_BUSY =
@@ -60,7 +61,15 @@ export function createSandboxAccountChange(
     ]);
     if (!membership.rows.length)
       throw new VaultError("forbidden", "You must still be a member of this sandbox's organization.");
-    if (row.deleted_at || !["ready", "stopped"].includes(row.status) || row.leased)
+    const runtimeRunning =
+      row.status === "running" &&
+      runtimeBridgeTarget({
+        provider: row.provider,
+        harness: row.harness,
+        boatRuntime: row.boat_runtime,
+        ...(row.runtime_transport ? { runtimeTransport: row.runtime_transport } : {}),
+      });
+    if (row.deleted_at || (!["ready", "stopped"].includes(row.status) && !runtimeRunning) || row.leased)
       throw new VaultError("credential_binding_unsafe", ACCOUNT_CHANGE_BUSY);
     return row;
   }
@@ -114,7 +123,7 @@ export function createSandboxAccountChange(
         resolved.usagePricing.credentialVersion !== pin.credentialVersion)
     )
       throw new VaultError("unavailable", "The selected account's pricing identity is inconsistent.");
-    if (before.status === "ready") await stopOwnedIdle();
+    if (before.status !== "stopped") await stopOwnedIdle();
     await credentials.enrollAccount?.(actor, resolved);
     return transaction(async (tx) => {
       // Follow the member -> account -> sandbox lock order used by turn admission.

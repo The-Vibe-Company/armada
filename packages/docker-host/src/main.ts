@@ -21,7 +21,7 @@ import {
 } from "./daemon.ts";
 import { dockerDiskFreeBytes, stoppedSandboxBytes, withDiskFloor } from "./disk.ts";
 import { cleanupOfficialImages } from "./image-retention.ts";
-import { dockerCli, fileStore, httpApi, readDockerOutputArchive } from "./native.ts";
+import { dockerCli, fileStore, httpApi, observeRetainedStop, readDockerOutputArchive } from "./native.ts";
 import { dockerRuntimeStarter } from "./runtime-install.ts";
 import {
   installService,
@@ -213,7 +213,7 @@ async function main(args: string[]) {
     const state = await store.load();
     let limits = dockerResourceLimits(dockerHostResources());
     const sharedArtifacts = await sharedArtifactDirectory(directory);
-    const executor = createDockerMachineExecutor({
+    const machineOptions = {
       installationId: state.installationId,
       hostId: state.hostId,
       cli: dockerCli,
@@ -221,10 +221,12 @@ async function main(args: string[]) {
       now: Date.now,
       limits: () => limits,
       ...(sharedArtifacts ? { sharedArtifacts } : {}),
-    });
+    };
+    const executor = createDockerMachineExecutor(machineOptions);
     const runtime = withDiskFloor(
       {
         ...executor,
+        isRetainedStop: (request) => observeRetainedStop(machineOptions, request),
         diskFreeBytes: sampleDisk,
         cleanupImages: () => cleanupOfficialImages(dockerCli),
         configureLimits(next: DockerSandboxLimits | undefined) {

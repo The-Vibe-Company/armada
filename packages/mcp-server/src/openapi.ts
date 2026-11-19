@@ -239,7 +239,7 @@ export function generateOpenApi(table: readonly OpenApiOperation[] = Object.valu
       operationId,
       description,
       ...(operation.directServer && { "x-armada-direct-server": true }),
-      security: [{ [viewer ? "viewerGrant" : "serviceToken"]: [] }],
+      security: operation.anonymous ? [] : [{ [viewer ? "viewerGrant" : "serviceToken"]: [] }],
       ...(parameters.length ? { parameters } : {}),
       ...(request && {
         requestBody: {
@@ -259,6 +259,14 @@ export function generateOpenApi(table: readonly OpenApiOperation[] = Object.valu
       responses: {
         [operation.successStatus ?? 200]: {
           description: "Success",
+          ...(operation.successHeaders && {
+            headers: Object.fromEntries(
+              Object.entries(operation.successHeaders).map(([name, schema]) => [
+                name,
+                { schema: responseJsonSchema(schema) },
+              ]),
+            ),
+          }),
           ...(operation.output && {
             content: {
               [operation.outputMediaType ?? "application/json"]: { schema: responseJsonSchema(operation.output) },

@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { assembleServer } from "../src/modules.ts";
 import type { ServerServices } from "../src/server-services.ts";
+import { jobsModule, type LaneFactory } from "../src/server-worker-modules.ts";
 
 test("server assembly preserves worker lane order and isolation", () => {
   const neverCall = async () => {
@@ -65,7 +66,6 @@ test("server assembly preserves worker lane order and isolation", () => {
       ],
       "managed": [
         "sandbox-lifecycle",
-        "pull-requests",
         "jobs",
         "native-prompts",
         "delegated-access",
@@ -83,6 +83,38 @@ test("server assembly preserves worker lane order and isolation", () => {
     githubApp: null,
   }).planWorkers().description;
   expect(minimal.background).toEqual(["routines"]);
-  expect(minimal.managed).not.toContain("pull-requests");
+  expect(minimal.managed).toContain("jobs");
   expect(minimal.isolated.map(({ name }) => name)).not.toContain("docker-inventory:host-1");
+});
+
+test("the shared jobs lane claims only configured job kinds", async () => {
+  const managed = new Map<string, LaneFactory>();
+  jobsModule({ workers: { managed } } as Parameters<typeof jobsModule>[0]);
+  const createLane = managed.get("jobs")!;
+  for (const { githubApp, encryptionKey, expected } of [
+    { githubApp: null, encryptionKey: undefined, expected: ["webhook"] },
+    { githubApp: {}, encryptionKey: undefined, expected: ["webhook", "pr_scan"] },
+    { githubApp: null, encryptionKey: "test", expected: ["webhook", "outputs_capture"] },
+    { githubApp: {}, encryptionKey: "test", expected: ["webhook", "pr_scan", "outputs_capture"] },
+  ]) {
+    const claimed = new Set<string>();
+    const lane = createLane({
+      githubApp,
+      options: {},
+      config: { encryptionKey },
+      sql: { query: async () => ({ rows: [] }) },
+      jobs: {
+        async claim(kind: string) {
+          claimed.add(kind);
+        },
+      },
+      webhooks: { run: async () => ({ status: "done" }) },
+      outputs: {
+        captureJob: { concurrency: 4, run: async () => ({ status: "done" }) },
+        enqueueCaptures: async () => {},
+      },
+    } as unknown as Parameters<LaneFactory>[0]);
+    await lane?.reconcileOne(new AbortController().signal);
+    expect(claimed).toEqual(new Set(expected));
+  }
 });

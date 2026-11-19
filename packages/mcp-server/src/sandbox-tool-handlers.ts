@@ -16,6 +16,7 @@ import { CREDENTIAL_BINDING_GUIDANCE } from "./credential-binding.ts";
 import type { SandboxView, ServerSandboxPatch } from "./data.ts";
 import { mcpLaunchContract, runMcpLaunch } from "./mcp-launch-tool.ts";
 import { DEFAULT_WAIT_SECONDS, registerListTool, registerLogsTool, registerStatusTools } from "./mcp-read-tools.ts";
+import { runtimeBridgeTarget } from "./provider-runtime-admission.ts";
 import { recordOperatorFailure } from "./request-observability.ts";
 import { appendConversation, sandboxActivity } from "./sandbox-activity.ts";
 import { refuseConversationSelector } from "./sandbox-conversation.ts";
@@ -450,12 +451,13 @@ export function configureTools(
     sandboxOperations.stopSandbox.tool,
     async (args) => {
       const found = await visible(args.id);
-      if (args.only_if_idle && !["ready", "stopped"].includes(found.status))
+      const canCheckIdle = found.status === "ready" || (found.status === "running" && runtimeBridgeTarget(found));
+      if (args.only_if_idle && !canCheckIdle && found.status !== "stopped")
         throw new VaultError(
           "credential_binding_unsafe",
           "Wait for the running turn or lifecycle operation to finish before changing accounts.",
         );
-      if (args.only_if_idle && found.status === "ready" && !(await statusOf(args.id, undefined)).settled)
+      if (args.only_if_idle && canCheckIdle && !(await statusOf(args.id, undefined)).settled)
         throw new VaultError(
           "credential_binding_unsafe",
           "Wait for the current turn to finish before changing accounts.",
@@ -541,6 +543,14 @@ export function configureTools(
   );
 
   if (surface === "mcp") {
+    const { sendPrompt, sandboxStatus, stopSandbox } = sandboxOperations;
+    const { mcpBranch: sendBranch } = sendPrompt;
+    const { mcpBranch: statusBranch } = sandboxStatus;
+    const { mcpBranch: stopBranch } = stopSandbox;
+    const branchHandlers = { steerSandbox: steerTool, waitSandbox: waitTool, interruptSandbox: interruptTool };
+    const steer = branchHandlers[sendBranch.operation];
+    const wait = branchHandlers[statusBranch.operation];
+    const interrupt = branchHandlers[stopBranch.operation];
     register(
       "send",
       {
@@ -552,7 +562,7 @@ export function configureTools(
             "Required for runtime follow-up. Optional for runtime steer. Reuse with identical input after uncertain delivery. " +
               "Native send accepts the field without deduplication. Omit it for native steer.",
           ),
-          steer: z
+          [sendBranch.flag]: z
             .boolean()
             .optional()
             .describe("Redirect the running turn. Delivery is native or a restart in the same conversation."),
@@ -560,20 +570,20 @@ export function configureTools(
         output: {
           ...sendTool.output,
           status: sendTool.output.status.optional(),
-          delivery: steerTool.output.delivery.optional(),
-          mode: steerTool.output.mode.optional(),
+          delivery: steer.output.delivery.optional(),
+          mode: steer.output.mode.optional(),
         },
       },
-      async ({ steer, id, prompt, request_id, model, reasoning_effort, ...extra }) => {
+      async ({ [sendBranch.flag]: shouldSteer, id, prompt, request_id, model, reasoning_effort, ...extra }) => {
         try {
           refuseConversationSelector(extra);
         } catch (error) {
           return errorResult(error, "send", context.logError ?? console.error);
         }
-        if (!steer) return sendTool.invoke({ id, prompt, request_id, model, reasoning_effort });
+        if (!shouldSteer) return sendTool.invoke({ id, prompt, request_id, model, reasoning_effort });
         if (model !== undefined || reasoning_effort !== undefined)
           return invalidToolInput("send", "Model and effort overrides require a new turn.");
-        return steerTool.invoke({ id, text: prompt, request_id });
+        return steer.invoke({ id, text: prompt, request_id });
       },
     );
 
@@ -583,16 +593,17 @@ export function configureTools(
         ...readStatusTool,
         input: {
           ...readStatusTool.input,
-          timeout_seconds: waitTool.input.timeout_seconds,
-          wait: z.boolean().optional().describe("Wait for settlement. Default timeout: 60 seconds."),
+          timeout_seconds: wait.input.timeout_seconds,
+          [statusBranch.flag]: z.boolean().optional().describe("Wait for settlement. Default timeout: 60 seconds."),
         },
-        output: { ...readStatusTool.output, timedOut: waitTool.output.timedOut.optional() },
+        output: { ...readStatusTool.output, timedOut: wait.output.timedOut.optional() },
       },
-      async ({ wait, timeout_seconds, ...args }) => {
-        if (!wait && timeout_seconds !== undefined) return invalidToolInput("status", "timeout_seconds requires wait.");
-        if (wait && args.recorded !== undefined)
+      async ({ [statusBranch.flag]: shouldWait, timeout_seconds, ...args }) => {
+        if (!shouldWait && timeout_seconds !== undefined)
+          return invalidToolInput("status", "timeout_seconds requires wait.");
+        if (shouldWait && args.recorded !== undefined)
           return invalidToolInput("status", "Waiting uses the live turn state. Omit recorded.");
-        return wait ? waitTool.invoke({ ...args, timeout_seconds }) : readStatusTool.invoke(args);
+        return shouldWait ? wait.invoke({ ...args, timeout_seconds }) : readStatusTool.invoke(args);
       },
     );
 
@@ -602,22 +613,22 @@ export function configureTools(
         ...stopTool,
         input: z.strictObject({
           ...stopTool.input,
-          turn: z.boolean().optional().describe("Interrupt the turn without stopping the sandbox."),
+          [stopBranch.flag]: z.boolean().optional().describe("Interrupt the turn without stopping the sandbox."),
           after: z.boolean().optional().describe("Wait for settlement before attempting an idle-only stop."),
           timeout_seconds: waitTool.input.timeout_seconds,
         }),
         output: {
           ...stopTool.output,
           status: stopTool.output.status.optional(),
-          interrupted: interruptTool.output.interrupted.optional(),
+          interrupted: interrupt.output.interrupted.optional(),
           timedOut: waitTool.output.timedOut.optional(),
         },
       },
-      async ({ turn, after, timeout_seconds, ...args }) => {
+      async ({ [stopBranch.flag]: shouldInterrupt, after, timeout_seconds, ...args }) => {
         if (!after && timeout_seconds !== undefined) return invalidToolInput("stop", "timeout_seconds requires after.");
-        if (after && (turn || args.only_if_idle !== undefined))
+        if (after && (shouldInterrupt || args.only_if_idle !== undefined))
           return invalidToolInput("stop", "Use after without turn or only_if_idle.");
-        if (turn && args.only_if_idle) return invalidToolInput("stop", "Use turn without only_if_idle.");
+        if (shouldInterrupt && args.only_if_idle) return invalidToolInput("stop", "Use turn without only_if_idle.");
         if (after) {
           const seconds = timeout_seconds ?? DEFAULT_WAIT_SECONDS;
           const deadline = context.now().getTime() + seconds * 1000;
@@ -629,7 +640,7 @@ export function configureTools(
           }
           return stopTool.invoke({ ...args, only_if_idle: true });
         }
-        return turn ? interruptTool.invoke({ id: args.id, request_id: args.request_id }) : stopTool.invoke(args);
+        return shouldInterrupt ? interrupt.invoke({ id: args.id, request_id: args.request_id }) : stopTool.invoke(args);
       },
     );
   }

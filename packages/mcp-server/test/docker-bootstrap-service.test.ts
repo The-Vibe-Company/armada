@@ -834,7 +834,27 @@ test("a failed Docker resume ACK only fails the activation admitted for that req
   expect((await service.resume(f.actor, f.sandbox.id, first.requestId)).state).toBe("failed");
 
   await fail(current.requestId);
+  await fail(current.requestId);
   expect((await reservations.get(f.actor, f.sandbox.id)).status).toBe("failed");
+  expect(
+    (
+      await database().query(
+        `select t.from_status, t.to_status, t.actor, t.code,
+                t.generation = s.lifecycle_generation as current_generation
+         from public.sandbox_transitions t join public.sandboxes s on s.id=t.sandbox_id
+         where t.sandbox_id=$1 and t.code='resume_ack_failed'`,
+        [f.sandbox.id],
+      )
+    ).rows,
+  ).toEqual([
+    {
+      from_status: "starting",
+      to_status: "failed",
+      actor: "docker_host",
+      code: "resume_ack_failed",
+      current_generation: true,
+    },
+  ]);
   await hosts.complete(f.hostToken, f.installationId, { requestId: previousStop, outcome: "completed" });
   expect(
     (await database().query("select stopped_at from public.sandboxes where id=$1", [f.sandbox.id])).rows[0],
@@ -931,16 +951,35 @@ test.each(refusalOrders)(
             }),
           ),
       }) satisfies Sql;
-    if (failedAckFirst) {
-      await expect(
-        createDockerHostStore(failWrite("set outcome=$2,completed_at=now()"), key).complete(
-          f.hostToken,
-          f.installationId,
-          { requestId: job.requestId, outcome: "failed" },
-        ),
-      ).rejects.toMatchObject({ cause: { message: "handoff write failed" } });
-      expect((await reservations.get(f.actor, id)).status).toBe("starting");
+    if (order === "failed ACK first") {
+      const durableState = async () =>
+        (
+          await database().query(
+            `select s.status, s.lifecycle_generation, s.status_reason,
+               exists(select 1 from public.sandbox_transitions t
+                 where t.sandbox_id=s.id and t.code='resume_ack_failed') as journaled
+             from public.sandboxes s where s.id=$1`,
+            [id],
+          )
+        ).rows[0];
+      const before = await durableState();
+      expect(before).toMatchObject({ status: "starting", journaled: false });
+      for (const write of [
+        "from public.sandbox_transition(",
+        "set status_reason=$2",
+        "set outcome=$2,completed_at=now()",
+      ]) {
+        await expect(
+          createDockerHostStore(failWrite(write), key).complete(f.hostToken, f.installationId, {
+            requestId: job.requestId,
+            outcome: "failed",
+          }),
+        ).rejects.toMatchObject({ cause: { message: "handoff write failed" } });
+        expect(await durableState()).toEqual(before);
+      }
       expect((await hosts.poll(f.hostToken, f.installationId))?.requestId).toBe(job.requestId);
+    }
+    if (failedAckFirst) {
       await ack(job.requestId, "failed");
       expect((await reservations.get(f.actor, id)).status).toBe("failed");
       await expect(authority.enrol(job.bootstrap.enrolmentToken)).rejects.toThrow("runtime_enrolment_denied");

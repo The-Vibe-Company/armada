@@ -18,7 +18,7 @@ import {
  * `creds/accounts/{set,rename,default,remove}` change them by id under the server's own owner/admin checks. A
  * secret pasted for an account travels once in a request body; every answer is the safe account DTO.
  */
-export const ACCOUNT_ROUTES = {
+const ACCOUNT_ROUTES = {
   list: "creds/list",
   set: "creds/accounts/set",
   rename: "creds/accounts/rename",
@@ -37,7 +37,7 @@ export const ACCOUNT_ROUTES = {
 export type AccountTarget = { scope: AccountScope; org?: string; id: string };
 
 /** Creates an account, or with `id` rotates its secret; `expectedVersion` refuses a stale rotation. */
-export type SetAccountRequest = Omit<AccountTarget, "id"> & {
+type SetAccountRequest = Omit<AccountTarget, "id"> & {
   id?: string;
   kind: string;
   name: string;
