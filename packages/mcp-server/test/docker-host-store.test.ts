@@ -1,6 +1,12 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { createHash, randomUUID } from "node:crypto";
-import { DOCKER_IMAGE_UNAVAILABLE_MESSAGE, DOCKER_LAUNCH_FAILURE_MESSAGES, type Sql } from "@armada/core";
+import {
+  DOCKER_HOST_PROTOCOL,
+  DOCKER_HOST_PROTOCOL_HEADER,
+  DOCKER_IMAGE_UNAVAILABLE_MESSAGE,
+  DOCKER_LAUNCH_FAILURE_MESSAGES,
+  type Sql,
+} from "@armada/core";
 import { decryptSecret, encryptSecret } from "@armada/core/server";
 import { admitDockerDisk, DockerHostDraining } from "../src/docker-capacity.ts";
 import { createDockerHostRoutes } from "../src/docker-host-routes.ts";
@@ -773,6 +779,7 @@ test("a complete stopped Docker archive replaces the live sample, while a trunca
         method: "POST",
         headers: {
           authorization: `Bearer ${a.hostToken}`,
+          [DOCKER_HOST_PROTOCOL_HEADER]: String(DOCKER_HOST_PROTOCOL),
           "x-armada-installation-id": a.installationId,
           "x-armada-request-id": a.startup.requestId,
           ...(body ? { "content-type": "application/x-tar" } : {}),
