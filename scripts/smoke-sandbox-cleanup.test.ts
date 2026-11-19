@@ -164,7 +164,7 @@ test.each([1, 32])("child deletion follows parent deletion with a batch limit of
   const remaining = await deleteSmokeReceipts(
     STAGING_ORIGIN,
     "token",
-    [child, row],
+    [child, row, { ...row }],
     {
       out: () => {},
       fetch: async (url) => {
@@ -173,7 +173,7 @@ test.each([1, 32])("child deletion follows parent deletion with a batch limit of
         return Response.json({ id, status: "deleted" });
       },
     },
-    limit,
+    { limit },
   );
   expect(remaining).toEqual(limit === 1 ? [child] : []);
   expect(calls).toEqual(limit === 1 ? [row.id] : [row.id, child.id]);
@@ -338,7 +338,7 @@ test.each([
   },
 );
 
-test("a staging run persists absent historical receipts as settled and never sweeps them again", async () => {
+test("a staging run stops historical receipts once before deleting and never sweeps settled IDs again", async () => {
   const directory = await mkdtemp(join(tmpdir(), "smoke-missing-history-"));
   const path = join(directory, "journal.json");
   const historical = [
@@ -346,6 +346,7 @@ test("a staging run persists absent historical receipts as settled and never swe
     { ...row, id: "33333333-3333-3333-3333-333333333333", provider: "modal" as const },
   ];
   const deferred = { ...row, id: "44444444-4444-4444-4444-444444444444", provider: "boat" as const };
+  const stopped = new Set<string>();
   const deleted: string[] = [];
   try {
     await saveSmokeJournal(path, [...historical, deferred]);
@@ -377,9 +378,17 @@ test("a staging run persists absent historical receipts as settled and never swe
             if (line.startsWith("{")) output.push(JSON.parse(line));
           },
           fetch: async (url, init) => {
+            if (url.endsWith("/stop")) {
+              const { id } = JSON.parse(String(init.body));
+              expect(stopped.has(id)).toBe(false);
+              stopped.add(id);
+              return Response.json({ id, status: "stopped" });
+            }
             if (init.method === "DELETE") {
-              deleted.push(new URL(url).pathname.split("/").at(-1)!);
-              return Response.json({ error: { code: "not_found" } }, { status: 404 });
+              const id = new URL(url).pathname.split("/").at(-1)!;
+              expect(stopped.has(id)).toBe(true);
+              deleted.push(id);
+              return Response.json({ id, status: "deleted" });
             }
             expect(url.endsWith("/launch")).toBe(true);
             return Response.json({ error: { code: "invalid_request" } }, { status: 400 });

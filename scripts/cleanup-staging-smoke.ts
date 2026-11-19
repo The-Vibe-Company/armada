@@ -24,7 +24,7 @@ export async function cleanupStagingSmoke(
   );
   if (!args.includes("--delete")) return true;
   if (!env.ARMADA_TOKEN) throw new Error("ARMADA_TOKEN is required for --delete.");
-  const remaining = await deleteSmokeReceipts(STAGING_ORIGIN, env.ARMADA_TOKEN, unique, io);
+  const remaining = await deleteSmokeReceipts(STAGING_ORIGIN, env.ARMADA_TOKEN, unique, io, { stopFirst: true });
   io.out(
     JSON.stringify({
       step: "historical_smoke_result",

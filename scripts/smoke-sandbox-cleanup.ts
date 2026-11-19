@@ -84,12 +84,23 @@ export async function deleteSmokeReceipts(
   token: string,
   rows: SmokeSandboxReceipt[],
   io: CleanupIo,
-  limit = 32,
+  { limit = 32, stopFirst = false } = {},
 ): Promise<SmokeSandboxReceipt[]> {
   if (origin !== STAGING_ORIGIN) throw new Error("staging_only");
   const scoped = (row: SmokeSandboxReceipt) => row.requestKey.startsWith("smoke-scoped-");
-  const ordered = rows.toSorted((a, b) => Number(scoped(a)) - Number(scoped(b)));
+  const unique = new Map(rows.map((row) => [`${row.org}/${row.id}`, row]));
+  const ordered = [...unique.values()].sort((a, b) => Number(scoped(a)) - Number(scoped(b)));
   const selected = ordered.slice(0, limit);
+
+  async function requestStop(row: SmokeSandboxReceipt) {
+    await io.fetch(`${origin}/api/v1/sandbox/stop`, {
+      method: "POST",
+      redirect: "error",
+      signal: AbortSignal.timeout(120_000),
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: JSON.stringify({ org: row.org, id: row.id }),
+    });
+  }
 
   async function requestDelete(row: SmokeSandboxReceipt) {
     let httpStatus: number | null = null;
@@ -130,7 +141,12 @@ export async function deleteSmokeReceipts(
   }
 
   async function submit(batch: SmokeSandboxReceipt[]) {
-    const results = await Promise.all(batch.map(requestDelete));
+    const results = await Promise.all(
+      batch.map(async (row) => {
+        if (stopFirst) await requestStop(row).catch(() => {});
+        return requestDelete(row);
+      }),
+    );
     return batch.filter((_, index) => !results[index]);
   }
 

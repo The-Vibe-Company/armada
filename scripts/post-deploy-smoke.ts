@@ -1530,7 +1530,7 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
         requiresOperator: true,
       }),
     );
-  rows = await deleteSmokeReceipts(STAGING_ORIGIN, env.ARMADA_TOKEN, rows, io);
+  rows = await deleteSmokeReceipts(STAGING_ORIGIN, env.ARMADA_TOKEN, rows, io, { stopFirst: true });
   await saveSmokeJournal(path, [...deferred, ...rows]);
   const earlierRows = rows;
   rows = [];
@@ -1612,7 +1612,7 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
     unknownLaunch ||= unacknowledgedLaunches.size > 0;
     deferred.push(...rows.filter((row) => row.provider !== "modal" && row.provider !== "docker"));
     rows = rows.filter((row) => row.provider === "modal" || row.provider === "docker");
-    rows = await deleteSmokeReceipts(STAGING_ORIGIN, env.ARMADA_TOKEN, rows, io, 64);
+    rows = await deleteSmokeReceipts(STAGING_ORIGIN, env.ARMADA_TOKEN, rows, io, { limit: 64 });
     rows = [...earlierRows, ...rows];
     await saveSmokeJournal(path, [...deferred, ...rows]);
     io.out(

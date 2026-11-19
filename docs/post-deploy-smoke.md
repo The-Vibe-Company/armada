@@ -301,7 +301,7 @@ lifecycle capture overwriting the stop result cannot silently pass.
 Budget: two allocations and two trivial model turns per selected pair, instead
 of one. Expect roughly 4–10 minutes per pair (provider/model dependent); the
 functional probe phase has a 35-minute work budget plus five minutes of local
-cleanup. Historical and final receipt sweeps bound each DELETE request to two minutes.
+cleanup. Historical and final receipt sweeps bound each request to two minutes.
 Slow selected pairs can exhaust the work budget and
 fail closed. Cost is twice the baseline sandbox/model usage, plus small recovery
 storage; stopped disks/archives retain the normal retention cost. No dollar
@@ -825,7 +825,7 @@ Synthetic protocol/build proofs are not inference or production acceptance.
 Both staging workflows upload `.smoke/sandboxes.json` as an artifact even when probes fail, restore the latest named artifact across branches/tags, and set
 `ARMADA_SMOKE_JOURNAL` for the compute smoke. Launch receipts are persisted before
 probe validation; cleanup deletes known IDs after all stop/recovery assertions.
-The startup sweep submits one DELETE per older receipt, up to 32 receipts;
+The startup sweep submits one stop and one DELETE per older sandbox ID, up to 32 IDs;
 current-run deletion has an independent 64-ID bound. It never lists all stopped
 sandboxes for deletion. The target `smoke_cleanup_summary.remainingRows` is zero;
 deleted audit rows remain but do not grow active dashboard lists.
@@ -859,8 +859,8 @@ verify its deletion while an unrelated stopped sandbox remains unchanged.
    refused before requests.
 4. Set `ARMADA_TOKEN` through the staging secret store, then run
    `bun scripts/cleanup-staging-smoke.ts --delete`. At most 32 explicit IDs are
-   attempted per invocation. Stop active sandboxes before running the sweep.
-   Counts are printed; failures return nonzero. Preserve
+   attempted per invocation, with one stop and one DELETE per ID. Counts are
+   printed and failures return nonzero. Preserve
    the source manifest and partition into batches of 32. Already-deleted IDs can
    safely be repeated. Never paste tokens into argv or logs.
 5. Compare the staging org's visible sandbox count before/after. Run an ordinary
@@ -874,8 +874,10 @@ one known leftover on the next run; verify unrelated stopped sandboxes survive.
 ## Diagnosing and reconciling deletion
 
 `delete_smoke_sandbox` reports the sandbox ID and whether cleanup settled. Each
-selected receipt gets one bounded DELETE request per sweep after the functional
-lanes have handled shutdown. The receipt settles on a matching `deleted`
+selected sandbox gets one bounded DELETE request per sweep. The final sweep
+runs after functional lanes have handled shutdown. The startup and manual sweeps
+first make one stop request to recover sandboxes from interrupted runs. The
+receipt settles on a matching `deleted`
 response or an explicit HTTP 404 `not_found` from the sandbox endpoint.
 Ordinary receipts are processed before delegated child receipts because the
 server requires the parent to be durably deleted first.
