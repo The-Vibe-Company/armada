@@ -22,6 +22,7 @@ import type { RuntimeNativePublication } from "./runtime-native-auth.ts";
 import { logRuntimeStage } from "./runtime-progress.ts";
 import { settleRuntimeTurn } from "./sandbox-lifecycle.ts";
 import { admittedTurnContexts } from "./turn-pricing.ts";
+import { deferTransactionWake, eventFeedWakeKey } from "./wake-bus.ts";
 
 class InvalidEvents extends Error {}
 class ConflictingEvent extends Error {}
@@ -225,13 +226,15 @@ export function createRuntimeEvents(
         }
         ack = Math.max(ack, item.sequence);
       }
-      if (sequences.length)
+      if (sequences.length) {
         await tx.query(
           `insert into public.runtime_events(sandbox_id,sequence,epoch,counted_prompt_id,event_enc,visible_text_prompt_id)
            select $1,sequence,$2,marker,decode(event_hex,'hex'),text_prompt_id
            from unnest($3::bigint[],$4::text[],$5::text[],$6::uuid[]) as batch(sequence,marker,event_hex,text_prompt_id)`,
           [scope.sandboxId, scope.epoch, sequences, markers, encrypted, visibleTextPromptIds],
         );
+        deferTransactionWake(tx, eventFeedWakeKey(scope.sandboxId));
+      }
       // Project only the newly committed contiguous archive prefix. Replays cannot
       // resurrect waits, and assistant progress or terminal events clear them.
       const retryUpdates = new Map<string, number | null>();

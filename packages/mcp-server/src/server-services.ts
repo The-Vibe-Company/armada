@@ -32,6 +32,7 @@ import { createDockerNormalLaunch } from "./docker-normal-launch.ts";
 import { createDockerNormalSend } from "./docker-normal-send.ts";
 import { createDockerOutputReader } from "./docker-outputs.ts";
 import { createDockerSandboxControls } from "./docker-sandbox-controls.ts";
+import { createEventFeed } from "./event-feed.ts";
 import { createGitHubAccountApi } from "./github-account.ts";
 import { configureBoatGitHub } from "./github-boat.ts";
 import { createSqlGoldenList } from "./golden-list.ts";
@@ -561,6 +562,7 @@ export async function createServerServices(env: Record<string, string | undefine
     scopedMcpUrl: orchestratorScopedMcpUrl(config.publicUrl),
   };
   const delegatedAccess = createSandboxAccessServices(sandboxAccessContext);
+  control.eventFeed = createEventFeed(sql, delegatedAccess.authority);
   const nativeHistoryFor = createHistoricalSandboxProviderResolver({
     resolve: (target, caller) => logProviders[target.provider](target, caller),
   });
