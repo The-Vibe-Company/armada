@@ -188,7 +188,6 @@ export function httpApi(
         authorization: `Bearer ${token}`,
         "content-type": "application/json",
         [DOCKER_HOST_PROTOCOL_HEADER]: String(DOCKER_HOST_PROTOCOL),
-        // Dispatch may depend on this poll's capability, even when older daemons report the same protocol.
         ...(endpoint === "poll" ? { "x-armada-docker-host-delete-physical": "1" } : {}),
       },
       body: JSON.stringify(body),
