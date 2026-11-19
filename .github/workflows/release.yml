@@ -1,22 +1,19 @@
 name: Release
 
-# Release Please opens the version PR on main. Merging it creates the release tag and
-# publishes in this same workflow: GITHUB_TOKEN-created tags do not trigger tag workflows.
-# Tag pushes also work; manual runs are dry runs unless a tag and publish=true are supplied.
+# Release Please prepares version PRs. Stable publication follows exact-source smoke.
 on:
   push:
     branches: [main]
-    tags: ["v*"]
   workflow_dispatch:
     inputs:
-      tag:
-        description: "Existing v<version> tag (empty: dry-run the selected ref)"
+      version:
+        description: "Release version to recover (leave both inputs empty for a dry run)"
         type: string
         default: ""
-      publish:
-        description: "Publish/recover the existing tag instead of a dry run"
-        type: boolean
-        default: false
+      sha:
+        description: "Full main commit SHA to recover"
+        type: string
+        default: ""
 
 permissions:
   contents: read
@@ -35,54 +32,29 @@ jobs:
     timeout-minutes: 5
     outputs:
       publish: ${{ steps.intent.outputs.publish }}
+      mode: ${{ steps.intent.outputs.mode }}
+      version: ${{ steps.intent.outputs.version }}
+      sha: ${{ steps.intent.outputs.sha }}
     steps:
+      - name: Require main for publication or recovery
+        if: github.ref != 'refs/heads/main' && (inputs.version != '' || inputs.sha != '')
+        run: exit 1
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          ref: ${{ inputs.tag || github.sha }}
+          ref: ${{ github.workflow_sha }}
           fetch-depth: 0
           persist-credentials: false
+      - uses: ./.github/actions/setup-bun
       - name: Decide publication intent
         id: intent
         env:
-          EVENT_NAME: ${{ github.event_name }}
-          SOURCE_REF: ${{ github.ref }}
-          RELEASE_TAG: ${{ inputs.tag || (github.ref_type == 'tag' && github.ref_name) || '' }}
-          REQUESTED_PUBLISH: ${{ inputs.publish && 'true' || 'false' }}
+          RUN_MODE: ${{ github.event_name == 'push' && 'automatic' || ((inputs.version != '' || inputs.sha != '') && 'dispatch' || 'dry-run') }}
+          SOURCE_SHA: ${{ github.sha }}
+          REQUESTED_VERSION: ${{ inputs.version }}
+          REQUESTED_SHA: ${{ inputs.sha }}
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-        run: |
-          set -euo pipefail
-          publish=false
-          if [[ "$EVENT_NAME" == push && "$SOURCE_REF" == refs/heads/main ]]; then
-            version=$(jq -er .version packages/core/package.json)
-            [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.+-]+)?$ ]] || { echo "::error::Invalid release version; no publication authorized."; exit 1; }
-            response="$RUNNER_TEMP/release-metadata-response"
-            trap 'rm -f "$response"' EXIT
-            # HTTP metadata only. A failed API request is never treated as 'already published'.
-            gh api --include "repos/$GH_REPO/releases/tags/v$version" > "$response" 2>/dev/null || true
-            status=$(awk '/^HTTP\// { print $2; exit }' "$response")
-            case "$status" in
-              200) publish=false ;;
-              404) publish=true ;;
-              *) echo "::error::Cannot verify release publication intent; no publication authorized."; exit 1 ;;
-            esac
-          elif [[ "$EVENT_NAME" == push && "$SOURCE_REF" == refs/tags/v* ]]; then
-            publish=true
-          elif [[ "$EVENT_NAME" == workflow_dispatch ]]; then
-            [[ "$REQUESTED_PUBLISH" == true || "$REQUESTED_PUBLISH" == false ]] || exit 1
-            publish="$REQUESTED_PUBLISH"
-          else
-            echo "::error::Unsupported release event; no publication authorized."
-            exit 1
-          fi
-          if [[ "$publish" == true && "$SOURCE_REF" != refs/heads/main ]]; then
-            [[ "$SOURCE_REF" == refs/tags/v* ]] || { echo "::error::Publishing requires main or a version tag."; exit 1; }
-          fi
-          if [[ "$publish" == true && "$EVENT_NAME" != push || "$publish" == true && "$SOURCE_REF" != refs/heads/main ]]; then
-            [[ -n "$RELEASE_TAG" && "$RELEASE_TAG" == "v$(jq -r .version packages/core/package.json)" ]] || { echo "::error::Publishing requires a matching existing version tag."; exit 1; }
-            [[ "$(git rev-parse HEAD)" == "$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")" ]] && git merge-base --is-ancestor HEAD origin/main || { echo "::error::Publishing tag must belong to main."; exit 1; }
-          fi
-          echo "publish=$publish" >> "$GITHUB_OUTPUT"
+        run: bun scripts/release/publication.ts admit
 
   release-configuration:
     name: Check ${{ matrix.environment }} release configuration
@@ -132,10 +104,9 @@ jobs:
           fi
 
   release-please:
-    name: Prepare the version PR or GitHub release
-    needs: [publication-intent, release-configuration]
-    if: ${{ !cancelled() && needs.publication-intent.result == 'success' && (needs.publication-intent.outputs.publish != 'true' || needs.release-configuration.result == 'success') && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
-    # Publication is disabled on ordinary preparation runs, not merely inferred.
+    name: Prepare the next version PR
+    needs: publication-intent
+    if: needs.publication-intent.outputs.mode == 'prepare'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -143,14 +114,24 @@ jobs:
       issues: write
       pull-requests: write
       actions: write # Explicitly dispatch CI for bot-authored release PRs.
-    outputs:
-      release_created: ${{ steps.release.outputs.release_created }}
-      tag_name: ${{ steps.release.outputs.tag_name }}
     steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.workflow_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: ./.github/actions/setup-bun
+      - name: Reconcile the published version PR
+        env:
+          VERSION: ${{ needs.publication-intent.outputs.version }}
+          RELEASE_SHA: ${{ needs.publication-intent.outputs.sha }}
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: bun scripts/release/publication.ts reconcile
       - id: release
         uses: googleapis/release-please-action@8b8fd2cc23b2e18957157a9d923d75aa0c6f6ad5 # v4
         with:
-          skip-github-release: ${{ needs.publication-intent.outputs.publish != 'true' }}
+          skip-github-release: true
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         if: steps.release.outputs.prs_created == 'true'
         with:
@@ -176,9 +157,9 @@ jobs:
           gh workflow run ci.yml --ref "$RELEASE_BRANCH"
 
   release-metadata:
-    name: Validate the release tag, version and source SHA
-    needs: [publication-intent, release-configuration, release-please]
-    if: ${{ !cancelled() && needs.publication-intent.result == 'success' && (needs.publication-intent.outputs.publish != 'true' || needs.release-configuration.result == 'success') && (startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch' || needs.release-please.outputs.release_created == 'true') }}
+    name: Validate the release version and source SHA
+    needs: [publication-intent, release-configuration]
+    if: ${{ !cancelled() && needs.publication-intent.result == 'success' && (needs.publication-intent.outputs.mode == 'dry-run' || (needs.publication-intent.outputs.publish == 'true' && needs.release-configuration.result == 'success')) }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
@@ -191,37 +172,26 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-          ref: ${{ needs.release-please.outputs.tag_name || inputs.tag || github.sha }}
+          ref: ${{ needs.publication-intent.outputs.sha }}
       - id: version
-        name: The tag, the version and the dist-tag
+        name: Validate workspace versions and set the dist-tag
         env:
-          RELEASE_TAG: ${{ needs.release-please.outputs.tag_name || inputs.tag || (github.ref_type == 'tag' && github.ref_name) || '' }}
-          SHOULD_PUBLISH: ${{ needs.release-please.outputs.release_created == 'true' || (github.event_name == 'push' && github.ref_type == 'tag') || inputs.publish }}
+          EXPECTED_VERSION: ${{ needs.publication-intent.outputs.version }}
+          PUBLISH: ${{ needs.publication-intent.outputs.publish }}
         run: |
           set -euo pipefail
           version=$(jq -r .version packages/core/package.json)
           for file in package.json packages/*/package.json apps/*/package.json; do
             test "$(jq -r .version "$file")" = "$version" || { echo "::error::$file is not at $version"; exit 1; }
           done
-          publish=false
-          if [ -n "$RELEASE_TAG" ]; then
-            test "$RELEASE_TAG" = "v$version" || { echo "::error::tag is not v$version"; exit 1; }
-            test "$(git rev-parse HEAD)" = "$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")" \
-              || { echo "::error::checkout is not the release tag"; exit 1; }
-            git merge-base --is-ancestor HEAD origin/main \
-              || { echo "::error::tag is not a commit of main"; exit 1; }
-            if [ "$SHOULD_PUBLISH" = true ]; then publish=true; fi
-          elif [ "$SHOULD_PUBLISH" = true ]; then
-            echo "::error::Publishing requires an existing version tag."
-            exit 1
-          fi
+          [[ -z "$EXPECTED_VERSION" || "$version" == "$EXPECTED_VERSION" ]]
           case "$version" in *-*) dist_tag=next ;; *) dist_tag=latest ;; esac
-          echo "Version $version, dist-tag $dist_tag, publish $publish."
+          echo "Version $version, dist-tag $dist_tag, publish $PUBLISH."
           {
             echo "sha=$(git rev-parse HEAD)"
             echo "version=$version"
             echo "dist_tag=$dist_tag"
-            echo "publish=$publish"
+            echo "publish=$PUBLISH"
           } >> "$GITHUB_OUTPUT"
 
   check:
@@ -299,12 +269,13 @@ jobs:
           sudo unshare --pid --fork --mount-proc "$(which bun)" packages/provider-modal/test/checkpoint-process-conformance.ts --native-pidfds
 
   sandbox-image:
-    name: Publish official sandbox image (linux/amd64)
+    name: Build candidate sandbox image (linux/amd64)
     outputs:
       enabled: ${{ steps.foundation.outputs.enabled }}
+      digest: ${{ steps.image.outputs.digest }}
       sha: ${{ needs.release-metadata.outputs.sha }}
       publish: ${{ needs.release-metadata.outputs.publish }}
-    needs: release-metadata
+    needs: [release-metadata, publication-intent]
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
@@ -324,24 +295,35 @@ jobs:
           if [ "$PUBLISH" = true ] && [ -f images/sandbox/Dockerfile ]; then
             echo 'enabled=true' >> "$GITHUB_OUTPUT"
           fi
-      - name: Publish versioned image and record immutable pin
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        if: steps.foundation.outputs.enabled == 'true'
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: .release-tools
+          sparse-checkout: scripts/release
+          persist-credentials: false
+      - id: image
+        name: Record the immutable candidate or published digest
         if: steps.foundation.outputs.enabled == 'true'
         env:
           GHCR_TOKEN: ${{ github.token }}
           VERSION: ${{ needs.release-metadata.outputs.version }}
+          SHA: ${{ needs.release-metadata.outputs.sha }}
+          MODE: ${{ needs.publication-intent.outputs.mode }}
         run: |
           set -euo pipefail
           registry=ghcr.io/the-vibe-company/armada-sandbox
-          echo "$GHCR_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
-          trap 'docker logout ghcr.io' EXIT
-          # A recovery run must reuse an existing version, not replace its bytes.
-          digest=$(python3 scripts/release/sandbox-image-digest.py)
-          if [ -z "$digest" ]; then
+          if [[ "$MODE" == recover ]]; then
+            digest=$(IMAGE_TAG="$VERSION" python3 .release-tools/scripts/release/sandbox-image-digest.py)
+          else
+            echo "$GHCR_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+            trap 'docker logout ghcr.io' EXIT
             docker buildx build --platform linux/amd64 --file images/sandbox/Dockerfile \
-              --tag "$registry:$VERSION" --push --metadata-file /tmp/sandbox-metadata.json .
+              --tag "$registry:$VERSION-rc.${SHA:0:7}" --push --metadata-file /tmp/sandbox-metadata.json .
             digest=$(jq -er '."containerimage.digest"' /tmp/sandbox-metadata.json)
           fi
           [[ "$digest" =~ ^sha256:[a-f0-9]{64}$ ]]
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
           jq -n --arg version "$VERSION" --arg image "$registry@$digest" \
             '{version: $version, image: $image}' > packages/core/src/official-sandbox-image.json
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -434,12 +416,67 @@ jobs:
       official_image: ${{ needs.sandbox-image.outputs.enabled == 'true' }}
     secrets: inherit
 
+  finalize-release:
+    name: Publish the smoked image, tag and GitHub release
+    needs: [release-metadata, check, sandbox-image, binary, staging-smoke]
+    if: needs.release-metadata.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: read
+      packages: write
+    env:
+      VERSION: ${{ needs.release-metadata.outputs.version }}
+      RELEASE_SHA: ${{ needs.release-metadata.outputs.sha }}
+      SMOKED_DIGEST: ${{ needs.sandbox-image.outputs.digest }}
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      GHCR_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.workflow_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: ./.github/actions/setup-bun
+      - name: Verify source and plan publication
+        id: plan
+        run: |
+          set -euo pipefail
+          export STABLE_DIGEST=""
+          if [[ -n "$SMOKED_DIGEST" ]]; then
+            STABLE_DIGEST=$(IMAGE_TAG="$VERSION" python3 scripts/release/sandbox-image-digest.py)
+          fi
+          bun scripts/release/publication.ts finalize
+      - name: Promote and verify the smoked digest
+        if: steps.plan.outputs.promote == 'true'
+        run: |
+          set -euo pipefail
+          registry=ghcr.io/the-vibe-company/armada-sandbox
+          echo "$GHCR_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+          trap 'docker logout ghcr.io' EXIT
+          docker buildx imagetools create --prefer-index=false -t "$registry:$VERSION" "$registry@$SMOKED_DIGEST"
+          test "$(IMAGE_TAG="$VERSION" python3 scripts/release/sandbox-image-digest.py)" = "$SMOKED_DIGEST"
+      - name: Create the release on the smoked SHA
+        if: steps.plan.outputs.create == 'true'
+        run: |
+          gh release create "v$VERSION" --target "$RELEASE_SHA" --title "v$VERSION" --notes-file "$RUNNER_TEMP/release-notes.md"
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.workflow_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Verify the published tag and reconcile the version PR
+        run: bun scripts/release/publication.ts reconcile
+
   production:
     name: Release migrations, server and dashboard
     permissions:
       contents: read
       actions: read
-    needs: [release-metadata, check, binary, staging-smoke]
+    needs: [release-metadata, finalize-release]
     if: needs.release-metadata.outputs.publish == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 40
@@ -496,7 +533,8 @@ jobs:
         run: |
           # Recovery retries the latest stable release, never silently downgrades production.
           latest=$(git tag --list 'v*' --sort=-version:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sed -n '1p')
-          test "v$RELEASE_VERSION" = "$latest" || {
+          test "v$RELEASE_VERSION" = "$latest" &&
+            test "$(git rev-parse "refs/tags/v$RELEASE_VERSION^{commit}")" = "$RELEASE_SHA" || {
             echo "::error::Production deploy requires the latest stable tag ($latest); use a new hotfix release."
             exit 1
           }

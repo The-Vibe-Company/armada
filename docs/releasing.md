@@ -15,10 +15,10 @@ so the package has no dependencies.
    It updates the root package, every workspace package, the changelog and the release manifest.
    The workflow also synchronizes Bun's lockfile and explicitly dispatches CI on that PR's branch.
    This explicit dispatch matters: PRs and pushes created with `GITHUB_TOKEN` do not trigger ordinary CI.
-3. Review the version PR and merge it after all checks pass. Release Please creates `v<version>` and
-   the GitHub release, then the **same workflow** validates, builds and publishes it. It does not
-   rely on a tag-push event from the bot token.
-4. After release metadata validates the tag, version and source SHA, `check` runs lint, typecheck,
+3. Review and merge the version PR after its checks pass. The Release workflow freezes a
+   same-version main SHA and validates it. It creates the tag and GitHub release after
+   the build and exact-source staging smoke pass.
+4. After release metadata validates the version and source SHA, `check` runs lint, typecheck,
    release-only contracts and the named sentinel files in parallel with sandbox image preparation.
    Once the image pin is ready, the binary jobs and exact-SHA staging smoke run in parallel while
    `check` can continue. The merge queue runs the ordinary unit suite for the same source tree.
@@ -86,12 +86,11 @@ If production Armada cannot launch a repair worker, use the
 `Actions → Release → Run workflow` defaults to a dry run from the selected ref. It builds,
 packs and smoke-tests every platform, then runs `npm publish --dry-run`.
 
-To recover a partially published release, run the workflow from `main` with the existing
-`v<version>` tag in **tag** and **publish** enabled. It validates the exact tag, requires it to
-belong to `main`, and pins all builds to that commit. Existing package versions are skipped;
-missing versions are published. Publication tooling is loaded from the executing workflow's
-revision so tags predating the registry guard can still be recovered; all package artifacts remain
-pinned to the selected release tag. A run without an existing version tag cannot publish.
+To recover a release, dispatch from `main` with the **version** and full **sha**.
+The workflow validates the source on main and reruns the release gates. For
+published versions, both inputs must match the latest stable tag and its commit.
+Recovery uses the executing workflow's tooling and the selected SHA's source.
+It skips npm versions already published. See [Tag last](#tag-last).
 
 The `npm-tarballs-<version>-<target>` Actions artifacts contain the exact packed packages and
 per-target `SHA256SUMS-<target>` manifests.
@@ -144,12 +143,11 @@ merge-queue or release-please branch deployment triggers smoke. The main-only
 manual **Post-deploy smoke** entry point calls the same deploy/smoke workflow,
 using its selected main SHA; it is not a deployment-status subscriber.
 
-Production deploys **only through a publishing Release**. Release Please creates
-the tag when the owner merges its version PR; that same workflow validates the
-exact tag/SHA. Production requires successful `check`, binaries and staging smoke before
-production migrations → server → prebuilt dashboard → npm. A failed `check` blocks
-production and npm even if staging has already deployed and smoked that SHA.
-Tag push and reviewed existing-tag recovery keep this same path.
+Production deploys **only through a publishing Release**. The Release workflow
+requires successful `check`, binaries and exact-source staging smoke before it
+promotes the image and creates the tag and GitHub release. Production migrations,
+server, prebuilt dashboard and npm follow in that order. A failed `check` blocks
+publication even if staging has already deployed and smoked that SHA.
 A dry-run release never enters staging/production deployment or publishes npm.
 There is no variable to bypass the gate: RELEASE_SYNCED_DEPLOYS and
 STAGING_GATED_DEPLOYS are obsolete and ignored. Missing configuration fails,
@@ -182,17 +180,12 @@ configuration job checks the names below. A missing value fails with one line:
 never printed. Both environment checks must succeed. Production rechecks at its
 own first step, before checkout or mutation, in case configuration changed later.
 
-A credential-free intent job reads the current source version and the published
-GitHub release-by-tag endpoint: HTTP 200 permits **preparation only**, HTTP 404
-requires both environment checks, and any other/API/transport error fails closed.
-Ordinary main pushes with an already-published version still prepare the next
-Release Please PR without entering deployment environments. They explicitly set
-Release Please's [skip-github-release](https://github.com/googleapis/release-please-action#action-inputs)
-input: absence of publication intent is an enforced no-publication mode, not a
-heuristic permission to publish unchecked. Tag pushes and reviewed publish=true
-recovery require both checks; tags must exist, match source version and belong
-to main before secrets are loaded. Dry runs skip these environments and keep
-existing no-publication behavior.
+The intent job uses GitHub metadata and loads no deployment credentials. For
+automatic main runs, HTTP 200 permits version PR preparation and HTTP 404
+admits a candidate after it verifies the merged version PR. Both candidate
+publication and explicit recovery require the environment checks. API and
+transport errors fail closed. Release Please always skips GitHub release
+creation. Dry runs skip staging and production configuration.
 
 Environment approvals/protections still apply, potentially earlier in a release.
 Presence is not credential validity, network connectivity or scope verification.
@@ -334,9 +327,10 @@ succeed. Keep migrations additive/backward-compatible. Never auto-undo SQL,
 reset databases, unpublish npm or automatically roll back hosts. A timeout may
 leave a remote deployment running: owner inspects/drains before recovery.
 
-Recover via **Release → Run workflow**, ref main, exact existing latest stable
-tag and publish=true. Already recorded migrations/published versions are skipped.
-The production job rejects superseded stable tags; cut a forward hotfix instead.
+Recover via **Release → Run workflow** on main with the version and full source
+SHA. For a published release, use the exact latest stable tag's SHA. Already
+recorded migrations and published npm versions are skipped. Cut a forward
+hotfix for a superseded version.
 Older tags can still fail staging on unknown or non-forward migration history;
 never repair history to force them through. Known forward main history is handled
 by the staging-only check described below. A failed smoke has no variable-based emergency bypass.
@@ -518,15 +512,12 @@ golden cache hit from a golden name or a successful historical smoke alone.
 
 ## Tag last
 
-Design for [#2838](https://github.com/The-Vibe-Company/armada/issues/2838).
-[#2839](https://github.com/The-Vibe-Company/armada/issues/2839) implements this
-sequence. Until then, use the current workflow described above.
+The release sequence follows the design in [#2838](https://github.com/The-Vibe-Company/armada/issues/2838).
 
 1. **Prepare the version PR.** Always set `skip-github-release: true`.
    The [pinned action](https://github.com/googleapis/release-please-action/blob/5c625bfb5d1ff62eadeeb3772007f7f66fdcf071/src/index.ts#L136-L151)
    leaves PR creation enabled and stops emitting `release_created` and
-   `tag_name`. Publication intent supplies `version`, `sha`,
-   `release_pr_number` and `mode` (prepare, candidate or recover) to
+   `tag_name`. Publication intent supplies `version`, `sha` and `mode` (prepare, candidate or recover) to
    `release-metadata`, replacing its Release Please inputs and tag-first guard.
    Keep workspace-version validation there. Checks, builds and smoke use
    the validated SHA and retain their parallel ordering. Candidate mode can
@@ -593,11 +584,9 @@ same 404. A 404 for the current version with a matching merged version PR
 allows a candidate. A 200 allows ordinary PR preparation and verified label
 reconciliation. Other API responses fail closed. After the SHA is frozen, a
 same-version main advance alone does not invalidate a passing candidate.
-Before publication, reject a newer version on main or any newer stable tag
-or release. For a new version, replace the old `Reject superseded releases`
-requirement that the target tag already be latest with this prepublication
-guard. After publication, keep the latest-stable-tag and exact-SHA guards
-for production and recovery.
+Before publication, require the candidate version on main and reject a newer
+stable tag. After publication, production and recovery require the latest stable
+version and its exact tag SHA.
 
 Dispatch the **Release** workflow from main with `version` and a full commit
 `sha` to retry a release with fixed workflow tooling:
@@ -613,7 +602,12 @@ exists without a release, require that exact SHA and smoke it again before
 creating the release. If the release already exists, both inputs must match
 the latest stable tag and its peeled commit. Reuse its published image digest,
 repair any interrupted label update and retry the protected downstream steps.
-A different SHA after publication requires a new version. This dispatch and
-its recovery guards are proposed for #2839. The scratch run exercised release
-history and labels through a simulated GitHub adapter. It provides no
-execution evidence for workflow dispatch, registry promotion or recovery.
+A different SHA after publication requires a new version.
+
+### Tag-last acceptance ledger (#2839)
+
+| Criterion | Evidence to record |
+| --- | --- |
+| Failed smoke leaves no stable publication | Scratch workflow run with a failing smoke and before/after checks of the tag, GitHub release and stable image |
+| First real tag-last release | Actions timeline showing smoke completed before image promotion and tag/release creation, followed by the existing production and npm jobs |
+| First-try reliability | Coordinator tracks the next ten releases against the 90% first-try green target |
