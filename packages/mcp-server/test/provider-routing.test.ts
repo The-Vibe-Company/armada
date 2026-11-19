@@ -20,8 +20,12 @@ afterEach(async () => {
 });
 
 function start(options: Parameters<typeof harness>[0] = {}) {
-  pendingServer = database().then((fixture) => harness(options, fixture));
-  return pendingServer;
+  const pending = database().then((fixture) => harness(options, fixture));
+  pendingServer = pending;
+  return pending.then((server) => {
+    if (pendingServer !== pending) throw new Error("Server fixture teardown has started");
+    return server;
+  });
 }
 
 const BINDING: ModalBinding = { workspace: "ws-acme", environment: "main", appId: "ap-0123456789abcdef" };

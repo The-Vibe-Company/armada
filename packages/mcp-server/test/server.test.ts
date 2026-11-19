@@ -53,7 +53,7 @@ afterEach(async () => {
 
 function start(options: Parameters<typeof harness>[0] = {}) {
   if (!sharedDatabase) throw new Error("Server database is not open");
-  pendingServer = sharedDatabase.then(async (db) => {
+  const pending = sharedDatabase.then(async (db) => {
     await db.exec(`
     reset role;
     reset all;
@@ -71,7 +71,11 @@ function start(options: Parameters<typeof harness>[0] = {}) {
   `);
     return harness(options, await seedDatabase(db));
   });
-  return pendingServer;
+  pendingServer = pending;
+  return pending.then((server) => {
+    if (pendingServer !== pending) throw new Error("Server fixture teardown has started");
+    return server;
+  });
 }
 
 const allSecrets = Object.values(SECRETS);
