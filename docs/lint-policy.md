@@ -28,3 +28,24 @@ and explain it; do not apply repository-wide unsafe fixes or introduce a new CI
 gate. Verify with the existing `bun run lint` command.
 
 Raising an AGENTS.md byte budget is the owner's decision.
+
+## Architecture counters
+
+Shard 1 compares the working tree with the fetched PR or merge-queue base. Each
+enabled counter may stay equal or decrease across the repository. Moving a
+match between files in scope does not consume a per-file allowance. An increase
+reports the base and head totals and the locations of new matches.
+
+- `provider-branch` counts strict comparisons and case labels for Boat, Modal,
+  and Docker, plus `switch (provider...)` on the provider identifier in non-test
+  TypeScript. Provider packages, Docker host, and server adapter files listed in
+  the script are excluded.
+- `versioned-route` counts route-name literals with a `-vN` segment suffix in
+  `public-rest-routes.ts` and `control*.ts` under the server source directory.
+- `deprecation-header` counts `Deprecation` and `Sunset` header names in non-test
+  server TypeScript.
+- `native-path` and `append-point` are reserved for #2859 and #2860.
+
+Run `bun scripts/ci/ratchets.ts [base]` locally. Without a base argument or
+`origin/main`, it prints working-tree totals. These regex counters are trend
+alarms. Import boundaries and table owners enforce their respective contracts.

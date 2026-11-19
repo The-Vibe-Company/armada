@@ -92,7 +92,7 @@ for line in sys.stdin:
   child.stderr.on("data", (chunk) => {
     error += chunk;
   });
-  let exited = new Promise<number | null>((resolve) => child.on("exit", resolve));
+  let exited = new Promise<number | null>((resolve) => child.once("close", resolve));
   let lines = createInterface({ input: child.stdout })[Symbol.asyncIterator]();
   const send = async (content = "inspect tools") => {
     child.stdin.write(`${JSON.stringify({ type: "user", message: { content } })}\n`);
@@ -142,7 +142,7 @@ for line in sys.stdin:
     expect(error).not.toContain("private upstream detail");
     configure(["armada_first"]);
     child = start();
-    exited = new Promise<number | null>((resolve) => child.on("exit", resolve));
+    exited = new Promise<number | null>((resolve) => child.once("close", resolve));
     lines = createInterface({ input: child.stdout })[Symbol.asyncIterator]();
     const alive = await send();
     child.kill("SIGTERM");
@@ -153,4 +153,4 @@ for line in sys.stdin:
     await exited;
     rmSync(home, { recursive: true, force: true });
   }
-}, 10000);
+});
