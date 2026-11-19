@@ -76,7 +76,12 @@ async function launchGolden(
   const { connections, idempotencyKey, golden: name, repo, harness, credentialId } = body;
   if (idempotencyKey !== undefined && !options.ordinaryLaunchReceipts)
     throw new VaultError("unavailable", "Durable launch receipts are not configured; idempotencyKey is refused.");
-  const armadaAccess = body.armadaAccess === true ? {} : body.armadaAccess || undefined;
+  const maxActiveChildren = typeof body.armadaAccess === "object" ? body.armadaAccess.maxActiveChildren : undefined;
+  const armadaAccess = body.armadaAccess
+    ? maxActiveChildren === undefined
+      ? {}
+      : { maxActiveChildren }
+    : undefined;
   if (armadaAccess && !options.sandboxArmadaAccess)
     throw new VaultError("unavailable", "Sandbox Armada access is not enabled on this server.");
   const data = options.data(caller);
