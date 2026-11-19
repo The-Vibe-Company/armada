@@ -3071,11 +3071,10 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     });
     const configuring = f.provider.configureMcp({ sandboxId: row.id, configuration });
     await entered.promise;
-    const prompts = Promise.all(
-      (["claude", "codex"] as const).map((harness) =>
-        f.provider.prompt({ sandboxId: row.id, harness, text: "queued behind authoritative config" }),
-      ),
+    const pendingPrompts = (["claude", "codex"] as const).map((harness) =>
+      f.provider.prompt({ sandboxId: row.id, harness, text: "queued behind authoritative config" }),
     );
+    const prompts = Promise.all(pendingPrompts);
     try {
       await Promise.race([
         admission.retry,
@@ -3087,7 +3086,7 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
       expect(f.log.at(-1)).toBe("configureMcp");
     } finally {
       release.resolve();
-      await Promise.allSettled([configuring, prompts]);
+      await Promise.allSettled([configuring, ...pendingPrompts]);
     }
     expect(await configuring).toEqual({ revision: configuration.revision });
     const receipts = await prompts;
