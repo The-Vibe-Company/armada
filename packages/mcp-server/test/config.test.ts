@@ -14,8 +14,8 @@ const ENV = {
 };
 
 describe("config", () => {
-  test("Boat launch selection is one strict server setting, native by default and explicit for rollback", () => {
-    expect(configFromEnv(ENV).boatAgentPath).toBe("native");
+  test("Boat launch selection is one strict server setting, runtime by default with explicit native rollback", () => {
+    expect(configFromEnv(ENV).boatAgentPath).toBe("runtime");
     for (const mode of ["native", "runtime"] as const)
       expect(configFromEnv({ ...ENV, ARMADA_BOAT_AGENT_PATH: mode }).boatAgentPath).toBe(mode);
     for (const mode of ["", "TRUE", " runtime ", "auto", "fallback"])
