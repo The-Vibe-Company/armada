@@ -606,10 +606,14 @@ async function admitLocked(
         state.receipts.some(
           (receipt) =>
             generationKey(receipt.request) === key &&
-            (receipt.cleaned || receipt.operation === "delete" || receipt.operation === "deletePhysical"),
+            (receipt.cleaned ||
+              receipt.operation === "delete" ||
+              (receipt.operation === "deletePhysical" && receipt.outcome !== "failed")),
         ) ||
         state.retired?.some(
-          (receipt) => receipt[2] === key && (receipt[4] === "delete" || receipt[4] === "deletePhysical"),
+          (receipt) =>
+            receipt[2] === key &&
+            (receipt[4] === "delete" || (receipt[4] === "deletePhysical" && receipt[5] === "completed")),
         );
       claim = { ...intent, accepted: !lost, active: !lost };
       state.resumeClaims.push(claim);

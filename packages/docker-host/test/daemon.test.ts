@@ -162,6 +162,29 @@ test("physical-only mailbox delete replays an uncommitted result for the same im
   expect(acknowledgements).toEqual(["completed", "completed"]);
 });
 
+test("a refused physical-only delete leaves the retained generation eligible for resume", async () => {
+  const { job, store, api, executor, acknowledgements } = fixture();
+  api.poll = async () => ({ job: { ...job, operation: "deletePhysical", machineId: "a".repeat(64) } });
+  executor.delete = async () => {
+    throw new DockerMachineError("ownership_mismatch");
+  };
+  await tick(store, api, executor);
+  expect(acknowledgements).toEqual(["failed"]);
+
+  const accepted: boolean[] = [];
+  api.claim = async (_state, _requestId, decision) => {
+    accepted.push(decision);
+  };
+  api.poll = async () => ({
+    job: null,
+    resumeClaims: [
+      { requestId: crypto.randomUUID(), sandboxId: job.request.sandboxId, generation: job.request.generation },
+    ],
+  });
+  await tick(store, api, executor);
+  expect(accepted).toEqual([true]);
+});
+
 test("recovers a persisted pending operation after interruption without issuing a new identity", async () => {
   const f = fixture();
   let interrupted = false;
