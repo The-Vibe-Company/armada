@@ -99,6 +99,7 @@ interface SmokeCase {
   golden: string;
   model: string;
   modelAccountId: string;
+  scriptedModelAccountId?: string;
   repo: string;
   goldenId?: string;
   reasoningEffort?: string;
@@ -132,7 +133,7 @@ const TEMPLATE_LAUNCH_TIMEOUT_MS = 600_000;
 const SIBLING_ATTRIBUTION_WAIT_MS = TEMPLATE_LAUNCH_TIMEOUT_MS;
 const SANDBOX_ID = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i;
 const LAUNCH_PATH = /^(?:sandbox\/launch|templates\/launch)$/;
-type Lane = "templates" | "expiry" | "lifecycle";
+type Lane = "templates" | "expiry" | "lifecycle" | "scoped";
 
 /** Wait for every concurrent unit, so all cleanups finish before the journal sweep; a thrown unit still throws. */
 async function settled(units: Promise<boolean>[]): Promise<boolean> {
@@ -405,9 +406,11 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
         !item.repo.startsWith("/") ||
         (scopedAccess &&
           item.harness === "codex" &&
-          [item.org, item.goldenId, item.modelAccountId].some(
-            (value) => typeof value !== "string" || !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(value),
-          )) ||
+          (typeof item.scriptedModelAccountId !== "string" ||
+            item.scriptedModelAccountId.toLowerCase() === item.modelAccountId.toLowerCase() ||
+            [item.org, item.goldenId, item.modelAccountId, item.scriptedModelAccountId].some(
+              (value) => typeof value !== "string" || !SANDBOX_ID.test(value),
+            ))) ||
         (defaultSkills &&
           (typeof item.goldenId !== "string" ||
             !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(item.goldenId) ||
@@ -799,32 +802,51 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
   // owner API launch, so the launch tracker cannot attribute another case's child: probe
   // windows that share an org and golden run one after another. Other lanes stay concurrent.
   const scopedWindow = createKeyedQueue();
+  const scopedUnits = scopedAccess
+    ? cases.map(async (item, index) => {
+        if (item.harness !== "codex") {
+          io.out(JSON.stringify({ case: index, step: "scoped_access", skip: true, reason: "codex_only" }));
+          return true;
+        }
+        const { reasoningEffort: _baselineEffort, ...scriptedCase } = item;
+        const scripted = {
+          ...scriptedCase,
+          modelAccountId: item.scriptedModelAccountId!.toLowerCase(),
+          model: "scripted",
+        };
+        const lane = unit(index, "scoped");
+        let passed = true;
+        for (const mode of ["enabled", "no_option"] as const) {
+          const ok = await scopedWindow(`${item.org}\n${item.goldenId}`, () =>
+            accountSlot(scripted.modelAccountId, () => lifecycleUnit(index, scripted, false, lane, mode)),
+          );
+          if (!ok) passed = false;
+        }
+        return passed;
+      })
+    : [];
   const lifecycleUnits = cases.map(async (item, index) => {
     const lane = unit(index, "lifecycle");
-    const scopedPair = scopedAccess && item.harness === "codex";
     let passed = true;
     for (const dirty of preservation ? [false, true] : [false]) {
-      // The account is taken inside the scoped window, never held while waiting for one.
-      const run = () => accountSlot(item.modelAccountId, () => lifecycleUnit(index, item, dirty, lane));
-      // Scoped Codex cases are normalized to lowercase UUIDs at configuration; others never key.
-      if (!(await (scopedPair ? scopedWindow(`${item.org}\n${item.goldenId}`, run) : run()))) passed = false;
+      if (!(await accountSlot(item.modelAccountId, () => lifecycleUnit(index, item, dirty, lane)))) passed = false;
     }
     return passed;
   });
-  return (await settled([...templateUnits, ...expiryUnits, ...lifecycleUnits])) && vaultPassed;
+  return (await settled([...templateUnits, ...expiryUnits, ...scopedUnits, ...lifecycleUnits])) && vaultPassed;
   async function lifecycleUnit(
     index: number,
     item: SmokeCase,
     dirty: boolean,
     { request, withCleanup, step, io }: ReturnType<typeof unit>,
+    scope?: "enabled" | "no_option",
   ): Promise<boolean> {
     let passed = true;
     const sandbox = <T>(action: string, body: object, timeoutMs?: number) =>
       request<T>(`sandbox/${action}`, { org: item.org, ...body }, undefined, timeoutMs);
-    const scopedPair = scopedAccess && item.harness === "codex";
     let parentCredentialVersion: number | undefined;
-    const scoped = scopedPair
-      ? createScopedProbe({ ...item, goldenId: item.goldenId! }, !dirty, {
+    const scoped = scope
+      ? createScopedProbe({ ...item, goldenId: item.goldenId! }, scope === "enabled", {
           request: (path, body, timeoutMs) => request(path, { ...body, org: item.org }, undefined, timeoutMs),
           now: io.now,
           sleep: io.sleep,
@@ -929,11 +951,12 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
       );
       stopped = true;
     }
-    try {
-      if (scoped) await scoped.prepare();
-      else if (scopedAccess && !dirty)
-        io.out(JSON.stringify({ case: index, step: "scoped_access", skip: true, reason: "codex_only" }));
-      await step("launch", async () => {
+    async function run() {
+      if (scoped) {
+        io.out(JSON.stringify({ step: "scoped_access", mode: scope, model: "scripted" }));
+        await scoped.prepare();
+      }
+      await step(scoped ? "scoped_parent_launch" : "launch", async () => {
         launchAttempted = true;
         type LaunchReceipt = {
           sandbox: {
@@ -952,7 +975,7 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
           promptId?: string;
         };
         const body = {
-          ...(scopedPair && !dirty ? { armadaAccessVersion: 1, armadaAccess: { maxActiveChildren: 1 } } : {}),
+          ...(scope === "enabled" ? { armadaAccessVersion: 1, armadaAccess: { maxActiveChildren: 1 } } : {}),
           golden: item.golden,
           provider: item.provider,
           harness: item.harness,
@@ -960,10 +983,10 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
           credentialId: item.modelAccountId,
           ...(item.reasoningEffort ? { reasoningEffort: item.reasoningEffort } : {}),
           connections: [],
-          ...((defaultSkills || scopedPair) && dirty ? { skipSkillDefaults: true } : {}),
+          ...((defaultSkills && dirty) || scope === "no_option" ? { skipSkillDefaults: true } : {}),
           ttlSeconds: 1800,
         };
-        const requiresLaunchReceipt = defaultSkills || scopedPair;
+        const requiresLaunchReceipt = defaultSkills || scope !== undefined;
         const result = await launchWithObservation<LaunchReceipt>(
           item,
           body,
@@ -977,8 +1000,8 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
         // Retain the cleanup handle even if later response validation fails.
         if (typeof result?.sandbox?.id === "string" && result.sandbox.id) sandboxId = result.sandbox.id;
         if (!sandboxId || result.sandbox.provider !== item.provider || result.promptId) fail("invalid_response");
-        if ((defaultSkills || scopedPair) && result.golden?.id !== item.goldenId) fail("invalid_response");
-        if (scopedPair)
+        if (requiresLaunchReceipt && result.golden?.id !== item.goldenId) fail("invalid_response");
+        if (scope)
           await step("scoped_parent_configuration", async () => {
             if (
               result.sandbox.harness !== item.harness ||
@@ -987,7 +1010,7 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
               result.sandbox.credentialId !== item.modelAccountId ||
               !Number.isSafeInteger(result.sandbox.credentialVersion) ||
               Number(result.sandbox.credentialVersion) < 1 ||
-              (dirty
+              (scope === "no_option"
                 ? result.armadaAccess?.enabled === true
                 : result.armadaAccess?.enabled !== true ||
                   result.armadaAccess.maxActiveChildren !== 1 ||
@@ -998,7 +1021,7 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
           });
         launchSkills = result.sandbox.skills;
       });
-      await step("ready", () =>
+      await step(scoped ? "scoped_parent_ready" : "ready", () =>
         poll(
           (timeoutMs) => sandbox<{ status: string }>("status", { id: sandboxId }, timeoutMs),
           (result) => {
@@ -1008,6 +1031,11 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
           { step: "ready" },
         ),
       );
+      if (scoped) {
+        await scoped.run(sandboxId!, parentCredentialVersion!);
+        await step("scoped_parent_stop", stopSandbox);
+        return;
+      }
       if (lifecycle && !dirty)
         io.out(
           JSON.stringify({
@@ -1215,7 +1243,6 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
           ),
         );
       await nativeTurn(false);
-      if (scoped) await scoped.run(sandboxId!, parentCredentialVersion!);
       if (lifecycle && !dirty) {
         await step("list_ready", () => consistent("ready"));
         await step("steer_refused", async () => {
@@ -1394,6 +1421,9 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
         await step("stop_resumed", stopSandbox);
         await step("list_stopped_final", () => consistent("stopped"));
       }
+    }
+    try {
+      await run();
     } catch {
       passed = false;
     } finally {
@@ -1427,13 +1457,13 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
       }
       if (sandboxId && !stopped) {
         try {
-          await withCleanup(() => step("cleanup_sandbox", stopSandbox));
+          await withCleanup(() => step(scoped ? "scoped_parent_cleanup" : "cleanup_sandbox", stopSandbox));
         } catch {
           passed = false;
         }
       }
     }
-    if (scoped && !(await scoped.cleanup(sandboxId, stopped, launchAttempted))) passed = false;
+    if (scoped) return (await scoped.cleanup(sandboxId, stopped, launchAttempted)) && passed;
     if (preservation)
       io.out(
         JSON.stringify({

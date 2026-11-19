@@ -32,7 +32,7 @@ function fixture(handler?: (call: Call) => Response | undefined | Promise<Respon
   const lines: string[] = [];
   let clock = 0;
   let stopping = false;
-  let lastPromptId = "prompt-id";
+  const promptsBySandbox = new Map<unknown, string>();
   const io = {
     now: () => clock,
     sleep: async (ms: number) => {
@@ -55,7 +55,7 @@ function fixture(handler?: (call: Call) => Response | undefined | Promise<Respon
       calls.push(call);
       if (call.path === "sandbox/launch") stopping = false;
       if (call.path === "sandbox/stop") stopping = true;
-      if (call.path === "sandbox/wait") lastPromptId = String(call.body.prompt_id);
+      if (call.path === "sandbox/wait") promptsBySandbox.set(call.body.id, String(call.body.prompt_id));
       const override = await handler?.(call);
       if (override) {
         if (call.path === "sandbox/status" && override.ok) {
@@ -64,7 +64,9 @@ function fixture(handler?: (call: Call) => Response | undefined | Promise<Respon
             return json({
               ...body,
               usage: {
-                turns: [{ promptId: lastPromptId, inputTokens: 10, outputTokens: 2 }],
+                turns: [
+                  { promptId: promptsBySandbox.get(call.body.id) ?? "prompt-id", inputTokens: 10, outputTokens: 2 },
+                ],
                 tokenTotals: { inputTokens: 10, outputTokens: 2 },
               },
             });
@@ -696,9 +698,10 @@ describe("preservation checks", () => {
         const defaults = fault.startsWith("default_");
         const scopes = fault === "scoped_pair";
         const scopeFlag = fault.startsWith("scoped_");
+        const baselineScopeAccount = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
         const scopeAccount = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
         const childId = crypto.randomUUID();
-        let positiveParent = "";
+        const scriptedParents = new Map<string, boolean>();
         let childExists = false;
         let childStopped = false;
         const scopeEvents = new Map<string, object[]>();
@@ -737,9 +740,8 @@ describe("preservation checks", () => {
             expect(call.body.golden).toBe(defaultGolden);
             return json({
               sandboxes: [
-                ...(positiveParent ? [{ id: positiveParent }] : []),
+                ...[...scriptedParents.keys()].map((id) => ({ id })),
                 ...(childExists ? [{ id: childId }] : []),
-                ...(launches === 2 ? [{ id: sandboxId }] : []),
               ],
               hasMore: false,
               nextPage: null,
@@ -749,19 +751,23 @@ describe("preservation checks", () => {
           if (
             scopes &&
             call.path === "sandbox/send" &&
-            String(call.body.prompt).startsWith("Use only the configured native MCP")
+            String(call.body.prompt).startsWith("ARMADA_SCOPED_SMOKE_V1 ")
           ) {
-            const goal = String(call.body.prompt);
-            if (launches === 1) {
-              const launch = JSON.parse(goal.match(/using exactly (.*?) \(no initial/)?.[1] ?? "null");
-              const message = JSON.parse(
-                goal.match(
-                  /message that child's returned sandboxId with exactly (.*?), replacing CHILD_SANDBOX_ID/,
-                )?.[1] ?? "null",
-              );
-              expect(message.sandboxId).toBe("CHILD_SANDBOX_ID");
-              const stopKey = goal.match(/Then stop that same child using idempotencyKey ([\w-]+)\./)?.[1];
-              const answer = goal.match(/SCOPED_CHILD_[\w-]+/)?.[0];
+            const prefix = "ARMADA_SCOPED_SMOKE_V1 ";
+            const { lane, launch, messageKey, stopKey, answer, noAccess } = JSON.parse(
+              String(call.body.prompt).slice(prefix.length),
+            );
+            expect(lane).toBe("parent");
+            expect(launch.selection).toMatchObject({
+              credentialId: scopeAccount,
+              model: "scripted",
+              credentialVersion: 7,
+            });
+            const parent = String(call.body.id);
+            expect(scriptedParents.has(parent)).toBe(true);
+            expect(launches).toBeGreaterThan(0);
+            if (parent === scriptedParents.keys().next().value) {
+              const message = { idempotencyKey: messageKey, text: prefix + JSON.stringify({ lane: "child", answer }) };
               const op = () => ({ id: crypto.randomUUID(), state: "succeeded", sandboxId: childId });
               const tool = (name: string, input: object, result: object) => ({
                 id: `call-${name}`,
@@ -771,7 +777,7 @@ describe("preservation checks", () => {
               });
               childExists = true;
               childStopped = true;
-              scopeEvents.set(sandboxId, [
+              scopeEvents.set(parent, [
                 {
                   id: "scoped-tools",
                   kind: "message",
@@ -792,7 +798,7 @@ describe("preservation checks", () => {
                         goldenId: defaultGolden,
                         credentialId: scopeAccount,
                         credentialVersion: 7,
-                        model: selected.model,
+                        model: "scripted",
                         events: [
                           {
                             id: "child-answer",
@@ -810,13 +816,13 @@ describe("preservation checks", () => {
                 },
               ]);
             } else
-              scopeEvents.set(sandboxId, [
+              scopeEvents.set(parent, [
                 {
                   id: "no-scope",
                   kind: "message",
                   partial: false,
                   promptId: "scope-turn",
-                  text: goal.match(/NO_ACCESS_[\w-]+/)?.[0],
+                  text: noAccess,
                   tools: [],
                 },
               ]);
@@ -836,14 +842,24 @@ describe("preservation checks", () => {
               status: childStopped ? "stopped" : "ready",
               providerState: childStopped ? "stopped" : "active",
             });
+          const requestedId = String(call.body.id);
+          if (scriptedParents.has(requestedId)) {
+            if (call.path === "sandbox/stop") {
+              scriptedParents.set(requestedId, true);
+              return json({ status: "stopped" });
+            }
+            if (call.path === "sandbox/status") {
+              const stopped = scriptedParents.get(requestedId);
+              return json({ status: stopped ? "stopped" : "ready", providerState: stopped ? "stopped" : "active" });
+            }
+          }
           if (call.path === "sandbox/launch") {
-            launches++;
-            stopping = false;
-            sandboxId = crypto.randomUUID();
-            recoveryReads = 0;
-            if (scopes) {
-              if (launches === 1) {
-                positiveParent = sandboxId;
+            if (scopes && call.body.model === "scripted") {
+              expect(call.body.credentialId).toBe(scopeAccount);
+              const enabled = scriptedParents.size === 0;
+              const id = crypto.randomUUID();
+              scriptedParents.set(id, false);
+              if (enabled) {
                 expect(call.body.armadaAccessVersion).toBe(1);
                 expect(call.body.armadaAccess).toEqual({ maxActiveChildren: 1 });
               } else {
@@ -851,6 +867,28 @@ describe("preservation checks", () => {
                 expect(call.body).not.toHaveProperty("armadaAccessVersion");
                 expect(call.body.skipSkillDefaults).toBe(true);
               }
+              return json({
+                sandbox: {
+                  id,
+                  provider,
+                  harness: "codex",
+                  model: "scripted",
+                  credentialId: scopeAccount,
+                  credentialVersion: 7,
+                  visibility: "private",
+                },
+                golden: { id: defaultGolden },
+                ...(enabled ? { armadaAccess: { enabled: true, maxActiveChildren: 1 } } : {}),
+              });
+            }
+            stopping = false;
+            sandboxId = crypto.randomUUID();
+            launches++;
+            recoveryReads = 0;
+            if (scopes) {
+              expect(call.body.model).toBe(selected.model);
+              expect(call.body.credentialId).toBe(baselineScopeAccount);
+              expect(call.body).not.toHaveProperty("armadaAccess");
             }
             if (defaults) {
               expect(call.body).not.toHaveProperty("skills");
@@ -861,15 +899,6 @@ describe("preservation checks", () => {
               sandbox: {
                 id: sandboxId,
                 provider,
-                ...(scopes
-                  ? {
-                      harness: "codex",
-                      model: selected.model,
-                      credentialId: scopeAccount,
-                      credentialVersion: 7,
-                      visibility: "private",
-                    }
-                  : {}),
                 ...(defaults
                   ? {
                       skills: receipts(
@@ -882,10 +911,7 @@ describe("preservation checks", () => {
                     }
                   : {}),
               },
-              ...(defaults || scopes
-                ? { golden: { id: fault === "default_wrong_golden" ? otherId : defaultGolden } }
-                : {}),
-              ...(scopes && launches === 1 ? { armadaAccess: { enabled: true, maxActiveChildren: 1 } } : {}),
+              ...(defaults ? { golden: { id: fault === "default_wrong_golden" ? otherId : defaultGolden } } : {}),
             });
           }
           if (call.path === "sandbox/stop") stopping = true;
@@ -950,7 +976,9 @@ describe("preservation checks", () => {
                 ...selected,
                 provider,
                 ...(defaults || scopes ? { org: defaultOrg.toUpperCase(), goldenId: defaultGolden.toUpperCase() } : {}),
-                ...(scopes ? { modelAccountId: scopeAccount.toUpperCase() } : {}),
+                ...(scopes
+                  ? { modelAccountId: baselineScopeAccount, scriptedModelAccountId: scopeAccount.toUpperCase() }
+                  : {}),
                 ...(fault === "scoped_unsupported" ? { harness: "claude" } : {}),
               },
             ]),
@@ -973,7 +1001,7 @@ describe("preservation checks", () => {
         expect(stops).toBeGreaterThanOrEqual(2);
         expect(stops).toBeLessThanOrEqual(4);
         if (success) {
-          expect(stops).toBe(2);
+          expect(stops).toBe(scopes ? 4 : 2);
           expect(fake.calls.filter((call) => call.body.recovery_id === recoveryId)).toHaveLength(1);
           expect(fake.calls.filter((call) => call.body.recovery_id !== undefined)).toHaveLength(2);
           expect(fake.receipts()).toContainEqual({ case: 0, step: "preservation_unknown_handle_refused", pass: true });
@@ -1000,6 +1028,15 @@ describe("preservation checks", () => {
           );
         }
         if (scopes) {
+          const scriptedSteps = fake.lines
+            .filter((line) => line !== boatNotice)
+            .map((line) => JSON.parse(line))
+            .filter((line) => line.lane === "scoped");
+          expect(scriptedSteps.map((line) => line.step)).not.toContain("launch");
+          expect(scriptedSteps.filter((line) => line.step === "scoped_parent_launch" && line.pass)).toHaveLength(2);
+          expect(
+            fake.receipts().filter((line) => line.step === "scoped_access" && line.model === "scripted"),
+          ).toHaveLength(2);
           expect(fake.calls.filter((call) => call.path === "sandbox/stop" && call.body.id === childId)).toHaveLength(1);
           expect(fake.receipts().filter((line) => line.step === "scoped_cleanup_summary" && line.pass)).toHaveLength(2);
           expect(
@@ -1265,10 +1302,14 @@ test("scoped access validates its matched control pair and explicit account IDs 
     org: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
     goldenId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
     modelAccountId: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+    scriptedModelAccountId: "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
   };
   for (const config of [
     { args: ["--scoped-access"], cases: [valid] },
-    { args: ["--work-preservation", "--scoped-access"], cases: [valid, { ...valid, modelAccountId: "invalid" }] },
+    ...[undefined, "invalid", valid.modelAccountId.toUpperCase()].map((scriptedModelAccountId) => ({
+      args: ["--work-preservation", "--scoped-access"],
+      cases: [valid, { ...valid, scriptedModelAccountId }],
+    })),
   ]) {
     const fake = fixture();
     expect(
@@ -1791,6 +1832,7 @@ test("an unrelated launch in flight never holds scoped child cleanup or the next
       golden: `smoke-${scopedGolden}`,
       goldenId: scopedGolden,
       modelAccountId: "40000000-0000-4000-8000-000000000000",
+      scriptedModelAccountId: "60000000-0000-4000-8000-000000000000",
     },
     { ...selected, harness: "claude", org, golden: `smoke-${otherGolden}`, goldenId: otherGolden },
   ];
@@ -1813,7 +1855,7 @@ test("an unrelated launch in flight never holds scoped child cleanup or the next
       },
     },
   );
-  // Both scoped windows of case 0 (clean, then preservation) closed while the other launch was pending.
+  // Both scoped windows of case 0 closed while the other launch was pending.
   expect(releasedAt).toBeGreaterThan(0);
   const before = lines.slice(0, releasedAt).map((line) => JSON.parse(line));
   const summaries = before.filter((line) => line.case === 0 && line.step === "scoped_cleanup_summary");
@@ -2123,6 +2165,7 @@ test("scoped probes sharing an org and golden never see each other's child; dist
         golden: `smoke-${golden}`,
         goldenId: golden,
         modelAccountId: `40000000-0000-4000-8000-00000000000${index}`,
+        scriptedModelAccountId: `60000000-0000-4000-8000-00000000000${index}`,
       })),
       // Not a scoped pair, so never queued: its owner launches land in the first inventory
       // while the scoped windows are open and must be recognised as siblings.
@@ -2285,6 +2328,7 @@ test("the advertised smoke workflow invocation admits ordinary staging checks", 
               org: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
               goldenId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
               modelAccountId: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+              scriptedModelAccountId: "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
             },
           ]),
         },
