@@ -4793,6 +4793,35 @@ export type Database = {
           },
         ];
       };
+      sandbox_output_state: {
+        Row: {
+          sandbox_id: string;
+          upload_scan: string | null;
+          published_scan: string | null;
+          retained_generation: number | null;
+        };
+        Insert: {
+          sandbox_id: string;
+          upload_scan?: string | null;
+          published_scan?: string | null;
+          retained_generation?: number | null;
+        };
+        Update: {
+          sandbox_id?: string;
+          upload_scan?: string | null;
+          published_scan?: string | null;
+          retained_generation?: number | null;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "sandbox_output_state_sandbox_id_fkey";
+            columns: ["sandbox_id"];
+            isOneToOne: true;
+            referencedRelation: "sandboxes";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
       sandbox_output_transfers: {
         Row: {
           id: string;
