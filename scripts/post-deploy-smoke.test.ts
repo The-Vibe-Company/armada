@@ -272,13 +272,14 @@ test("failure paths retain cleanup handles and never emit remote bodies, arbitra
   }
 });
 
-test("pending turns terminate after bounded polling and cleanup errors remain visible without hiding the first failure", async () => {
+test("pending turns terminate at the measured deadline and cleanup errors remain visible", async () => {
   const fake = fixture((call) => {
     if (call.path === "sandbox/wait") return json({ prompt: { promptId: "prompt-id", state: "running" } });
     if (call.path === "sandbox/stop") return json({ error: { code: "unavailable", message: "secret" } }, 503);
   });
   expect(await postDeploySmoke(env, [], fake.io)).toBe(false);
-  expect(fake.calls.filter((call) => call.path === "sandbox/wait")).toHaveLength(120);
+  expect(fake.calls.filter((call) => call.path === "sandbox/wait")).toHaveLength(Math.ceil(deadlines.wait / 1000));
+  expect(fake.io.now()).toBe(deadlines.wait);
   expect(fake.receipts().slice(-2)).toEqual([
     { case: 0, step: "wait", pass: false, code: "poll_limit_exceeded" },
     { case: 0, step: "cleanup_sandbox", pass: false, code: "unavailable" },
@@ -1535,6 +1536,23 @@ test("lifecycle records readiness and confirms extend/list, closed idle steer re
       .every((line) => line.pass && !line.leftoverSandboxIds.length && !line.launchOutcomeUnknown),
   ).toBe(true);
   expect(fake.lines.join("")).not.toContain("secret");
+});
+
+test("a resumed turn receipt arriving after its measured deadline fails and the sandbox is stopped", async () => {
+  const fake = lifecycleFixture("none", (call) => {
+    if (call.path !== "sandbox/wait" || call.body.prompt_id !== "turn-2") return;
+    fake.advance(deadlines.resume_wait + 1);
+    return json({ prompt: { promptId: "turn-2", state: "finished" } });
+  });
+  expect(await fake.run()).toBe(false);
+  expect(fake.receipts()).toContainEqual({
+    case: 0,
+    step: "resume_wait",
+    pass: false,
+    code: "poll_limit_exceeded",
+  });
+  expect(fake.calls.at(-2)?.path).toBe("sandbox/stop");
+  expect(fake.calls.at(-1)?.path).toBe("sandbox/status");
 });
 
 test("resume wait reports only the redacted shape of an invalid response", async () => {
