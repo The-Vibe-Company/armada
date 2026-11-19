@@ -142,7 +142,16 @@ export function createProviderReaperLane(
     async reconcileOne(signal) {
       if (active || signal.aborted || now() < nextSweepAt) return false;
       active = (async () => {
-        for (const source of await discover(signal)) {
+        let sources: readonly ProviderReaperSource[];
+        try {
+          sources = await discover(signal);
+        } catch {
+          if (!signal.aborted) {
+            log(JSON.stringify({ event: "provider_reaper_retry", phase: "discovery", errors: 1, complete: false }));
+          }
+          return;
+        }
+        for (const source of sources) {
           if (signal.aborted) return;
           await sweep(source, signal);
         }

@@ -1,6 +1,11 @@
 import { expect, test } from "bun:test";
 import type { ProviderInventoryMachine } from "@armada/core";
-import { createProviderReaper, decideInventoryMachine, type ProviderReaperSource } from "../src/provider-reaper.ts";
+import {
+  createProviderReaper,
+  createProviderReaperLane,
+  decideInventoryMachine,
+  type ProviderReaperSource,
+} from "../src/provider-reaper.ts";
 
 const now = Date.UTC(2026, 10, 18);
 const grace = 15 * 60_000;
@@ -12,6 +17,29 @@ const oldMachine: ProviderInventoryMachine = {
   deploymentId,
   createdAt: new Date(now - grace - 1),
 };
+
+test("discovery failure emits incomplete sweep evidence and retries on schedule", async () => {
+  let time = now;
+  let attempts = 0;
+  const records: unknown[] = [];
+  const lane = createProviderReaperLane(
+    async () => {
+      if (++attempts === 1) throw new Error("registry unavailable");
+      return [];
+    },
+    (line) => records.push(JSON.parse(line)),
+    () => time,
+  );
+  const signal = new AbortController().signal;
+
+  await lane.reconcileOne(signal);
+  await lane.reconcileOne(signal);
+  expect(attempts).toBe(1);
+  time += 60_000;
+  await lane.reconcileOne(signal);
+  expect(attempts).toBe(2);
+  expect(records).toEqual([{ event: "provider_reaper_retry", phase: "discovery", errors: 1, complete: false }]);
+});
 
 test.each([
   ["old orphan", {}, { kind: "absent" }, "unknown"],
