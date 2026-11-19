@@ -7,6 +7,7 @@ import type { CheckpointIdentity, StoredPrompt } from "./protocol.ts";
 import { createRedactor, createShortSecretTextRedactor } from "./state.ts";
 
 const MAX_EVENT_BYTES = 262144;
+const CLAUDE_RESULT_OUTPUT_FIELDS = ["result", "errors", "structured_output"] as const;
 
 function isToolProof(type: string) {
   return type === "armada/opencodeShell" || type === "armada/opencodeMcp";
@@ -203,8 +204,14 @@ export class Journal {
       };
       if (event.type === "result") {
         if (event.data && typeof event.data === "object" && scrubbed.data && typeof scrubbed.data === "object") {
-          for (const key of ["result", "errors", "structured_output"])
+          for (const key of CLAUDE_RESULT_OUTPUT_FIELDS)
             maskPayloadField(event.data as Record<string, unknown>, scrubbed.data, key, maskField);
+
+          // Output can grow during masking. Keep accounting metadata whenever it fits on its own.
+          const result = JSON.stringify(scrubbed);
+          if (Buffer.byteLength(result) <= MAX_EVENT_BYTES) return result;
+          for (const key of CLAUDE_RESULT_OUTPUT_FIELDS) delete scrubbed.data[key];
+          scrubbed.data.outputTruncated = true;
         }
       } else {
         scrubbed.data = maskProofData(event.data, scrubbed.data, mask, maskField);

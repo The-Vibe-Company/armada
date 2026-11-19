@@ -248,6 +248,29 @@ test.each([
   }
 });
 
+test("expanding Claude result output is dropped while usage survives", () => {
+  const journal = new Journal(":memory:", (text) => text);
+  try {
+    const event = {
+      id: "result-event",
+      at: 1,
+      kind: "other",
+      type: "result",
+      data: { result: "x".repeat(30_000), modelUsage: { fixture: { inputTokens: 3 } } },
+    } satisfies AgentEvent;
+    journal.append(event);
+    journal.registerApplicationSecrets(["x"]);
+    journal.append(event);
+    const expected = { ...event, data: { modelUsage: { fixture: { inputTokens: 3 } }, outputTruncated: true } };
+    expect(journal.redactEvent(journal.events()[0]!.event)).toEqual(expected);
+    expect(journal.events()[1]!.event).toEqual(expected);
+    journal.sanitize();
+    expect(journal.events().map(({ event }) => event)).toEqual([expected, expected]);
+  } finally {
+    journal.close();
+  }
+});
+
 test("proof truncation persists only scrubbed correlation metadata", () => {
   const journal = new Journal(":memory:", (text) => text);
   try {
