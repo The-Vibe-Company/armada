@@ -11,6 +11,7 @@ import { createRuntimeAgent } from "./runtime-agent.ts";
 import { createRuntimeIdle } from "./runtime-idle.ts";
 import { createFinishedDockerCleanup } from "./sandbox-finish.ts";
 import { createSandboxLifecycle } from "./sandbox-lifecycle.ts";
+import { OUTPUTS_CAPTURE } from "./sandbox-outputs.ts";
 import { createPullRequestScanJob } from "./sandbox-pull-requests.ts";
 import { dockerMounts, outputMounts, runtimeMounts } from "./server-mounts.ts";
 import type { ServerModule } from "./server-registration.ts";
@@ -44,6 +45,7 @@ const jobsLane: LaneFactory = ({
   runtimeCommands,
   webhooks,
   options,
+  outputs,
 }) => {
   const prScan = githubApp
     ? createPullRequestScanJob(
@@ -77,14 +79,30 @@ const jobsLane: LaneFactory = ({
         },
       )
     : undefined;
-  return createJobsRunner(
+  const runner = createJobsRunner(
     jobs,
     {
       webhook: { concurrency: 1, run: webhooks.run },
       ...(prScan ? { pr_scan: prScan } : {}),
+      ...(config.encryptionKey ? { [OUTPUTS_CAPTURE]: outputs.captureJob } : {}),
     },
     options.logError,
   );
+  return {
+    ...runner,
+    async reconcileOne(signal) {
+      try {
+        await outputs.enqueueCaptures(jobs, signal);
+      } catch {
+        (options.logError ?? console.error)("armada: output capture scheduling unavailable.");
+      }
+      return runner.reconcileOne(signal);
+    },
+    async drain() {
+      await runner.drain();
+      await outputs.drain();
+    },
+  };
 };
 
 const idleLane: LaneFactory = ({ sql, config, runtimeCheckpoint, idleDelayMs, dockerBootstrap }) =>
@@ -132,9 +150,8 @@ export function extraReaperLanes({ options }: ServerServices) {
 export const jobsModule: ServerModule = ({ workers }) => {
   workers.managed.set("jobs", jobsLane);
 };
-export const outputModule: ServerModule = ({ mounts, workers }) => {
+export const outputModule: ServerModule = ({ mounts }) => {
   mounts.push(outputMounts);
-  workers.managed.set("outputs", ({ outputs }) => outputs);
 };
 export const nativeModule: ServerModule = ({ workers }) => {
   workers.managed.set("native-prompts", ({ nativePrompts }) => nativePrompts);
