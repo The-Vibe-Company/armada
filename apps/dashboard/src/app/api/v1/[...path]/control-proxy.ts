@@ -119,7 +119,6 @@ export const PRIVATE_POST_PATHS: ReadonlySet<string> = new Set([
   "sandbox/launch",
   "sandbox/bind-credential",
   "sandbox/list",
-  "sandbox/detail",
   "sandbox/status",
   "sandbox/recovery",
   "sandbox/report",

@@ -848,7 +848,7 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
       const previous = requestDeadline;
       requestDeadline = until;
       try {
-        const detail = await api<{ id: string; conversationIds?: string[] }>("sandbox/detail", { id });
+        const detail = await api<{ id: string; conversationIds?: string[] }>("sandbox/status", { id });
         if (io.now() > until) throw new ClientSendError("dashboard", "client_send_timeout");
         const conversations = detail?.conversationIds;
         if (
@@ -937,7 +937,7 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
       try {
         await poll(
           async () => {
-            const page = await api<{ usage?: SandboxUsage }>("sandbox/detail", { id });
+            const page = await api<{ usage?: SandboxUsage }>("sandbox/status", { id });
             usage = page.usage;
             return usage;
           },
@@ -1266,7 +1266,7 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
         throw new Error("invalid_idle_receipt");
     };
     async function observeIdle() {
-      idleBaseline = await api<IdleState>("sandbox/detail", { id });
+      idleBaseline = await api<IdleState>("sandbox/status", { id });
       if (
         idleBaseline.id !== id ||
         !["ready", "running"].includes(idleBaseline.status) ||
@@ -1280,7 +1280,7 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
       const until = Math.min(deadline, io.now() + idleDelay + 180_000);
       if (Date.parse(idleBaseline.expiresAt) <= until) throw new Error("invalid_idle_receipt");
       await poll(
-        () => api<IdleState>("sandbox/detail", { id }),
+        () => api<IdleState>("sandbox/status", { id }),
         (value) => {
           sameRetainedState(value);
           if (value.status === "stopped") {
@@ -2206,7 +2206,7 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
             stopRequested = false;
             // Ordinary send, never an explicit resume. Preserve the original deadline and conversation.
             await runTurn(true, true);
-            const awake = await api<IdleState>("sandbox/detail", { id });
+            const awake = await api<IdleState>("sandbox/status", { id });
             sameRetainedState(awake);
             if (
               !["ready", "running"].includes(awake.status) ||

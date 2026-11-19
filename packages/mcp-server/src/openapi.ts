@@ -11,11 +11,10 @@ import {
   VERSION,
   vaultControlRoute,
 } from "@armada/core";
-import { launch, templateLaunchResponse } from "@armada/core/contract";
+import { launch, sandboxOperations, templateLaunchResponse } from "@armada/core/contract";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { z } from "zod";
-import { CONTROL_TOOL_ROUTES } from "./control-tool-routes.ts";
 import { DOCKER_SEND_REQUEST } from "./docker-send-request-schema.ts";
 import { GITHUB_REST_CONTRACTS, isGitHubRestControl } from "./github-rest-controls.ts";
 import {
@@ -42,7 +41,6 @@ export const REST_FIELD_NAMES: Readonly<Record<string, Readonly<Record<string, s
 };
 /** REST routes whose contract is the named MCP tool, beyond the dispatcher's shared-tool table. */
 const REST_TOOL_ROUTES: Readonly<Record<string, string>> = {
-  ...CONTROL_TOOL_ROUTES,
   "sandbox/launch": "launch",
   "logs/read": "logs",
 };
@@ -337,12 +335,15 @@ export async function generateOpenApi() {
     const paths: Record<string, unknown> = {};
     for (const route of PUBLISHED_REST_ROUTES) {
       const github = isGitHubRestControl(route) ? GITHUB_REST_CONTRACTS[route] : undefined;
+      const sandbox = Object.values(sandboxOperations).find((entry) => entry.route.path === `/api/v1/${route}`);
       const restOnly: (typeof REST_ONLY)[string] | undefined = github
         ? {
             description: github.description,
             input: requestJsonSchema(github.input.extend({ org: z.string().optional() })),
           }
-        : REST_ONLY[route];
+        : sandbox
+          ? { description: sandbox.description, input: requestJsonSchema(sandbox.input.body) }
+          : REST_ONLY[route];
       const tool = tools.find((tool) => tool.name === REST_TOOL_ROUTES[route]);
       if (!tool && !restOnly) throw new Error(`No registered contract for ${route}`);
       const rename = REST_FIELD_NAMES[route] ?? {};
@@ -418,8 +419,8 @@ export async function generateOpenApi() {
               content: {
                 "application/json": {
                   schema:
-                    github || REST_RESPONSES[route]
-                      ? responseJsonSchema(github?.output ?? REST_RESPONSES[route]!)
+                    github || sandbox || REST_RESPONSES[route]
+                      ? responseJsonSchema(github?.output ?? sandbox?.output ?? REST_RESPONSES[route]!)
                       : (tool?.outputSchema ?? {}),
                 },
               },

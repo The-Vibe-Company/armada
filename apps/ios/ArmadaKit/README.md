@@ -38,7 +38,7 @@ It never calls interior routes and does not infer authority from display IDs.
 ## Sandbox interior (#711)
 
 `sandboxDetail(id:)`, `sandboxEvents(id:cursor:)`, `sendSandboxPrompt(id:text:)`
-and `stopSandbox(id:)` call the routes the CLI already uses (`sandbox/detail`,
+and `stopSandbox(id:)` call the routes the CLI already uses (`sandbox/status`,
 `logs/read`, `sandbox/send`, `sandbox/stop`, all `POST /api/v1/…` with the
 selected `org`). No server route was added. The interior is owner or current
 admin only (#680, `docs/contracts/sandbox-access-v1.md`); list `canOpen` is a

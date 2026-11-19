@@ -19,7 +19,7 @@ import {
   VaultError,
   VERSION,
 } from "@armada/core";
-import { launchEnvelope } from "@armada/core/contract";
+import { LOGS_OUTPUT, launchEnvelope } from "@armada/core/contract";
 import {
   createApplicationVault,
   createSqlMcpLeasePort,
@@ -59,7 +59,6 @@ import { createRuntimeEnrolments } from "../src/runtime-enrolment.ts";
 import { createRuntimeEvents } from "../src/runtime-events.ts";
 import { createRuntimeGitHub } from "../src/runtime-github.ts";
 import { createRuntimeMcp } from "../src/runtime-mcp.ts";
-import { LOGS_OUTPUT } from "../src/sandbox-tool-schemas.ts";
 import { createArmadaServer } from "../src/tools.ts";
 import { migratedDatabase } from "./migrated-database.ts";
 import { publishedRequest, publishedResponse } from "./published-response.ts";
@@ -1034,7 +1033,7 @@ test("canonical Docker admission replays a scoped key and makes the external ref
     expect(await post("sandbox/list", { org, externalRef: body.externalRef })).toMatchObject({
       sandboxes: [{ id: admitted.sandbox.id, externalRef: body.externalRef }],
     });
-    expect(await post("sandbox/detail", { org, id: admitted.sandbox.id })).toMatchObject({
+    expect(await post("sandbox/status", { org, id: admitted.sandbox.id })).toMatchObject({
       externalRef: body.externalRef,
     });
     expect(await post("sandbox/list", { org, externalRef: "customer:43" })).toMatchObject({ sandboxes: [] });
@@ -1159,7 +1158,7 @@ test("the normal HTTP route accepts the dashboard body and returns a launched sa
   const listed = (await post("sandbox/list", scope)) as { sandboxes: SandboxListMetadata[] };
   expect(listed.sandboxes).toHaveLength(1);
   expect(listed.sandboxes[0]).toMatchObject({ id: f.body.requestId, provider: "docker", boatId: null });
-  const status = (await post("sandbox/detail", { ...scope, id: f.body.requestId })) as DockerSandboxStatus;
+  const status = (await post("sandbox/status", { ...scope, id: f.body.requestId })) as DockerSandboxStatus;
   expect(status).toMatchObject({
     id: f.body.requestId,
     provider: "docker",
@@ -1441,7 +1440,7 @@ test.each([false, true])(
     const ref = { org: f.actor.orgId, id: f.body.requestId, prompt_id: queued.promptId };
     for (const [route, input] of [
       ["sandbox/status", ref],
-      ["sandbox/detail", ref],
+      ["sandbox/status", ref],
       ["sandbox/wait", { ...ref, timeout_seconds: 0 }],
     ] as const) {
       const report = await rest.post(route, input);

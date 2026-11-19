@@ -121,7 +121,7 @@ shared launch envelope with `sandbox`, null `golden` and `helper`, GitHub
 status, TTL and expiry. The `runtime` field contains `{kind:"armada",epoch}`
 when runtime information is available and is null otherwise. The `promptId` and
 `conversationId` fields are null when their IDs are unavailable. Read the prompt
-output through `/api/v1/logs/read` and status through `/api/v1/sandbox/detail`.
+output through `/api/v1/logs/read` and status through `/api/v1/sandbox/status`.
 
 `requestId` is the logical sandbox ID and durable replay key. Identical retries
 resume the original phase IDs; changed input conflicts. Store this UUID before

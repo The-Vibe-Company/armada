@@ -227,7 +227,7 @@ export async function probeRoutine(
       hostId?: string;
       golden: string | null;
       billingAccount?: { id: string };
-    }>("sandbox/detail", { id: run.sandboxId });
+    }>("sandbox/status", { id: run.sandboxId });
     if (
       !state ||
       state.id !== run.sandboxId ||
