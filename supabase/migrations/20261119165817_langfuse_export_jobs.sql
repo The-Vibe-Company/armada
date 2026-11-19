@@ -11,8 +11,8 @@ begin
       jsonb_build_array('internal', new.org_id, 'langfuse_export', new.sandbox_id, null, new.prompt_id)::text,
       greatest(new.observed_at, new.lease_until),
       -- An in-flight legacy claim cannot record its outcome after transfer.
-      -- Give that reservation back so the last possible send can be replayed.
-      greatest(0, new.attempts - coalesce((new.lease_id is not null and new.lease_until > clock_timestamp())::int, 0)),
+      -- Use one statement cutoff so a lease cannot expire midway through the bulk transfer.
+      greatest(0, new.attempts - coalesce((new.lease_id is not null and new.lease_until > statement_timestamp())::int, 0)),
       35, jsonb_build_object('promptId', new.prompt_id)
     on conflict (idem_key) do nothing;
 

@@ -243,12 +243,13 @@ export function createLangfuse(
       {
         id: provider.id,
         async events(page) {
+          if (!(await canDispatch())) throw Error("Native export job lost its claim.");
           signal.throwIfAborted();
           const binding = await sql.query(
             "select 1 from public.sandboxes where id=$1 and lifecycle_generation=$2 and provider_sandbox_id=$3",
             [job.sandbox_id, job.generation, providerSandboxId],
           );
-          if (!binding.rows.length || !(await canDispatch())) throw Error("Native export history binding changed.");
+          if (!binding.rows.length) throw Error("Native export history binding changed.");
           signal.throwIfAborted();
           return provider.events(page);
         },

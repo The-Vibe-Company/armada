@@ -2,18 +2,21 @@ import { expect, spyOn, test } from "bun:test";
 import type { AgentEvent, Provider, Sql } from "@armada/core";
 import { decryptSecret, encryptSecret } from "@armada/core/server";
 import { normalizeEvent } from "@armada/provider-boat";
-import { createJobsRunner } from "../src/jobs/runner.ts";
+import { createJobsRunner, type JobStore } from "../src/jobs/runner.ts";
 import { createJobsStore } from "../src/jobs/store.ts";
 import { createLangfuse, langfuseSpans } from "../src/langfuse.ts";
 import { createNativeWebhookPrompts } from "../src/native-webhook-prompts.ts";
 import { rowOnlyDatabase } from "./row-only-database.ts";
 
 const database = rowOnlyDatabase();
-async function runExport(db: Sql, exporter: ReturnType<typeof createLangfuse>, signal = new AbortController().signal) {
+async function runExport(
+  db: Sql,
+  exporter: ReturnType<typeof createLangfuse>,
+  signal = new AbortController().signal,
+  store: JobStore = createJobsStore(db),
+) {
   const errors: string[] = [];
-  const runner = createJobsRunner(createJobsStore(db), { langfuse_export: exporter.exportJob }, (line) =>
-    errors.push(line),
-  );
+  const runner = createJobsRunner(store, { langfuse_export: exporter.exportJob }, (line) => errors.push(line));
   const claimed = await runner.reconcileOne(signal);
   await runner.drain();
   runner.stopAdmission();
@@ -472,10 +475,7 @@ test("native history fences every page and exports the receipt after an activity
   const provider = {
     id: "boat",
     events: async () => {
-      if (++reads === 1) {
-        await db.query("update sandboxes set lifecycle_generation=lifecycle_generation+1 where boat_id='boat_export'");
-        return { events: [], olderCursor: "previous", cursor: "native", hasMore: true };
-      }
+      if (++reads === 1) return { events: [], olderCursor: "previous", cursor: "native", hasMore: true };
       return { events, cursor: "native", hasMore: false };
     },
   } satisfies Pick<Provider, "id" | "events">;
@@ -496,7 +496,21 @@ test("native history fences every page and exports the receipt after an activity
     undefined,
     () => clock,
   );
-  expect(await runExport(db, exporter)).toBe(true);
+  const store = createJobsStore(db);
+  expect(
+    await runExport(db, exporter, undefined, {
+      ...store,
+      async inspect(job, owner) {
+        const state = await store.inspect(job, owner);
+        // The lifecycle advances while the worker checks its lease for page two.
+        if (reads === 1)
+          await db.query(
+            "update sandboxes set lifecycle_generation=lifecycle_generation+1 where boat_id='boat_export'",
+          );
+        return state;
+      },
+    }),
+  ).toBe(true);
   expect(reads).toBe(1);
   expect(sends).toBe(0);
   expect((await db.query<{ run_after: Date }>("select run_after from jobs")).rows[0]?.run_after.getTime()).toBe(
