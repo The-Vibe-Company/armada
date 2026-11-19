@@ -105,7 +105,6 @@ function referenceRead(name: string, input: Row): boolean {
 type Call = { id: string; name: string; input: Row; result: Row; error: boolean; denied: boolean };
 
 const childTools = ["launch", "message", "read", "stop"];
-// Event names can be arbitrary provider data. Only report known names verbatim.
 const knownExtraTools = [
   "exec_command",
   "commandExecution",
@@ -114,6 +113,7 @@ const knownExtraTools = [
   "webSearch",
   "list_children",
   "extend",
+  "finish",
   "delete",
 ];
 

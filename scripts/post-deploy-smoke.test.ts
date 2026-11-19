@@ -2533,7 +2533,7 @@ test("a resumed usage request that exhausts the poll deadline reports its timeou
   const fake = lifecycleFixture("none", (call) => {
     if (call.path === "sandbox/wait" && call.body.prompt_id === "turn-2") resumed = true;
     if (call.path === "sandbox/stop") resumed = false;
-    if (call.path !== "sandbox/status" || !resumed) return;
+    if (call.path !== "sandbox/status" || !resumed) return undefined;
     fake.advance(deadlines.resume_usage + 1);
     throw new DOMException("private transport detail", "TimeoutError");
   });
