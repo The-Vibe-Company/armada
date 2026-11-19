@@ -9,12 +9,93 @@ import { createRuntimeCheckpoint } from "../src/runtime-checkpoint.ts";
 import { createRuntimeEvents } from "../src/runtime-events.ts";
 import { createRuntimeHistory } from "../src/runtime-history.ts";
 import { createRuntimeProvider, type RuntimeWorkProvider } from "../src/runtime-provider.ts";
+import { createSandboxArmadaAccess } from "../src/sandbox-armada-access.ts";
 import { callSharedTool } from "../src/tool-api.ts";
 import { rowOnlyDatabase } from "./row-only-database.ts";
 import { runtimeFixture } from "./runtime.fixture.ts";
-import { ENCRYPTION_KEY } from "./support.ts";
+import { ENCRYPTION_KEY, fakeBoat, PUBLIC_URL } from "./support.ts";
 
 const database = rowOnlyDatabase();
+
+test.each(["acknowledged", "refused", "reply lost", "epoch replaced"])(
+  "enrolled scoped grant admission after delivery: %s",
+  async (outcome) => {
+    const f = await runtimeFixture(await database(), "modal", "codex", true);
+    try {
+      await f.db.query("update sandboxes set visibility='private', access_owner_id=owner_id where id=$1", [f.row.id]);
+      const authority = new DelegatedAuthority(f.sql, async () => {});
+      let token = "";
+      const admit = () =>
+        authority.admit(
+          token,
+          {
+            method: "launch",
+            goldenId: f.row.goldenId,
+            harness: "codex",
+            credentialId: f.account.id,
+            credentialVersion: f.account.version,
+          },
+          async (_tx, principal) => principal.ownerId,
+        );
+      const dispatched: string[] = [];
+      let admittedBeforeAcknowledgement: boolean | undefined;
+      let scrubAcknowledged = false;
+      const access = createSandboxArmadaAccess({
+        sql: f.sql,
+        encryptionKey: ENCRYPTION_KEY,
+        publicUrl: PUBLIC_URL,
+        commands: {
+          async call(owner, command, options) {
+            dispatched.push(command.op);
+            if (command.op === "installOrchestratorEpoch") {
+              token = command.token;
+              admittedBeforeAcknowledgement = await admit().then(
+                () => true,
+                () => false,
+              );
+            }
+            const reply = await f.bridge.call(owner, command, options);
+            if (outcome === "epoch replaced" && command.op === "installOrchestratorEpoch")
+              await f.authority.issue({ sandboxId: f.row.id, ownerId: f.people.owner, configuration: {} });
+            if (command.op === "scrubOrchestratorEpoch") scrubAcknowledged = reply.status === 200;
+            return reply;
+          },
+        },
+      });
+      if (outcome === "refused") f.refuse("installOrchestratorEpoch");
+      if (outcome === "reply lost") f.dropReplyOnce("installOrchestratorEpoch");
+      const nativeUnavailable = async () => {
+        throw Error("Scoped preparation must use the enrolled runtime");
+      };
+      const prepare = access.prepare(
+        { ...fakeBoat().provider, id: "modal", exec: nativeUnavailable, installOrchestratorEpoch: nativeUnavailable },
+        { ...f.row, visibility: "private" },
+        { userId: f.people.owner, orgId: f.people.org, role: "member" },
+        { maxActiveChildren: 1 },
+      );
+      if (outcome === "acknowledged") {
+        await prepare;
+        await expect(admit()).resolves.toBe(f.people.owner);
+        expect(dispatched).toEqual(["installOrchestratorEpoch"]);
+        expect(
+          (
+            await f.db.query("select max_active_children from orchestrator_lifecycle where orchestrator_id=$1", [
+              f.row.id,
+            ])
+          ).rows,
+        ).toEqual([{ max_active_children: 1 }]);
+      } else {
+        await expect(prepare).rejects.toThrow("denied");
+        await expect(admit()).rejects.toThrow("denied");
+        expect(dispatched).toEqual(["installOrchestratorEpoch", "scrubOrchestratorEpoch"]);
+        expect(scrubAcknowledged).toBe(outcome !== "epoch replaced");
+      }
+      expect(admittedBeforeAcknowledgement).toBe(false);
+    } finally {
+      await f.close();
+    }
+  },
+);
 
 function stopPort(f: Awaited<ReturnType<typeof runtimeFixture>>) {
   let stopped = false,
