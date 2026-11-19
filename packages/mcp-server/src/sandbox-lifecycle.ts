@@ -115,6 +115,32 @@ export async function publishDockerRuntimeReady(tx: Sql, sandboxId: string, sour
   return result.kind === "applied";
 }
 
+export async function recordDockerPromptAccepted(
+  tx: Sql,
+  sandboxId: string,
+  generation: string,
+  receipt: { promptId: string; conversationId: string },
+) {
+  const { rows } = await tx.query(
+    `select 1 from public.sandboxes s where s.id=$1 and s.provider='docker' and s.status='ready'
+     and (cardinality(s.conversation_ids)=0 or s.conversation_ids=array[$3]::text[])
+     and not exists(select 1 from public.runtime_idle_turns t
+       where t.sandbox_id=s.id and t.prompt_id=$2 and t.settled)`,
+    [sandboxId, receipt.promptId, receipt.conversationId],
+  );
+  if (!rows.length) return;
+  const result = await transitionSandbox(tx, {
+    sandboxId,
+    expectedGeneration: generation,
+    fromStates: ["ready"],
+    toState: "running",
+    actor: "docker_host",
+    code: "docker_prompt_accepted",
+    effects: [],
+  });
+  if (result.kind === "conflict") throw Error("Docker prompt acceptance lost the lifecycle generation.");
+}
+
 export async function settleRuntimeTurn(tx: Sql, sandboxId: string, generation: number | string, key?: string) {
   const {
     rows: [eligible],

@@ -1,4 +1,5 @@
 import type { RunnerRequest } from "@armada/agent-runtime";
+import { PROMPT_STATUSES } from "@armada/core";
 import { decryptSecret, encryptSecret } from "@armada/core/server";
 import { UUID } from "./control-input.ts";
 import type { Route } from "./http.ts";
@@ -10,7 +11,7 @@ import {
 } from "./request-observability.ts";
 import { type createRuntimeEnrolments, RuntimeEnrolmentDenied, type RuntimeOwnerScope } from "./runtime-enrolment.ts";
 import { runtimeHttpFailure } from "./runtime-http-failure.ts";
-import { settleRuntimeTurn } from "./sandbox-lifecycle.ts";
+import { recordDockerPromptAccepted, settleRuntimeTurn } from "./sandbox-lifecycle.ts";
 import { deferTransactionWake, runtimeWakes, waitForTimeout } from "./wake-bus.ts";
 
 const MAX_COMMAND = 1048576;
@@ -45,6 +46,36 @@ const clock: Clock = {
 function record(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value);
 }
+export function readRuntimeCommandSuccess(reply: RuntimeCommandReply, epoch: string, requestId: string) {
+  if (
+    reply.epoch === epoch &&
+    reply.requestId === requestId &&
+    reply.status === 200 &&
+    reply.body.version === 1 &&
+    reply.body.requestId === requestId &&
+    record(reply.body.result) &&
+    !Object.hasOwn(reply.body, "error")
+  )
+    return reply.body.result;
+}
+
+export function readDockerPromptReceipt(reply: RuntimeCommandReply, epoch: string, requestId: string) {
+  const result = readRuntimeCommandSuccess(reply, epoch, requestId);
+  if (!result) return;
+  const { promptId, conversationId } = result;
+  const status = PROMPT_STATUSES.find((candidate) => candidate === result.status);
+  if (
+    typeof promptId === "string" &&
+    UUID.test(promptId) &&
+    promptId === promptId.toLowerCase() &&
+    typeof conversationId === "string" &&
+    UUID.test(conversationId) &&
+    conversationId === conversationId.toLowerCase() &&
+    status
+  )
+    return { promptId, conversationId, status };
+}
+
 /** Read-only output samples (`outputs_<deadline ms>_<nonce>`) expire at the deadline in their id.
  * An expired read is never dispatched and never makes the runtime look busy: nobody awaits its
  * reply, so it must not hold the ordered queue ahead of later commands or idle checks. Its row
@@ -238,6 +269,7 @@ export function createRuntimeCommands(
         }
       }
       let promptId: string | null = null;
+      let requestedConversation: string | undefined;
       if (acceptedPromptId) {
         const command = (
           await tx.query<{ request_enc: Uint8Array<ArrayBuffer> }>(
@@ -246,8 +278,13 @@ export function createRuntimeCommands(
             [scope.sandboxId, value.requestId, scope.epoch],
           )
         ).rows[0];
-        if (command && JSON.parse(await decryptSecret(command.request_enc, key)).op === "prompt")
-          promptId = acceptedPromptId;
+        if (command) {
+          const request: RunnerRequest = JSON.parse(await decryptSecret(command.request_enc, key));
+          if (request.op === "prompt") {
+            promptId = acceptedPromptId;
+            requestedConversation = request.input.conversationId;
+          }
+        }
       }
       const row = (
         await tx.query<{ request_id: string; result_enc: Uint8Array<ArrayBuffer> }>(
@@ -272,7 +309,12 @@ export function createRuntimeCommands(
           [scope.sandboxId, queued[1], result.promptId],
         );
       }
-      if (row.request_id.startsWith("docker_prompt_")) await settleRuntimeTurn(tx, scope.sandboxId, generation, key);
+      if (row.request_id.startsWith("docker_prompt_")) {
+        const accepted = promptId && readDockerPromptReceipt(reply, scope.epoch, row.request_id);
+        if (accepted && (requestedConversation === undefined || requestedConversation === accepted.conversationId))
+          await recordDockerPromptAccepted(tx, scope.sandboxId, generation, accepted);
+        await settleRuntimeTurn(tx, scope.sandboxId, generation, key);
+      }
       return { sandboxId: scope.sandboxId, epoch: scope.epoch, requestId: value.requestId };
     });
     runtimeWakes.notify(`reply:${sandboxId}:${receipt.epoch}:${receipt.requestId}`);
