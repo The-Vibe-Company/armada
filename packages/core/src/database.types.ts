@@ -552,6 +552,7 @@ export type Database = {
           snapshot_id: string | null;
           result_image_id: string | null;
           cancelled_at: string | null;
+          refused_resume_generation: number | null;
         };
         Insert: {
           request_id: string;
@@ -568,6 +569,7 @@ export type Database = {
           snapshot_id?: string | null;
           result_image_id?: string | null;
           cancelled_at?: string | null;
+          refused_resume_generation?: number | null;
         };
         Update: {
           request_id?: string;
@@ -584,6 +586,7 @@ export type Database = {
           snapshot_id?: string | null;
           result_image_id?: string | null;
           cancelled_at?: string | null;
+          refused_resume_generation?: number | null;
         };
         Relationships: [
           {
@@ -645,6 +648,7 @@ export type Database = {
           disk_free_bytes: number | null;
           stopped_sandbox_bytes: number | null;
           snapshot_baseline_version: number | null;
+          daemon_protocol: number | null;
         };
         Insert: {
           id: string;
@@ -674,6 +678,7 @@ export type Database = {
           disk_free_bytes?: number | null;
           stopped_sandbox_bytes?: number | null;
           snapshot_baseline_version?: number | null;
+          daemon_protocol?: number | null;
         };
         Update: {
           id?: string;
@@ -703,6 +708,7 @@ export type Database = {
           disk_free_bytes?: number | null;
           stopped_sandbox_bytes?: number | null;
           snapshot_baseline_version?: number | null;
+          daemon_protocol?: number | null;
         };
         Relationships: [
           {
@@ -5538,7 +5544,6 @@ export type ModalMachineRow = Database["public"]["Tables"]["modal_machines"]["Ro
 export type ModalServerAppRow = Database["public"]["Tables"]["modal_server_apps"]["Row"];
 export type ModalServerHarnessRow = Database["public"]["Tables"]["modal_server_harnesses"]["Row"];
 export type ModalServerScopeRow = Database["public"]["Tables"]["modal_server_scopes"]["Row"];
-export type ModelAuthOwnershipRow = Database["public"]["Tables"]["model_auth_ownership"]["Row"];
 export type ModelAuthStateRow = Database["public"]["Tables"]["model_auth_state"]["Row"];
 export type NativeSteerCursorRow = Database["public"]["Tables"]["native_steer_cursors"]["Row"];
 export type NativeWebhookPromptRow = Database["public"]["Tables"]["native_webhook_prompts"]["Row"];

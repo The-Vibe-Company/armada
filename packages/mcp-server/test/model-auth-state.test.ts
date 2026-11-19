@@ -6,7 +6,7 @@ import { launchCredentials } from "../src/launch-credentials.ts";
 import { createModelAuthOwnership } from "../src/model-auth.ts";
 import { createNativeStateStore, nativeState } from "../src/model-auth-state.ts";
 import { rowOnlyConnection } from "./row-only-database.ts";
-import { call, ENCRYPTION_KEY, fakeBoat, harness, SECRETS, seedDatabase } from "./support.ts";
+import { call, ENCRYPTION_KEY, fakeBoat, harness, launchSandboxId, SECRETS, seedDatabase } from "./support.ts";
 
 const sharedConnection = rowOnlyConnection();
 const sharedDatabase = async () => seedDatabase(await sharedConnection());
@@ -588,14 +588,23 @@ test("managed exec holds stop admission through secret publication while indepen
     expect(claude.isError).toBe(false);
     const peerClient = await server.client(await server.token(server.people.member));
     server.boat.setExecOutput({ stdout: SECRETS.ownerClaude });
-    const peerOutput = await call(peerClient, "exec", { id: claude.data.id, command: "inspect-static-native-token" });
+    const peerOutput = await call(peerClient, "exec", {
+      id: launchSandboxId(claude.data),
+      command: "inspect-static-native-token",
+    });
     expect(peerOutput.isError).toBe(true); // Current sandbox access is owner/admin, not org-peer.
     const adminClient = await server.client(await server.token(server.people.admin));
-    const adminOutput = await call(adminClient, "exec", { id: claude.data.id, command: "inspect-static-native-token" });
+    const adminOutput = await call(adminClient, "exec", {
+      id: launchSandboxId(claude.data),
+      command: "inspect-static-native-token",
+    });
     expect(adminOutput.isError).toBe(false);
     expect(adminOutput.data.stdout).toBe("***");
 
-    const ownerOutput = await call(ownerClient, "exec", { id: claude.data.id, command: "inspect-static-native-token" });
+    const ownerOutput = await call(ownerClient, "exec", {
+      id: launchSandboxId(claude.data),
+      command: "inspect-static-native-token",
+    });
     expect(ownerOutput.isError).toBe(false);
     expect(ownerOutput.data.stdout).toBe("***");
     const first = await create("held-native-account");

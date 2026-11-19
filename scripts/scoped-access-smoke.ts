@@ -110,7 +110,7 @@ export function createScopedProbe(item: ScopedProbeCase, enabled: boolean, io: S
   const stopKey = `smoke-scoped-${crypto.randomUUID()}`;
   const answer = `SCOPED_CHILD_${crypto.randomUUID()}`;
   const noAccess = `NO_ACCESS_${crypto.randomUUID()}`;
-  const childPrompt = `Reply with exactly ${answer} and nothing else. Do not use tools or modify files.`;
+  const childPrompt = `ARMADA_SCOPED_SMOKE_V1 ${JSON.stringify({ lane: "child", answer })}`;
   let before: Set<string> | undefined;
   let parentId: string | undefined;
   let promptId: string | undefined;
@@ -296,7 +296,14 @@ export function createScopedProbe(item: ScopedProbeCase, enabled: boolean, io: S
         skills: [],
         ...(item.reasoningEffort ? { reasoningEffort: item.reasoningEffort } : {}),
       };
-      const goal = `Use only the configured native MCP server armada_orchestrator tools launch, message, read, stop for this task. Never use CLI, HTTP, config, credential or grant reads. If needed, the ONLY terminal command allowed is exactly ${referenceCommand} to read the nonsecret tool reference; do not use other exec commands. Never retry a mutation or generate new keys. Launch at most ONE idle child using exactly ${JSON.stringify({ idempotencyKey: launchKey, selection })} (no initial prompt or TTL). After a succeeded launch, message that child's returned sandboxId with exactly ${JSON.stringify({ sandboxId: "CHILD_SANDBOX_ID", idempotencyKey: messageKey, text: childPrompt })}, replacing CHILD_SANDBOX_ID with the actual sandboxId returned by launch. Poll read with {sandboxId} at most 20 times until its events contain the child's actual nonpartial assistant answer ${answer}, not a prompt/tool echo. Then stop that same child using idempotencyKey ${stopKey}. If any mutation is pending/uncertain or fails, do not retry; stop this task and report the failure. If the native tools are unavailable or launch returns scoped_authority_denied, reply with exactly ${noAccess}. Do not fabricate tool results.`;
+      const goal = `ARMADA_SCOPED_SMOKE_V1 ${JSON.stringify({
+        lane: "parent",
+        launch: { idempotencyKey: launchKey, selection },
+        messageKey,
+        stopKey,
+        answer,
+        noAccess,
+      })}`;
       await io.step("scoped_native_turn", async () => {
         sendUnknown = true;
         evidenceUnknown = true;

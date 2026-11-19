@@ -11,7 +11,7 @@ import { createRuntimeHistory } from "../src/runtime-history.ts";
 import { createRuntimeProvider } from "../src/runtime-provider.ts";
 import { callSharedTool } from "../src/tool-api.ts";
 import { rowOnlyDatabase } from "./row-only-database.ts";
-import { runtimeFixture } from "./runtime-fixture.ts";
+import { runtimeFixture } from "./runtime.fixture.ts";
 import { ENCRYPTION_KEY } from "./support.ts";
 
 const database = rowOnlyDatabase();

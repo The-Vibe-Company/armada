@@ -99,10 +99,6 @@ test("first shared launch drains known writers, keeps their latest auth and upgr
       [id, people.org, people.owner, status, account.id, id],
     );
   const resolved: string[] = [];
-  await db.query("insert into model_auth_ownership(account_id,account_version,sandbox_id) values($1,1,$2)", [
-    account.id,
-    crypto.randomUUID(),
-  ]);
   let writer = true,
     disk: string | undefined = native(0),
     drained = 0,

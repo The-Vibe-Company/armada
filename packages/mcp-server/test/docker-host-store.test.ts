@@ -1,6 +1,12 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { createHash, randomUUID } from "node:crypto";
-import { DOCKER_IMAGE_UNAVAILABLE_MESSAGE, DOCKER_LAUNCH_FAILURE_MESSAGES, type Sql } from "@armada/core";
+import {
+  DOCKER_HOST_PROTOCOL,
+  DOCKER_HOST_PROTOCOL_HEADER,
+  DOCKER_IMAGE_UNAVAILABLE_MESSAGE,
+  DOCKER_LAUNCH_FAILURE_MESSAGES,
+  type Sql,
+} from "@armada/core";
 import { decryptSecret, encryptSecret } from "@armada/core/server";
 import { admitDockerDisk, DockerHostDraining } from "../src/docker-capacity.ts";
 import { createDockerHostRoutes } from "../src/docker-host-routes.ts";
@@ -522,43 +528,79 @@ test("bound bootstrap requires ACKed creation and the exact pending capability, 
   await denied(store.enqueueSandbox(a.owner, a.sandboxId, { ...selection, requestId: randomUUID() }));
 });
 
-test.each(["account", "docker"] as const)("idle-only stop leaves an accepted %s turn intact", async (queue) => {
-  const db = database();
-  const a = await boundFixture();
-  await store.enqueueSandbox(a.owner, a.sandboxId, a.create);
-  await db.query("update public.sandboxes set status='ready' where id=$1", [a.sandboxId]);
-  const turn = randomUUID();
-  const sealed = await encryptSecret("queued turn", key);
-  if (queue === "account") {
-    const credential = randomUUID();
-    await db.query(
-      "insert into public.credentials(id,scope,owner_id,kind,value_enc) values($1,'user',$2,'openai',$3)",
-      [credential, a.owner.userId, sealed],
-    );
-    await db.query(
-      `insert into public.account_turn_queue
+test.each(["account", "docker", "runtime", "revoked runtime", "revoked issuer"] as const)(
+  "idle-only stop checks %s work",
+  async (queue) => {
+    const db = database();
+    const a = await boundFixture();
+    await store.enqueueSandbox(a.owner, a.sandboxId, a.create);
+    await db.query("update public.sandboxes set status='ready' where id=$1", [a.sandboxId]);
+    const turn = randomUUID();
+    const sealed = await encryptSecret("queued turn", key);
+    if (queue === "account") {
+      const credential = randomUUID();
+      await db.query(
+        "insert into public.credentials(id,scope,owner_id,kind,value_enc) values($1,'user',$2,'openai',$3)",
+        [credential, a.owner.userId, sealed],
+      );
+      await db.query(
+        `insert into public.account_turn_queue
         (sandbox_id,request_id,account_id,owner_id,org_id,actor_epoch,credential_version,input_hash,input_enc,conversation_id)
        values($1,$2,$3,$4,$5,1,1,$6,$7,'first')`,
-      [a.sandboxId, turn, credential, a.owner.userId, a.owner.orgId, "a".repeat(64), sealed],
-    );
-  } else {
-    await db.query(
-      `insert into public.docker_queued_prompts
+        [a.sandboxId, turn, credential, a.owner.userId, a.owner.orgId, "a".repeat(64), sealed],
+      );
+    } else if (queue === "docker") {
+      await db.query(
+        `insert into public.docker_queued_prompts
         (sandbox_id,request_id,prompt_id,owner_id,actor_epoch,lifecycle_generation,input_hash,input_enc)
        select id,$2,$3,owner_id,1,lifecycle_generation,$4,$5 from public.sandboxes where id=$1`,
-      [a.sandboxId, turn, randomUUID(), "a".repeat(64), sealed],
-    );
-  }
-  const stop = { requestId: randomUUID(), operation: "stop" as const };
-  await denied(store.enqueueSandbox(a.owner, a.sandboxId, { ...stop, onlyIfIdle: true }));
-  expect(
-    (await db.query("select status,stop_requested_at from public.sandboxes where id=$1", [a.sandboxId])).rows,
-  ).toEqual([{ status: "ready", stop_requested_at: null }]);
-  expect((await db.query("select 1 from public.docker_host_jobs where request_id=$1", [stop.requestId])).rows).toEqual(
-    [],
-  );
-  await store.enqueueSandbox(a.owner, a.sandboxId, stop);
-});
+        [a.sandboxId, turn, randomUUID(), "a".repeat(64), sealed],
+      );
+    }
+    if (queue === "runtime" || queue === "revoked runtime" || queue === "revoked issuer") {
+      await db.query(
+        `insert into public.runtime_enrolments(sandbox_id,lifecycle_generation,epoch,runtime_hash,docker_issuer_fence)
+       select id,lifecycle_generation,1,encode(sha256(uuid_send(id)),'hex'),$2
+       from public.sandboxes where id=$1`,
+        [a.sandboxId, `${a.actor.userId}:1`],
+      );
+      await db.query(
+        "insert into public.runtime_commands(sandbox_id,request_id,epoch,request_enc) values($1,$2,1,$3)",
+        [a.sandboxId, turn, sealed],
+      );
+    }
+    const stop = { requestId: randomUUID(), operation: "stop" as const };
+    if (queue === "revoked runtime") {
+      await db.query("update public.runtime_enrolments set runtime_hash=null where sandbox_id=$1", [a.sandboxId]);
+      await store.enqueueSandbox(a.owner, a.sandboxId, { ...stop, onlyIfIdle: true });
+      return;
+    }
+    if (queue === "revoked issuer") {
+      await db.query("update public.mcp_actor_epochs set epoch=epoch+1 where org_id=$1 and user_id=$2", [
+        a.actor.orgId,
+        a.actor.userId,
+      ]);
+      await store.enqueueSandbox(a.owner, a.sandboxId, { ...stop, onlyIfIdle: true });
+      return;
+    }
+    await denied(store.enqueueSandbox(a.owner, a.sandboxId, { ...stop, onlyIfIdle: true }));
+    expect(
+      (await db.query("select status,stop_requested_at from public.sandboxes where id=$1", [a.sandboxId])).rows,
+    ).toEqual([{ status: "ready", stop_requested_at: null }]);
+    expect(
+      (await db.query("select 1 from public.docker_host_jobs where request_id=$1", [stop.requestId])).rows,
+    ).toEqual([]);
+    if (queue === "runtime") {
+      await db.query(
+        "update public.runtime_commands set request_id='outputs_9999999999999_sample' where sandbox_id=$1 and request_id=$2",
+        [a.sandboxId, turn],
+      );
+      await store.enqueueSandbox(a.owner, a.sandboxId, { ...stop, onlyIfIdle: true });
+      return;
+    }
+    await store.enqueueSandbox(a.owner, a.sandboxId, stop);
+  },
+);
 
 test("stop commits runtime revocation once; cleanup retains the create deadline and ACKs only terminal transitions", async () => {
   const db = database();
@@ -737,6 +779,7 @@ test("a complete stopped Docker archive replaces the live sample, while a trunca
         method: "POST",
         headers: {
           authorization: `Bearer ${a.hostToken}`,
+          [DOCKER_HOST_PROTOCOL_HEADER]: String(DOCKER_HOST_PROTOCOL),
           "x-armada-installation-id": a.installationId,
           "x-armada-request-id": a.startup.requestId,
           ...(body ? { "content-type": "application/x-tar" } : {}),

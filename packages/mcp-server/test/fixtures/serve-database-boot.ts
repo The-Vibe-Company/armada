@@ -164,17 +164,34 @@ try {
     const recovered = await fetch(`http://127.0.0.1:${server.port}/healthz`);
     assert.equal(recovered.status, 200);
     assert.equal(((await recovered.json()) as { ok: boolean }).ok, true);
-    const stream = await fetch(`http://127.0.0.1:${server.port}/stream-fixture`, { method: "POST" });
+    const drain = new AbortController();
+    const stream = await fetch(`http://127.0.0.1:${server.port}/stream-fixture`, {
+      method: "POST",
+      signal: drain.signal,
+    });
     const streamText = stream.text();
-    const request = fetch(`http://127.0.0.1:${server.port}/drain-fixture`);
-    await entered.promise;
-    const stopped = server.stop(false);
-    assert.equal(server.stop(false), stopped, "Repeated stop shares one cleanup");
-    release.resolve();
-    assert.equal(await (await request).text(), "finished");
-    streamed.resolve();
-    assert.equal(await streamText, "startedfinished");
-    await stopped;
+    const request = fetch(`http://127.0.0.1:${server.port}/drain-fixture`, { signal: drain.signal });
+    const drained = Promise.allSettled([request, streamText]);
+    try {
+      await Promise.race([
+        entered.promise,
+        request.then((response) => {
+          throw new Error(`Drain handler did not hold the request (HTTP ${response.status})`);
+        }),
+      ]);
+      const stopped = server.stop(false);
+      assert.equal(server.stop(false), stopped, "Repeated stop shares one cleanup");
+      release.resolve();
+      assert.equal(await (await request).text(), "finished");
+      streamed.resolve();
+      assert.equal(await streamText, "startedfinished");
+      await stopped;
+    } finally {
+      release.resolve();
+      streamed.resolve();
+      drain.abort();
+      await drained;
+    }
   } finally {
     await server.stop(true);
     await server.workerDone;

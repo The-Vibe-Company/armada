@@ -1,6 +1,12 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
-import { DOCKER_LAUNCH_FAILURE_MESSAGES, DockerRetentionEnded, type Harness, type Sql } from "@armada/core";
+import {
+  DOCKER_HOST_PROTOCOL,
+  DOCKER_LAUNCH_FAILURE_MESSAGES,
+  DockerRetentionEnded,
+  type Harness,
+  type Sql,
+} from "@armada/core";
 import { createSqlVaultStore, decryptSecret, encryptSecret } from "@armada/core/server";
 import { type Api, type Executor, type State, type Store, tick } from "../../docker-host/src/daemon.ts";
 import { createDockerBootstrapService, DockerBootstrapDenied } from "../src/docker-bootstrap-service.ts";
@@ -78,6 +84,7 @@ async function fixture(ack = true, harness: Harness = "codex") {
   const registration = await hosts.issueRegistration(admin),
     installationId = randomUUID();
   const host = await hosts.exchangeRegistration(registration.registrationToken, installationId);
+  await db.query("update public.docker_hosts set daemon_protocol=$2 where id=$1", [host.hostId, DOCKER_HOST_PROTOCOL]);
   // Generated offline value, not an actual credential or an externally usable fixture secret.
   const secret = `offline-bootstrap-${randomUUID()}`,
     credentialId = randomUUID();
@@ -489,7 +496,6 @@ test.each([false, true])("idle checkpoint fences Docker stop and retained restor
   if (boot?.operation !== "bootstrap") throw Error("missing bootstrap");
   const session = await authority.enrol(boot.bootstrap.enrolmentToken);
   await hosts.complete(f.hostToken, f.installationId, { requestId: f.requestId, outcome: "completed" });
-  await db.query("update public.docker_hosts set daemon_version='2.28.0' where id=$1", [f.hostId]);
   await db.query("update public.sandboxes set status='ready' where id=$1", [f.sandbox.id]);
   const conversationId = randomUUID(),
     promptId = randomUUID(),
@@ -809,11 +815,12 @@ test("a failed Docker resume ACK only fails the activation admitted for that req
       requestId: randomUUID(),
     });
     await hosts.complete(f.hostToken, f.installationId, { requestId: job.requestId, outcome: "completed" });
+    return job.requestId;
   };
   await stop();
   const first = await admittedResume(f, randomUUID());
   expect(first.state).toBe("pending");
-  await stop();
+  const previousStop = await stop();
   const current = await admittedResume(f, randomUUID());
   expect(current.state).toBe("pending");
 
@@ -825,4 +832,117 @@ test("a failed Docker resume ACK only fails the activation admitted for that req
 
   await fail(current.requestId);
   expect((await reservations.get(f.actor, f.sandbox.id)).status).toBe("failed");
+  await hosts.complete(f.hostToken, f.installationId, { requestId: previousStop, outcome: "completed" });
+  expect(
+    (await database().query("select stopped_at from public.sandboxes where id=$1", [f.sandbox.id])).rows[0],
+  ).toEqual({ stopped_at: null });
 });
+
+test.each(["refusal first", "ACK first", "previous server ACK", "ACK transaction rollback"] as const)(
+  "a refused Docker resume returns to a retained stop after claim settlement (%s)",
+  async (order) => {
+    const f = await fixture();
+    const { id } = f.sandbox;
+    const authority = createRuntimeEnrolments(sql, key);
+    await service.bootstrap(f.actor, id, f.requestId);
+    const bootstrap = await hosts.poll(f.hostToken, f.installationId);
+    if (bootstrap?.operation !== "bootstrap") throw Error("missing bootstrap");
+    const source = await authority.enrol(bootstrap.bootstrap.enrolmentToken);
+    await hosts.complete(f.hostToken, f.installationId, { requestId: bootstrap.requestId, outcome: "completed" });
+    const conversationId = randomUUID();
+    await database().query("update public.sandboxes set conversation_ids=array[$2]::text[] where id=$1", [
+      id,
+      conversationId,
+    ]);
+    await database().query(
+      `insert into public.runtime_checkpoints(sandbox_id,epoch,request_id,watermark,completed_at)
+       values($1,$2,$3,0,now())`,
+      [id, source.epoch, randomUUID()],
+    );
+    const previousStop = await hosts.enqueueSandbox(f.actor, id, { operation: "stop", requestId: randomUUID() });
+    const ack = (requestId: string, outcome: "completed" | "failed" = "completed") =>
+      hosts.complete(f.hostToken, f.installationId, { requestId, outcome });
+    await ack(previousStop.requestId);
+    const resume = await admittedResume(f, randomUUID());
+    const job = await hosts.poll(f.hostToken, f.installationId, "3.0.0");
+    if (job?.operation !== "resume") throw Error("missing resume");
+    const refuse = () =>
+      authority.route(
+        new Request("https://armada.example/api/runtime/enrol", {
+          method: "POST",
+          headers: {
+            authorization: `Bearer ${job.bootstrap.enrolmentToken}`,
+            "x-armada-runtime-protocol": "0",
+          },
+        }),
+      );
+
+    if (order === "ACK first") await ack(job.requestId);
+    const response = await refuse();
+    expect(response?.status).toBe(409);
+    expect(await response?.json()).toEqual({ error: "runtime_protocol_unsupported" });
+    if (order !== "ACK first") {
+      expect((await reservations.get(f.actor, id)).status).toBe("starting");
+      expect((await hosts.poll(f.hostToken, f.installationId))?.requestId).toBe(job.requestId);
+      if (order === "previous server ACK") {
+        await database().query(
+          "update public.docker_host_jobs set outcome='completed',completed_at=now() where request_id=$1",
+          [job.requestId],
+        );
+        await hosts.poll(f.hostToken, f.installationId);
+      } else {
+        if (order === "ACK transaction rollback") {
+          const failingSql: Sql = {
+            query: sql.query,
+            transaction: (work) =>
+              sql.transaction!((tx) =>
+                work({
+                  query: (statement, values) => {
+                    if (statement.includes("insert into public.docker_host_jobs")) throw Error("stop insertion failed");
+                    return tx.query(statement, values);
+                  },
+                }),
+              ),
+          };
+          const failingStore = createDockerHostStore(failingSql, key);
+          await expect(
+            failingStore.complete(f.hostToken, f.installationId, { requestId: job.requestId, outcome: "completed" }),
+          ).rejects.toMatchObject({ cause: { message: "stop insertion failed" } });
+          expect((await reservations.get(f.actor, id)).status).toBe("starting");
+          expect((await hosts.poll(f.hostToken, f.installationId))?.requestId).toBe(job.requestId);
+        }
+        await ack(job.requestId);
+      }
+    }
+    expect((await reservations.get(f.actor, id)).status).toBe("stopping");
+    await expect(authority.enrol(job.bootstrap.enrolmentToken)).rejects.toThrow("runtime_enrolment_denied");
+    expect((await service.resume(f.actor, id, resume.requestId)).state).toBe("failed");
+    if (order === "ACK first") {
+      await expect(reservations.job(f.actor, id, resume.requestId)).resolves.toMatchObject({ state: "failed" });
+      const controls = createDockerSandboxControls(sql, key, { resume: service });
+      await expect(
+        controls.invoke(
+          { userId: f.actor.userId, orgs: [{ orgId: f.actor.orgId, role: "member" }], via: "service" },
+          "resume",
+          { id, request_id: resume.requestId },
+        ),
+      ).rejects.toMatchObject({ code: "conflict", message: "Docker resume failed." });
+    }
+    await ack(previousStop.requestId);
+    expect((await reservations.get(f.actor, id)).status).toBe("stopping");
+
+    const stop = await hosts.poll(f.hostToken, f.installationId);
+    if (stop?.operation !== "stop") throw Error("missing refusal stop");
+    expect(stop.request).toEqual(job.request);
+    await ack(stop.requestId);
+    expect((await reservations.get(f.actor, id)).status).toBe("stopped");
+    const next = await admittedResume(f, randomUUID());
+    expect(next.state).toBe("pending");
+    const nextJob = await hosts.poll(f.hostToken, f.installationId);
+    if (nextJob?.operation !== "resume") throw Error("missing replacement resume");
+    expect(await authority.enrol(nextJob.bootstrap.enrolmentToken)).toMatchObject({
+      epoch: String(Number(source.epoch) + 1),
+      configuration: { restoreCheckpoint: { epoch: source.epoch, conversationId, watermark: 0 } },
+    });
+  },
+);

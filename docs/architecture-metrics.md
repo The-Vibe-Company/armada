@@ -27,7 +27,7 @@ git worktree remove /tmp/armada-metrics-baseline
 | `netSourceLines` | 167,729 | Current tree total on the same basis as `nonTestSourceLines`. Subtract the baseline or base-tree total to get the net change. |
 | `weeklyFixShare.share` | 34.89% | 419 fixes among 1,201 merges in the seven UTC days ending 2026-11-18. The epic's 38% came from a manual log tally. |
 | `runtimeCommandToFirstVisibleText` | unavailable | The baseline schema has no `created_at` on either runtime table. The epic's ~2 s is an estimate of polling overhead. |
-| `launchStageTotals` | unmeasured | Requires staging data. |
+| `launchStageTotals` | unmeasured | See the [2026-11-19 Modal staging baseline](#staging-baseline) for the later launch timing sample. |
 
 Token and path definitions live in `scripts/metrics/architecture-rules.ts` for use by the ratchets. These textual counts measure trends. Indirection, code generation and historical SQL can affect them.
 
@@ -78,15 +78,25 @@ and cleanup. For idle launches, the first event can occur long after readiness.
 
 ### Staging baseline
 
-Modal launch p50 and p95 are pending coordinator measurement. The individual
-12.3 s staging and 17.3 s production measurements cited in #2767 do not establish
-percentiles. The program targets 8 s p50 and 12 s p95.
+On 2026-11-19 (UTC), the coordinator measured 10 fresh, successful, sequential
+Modal golden launches through REST on staging. All 10 used the native path,
+the Codex harness, the `smoke-modal` snapshot, the prompt `reply OK`, and no
+connections. The deployed SHAs were `b6fda81b` (launch 1), `1d10bfa0`
+(launches 2–3), `4359b107` (launch 4), and `840718ce` (launches 5–10).
 
-For successful staging launches, record the deployed SHA, date, path, sample
-count, and workload. Calculate nearest-rank p50 and p95 from `totalMs` and
-compare the sum of `modal_launch_timing.stages[].ms` with an independently
-measured wall time using the same admission and readiness boundary. Report request-to-ready wall time
-separately to show work outside that boundary.
+| Timing boundary (nearest rank, n = 10) | p50 (ms) | p95 (ms) |
+| --- | ---: | ---: |
+| Shared launcher through harness readiness (`modal_launch_timing.totalMs`) | 13,613 | 20,214 |
+| Outer handler stage sum (`modal_golden_launch_timing.stages[].ms`) | 15,728 | 22,160 |
+| Client request-to-ready (through receipt of the full launch response) | 15,812 | 22,318 |
+
+The outer stage sum was within 0.3–1.8% of the client wall time on every launch.
+The largest stages were `workspace_preparation` (median 6.1 s, up to 13.1 s,
+including native setup) and `provider_allocation` (median 5.3 s, including
+native runner startup and health). Every launch made 121 SQL adapter query
+attempts. This baseline informs #2768. The program targets 8 s p50 and 12 s p95.
+
+Source: [Coordinator staging measurement on #2767](https://github.com/The-Vibe-Company/armada/issues/2767#issuecomment-7003426082).
 
 ### Golden launch admission and SQL
 

@@ -92,7 +92,7 @@ function shareSqlWorker(file: string, source: string): boolean {
     /^(packages\/(core|mcp-server)\/test\/)/.test(file) &&
     (/\b(migratedDatabase|openMigratedDatabase|rowOnlyDatabase|rowOnlyConnection)\s*\(/.test(source) ||
       /import\s*\{[^}]*\b(database|harness)\b[^}]*\}\s*from "\.\/support\.ts"/.test(source)) &&
-    !/Bun\.(spawn|serve|env)|runtimeFixture|runtime-fixture|\b(Journal|Runner)\b|captureGitHubAuditLogs|mock\.(module|restore)|\b(CodexDriver|ClaudeDriver|OpencodeDriver)\b|globalThis\.|process\.(env|on|once|chdir)|spyOn\(|child_process|test\.concurrent|setSystemTime|Date\.now\s*=/.test(
+    !/Bun\.(spawn|serve|env)|runtimeFixture|runtime\.fixture|\b(Journal|Runner)\b|captureGitHubAuditLogs|mock\.(module|restore)|\b(CodexDriver|ClaudeDriver|OpencodeDriver)\b|globalThis\.|process\.(env|on|once|chdir)|spyOn\(|child_process|test\.concurrent|setSystemTime|Date\.now\s*=/.test(
       source,
     )
   );

@@ -25,7 +25,7 @@ import {
   resolveLaunchSkills,
 } from "./launch-plan.ts";
 import { runtimeLaunch } from "./launch-runtime.ts";
-import { LaunchSecretRefusal, ModalLaunchSecretRefusal } from "./launch-secrets.ts";
+import { LaunchSecretRefusal, RuntimeLaunchSecretRefusal } from "./launch-secrets.ts";
 import type { LaunchStage } from "./launch-stages.ts";
 import { isLaunchTtlSeconds, validateLaunchSkillPins } from "./launch-validation.ts";
 import { type MachineSize, resolveMachineSize } from "./machine-size.ts";
@@ -192,8 +192,6 @@ export interface LaunchOptions extends GoldenLimits {
   modalRuntimeDefault?: NonNullable<LaunchOptions["boatRuntimeDefault"]>;
   /** Frozen template account version, not a public launch override. */
   credentialVersion?: number;
-  /** Whether the template declares application-secret bindings. */
-  templateHasSecretBindings?: boolean;
 
   /** Trusted per-launch opt-in for common-runtime routes; private bootstrap, never a native-agent fallback. */
   runtime?: LaunchOptions["boatRuntime"];
@@ -712,8 +710,8 @@ export async function launchSandbox(
           },
         })
         .catch((error: unknown) => {
-          if (provider.id === "modal" && strategy.kind === "enrolled" && error instanceof LaunchSecretRefusal)
-            throw new ModalLaunchSecretRefusal(error, record.id);
+          if (strategy.kind === "enrolled" && error instanceof LaunchSecretRefusal)
+            throw new RuntimeLaunchSecretRefusal(error, record.id);
           throw error;
         });
       timing.mark("finish_initialization");

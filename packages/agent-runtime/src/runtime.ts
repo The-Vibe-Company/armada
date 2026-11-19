@@ -31,7 +31,7 @@ import {
 } from "./protocol.ts";
 import { ReadableConfigurations } from "./readable-configurations.ts";
 import { readRuntimeJson } from "./request-framing.ts";
-import { executeWithReceipt } from "./request-receipts.ts";
+import { type EventSelection, executeWithReceipt } from "./request-receipts.ts";
 import { sampleVmResources } from "./resource-sampler.ts";
 import { installRuntimeSkills } from "./skills.ts";
 import { executeWorkspace, validateWorkspaceExec } from "./workspace-exec.ts";
@@ -244,9 +244,12 @@ export class Runner {
           result = { acknowledged: true };
         }
         // Never put this private request/body or bearer in the replay cache.
-        return new Response(this.journal.redact(JSON.stringify({ version: 1, requestId: r.requestId, result })), {
-          headers: { "content-type": "application/json" },
-        });
+        return new Response(
+          this.journal.redact(JSON.stringify({ version: 1, requestId: r.requestId, result }), "requests"),
+          {
+            headers: { "content-type": "application/json" },
+          },
+        );
       }
       if (r.op === "testModelConnection") {
         if (
@@ -344,10 +347,11 @@ export class Runner {
       }
       return await executeWithReceipt(this.journal, r, () => this.dispatch(r, request.signal));
     } catch (error) {
-      return Response.json(
-        { error: this.journal.redact(error instanceof Error ? error.message : "runner_error") },
-        { status: error instanceof Error && error.message === "unauthorized" ? 401 : 409 },
-      );
+      const message = error instanceof Error ? error.message : "runner_error";
+      return new Response(this.journal.redact(JSON.stringify({ error: message }), "requests"), {
+        status: message === "unauthorized" ? 401 : 409,
+        headers: { "content-type": "application/json" },
+      });
     }
   }
   private configureMcp(value: unknown, epochControl = false): ConfigureMcpResult {
@@ -485,12 +489,7 @@ export class Runner {
       if (!Number.isSafeInteger(after) || after < 0) throw Error("invalid_cursor");
       const limit = Math.max(1, Math.min(r.limit ?? 100, 1000));
       const rows = this.journal.events(after, limit + 1, r.conversationId);
-      const page = rows.slice(0, limit);
-      return {
-        events: page.map((x) => x.event),
-        cursor: String(page.at(-1)?.sequence ?? after),
-        hasMore: rows.length > limit,
-      };
+      return { after, rows: rows.slice(0, limit), hasMore: rows.length > limit } satisfies EventSelection;
     }
     if (r.op === "getExec") {
       const row = this.journal.db.query("SELECT body FROM processes WHERE pid=?").get(r.processId) as {
@@ -883,7 +882,7 @@ export class Runner {
     const save = (value: unknown) =>
       this.journal.db
         .query("INSERT OR REPLACE INTO processes VALUES(?,?)")
-        .run(pid, this.journal.redact(JSON.stringify(value)));
+        .run(pid, this.journal.redact(JSON.stringify(value), "processes"));
     const identity = processIdentity(pid);
     save({ pid, status: "running", identity });
     const timer = setTimeout(

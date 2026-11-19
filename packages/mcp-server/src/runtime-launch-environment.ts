@@ -15,7 +15,7 @@ export interface RuntimeEnvironmentSource {
 export function createRuntimeEnvironmentDelivery(sql: Sql, key: string, clock?: RuntimeClock) {
   const commands = createRuntimeCommands(createRuntimeEnrolments(sql, key), key, clock);
   return async (input: {
-    provider: "docker" | "modal";
+    provider: "boat" | "docker" | "modal";
     ownerId: string;
     id: string;
     load(tx: Sql): Promise<RuntimeEnvironmentSource>;
@@ -47,11 +47,6 @@ export function createRuntimeEnvironmentDelivery(sql: Sql, key: string, clock?: 
             source.bindings,
             key,
           );
-          if (provider === "modal" && Object.values(secrets).some((value) => value.length < 8))
-            throw new VaultError(
-              "unavailable",
-              "Modal runtime secret delivery requires values of at least eight characters.",
-            );
           const variables = validateReadableVariables({ ...source.variables, ...secrets });
           return locked.withOwner(id, ownerId, async (_tx, scope) => {
             if (scope.provider !== provider || (input.epoch !== undefined && scope.epoch !== input.epoch))
@@ -64,7 +59,7 @@ export function createRuntimeEnvironmentDelivery(sql: Sql, key: string, clock?: 
               op: "configureReadableVariables" as const,
               harness: source.harness,
               variables,
-              ...(provider === "modal" ? { secretKeys: source.bindings.map(({ key }) => key).sort() } : {}),
+              ...(provider !== "docker" ? { secretKeys: source.bindings.map(({ key }) => key).sort() } : {}),
             };
             await createRuntimeCommands(locked, key, clock).enqueue(ownerId, request, scope.epoch);
             return { request, epoch: scope.epoch };

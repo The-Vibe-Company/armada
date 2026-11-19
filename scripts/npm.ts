@@ -110,7 +110,11 @@ export function stageNpm(options: StageOptions): StagedPackage[] {
 }
 
 /** Bundles the SDK into `<out>/sdk`, which must contain no reference to a workspace package. */
-export async function stageSdk(options: { out: string; version?: string }): Promise<StagedPackage> {
+export async function stageSdk(options: {
+  out: string;
+  version?: string;
+  declarations?: string;
+}): Promise<StagedPackage> {
   const version = options.version ?? VERSION;
   const entry = join(ROOT, "packages/sdk/src/index.ts");
   const dir = join(options.out, "sdk");
@@ -123,11 +127,15 @@ export async function stageSdk(options: { out: string; version?: string }): Prom
   }
   const code = await output.text();
   // A bare import resolves against the consumer's node_modules, where no workspace package exists.
-  if (/^\s*import\b|\bfrom\s*["']|\bimport\(|\brequire\(/m.test(code)) {
-    throw new Error("The SDK bundle must not import other modules.");
+  const imports = new Bun.Transpiler({ loader: "js" }).scanImports(code);
+  if (imports.length) {
+    const dependencies = [...new Set(imports.map(({ path }) => path))].sort();
+    throw new Error(`The SDK bundle must not import other modules: ${dependencies.join(", ")}`);
   }
+  const runtimeImport = code.match(/\b(?:import|require)\s*\([^)]*\)/)?.[0];
+  if (runtimeImport) throw new Error(`The SDK bundle must not import other modules: ${runtimeImport}`);
   writeFileSync(join(dir, "index.js"), code);
-  writeFileSync(join(dir, "index.d.ts"), await sdkDeclarations(entry));
+  writeFileSync(join(dir, "index.d.ts"), options.declarations ?? (await sdkDeclarations(entry)));
   copyFileSync(LICENSE, join(dir, "LICENSE"));
   writeFileSync(
     join(dir, "README.md"),

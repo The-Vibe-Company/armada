@@ -45,15 +45,8 @@ function allocationTtlFor(
 export const goldenLaunchPlacements: Readonly<Record<SandboxProviderId, GoldenLaunchPlacement>> = {
   boat: {
     admit: admitGoldenLaunch,
-    runtimeDefault: (options, harness) => {
-      const runtime = options.boatRuntimeDefault ?? (harness === "opencode" ? options.boatEndpointRuntime : undefined);
-      if (runtime && options.templateHasSecretBindings)
-        throw new LaunchError(
-          "invalid_request",
-          "Boat runtime default cannot launch template application-secret bindings; no native fallback. Set ARMADA_BOAT_AGENT_PATH=native for rollback.",
-        );
-      return runtime;
-    },
+    runtimeDefault: (options, harness) =>
+      options.boatRuntimeDefault ?? (harness === "opencode" ? options.boatEndpointRuntime : undefined),
     endpointRuntime: (options) => options.boatEndpointRuntime,
     allocationTtlSeconds: (ttlSeconds, extensionHeadroom, privateParent) =>
       allocationTtlFor("boat", ttlSeconds, extensionHeadroom, privateParent),

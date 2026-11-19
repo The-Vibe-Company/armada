@@ -7,12 +7,6 @@ import { nativeQuiescent } from "../src/native-idle.ts";
 import { createSandboxLifecycle } from "../src/sandbox-lifecycle.ts";
 import { createSandboxPullRequests } from "../src/sandbox-pull-requests.ts";
 import { callSharedTool } from "../src/tool-api.ts";
-import {
-  lostConfirmation,
-  recreatedAtFetchedCommit,
-  rejectedRecreation,
-  unrecordedUrlPush,
-} from "./push-ledger-git.ts";
 import { rowOnlyDatabase } from "./row-only-database.ts";
 import { bunLikeSql, ENCRYPTION_KEY } from "./support.ts";
 
@@ -506,19 +500,14 @@ test.each([
   const f = await fixture(state === "running-turn" ? state : "quiet");
   const owner = f.caller.userId;
   const repository = "example/repo";
-  // Real Git evidence: the reader output that reaches admission.
-  const git =
-    state === "rejected recreation"
-      ? rejectedRecreation()
-      : state === "recreated at fetched commit"
-        ? (({ stdout, first }) => ({ stdout, sha: first }))(recreatedAtFetchedCommit())
-        : state === "lost confirmation"
-          ? (({ stdout, first }) => ({ stdout, sha: first }))(lostConfirmation())
-          : state === "unrecorded URL push"
-            ? // Discovery sees only the merged PR; the open one left by URL with --no-verify.
-              (({ stdout, first }) => ({ stdout, sha: first }))(unrecordedUrlPush())
-            : undefined;
-  const sha = git?.sha ?? "a".repeat(40);
+  const sha = "a".repeat(40);
+  const later = "2".repeat(40);
+  const ledger: Partial<Record<typeof state, string>> = {
+    "rejected recreation": `^\t${sha}\n?\ttopic\t${sha}\n`,
+    "recreated at fetched commit": `topic\t${later}\ntopic\t${sha}\n`,
+    "lost confirmation": `^\t${later}\ntopic\t${sha}\n?\ttopic\t${later}\n`,
+    "unrecorded URL push": `^\t${later}\ntopic\t${sha}\n`,
+  };
   await f.db.query(
     `insert into github_connections(user_id,github_id,login,name,refresh_token_enc,access_token_enc,access_expires_at)
        values($1,123,'owner','Owner',$2,$3,now()+interval '1 hour')`,
@@ -700,9 +689,8 @@ test.each([
     );
   }
   await observe(
-    git
-      ? git.stdout
-      : state === "no push" || state === "corrected report"
+    ledger[state] ??
+      (state === "no push" || state === "corrected report"
         ? ""
         : `${state === "ledger gap" ? "!untracked\n" : state === "ledger hook missing" ? "!unproven\n" : state === "pending attempt" ? "!pending\n" : ""}topic\t${sha}\n${state.startsWith("merged after closed") ? `topic\t${"e".repeat(40)}\n` : ""}${
             // More older pushes to the branch than one scan looks up: the newest
@@ -710,7 +698,7 @@ test.each([
             state === "merged after many pushes"
               ? Array.from({ length: 16 }, (_, i) => `topic\t${i.toString(16).padStart(40, "1")}\n`).join("")
               : ""
-          }${state.startsWith("merged with") ? `scratch\t${"c".repeat(40)}\n` : ""}${state === "unmerged PR at attempt" ? `~\tother\t${"f".repeat(40)}\n` : ""}${state === "rejected attempt" ? `?\tmain\t${"9".repeat(40)}\n` : ""}`,
+          }${state.startsWith("merged with") ? `scratch\t${"c".repeat(40)}\n` : ""}${state === "unmerged PR at attempt" ? `~\tother\t${"f".repeat(40)}\n` : ""}${state === "rejected attempt" ? `?\tmain\t${"9".repeat(40)}\n` : ""}`),
   );
   if (state === "revoked") await f.db.query("update github_connections set revoked_at=now() where user_id=$1", [owner]);
   if (state === "opted out") await f.db.query("update sandboxes set stop_when_work_merged=false where id=$1", [f.id]);

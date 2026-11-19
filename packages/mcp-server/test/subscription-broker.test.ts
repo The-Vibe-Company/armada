@@ -17,7 +17,7 @@ import { ENCRYPTION_KEY, fakeBoat } from "./support.ts";
 
 const database = rowOnlyDatabase();
 
-test("three subscription launches prompt despite trapped history and share one refresh across replicas", async () => {
+test("three subscription launches prompt despite historical sandbox rows and share one refresh across replicas", async () => {
   const { db, people } = await database();
   let release: (() => void) | undefined;
   const pending: Promise<unknown>[] = [];
@@ -32,8 +32,7 @@ test("three subscription launches prompt despite trapped history and share one r
         [people.owner, await encryptSecret(raw, ENCRYPTION_KEY)],
       )
     ).rows[0]!;
-    // All former traps coexist: historical failed/deleted, unknown-version live
-    // history, and ownership pointing at an allocation that was never recorded.
+    // Historical failed/deleted sandboxes and live sandboxes with no known credential version coexist.
     for (const [status, version] of [
       ["failed", 1],
       ["deleted", 1],
@@ -46,10 +45,6 @@ test("three subscription launches prompt despite trapped history and share one r
         [people.org, people.owner, status, `old-${status}`, account.id, version],
       );
     }
-    await db.query("insert into model_auth_ownership(account_id,account_version,sandbox_id) values($1,1,$2)", [
-      account.id,
-      crypto.randomUUID(),
-    ]);
     let requests = 0;
     const gate = new Promise<void>((resolve) => {
       release = resolve;

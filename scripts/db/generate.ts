@@ -85,7 +85,6 @@ const ROW_ALIASES: Record<string, string> = {
   orchestrator_runtime: "OrchestratorRuntimeRow",
   orchestrator_runtime_create_keys: "OrchestratorRuntimeCreateKeyRow",
   orchestrator_runtime_events: "OrchestratorRuntimeEventRow",
-  model_auth_ownership: "ModelAuthOwnershipRow",
   model_auth_state: "ModelAuthStateRow",
   modal_events: "ModalEventRow",
   modal_images: "ModalImageRow",
@@ -385,10 +384,9 @@ ${table.columns.map((column) => field(column.name, column.tsType, true, column.n
     .join("\n");
 
   const aliases = [
-    ...schema.tables.map((table) => {
+    ...schema.tables.flatMap((table) => {
       const alias = ROW_ALIASES[table.name];
-      if (!alias) throw new Error(`no row alias for table ${table.name}`);
-      return `export type ${alias} = Database["public"]["Tables"]["${table.name}"]["Row"];`;
+      return alias ? [`export type ${alias} = Database["public"]["Tables"]["${table.name}"]["Row"];`] : [];
     }),
     ...schema.enums.flatMap((item) => {
       const alias = ENUM_ALIASES[item.name];

@@ -36,7 +36,7 @@ For MCP coordinator launches, call `launch` with optional `size`, a stable
 `idempotencyKey` and an `externalRef`. After an uncertain response, repeat the
 same call with the same key, then use `list` with the reference to find any
 registered sandbox. Escalate unresolved allocations with the original key and
-any receipt UUID returned.
+any receipt UUID returned. On success, pass `sandbox.id` to subsequent tools.
 
 ## 2. Choose before launching
 
@@ -157,7 +157,9 @@ as a safe interruption mechanism. Capture returned prompt/turn identifiers.
 On MCP, use `send` with `steer: true` and the instruction in `prompt`,
 `status` with `wait: true` and optional `timeout_seconds`, or `stop` with
 `turn: true` to interrupt while keeping compute up. Steer and interrupt
-target the sandbox by ID.
+target the sandbox by ID. To wait for settlement and stop only if still idle,
+use `stop` with `after: true` and optional `timeout_seconds`. A receipt with
+`timedOut: true` means this call did not request a stop.
 
 Use blocking wait instead of tight status loops. --timeout is in seconds,
 accepts 0–600 and defaults to 60; the example waits at most 120 seconds. A
@@ -196,6 +198,11 @@ sandbox resumes it and continues its conversation, subject to current credential
 and access gates. This starts a new agent turn. For a standalone Docker restart,
 use the owner REST route `POST /api/v1/sandbox/resume` with `id` and a
 `request_id` UUID. Reuse that UUID after an uncertain outcome.
+
+A `docker_host_upgrade_required` refusal means the daemon must be upgraded.
+After the protocol-aware release ships, use `armada host add` and run its
+generated installer on the existing Docker host. Check `armada host list --json`
+for the reported protocol and `upgradeRequired: false`.
 
 ## 5. Several sandboxes, including a sandbox as caller
 

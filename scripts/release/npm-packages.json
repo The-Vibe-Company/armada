@@ -1,0 +1,8 @@
+[
+  "@the-vibe-company/armada",
+  "@the-vibe-company/armada-darwin-arm64",
+  "@the-vibe-company/armada-darwin-x64",
+  "@the-vibe-company/armada-linux-arm64",
+  "@the-vibe-company/armada-linux-x64",
+  "@the-vibe-company/armada-sdk"
+]

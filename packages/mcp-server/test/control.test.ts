@@ -3343,10 +3343,9 @@ test.each([
           "launch",
           input,
         );
-        expect(result).toMatchObject({
+        expect(launchEnvelope.parse(result)).toMatchObject({
           runtime: { kind: "armada", epoch: "1" },
-          runtimeTransport: "dialout",
-          provider: "modal",
+          sandbox: { provider: "modal", runtimeTransport: "dialout" },
           promptId: "modal-initial",
         });
         expect(starts).toBe(1);

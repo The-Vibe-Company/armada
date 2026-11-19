@@ -187,26 +187,27 @@ the sandbox and checks provider state.
 
 Default-pin reads and the vault family (no compute) run first, in case order.
 After that every independent sandbox runs concurrently in its own lane, one per
-case and family: `templates`, `expiry` and `lifecycle` (the clean worker, then
-the dirty preservation worker of the same case, in that order). The expiry TTL
+case and family: `templates`, `expiry`, `scoped`, and `lifecycle` (the clean
+worker, then the dirty preservation worker of the same case, in that order). The expiry TTL
 wait therefore overlaps the lifecycle work instead of adding to it (work on one
 model account takes turns, see below).
 Every step receipt from a lane carries its `case` index and `lane`, so
 interleaved output still gives one attributable failure report per case. Each
 lane keeps its own cleanup reserve: one lane entering cleanup never extends or
 shortens another lane's deadline. The run waits for every lane, including its
-cleanup, before the journal cleanup waves and passes only if every lane passes.
+cleanup, before journal deletion and passes only if every lane passes.
 The scoped-access snapshot diff ignores sandboxes this same run launched through
 the owner API in other lanes; any other new sandbox remains unattributed and
 fails the probe. Verified children are stopped first. Only a row nothing else
 explains waits for launches still in flight to return its handle, until none
 is in flight or for at most the longest launch request timeout (10 minutes).
 When nothing is unexplained there is no wait, so an unrelated launch does not
-delay scoped cleanup or the next preservation worker. A scoped child is registered under its parent's owner and
+delay scoped cleanup or the next scoped parent. A scoped child is registered under its parent's owner and
 golden without an owner API launch, so the run cannot attribute another case's
-child: scoped Codex lifecycle runs that share an org and golden run one after
+child: scoped Codex probes that share an org and golden run one after
 another, from the baseline snapshot through scoped cleanup. Expiry, templates
-and scoped runs on other goldens are not held by that queue.
+and scoped runs on other goldens are not held by that queue. Scoped parent
+launch, ready, and stop receipts have distinct step names in the journal.
 
 A model account admits a bounded number of working agents, possibly one, and
 every launch reserves a slot before its fork. Work that occupies the same
@@ -301,8 +302,7 @@ lifecycle capture overwriting the stop result cannot silently pass.
 Budget: two allocations and two trivial model turns per selected pair, instead
 of one. Expect roughly 4–10 minutes per pair (provider/model dependent); the
 functional probe phase has a 35-minute work budget plus five minutes of local
-cleanup. Historical/final receipt reconciliation has separate bounded windows;
-the staging job's outer cap is 85 minutes (see cleanup transition races below).
+cleanup. Historical and final receipt sweeps bound each request to two minutes.
 Slow selected pairs can exhaust the work budget and
 fail closed. Cost is twice the baseline sandbox/model usage, plus small recovery
 storage; stopped disks/archives retain the normal retention cost. No dollar
@@ -517,19 +517,17 @@ migrations or extra workers. Model/registry latency stays inside the shared
 
 ### Scoped Armada access
 
-`--scoped-access` requires `--work-preservation` and reuses its two workers:
-the clean Codex parent uses `sandbox/launch` with version1 and
-maxActiveChildren1; the dirty no-option control omits access entirely and opts
-out of skill defaults. Both staging entrypoints enable it. Current ordinary
-access supports Codex only: Claude emits explicit `codex_only` SKIP, not a false
-authorization-denial proof. Supported Codex pairs must be enabled on staging
-using the existing access configuration; unavailable/misconfigured access fails.
+`--scoped-access` requires `--work-preservation`. Each Modal Codex case runs
+two dedicated parents on the scripted account. The enabled parent requests
+`armadaAccessVersion: 1` and `maxActiveChildren: 1`. The no-option control
+omits the grant and opts out of skill defaults. Each probe emits a
+`scoped_access` journal entry with `model: scripted`. GitHub, lifecycle, and
+work-preservation turns still use the case's ordinary model and account.
+Claude cases emit a `codex_only` skip. Codex cases require staging scoped
+access to be configured.
 
-The native parent uses only configured scoped MCP launch/message/read/stop.
-No owner CLI token, copied bearer, direct owner HTTP fallback, config/grant read
-or new orchestration method. The reserved MCP server's legacy internal name is
-unchanged; no separate managed parent is created. The nonsecret armada-tools reference
-may be read with the supplied exact read-only cat command.
+The parent drives the configured scoped MCP launch, message, read, and stop
+tools. The runner uses the owner API to verify receipts and clean up compute.
 
 Named proofs: parent configuration, native turn, actual correlated child launch,
 message, nonpartial child assistant answer (not prompt/tool echo), stop and
@@ -555,8 +553,8 @@ If the parent's stop cannot be confirmed, cleanup still attempts safe known
 children but must report an unquiesced producer/future-child uncertainty. A
 snapshot taken while a parent remains active is never declared final/clean.
 
-Budget: one additional native parent task per worker and one idle child plus one
-tiny child message per supported pair; no extra parent allocations. Parent
+Budget: two dedicated parent allocations and one idle child with one short
+message per supported pair. Parent
 polling is capped at300 observations (~5minutes plus bounded request latency),
 native child reads at20, logs/inventory at20pages; shared35+5-minute deadline still
 wins. Normal cleanup stops all known compute. The shipped delegated launch has
@@ -826,7 +824,7 @@ Synthetic protocol/build proofs are not inference or production acceptance.
 Both staging workflows upload `.smoke/sandboxes.json` as an artifact even when probes fail, restore the latest named artifact across branches/tags, and set
 `ARMADA_SMOKE_JOURNAL` for the compute smoke. Launch receipts are persisted before
 probe validation; cleanup deletes known IDs after all stop/recovery assertions.
-The bounded startup sweep retries at most 32 older receipted IDs in parallel;
+The startup sweep submits one stop and one DELETE per older sandbox ID, up to 32 IDs;
 current-run deletion has an independent 64-ID bound. It never lists all stopped
 sandboxes for deletion. The target `smoke_cleanup_summary.remainingRows` is zero;
 deleted audit rows remain but do not grow active dashboard lists.
@@ -860,7 +858,8 @@ verify its deletion while an unrelated stopped sandbox remains unchanged.
    refused before requests.
 4. Set `ARMADA_TOKEN` through the staging secret store, then run
    `bun scripts/cleanup-staging-smoke.ts --delete`. At most 32 explicit IDs are
-   attempted per invocation. Counts are printed; failures return nonzero. Preserve
+   attempted per invocation, with one stop and one DELETE per ID. Counts are
+   printed and failures return nonzero. Preserve
    the source manifest and partition into batches of 32. Already-deleted IDs can
    safely be repeated. Never paste tokens into argv or logs.
 5. Compare the staging org's visible sandbox count before/after. Run an ordinary
@@ -873,61 +872,21 @@ one known leftover on the next run; verify unrelated stopped sandboxes survive.
 
 ## Diagnosing and reconciling deletion
 
-`delete_smoke_sandbox` failures now include `phase`, `httpStatus` and a closed,
-non-secret `code`. No error message, provider body, bearer or cookie is printed;
-unrecognized remote codes become `api_failed`. Retry diagnostics use the named
-`delete_smoke_sandbox_retry` step with the same safe fields.
+`delete_smoke_sandbox` reports the sandbox ID and whether cleanup settled. Each
+selected sandbox gets one bounded DELETE request per sweep. The final sweep
+runs after functional lanes have handled shutdown. The startup and manual sweeps
+first make one stop request to recover sandboxes from interrupted runs. The
+receipt settles on a matching `deleted`
+response or an explicit HTTP 404 `not_found` from the sandbox endpoint.
+Ordinary receipts are processed before delegated child receipts because the
+server requires the parent to be durably deleted first.
 
-A successful stop request may return `stopping`, not physical completion. Cleanup accepts a matching terminal stop receipt or
-observes terminal status before calling the public
-`DELETE /api/v1/sandboxes/<id>?org=<org>` endpoint. The former POST alias is also
-routed to the same server tool; changing verbs alone is not the fix. A Boat
-provider deletion can return pending, which the server reports as `409 conflict`;
-that admission intentionally retains a two-minute activity lease, so immediate
-retries can return `sandbox_not_ready`. Cleanup now reconciles the same idempotent
-delete within a bounded four-minute window, with up to two minutes per HTTP
-request instead of 15 seconds. It never replays stop while waiting or deletes a
-row merely because it disappeared from a fleet list. Authorization/refusal codes
-are reported without retrying indefinitely; failed receipts stay in the journal.
-
-Run 43399781555 discarded all HTTP/error information, so its nine failures cannot
-retrospectively distinguish pending deletion, lease contention, authorization or
-provider failure. The source confirms the asynchronous-state/lease defects above,
-not that every historical refusal had that cause. Coordinator check: restore that
-run's exact receipt artifact, run the next staging smoke, require zero remaining
-rows, and inspect any named failure's status/code before attributing it. No worker
-needs staging access to run the fake-fetch regression tests.
-Functional probes and local cleanup retain their 35+5-minute budgets.
-Historical/final receipt reconciliation has separate bounded windows described
-under cleanup transition races below; waiting for deletion is never unbounded.
-
-### Final delegated cleanup order (#1383)
-
-Cleanup uses two waves over its existing exact-ID receipts: ordinary sandboxes
-(including delegated parents) first, then `smoke-scoped-*` child receipts. Ordering
-is applied before the sweep limit, so a child cannot occupy every bounded slot
-while its parent waits behind it. Sandboxes within a wave still run in parallel.
-
-The server permits owner/admin deletion of an ordinary delegated child only
-**after its ordinary parent is durably deleted**. Both authorization and atomic
-activity admission enforce the same rule. Relation/history rows remain intact;
-legacy orchestrator parents and children remain refused. A merely stopped parent
-is not sufficient because it could resume and issue delegated work again.
-
-Stop settling and transient `sandbox_not_ready`/pending deletion now share the
-local five-minute cleanup reserve across both waves. The later
-[cleanup transition-race handling](#cleanup-transition-races-1785) adds separately
-bounded historical/final reconciliation, not unbounded mutation retries. This replaces the previous four-minute
-per-row cutoff; it adds no new overall grace period. A still-busy provider or
-unsettled lease at the bound remains a named failure with its safe HTTP/code
-and a retained receipt, never a falsely successful cleanup.
-
-Coordinator validation: rerun staging with run 43405042771's two exact receipts,
-verify parent deletion precedes scoped-child deletion and
-`smoke_cleanup_summary.remainingRows` is zero. Confirm unrelated stopped rows
-remain untouched. Offline regression tests cover a late-settling stop/lease,
-bounded parent-first selection, and real-SQL child-before-parent refusal followed
-by successful parent/child deletion under current owner/org authorization.
+HTTP 409 can mean either a refusal to start deletion or an operation still in
+progress. A 409, a lost response, or a mismatched receipt fails cleanup and
+keeps the ID in the journal. Failure output includes the HTTP status and a safe
+error code. Restore the journal on the next run or use the manual sweep for
+known receipts. A 404 settles the logical receipt only. It provides no evidence
+about a provider machine whose allocation never registered a sandbox row.
 
 ### Modal and Docker parity observation (#1532)
 
@@ -1513,29 +1472,6 @@ Transient template-admission failures reconcile only the identical durable
 request key. The safe `parity_template_intent` record permits reconciliation;
 if no allocation identity can be recovered, cleanup is explicitly unconfirmed,
 never a successful absence. No values or raw manifests are printed.
-### Cleanup transition races (#1785)
-
-DELETE remains stop-first: a transition/lease refusal is not an accepted future
-operation. The smoke must observe terminal shutdown, then confirm idempotent
-DELETE for the same receipt ID. Do not remove the lifecycle/authorization
-fences or infer deletion from a timeout, `stopping`, or a pending response.
-
-Receipt cleanup preserves parent-before-delegated-child ordering and grants each
-wave up to ten minutes (the parity lifecycle bound), capped by an explicit caller
-deadline. A slow parent cannot spend the child's whole window. The journal
-wrapper reserves both windows independently of the existing 35-minute work and
-five-minute local cleanup allowances; historical reconciliation has its own
-bounded sweep. Standard release modes are bounded to 20 minutes historical,
-35 work, 5 local cleanup, and 20 final reconciliation. The existing staging job
-still has its 85-minute outer cap; no job or required check was added or changed.
-
-An unknown/admitted stop is observed, not blindly dispatched again. Only an
-explicit busy refusal followed by a ready/running observation permits retrying
-the guarded stop API. Transient reads and the same idempotent DELETE can be
-reconciled after lost acknowledgements. Permanent refusals and exhausted hard
-deadlines still retain receipts and fail cleanup. Successful reconciliation
-never converts a failed functional probe into a pass.
-
 ### Installed skill-content parity
 
 Configure a dedicated existing template revision with at least one exact skill
@@ -1826,7 +1762,7 @@ IDs to a particular launch failure without their original response evidence.
 
 Keep this conservative recording: discarding every failed or reconciling launch
 handle could hide an uncertain provider allocation. Instead, the cleanup boundary
-resolves an explicit API HTTP 404 `not_found` at stop, status or delete. Other
+resolves an explicit API HTTP 404 `not_found` from DELETE. Other
 404 codes (including `unknown_route`), permission refusals and transport failures
 remain unresolved. A failed functional probe still fails the smoke even when
 cleanup succeeds. A 404 is not a provider-allocation reconciliation proof;
@@ -1976,3 +1912,39 @@ For Docker the inventory row must also match the submitted sandbox UUID.
 An unresolved result retains the reference and any server request ID in the
 parity diagnostic. Docker snapshot parity still requires the launch receipt's
 snapshot provenance.
+
+### Scripted scoped-child model
+
+The server's scripted Responses endpoint is for the Modal Codex scoped-child
+probe. Its script covers launch, message, observing the child's answer, and stop,
+plus the no-access control. The probe must still check actual gateway receipts
+and sandbox events. After provisioning, the coordinator counts non-defect
+`scoped_*_unproven` failures across 50 ordinary staging runs.
+
+The coordinator provisions the endpoint on the pinned Railway staging server
+only. Use a dedicated random base64url bearer with at least 32 bytes of entropy.
+Seal it with the staging `ARMADA_ENCRYPTION_KEY` using `encryptSecret` from
+`packages/core/src/crypto.ts`. Set the base64-encoded ciphertext in the staging
+secret `ARMADA_SCRIPTED_MODEL_BEARER_ENC`, then set `ARMADA_SCRIPTED_MODEL=1`.
+Startup requires the Railway environment name `staging` and the pinned staging
+public origin. Leave the flag unset in production.
+
+Provision a staging named OpenAI API-key account using
+`armada creds set openai --name scripted --base-url
+https://armada-mcp-staging.up.railway.app/internal/scripted-model/v1 --models scripted`. Pass the
+same bearer privately on stdin. Keep the bearer out of the smoke configuration,
+logs and command arguments. Before the smoke wiring is deployed, set
+`scriptedModelAccountId` to the scripted account UUID in each Modal Codex
+entry in staging's `ARMADA_SMOKE_CASES`. Keep the ordinary `modelAccountId`
+and `model` on that entry for its baseline workers. The scoped probe always
+selects the `scripted` model, and validates that its account UUID differs from
+the baseline account.
+
+The marker is a user message beginning with `ARMADA_SCOPED_SMOKE_V1 ` followed
+by a JSON object. For the parent, send `lane: "parent"`, `launch` with the
+original `idempotencyKey` and `selection`, `messageKey`, `stopKey`, `answer`,
+and `noAccess`. Use one fresh nonce per key or answer, retaining the existing
+`smoke-scoped-`, `SCOPED_CHILD_`, and `NO_ACCESS_` prefixes. The endpoint emits
+the child prompt with the same prefix and a `lane: "child"` marker containing
+`answer`. The smoke runner verifies that exact child prompt in the message evidence
+before checking the child's answer.

@@ -32,8 +32,9 @@ export interface DockerHostSummary {
   revokedAt: string | null;
   /** The daemon version the host last reported (#1453); absent or null until a host has reported one. */
   version?: string | null;
-  /** Whether the host can verify the baseline required for new snapshot builds. */
-  snapshotBuildSupported?: boolean;
+  /** Last accepted daemon protocol, or null before its first protocol-aware poll. */
+  protocol: number | null;
+  upgradeRequired: boolean;
   /** Physical reservations, including pending starts until confirmed stopped. */
   running?: number;
   /** Missing on older servers; null until upgraded host hardware has been observed. */
@@ -53,7 +54,6 @@ export interface DockerHostSummary {
 /** Version metadata shared by the machine poll and the owner host list. Older servers omit it. */
 export interface DockerHostVersionOffer {
   targetVersion?: string;
-  minimumVersion?: string;
 }
 export interface DockerHostListResponse extends DockerHostVersionOffer {
   serverVersion?: string;

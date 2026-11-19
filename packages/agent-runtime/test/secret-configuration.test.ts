@@ -1,6 +1,8 @@
 import { expect, test } from "bun:test";
 import type { AgentEvent } from "@armada/core";
+import { RequestRefused } from "../src/errors.ts";
 import { type Driver, Journal, Runner } from "../src/index.ts";
+import { executeWithReceipt } from "../src/request-receipts.ts";
 
 const grant = {
   token: "runtime_fixture_grant",
@@ -76,6 +78,101 @@ test.each([
       JSON.stringify(`${prefix}${secret}${extension}${suffix}`).slice(1, -1),
     );
     expect(journal.db.query("select 1 from requests where id=?").get(command.requestId)).toBeNull();
+  } finally {
+    await runner.close();
+    journal.close();
+  }
+});
+
+test("fallback events mask short application values before append, on read, and at checkpoint", async () => {
+  const journal = new Journal(":memory:", (text) => text);
+  const runner = new Runner(journal, grant, {});
+  try {
+    const event = {
+      id: "original",
+      at: 1,
+      kind: "other",
+      type: "diagnostic_fixture",
+      data: { nested: [{ prefixvalue: "prefixvalue" }] },
+    } satisfies AgentEvent;
+    journal.append(event);
+    journal.registerApplicationSecrets(["value"]);
+    journal.append({ ...event, id: "new" });
+    const expected = { ...event, data: { nested: [{ "prefix[REDACTED]": "prefix[REDACTED]" }] } };
+    expect(journal.events().at(-1)?.event).toEqual({ ...expected, id: "new" });
+    const read = await runner.handleDialout({ ...command, op: "events" });
+    expect(await read.json()).toMatchObject({ result: { events: [expected, { ...expected, id: "new" }] } });
+    journal.sanitize();
+    expect(journal.events()[0]?.event).toEqual(expected);
+  } finally {
+    await runner.close();
+    journal.close();
+  }
+});
+
+test("prompt and process rows mask short text without changing recovery fields", () => {
+  const journal = new Journal(":memory:", (text) => text);
+  try {
+    journal.registerApplicationSecrets(["run"]);
+    const prompt = {
+      promptId: "run-prompt",
+      conversationId: "run-conversation",
+      status: "running" as const,
+      request: { sandboxId: "logical", harness: "codex" as const, text: "prefixrun" },
+    };
+    journal.transition(prompt, "running");
+    expect(journal.get(prompt.promptId)).toEqual({
+      ...prompt,
+      request: { ...prompt.request, text: "prefix[REDACTED]" },
+    });
+    journal.registerApplicationSecrets(["auth"]);
+    journal.transition(prompt, "failed", "authentication_failed:authentication");
+    const process = {
+      pid: 12,
+      status: "running",
+      identity: { boot: "fixture-run", start: "123", group: 12 },
+      stderr: "prefixrun",
+    };
+    journal.db.query("INSERT INTO processes VALUES(?,?)").run(process.pid, JSON.stringify(process));
+    journal.sanitize();
+    expect(journal.events().at(-1)?.event).toMatchObject({
+      status: "failed",
+      reason: "authentication_failed:authentication",
+    });
+    const row = journal.db.query("SELECT body FROM processes WHERE pid=?").get(process.pid) as { body: string };
+    expect(JSON.parse(row.body)).toEqual({ ...process, stderr: "prefix[REDACTED]" });
+  } finally {
+    journal.close();
+  }
+});
+
+test("receipts and command errors mask short text while retaining command correlation", async () => {
+  const journal = new Journal(":memory:", (text) => text);
+  const runner = new Runner(journal, grant, {});
+  try {
+    const uncertain = { ...command, requestId: "uncertain", op: "interrupt" as const };
+    await expect(
+      executeWithReceipt(journal, uncertain, () => Promise.reject(Error("dispatch interrupted"))),
+    ).rejects.toThrow("dispatch interrupted");
+    journal.registerSecrets(["outcome"]);
+    const fenced = await executeWithReceipt(journal, uncertain, () => Promise.reject(Error("unexpected dispatch")));
+    expect(fenced.status).toBe(200);
+    expect(await fenced.json()).toMatchObject({ error: "request_outcome_unknown" });
+    journal.registerApplicationSecrets(["value", "cursor"]);
+    const request = { ...command, requestId: "value-request", op: "interrupt" as const };
+    const first = await executeWithReceipt(journal, request, async () => ({ description: "prefixvalue" }));
+    const expected = { version: 1, requestId: request.requestId, result: { description: "prefix[REDACTED]" } };
+    expect(await first.json()).toEqual(expected);
+    const replay = await executeWithReceipt(journal, request, () => Promise.reject(Error("unexpected dispatch")));
+    expect(await replay.json()).toEqual(expected);
+    const refused = await executeWithReceipt(journal, { ...request, requestId: "refused" }, async () => {
+      throw new RequestRefused("prefixvalue");
+    });
+    expect(refused.status).toBe(409);
+    expect(await refused.json()).toEqual({ error: "prefix[REDACTED]" });
+    const failed = await runner.handleDialout({ ...command, op: "events", cursor: "bad" });
+    expect(failed.status).toBe(409);
+    expect(await failed.json()).toEqual({ error: "invalid_cursor" });
   } finally {
     await runner.close();
     journal.close();
@@ -229,20 +326,168 @@ test.each([
     },
   },
   {
+    type: "turn/completed",
+    data: {
+      threadId: "thread-prefixvalue",
+      turn: {
+        id: "turn-fixture",
+        status: "failed",
+        error: {
+          message: "Plan limit reached. Resets at 2042-01-01T00:00:00.000Z.",
+          additionalDetails: "prefixvalue",
+          codexErrorInfo: { prefixlongfixture: "prefixvalue" },
+        },
+      },
+    },
+    masked: {
+      threadId: "thread-prefix[REDACTED]",
+      turn: {
+        id: "turn-fixture",
+        status: "failed",
+        error: {
+          message: "Plan limit reached. Resets at 20[REDACTED]-01-01T00:00:00.000Z.",
+          additionalDetails: "prefix[REDACTED]",
+          codexErrorInfo: { "prefix[REDACTED]": "prefix[REDACTED]" },
+        },
+      },
+    },
+  },
+  {
+    type: "usage_limit",
+    data: { code: "usage_limit_exceeded", resetsAt: "2042-01-01T00:00:00.000Z" },
+    masked: { code: "usage_limit_exceeded", resetsAt: "20[REDACTED]-01-01T00:00:00.000Z" },
+  },
+  {
+    type: "armada/modelRateLimit",
+    data: {
+      retryCount: 2,
+      delayMs: 41000,
+      totalWaitMs: 43000,
+      reason: "model_provider_retry",
+      message: "Model provider request retrying in 41 s",
+    },
+    masked: {
+      retryCount: 2,
+      delayMs: 41000,
+      totalWaitMs: 43000,
+      reason: "model_provider_retry",
+      message: "Model [REDACTED] request retrying in 41 s",
+    },
+  },
+  {
+    type: "usage_report",
+    data: {
+      rate_limits: {
+        limits: [{ group: "plan-prefixvalue", percent: 25, scope: { model: { display_name: "model-prefixvalue" } } }],
+        extra_usage: { is_enabled: true, currency: "EUR" },
+      },
+      session: { model_usage: { prefixlongfixture: { prefixvalue: "model-prefixvalue" } } },
+    },
+    masked: {
+      rate_limits: {
+        limits: [
+          { group: "plan-prefix[REDACTED]", percent: 25, scope: { model: { display_name: "model-prefix[REDACTED]" } } },
+        ],
+        extra_usage: { is_enabled: true, currency: "EUR" },
+      },
+      session: { model_usage: { "prefix[REDACTED]": { "prefix[REDACTED]": "model-prefix[REDACTED]" } } },
+    },
+  },
+  {
+    type: "armada/turnUsage",
+    data: {
+      model: "model-prefixvalue",
+      inputTokens: 17,
+      outputTokens: 42,
+      cachedTokens: null,
+      prefixlongfixture: "prefixvalue",
+    },
+    masked: {
+      model: "model-prefix[REDACTED]",
+      inputTokens: 17,
+      outputTokens: "[REDACTED]",
+      cachedTokens: null,
+      "prefix[REDACTED]": "prefix[REDACTED]",
+    },
+  },
+  ...["account/rateLimits/read", "account/rateLimits/updated"].map((type) => ({
+    type,
+    data: {
+      rateLimits: {
+        limitId: "codex",
+        limitName: "quota-prefixvalue",
+        primary: { usedPercent: 17, resetsAt: 17944288 },
+        credits: { hasCredits: true, unlimited: false, balance: "42" },
+      },
+      ...(type.endsWith("/read") ? { rateLimitsByLimitId: { prefixvalue: { limitId: "prefixvalue" } } } : {}),
+    },
+    masked: {
+      rateLimits: {
+        limitId: "codex",
+        limitName: "quota-prefix[REDACTED]",
+        primary: { usedPercent: 17, resetsAt: "[REDACTED]" },
+        credits: { hasCredits: true, unlimited: false, balance: "[REDACTED]" },
+      },
+      ...(type.endsWith("/read")
+        ? { rateLimitsByLimitId: { "prefix[REDACTED]": { limitId: "prefix[REDACTED]" } } }
+        : {}),
+    },
+  })),
+  {
     type: "result",
     data: {
       subtype: "success",
       result: "prefixvalue",
       errors: ["prefixvalue"],
       structured_output: { prefixlongfixture: "prefixvalue" },
-      modelUsage: { fixture: { inputTokens: 3 } },
+      permission_denials: [{ tool_name: "prefixvalue", tool_input: { prefixlongfixture: "prefixvalue" } }],
+      session_id: "prefixvalue",
+      uuid: "prefixvalue",
+      user_message_uuid: "prefixvalue",
+      user_message_uuids: ["prefixvalue"],
+      stop_reason: "prefixvalue",
+      deferred_tool_use: { id: "tool", name: "fixture", input: { valueText: "prefixvalue" } },
+      local_command: "prefixvalue",
+      resume_reason: "prefixvalue",
+      origin: { kind: "peer", from: "fixture", body: "prefixvalue" },
+      modelUsage: {
+        prefixvalue: { inputTokens: 3, outputTokens: 42, provider: "prefixlongfixture" },
+        prefixlongfixture: { inputTokens: 5 },
+      },
+      usage: {
+        input_tokens: 3,
+        inference_geo: "prefixvalue",
+        iterations: [{ type: "message", input_tokens: 3, model: "prefixvalue" }],
+        output_tokens_details: { thinking_tokens: 6 },
+      },
+      total_cost_usd: 0.15,
     },
     masked: {
       subtype: "success",
       result: "prefix[REDACTED]",
       errors: ["prefix[REDACTED]"],
       structured_output: { "prefix[REDACTED]": "prefix[REDACTED]" },
-      modelUsage: { fixture: { inputTokens: 3 } },
+      permission_denials: [{ tool_name: "prefix[REDACTED]", tool_input: { "prefix[REDACTED]": "prefix[REDACTED]" } }],
+      session_id: "prefix[REDACTED]",
+      uuid: "prefix[REDACTED]",
+      user_message_uuid: "prefix[REDACTED]",
+      user_message_uuids: ["prefix[REDACTED]"],
+      stop_reason: "prefix[REDACTED]",
+      deferred_tool_use: { id: "tool", name: "fixture", input: { "[REDACTED]Text": "prefix[REDACTED]" } },
+      local_command: "prefix[REDACTED]",
+      resume_reason: "prefix[REDACTED]",
+      origin: { kind: "peer", from: "fixture", body: "prefix[REDACTED]" },
+      modelUsage: {
+        "prefix[REDACTED]": { inputTokens: 3, outputTokens: "[REDACTED]", provider: "prefix[REDACTED]" },
+        "[REDACTED]#1": { inputTokens: 5 },
+      },
+      usage: {
+        input_tokens: 3,
+        inference_geo: "prefix[REDACTED]",
+        iterations: [{ type: "message", input_tokens: 3, model: "prefix[REDACTED]" }],
+        output_tokens_details: { thinking_tokens: 6 },
+      },
+      total_cost_usd: 0.15,
     },
   },
 ])("masks typed $type output at each journal boundary", async ({ type, data, masked }) => {
@@ -251,7 +496,17 @@ test.each([
   try {
     const event = { id: "proof", at: 1, kind: "other", type, data } satisfies AgentEvent;
     journal.append(event);
-    journal.registerApplicationSecrets(["value", type, "bash", "longfixture"]);
+    journal.registerApplicationSecrets([
+      "value",
+      type,
+      "bash",
+      "longfixture",
+      ...(["turn/completed", "usage_limit"].includes(type) ? ["42"] : []),
+      ...(type === "armada/modelRateLimit" ? ["provider"] : []),
+      ...(type === "usage_report" ? ["limits"] : []),
+      ...(type.startsWith("account/") ? ["rateLimits", "42"] : []),
+      ...(type === "result" || type === "armada/turnUsage" ? ["Tokens", "tokens", "42"] : []),
+    ]);
     journal.append({ ...event, id: "new-proof" });
     const expected = { ...event, data: masked };
     const newer = { ...expected, id: "new-proof" };
@@ -267,24 +522,84 @@ test.each([
   }
 });
 
-test("expanding Claude result output is dropped while usage survives", () => {
+test("terminal diagnostic keys retain stable redaction across checkpoint sanitation", () => {
   const journal = new Journal(":memory:", (text) => text);
   try {
+    journal.registerApplicationSecrets(["httpConnectionFailed", "REDACTED"]);
+    journal.append({
+      id: "terminal",
+      at: 1,
+      kind: "other",
+      type: "turn/completed",
+      data: { turn: { error: { codexErrorInfo: { httpConnectionFailed: { httpStatusCode: 503 } } } } },
+    });
+    const expected = { turn: { error: { codexErrorInfo: { "[REDACTED]": { httpStatusCode: 503 } } } } };
+    expect(journal.events()[0]?.event).toMatchObject({ data: expected });
+    journal.sanitize();
+    journal.sanitize();
+    expect(journal.events()[0]?.event).toMatchObject({ data: expected });
+  } finally {
+    journal.close();
+  }
+});
+
+test.each([{ result: "x".repeat(30_000) }, { usage: { inference_geo: "x".repeat(30_000) } }])(
+  "expanding Claude result details are dropped while per-model counters survive",
+  (details) => {
+    const journal = new Journal(":memory:", (text) => text);
+    try {
+      const event = {
+        id: "result-event",
+        at: 1,
+        kind: "other",
+        type: "result",
+        data: { modelUsage: { "model-a": { inputTokens: 3 } }, ...details },
+      } satisfies AgentEvent;
+      journal.append(event);
+      journal.registerApplicationSecrets(["x"]);
+      journal.append(event);
+      const expected = { ...event, data: { modelUsage: { "model-a": { inputTokens: 3 } }, outputTruncated: true } };
+      expect(journal.redactEvent(journal.events()[0]!.event)).toEqual(expected);
+      expect(journal.events()[1]!.event).toEqual(expected);
+      journal.sanitize();
+      expect(journal.events().map(({ event }) => event)).toEqual([expected, expected]);
+    } finally {
+      journal.close();
+    }
+  },
+);
+
+test("many colliding Claude usage keys stay bounded and stable after masking", () => {
+  const journal = new Journal(":memory:", (text) => text);
+  try {
+    const modelUsage = Object.fromEntries(
+      Array.from({ length: 4098 }, (_, index) => [
+        index.toString(2).padStart(13, "0").replaceAll("0", "a").replaceAll("1", "b"),
+        { inputTokens: index + 1 },
+      ]),
+    );
     const event = {
       id: "result-event",
       at: 1,
       kind: "other",
       type: "result",
-      data: { result: "x".repeat(30_000), modelUsage: { fixture: { inputTokens: 3 } } },
+      data: { modelUsage: { "model[[REDACTED]]": { inputTokens: 5000 }, ...modelUsage } },
     } satisfies AgentEvent;
     journal.append(event);
-    journal.registerApplicationSecrets(["x"]);
+    journal.registerApplicationSecrets(["a", "b", "REDACTED", "model[R"]);
     journal.append(event);
-    const expected = { ...event, data: { modelUsage: { fixture: { inputTokens: 3 } }, outputTruncated: true } };
-    expect(journal.redactEvent(journal.events()[0]!.event)).toEqual(expected);
-    expect(journal.events()[1]!.event).toEqual(expected);
+
+    const stored = journal.events()[1]!.event;
+    expect(stored).toMatchObject({ type: "result", data: { modelUsage: { "[REDACTED]": { inputTokens: 5000 } } } });
+    if (stored.kind !== "other") throw Error("expected a result event");
+    const counterRows = Object.values((stored.data as typeof event.data).modelUsage);
+    expect(counterRows.map(({ inputTokens }) => inputTokens).sort((a, b) => a - b)).toEqual([
+      ...Array.from({ length: 4098 }, (_, index) => index + 1),
+      5000,
+    ]);
+    expect(journal.redactEvent(stored)).toEqual(stored);
     journal.sanitize();
-    expect(journal.events().map(({ event }) => event)).toEqual([expected, expected]);
+    expect(journal.events().map(({ event }) => event)).toEqual([stored, stored]);
   } finally {
     journal.close();
   }
@@ -302,7 +617,7 @@ test("proof truncation persists only scrubbed correlation metadata", () => {
       data: { tool: "bash", output: "x".repeat(30_000) },
     } satisfies AgentEvent;
     journal.append(event);
-    journal.registerApplicationSecrets(["x", "fixturevalue"]);
+    journal.registerApplicationSecrets(["x", "trunca", "fixturevalue"]);
     journal.append(event);
     expect(journal.events().at(-1)?.event).toMatchObject({
       kind: "other",
@@ -315,6 +630,118 @@ test("proof truncation persists only scrubbed correlation metadata", () => {
       { type: "event_truncated", conversationId: "conversation-[REDACTED]" },
     ]);
   } finally {
+    journal.close();
+  }
+});
+
+test("an event expanded beyond the dialout limit is truncated and its cursor advances", async () => {
+  const journal = new Journal(":memory:", (text) => text);
+  const runner = new Runner(journal, grant, {});
+  try {
+    const message = {
+      id: "large-answer",
+      at: 1,
+      kind: "message",
+      textMode: "snapshot",
+      text: "x".repeat(120_000),
+      partial: false,
+      tools: [],
+    } satisfies AgentEvent;
+    journal.append(message);
+    const next = { ...message, id: "next-answer", text: "done" };
+    journal.append(next);
+    journal.registerApplicationSecrets(["x"]);
+
+    const response = await runner.handleDialout({ ...command, op: "events", limit: 1 });
+    const body = await response.text();
+    expect(response.status).toBe(200);
+    expect(Buffer.byteLength(body)).toBeLessThanOrEqual(1_048_576);
+    const { result } = JSON.parse(body);
+    expect(result).toMatchObject({
+      cursor: "1",
+      hasMore: true,
+      events: [{ id: message.id, kind: "other", type: "event_truncated" }],
+    });
+    const following = await runner.handleDialout({ ...command, op: "events", cursor: result.cursor });
+    expect(await following.json()).toMatchObject({
+      result: { cursor: "2", hasMore: false, events: [next] },
+    });
+    expect(journal.events()[0]?.event).toEqual(message);
+  } finally {
+    await runner.close();
+    journal.close();
+  }
+});
+
+test("event pages stop at the UTF-8 byte limit and resume at the first omitted row", async () => {
+  const journal = new Journal(":memory:", (text) => text);
+  const runner = new Runner(journal, grant, {});
+  try {
+    for (let index = 1; index <= 5; index++) {
+      journal.append({
+        id: String(index),
+        at: index,
+        kind: "message",
+        textMode: "snapshot",
+        text: "界".repeat(80_000),
+        partial: false,
+        tools: [],
+      });
+    }
+    const response = await runner.handleDialout({ ...command, op: "events" });
+    const body = await response.text();
+    expect(response.status).toBe(200);
+    expect(Buffer.byteLength(body)).toBeLessThanOrEqual(1_048_576);
+    const { result } = JSON.parse(body);
+    expect(result).toMatchObject({ cursor: "4", hasMore: true });
+    expect(result.events.map(({ id }: AgentEvent) => id)).toEqual(["1", "2", "3", "4"]);
+
+    const following = await runner.handleDialout({ ...command, op: "events", cursor: result.cursor });
+    expect(await following.json()).toMatchObject({
+      result: { cursor: "5", hasMore: false, events: [{ id: "5" }] },
+    });
+  } finally {
+    await runner.close();
+    journal.close();
+  }
+});
+
+test("a redacted event that exactly fits is returned intact when another row remains", async () => {
+  const journal = new Journal(":memory:", (text) => text);
+  const runner = new Runner(journal, grant, {});
+  try {
+    const message = {
+      id: "answer",
+      at: 1,
+      kind: "message",
+      textMode: "snapshot",
+      text: "",
+      partial: false,
+      tools: [],
+    } satisfies AgentEvent;
+    const emptyTextBytes = Buffer.byteLength(
+      JSON.stringify({
+        version: 1,
+        requestId: command.requestId,
+        result: { events: [message], cursor: "1", hasMore: true },
+      }),
+    );
+    const padding = "a".repeat(1_048_576 - emptyTextBytes - 1_000_000);
+    journal.append({ ...message, text: "x".repeat(100_000) + padding });
+    journal.append({ ...message, id: "next", text: "done" });
+    journal.registerApplicationSecrets(["x"]);
+
+    const response = await runner.handleDialout({ ...command, op: "events", limit: 1 });
+    const body = await response.text();
+    expect(response.status).toBe(200);
+    expect(Buffer.byteLength(body)).toBe(1_048_576);
+    expect(JSON.parse(body).result).toEqual({
+      events: [{ ...message, text: "[REDACTED]".repeat(100_000) + padding }],
+      cursor: "1",
+      hasMore: true,
+    });
+  } finally {
+    await runner.close();
     journal.close();
   }
 });

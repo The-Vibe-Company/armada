@@ -29,7 +29,6 @@ for (const organization of [
     await screen.getByRole("option", new RegExp(organization.source)).tap();
     await expect(screen.getByRole("button", "Agent settings")).toBeVisible();
     await screen.getByRole("button", /^Account:/).tap();
-    // Account and model are one picker; an enabled model pins both together.
     await screen
       .getByRole("option", /Claude Opus/, { disabled: false })
       .first()
@@ -84,7 +83,6 @@ test("Large: launch on the online Docker host", { session: "large" }, async ({ a
   await screen.getByRole("button", "Launch a sandbox").tap();
   await reveal(screen, "From settings", /^From:/);
   await screen.getByRole("button", /^From:/).tap();
-  // Search by the displayed group term: the group label and its search keywords share one wording.
   await screen.getByPlaceholder("Search from").fill("Docker host");
   await expect(screen.getByRole("group", /^Large platform .* · Docker host · online$/)).toBeVisible();
   await screen.getByRole("option", /^Empty machine · Large platform/).tap();

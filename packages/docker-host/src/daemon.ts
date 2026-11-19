@@ -1,5 +1,4 @@
 import { createHash } from "node:crypto";
-import type { DockerHostVersionOffer } from "@armada/core";
 import type { DockerJobFailureReason } from "../../core/src/docker-api.ts";
 import { DOCKER_DISK_FLOOR_BYTES, DockerDiskFloorError } from "../../core/src/docker-disk-policy.ts";
 import {
@@ -8,6 +7,7 @@ import {
   type DockerHostJob,
   parseDockerHostJob,
 } from "../../core/src/docker-host-job.ts";
+import type { DockerHostPollResponse } from "../../core/src/docker-host-wire.ts";
 import { DockerMachineError, type DockerMachineRequest } from "../../core/src/docker-machine.ts";
 import type { DockerSandboxLimits } from "../../core/src/docker-resource-policy.ts";
 import {
@@ -32,7 +32,7 @@ export type Receipt = {
   expiryOutputsPending?: true;
 } & (
   | { operation: "create" | "stop" | "delete" }
-  | { operation: "bootstrap" | "resume"; inputHash: string }
+  | { operation: "bootstrap" | "resume" | "deletePhysical"; inputHash: string }
   | {
       operation: "buildSnapshot";
       inputHash: string;
@@ -101,20 +101,7 @@ export interface Api {
       /** Request IDs still executing here; the server hands out other sandboxes' jobs. */
       running?: string[];
     },
-  ): Promise<
-    DockerHostVersionOffer & {
-      job: Job | null;
-      containerInventory?: 1;
-      containerInventoryDeploymentId?: string;
-      /** The server held this poll until work existed or its hold elapsed. */
-      held?: true;
-      limits?: DockerSandboxLimits;
-      retentionSeconds?: number;
-      /** Every generation with a queued resume/bootstrap, not only the job handed out. */
-      pendingStarts?: { sandboxId: string; generation: string }[];
-      resumeClaims?: { requestId: string; sandboxId: string; generation: string }[];
-    }
-  >;
+  ): Promise<DockerHostPollResponse>;
   result(state: State, receipt: Receipt, expired?: true): Promise<void>;
   retainedOutputs?(state: State, requestId: string, read: () => Promise<Uint8Array<ArrayBuffer> | null>): Promise<void>;
   claim?(state: State, requestId: string, accepted: boolean): Promise<void>;
@@ -132,7 +119,7 @@ export interface Executor {
   resume?(request: DockerMachineRequest): Promise<unknown>;
   create(request: DockerMachineRequest): Promise<unknown>;
   stop(request: DockerMachineRequest): Promise<unknown>;
-  delete(request: DockerMachineRequest): Promise<unknown>;
+  delete(request: DockerMachineRequest, target?: { scope: "physical-only"; machineId: string }): Promise<unknown>;
   stopIfExpired(request: DockerMachineRequest): Promise<unknown>;
   deleteStopped?(request: DockerMachineRequest): Promise<void>;
   isRunning?(request: DockerMachineRequest): Promise<boolean>;
@@ -512,7 +499,13 @@ async function admitLocked(
   if (executor.isStopped) {
     const candidates = new Map<string, Receipt>();
     for (const receipt of state.receipts) {
-      if (receipt.cleaned || receipt.operation === "buildSnapshot" || receipt.operation === "delete") continue;
+      if (
+        receipt.cleaned ||
+        receipt.operation === "buildSnapshot" ||
+        receipt.operation === "delete" ||
+        receipt.operation === "deletePhysical"
+      )
+        continue;
       candidates.set(generationKey(receipt.request), receipt);
     }
     // An admitted but unfinished operation may still be recovered below. Absence
@@ -598,9 +591,17 @@ async function admitLocked(
           (entry) => generationKey(entry.request) === key && (entry.cleanupAuthorized || entry.deleted),
         ) ||
         state.receipts.some(
-          (receipt) => generationKey(receipt.request) === key && (receipt.cleaned || receipt.operation === "delete"),
+          (receipt) =>
+            generationKey(receipt.request) === key &&
+            (receipt.cleaned ||
+              receipt.operation === "delete" ||
+              (receipt.operation === "deletePhysical" && receipt.outcome !== "failed")),
         ) ||
-        state.retired?.some((receipt) => receipt[2] === key && receipt[4] === "delete");
+        state.retired?.some(
+          (receipt) =>
+            receipt[2] === key &&
+            (receipt[4] === "delete" || (receipt[4] === "deletePhysical" && receipt[5] === "completed")),
+        );
       claim = { ...intent, accepted: !lost, active: !lost };
       state.resumeClaims.push(claim);
       if (claim.accepted) state.retention = state.retention.filter((entry) => generationKey(entry.request) !== key);
@@ -662,7 +663,8 @@ async function admitLocked(
   };
   if (await pressure()) {
     const latest = new Map<string, Receipt>();
-    for (const receipt of state.receipts) latest.set(generationKey(receipt.request), receipt);
+    for (const receipt of state.receipts)
+      if (receipt.operation !== "deletePhysical") latest.set(generationKey(receipt.request), receipt);
     for (const [key, receipt] of latest) {
       if (
         !receipt.outcome ||
@@ -767,7 +769,7 @@ async function admitLocked(
       if (retired[4] === "stop") stopped.add(retired[2]);
       // Compacted launch receipts carry durable reported expiry proof. Deletes
       // are permanent; snapshots do not describe a running machine.
-      else if (retired[4] !== "buildSnapshot") terminal.add(retired[2]);
+      else if (retired[4] !== "buildSnapshot" && retired[4] !== "deletePhysical") terminal.add(retired[2]);
     }
     for (const receipt of state.receipts) {
       const key = generationKey(receipt.request);
@@ -850,7 +852,7 @@ async function admitLocked(
   async function prepare(receipt: Receipt): Promise<unknown> {
     try {
       if (
-        (receipt.operation === "stop" || receipt.operation === "delete") &&
+        (receipt.operation === "stop" || receipt.operation === "delete" || receipt.operation === "deletePhysical") &&
         state.resumeClaims?.some(
           (claim) => claim.active && claim.accepted && generationKey(claim) === generationKey(receipt.request),
         )
@@ -901,6 +903,9 @@ async function admitLocked(
           await executor.resume(receipt.request);
         }
         await executor.startRuntime(receipt.request, job.bootstrap);
+      } else if (receipt.operation === "deletePhysical") {
+        if (job.operation !== "deletePhysical") throw Error("Changed host job");
+        await executor.delete(receipt.request, { scope: "physical-only", machineId: job.machineId });
       } else {
         await executor[receipt.operation](receipt.request);
       }
@@ -972,7 +977,10 @@ async function admitLocked(
     return "busy";
   }
   const inputHash =
-    job.operation === "bootstrap" || job.operation === "resume" || job.operation === "buildSnapshot"
+    job.operation === "bootstrap" ||
+    job.operation === "resume" ||
+    job.operation === "buildSnapshot" ||
+    job.operation === "deletePhysical"
       ? createHash("sha256")
           .update(JSON.stringify({ requestId: job.requestId, input: canonicalDockerHostJob(job) }))
           .digest("hex")
@@ -983,8 +991,7 @@ async function admitLocked(
     receipt &&
     (receipt.operation !== job.operation ||
       fingerprint(receipt) !== fingerprint(job) ||
-      ((receipt.operation === "bootstrap" || receipt.operation === "resume" || receipt.operation === "buildSnapshot") &&
-        receipt.inputHash !== inputHash))
+      ("inputHash" in receipt ? receipt.inputHash : undefined) !== inputHash)
   )
     throw new Error("Changed host job");
   if (!receipt) {
@@ -1042,7 +1049,7 @@ async function admitLocked(
     const created: Receipt =
       job.operation === "buildSnapshot"
         ? { ...base, operation: "buildSnapshot", inputHash: inputHash as string }
-        : job.operation === "bootstrap" || job.operation === "resume"
+        : job.operation === "bootstrap" || job.operation === "resume" || job.operation === "deletePhysical"
           ? { ...base, operation: job.operation, inputHash: inputHash as string }
           : { ...base, operation: job.operation };
     receipt = created;
@@ -1094,11 +1101,13 @@ export function compactReceipts(state: State): void {
       receipt.cleaned ||
       receipt.operation === "stop" ||
       receipt.operation === "delete" ||
+      receipt.operation === "deletePhysical" ||
       receipt.operation === "buildSnapshot" ||
       (receipt.expired && receipt.expiryReported && !receipt.expiryOutputsPending);
     if (!closed) return true;
     if (
       receipt.operation !== "delete" &&
+      receipt.operation !== "deletePhysical" &&
       receipt.operation !== "buildSnapshot" &&
       !covered.has(generationKey(receipt.request))
     )

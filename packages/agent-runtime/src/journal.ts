@@ -1,17 +1,43 @@
 import { Database } from "bun:sqlite";
 import type { AgentEvent, PromptStatus } from "@armada/core";
-import { HARNESSES, isFinalPromptStatus } from "@armada/core";
+import { describeNativeFailure, HARNESSES, isFinalPromptStatus, PROMPT_STATUSES, planLimitData } from "@armada/core";
 import { HarnessError } from "./errors.ts";
 import { checkpointIdentity, checkpointIdentityKey } from "./identity.ts";
 import type { CheckpointIdentity, StoredPrompt } from "./protocol.ts";
 import { createRedactor, createShortSecretTextRedactor } from "./state.ts";
 
 const MAX_EVENT_BYTES = 262144;
-const CLAUDE_RESULT_OUTPUT_FIELDS = ["result", "errors", "structured_output"] as const;
+const MAX_COLLISION_ALIASES = MAX_EVENT_BYTES / 4;
+const CLAUDE_RESULT_PAYLOAD_FIELDS = [
+  "result",
+  "errors",
+  "structured_output",
+  "permission_denials",
+  "deferred_tool_use",
+  "local_command",
+  "resume_reason",
+  "origin",
+  "session_id",
+  "uuid",
+  "user_message_uuid",
+  "user_message_uuids",
+  "stop_reason",
+] as const;
+
+function isCodexQuotaDiagnostic(type: string) {
+  return type === "account/rateLimits/read" || type === "account/rateLimits/updated";
+}
 
 function isStructuredDiagnostic(type: string) {
   return (
-    type === "armada/opencodeShell" || type === "armada/opencodeMcp" || type === "result" || type === "model/rerouted"
+    type === "armada/opencodeShell" ||
+    type === "armada/opencodeMcp" ||
+    type === "armada/turnUsage" ||
+    type === "result" ||
+    type === "usage_report" ||
+    type === "model/rerouted" ||
+    Object.hasOwn(terminalDiagnosticShapes, type) ||
+    isCodexQuotaDiagnostic(type)
   );
 }
 
@@ -43,6 +69,137 @@ function maskText(original: string, scrubbed: string, mask: (text: string) => st
   return original === scrubbed ? short : "[REDACTED]";
 }
 
+const protocolText = {
+  events: new Set(["id", "kind", "conversationId", "promptId"]),
+  prompts: new Set(["promptId", "conversationId", "request/sandboxId", "request/conversationId", "request/harness"]),
+  processes: new Set(["identity/boot", "identity/start"]),
+  requests: new Set([
+    "requestId",
+    "result/promptId",
+    "result/conversationId",
+    "result/generation",
+    "result/physicalGeneration",
+    "result/nativeSessionId",
+    "result/state",
+    "result/evidence",
+    "result/restoredFrom/epoch",
+    "result/restoredFrom/conversationId",
+    "result/identity/boot",
+    "result/identity/start",
+  ]),
+  transcript: new Set([
+    "type",
+    "uuid",
+    "parentUuid",
+    "sessionId",
+    "payload/id",
+    "payload/session_id",
+    "payload/type",
+    "payload/role",
+    "payload/model",
+    "payload/call_id",
+    "payload/content/#/type",
+    "message/id",
+    "message/type",
+    "message/role",
+    "message/model",
+    "message/content/#/type",
+    "message/content/#/id",
+    "message/content/#/tool_use_id",
+    "info/id",
+    "info/projectID",
+    "info/directory",
+    "messages/#/info/id",
+    "messages/#/info/sessionID",
+    "messages/#/info/parentID",
+    "messages/#/info/role",
+    "messages/#/info/modelID",
+    "messages/#/info/providerID",
+    "messages/#/parts/#/id",
+    "messages/#/parts/#/messageID",
+    "messages/#/parts/#/sessionID",
+    "messages/#/parts/#/type",
+    "messages/#/parts/#/callID",
+    "messages/#/parts/#/tool",
+    "messages/#/parts/#/state/status",
+  ]),
+};
+type RedactionContext = keyof typeof protocolText;
+const runtimeErrorCodes = new Set([
+  "not_found",
+  "no_running_turn",
+  "invalid_request",
+  "invalid_cursor",
+  "invalid_cwd",
+  "unsupported_fast_model",
+  "invalid_effort",
+  "invalid_native_resume",
+  "native_resume_unsupported",
+  "builder_model_prompts_forbidden",
+  "invalid_operation",
+  "invalid_harness_protocol",
+  "workspace_request_invalid",
+  "unselected_runtime_harness",
+  "conversation_harness_mismatch",
+  "conversation_busy",
+  "native_resume_unavailable",
+  "native_session_identity_changed",
+  "native_resume_in_progress",
+  "workspace_launch_only",
+  "skills_install_denied",
+  "native_auth_writer_busy",
+  "checkpoint_in_progress",
+  "workspace_setup_in_progress",
+  "skills_install_in_progress",
+  "request_outcome_unknown",
+  "unauthorized",
+]);
+const controlStatuses = new Set<string>([
+  ...PROMPT_STATUSES,
+  "exited",
+  "running_after_restart",
+  "unknown_after_restart",
+]);
+
+const maskJsonText: (
+  original: unknown,
+  scrubbed: unknown,
+  mask: ((text: string) => string) | undefined,
+  context?: RedactionContext,
+  path?: string,
+) => unknown = (original, scrubbed, mask, context, path = "") => {
+  if (typeof original === "string" && typeof scrubbed === "string") {
+    if (
+      ((context === "events" || context === "prompts" || context === "processes" || context === "requests") &&
+        (path === "status" || path === "result/status") &&
+        controlStatuses.has(original)) ||
+      (context === "requests" && path === "error" && runtimeErrorCodes.has(original)) ||
+      (context === "events" &&
+        path === "reason" &&
+        (original === "runner_restarted_outcome_unknown" ||
+          original === "native_auth_state_unacknowledged" ||
+          describeNativeFailure(original) !== null))
+    )
+      return original;
+    return !mask || (context !== undefined && protocolText[context].has(path))
+      ? scrubbed
+      : maskText(original, scrubbed, mask);
+  }
+  if (context === undefined && mask && (typeof original === "number" || typeof original === "boolean"))
+    return maskPayload(original, mask);
+  if (Array.isArray(original) && Array.isArray(scrubbed))
+    return scrubbed.map((value, index) => maskJsonText(original[index], value, mask, context, `${path}/#`));
+  if (!original || typeof original !== "object" || !scrubbed || typeof scrubbed !== "object") return scrubbed;
+  const source = original as Record<string, unknown>;
+  return Object.fromEntries(
+    Object.entries(scrubbed).map(([key, value]) => {
+      const segment = key.replaceAll("/", "~1").replaceAll("#", "~2");
+      const name = context === undefined && mask ? mask(key) : key;
+      return [name, maskJsonText(source[key], value, mask, context, path ? `${path}/${segment}` : segment)];
+    }),
+  );
+};
+
 const maskPayload: (value: unknown, mask: (text: string) => string) => unknown = (value, mask) => {
   if (typeof value === "string") return mask(value);
   if (typeof value === "number" || typeof value === "boolean") {
@@ -69,6 +226,212 @@ function maskPayloadField(
   const masked = JSON.stringify(replacement);
   if (masked !== before && masked !== after) data[key] = before === after ? replacement : "[REDACTED]";
 }
+
+type PayloadShape = {
+  fields?: Readonly<Record<string, PayloadShape | null>>;
+  entries?: PayloadShape;
+  items?: PayloadShape;
+};
+
+const claudeModelUsage = {
+  entries: {
+    fields: {
+      inputTokens: null,
+      outputTokens: null,
+      thinkingTokens: null,
+      reasoningTokens: null,
+      cacheReadInputTokens: null,
+      cacheCreationInputTokens: null,
+      cacheCreationEphemeral5mInputTokens: null,
+      cacheCreationEphemeral1hInputTokens: null,
+      webSearchRequests: null,
+      costUSD: null,
+      contextWindow: null,
+      maxOutputTokens: null,
+      canonicalModel: null,
+      provider: null,
+      costBasis: null,
+    },
+  },
+};
+
+const claudeUsageCounters = {
+  cache_creation: { fields: { ephemeral_5m_input_tokens: null, ephemeral_1h_input_tokens: null } },
+  cache_creation_input_tokens: null,
+  cache_read_input_tokens: null,
+  input_tokens: null,
+  output_tokens: null,
+};
+
+const claudeUsage = {
+  fields: {
+    ...claudeUsageCounters,
+    fallback_credit: { fields: { status: { fields: { type: null, reason: null, remove_to_redeem: null } } } },
+    inference_geo: null,
+    iterations: { items: { fields: { ...claudeUsageCounters, model: null, type: null } } },
+    output_tokens_details: { fields: { thinking_tokens: null } },
+    server_tool_use: { fields: { web_fetch_requests: null, web_search_requests: null } },
+    service_tier: null,
+    speed: null,
+  },
+};
+
+const claudeUsageReport = {
+  fields: {
+    session: {
+      fields: {
+        total_cost_usd: null,
+        total_api_duration_ms: null,
+        total_duration_ms: null,
+        total_lines_added: null,
+        total_lines_removed: null,
+        model_usage: claudeModelUsage,
+      },
+    },
+    rate_limits: {
+      fields: {
+        limits: {
+          items: {
+            fields: {
+              kind: null,
+              group: null,
+              percent: null,
+              resets_at: null,
+              scope: {
+                fields: {
+                  model: { fields: { display_name: null } },
+                  surface: { fields: { display_name: null } },
+                },
+              },
+              severity: null,
+              is_active: null,
+            },
+          },
+        },
+        extra_usage: {
+          fields: { is_enabled: null, monthly_limit: null, used_credits: null, utilization: null, currency: null },
+        },
+      },
+    },
+  },
+};
+
+const quotaWindow = { fields: { usedPercent: null, windowDurationMins: null, resetsAt: null } };
+const quotaSnapshot = {
+  fields: {
+    limitId: null,
+    limitName: null,
+    primary: quotaWindow,
+    secondary: quotaWindow,
+    credits: { fields: { hasCredits: null, unlimited: null, balance: null } },
+    planType: null,
+    rateLimitReachedType: null,
+  },
+};
+const quotaPayload = {
+  fields: {
+    rateLimits: quotaSnapshot,
+    rateLimitsByLimitId: { entries: quotaSnapshot },
+    ordinaryUsageAllowed: null,
+  },
+};
+const terminalDiagnosticShapes: Readonly<Record<string, PayloadShape>> = {
+  "turn/completed": {
+    fields: {
+      threadId: null,
+      turn: {
+        fields: {
+          id: null,
+          status: null,
+          error: {
+            fields: { message: null, codexErrorInfo: null, additionalDetails: null, misalignment: null },
+          },
+        },
+      },
+    },
+  },
+  "armada/modelRateLimit": {
+    fields: { retryCount: null, delayMs: null, totalWaitMs: null, reason: null, message: null },
+  },
+  usage_limit: { fields: { code: null, resetsAt: null } },
+};
+const turnUsagePayload = {
+  fields: {
+    model: null,
+    inputTokens: null,
+    outputTokens: null,
+    cachedTokens: null,
+    cacheWriteTokens: null,
+    reasoningTokens: null,
+  },
+};
+
+const maskShapedPayload: (
+  original: unknown,
+  scrubbed: unknown,
+  mask: (text: string) => string,
+  shape?: PayloadShape | null,
+) => unknown = (original, scrubbed, mask, shape) => {
+  if (Array.isArray(original) && Array.isArray(scrubbed)) {
+    return original.map((item, index) => maskShapedPayload(item, scrubbed[index], mask, shape?.items));
+  }
+  if (
+    original &&
+    typeof original === "object" &&
+    !Array.isArray(original) &&
+    scrubbed &&
+    typeof scrubbed === "object" &&
+    !Array.isArray(scrubbed)
+  ) {
+    const fields = shape?.fields;
+    const values = scrubbed as Record<string, unknown>;
+    const collapseMarkers = (text: string) => text.replace(/\[+REDACTED\]+/g, "[REDACTED]");
+    const maskKey = (key: string) => {
+      const masked = mask(key);
+      if (masked === key) return key;
+      const collapsed = collapseMarkers(masked);
+      return collapseMarkers(mask(collapsed)) === collapsed ? collapsed : "[REDACTED]";
+    };
+    const entries = Object.entries(original).map(([key, value]) => {
+      const fixed = fields && Object.hasOwn(fields, key);
+      return {
+        key,
+        maskedKey: fixed ? key : maskKey(key),
+        value: maskShapedPayload(value, values[key], mask, fixed ? fields[key] : shape?.entries),
+      };
+    });
+    if (!shape?.entries) return Object.fromEntries(entries.map(({ maskedKey, value }) => [maskedKey, value]));
+
+    const reserved = new Set(entries.map(({ maskedKey }) => maskedKey));
+    const output = new Map(
+      entries.filter(({ key, maskedKey }) => key === maskedKey).map(({ key, value }) => [key, value]),
+    );
+    let nextAlias = 0;
+    for (const { key, maskedKey, value } of entries) {
+      if (key === maskedKey) continue;
+      if (!output.has(maskedKey)) {
+        output.set(maskedKey, value);
+        continue;
+      }
+      let alias: string | undefined;
+      while (nextAlias < MAX_COLLISION_ALIASES && !alias) {
+        const ordinal = nextAlias++;
+        const candidates = [`[REDACTED]#${ordinal + 1}`, String.fromCodePoint(0xf0000 + ordinal)];
+        alias = candidates.find((candidate) => !reserved.has(candidate) && maskKey(candidate) === candidate);
+      }
+      if (alias !== undefined) {
+        reserved.add(alias);
+        output.set(alias, value);
+      }
+    }
+    return Object.fromEntries(output);
+  }
+  if (original !== scrubbed) {
+    if (typeof original !== "string" || typeof scrubbed !== "string") return scrubbed;
+    return maskText(original, scrubbed, mask);
+  }
+  return maskPayload(original, mask);
+};
 
 function maskProofData(
   original: unknown,
@@ -97,8 +460,10 @@ function maskProofData(
 
 export class Journal {
   readonly db: Database;
-  readonly redact: (text: string) => string;
+  readonly redact: (text: string, context?: RedactionContext) => string;
   private dynamicRedactor = createRedactor([]);
+  private shortWordRedactor = createRedactor([]);
+  private readonly redactProtocol: (text: string) => string;
   private applicationSecrets = new Set<string>();
   private hasApplicationSecrets = false;
   private redactShortApplicationText: ((text: string) => string) | undefined;
@@ -106,7 +471,8 @@ export class Journal {
     this.dynamicRedactor.register(values);
   }
   registerApplicationSecrets(values: readonly string[]) {
-    this.registerSecrets(values);
+    this.registerSecrets(values.filter((value) => value.length >= 8));
+    this.shortWordRedactor.register(values.filter((value) => value.length < 8));
     this.hasApplicationSecrets ||= values.some(Boolean);
     for (const value of values) if (value.length > 0 && value.length < 8) this.applicationSecrets.add(value);
     this.redactShortApplicationText = createShortSecretTextRedactor([...this.applicationSecrets]);
@@ -121,13 +487,26 @@ export class Journal {
   redactCommandOutput(capture: { text: string; truncated: boolean }, limit: number) {
     const mask = this.redactShortApplicationText;
     if (this.hasApplicationSecrets && capture.truncated) return { text: "[REDACTED]", truncated: true };
-    const scrubbed = this.redactLiteralText(this.redact(capture.text));
+    const scrubbed: string = JSON.parse(this.redactProtocol(JSON.stringify(this.redactProtocol(capture.text))));
     const text = mask ? maskText(capture.text, scrubbed, mask) : scrubbed;
     if (text.length > limit) return { text: "[REDACTED]", truncated: true };
     return { text, truncated: capture.truncated };
   }
   constructor(path: string, redact: (text: string) => string) {
-    this.redact = (text) => this.dynamicRedactor(redact(text));
+    this.redactProtocol = (text) => this.shortWordRedactor(this.dynamicRedactor(redact(text)));
+    this.redact = (text, context) => {
+      const scrubbed = this.dynamicRedactor(redact(text));
+      const mask = this.redactShortApplicationText;
+      if (!mask && (!context || scrubbed === text)) return scrubbed;
+      if (!/^\s*["{[]/.test(text)) return mask ? maskText(text, scrubbed, mask) : scrubbed;
+      let original: unknown;
+      try {
+        original = JSON.parse(text);
+      } catch {
+        return mask ? maskText(text, scrubbed, mask) : scrubbed;
+      }
+      return JSON.stringify(maskJsonText(original, JSON.parse(scrubbed), mask, context));
+    };
     this.db = new Database(path, { create: true });
     this.db.exec(`PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA secure_delete=ON;
  CREATE TABLE IF NOT EXISTS prompts(id TEXT PRIMARY KEY, conversation TEXT NOT NULL,status TEXT NOT NULL,body TEXT NOT NULL);
@@ -164,7 +543,11 @@ export class Journal {
   }
   private eventBody(event: AgentEvent, appending: boolean) {
     const mask = this.redactShortApplicationText;
-    const body = this.redact(JSON.stringify(event));
+    const serialized = JSON.stringify(event);
+    const shaped =
+      event.kind === "message" ||
+      (event.kind === "other" && (event.type === "harness_stderr" || isStructuredDiagnostic(event.type)));
+    const body = shaped ? this.redactProtocol(serialized) : this.redact(serialized, "events");
     if (event.kind === "prompt") return JSON.stringify({ ...JSON.parse(body), kind: event.kind, status: event.status });
     if (event.kind === "steer") return JSON.stringify({ ...JSON.parse(body), kind: event.kind });
     if (event.kind === "message") {
@@ -201,18 +584,64 @@ export class Journal {
     if (isStructuredDiagnostic(event.type)) {
       scrubbed.type = event.type;
       const maskField = (text: string) => {
-        const literal = this.redactLiteralText(text);
+        const literal: string = JSON.parse(this.redactProtocol(JSON.stringify(text)));
         return mask ? maskText(text, literal, mask) : literal;
       };
       if (event.type === "result") {
         if (event.data && typeof event.data === "object" && scrubbed.data && typeof scrubbed.data === "object") {
-          for (const key of CLAUDE_RESULT_OUTPUT_FIELDS)
-            maskPayloadField(event.data as Record<string, unknown>, scrubbed.data, key, maskField);
+          const source = event.data as Record<string, unknown>;
+          const generic = JSON.parse(this.redact(serialized, "events")).data;
+          const shapedFields = new Set<string>([
+            ...CLAUDE_RESULT_PAYLOAD_FIELDS,
+            "modelUsage",
+            "usage",
+            "total_cost_usd",
+          ]);
+          for (const [key, value] of Object.entries(generic)) if (!shapedFields.has(key)) scrubbed.data[key] = value;
+          for (const key of CLAUDE_RESULT_PAYLOAD_FIELDS) maskPayloadField(source, scrubbed.data, key, maskField);
+          if (Object.hasOwn(source, "modelUsage"))
+            scrubbed.data.modelUsage = maskShapedPayload(
+              source.modelUsage,
+              scrubbed.data.modelUsage,
+              maskField,
+              claudeModelUsage,
+            );
+          if (Object.hasOwn(source, "usage"))
+            scrubbed.data.usage = maskShapedPayload(source.usage, scrubbed.data.usage, maskField, claudeUsage);
+          maskPayloadField(source, scrubbed.data, "total_cost_usd", maskField);
 
           const result = JSON.stringify(scrubbed);
           if (Buffer.byteLength(result) <= MAX_EVENT_BYTES) return result;
-          for (const key of CLAUDE_RESULT_OUTPUT_FIELDS) delete scrubbed.data[key];
+          for (const key of CLAUDE_RESULT_PAYLOAD_FIELDS) delete scrubbed.data[key];
           scrubbed.data.outputTruncated = true;
+          if (Buffer.byteLength(JSON.stringify(scrubbed)) > MAX_EVENT_BYTES) {
+            delete scrubbed.data.usage;
+            if (Buffer.byteLength(JSON.stringify(scrubbed)) > MAX_EVENT_BYTES) {
+              for (const usage of Object.values(scrubbed.data.modelUsage ?? {})) {
+                if (!usage || typeof usage !== "object" || Array.isArray(usage)) continue;
+                const fields = usage as Record<string, unknown>;
+                delete fields.canonicalModel;
+                delete fields.provider;
+              }
+            }
+          }
+        }
+      } else if (event.type === "usage_report") {
+        scrubbed.data = maskShapedPayload(event.data, scrubbed.data, maskField, claudeUsageReport);
+      } else if (isCodexQuotaDiagnostic(event.type)) {
+        scrubbed.data = maskShapedPayload(event.data, scrubbed.data, maskField, quotaPayload);
+      } else if (event.type === "armada/turnUsage") {
+        scrubbed.data = maskShapedPayload(event.data, scrubbed.data, maskField, turnUsagePayload);
+      } else if (Object.hasOwn(terminalDiagnosticShapes, event.type)) {
+        scrubbed.data = maskShapedPayload(event.data, scrubbed.data, maskField, terminalDiagnosticShapes[event.type]);
+        if (event.type === "usage_limit") {
+          const limit = planLimitData(event.data);
+          if (limit) scrubbed.data.code = limit.code;
+        } else if (
+          event.type === "armada/modelRateLimit" &&
+          (event.data as { reason?: unknown } | null | undefined)?.reason === "model_provider_retry"
+        ) {
+          scrubbed.data.reason = "model_provider_retry";
         }
       } else if (event.type === "model/rerouted") {
         maskPayloadField({ data: event.data }, scrubbed, "data", maskField);
@@ -224,7 +653,16 @@ export class Journal {
         ? truncatedEvent(scrubbed, diagnostic.length)
         : diagnostic;
     }
-    return JSON.stringify(scrubbed);
+    if (event.type === "event_truncated") return JSON.stringify({ ...scrubbed, type: event.type });
+    scrubbed.type = this.redactLiteralText(event.type);
+    if (mask) {
+      const baseline = JSON.parse(this.redactProtocol(serialized)).data;
+      scrubbed.data = maskShapedPayload(event.data, baseline, (text) => this.redactLiteralText(text));
+    }
+    const diagnostic = JSON.stringify(scrubbed);
+    return !appending && Buffer.byteLength(diagnostic) > MAX_EVENT_BYTES
+      ? truncatedEvent(scrubbed, diagnostic.length)
+      : diagnostic;
   }
   private sanitizeEvent(body: string) {
     let event: AgentEvent;
@@ -233,8 +671,7 @@ export class Journal {
     } catch {
       return this.redact(body);
     }
-    return event?.kind === "message" ||
-      (event?.kind === "other" && (event.type === "harness_stderr" || isStructuredDiagnostic(event.type)))
+    return event?.kind === "message" || event?.kind === "other" || event?.kind === "prompt" || event?.kind === "steer"
       ? this.eventBody(event, false)
       : this.redact(body);
   }
@@ -242,7 +679,12 @@ export class Journal {
     this.db.transaction(() => {
       this.db
         .query("INSERT OR REPLACE INTO prompts VALUES(?,?,?,?)")
-        .run(prompt.promptId, prompt.conversationId, status, this.redact(JSON.stringify({ ...prompt, status })));
+        .run(
+          prompt.promptId,
+          prompt.conversationId,
+          status,
+          this.redact(JSON.stringify({ ...prompt, status }), "prompts"),
+        );
       this.append({
         id: crypto.randomUUID(),
         at: Date.now(),
@@ -277,8 +719,8 @@ export class Journal {
       !session ||
       session.length > 256 ||
       !(HARNESSES as readonly string[]).includes(harness) ||
-      this.redact(conversation) !== conversation ||
-      this.redact(session) !== session
+      this.redactProtocol(conversation) !== conversation ||
+      this.redactProtocol(session) !== session
     )
       throw Error("invalid_native_session_identity");
     const saved = this.db
@@ -395,7 +837,7 @@ export class Journal {
   }
   sanitize() {
     this.db.transaction(() => {
-      for (const table of ["events", "prompts", "requests", "processes"]) {
+      for (const table of ["events", "prompts", "requests", "processes"] as const) {
         // A batch is one row: retain O(largest body + its redacted copy), not
         // cumulative history. Prompts/requests/processes have no body-size cap.
         // Keyset reads finish before UPDATE; text preserves every SQLite rowid without numeric rounding.
@@ -411,7 +853,7 @@ export class Journal {
             body: string;
           } | null;
           if (!row) break;
-          update.run(table === "events" ? this.sanitizeEvent(row.body) : this.redact(row.body), row.recordId);
+          update.run(table === "events" ? this.sanitizeEvent(row.body) : this.redact(row.body, table), row.recordId);
           cursor = row.recordId;
         }
       }

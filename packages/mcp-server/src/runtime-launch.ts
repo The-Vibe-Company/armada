@@ -1,5 +1,6 @@
 import type { LaunchOptions, Sql } from "@armada/core/server";
 import { requirePublishedRuntimeArchitecture } from "../../agent-runtime/src/publication.ts";
+import { createGoldenRuntimeEnvironment } from "./golden-runtime-environment.ts";
 import { runtimeAgentFor } from "./runtime-agent.ts";
 import { createRuntimeCommands } from "./runtime-commands.ts";
 import type { runtimeConfiguration } from "./runtime-configuration.ts";
@@ -23,12 +24,13 @@ export interface RuntimeLaunchOptions {
 }
 
 /** One enrolled activation/readiness/session path; placement owns configuration and bootstrap transport. */
-export function createRuntimeLaunch(options: RuntimeLaunchOptions) {
+export function createRuntimeLaunch(options: RuntimeLaunchOptions, provider: "boat" | "modal") {
   requirePublishedRuntimeArchitecture(options.architecture);
   const server = new URL(options.serverUrl);
   if (server.protocol !== "https:" || server.href !== `${server.origin}/`) throw Error("invalid_runtime_origin");
   const authority = createRuntimeEnrolments(options.sql, options.encryptionKey);
   const commands = createRuntimeCommands(authority, options.encryptionKey);
+  const environment = createGoldenRuntimeEnvironment(options.sql, options.encryptionKey);
   return async (request: {
     input: LaunchInput;
     configure(): Promise<LaunchPlan>;
@@ -57,6 +59,7 @@ export function createRuntimeLaunch(options: RuntimeLaunchOptions) {
       ...plan,
       signal,
     });
+    await environment.deliver(provider, actor, sandbox.id, ready.epoch, signal);
     return {
       ...runtimeWorkspace(input, agent, ready.epoch, options.github),
       installSkills: (references, key) => agent.installSkills(references, key, ready.epoch, signal),

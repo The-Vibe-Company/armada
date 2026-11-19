@@ -7,7 +7,7 @@ import { createSqlData } from "../src/data.ts";
 import { createOrdinaryLaunchReceipts } from "../src/ordinary-launch-receipts.ts";
 import { sqlOver } from "../src/sql.ts";
 import { rowOnlyDatabase } from "./row-only-database.ts";
-import { call, ENCRYPTION_KEY, fakeBoat, harness, PUBLIC_URL, type TestServer } from "./support.ts";
+import { call, ENCRYPTION_KEY, fakeBoat, harness, launchSandboxId, PUBLIC_URL, type TestServer } from "./support.ts";
 
 const database = rowOnlyDatabase();
 let server: TestServer | undefined;
@@ -114,7 +114,11 @@ describe("provider routing", () => {
     expect(server.boat.forks).toEqual([]);
 
     const onBoat = await call(mcp, "launch", { golden: "shared", provider: "boat", harness: "claude" });
-    expect(onBoat.data).toMatchObject({ provider: "boat", providerSandboxId: "bx_1", boatId: "bx_1" });
+    expect(launchEnvelope.parse(onBoat.data).sandbox).toMatchObject({
+      provider: "boat",
+      providerSandboxId: "bx_1",
+      boatId: "bx_1",
+    });
     expect(server.boat.forks).toHaveLength(1);
   });
 
@@ -161,33 +165,42 @@ describe("provider routing", () => {
       });
       const samples = launchSamples(log);
       expect(samples).toHaveLength(1);
-      expect(samples[0]).toMatchObject({ surface: "mcp", sandboxId: launched.data.id });
+      expect(samples[0]).toMatchObject({ surface: "mcp", sandboxId: launchSandboxId(launched.data) });
       expect(samples[0]?.stages.map(({ name }) => name)).toEqual(launchStages);
     } finally {
       log.mockRestore();
     }
-    expect(launched.data.visibility).toBe("org");
+    expect(launchEnvelope.parse(launched.data).golden?.visibility).toBe("org");
     const source = (
       await server.db.query<{ source_golden_visibility: string }>(
         "select source_golden_visibility from sandboxes where id=$1",
-        [launched.data.id],
+        [launchSandboxId(launched.data)],
       )
     ).rows[0];
     expect(source?.source_golden_visibility).toBe("org");
     await expect(
-      server.db.query("update sandboxes set source_golden_visibility='private' where id=$1", [launched.data.id]),
+      server.db.query("update sandboxes set source_golden_visibility='private' where id=$1", [
+        launchSandboxId(launched.data),
+      ]),
     ).rejects.toThrow(/immutable/);
     const otherMember = await server.client(await server.token(server.people.owner));
-    const forbidden = await call(otherMember, "send", { id: launched.data.id, prompt: "impersonate" });
+    const forbidden = await call(otherMember, "send", {
+      id: launchSandboxId(launched.data),
+      prompt: "impersonate",
+    });
     expect(forbidden.isError).toBe(true);
-    expect(launched.data).toMatchObject({ provider: "modal", providerSandboxId: "bx_1", boatId: null });
+    expect(launchEnvelope.parse(launched.data).sandbox).toMatchObject({
+      provider: "modal",
+      providerSandboxId: "bx_1",
+      boatId: null,
+    });
     expect(modal.forks[0]).toMatchObject({ from: "im-modal-1", noEnv: true });
     expect(JSON.stringify(modal.forks[0]?.env)).not.toContain(PAIR.token_secret);
     expect(JSON.stringify(modal.forks[0]?.env)).not.toContain(PAIR.token_id);
     expect(server.boat.forks).toEqual([]);
 
     await setOrgModalPair(server, ROTATED);
-    await call(mcp, "send", { id: launched.data.id, prompt: "next" });
+    await call(mcp, "send", { id: launchSandboxId(launched.data), prompt: "next" });
     expect(modal.prompts.map((prompt) => prompt.text)).toEqual(["next"]);
     // Every call is pinned to the golden's App; only the token follows the rotation.
     expect(calls.every(({ binding }) => JSON.stringify(binding) === JSON.stringify(BINDING))).toBe(true);
