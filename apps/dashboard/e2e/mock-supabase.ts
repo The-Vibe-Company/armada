@@ -1200,7 +1200,8 @@ function mcp(message: RpcMessage, userId: string | null): Response {
 
   const args = (message.params?.arguments ?? {}) as Row;
   const name = String(message.params?.name);
-  const driving = name === "send" || name === "steer" || name === "interrupt";
+  const interruptTurn = name === "stop" && args.turn === true;
+  const driving = name === "send" || interruptTurn;
   const target = state.sandboxes.find((row) => row.id === args.id);
   const visible = visibleRows("sandboxes", userId).some((row) => row === target);
   const text = (value: unknown, isError = false) =>
@@ -1223,7 +1224,7 @@ function mcp(message: RpcMessage, userId: string | null): Response {
   state.events.set(String(target.id), events);
   const conversations = (target.conversation_ids ?? []) as string[];
 
-  switch (message.params?.name) {
+  switch (name) {
     case "status":
       return text({
         status: target.status,
@@ -1239,6 +1240,18 @@ function mcp(message: RpcMessage, userId: string | null): Response {
       return text({ events: events.slice(since), cursor: String(events.length), hasMore: false });
     }
     case "send": {
+      if (args.steer === true) {
+        const conversationId = conversations.at(-1);
+        events.push({
+          id: `steer-${events.length}`,
+          at: Date.now(),
+          kind: "steer",
+          text: String(args.prompt),
+          conversationId,
+        });
+        const delivery = target.harness === "codex" ? "restart" : "native";
+        return text({ id: target.id, promptId: "steered", conversationId, delivery, mode: null });
+      }
       const conversationId = conversations.at(-1) ?? `conv-${events.length}`;
       if (!conversations.includes(conversationId)) target.conversation_ids = [...conversations, conversationId];
       target.status = "running";
@@ -1256,33 +1269,22 @@ function mcp(message: RpcMessage, userId: string | null): Response {
       });
       return text({ id: target.id, promptId, conversationId, status: "running" });
     }
-    case "steer": {
-      const conversationId = conversations.at(-1);
-      events.push({
-        id: `steer-${events.length}`,
-        at: Date.now(),
-        kind: "steer",
-        text: String(args.text),
-        conversationId,
-      });
-      const delivery = target.harness === "codex" ? "restart" : "native";
-      return text({ id: target.id, promptId: "steered", conversationId, delivery, mode: null });
-    }
-    case "interrupt": {
-      const conversationId = conversations.at(-1);
-      const running = [...events]
-        .reverse()
-        .find(
-          (event) => event.kind === "prompt" && event.status === "running" && event.conversationId === conversationId,
-        );
-      if (running)
-        events.push({ ...running, id: `interrupted-${events.length}`, at: Date.now(), status: "interrupted" });
-      return text({ id: target.id, interrupted: !!running });
-    }
-    case "stop":
+    case "stop": {
+      if (interruptTurn) {
+        const conversationId = conversations.at(-1);
+        const running = [...events]
+          .reverse()
+          .find(
+            (event) => event.kind === "prompt" && event.status === "running" && event.conversationId === conversationId,
+          );
+        if (running)
+          events.push({ ...running, id: `interrupted-${events.length}`, at: Date.now(), status: "interrupted" });
+        return text({ id: target.id, interrupted: !!running });
+      }
       target.status = "stopped";
       target.stopped_at = new Date().toISOString();
       return text({ ok: true });
+    }
     default:
       return text("unknown tool", true);
   }
