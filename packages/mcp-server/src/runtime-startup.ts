@@ -78,9 +78,7 @@ export function createRuntimeStartup(
             elapsedMs: at - startedAt,
           }),
         );
-      } catch {
-        // Diagnostics must not change the startup outcome.
-      }
+      } catch {}
     };
     try {
       signal?.throwIfAborted();
@@ -131,8 +129,8 @@ export function createRuntimeStartup(
         admission.throwIfAborted();
         if (time.now() >= deadline || ready.runtime !== "armada" || ready.epoch !== ticket.epoch)
           throw Error("runtime_startup_wrong_health");
-        // Do not publish a health response after stop/replacement while in flight.
         entering("readiness_fence", time.now());
+        // Do not publish a health response after stop/replacement while in flight.
         await authority.withOwner(
           sandboxId,
           ownerId,
