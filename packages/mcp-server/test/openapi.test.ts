@@ -189,6 +189,7 @@ test("published template launch request lists exactly the fields the template se
   expect(templateLaunch.safeParse(cli).success).toBe(true);
   expect(templateLaunch.safeParse({ ...cli, requestKey: "invalid key" }).success).toBe(false);
   expect(templateLaunch.safeParse({ ...cli, repo: "x".repeat(201) }).success).toBe(false);
+  expect(templateLaunch.safeParse({ ...cli, prompt: "hello\0world" }).success).toBe(false);
 });
 
 test("published extension request accepts either lifetime field and nullable org, and refuses both fields together", async () => {
@@ -203,7 +204,7 @@ test("published extension request accepts either lifetime field and nullable org
 test("the integration projection merges methods on one path and excludes admin operations", () => {
   const entry = {
     name: "example",
-    route: { method: "GET", path: "/api/v1/example/{id}" },
+    route: { method: "GET", path: "/api/v1/sandboxes/{id}" },
     input: { body: z.undefined(), path: { id: z.string() } },
     output: z.object({ value: z.string() }),
     readOnly: true,
@@ -218,7 +219,7 @@ test("the integration projection merges methods on one path and excludes admin o
     { ...entry, name: "adminExample", route: { ...entry.route, method: "PUT" }, audience: "admin" },
   ]);
   expect(paths).toEqual({
-    "/api/v1/example/{id}": {
+    "/api/v1/sandboxes/{id}": {
       get: expect.objectContaining({
         operationId: "example",
         parameters: [expect.objectContaining({ name: "id", in: "path", required: true })],
@@ -228,7 +229,7 @@ test("the integration projection merges methods on one path and excludes admin o
           }),
         }),
       }),
-      delete: expect.objectContaining({ operationId: "deleteExample" }),
+      delete: expect.objectContaining({ operationId: "sandbox_delete" }),
     },
   });
 });

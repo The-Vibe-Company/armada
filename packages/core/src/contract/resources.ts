@@ -161,6 +161,9 @@ export const goldenOperations = {
   },
 } as const satisfies Record<string, Operation<z.ZodType, z.ZodType>>;
 
+// biome-ignore lint/suspicious/noControlCharactersInRegex: template text excludes NUL and requires a non-whitespace character.
+const templateText = z.string().regex(/^(?![\s\S]*\x00)[\s\S]*\S/);
+
 export const launchTemplateOperation = {
   name: "launchTemplate",
   route: { method: "POST", path: "/api/v1/templates/launch" },
@@ -180,10 +183,10 @@ export const launchTemplateOperation = {
         .min(1)
         .max(128)
         .regex(/^[A-Za-z0-9._:-]+(?![\s\S])/),
-      prompt: z.string().max(100000).regex(/\S/).optional(),
+      prompt: templateText.max(100000).optional(),
       ttlSeconds: z.number().int().positive().optional(),
       size: z.enum(MACHINE_SIZES).optional(),
-      repo: z.string().max(200).regex(/\S/).optional(),
+      repo: templateText.max(200).optional(),
       skills: z.array(z.string().max(256).regex(SKILL_PIN_PATTERN)).max(20).nullish(),
       skipSkillDefaults: z.boolean().optional(),
       modelAccount: z

@@ -151,6 +151,7 @@ const OUTPUT_OPERATIONS = {
 /** Project the integration API from the browser-safe operation table. */
 export function generateOpenApi(table: readonly OpenApiOperation[] = Object.values(operations)) {
   const paths: Record<string, Record<string, unknown>> = {};
+  const ids = new Set<string>();
   for (const operation of table) {
     if (operation.audience === "admin") continue;
     const method = operation.route.method.toLowerCase();
@@ -160,6 +161,7 @@ export function generateOpenApi(table: readonly OpenApiOperation[] = Object.valu
     if (Object.hasOwn(path, method)) throw new Error(`Duplicate REST operation: ${method} ${operation.route.path}`);
     const output = OUTPUT_OPERATIONS[operation.route.path as keyof typeof OUTPUT_OPERATIONS]?.get;
     if (output && method === "get") {
+      reserveOperationId(output.operationId);
       path[method] = output;
       continue;
     }
@@ -226,9 +228,15 @@ export function generateOpenApi(table: readonly OpenApiOperation[] = Object.valu
         schema: requestJsonSchema(schema),
       })),
     ];
-    const operationId = method === "post" ? route.replaceAll("/", "_").replaceAll("-", "_") : operation.name;
+    const operationId =
+      method === "delete" && route === "sandboxes/{id}"
+        ? "sandbox_delete"
+        : method === "post"
+          ? route.replaceAll("/", "_").replaceAll("-", "_")
+          : operation.name;
+    reserveOperationId(operationId);
     path[method] = {
-      operationId: route === "sandboxes/{id}" ? "sandbox_delete" : operationId,
+      operationId,
       description,
       ...(operation.directServer && { "x-armada-direct-server": true }),
       security: [{ [viewer ? "viewerGrant" : "serviceToken"]: [] }],
@@ -299,6 +307,11 @@ export function generateOpenApi(table: readonly OpenApiOperation[] = Object.valu
       },
     };
   }
+  function reserveOperationId(id: string) {
+    if (ids.has(id)) throw new Error(`Duplicate OpenAPI operation ID: ${id}`);
+    ids.add(id);
+  }
+
   return {
     openapi: "3.1.0",
     info: {

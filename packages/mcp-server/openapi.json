@@ -2536,7 +2536,7 @@
                   "prompt": {
                     "type": "string",
                     "maxLength": 100000,
-                    "pattern": "\\S"
+                    "pattern": "^(?![\\s\\S]*\\x00)[\\s\\S]*\\S"
                   },
                   "ttlSeconds": {
                     "type": "integer",
@@ -2555,7 +2555,7 @@
                   "repo": {
                     "type": "string",
                     "maxLength": 200,
-                    "pattern": "\\S"
+                    "pattern": "^(?![\\s\\S]*\\x00)[\\s\\S]*\\S"
                   },
                   "skills": {
                     "anyOf": [
