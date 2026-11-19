@@ -3,6 +3,10 @@ import type { GitHubBrokerConfiguration } from "./github-broker.ts";
 import type { ModelConnectionTestResult } from "./model-connection-test.ts";
 export const MAX_COMMAND_RESPONSE_BYTES = 1_048_576;
 
+// Bump the version only when an older runtime can no longer work with the new server.
+// Breaking changes include removing or renaming an op or field, changing a field's
+// type or meaning, making an optional field required, or changing authentication.
+// Adding optional fields or ops an older runtime never receives is additive.
 export const PROTOCOL_VERSION = 1;
 export const AUTH_HEADER = "x-armada-runner-grant";
 export type McpConnection =
