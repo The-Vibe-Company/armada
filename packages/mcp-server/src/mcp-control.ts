@@ -6,7 +6,10 @@ import {
   VaultError,
   type VaultStore,
 } from "@armada/core/server";
+import { scopedOrg } from "./control-caller.ts";
 import { optional, required, UUID } from "./control-input.ts";
+
+import { type ControlRouteContext, defineRoutes } from "./routes.ts";
 
 export interface McpControlOptions {
   store: VaultStore;
@@ -105,3 +108,31 @@ export async function dispatchMcp(
   }
   throw new VaultError("not_found", "Unknown MCP control action.");
 }
+
+async function mcpCommand({ route, caller, body, options }: ControlRouteContext) {
+  const org = scopedOrg(caller, optional(body, "org"));
+  if (route === "mcp/sandbox-connections") {
+    const sandbox = await options.data?.(caller).sandboxes.get(required(body, "id"));
+    if (!sandbox || sandbox.orgId !== org) throw new VaultError("not_found", "No such sandbox.");
+  }
+  return dispatchMcp(route.slice(4), caller.userId, { ...body, org }, options);
+}
+
+export const mcpRoutes = defineRoutes("mcp", {
+  "mcp/catalog": mcpCommand,
+  "mcp/metadata": mcpCommand,
+  "mcp/list": mcpCommand,
+  "mcp/create": mcpCommand,
+  "mcp/update": mcpCommand,
+  "mcp/sandbox-connections": mcpCommand,
+  "mcp/set-enabled": mcpCommand,
+  "mcp/delete": mcpCommand,
+  "mcp/revoke": mcpCommand,
+  "mcp/connect": mcpCommand,
+  "mcp/status": mcpCommand,
+  "mcp/oauth/callback": ({ caller, body, options }) => {
+    if (caller.via !== "supabase")
+      throw new VaultError("forbidden", "OAuth callbacks require a personal sign-in session.");
+    return dispatchMcp("oauth/callback", caller.userId, body, options);
+  },
+});

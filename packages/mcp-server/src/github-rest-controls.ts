@@ -1,7 +1,9 @@
 import { GITHUB_REFRESH_MODAL_NATIVE, GitHubHydrationError, providerRateLimitDetails } from "@armada/core";
 import { ProviderError, VaultError } from "@armada/core/server";
 import { z } from "zod";
+import { sandboxToolContext } from "./control-tool-routes.ts";
 import { CREDENTIAL_BINDING_GUIDANCE } from "./credential-binding.ts";
+import { type ControlRouteContext, defineRoutes } from "./routes.ts";
 import type { RuntimeGitHub } from "./runtime-github.ts";
 import { ToolApiError } from "./tool-api.ts";
 import { ToolError } from "./tool-error.ts";
@@ -119,3 +121,19 @@ function validationMessage(message: string, error: z.ZodError) {
   const details = error.issues.map((issue) => `${issue.message} at ${issue.path.join(".")}`).join("\n");
   return `MCP error -32602: ${message}: ${details}`;
 }
+
+function githubSandboxCommand(route: GitHubRestRoute) {
+  return async ({ caller, body, options }: ControlRouteContext) => {
+    const context = await sandboxToolContext({ route, caller, body, options });
+    return dispatchGitHubRestControl(
+      { ...context, ...(options.runtimeGitHub ? { runtimeGitHub: options.runtimeGitHub } : {}) },
+      route,
+      body,
+    );
+  };
+}
+
+export const githubSandboxRoutes = defineRoutes("github-sandbox", {
+  "github/refresh": githubSandboxCommand("github/refresh"),
+  "github/runtime-status": githubSandboxCommand("github/runtime-status"),
+});

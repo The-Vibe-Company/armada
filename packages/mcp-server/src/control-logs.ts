@@ -1,10 +1,12 @@
 import { type Provider, VaultError } from "@armada/core/server";
 import type { Caller } from "./caller.ts";
 import type { ControlOptions } from "./control.ts";
-import { optional } from "./control-input.ts";
+import { scopedOrg, selectedCaller } from "./control-caller.ts";
+import { optional, required } from "./control-input.ts";
 import { readEventPages, validateLogPagination } from "./event-pagination.ts";
 import { publicLogEvents } from "./model-usage.ts";
 import { measureRequestPhase } from "./request-timing.ts";
+import { defineRoutes } from "./routes.ts";
 import { latestPromptEvent } from "./turns.ts";
 
 type LogControlOptions = Pick<ControlOptions, "dockerControls" | "logs" | "timing" | "accountTurns">;
@@ -107,3 +109,11 @@ export async function readLogs(
       (latest === null ? info?.state !== "running" && info?.state !== "starting" : prompt?.done === true),
   };
 }
+
+export const logRoutes = defineRoutes("logs", {
+  "logs/read": async ({ caller, body, options }) => {
+    const org = optional(body, "org");
+    scopedOrg(caller, org);
+    return readLogs(options, await selectedCaller(options, caller, org), required(body, "id"), body);
+  },
+});
