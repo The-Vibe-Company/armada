@@ -302,6 +302,8 @@ export function createMcpLifecycle(options: {
         if (["ready", "running", "starting"].includes(physical.state))
           return { sandboxId: sandbox.id, shouldResume: false };
         if (physical.state !== "stopped") throw Error("Sandbox cannot be resumed from its current physical state.");
+        if (provider.id === "boat" && physical.retainedSnapshot !== "usable")
+          throw Error("Boat retained data has not been verified.");
         await tx.query(
           `with fenced as (delete from public.github_runtime_capabilities where sandbox_id=$1::uuid returning sandbox_id)
           update public.sandboxes s set mcp_generation=mcp_generation+1 from fenced f where s.id=f.sandbox_id`,

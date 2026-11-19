@@ -51,8 +51,10 @@ into `stopping` for the current lifecycle generation. Definitive absence is
 insufficient to publish a resumable stop for this transition. When requeuing
 one of these stops, leave `reconcile_after` at infinity and clear the hold
 diagnostic under the same transaction and preconditions. The current worker
-recognizes the journal entry. Keeping the infinite schedule prevents an older
-worker from claiming it during deployment overlap.
+recognizes the journal entry. The infinite schedule excludes workers that
+predate the journal-based handoff. Workers that understand the handoff but
+predate the snapshot check can still claim it. Require all such workers to
+drain before relying on automatic enforcement of verified retention.
 
 Docker-host reservations use their separate authenticated host mailbox/TTL cleanup
 path and are never claimed by this Boat/Modal worker. This change neither grants
