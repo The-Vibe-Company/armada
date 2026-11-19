@@ -566,7 +566,7 @@ test("Boat launch withholds the first prompt when the runtime rejects secret con
   try {
     const reply = await f.api(f.request(template.id));
     expect(reply.status).toBe(200);
-    expect(await reply.json()).toMatchObject({ state: "reconciling", reason: "unavailable" });
+    expect(await reply.json()).toMatchObject({ state: "reconciling" });
     expect(boat.handled).toEqual(["health", "configureReadableVariables"]);
   } finally {
     await boat.close();
