@@ -36,7 +36,6 @@ export async function servicePreflight(instance?: string) {
     );
   await command(["flock", "--version"]);
   await command(["systemctl", "--user", "show-environment"]);
-  // This may be permitted by logind policy; no sudo or privileged fallback.
   await command(["loginctl", "enable-linger"]);
   if ((await command(["loginctl", "show-user", String(process.getuid?.()), "--property=Linger", "--value"])) !== "yes")
     throw new Error("Linger is required for reboot persistence; ask the administrator to enable it for this account.");
@@ -106,7 +105,6 @@ type ManagedInstallation = {
 };
 const digestPattern = /^[a-f0-9]{64}$/;
 const sha256 = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
-/** Daemon-owned, re-creatable public artifact caches (runtime binary; #2562 shared and private archives). */
 const CACHE_DIRECTORIES = ["runtime-cache", "artifact-cache", "artifact-cache-private"];
 
 async function safeAncestors(path: string, home: string) {
@@ -139,8 +137,6 @@ async function ownedFile(path: string, home: string, executable = false): Promis
     await file.close();
   }
 }
-
-/** Refuse all unknown files and preserve shared Docker images and linger settings. */
 export async function validateInstallation(
   state: State,
   home = homedir(),
@@ -188,8 +184,6 @@ export async function validateInstallation(
 export interface UpgradeServiceIo extends ServiceIo {
   executable: string;
 }
-
-/** Durable rename: pending marker is synced before the executable can be replaced. */
 async function atomicReplace(path: string, bytes: Uint8Array, mode: number, temporaryDirectory = dirname(path)) {
   const temporary = join(temporaryDirectory, `.armada-host-upgrade-${randomUUID()}.tmp`);
   try {
@@ -213,8 +207,6 @@ async function atomicReplace(path: string, bytes: Uint8Array, mode: number, temp
     });
   }
 }
-
-/** Invoked only from the caller's verified downloaded executable; never reads stdin or rewrites credentials. */
 export async function upgradeService(
   store: Pick<Store, "load"> & { lock(): Promise<() => Promise<void>> },
   server: string,
@@ -229,8 +221,6 @@ export async function upgradeService(
   const bytes = await ownedFile(io.executable, io.home, true);
   const digest = sha256(bytes);
   if (initialMarker.binarySha256 === digest && initialMarker.pendingBinarySha256 === undefined) return;
-  // Do not disable the service or touch work. Stop must complete before taking
-  // the daemon's exclusive lock; restart even if stop/lock/update fails.
   try {
     await io.service(["systemctl", "--user", "stop", serviceName(instance)]);
     const unlock = await store.lock();
@@ -244,8 +234,6 @@ export async function upgradeService(
       const markerFile = join(directory, "managed.json");
       const currentDigest = sha256(await ownedFile(p.binary, io.home, true));
       const stable = { installationId: marker.installationId, binarySha256: currentDigest, unit: marker.unit };
-      // Sibling temporary marker files cannot make the private state directory
-      // fail its unknown-file check after an interrupted write.
       await atomicReplace(
         markerFile,
         Buffer.from(JSON.stringify({ ...stable, pendingBinarySha256: digest })),
@@ -277,7 +265,6 @@ export async function stopService(instance?: string) {
 export async function removeInstallation(instance?: string, io = localService()) {
   const p = paths(io.home, instance);
   const directory = stateDirectory(io.home, instance);
-  // Preserve registration/ownership proof until the final binary unlink succeeds.
   const saved = await Promise.all(
     [p.unit, join(directory, "state.json"), join(directory, "managed.json")].map(async (path) => ({
       path,
@@ -300,7 +287,6 @@ export async function removeInstallation(instance?: string, io = localService())
     await unlink(join(directory, "state.json"));
     await unlink(join(directory, "managed.json"));
     await rmdir(directory);
-    // Last fallible operation: command remains available on any earlier failure.
     await unlink(p.binary);
   } catch (error) {
     await mkdir(directory, { recursive: true, mode: 0o700 });
