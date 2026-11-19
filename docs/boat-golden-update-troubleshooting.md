@@ -6,13 +6,14 @@ create a second snapshot as a workaround. Both the dashboard rebuild and
 
 ## Read-only diagnosis
 
-Run with the affected user's Armada login and organization:
+Use the affected user's Armada login. Replace `ORG_UUID` with the organization's
+UUID and `ADMISSION_KEY` and `JOB_UUID` with the key and job UUID printed by the CLI.
 
 ```sh
-armada snapshot capabilities --provider boat
-armada snapshot list --provider boat --org <org-id> --json
-armada snapshot build-status --idempotency-key <printed-admission-key> --org <org-id>
-armada snapshot build-status <job-id>
+armada snapshot capabilities --provider boat --org ORG_UUID
+armada snapshot list --provider boat --org ORG_UUID --json
+armada snapshot build-status --idempotency-key ADMISSION_KEY --org ORG_UUID
+armada snapshot build-status JOB_UUID
 ```
 
 “No such build” for an admission key means no visible durable admission exists.
@@ -36,9 +37,10 @@ Neither capacity nor a missing binding proves a GitHub authorization problem.
 
 ## Find active work when the receipt was lost
 
-A rebuild's current job can be found without the original admission key or URL:
+You can find a rebuild without the original admission key or URL. Replace
+`SNAPSHOT_NAME` with the snapshot name.
 
-    armada snapshot build-find <snapshot-name> --provider boat --org <org-id>
+    armada snapshot build-find "SNAPSHOT_NAME" --provider boat --org ORG_UUID
 
 On the Snapshots page, open the existing snapshot's Edit and rebuild form and
 choose Find active build. The latest visible queued, running or recovery-required
@@ -74,7 +76,7 @@ A timeout must not simply clear a reservation while a provider operation could
 still publish a snapshot. Owners can cancel a queued, never-started build using Cancel queued build beside
 its tracked status in the dashboard, or:
 
-    armada snapshot build-cancel <job-id> --org <org-id>
+    armada snapshot build-cancel JOB_UUID --org ORG_UUID
 
 Cancellation is idempotent and only releases that admission's reservation. A
 rebuild keeps its existing snapshot binding and snapshot. If a worker has already
@@ -87,17 +89,20 @@ states; this change does not add an unsafe automatic unlock.
 For the full CLI refusal/version-skew inventory, see
 [Snapshot update CLI refusals](golden-update-cli-refusals.md).
 
-After release, append without dropping existing repositories:
+To append a repository, substitute your snapshot name and the new repository URL.
 
-    armada snapshot update two-repos-prod-test --provider boat --org <org-id> --add-repo https://github.com/new-owner/repo.git
+    armada snapshot update two-repos-prod-test --provider boat --org ORG_UUID --add-repo https://github.com/new-owner/repo.git
 
-For intentional replacement with --repo or --config, supply the
-**complete desired repository list**, not just the new repository:
+For intentional replacement, supply the **complete desired repository list**.
+Before running this example, replace `two-repos-prod-test` with your snapshot name
+and supply one `--repo` for every desired repository, including those you want to keep.
 
 ```sh
-armada snapshot update two-repos-prod-test --provider boat --org <org-id> --replace --repo <existing-owner/repo-1> --repo <existing-owner/repo-2> --repo <other-existing-repo> --repo <new-owner/repo>
+armada snapshot update two-repos-prod-test --provider boat --org ORG_UUID --replace --repo https://github.com/current-owner/repo-1.git --repo https://github.com/current-owner/repo-2.git --repo https://github.com/new-owner/repo.git
 ```
 
-Repeat `--repo` for every existing repository; preserve required initialization
-commands using `--init`, or use the complete desired `--config` instead.
+Preserve any branch selections with `@branch` and repeat `--init` for each
+initialization command to keep. Use the full desired config with `--replace
+--config` if you need to retain repository settings such as custom checkout
+directories or history mode.
 No production rebuild was executed as part of this diagnosis.
