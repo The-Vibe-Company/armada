@@ -14,7 +14,7 @@ import { createDockerHostStore, DockerHostDenied } from "../src/docker-host-stor
 import { createDockerMachineBindings } from "../src/docker-machine-bindings.ts";
 import { SNAPSHOT_COLUMNS } from "../src/docker-snapshot-data.ts";
 import { createSandboxAccessServices } from "../src/sandbox-access-services.ts";
-import { createFinishedDockerCleanup, selfFinishToken } from "../src/sandbox-finish.ts";
+import { createFinishedDockerCleanup, requestSandboxFinish, selfFinishToken } from "../src/sandbox-finish.ts";
 import { migratedDatabase } from "./migrated-database.ts";
 
 let connection: Awaited<ReturnType<typeof migratedDatabase>> | undefined;
@@ -1427,6 +1427,49 @@ test("runtime self completion needs no child access and retries failed stop/dele
   const a = await boundStartup("bootstrap");
   await store.complete(a.hostToken, a.installationId, { requestId: a.startup.requestId, outcome: "completed" });
   await db.query("update public.sandboxes set status='ready' where id=$1", [a.sandboxId]);
+  const finishState = async () =>
+    (
+      await db.query<{ lifecycle_generation: number; stop_generation: number }>(
+        `select status, status_reason, preservation_note, lifecycle_generation, stop_generation, stop_requested_at
+         from public.sandboxes where id=$1`,
+        [a.sandboxId],
+      )
+    ).rows[0];
+  const finishJournal = async () =>
+    (
+      await db.query(
+        `select from_status, to_status, generation, code from public.sandbox_transitions
+         where sandbox_id=$1 and actor='finish'`,
+        [a.sandboxId],
+      )
+    ).rows;
+  const initial = (await finishState())!;
+  for (const [statement, expected] of [
+    ["public.sandbox_transition(", { message: "Injected finish failure" }],
+    [
+      "select * from public.docker_host_jobs where request_id",
+      { message: "Docker host unavailable", cause: { message: "Injected finish failure" } },
+    ],
+  ] as const) {
+    await expect(
+      sql.transaction!((tx) =>
+        requestSandboxFinish(
+          {
+            query: (query, params) => {
+              if (query.includes(statement)) throw new Error("Injected finish failure");
+              return tx.query(query, params);
+            },
+          },
+          key,
+          a.sandboxId,
+          a.owner.userId,
+        ),
+      ),
+    ).rejects.toMatchObject(expected);
+    expect(await finishState()).toEqual(initial);
+    expect(await finishJournal()).toEqual([]);
+    expect(await store.poll(a.hostToken, a.installationId)).toBeNull();
+  }
   const generation = (
     await db.query<{ mcp_generation: number }>("select mcp_generation from public.sandboxes where id=$1", [a.sandboxId])
   ).rows[0]!.mcp_generation;
@@ -1464,6 +1507,17 @@ test("runtime self completion needs no child access and retries failed stop/dele
   expect(response?.status).toBe(200);
   const report = (await response?.json()) as { result: { preservationNote: string } };
   expect(report.result.preservationNote).toContain("Unpushed Git work is not preserved");
+  const stopping = (await finishState())!;
+  expect(Number(stopping.lifecycle_generation)).toBe(Number(initial.lifecycle_generation) + 1);
+  expect(stopping.stop_generation).toBe(initial.stop_generation);
+  expect(await finishJournal()).toEqual([
+    {
+      from_status: "ready",
+      to_status: "stopping",
+      generation: stopping.lifecycle_generation,
+      code: "agent_finished",
+    },
+  ]);
   const stop = await store.poll(a.hostToken, a.installationId);
   expect(stop?.operation).toBe("stop");
   if (!stop) throw Error("Missing stop");

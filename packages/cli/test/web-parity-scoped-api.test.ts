@@ -14,9 +14,6 @@ import { filePreferences } from "../src/preferences.ts";
 import { run } from "../src/run.ts";
 import { memorySessionStore } from "../src/session.ts";
 
-// Owner-boundary regressions: old list lacks scoped filtering/count/offset, old CLI loses golden UUIDs
-// and private-fork visibility, and bindings have no command. Existing MCP list tests only cover basic
-// visibility. These use production HTTP/auth/SQL/registry paths, not parser/SQL implementation mirrors.
 const me = "11111111-1111-4111-8111-111111111111",
   other = "22222222-2222-4222-8222-222222222222";
 const org = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
@@ -304,7 +301,7 @@ test("CLI list matches scoped web filters, exact totals and stable pages with sa
     await f.setActor(me);
     await f.db.query("delete from members where org_id=$1 and user_id=$2", [org, me]);
     const revoked = await f.cli(["list", "--json", "--page-info"]);
-    expect(revoked.code).not.toBe(0); // selected-org guard rechecks membership before the SQL read
+    expect(revoked.code).not.toBe(0);
     expect(revoked.out).toBe("");
     expect((await f.cli(["org", "use", "none"])).code).toBe(0);
     const stalePrincipal = JSON.parse((await f.cli(["list", "--json", "--page-info"])).out);
