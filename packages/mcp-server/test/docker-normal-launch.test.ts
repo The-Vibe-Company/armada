@@ -111,7 +111,7 @@ async function fixture(
     refreshFailure?: "auth" | "network";
     repositoryAccessDenied?: boolean;
     publicRepositoryAccess?: boolean;
-    withholdWorkspace?: "timeout" | "stop";
+    withholdWorkspace?: { timeoutMs: number } | "stop";
     distinctPromptIds?: boolean;
     githubConfigurationAcknowledged?: boolean;
     refuseSkillInstall?: boolean;
@@ -257,6 +257,7 @@ async function fixture(
         if (command.op === "workspaceExec" && options.withholdWorkspace) {
           if (options.withholdWorkspace === "stop")
             await db.query("update sandboxes set stop_requested_at=now() where id=$1", [body.requestId]);
+          else now = Math.max(now, options.withholdWorkspace.timeoutMs - 1);
           return;
         }
         if (command.op === "prompt" && command.input.conversationId)
@@ -2714,16 +2715,19 @@ test("a lost Docker template response retains one reconciling claim and never re
 
 async function snapshotFixture(enabled = true, options: Parameters<typeof fixture>[0] = {}, defaultBranch = "main") {
   const db = database();
-  const f = await fixture(options);
-  await hosts.poll(f.hostToken, f.installationId, "2.55.0");
-  for (const [userId, githubId, access] of [
-    [f.actor.userId, 123, "offline-snapshot-access"],
-    [f.admin.userId, 124, "offline-admin-access"],
-  ] as const)
-    await db.query(
-      `insert into public.github_connections(user_id,github_id,login,name,refresh_token_enc,access_token_enc,access_expires_at) values($1,$2,'owner','Owner',$3,$4,now()+interval '2 hours')`,
-      [userId, githubId, await encryptSecret("offline-refresh", key), await encryptSecret(access, key)],
-    );
+  const f = await fixture({ daemonVersion: "2.55.0", ...options });
+  const [refresh, actorAccess, adminAccess] = await Promise.all([
+    encryptSecret("offline-refresh", key),
+    encryptSecret("offline-snapshot-access", key),
+    encryptSecret("offline-admin-access", key),
+  ]);
+  await db.query(
+    `insert into public.github_connections
+      (user_id,github_id,login,name,refresh_token_enc,access_token_enc,access_expires_at)
+     values ($1,123,'owner','Owner',$3,$4,now()+interval '2 hours'),
+            ($2,124,'owner','Owner',$3,$5,now()+interval '2 hours')`,
+    [f.actor.userId, f.admin.userId, refresh, actorAccess, adminAccess],
+  );
   const githubFetch = (async (url: string | URL | Request, init?: RequestInit) => {
     const path = String(url),
       admin = new Headers(init?.headers).get("authorization")?.includes("admin");
@@ -3099,7 +3103,8 @@ test.each([false, true])(
 test.each(["timeout", "stop"] as const)(
   "snapshot refresh wait honors launch admission while its runtime reply is withheld (%s)",
   async (mode) => {
-    const f = await snapshotFixture(true, { withholdWorkspace: mode });
+    const timeoutMs = 5000;
+    const f = await snapshotFixture(true, { withholdWorkspace: mode === "timeout" ? { timeoutMs } : "stop" });
     const id = randomUUID();
     await f.snapshots.command(f.caller, "create", {
       org: f.actor.orgId,
@@ -3119,12 +3124,12 @@ test.each(["timeout", "stop"] as const)(
     });
     const { hostId: _, ...body } = f.body;
     const startedAt = f.clock.now();
-    await expect(f.service(sql, true, 5000).launch(f.caller, { ...body, snapshotId: id })).rejects.toBeInstanceOf(
-      ProviderError,
-    );
+    await expect(f.service(sql, true, timeoutMs).launch(f.caller, { ...body, snapshotId: id })).rejects.toMatchObject({
+      code: mode === "timeout" ? "unavailable" : "conflict",
+    });
     const elapsed = f.clock.now() - startedAt;
-    expect(elapsed).toBeLessThanOrEqual(5250);
-    if (mode === "timeout") expect(elapsed).toBeGreaterThanOrEqual(5000);
+    if (mode === "timeout") expect(elapsed).toBe(timeoutMs);
+    else expect(elapsed).toBeLessThan(timeoutMs);
     expect((f.native as { op: string }[]).some((command) => command.op === "workspaceExec")).toBe(true);
     expect((f.native as { op: string }[]).some((command) => command.op === "prompt")).toBe(false);
   },

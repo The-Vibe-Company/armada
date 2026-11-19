@@ -1,4 +1,4 @@
-import { beforeAll, describe, expect, test } from "bun:test";
+import { describe, expect, test } from "bun:test";
 import { sandboxCheckOperations } from "@armada/core/contract";
 import { createSqlVaultStore, encryptSecret, type GitHubRuntimeConfiguration } from "@armada/core/server";
 import { GitHubBroker } from "../../agent-runtime/src/github-broker.ts";
@@ -6,7 +6,7 @@ import { type ControlOptions, dispatchControlCommand } from "../src/control.ts";
 import { createRuntimeCheckpoint } from "../src/runtime-checkpoint.ts";
 import { createRuntimeGitHub } from "../src/runtime-github.ts";
 import { rowOnlyDatabase } from "./row-only-database.ts";
-import { runtimeFixture } from "./runtime.fixture.ts";
+import { runtimeFixture, scopedRuntimeFixture } from "./runtime.fixture.ts";
 import { ENCRYPTION_KEY } from "./support.ts";
 
 const sharedDatabase = rowOnlyDatabase();
@@ -67,6 +67,7 @@ async function fixture(
     configured = value ?? undefined;
   });
   return {
+    close: () => f.close(),
     requests: () => githubRequests,
     f,
     service,
@@ -204,11 +205,8 @@ function runtimeCase(
   provider: "boat" | "modal" = "boat",
 ) {
   describe("launch GitHub fixture", () => {
-    let prepared: Awaited<ReturnType<typeof fixture>>;
-    beforeAll(async () => {
-      prepared = await fixture(provider);
-    }, 20000);
-    test(name, () => action(prepared));
+    const prepared = scopedRuntimeFixture(() => fixture(provider), { timeout: 20_000 });
+    test(name, async () => action(await prepared()));
   });
 }
 for (const provider of ["boat", "modal"] as const)
@@ -216,23 +214,19 @@ for (const provider of ["boat", "modal"] as const)
     `${provider} launch GitHub authority works only in an actively leased starting sandbox before private repository setup`,
     async (x) => {
       const { f, service } = x;
-      try {
-        await f.db.query(
-          "update sandboxes set status='starting',activity_lease_id=null,activity_until=null where id=$1",
-          [f.row.id],
-        );
-        await expect(service.prepareLaunch(f.caller, f.row.id)).rejects.toThrow();
-        await f.db.query(
-          "update sandboxes set activity_lease_id=$2,activity_until=now()+interval '1 minute' where id=$1",
-          [f.row.id, crypto.randomUUID()],
-        );
-        expect(await service.prepareLaunch(f.caller, f.row.id)).toMatchObject({ status: "connected", login: "owner" });
-        expect(await x.broker.acquire("example/web", "git")).toBe(x.access);
-        await f.db.query("update sandboxes set activity_until=now()-interval '1 second' where id=$1", [f.row.id]);
-        await expect(x.broker.acquire("example/web", "git")).rejects.toThrow();
-      } finally {
-        await f.close();
-      }
+      await f.db.query(
+        "update sandboxes set status='starting',activity_lease_id=null,activity_until=null where id=$1",
+        [f.row.id],
+      );
+      await expect(service.prepareLaunch(f.caller, f.row.id)).rejects.toThrow();
+      await f.db.query(
+        "update sandboxes set activity_lease_id=$2,activity_until=now()+interval '1 minute' where id=$1",
+        [f.row.id, crypto.randomUUID()],
+      );
+      expect(await service.prepareLaunch(f.caller, f.row.id)).toMatchObject({ status: "connected", login: "owner" });
+      expect(await x.broker.acquire("example/web", "git")).toBe(x.access);
+      await f.db.query("update sandboxes set activity_until=now()-interval '1 second' where id=$1", [f.row.id]);
+      await expect(x.broker.acquire("example/web", "git")).rejects.toThrow();
     },
     provider,
   );

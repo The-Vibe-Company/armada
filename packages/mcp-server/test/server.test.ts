@@ -29,27 +29,32 @@ import {
   type TestServer,
 } from "./support.ts";
 
-let sharedDatabase: Awaited<ReturnType<typeof migratedDatabase>> | undefined;
-let server: TestServer | undefined;
+let sharedDatabase: ReturnType<typeof migratedDatabase> | undefined;
+let pendingServer: Promise<TestServer> | undefined;
 
 beforeAll(async () => {
-  sharedDatabase = await migratedDatabase();
+  sharedDatabase = migratedDatabase();
+  await sharedDatabase;
 });
 
 afterAll(async () => {
-  const db = sharedDatabase;
+  const pending = sharedDatabase;
   sharedDatabase = undefined;
+  const db = await pending?.catch(() => undefined);
   await db?.close();
 });
 
 afterEach(async () => {
+  const pending = pendingServer;
+  pendingServer = undefined;
+  const server = await pending?.catch(() => undefined);
   await server?.close();
-  server = undefined;
 });
 
-async function start(options: Parameters<typeof harness>[0] = {}) {
+function start(options: Parameters<typeof harness>[0] = {}) {
   if (!sharedDatabase) throw new Error("Server database is not open");
-  await sharedDatabase.exec(`
+  const pending = sharedDatabase.then(async (db) => {
+    await db.exec(`
     reset role;
     reset all;
     set search_path=public;
@@ -64,8 +69,13 @@ async function start(options: Parameters<typeof harness>[0] = {}) {
     delete from auth.users;
     delete from mcp_invalidations;
   `);
-  server = await harness(options, await seedDatabase(sharedDatabase));
-  return server;
+    return harness(options, await seedDatabase(db));
+  });
+  pendingServer = pending;
+  return pending.then((server) => {
+    if (pendingServer !== pending) throw new Error("Server fixture teardown has started");
+    return server;
+  });
 }
 
 const allSecrets = Object.values(SECRETS);
@@ -1046,26 +1056,28 @@ describe("tools", () => {
   });
 
   test("failed model record inserts do not fail an accepted launch or send", async () => {
-    // This case creates a trigger: keep it off the row-only shared connection.
-    server = await harness();
-    const { token, client, people, boat, db } = server;
+    const { token, client, people, boat, db } = await start();
     const mcp = await client(await token(people.member));
     await db.exec(
       `create function reject_model_record() returns trigger language plpgsql as $$ begin raise exception 'record unavailable'; end $$; create trigger reject_model_record before insert on sandbox_turn_models for each row execute function reject_model_record();`,
     );
-    const launched = await call(mcp, "launch", {
-      provider: "boat",
-      golden: "shared",
-      harness: "claude",
-      prompt: "work",
-    });
-    expect(launched.isError).toBe(false);
-    expect(boat.stops).toHaveLength(0);
-    const sent = await call(mcp, "send", { id: launchSandboxId(launched.data), prompt: "next" });
-    expect(sent.isError).toBe(false);
-    expect(boat.prompts).toHaveLength(2);
-    const status = await call(mcp, "status", { id: launchSandboxId(launched.data) });
-    expect(status.data).toMatchObject({ status: "running", prompt: { state: "running" } });
+    try {
+      const launched = await call(mcp, "launch", {
+        provider: "boat",
+        golden: "shared",
+        harness: "claude",
+        prompt: "work",
+      });
+      expect(launched.isError).toBe(false);
+      expect(boat.stops).toHaveLength(0);
+      const sent = await call(mcp, "send", { id: launchSandboxId(launched.data), prompt: "next" });
+      expect(sent.isError).toBe(false);
+      expect(boat.prompts).toHaveLength(2);
+      const status = await call(mcp, "status", { id: launchSandboxId(launched.data) });
+      expect(status.data).toMatchObject({ status: "running", prompt: { state: "running" } });
+    } finally {
+      await db.exec("drop trigger reject_model_record on sandbox_turn_models; drop function reject_model_record()");
+    }
   });
 
   test("turn model provenance survives send overrides and provider history retention", async () => {

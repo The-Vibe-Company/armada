@@ -18,6 +18,7 @@ import {
 } from "./account-turn-dispatch.ts";
 import type { Caller } from "./caller.ts";
 import { DOCKER_SEND_REFUSAL, DOCKER_SEND_REQUEST } from "./docker-send-request-schema.ts";
+import { createJobsStore } from "./jobs/store.ts";
 import { queuedPromptAliases } from "./queued-prompt-ids.ts";
 import { currentRequestId } from "./request-observability.ts";
 import type { RuntimeFollowupInput } from "./runtime-followup.ts";
@@ -42,14 +43,64 @@ type Entry = {
   result_enc: Uint8Array<ArrayBuffer> | null;
   conversation_id: string;
 };
+type DispatchJobEntry = Pick<Entry, "sandbox_id" | "request_id" | "org_id" | "queued_generation">;
+const DISPATCH_JOB_BACKFILL_BATCH = 20;
+
+const UNSETTLED_TASK = `s.task_prompt_id is not null
+  and (s.status='running' or (s.status='ready' and ${RUNTIME_LANE} and s.provider<>'docker'))
+  and not exists(select 1 from public.runtime_idle_turns t
+    where t.sandbox_id=s.id and t.prompt_id=s.task_prompt_id and t.settled)`;
+
 /** Durable encrypted sends. Account locking serializes FIFO admission across server replicas.
  * Native dispatches are never retried: native providers have no idempotent prompt protocol.
  * Runtime-backed lanes reconcile the same durable request under a bounded dispatch lease.
  * An uncertain dispatch retains its slot until lifecycle evidence or an owner stop resolves it. */
 export function createAccountTurnQueue(sql: Sql, key: string) {
+  const jobs = createJobsStore(sql, key);
   const pending = new Set<Promise<unknown>>();
   let scanAfter = "0";
+  let backfillRange: { after: string; through: string | null } = { after: "0", through: null };
   let dispatch: DispatchTurn | undefined;
+  function enqueueDispatchJob(entry: DispatchJobEntry, tx?: Sql) {
+    return jobs.enqueue(
+      "turn_dispatch",
+      entry.sandbox_id,
+      Number(entry.queued_generation),
+      entry.request_id,
+      { requestId: entry.request_id },
+      { orgId: entry.org_id, maxAttempts: 3 },
+      tx,
+    );
+  }
+  async function backfillDispatchJobs(signal: AbortSignal) {
+    // WARNING: Match the producer's compact key with queued_generation, since the job generation can advance.
+    const { rows } = await sql.query<DispatchJobEntry & { sequence: string; through: string; missing_job: boolean }>(
+      `with sweep as (
+         select coalesce($3::bigint,(select max(sequence) from public.account_turn_queue)) as through
+       )
+       select q.sandbox_id,q.request_id,q.org_id,q.queued_generation::text,q.sequence::text,sweep.through::text,
+       case when q.state in ('queued','dispatching') then not exists (
+         select 1 from public.jobs j where j.idem_key =
+           format('["internal","%s","turn_dispatch","%s",%s,"%s"]',q.org_id,q.sandbox_id,q.queued_generation,q.request_id)
+       ) else false end as missing_job
+       from sweep cross join lateral (
+         select sandbox_id,request_id,org_id,queued_generation,sequence,state
+         from public.account_turn_queue where sequence>$1::bigint and sequence<=sweep.through
+         order by sequence limit $2
+       ) q order by q.sequence`,
+      [backfillRange.after, DISPATCH_JOB_BACKFILL_BATCH, backfillRange.through],
+    );
+    const last = rows.at(-1);
+    backfillRange =
+      last && rows.length === DISPATCH_JOB_BACKFILL_BATCH && last.sequence !== last.through
+        ? { after: last.sequence, through: last.through }
+        : { after: "0", through: null };
+    for (const entry of rows) {
+      if (signal.aborted) return;
+      if (entry.missing_job) await enqueueDispatchJob(entry);
+    }
+  }
+
   async function waitingMessage(accountId: string, sandboxId: string, requestId: string) {
     const row = (
       await sql.query<{
@@ -64,8 +115,7 @@ export function createAccountTurnQueue(sql: Sql, key: string) {
       }>(
         `select c.name,c.max_agents,coalesce(q.model,s.model) as model,(c.model_limits->>coalesce(q.model,s.model))::integer as model_limit,${accountWorkingCountSql("c.id", "$2", "q.model")} as model_working,${accountWorkingCountSql("c.id")} as working,
           (s.reconcile_lease_until>now() or s.activity_lease_id is not null
-            or (s.task_prompt_id is not null and s.status='running' and not exists(
-              select 1 from public.runtime_idle_turns t where t.sandbox_id=s.id and t.prompt_id=s.task_prompt_id and t.settled))
+            or (${UNSETTLED_TASK})
             or exists(select 1 from public.account_turn_queue active where active.sandbox_id=s.id and active.state='dispatching')) as busy,
           ((${ACCOUNT_WORKING_PREDICATE}) or exists(
             select 1 from public.account_agent_reservations r where r.sandbox_id=s.id and r.account_id=c.id)) as has_slot
@@ -193,18 +243,22 @@ export function createAccountTurnQueue(sql: Sql, key: string) {
         );
         const locked = sandbox.rows[0];
         if (!locked) throw new VaultError("conflict", "Sandbox cannot accept a queued prompt.");
-        if (
-          locked.status !== "stopped" &&
-          (
-            await tx.query(
-              `select 1 from public.runtime_checkpoints p join public.runtime_enrolments r
-           on r.sandbox_id=p.sandbox_id and r.epoch=p.epoch
-           where p.sandbox_id=$1 and p.merge_stop`,
+        if (locked.status !== "stopped") {
+          const checkpoint = (
+            await tx.query<{ merge_stop: boolean }>(
+              `select p.merge_stop from public.runtime_checkpoints p join public.runtime_enrolments r
+               on r.sandbox_id=p.sandbox_id and r.epoch=p.epoch where p.sandbox_id=$1`,
               [input.id],
             )
-          ).rows.length
-        )
-          throw new VaultError("conflict", "Sandbox is stopping after its pull requests were merged.");
+          ).rows[0];
+          if (checkpoint)
+            throw new VaultError(
+              "conflict",
+              checkpoint.merge_stop
+                ? "Sandbox is stopping after its pull requests were merged."
+                : "Sandbox is checkpointing. Wait for a confirmed retained stop before sending.",
+            );
+        }
         const lockedRefusal = sandboxControlRefusal(
           {
             status: String(locked.status),
@@ -238,6 +292,7 @@ export function createAccountTurnQueue(sql: Sql, key: string) {
             ],
           )
         ).rows[0]!;
+        await enqueueDispatchJob(saved, tx);
       }
       return saved;
     });
@@ -339,6 +394,12 @@ export function createAccountTurnQueue(sql: Sql, key: string) {
     async reconcileOne(signal: AbortSignal) {
       if (!dispatch || pending.size >= 32 || signal.aborted) return false;
       if (!sql.transaction) throw new VaultError("unavailable", "Transactional account admission unavailable.");
+      try {
+        await backfillDispatchJobs(signal);
+      } catch {
+        console.error("armada: queued turn job backfill unavailable; existing dispatch continues.");
+      }
+      if (signal.aborted) return false;
       const picked = await (async () => {
         // Older replicas could leave a queued receipt after publishing its request.
         // Never replay it (especially on native providers without idempotency).
@@ -444,7 +505,7 @@ export function createAccountTurnQueue(sql: Sql, key: string) {
             const busy = await tx.query(
               `select 1 from public.account_turn_queue where sandbox_id=$1 and state='dispatching'
              union all select 1 from public.sandboxes s where s.id=$1 and (s.reconcile_lease_until>now() or s.activity_lease_id is not null
-             or (s.task_prompt_id is not null and s.status='running' and not exists(select 1 from public.runtime_idle_turns t where t.sandbox_id=s.id and t.prompt_id=s.task_prompt_id and t.settled))) limit 1`,
+             or (${UNSETTLED_TASK})) limit 1`,
               [candidate.sandbox_id],
             );
             if (!recovering && busy.rows.length) return null;

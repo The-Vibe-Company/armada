@@ -30,8 +30,8 @@ An org admin registers hosts. Hosts and new Docker placements are separate serve
 opt-ins: a visible host list does not guarantee new launches are enabled.
 `armada host list --org ORG_UUID --json` reports `placement` and host states.
 
-If Self-hosted or Docker launch is absent/disabled, confirm your org and admin
-role, then ask the Armada server operator whether host registration and Docker
+If the Docker hosts section is missing or Docker launches are disabled, confirm
+your org and admin role, then ask the Armada server operator whether host registration and Docker
 placement are enabled and whether your architecture is supported. Do not assume
 the public deployment enables them. Choose Boat/Modal in the meantime.
 Operators, not users, own the [deployment prerequisites](docker-host-daemon.md#staging-prerequisites-coordinator-only);
@@ -100,19 +100,23 @@ armada host list --org ORG_UUID
 armada host show office --org ORG_UUID
 ```
 
-On the Linux machine, check the local installation with:
+The host installer sets up the daemon. For the commands below, make sure the
+[Armada CLI](dave-onboarding.md#1-install-the-cli) is installed on the Docker
+machine. The local host commands need no Armada login.
+
+On the Docker machine, check the local installation with:
 
 ```sh
-~/.local/bin/armada-docker-host status
+armada host status
 ```
 
 Online means the daemon has polled, not that an agent is ready. If installation
 reports pending or an uncertain result, inspect status before trying again;
-do not blindly replay the registration command. Local service management belongs
-to `armada-docker-host`, not `armada host`: the latter manages server registrations.
-To remove the managed installation later, use
-`~/.local/bin/armada-docker-host uninstall`; it drains/revokes before removal
-and refuses uncertain cleanup. See [managed installation troubleshooting](docker-host-daemon.md#managed-owner-installation-1453).
+do not blindly replay the registration command. To remove the managed installation
+later, run `armada host uninstall` on the Docker machine. The daemon drains and revokes
+the installation before removing it. If the machine is linked to multiple servers, add
+`--server HTTPS_ORIGIN` to either command to select the installation. See
+[managed installation troubleshooting](docker-host-daemon.md#managed-owner-installation-1453).
 
 ## 3. First launch: fresh workspace
 

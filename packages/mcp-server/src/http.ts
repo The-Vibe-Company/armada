@@ -45,6 +45,7 @@ export interface HandlerOptions {
   ) => Promise<import("./sandbox-billing-account.ts").SandboxBillingAccount | null>;
   dockerControls?: import("./docker-sandbox-controls.ts").DockerSandboxControls;
   runtimeSend?: RuntimeFollowup;
+  runtimeStopCheckpoint?: ToolContext["runtimeStopCheckpoint"];
   accountTurns?: import("./account-turn-queue.ts").AccountTurnQueue;
   runtimeProviderFor?: (
     apiKey: string | Provider,
@@ -190,6 +191,7 @@ export function createHandler(options: HandlerOptions): (request: Request) => Pr
           : {}),
         ...(options.dockerControls ? { dockerControls: options.dockerControls } : {}),
         ...(options.runtimeSend ? { runtimeSend: options.runtimeSend } : {}),
+        ...(options.runtimeStopCheckpoint ? { runtimeStopCheckpoint: options.runtimeStopCheckpoint } : {}),
         ...(options.accountTurns ? { accountTurns: options.accountTurns } : {}),
         ...(options.skillDefaults ? { skillDefaults: options.skillDefaults } : {}),
         ...(options.connections ? { connections: options.connections } : {}),

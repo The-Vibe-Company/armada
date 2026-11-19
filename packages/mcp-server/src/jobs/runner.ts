@@ -13,6 +13,11 @@ export interface Job {
   outcome: unknown;
 }
 
+export interface GenerationHandoff {
+  lockPrerequisites(tx: Sql): Promise<void>;
+  advance(tx: Sql): Promise<void>;
+}
+
 export type JobResult = (
   | { status: "done"; outcome?: unknown }
   | { status: "retry"; after: Date; outcome?: unknown }
@@ -22,15 +27,23 @@ export type JobResult = (
 export interface JobStore {
   claim(kind: string, owner: string, seconds: number, concurrency: number): Promise<Job | undefined>;
   inspect(job: Job, owner: string): Promise<"dispatch" | "reconcile" | "stale" | "lost">;
-  retireStale(job: Job, owner: string): Promise<void>;
+  retireStale(job: Job, owner: string, phase?: "before_handler"): Promise<void>;
+  handoffGeneration(job: Job, owner: string, handoff: GenerationHandoff): Promise<string>;
   renew(job: Job, owner: string, seconds: number): Promise<boolean>;
   complete(job: Job, owner: string, result: JobResult): Promise<boolean>;
 }
 
+interface JobContext {
+  signal: AbortSignal;
+  canDispatch(): Promise<boolean>;
+  handoffGeneration(handoff: GenerationHandoff): Promise<string>;
+}
+
 export interface JobKind {
   prepare?(): Promise<boolean>;
+  drain?(): Promise<void>;
   concurrency: number;
-  run(job: Job, context: { signal: AbortSignal; canDispatch(): Promise<boolean> }): Promise<JobResult>;
+  run(job: Job, context: JobContext): Promise<JobResult>;
 }
 
 const LEASE_SECONDS = 30;
@@ -87,7 +100,7 @@ export function createJobsRunner(
       const state = await store.inspect(job, owner);
       if (signal.aborted || state === "lost") return;
       if (state === "stale") {
-        await store.retireStale(job, owner);
+        await store.retireStale(job, owner, "before_handler");
         return;
       }
       scheduleRenewal();
@@ -95,6 +108,19 @@ export function createJobsRunner(
         signal,
         async canDispatch() {
           return !signal.aborted && (await store.inspect(job, owner)) === "dispatch" && !signal.aborted;
+        },
+        async handoffGeneration(handoff) {
+          signal.throwIfAborted();
+          const generation = await store.handoffGeneration(job, owner, {
+            lockPrerequisites: handoff.lockPrerequisites,
+            async advance(tx) {
+              signal.throwIfAborted();
+              await handoff.advance(tx);
+              signal.throwIfAborted();
+            },
+          });
+          signal.throwIfAborted();
+          return generation;
         },
       });
       if (!signal.aborted && !(await store.complete(job, owner, result))) await store.retireStale(job, owner);
@@ -135,6 +161,7 @@ export function createJobsRunner(
     stopAdmission: () => shutdown.abort(),
     async drain() {
       await Promise.allSettled(pending);
+      await Promise.all(registrations.map(({ handler }) => handler.drain?.()));
     },
   } satisfies ServerLifecycleLane;
 }

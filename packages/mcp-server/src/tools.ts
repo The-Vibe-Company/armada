@@ -25,6 +25,7 @@ export interface ToolContext {
   sandboxBillingAccount?: (id: string) => Promise<import("./sandbox-billing-account.ts").SandboxBillingAccount | null>;
   dockerControls?: import("./docker-sandbox-controls.ts").DockerSandboxControls;
   runtimeSend?: RuntimeFollowup;
+  runtimeStopCheckpoint?: ReturnType<typeof import("./runtime-checkpoint.ts").createRuntimeStopCheckpoint>;
   measure?: import("./request-timing.ts").RequestTiming["measure"];
   storedProviders?: Partial<Record<SandboxProviderId, ToolContext["provider"]>>;
   skillDefaults?: SkillDefaultsService;
@@ -44,6 +45,7 @@ export interface ToolContext {
   connections?: LaunchStores["connections"];
   /** Where the real cause of an internal or unavailable tool error goes, redacted. Defaults to stderr. */
   logError?: (line: string) => void;
+  onLocalToolError?: (error: unknown) => void;
 }
 
 export const serverInfo = { name: "armada" } as const;

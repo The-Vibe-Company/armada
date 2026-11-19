@@ -1,24 +1,7 @@
-import { createHash, randomUUID } from "node:crypto";
+import { createHash } from "node:crypto";
 import { posix } from "node:path";
-import type {
-  CreateGoldenRequest,
-  ExecResult,
-  ForkRequest,
-  Harness,
-  Provider,
-  ResumeStageObserver,
-  SandboxInfo,
-  SnapshotInfo,
-} from "@armada/core";
-import {
-  HARNESSES,
-  isModelConnectionTestResult,
-  mapHarnesses,
-  OUTPUT_MAX_READ_BYTES,
-  ProviderError,
-  parseMachineSize,
-  resolveModelChoice,
-} from "@armada/core";
+import type { ExecResult, Harness, Provider, ResumeStageObserver, SandboxInfo } from "@armada/core";
+import { HARNESSES, isModelConnectionTestResult, OUTPUT_MAX_READ_BYTES, resolveModelChoice } from "@armada/core";
 import {
   OUTPUT_COLLECTOR,
   OUTPUT_COLLECTOR_PROBE,
@@ -34,6 +17,9 @@ import { abortable, boundModalApp, type ModalConnection, modalConnection } from 
 import { ModalOperationError, modalError, refusal } from "./errors.ts";
 import { executeGoldenCommand } from "./golden-exec.ts";
 import { createImageCollection, trackDetachedCollection } from "./image-collection.ts";
+import { createLaunchLifecycle } from "./launch-lifecycle.ts";
+import { createNativeLifecycle } from "./native-lifecycle.ts";
+import { createNativeOrchestratorOperations } from "./native-orchestrator.ts";
 import { createPhysicalLifecycle } from "./physical-lifecycle.ts";
 import type {
   Machine,
@@ -48,6 +34,7 @@ import type {
 } from "./ports.ts";
 import { createRuntimeLifecycle } from "./runtime-lifecycle.ts";
 import { createSandboxInspection } from "./sandbox-inspection.ts";
+import { createSnapshotLifecycle } from "./snapshot-lifecycle.ts";
 import { createSnapshotTombstones } from "./snapshot-tombstones.ts";
 import { createSshPreparation } from "./ssh.ts";
 import { createStopDeleteLifecycle } from "./stop-delete-lifecycle.ts";
@@ -245,225 +232,15 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
     detachCollection,
     cleanupSleep: options.cleanupSleep,
   });
-  async function launch(request: CreateGoldenRequest | ForkRequest, golden: boolean): Promise<SandboxInfo> {
-    let size: Machine["size"];
-    if ("size" in request && request.size !== undefined) {
-      try {
-        size = parseMachineSize(request.size);
-      } catch {
-        throw refusal("invalid_request", "Size must be small, medium, large or xlarge.");
-      }
-    }
-    await bound();
-    const ttl = request.ttlSeconds ?? 3600;
-    if (!Number.isInteger(ttl) || ttl < 1 || ttl > 86400)
-      throw refusal("invalid_request", "Modal machine TTL must be 1–86400 seconds (maximum 24 hours).");
-    let imageId: string | undefined;
-    let sourceImage: Machine["sourceImage"];
-    let runtimeSourceId: string | undefined;
-    if ("from" in request) {
-      const snapshot = await source.store.image(request.from);
-      assertAuthority(snapshot);
-      if (snapshot.info.status !== "ready" || !snapshot.imageId)
-        throw refusal("sandbox_not_ready", "Snapshot is not ready.");
-      if (options.commonRuntime) {
-        const sourceRow = await source.store.get(snapshot.sourceId);
-        if (sourceRow.commonRuntime) throw refusal("invalid_request", "Enrolled Modal forks are not enabled.");
-        runtimeSourceId = snapshot.sourceId;
-      }
-      imageId = snapshot.imageId;
-      sourceImage = { scopeKey: scopeKey(source.scope), name: request.from, imageId };
-    }
-    const key = request.idempotencyKey ?? randomUUID();
-    const id = `modal_${randomUUID()}`;
-    const row = await store.reserve(
-      key,
-      {
-        info: {
-          id,
-          name: request.name ?? id,
-          state: "starting",
-          providerState: "reserved",
-          labels: request.labels ?? {},
-          createdAt: new Date(),
-        },
-        generation: 1,
-        ...(!golden && options.commonRuntime ? { commonRuntime: true as const } : {}),
-        ...(!golden ? { runtimePolicy: "explicit-vm-v1" as const } : {}),
-        launchUserId: options.scope.userId,
-        managementAuthority: { ...managementAuthority },
-        modelDefaults: mapHarnesses((_, harness) => resolveModelChoice(harness, {})),
-        phase: "reserved",
-        golden,
-        ttlSeconds: ttl,
-        ...(size === undefined ? {} : { size }),
-        physicalName: `armada-${createHash("sha256").update(id).digest("hex").slice(0, 32)}-1`,
-        ...(imageId ? { imageId } : {}),
-        ...(sourceImage ? { sourceImage } : {}),
-      },
-      runtimeSourceId,
-    );
-    const needsBoot = (row: Machine) => {
-      if (
-        row.golden !== golden ||
-        (!golden && row.generation !== 1) ||
-        Boolean(row.commonRuntime) !== Boolean(!golden && options.commonRuntime) ||
-        row.size !== size ||
-        row.imageId !== imageId ||
-        row.sourceImage?.scopeKey !== sourceImage?.scopeKey ||
-        row.sourceImage?.name !== sourceImage?.name
-      )
-        throw refusal("conflict", "Idempotency key belongs to another launch or generation.");
-      assertMachineSource(row);
-      if (row.phase === "active" || row.phase === "stopped") return false;
-      if (!["reserved", "creating", "booting"].includes(row.phase))
-        throw refusal("conflict", "Launch is in a terminal or checkpoint phase.");
-      return true;
-    };
-    let observed = row;
-    try {
-      if (!needsBoot(row)) return sandboxInfo(row);
-      return await store.lease(row.info.id, async (current, save) => {
-        observed = current;
-        // A lifecycle operation may have changed the phase or generation before we acquired the lease.
-        if (!needsBoot(current)) return sandboxInfo(current);
-        return create(current, save, "env" in request ? (request.env ?? {}) : {});
-      });
-    } catch (error) {
-      if (
-        observed.phase === "deleted" &&
-        !observed.physicalId &&
-        error instanceof ProviderError &&
-        error.providerCode === "modal_builder_image_failed"
-      )
-        throw error;
-      throw new ModalOperationError(error, await resourceReceipt(observed));
-    }
-  }
-  /** Caller holds the lifecycle lease through activation and the admitted operation. */
-  async function readyLeased(
-    row: Machine,
-    save: (row: Machine) => Promise<void>,
-    onResumeStage?: ResumeStageObserver,
-  ): Promise<Machine> {
-    assertMachineSource(row);
-    if (row.golden && row.quiesced) throw refusal("sandbox_not_ready", "Sealed golden admission cannot be reopened.");
-    if (row.phase === "stopped") {
-      if (row.commonRuntime) throw refusal("invalid_request", "Enrolled Modal resume is not enabled.");
-      if (!row.recoveryImageId) throw refusal("conflict", "Stopped sandbox has no durable recovery image.");
-      await onResumeStage?.("accepted");
-      await options.beforeResume?.(provider, row.info.id);
-      row.generation++;
-      row.quiesced = false;
-      delete row.ordinaryStopAttempted;
-      delete row.info.stopNote;
-      row.eventBase = row.checkpointWatermark ?? 0;
-      row.imageId = row.recoveryImageId;
-      row.physicalName = `armada-${createHash("sha256").update(row.info.id).digest("hex").slice(0, 32)}-${row.generation}`;
-      row.phase = "reserved";
-      row.info.state = "starting";
-      delete row.physicalId;
-      delete row.processBaseline;
-      try {
-        await save(row);
-      } catch (error) {
-        await options.resumeRefused?.(provider, row.info.id);
-        throw error;
-      }
-    }
-    if (row.generation > 1 && ["reserved", "creating", "booting"].includes(row.phase))
-      await create(row, save, await distribution.restoreEnv(row), onResumeStage);
-    if (row.phase !== "active") throw refusal("sandbox_not_ready", "Sandbox lifecycle is not active.");
-    if ((await (await physical(row)).poll()) !== null)
-      throw refusal(
-        "sandbox_not_ready",
-        "Physical machine expired or exited; no verified checkpoint is available for current writes.",
-      );
-    return row;
-  }
-  async function ready(id: string): Promise<Machine> {
-    const row = await store.get(id);
-    if (row.phase === "stopped" || (row.generation > 1 && ["reserved", "creating", "booting"].includes(row.phase)))
-      return store.lease(id, readyLeased);
-    // No mutation is necessary; readyLeased cannot save an already-active row.
-    return readyLeased(row, async () => {
-      throw refusal("conflict", "Activation requires a lifecycle lease.");
-    });
-  }
-  async function healthyAdmission(
-    row: Machine,
-    save: (row: Machine) => Promise<void>,
-    onResumeStage?: ResumeStageObserver,
-  ): Promise<Machine> {
-    if (row.commonRuntime) throw refusal("invalid_request", "Enrolled runtime commands require the common transport.");
-    const active = await readyLeased(row, save, onResumeStage);
-    const health = await measure("modal_health", () =>
-      runner.call<{ generation: string; ready: boolean }>(active, "health", {}),
-    );
-    if (!health || health.generation !== String(active.generation) || health.ready !== true)
-      throw refusal("sandbox_not_ready", "Runner admission is not open for this generation.");
-    return active;
-  }
-  /** Queue only a lease acquisition that ran no callback. Never retry an uncertain RPC outcome. */
-  async function admit<T>(
-    id: string,
-    work: (row: Machine, save: (row: Machine) => Promise<void>) => Promise<T>,
-  ): Promise<T> {
-    for (let attempt = 0; ; attempt++) {
-      let entered = false;
-      try {
-        return await store.lease(id, (row, save) => {
-          entered = true;
-          return work(row, save);
-        });
-      } catch (error) {
-        if (entered || modalError(error).providerCode !== "lifecycle_lease_busy" || attempt >= 99) throw error;
-        if ((await store.get(id)).phase !== "active") throw error;
-        await (options.admissionSleep ?? Bun.sleep)(20);
-      }
-    }
-  }
-  async function call<T>(id: string, op: string, input: object): Promise<T> {
-    const row = await ready(id);
-    if (row.commonRuntime) throw refusal("invalid_request", "Enrolled runtime commands require the common transport.");
-    return runner.call<T>(row, op, input);
-  }
-  async function verifyNativeSession(
-    row: Machine,
-    request: Parameters<NonNullable<Provider["verifyOrchestratorSession"]>>[0],
-  ) {
-    if (row.golden || row.phase !== "active" || request.physicalGeneration !== String(row.generation))
-      throw refusal("conflict", "Native session verification requires the bound active incarnation.");
-    const result = await runner.call<{
-      physicalGeneration: string;
-      conversationId: string;
-      nativeSessionId: string;
-      verified: boolean;
-    }>(row, "resumeNativeSession", {
-      conversationId: request.conversationId,
-      expectedSessionId: request.nativeSessionId,
-      input: {
-        sandboxId: request.sandboxId,
-        harness: request.harness,
-        model: request.model,
-        ...(request.reasoningEffort === undefined ? {} : { reasoningEffort: request.reasoningEffort }),
-        ...(request.cwd === undefined ? {} : { cwd: request.cwd }),
-      },
-    });
-    if (
-      result?.physicalGeneration !== request.physicalGeneration ||
-      result.conversationId !== request.conversationId ||
-      result.nativeSessionId !== request.nativeSessionId ||
-      result.verified !== true
-    )
-      throw refusal("conflict", "Native session verification did not match the persisted identity.");
-    return {
-      physicalGeneration: request.physicalGeneration,
-      conversationId: request.conversationId,
-      nativeSessionId: request.nativeSessionId,
-      verified: true as const,
-    };
-  }
+  const { ready, healthyAdmission, admit, call, turns } = createNativeLifecycle({
+    options,
+    provider: () => provider,
+    runner,
+    measure,
+    bound,
+    assertMachineSource,
+    physicalLifecycle,
+  });
   function assertRecoveryTarget({ ownerId, target }: Parameters<NonNullable<Provider["findGoldenBuilder"]>>[0]) {
     if (
       target.provider !== "modal" ||
@@ -572,43 +349,19 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
     }),
     harnesses: HARNESSES,
     capabilities: distribution.capabilities,
-    createGolden: (r) => {
-      if (source.scope.visibility !== options.scope.visibility)
-        throw refusal("forbidden", "Split source/target adapter is fork-only for golden creation.");
-      return launch(r, true);
-    },
-    async fork(r) {
-      if (r.size !== undefined) {
-        try {
-          parseMachineSize(r.size);
-        } catch {
-          throw refusal("invalid_request", "Size must be small, medium, large or xlarge.");
-        }
-      }
-      if (options.commonRuntime) return launch(r, false);
-      const snapshot = await source.store.image(r.from);
-      assertAuthority(snapshot);
-      let admitted = false;
-      try {
-        return await source.store.lease(snapshot.sourceId, async (sourceRow) => {
-          admitted = true;
-          if (sourceRow.commonRuntime) throw refusal("invalid_request", "Enrolled Modal forks are not enabled.");
-          return launch(r, false);
-        });
-      } catch (error) {
-        // Only acquisition refusal proves no child was reserved. Once entered,
-        // preserve launch receipts and uncertainty rather than permitting a replay.
-        if (!admitted && modalError(error).providerCode === "lifecycle_lease_busy")
-          throw new ProviderError({
-            provider: "modal",
-            code: "conflict",
-            providerCode: "fork_source_busy",
-            message: "The Modal snapshot source is busy. No sandbox was created; retry after the current operation.",
-            retryable: true,
-          });
-        throw error;
-      }
-    },
+    ...createLaunchLifecycle({
+      store,
+      source,
+      scope: options.scope,
+      commonRuntime: options.commonRuntime,
+      managementAuthority,
+      bound,
+      assertAuthority,
+      assertMachineSource,
+      create,
+      sandboxInfo,
+      resourceReceipt,
+    }),
     ...createRuntimeLifecycle({
       store,
       distribution,
@@ -833,198 +586,16 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
         return { revision: configuration.revision };
       });
     },
-    async installOrchestratorEpoch({ sandboxId, token, binding, url }) {
-      return admit(sandboxId, async (row, save) => {
-        if (row.golden || row.phase !== "active" || binding.physicalGeneration !== String(row.generation))
-          throw refusal("conflict", "Orchestrator authority requires the bound active physical generation.");
-        const active = await healthyAdmission(row, save);
-        if (binding.physicalGeneration !== String(active.generation))
-          throw refusal("conflict", "Physical generation changed during authority admission.");
-        const result = await runner.call<{ acknowledged?: unknown }>(active, "installOrchestratorEpoch", {
-          token,
-          binding,
-          url,
-        });
-        if (result?.acknowledged !== true)
-          throw refusal("unavailable", "Private runner did not acknowledge authority delivery.");
-        return { acknowledged: true };
-      });
-    },
-    async observeOrchestrator({ sandboxId, physicalGeneration, conversationId }) {
-      return admit(sandboxId, async (row) => {
-        if (row.golden || row.phase !== "active" || physicalGeneration !== String(row.generation))
-          throw refusal("conflict", "Observation requires the bound active native generation.");
-        const observed = await runner.call<{
-          physicalGeneration: string;
-          state: "active" | "quiescent" | "unknown";
-          evidence: string;
-          eventWatermark: number;
-          acknowledgedSequence: number;
-          nativeSessionId: string | null;
-        }>(row, "observeOrchestrator", { ...(conversationId === undefined ? {} : { conversationId }) });
-        if (
-          observed?.physicalGeneration !== physicalGeneration ||
-          !["active", "quiescent", "unknown"].includes(observed.state) ||
-          typeof observed.evidence !== "string" ||
-          !/^[a-f0-9]{64}$/.test(observed.evidence) ||
-          !Number.isSafeInteger(observed.eventWatermark) ||
-          observed.eventWatermark < 0 ||
-          !Number.isSafeInteger(observed.acknowledgedSequence) ||
-          observed.acknowledgedSequence < 0 ||
-          observed.acknowledgedSequence > observed.eventWatermark ||
-          (observed.nativeSessionId !== null && typeof observed.nativeSessionId !== "string")
-        )
-          throw refusal("unavailable", "Invalid native observation receipt.");
-        return observed;
-      });
-    },
-    async verifyOrchestratorSession(request) {
-      return admit(request.sandboxId, async (row) => {
-        return verifyNativeSession(row, request);
-      });
-    },
-    async quiesceOrchestrator({ sandboxId, physicalGeneration }) {
-      return admit(sandboxId, async (row, save) => {
-        if (row.golden || row.phase !== "active" || physicalGeneration !== String(row.generation))
-          throw refusal("conflict", "Quiescence requires the bound active physical generation.");
-        const active = await healthyAdmission(row, save);
-        if (physicalGeneration !== String(active.generation))
-          throw refusal("conflict", "Physical generation changed during quiescence.");
-        await runner.call(active, "interrupt", {});
-        return { acknowledged: true };
-      });
-    },
-    async scrubOrchestratorEpoch({ sandboxId, physicalGeneration, tokenHash }) {
-      return admit(sandboxId, async (row, save) => {
-        if (row.golden || row.phase !== "active" || physicalGeneration !== String(row.generation))
-          throw refusal("conflict", "Orchestrator scrub requires the bound active physical generation.");
-        const active = await healthyAdmission(row, save);
-        if (physicalGeneration !== String(active.generation))
-          throw refusal("conflict", "Physical generation changed during authority scrub.");
-        const result = await runner.call<{ acknowledged?: unknown }>(active, "scrubOrchestratorEpoch", {
-          ...(tokenHash === undefined ? {} : { tokenHash }),
-        });
-        if (result?.acknowledged !== true)
-          throw refusal("unavailable", "Private runner did not acknowledge authority scrub.");
-        return { acknowledged: true };
-      });
-    },
-    async prompt(r) {
-      // Capture only trusted incarnation state, never labels/request data or volatile callback refs.
-      const incarnation = (row: Machine) =>
-        JSON.stringify([
-          row.generation,
-          row.physicalId ?? null,
-          row.grantExpiresAt ?? null,
-          row.processBaseline?.namespace.pid ?? null,
-          row.processBaseline?.namespace.mount ?? null,
-        ]);
-      let expected: string | undefined;
-      let restored = false;
-      const observeResume: ResumeStageObserver | undefined =
-        r.onResumeStage &&
-        (async (stage) => {
-          if (stage === "machine_started") restored = true;
-          await r.onResumeStage?.(stage);
-        });
-      if (options.beforePrompt) {
-        expected = await measure("modal_prepare", () =>
-          admit(r.sandboxId, async (row, save) => {
-            if (row.golden) throw refusal("invalid_request", "Golden builders cannot run model turns.");
-            // Preparation needs an active physical incarnation, not a native health
-            // probe that is repeated after the hook. Final admission below owns health.
-            return incarnation(await readyLeased(row, save, observeResume));
-          }),
-        );
-        // configureMcp takes its own lease. Invoking this under admission would deadlock.
-        await measure("modal_before_prompt", () => options.beforePrompt!(provider, r.sandboxId));
-      }
-      return measure("modal_admit", () =>
-        admit(r.sandboxId, async (row, save) => {
-          if (row.golden) throw refusal("invalid_request", "Golden builders cannot run model turns.");
-          if (expected !== undefined && (row.phase !== "active" || incarnation(row) !== expected))
-            throw refusal(
-              "conflict",
-              "Prompt preparation belongs to a different physical incarnation; turn not submitted.",
-            );
-          const active = await healthyAdmission(row, save, observeResume);
-          if (expected !== undefined && (active.phase !== "active" || incarnation(active) !== expected))
-            throw refusal("conflict", "Runner incarnation changed during admission; turn not submitted.");
-          const choice = resolveModelChoice(r.harness, r, active.modelDefaults?.[r.harness]);
-          const cwd = active.harnessCwds?.[r.harness];
-          if (restored) await r.onResumeStage?.("harness_ready");
-          return measure("modal_rpc", () =>
-            runner.call(active, "prompt", {
-              input: {
-                sandboxId: r.sandboxId,
-                harness: r.harness,
-                text: r.text,
-                ...choice,
-                ...(r.conversationId !== undefined ? { conversationId: r.conversationId } : {}),
-                ...(r.fast !== undefined ? { fast: r.fast } : {}),
-                ...(cwd !== undefined ? { cwd } : {}),
-              },
-            }),
-          );
-        }),
-      );
-    },
-    async getPrompt(r) {
-      const row = await store.get(r.sandboxId);
-      assertMachineSource(row);
-      // Observation must never use ready(): a stop racing this read must not activate a new generation.
-      if (row.commonRuntime)
-        throw refusal("invalid_request", "Enrolled runtime history requires the common transport.");
-      if (row.phase === "active" && !options.storedReads) return runner.call(row, "getPrompt", r);
-      if (options.storedReads) {
-        if (row.phase === "deleted") throw refusal("not_found", "Sandbox was deleted.");
-        const latest = await store.latestPrompt(r.sandboxId, r.promptId);
-        if (!latest) {
-          if (row.phase === "active") return { promptId: r.promptId, status: "queued", done: false };
-          throw refusal("not_found", "No durable prompt observation found.");
-        }
-        return {
-          promptId: r.promptId,
-          ...(latest.conversationId ? { conversationId: latest.conversationId } : {}),
-          status: latest.status,
-          done: !["queued", "running"].includes(latest.status),
-        };
-      }
-      let cursor: string | undefined;
-      let latest: import("@armada/core").AgentEvent | undefined;
-      for (;;) {
-        const page = await store.events({ sandboxId: r.sandboxId, limit: 1000, ...(cursor ? { cursor } : {}) });
-        for (const event of page.events) if (event.kind === "prompt" && event.promptId === r.promptId) latest = event;
-        if (!page.hasMore) break;
-        if (!page.cursor || page.cursor === cursor)
-          throw refusal("unavailable", "Prompt event cursor did not advance.");
-        cursor = page.cursor;
-      }
-      if (latest?.kind !== "prompt") throw refusal("not_found", "No durable prompt observation found.");
-      return {
-        promptId: r.promptId,
-        ...(latest.conversationId ? { conversationId: latest.conversationId } : {}),
-        status: latest.status,
-        done: !["queued", "running"].includes(latest.status),
-      };
-    },
-    steer(r) {
-      return admit(r.sandboxId, async (row, save) => {
-        if (row.golden) throw refusal("invalid_request", "Golden builders cannot run model turns.");
-        if (row.phase === "stopped") throw refusal("sandbox_not_ready", "Stopped sandboxes cannot be steered.");
-        // Protocol 1 selects the sole active turn when no conversation is specified.
-        return runner.call(await healthyAdmission(row, save), "steer", {
-          sandboxId: r.sandboxId,
-          conversationId: r.conversationId,
-          text: r.text,
-        });
-      });
-    },
-    interrupt: (r) => call(r.sandboxId, "interrupt", r),
-    async exec(r) {
-      if (r.onlyIfRunning)
+    ...createNativeOrchestratorOperations({ admit, healthyAdmission, runner }),
+    ...turns,
+    supportsExecPhysicalGeneration: true,
+    async exec({ expectedPhysicalGeneration, ...r }) {
+      if (r.onlyIfRunning || expectedPhysicalGeneration !== undefined)
         return admit(r.sandboxId, async (row) => {
+          r.signal?.throwIfAborted();
           if (row.commonRuntime) throw refusal("invalid_request", "Enrolled runtime exec is not enabled.");
+          if (expectedPhysicalGeneration !== undefined && expectedPhysicalGeneration !== String(row.generation))
+            throw refusal("conflict", "Native exec physical incarnation changed.");
           if (row.phase !== "active") throw refusal("sandbox_not_ready", "Recovery capture requires active compute.");
           return runner.call<ExecResult>(row, "exec", { input: r });
         });
@@ -1036,102 +607,20 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
         return executeGoldenCommand(await physical(active), r);
       });
     },
-    async events(r) {
-      r.signal?.throwIfAborted();
-      if (!options.storedReads) await bound();
-      r.signal?.throwIfAborted();
-      const row = await store.get(r.sandboxId);
-      if (row.commonRuntime)
-        throw refusal("invalid_request", "Enrolled runtime history requires the common transport.");
-      // History is readable without live compute, but still belongs to this
-      // immutable source/management authority and must not be a deleted machine.
-      assertMachineSource(row);
-      if (row.phase === "deleted") throw refusal("not_found", "Sandbox was deleted.");
-      r.signal?.throwIfAborted();
-      const page = await store.events(r);
-      r.signal?.throwIfAborted();
-      return page;
-    },
-    async snapshot(r) {
-      await bound();
-      let observed: Machine | undefined;
-      try {
-        return await store.lease(r.sandboxId, async (row, save) => {
-          observed = row;
-          assertMachineSource(row);
-          if (!row.golden || row.phase !== "active")
-            throw refusal("conflict", "Only active credential-free builders can become golden snapshots.");
-          try {
-            await store.image(r.name);
-            throw refusal("conflict", "Snapshot name is immutable.");
-          } catch (e) {
-            if (!(e instanceof Error && "code" in e && e.code === "not_found")) throw e;
-          }
-          const info: SnapshotInfo = {
-            name: r.name,
-            status: "saving",
-            sourceSandboxId: r.sandboxId,
-            managementAuthority: {
-              scope: managementAuthority.credentialScope,
-              ownerId: managementAuthority.credentialOwnerId,
-            },
-            createdAt: new Date(),
-          };
-          await store.saveImage({ info, sourceId: r.sandboxId, managementAuthority: { ...managementAuthority } });
-          const sb = await physical(row);
-          row.phase = "checkpoint";
-          row.info.state = "stopping";
-          await save(row);
-          await checkpoint(row, save);
-          await distribution.prepareSnapshot(sb, row);
-          row.quiesced = true;
-          row.phase = "snapshot";
-          await save(row);
-          const image = await sb.snapshotFilesystem({ ttlMs: null });
-          row.snapshotImages = [...(row.snapshotImages ?? []), { name: r.name, imageId: image.imageId }];
-          await save(row);
-          info.status = "ready";
-          info.artifactId = image.imageId;
-          await store.saveImage({
-            info,
-            sourceId: r.sandboxId,
-            imageId: image.imageId,
-            goldenClean: true,
-            managementAuthority: { ...managementAuthority },
-          });
-          row.phase = "checkpoint";
-          row.info.state = "stopping";
-          await save(row);
-          return info;
-        });
-      } catch (error) {
-        if (observed) throw new ModalOperationError(error, await resourceReceipt(observed));
-        throw error;
-      }
-    },
-    async getSnapshot(name) {
-      await snapshotBackend();
-      const image = await source.store.image(name);
-      assertAuthority(image);
-      // Only canonical saved-image fields are provenance; cached optional info is not
-      // a substitute when an older/partial receipt lacks its artifact or authority.
-      const { artifactId: _artifact, managementAuthority: _authority, sourceSandboxId: _source, ...info } = image.info;
-      return {
-        ...info,
-        sourceSandboxId: image.sourceId,
-        ...(image.imageId ? { artifactId: image.imageId } : {}),
-        ...(image.managementAuthority
-          ? {
-              managementAuthority: {
-                scope: image.managementAuthority.credentialScope,
-                ownerId: image.managementAuthority.credentialOwnerId,
-              },
-            }
-          : {}),
-      };
-    },
+    ...createSnapshotLifecycle({
+      store,
+      sourceStore: source.store,
+      managementAuthority,
+      bound,
+      snapshotBackend,
+      assertAuthority,
+      assertMachineSource,
+      physical,
+      checkpoint,
+      distribution,
+      resourceReceipt,
+    }),
     ...snapshotTombstones,
-    quiesce: (r) => call(r.sandboxId, "interrupt", r),
     async extendLifetime({ sandboxId, ttlSeconds }) {
       await bound();
       return store.lease(sandboxId, async (row) => {

@@ -121,7 +121,7 @@ export function listSandboxCosts(
 }
 
 /** The cost of each sandbox among `ids` whose row row level security returns to the viewer (owner or org admin), by id. */
-export async function sandboxCosts(supabase: Supabase, ids: readonly string[]): Promise<Map<string, SandboxCost>> {
+async function sandboxCosts(supabase: Supabase, ids: readonly string[]): Promise<Map<string, SandboxCost>> {
   const costs = new Map<string, SandboxCost>();
   // A malformed sandbox id is never queried.
   const wanted = [...new Set(ids)].filter(isUuid);

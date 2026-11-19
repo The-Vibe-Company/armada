@@ -192,9 +192,9 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-export type GoldenBuildResult = { name: string; visibility: "org" | "private"; snapshot: string };
+type GoldenBuildResult = { name: string; visibility: "org" | "private"; snapshot: string };
 
-export function isGoldenBuildResult(value: unknown): value is GoldenBuildResult {
+function isGoldenBuildResult(value: unknown): value is GoldenBuildResult {
   return (
     isRecord(value) &&
     typeof value.name === "string" &&
@@ -210,7 +210,7 @@ export function isGoldenBuildResult(value: unknown): value is GoldenBuildResult 
  * org, an older server, an answer for another provider): the limit is then not known here, and the server still
  * checks it when it builds.
  */
-export type GoldenBinding = {
+type GoldenBinding = {
   goldenId: string;
   relation: "current_backend" | "other_backend" | "unbound";
 };
@@ -258,7 +258,7 @@ export async function readGoldenCapabilities(
   return { ok: false, reason: "The Armada server sent an unexpected answer." };
 }
 
-export const MCP_CONTROL_PATH = "/api/v1/mcp/";
+const MCP_CONTROL_PATH = "/api/v1/mcp/";
 
 export type ArmadaApiOptions = {
   /** Any URL on the Armada server, such as `ARMADA_MCP_URL`; only its origin is used. */
@@ -397,7 +397,7 @@ export function isGoldenBuildStatus(value: unknown): value is GoldenBuildStatus 
 }
 
 /** `golden/remove {id, org?}`'s answer: the golden is retired; its sandboxes and provider artifacts are kept. */
-export type GoldenRemoval = { id: string; removedAt: string; artifacts: "retained" };
+type GoldenRemoval = { id: string; removedAt: string; artifacts: "retained" };
 
 export function isGoldenRemoval(value: unknown): value is GoldenRemoval {
   return (

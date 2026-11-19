@@ -1,3 +1,4 @@
+import { afterAll, afterEach, beforeAll, beforeEach } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -11,6 +12,29 @@ import { createRuntimeEvents } from "../src/runtime-events.ts";
 import { createRuntimeFollowup } from "../src/runtime-followup.ts";
 import type { ToolContext } from "../src/tools.ts";
 import { database, ENCRYPTION_KEY, type People } from "./support.ts";
+
+export function scopedRuntimeFixture<T extends { close(): Promise<void> }>(
+  setup: () => Promise<T>,
+  { timeout, perTest }: { timeout?: number; perTest?: boolean } = {},
+) {
+  let pending: Promise<T> | undefined;
+  const before = perTest ? beforeEach : beforeAll;
+  const after = perTest ? afterEach : afterAll;
+  before(async () => {
+    pending = setup();
+    await pending;
+  }, timeout);
+  after(async () => {
+    const fixture = pending;
+    pending = undefined;
+    const ready = await fixture?.catch(() => undefined);
+    await ready?.close();
+  });
+  return () => {
+    if (!pending) throw new Error("Runtime fixture is outside its suite");
+    return pending;
+  };
+}
 
 export async function runtimeFixtureGolden(
   db: Awaited<ReturnType<typeof database>>["db"],

@@ -21,7 +21,7 @@ export { SANDBOX_PROVIDERS as GOLDEN_PROVIDERS } from "@armada/core";
 export { PROVIDER_LABELS };
 
 /** The fields of the golden form, as strings, before any check. */
-export type GoldenFormFields = {
+type GoldenFormFields = {
   mode: string;
   name: string;
   org: string;
@@ -34,7 +34,7 @@ export type GoldenFormFields = {
 };
 
 /** What `golden/create` and `golden/update` of the control API take. Never a token. */
-export type GoldenRequest =
+type GoldenRequest =
   | {
       mode: "create";
       body: {
@@ -162,7 +162,7 @@ export function repoSlug(url: string): string | null {
   return match?.[1] && match[2] ? `${match[1]}/${match[2]}` : null;
 }
 
-export type GoldenRepoView = {
+type GoldenRepoView = {
   url: string;
   slug: string | null;
   branch: string;
@@ -206,7 +206,7 @@ export function editDefaults(golden: Pick<Golden, "config">): { repos: RepoRow[]
   };
 }
 
-export type GoldenRowState = {
+type GoldenRowState = {
   /** Another visible row of the same provider has this name: `golden/update` selects by name and cannot tell them apart. */
   duplicateName: boolean;
   canRebuild: boolean;

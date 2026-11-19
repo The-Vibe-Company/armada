@@ -225,8 +225,13 @@ export interface LaunchOptions extends GoldenLimits {
   extensionHeadroomSeconds?: number;
   /** Trusted server telemetry only; never request input or a raw-error sink. */
   onInitialization?: (stage: LaunchInitializationStage) => void;
-  /** Trusted pre-dispatch fence; failure is provably before provider allocation. */
+  /** Trusted pre-dispatch check; failure is provably before provider allocation. */
   beforeFork?: (sandboxId: string) => Promise<void>;
+  /** A durable template request supplies the snapshot reference for this launch. */
+  templateSnapshotAdmission?: {
+    admit: () => Promise<void>;
+    confirmAbsence: () => void;
+  };
   /** Confirmed registration handoff; errors use the recorded initialization cleanup. */
   onRegistered?: (sandbox: SandboxRecord) => Promise<void>;
   /** Trusted final-start admission/bootstrap, after all repository and init work. */
@@ -564,11 +569,14 @@ export async function launchSandbox(
   } = plan;
   const strategy = plan.runtime ? runtimeLaunch(plan.runtime) : nativeLaunch;
   const id = (options.newId ?? (() => crypto.randomUUID()))();
-  const releaseOperation = await stores.goldens.beginOperation?.(golden.id, {
-    kind: "launch",
-    snapshotId: golden.providerSnapshotId,
-    sandboxId: golden.providerSandboxId,
-  });
+  const templateAdmission = options.templateSnapshotAdmission;
+  const releaseOperation = templateAdmission
+    ? undefined
+    : await stores.goldens.beginOperation?.(golden.id, {
+        kind: "launch",
+        snapshotId: golden.providerSnapshotId,
+        sandboxId: golden.providerSandboxId,
+      });
   let childRecorded = false;
   let noAllocation = true;
   try {
@@ -594,6 +602,7 @@ export async function launchSandbox(
         provider: golden.provider,
         providerSandboxId: forked.id,
         goldenId: golden.id,
+        ...(templateAdmission ? {} : { sourceSnapshotId: plan.snapshot }),
         orgId: golden.orgId,
         ownerId: actor.userId,
         harness,
@@ -843,7 +852,7 @@ export async function launchSandbox(
         );
       }
     }
-    // An unrecorded physical outcome remains owned by this durable fence.
+    if (noAllocation) templateAdmission?.confirmAbsence();
     if (childRecorded || noAllocation) {
       try {
         await releaseOperation?.();

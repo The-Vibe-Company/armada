@@ -1,6 +1,5 @@
 import { sandboxControlRefusal } from "@armada/core";
 
-/** Sandbox command failures may contain guest secrets; only closed reasons leave the client. */
 export function sandboxFailure(path: string, status: number, serverCode: unknown, serverMessage: unknown) {
   if (
     !/^\/api\/v1\/sandbox\/(?:list|status|recovery|advice|report|bind-credential|send|steer|interrupt|exec|stop|extend|wait)$/.test(
@@ -10,7 +9,7 @@ export function sandboxFailure(path: string, status: number, serverCode: unknown
     path !== "/api/v1/logs/read"
   )
     return undefined;
-  if (status === 401) return undefined; // Keep the shared login/token recovery path.
+  if (status === 401) return undefined;
   const inspect = "Run armada list --json to find a visible sandbox ID and check its state and selected organization.";
   const help: Record<string, string> = {
     sandbox_terminal: `This sandbox cannot accept this operation. Start a new sandbox on the same branch. ${inspect}`,
@@ -51,13 +50,11 @@ export function sandboxFailure(path: string, status: number, serverCode: unknown
               : status === 429
                 ? "rate_limited"
                 : "unavailable";
-  // Alias the JSON code emitted before this quality pass; never alias arbitrary server text.
   const wasInterior =
     /^\/api\/v1\/sandbox\/(?:status|send|steer|interrupt|exec|stop|extend|wait)$/.test(path) ||
     path === "/api/v1/logs/read" ||
     path.startsWith("/api/v1/sandboxes/");
   const legacyCode = status === 403 || (wasInterior && status === 404) ? "conflict" : "unavailable";
-  // These immutable-binding refusals are fixed server-owned strings, never guest text.
   const bindingReasons: Record<string, string> = {
     "This sandbox is already bound; its account cannot change.":
       "This sandbox is already bound; its account cannot change. Run armada detail ID to inspect the existing binding; keep that account.",
@@ -73,7 +70,6 @@ export function sandboxFailure(path: string, status: number, serverCode: unknown
     Object.hasOwn(bindingReasons, serverMessage)
       ? bindingReasons[serverMessage]
       : undefined;
-  // Match only complete policy-owned messages: arbitrary provider/guest text remains redacted.
   const controlReason =
     ["sandbox_terminal", "invalid_request", "conflict"].includes(String(serverCode)) &&
     typeof serverMessage === "string" &&
