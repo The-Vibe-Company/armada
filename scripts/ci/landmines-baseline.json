@@ -1874,7 +1874,6 @@
     "scripts/local-ports.ts": 1,
     "scripts/mcp/managed-boat-probe.ts": 2,
     "scripts/mcp/managed-inspection.ts": 2,
-    "scripts/npm.ts": 5,
     "scripts/post-deploy-smoke.test.ts": 1,
     "scripts/post-deploy-smoke.ts": 16,
     "scripts/provider-parity-client-send.ts": 1,
