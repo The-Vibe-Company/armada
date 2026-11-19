@@ -1093,6 +1093,18 @@ test("uninstall drains bound machines through stop/delete ACKs before idempotent
   expect(remove?.operation).toBe("delete");
   if (!remove) throw new Error("Missing delete");
   await store.complete(a.hostToken, a.installationId, { requestId: remove.requestId, outcome: "completed" });
+  await store.complete(a.hostToken, a.installationId, { requestId: remove.requestId, outcome: "completed" });
+  expect(
+    (
+      await database().query(
+        `select from_status, to_status, actor, code from public.sandbox_transitions where sandbox_id=$1 order by id`,
+        [a.sandboxId],
+      )
+    ).rows,
+  ).toEqual([
+    { from_status: "stopping", to_status: "stopped", actor: "lifecycle_runner", code: "docker_stop_completed" },
+    { from_status: "stopped", to_status: "deleted", actor: "delete_job", code: "docker_delete_completed" },
+  ]);
   expect(await store.unregister(a.hostToken, a.installationId)).toBe(true);
   expect(await store.unregister(a.hostToken, a.installationId)).toBe(true);
   await denied(store.poll(a.hostToken, a.installationId));
@@ -1674,6 +1686,13 @@ test("a stale cleaned ACK cannot delete a sandbox with a later admitted resume",
     await store.complete(a.hostToken, a.installationId, { requestId: oldJob.requestId, outcome: "completed" });
     expect((await lifecycle(a.sandboxId))?.status).toBe("stopped");
   }
+  expect(
+    (
+      await db.query(`select actor from public.sandbox_transitions where sandbox_id=$1 and to_status='deleted'`, [
+        a.sandboxId,
+      ])
+    ).rows,
+  ).toEqual([]);
   // Cleanup of the latest lifecycle is still authoritative.
   await store.cleaned(a.hostToken, a.installationId, { requestId: resume.requestId });
   expect((await lifecycle(a.sandboxId))?.status).toBe("deleted");
