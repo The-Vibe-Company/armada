@@ -91,7 +91,6 @@ export function productionLocalHostIo(
       const child = Bun.spawn([program, ...args], {
         stdin: stdin === undefined ? "ignore" : new TextEncoder().encode(stdin),
         stdout: "pipe",
-        // Native failures may include private response bytes. Never relay them.
         stderr: "ignore",
         timeout: timeoutMs,
         killSignal: "SIGKILL",
@@ -191,7 +190,6 @@ async function status(native: LocalHostIo, binary: string, timeoutMs = 30_000): 
   };
 }
 
-/** Check every ancestor, not just the executable: never follow an installation symlink. */
 async function checkPath(native: LocalHostIo, path: string, create = false): Promise<FileInfo | null> {
   const parent = dirname(path);
   if (parent !== path) {
@@ -301,7 +299,6 @@ export async function localHostCommand(argv: readonly string[], io: Io, native: 
       const statePath = join(native.home, ".local/state", name, "state.json");
       await checkPath(native, statePath);
       const savedOrigin = await native.readServer?.(statePath);
-      // Explicit selection must not depend on another server's daemon health.
       const current =
         server && savedOrigin && savedOrigin !== server
           ? { registered: true, connected: false, version: "0.0.0" }
@@ -319,7 +316,6 @@ export async function localHostCommand(argv: readonly string[], io: Io, native: 
       otherOrigin = installations.find((i) => i.server && i.server !== server)?.server;
     const matched = server ? installations.find((i) => i.server === server) : installations[0];
     const legacyInstall = installations.find((i) => i.name === legacy);
-    // An older daemon may not expose its origin. Never guess or exchange a token.
     if (server && legacyInstall?.current.registered && !legacyInstall.server)
       return failed(
         "The existing Docker host origin cannot be read; the new token was not consumed. Run armada host status to inspect the existing instance before retrying.",
@@ -410,7 +406,6 @@ export async function localHostCommand(argv: readonly string[], io: Io, native: 
       }
       return connected(native, binary, io);
     }
-    // Never replace an installation whose registration/ownership cannot be read.
     for (const path of [
       join(native.home, ".local/state", name, "state.json"),
       join(native.home, ".local/state", name, "managed.json"),
@@ -433,9 +428,7 @@ export async function localHostCommand(argv: readonly string[], io: Io, native: 
     } finally {
       try {
         await native.remove(temporary);
-      } catch {
-        /* Renamed or already removed. */
-      }
+      } catch {}
     }
     io.out(current ? "Replacing the unregistered Docker host binary.\n" : "Installing Docker host user service.\n");
     if (
@@ -462,7 +455,6 @@ export async function localHostCommand(argv: readonly string[], io: Io, native: 
         );
       throw error;
     }
-    // Do not expose native stdout/stderr, stdin or transport response diagnostics.
     return failed(
       "Docker host command failed; private state and credentials were not printed. Check Docker/systemd access and armada host status before retrying registration.",
     );
