@@ -4,7 +4,6 @@ import { sandboxListAttention } from "./sandbox-activity.ts";
 import { sandboxListName } from "./sandbox-list-name.ts";
 
 export const SANDBOX_STATUSES = ["starting", "ready", "running", "stopping", "stopped", "failed", "deleted"] as const;
-export const PAGE_SIZE = 25;
 export const FACETS = ["status", "provider", "harness", "model", "owner", "size"] as const;
 export type Facet = (typeof FACETS)[number];
 export type SandboxFilters = Record<Facet, string[]> & {
@@ -13,7 +12,7 @@ export type SandboxFilters = Record<Facet, string[]> & {
   page: number;
 };
 /** The list opens newest first; the URL names only a different sort. */
-export const DEFAULT_SANDBOX_SORT: SandboxFilters["sort"] = "newest";
+const DEFAULT_SANDBOX_SORT: SandboxFilters["sort"] = "newest";
 type Params = Record<string, string | string[] | undefined>;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const values = (value: string | string[] | undefined) => [
@@ -50,7 +49,7 @@ export function filtersToSearch(filters: Partial<SandboxFilters>): string {
 export function hasSandboxFilters(filters: SandboxFilters): boolean {
   return Boolean(filters.q || FACETS.some((key) => filters[key].length));
 }
-export function facetValue(row: SandboxListMetadata, key: Facet): string {
+function facetValue(row: SandboxListMetadata, key: Facet): string {
   return key === "owner" ? row.ownerId : key === "size" ? (row.machineSize ?? "unknown") : (row[key] ?? "unknown");
 }
 /** Runs over the full authorized metadata inventory, never only the visible page. */
