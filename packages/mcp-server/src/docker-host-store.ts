@@ -1610,8 +1610,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
         { sandboxId: row.provider_sandbox_id, signal },
         row.scan,
         key,
-        undefined,
-        row.generation,
+        { generation: row.generation, mode: "docker-retained" },
       );
       return 204;
     },

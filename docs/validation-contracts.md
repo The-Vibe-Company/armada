@@ -256,6 +256,34 @@ regression calls the accounting logic directly. Claude's unsafe-home and
 unsupported-reasoning cases reject during preflight. The native-resume
 serialization and credential lifecycle cases use synthetic drivers.
 
+### Additional Agent Runtime native driver fixture cases
+
+These cases reach real local subprocesses through the harness drivers. The
+times are whole-case measurements from a focused Linux run with Bun 1.4.2
+at `df880d86`, after `bun scripts/prepare-runtime.ts`.
+
+| File under `packages/agent-runtime/test` | Case | Local subprocess boundary | Local |
+| --- | --- | --- | ---: |
+| `opencode.test.ts` | OpenCode refuses stale history and checkpoint after an unacknowledged export | OpenCodeDriver starts the local OpenCode fixture for ACP and session import/export. | 113.51 ms |
+| `opencode.test.ts` | OpenCode meters every new native assistant step once, excludes loaded history and normalizes reasoning output | OpenCodeDriver starts the local OpenCode fixture for ACP and session import/export. | 125.16 ms |
+| `opencode.test.ts` | OpenCode driver publishes only the new MCP receipt from a follow-up native export | OpenCodeDriver starts the local OpenCode fixture for ACP and session import/export. | 126.24 ms |
+| `acp.test.ts` | ACP v1 finish preserves session identity and native usage without replay and sends pinned MCP configuration on load and new | AcpDriver starts Bun running the local ACP fixture over stdio. | 51.60 ms |
+| `acp.test.ts` | ACP v1 steer preserves session identity and native usage without replay | AcpDriver starts Bun running the local ACP fixture over stdio. | 51.96 ms |
+| `acp.test.ts` | ACP v1 interrupt preserves session identity and native usage without replay | AcpDriver starts Bun running the local ACP fixture over stdio. | 53.00 ms |
+| `acp.test.ts` | ACP v1 unknown preserves session identity and native usage without replay | AcpDriver starts Bun running the local ACP fixture over stdio. | 49.49 ms |
+| `acp.test.ts` | ACP names a turn cut by the model output limit instead of a configuration failure | AcpDriver starts Bun running the local ACP fixture over stdio. | 25.13 ms |
+| `acp.test.ts` | ACP refuses another protocol before dispatching a prompt | AcpDriver starts Bun running the local ACP fixture over stdio. | 25.95 ms |
+| `acp.test.ts` | ACP observes native events before prompt and releases the observer when its stream fails | AcpDriver starts Bun running the local ACP fixture over stdio. | 26.35 ms |
+| `acp.test.ts` | ACP refuses a steer after its turn stopped with a replayable refusal | AcpDriver starts Bun running the local ACP fixture over stdio. | 25.64 ms |
+| `cwd.test.ts` | claude native subprocess/thread cwd is turn-local across parallel conversations, steering and resume | The Claude SDK starts the local Claude fixture in the requested directory. | 123.58 ms |
+| `cwd.test.ts` | codex native subprocess/thread cwd is turn-local across parallel conversations, steering and resume | CodexDriver starts the local app-server fixture in the requested directory. | 123.82 ms |
+
+In `opencode.test.ts`, credential translation and proof extraction run in
+process, including the assertions on recorded shell proof. The unsupported
+reasoning effort case in `acp.test.ts` is rejected before the driver spawns a
+child. The private prompt working-directory case in `cwd.test.ts` injects an
+in-process driver. The two native working-directory cases run only on Linux.
+
 ## Process-spawning unit cases in `provider-modal`
 
 The [process-test allowlist](../scripts/ci/process-tests.txt) records matching
