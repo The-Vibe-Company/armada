@@ -1,4 +1,5 @@
 import { lookup } from "node:dns/promises";
+import type { IncomingMessage } from "node:http";
 import { request } from "node:https";
 import { isIP } from "node:net";
 import { Readable } from "node:stream";
@@ -72,39 +73,44 @@ export const publicFetch: FetchLike = async (input, init) => {
         lookup: (_hostname, _options, callback) => callback(null, selected.address, selected.family),
         signal: req.signal,
       },
-      (incoming) => {
-        try {
-          const headers = new Headers();
-          for (const [key, value] of Object.entries(incoming.headers))
-            if (value) headers.set(key, Array.isArray(value) ? value.join(", ") : value);
-          const status = incoming.statusCode;
-          if (status === undefined || !Number.isInteger(status) || status < 200 || status > 599)
-            throw new GatewayError("upstream", "Upstream returned an invalid HTTP status.");
-          if (status >= 300 && status < 400) {
-            incoming.destroy();
-            reject(new GatewayError("unsafe_endpoint", "Redirects are not permitted. Configure the final endpoint."));
-            return;
-          }
-          resolve(
-            new Response(
-              [204, 205, 304].includes(status) ? null : (Readable.toWeb(incoming) as ReadableStream<Uint8Array>),
-              { status, headers },
-            ),
-          );
-        } catch (error) {
-          incoming.destroy();
-          reject(
-            error instanceof GatewayError
-              ? error
-              : new GatewayError("upstream", "Upstream returned an invalid HTTP response."),
-          );
-        }
-      },
+      (incoming) => receivePublicResponse(incoming, resolve, reject),
     );
     outgoing.on("error", () => reject(new GatewayError("upstream", "Upstream connection failed.")));
     outgoing.end(body);
   });
 };
+export function receivePublicResponse(
+  incoming: IncomingMessage,
+  resolve: (response: Response) => void,
+  reject: (error: GatewayError) => void,
+) {
+  try {
+    const headers = new Headers();
+    for (const [key, value] of Object.entries(incoming.headers))
+      if (value) headers.set(key, Array.isArray(value) ? value.join(", ") : value);
+    const status = incoming.statusCode;
+    if (status === undefined || !Number.isInteger(status) || status < 200 || status > 599)
+      throw new GatewayError("upstream", "Upstream returned an invalid HTTP status.");
+    if (status >= 300 && status < 400) {
+      incoming.destroy();
+      reject(new GatewayError("unsafe_endpoint", "Redirects are not permitted. Configure the final endpoint."));
+      return;
+    }
+    resolve(
+      new Response([204, 205, 304].includes(status) ? null : (Readable.toWeb(incoming) as ReadableStream<Uint8Array>), {
+        status,
+        headers,
+      }),
+    );
+  } catch (error) {
+    incoming.destroy();
+    reject(
+      error instanceof GatewayError
+        ? error
+        : new GatewayError("upstream", "Upstream returned an invalid HTTP response."),
+    );
+  }
+}
 export function restrictedFetch(fetcher: FetchLike, allowed: (url: URL) => boolean) {
   const fetchRestricted: FetchLike = async (input, init) => {
     const req = new Request(input instanceof URL ? input.href : input, init);

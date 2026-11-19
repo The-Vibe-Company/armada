@@ -1,7 +1,8 @@
-import { expect, spyOn, test } from "bun:test";
-import type { IncomingMessage } from "node:http";
-import * as https from "node:https";
+import { expect, test } from "bun:test";
+import { IncomingMessage } from "node:http";
+import { Socket } from "node:net";
 import { publicFetch, restrictedFetch } from "../src/index.ts";
+import { receivePublicResponse } from "../src/network.ts";
 
 test("outbound boundary rejects unsafe URLs, origin escape and redirects before forwarding secrets", async () => {
   let calls = 0;
@@ -87,28 +88,15 @@ test("issuer discovery rejects query-bearing issuer identifiers while resource q
 });
 
 test("malformed peer status rejects the request and closes the response", async () => {
-  const incoming = {
-    headers: {},
-    statusCode: 600,
-    destroy: () => {},
-  };
-  const destroy = spyOn(incoming, "destroy");
-  const request = spyOn(https, "request").mockImplementation(((
-    _url: URL,
-    _options: https.RequestOptions,
-    onResponse: (response: IncomingMessage) => void,
-  ) => ({
-    on: () => {},
-    end: () => queueMicrotask(() => onResponse(incoming as IncomingMessage)),
-  })) as typeof https.request);
+  const incoming = new IncomingMessage(new Socket());
+  incoming.statusCode = 600;
+  const response = new Promise<Response>((resolve, reject) => {
+    queueMicrotask(() => receivePublicResponse(incoming, resolve, reject));
+  });
 
-  try {
-    await expect(publicFetch("https://93.184.216.34/")).rejects.toMatchObject({
-      code: "upstream",
-      action: "Upstream returned an invalid HTTP status.",
-    });
-    expect(destroy).toHaveBeenCalledTimes(1);
-  } finally {
-    request.mockRestore();
-  }
+  await expect(response).rejects.toMatchObject({
+    code: "upstream",
+    action: "Upstream returned an invalid HTTP status.",
+  });
+  expect(incoming.destroyed).toBe(true);
 });
