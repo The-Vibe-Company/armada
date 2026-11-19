@@ -36,7 +36,13 @@ type Fault =
   | "uncertain_launch"
   | "missing_handle";
 function fixture(
-  options: { key?: "user" | "org" | "absent"; fault?: Fault; splitAnswer?: boolean; refusalReason?: string } = {},
+  options: {
+    key?: "user" | "org" | "absent";
+    fault?: Fault;
+    splitAnswer?: boolean;
+    refusalReason?: string;
+    lateInventory?: boolean;
+  } = {},
 ) {
   const { key = "user", fault = "none", splitAnswer = false } = options;
   const calls: { path: string; body: Record<string, unknown> }[] = [];
@@ -51,6 +57,10 @@ function fixture(
     uncertainLaunches?: { templateId: string; templateName: string; requestKey: string; requestId?: string }[];
   }[] = [];
   const stopped: string[] = [];
+  const discovered: string[] = [];
+  const reservedId = "b0000000-0000-4000-8000-000000000001";
+  let clock = 0;
+  let inventoryReads = 0;
   let cleaning = false;
   let variable: { id: string; version: number; name: string; value: string } | undefined;
   const templates: {
@@ -68,6 +78,20 @@ function fixture(
     origin: "https://skillpack.app/v1",
   });
   const io: TemplateSkillIo = {
+    now: () => clock,
+    sleep: async (ms) => {
+      clock += ms;
+    },
+    deadline: 10_000,
+    trackLaunch: (action) =>
+      action(
+        (body, timeout) => io.request("templates/launch", body, timeout),
+        (id) => {
+          discovered.push(id);
+        },
+      ),
+    launchTimeout: () => 600_000,
+    isAmbiguousLaunch: () => fault === "lost_launch",
     async request<T>(path: string, body: object) {
       const input = body as Record<string, unknown>;
       calls.push({ path, body: input });
@@ -114,7 +138,7 @@ function fixture(
           (fault === "key_refused" && pin === selected.privateSkill) || fault === "uncertain_launch"
             ? {
                 state: fault === "uncertain_launch" ? "reconciling" : "failed",
-                id: `sandbox-${template.id}`,
+                id: input.externalRef ? reservedId : `sandbox-${template.id}`,
                 requestId: "request-1",
                 reason:
                   options.refusalReason ??
@@ -123,10 +147,18 @@ function fixture(
             : {
                 state: "succeeded",
                 ...(fault === "missing_handle" ? {} : { id: `sandbox-${template.id}` }),
-                provider: selected.provider,
+                provider: input.externalRef ? "modal" : selected.provider,
                 promptId: `prompt-${template.id}`,
                 manifest: { skillReceipts: fault === "missing_receipt" || !pin ? [] : [receipt(pin)] },
               };
+      } else if (path === "sandbox/list") {
+        const launch = calls.find((call) => call.path === "templates/launch");
+        if (options.lateInventory && inventoryReads === 1) clock = io.deadline + 1;
+        expect(input).toEqual({ org: selected.org, owner: "me", externalRef: launch?.body.requestKey });
+        output = {
+          sandboxes:
+            ++inventoryReads === 1 ? [] : [{ id: reservedId, provider: "modal", externalRef: input.externalRef }],
+        };
       } else if (path === "sandbox/status") {
         const template = templates.find((item) => `sandbox-${item.id}` === input.id);
         output = {
@@ -226,7 +258,7 @@ function fixture(
       }
     },
   };
-  return { io, calls, lines, stopped, value: () => variable?.value };
+  return { discovered, reservedId, io, calls, lines, stopped, value: () => variable?.value };
 }
 
 test("template smoke pins the selected account, checks exact paginated assistant answer and both receipt copies, then cleans all resources", async () => {
@@ -366,4 +398,32 @@ test("launch refusal diagnostics drop arbitrary remote text but retain closed un
     reason: "unrecognized_refusal",
   });
   expect(JSON.stringify(fake.lines)).not.toContain("secret-provider-detail");
+});
+
+test("a reserved template launch waits for keyed inventory before cleanup without resubmitting", async () => {
+  const fake = fixture({ fault: "uncertain_launch", key: "absent" });
+  expect(await runTemplateSkillCase({ ...selected, provider: "modal" }, fake.io)).toBe(false);
+  expect(fake.calls.filter((call) => call.path === "templates/launch")).toHaveLength(1);
+  expect(fake.calls.filter((call) => call.path === "sandbox/list")).toHaveLength(2);
+  expect(fake.discovered).toEqual([fake.reservedId]);
+  expect(fake.stopped).toEqual([fake.reservedId]);
+});
+
+test("a late inventory receipt still supplies a lost template launch cleanup handle", async () => {
+  const fake = fixture({ fault: "lost_launch", key: "absent", lateInventory: true });
+  expect(await runTemplateSkillCase({ ...selected, provider: "modal" }, fake.io)).toBe(false);
+  expect(fake.calls.filter((call) => call.path === "templates/launch")).toHaveLength(1);
+  expect(fake.discovered).toEqual([fake.reservedId]);
+  expect(fake.stopped).toEqual([fake.reservedId]);
+});
+
+test("a template response without its sandbox ID cannot use inventory as launch proof", async () => {
+  const fake = fixture({ fault: "missing_handle", key: "absent", lateInventory: true });
+  expect(await runTemplateSkillCase({ ...selected, provider: "modal", publicSkill: undefined }, fake.io)).toBe(false);
+  expect(fake.discovered).toEqual([fake.reservedId]);
+  expect(fake.stopped).toEqual([fake.reservedId]);
+  expect(fake.calls.some((call) => call.path === "sandbox/wait")).toBe(false);
+  expect(fake.lines).toContainEqual(
+    expect.objectContaining({ step: "template_launch", pass: false, code: "invalid_response" }),
+  );
 });

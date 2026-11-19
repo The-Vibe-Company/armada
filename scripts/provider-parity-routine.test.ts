@@ -27,6 +27,9 @@ function fixture(mode: string, provider: "modal" | "docker" | "boat" = "modal") 
   };
   const io: RoutineProbeIo = {
     now: () => clock,
+    sleep: async (ms) => {
+      clock += ms;
+    },
     deadline: clock + 300_000,
     claim: async (id) => {
       claims.add(id);
@@ -226,9 +229,11 @@ test.each([
         ? "routine_due_outside_budget"
         : ["failed", "initial_failed"].includes(mode)
           ? "routine_occurrence_failed"
-          : ["echo", "wrong_prompt", "late_claim"].includes(mode)
-            ? "poll exhausted"
-            : "invalid_routine_receipt";
+          : mode === "late_claim"
+            ? "routine_occurrence_unresolved"
+            : ["echo", "wrong_prompt"].includes(mode)
+              ? "poll exhausted"
+              : "invalid_routine_receipt";
   await expect(probeRoutine(f.item, f.io)).rejects.toThrow(expected);
   expect(f.status()).toBe(["source_account", "source_golden"].includes(mode) ? undefined : "deleted");
   if (["source_account", "source_golden", "null_success", "window", "create_lost", "enable_lost"].includes(mode))

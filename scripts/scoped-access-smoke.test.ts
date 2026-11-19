@@ -36,6 +36,7 @@ function fixture(enabled = true) {
     sends: 0,
     lists: 0,
     logReads: 0,
+    lateLogs: false,
     noTools: false,
     denied: false,
     content: false,
@@ -68,7 +69,13 @@ function fixture(enabled = true) {
         : { structuredContent: { result } },
     },
   });
+  let clock = 0;
   const io: ScopedProbeIo = {
+    now: () => clock,
+    sleep: async (ms) => {
+      clock += ms;
+    },
+    deadline: Number.POSITIVE_INFINITY,
     async request<T>(path: string, input: object): Promise<T> {
       const body = input as Obj;
       requests.push({ path, body });
@@ -187,7 +194,7 @@ function fixture(enabled = true) {
         expect(body.limit).toBe(500);
         if (state.logsFail) throw Object.assign(new Error("secret-error-do-not-print"), { status: 400 });
         return {
-          events: state.events,
+          events: state.lateLogs && state.logReads === 1 ? [] : state.events,
           hasMore: state.logsIncomplete,
           cursor: state.logsIncomplete ? `cursor-${state.logReads}` : null,
         } as T;
@@ -246,6 +253,16 @@ describe("ordinary scoped Armada smoke", () => {
       });
     },
   );
+
+  test("recovers a late scoped launch result by rereading logs without sending another turn", async () => {
+    const f = fixture();
+    f.state.lateLogs = true;
+    await run(f);
+    expect(f.state.sends).toBe(1);
+    expect(f.state.logReads).toBe(2);
+    expect(await f.probe.cleanup(parent, true)).toBe(true);
+    expect(f.stopped).toEqual([child]);
+  });
 
   test.each(["noTools", "denied"] as const)(
     "negative control accepts only genuine lack of authority: %s",
