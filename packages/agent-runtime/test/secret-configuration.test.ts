@@ -181,3 +181,81 @@ test("checkpoint sanitation keeps expanding stderr within the journal row limit"
     journal.close();
   }
 });
+
+test.each([
+  {
+    type: "armada/opencodeShell",
+    data: { tool: "bash", command: "echo prefixvalue", output: "prefixvalue", exitCode: 0, truncated: false },
+    masked: {
+      tool: "bash",
+      command: "echo prefix[REDACTED]",
+      output: "prefix[REDACTED]",
+      exitCode: 0,
+      truncated: false,
+    },
+  },
+  {
+    type: "armada/opencodeMcp",
+    data: {
+      server: "prefixvalue",
+      nativeToolName: "prefixvalue",
+      input: { prefixlongfixture: 2, "field-value": 3 },
+      result: { output: "prefixvalue", isError: false },
+    },
+    masked: {
+      server: "prefix[REDACTED]",
+      nativeToolName: "prefix[REDACTED]",
+      input: { "prefix[REDACTED]": 2, "field-[REDACTED]": 3 },
+      result: { output: "prefix[REDACTED]", isError: false },
+    },
+  },
+])("masks typed $type proof content at each journal boundary", async ({ type, data, masked }) => {
+  const journal = new Journal(":memory:", (text) => text);
+  const runner = new Runner(journal, grant, {});
+  try {
+    const event = { id: "proof", at: 1, kind: "other", type, data } satisfies AgentEvent;
+    journal.append(event);
+    journal.registerApplicationSecrets(["value", type, "bash", "longfixture"]);
+    journal.append({ ...event, id: "new-proof" });
+    const expected = { ...event, data: masked };
+    const newer = { ...expected, id: "new-proof" };
+    expect(journal.events().map(({ event }) => event)).toEqual([event, newer]);
+
+    const response = await runner.handleDialout({ ...command, op: "events" });
+    expect(await response.json()).toMatchObject({ result: { events: [expected, newer] } });
+    journal.sanitize();
+    expect(journal.events().map(({ event }) => event)).toEqual([expected, newer]);
+  } finally {
+    await runner.close();
+    journal.close();
+  }
+});
+
+test("proof truncation persists only scrubbed correlation metadata", () => {
+  const journal = new Journal(":memory:", (text) => text);
+  try {
+    const event = {
+      id: "proof",
+      at: 1,
+      kind: "other",
+      type: "armada/opencodeShell",
+      conversationId: "conversation-fixturevalue",
+      data: { tool: "bash", output: "x".repeat(30_000) },
+    } satisfies AgentEvent;
+    journal.append(event);
+    journal.registerApplicationSecrets(["x", "fixturevalue"]);
+    journal.append(event);
+    expect(journal.events().at(-1)?.event).toMatchObject({
+      kind: "other",
+      type: "event_truncated",
+      conversationId: "conversation-[REDACTED]",
+    });
+    journal.sanitize();
+    expect(journal.events().map(({ event }) => event)).toMatchObject([
+      { type: "event_truncated", conversationId: "conversation-[REDACTED]" },
+      { type: "event_truncated", conversationId: "conversation-[REDACTED]" },
+    ]);
+  } finally {
+    journal.close();
+  }
+});

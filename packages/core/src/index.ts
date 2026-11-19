@@ -1,5 +1,14 @@
 export { accountBindingAvailability, NATIVE_ACCOUNT_CHANGE_UNSUPPORTED } from "./account-binding-policy.ts";
 export {
+  type AccountCandidate,
+  type AccountChoice,
+  type AccountPool,
+  type AccountPoolFacts,
+  type AccountRefusal,
+  type AccountSkip,
+  choose,
+} from "./account-pool.ts";
+export {
   API_FAILURE_HELP,
   API_FAILURE_STATUS,
   type ApiFailureCode,
