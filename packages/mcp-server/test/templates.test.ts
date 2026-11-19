@@ -408,6 +408,64 @@ for (const retained of [false, true]) {
   });
 }
 
+test("a lost allocation commit acknowledgement settles without dispatching the provider", async () => {
+  const f = await fixture();
+  const transaction = f.sql.transaction!.bind(f.sql);
+  let loseAcknowledgement = false;
+  let committedState: unknown;
+  const injected = spyOn(f.sql, "transaction").mockImplementation(async (work) => {
+    const result = await transaction(work);
+    if (!loseAcknowledgement) return result;
+    loseAcknowledgement = false;
+    committedState = (await f.db.query("select state from template_launch_requests")).rows;
+    throw Error("allocation acknowledgement lost");
+  });
+  try {
+    const template = (await f.create()).item as LaunchTemplate;
+    f.runtime.options = {
+      ...f.runtime.options,
+      beforeFork: async () => {
+        loseAcknowledgement = true;
+      },
+    };
+    const result = await f.launch(template.id);
+    expect(committedState).toEqual([{ state: "allocating" }]);
+    expect(result.state).toBe("failed");
+    expect(await f.launch(template.id)).toEqual(result);
+    expect(f.boat.forks).toHaveLength(0);
+  } finally {
+    injected.mockRestore();
+    await f.close();
+  }
+});
+
+test.each(["deleted", "pending"] as const)(
+  "template registration failure releases the snapshot reference only after confirmed deletion (%s)",
+  async (deleteStatus) => {
+    const f = await fixture();
+    try {
+      const template = (await f.create()).item as LaunchTemplate;
+      f.runtime.stores.sandboxes.insert = async () => {
+        throw Error("registration failed");
+      };
+      f.provider.delete = async () => ({ status: deleteStatus });
+      await f.db.query("select set_config('request.jwt.claim.sub',$1,false)", [f.people.admin]);
+
+      const result = await f.launch(template.id);
+      expect(f.boat.forks).toHaveLength(1);
+      if (deleteStatus === "deleted") {
+        expect(result.state).toBe("failed");
+        await expect(f.db.query("select remove_golden($1)", [f.goldenId])).resolves.toBeDefined();
+      } else {
+        expect(result.state).toBe("reconciling");
+        await expect(f.db.query("select remove_golden($1)", [f.goldenId])).rejects.toThrow("unresolved");
+      }
+    } finally {
+      await f.close();
+    }
+  },
+);
+
 test("template launch records externalRef on the sandbox and keys it into the request fingerprint", async () => {
   const f = await fixture();
   try {
