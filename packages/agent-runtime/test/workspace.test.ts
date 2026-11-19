@@ -14,6 +14,7 @@ function processHost() {
   };
   const started = Promise.withResolvers<void>();
   let launches = 0;
+  let environment: NodeJS.ProcessEnv | undefined;
   let live = true;
   let timer: (() => void) | undefined;
   const kills: [number, string | number | undefined][] = [];
@@ -30,8 +31,9 @@ function processHost() {
     throw Error("must signal the verified group");
   };
   const host: WorkspaceExecutionHost = {
-    spawn: (() => {
+    spawn: ((_command: string, _args: string[], options: { env?: NodeJS.ProcessEnv }) => {
       launches++;
+      environment = options.env;
       queueMicrotask(() => child.emit("spawn"));
       return child;
     }) as unknown as WorkspaceExecutionHost["spawn"],
@@ -54,6 +56,7 @@ function processHost() {
     started: started.promise,
     kills,
     launches: () => launches,
+    environment: () => environment,
     expire() {
       if (!timer) throw Error("no deadline");
       timer();
@@ -91,7 +94,11 @@ async function fixture() {
     undefined,
     undefined,
     undefined,
-    { execEnv: { HOME: home, PATH: "/usr/bin:/bin" }, workspaceHost: processes.host },
+    {
+      execEnv: { HOME: home, PATH: "/usr/bin:/bin" },
+      readableVariables: { APP_REGION: "eu-west" },
+      workspaceHost: processes.host,
+    },
   );
   const call = (r: RunnerRequest, signal?: AbortSignal) =>
     runner.handle(
@@ -139,6 +146,7 @@ test("private workspace command replay runs once without starting inference", as
     expect(first).toMatchObject({ result: { exitCode: 0, detached: false, timedOut: false } });
     expect(await (await f.step("init", command, f.home)).json()).toEqual(first);
     expect(f.processes.launches()).toBe(1);
+    expect(f.processes.environment()?.APP_REGION).toBe("eu-west");
     expect(f.starts()).toBe(0);
     expect(
       f.journal
