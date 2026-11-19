@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import type { RunnerRequest } from "@armada/agent-runtime";
 import { createSqlAuthStore } from "@armada/auth";
 import {
@@ -23,6 +23,7 @@ import {
   runtimeConfigurationWithVariables,
 } from "../src/runtime-readable-variables.ts";
 import { createRuntimeResume } from "../src/runtime-resume.ts";
+import { sqlOver } from "../src/sql.ts";
 import { publishedFailure, publishedResponse } from "./published-response.ts";
 import { rowOnlyDatabase } from "./row-only-database.ts";
 import { ENCRYPTION_KEY, fakeBoat } from "./support.ts";
@@ -38,7 +39,13 @@ async function fixture(
   deliverSecrets = false,
 ) {
   const { db, people } = await sharedDatabase();
-  const sql: Sql = { query: (q, v) => db.query(q, v), transaction: (work) => db.transaction((tx) => work(tx)) };
+  const driver = (connection: Pick<Sql, "query">) => ({
+    unsafe: async (query: string, params: never[]) => (await connection.query(query, params)).rows,
+  });
+  const sql = sqlOver({
+    ...driver(db),
+    begin: (work) => db.transaction((tx) => work(driver(tx))),
+  });
   const templates = createTemplateService(sql, ENCRYPTION_KEY);
   const application = createApplicationVault(sql, ENCRYPTION_KEY);
   const caller = {
@@ -289,52 +296,73 @@ for (const entry of ["explicit", "default"] as const)
     });
     const template = await f.create();
     const request = f.request(template.id);
-    const first = await f.api(request);
-    expect(first.status).toBe(200);
-    const launched = (await first.json()) as {
-      id: string;
-      state: string;
-      runtime: { kind: string; epoch: string };
-      manifest: { variables: Record<string, string> };
-    };
-    if (entry === "explicit") publishedResponse("sandbox/launch").parse(launched);
-    expect(launched).toMatchObject({ state: "succeeded", runtime: { kind: "armada", epoch: "7" } });
-    expect(f.starts).toEqual([{ APP_REGION: "original\n$(not-a-command)" }]);
-    const delivered = f.starts[0];
-    if (!delivered) throw Error("Missing enrolled variable delivery");
-    expect(launched.manifest.variables).toEqual(delivered);
-    await f.application.command(f.caller, "variable", "update", {
-      org: f.people.org,
-      id: f.variableId,
-      expectedVersion: 1,
-      value: "changed-source",
-    });
-    const replay = await f.api(request);
-    expect(replay.status).toBe(200);
-    expect(await replay.json()).toEqual(launched);
-    await f.templates.command(f.caller, "delete", { org: f.people.org, id: template.id, expectedRevision: 1 });
-    if (entry === "explicit") {
-      const mismatched = await f.api({ ...request, harness: "codex" });
-      expect(mismatched.status).toBe(400);
+    const log = spyOn(console, "info");
+    try {
+      const first = await f.api(request);
+      expect(first.status).toBe(200);
+      const launched = (await first.json()) as {
+        id: string;
+        state: string;
+        runtime: { kind: string; epoch: string };
+        manifest: { variables: Record<string, string> };
+      };
+      if (entry === "explicit") publishedResponse("sandbox/launch").parse(launched);
+      expect(launched).toMatchObject({ state: "succeeded", runtime: { kind: "armada", epoch: "7" } });
+      expect(f.starts).toEqual([{ APP_REGION: "original\n$(not-a-command)" }]);
+      const delivered = f.starts[0];
+      if (!delivered) throw Error("Missing enrolled variable delivery");
+      expect(launched.manifest.variables).toEqual(delivered);
+      await f.application.command(f.caller, "variable", "update", {
+        org: f.people.org,
+        id: f.variableId,
+        expectedVersion: 1,
+        value: "changed-source",
+      });
+      const replay = await f.api(request);
+      expect(replay.status).toBe(200);
+      expect(await replay.json()).toEqual(launched);
+      await f.templates.command(f.caller, "delete", { org: f.people.org, id: template.id, expectedRevision: 1 });
+      if (entry === "explicit") {
+        const mismatched = await f.api({ ...request, harness: "codex" });
+        expect(mismatched.status).toBe(400);
+      }
+      const tombstoneReplay = await f.api(request);
+      expect(tombstoneReplay.status).toBe(200);
+      expect(await tombstoneReplay.json()).toEqual(launched);
+      expect(f.physical.forks).toHaveLength(1);
+      expect(f.prompts()).toBe(1);
+      // Resume reads the admitted manifest, not the mutable current variable source.
+      expect(
+        (
+          await readRuntimeTemplateEnvironment(
+            f.sql,
+            { userId: f.people.owner, orgId: f.people.org },
+            launched.id,
+            "modal",
+          )
+        ).variables,
+      ).toEqual({
+        APP_REGION: "original\n$(not-a-command)",
+      });
+      const samples = log.mock.calls
+        .map(([line]) => JSON.parse(String(line)))
+        .filter(({ event }) => event === "modal_golden_launch_timing");
+      expect(samples).toHaveLength(1);
+      const [sample] = samples;
+      expect(sample).toMatchObject({ surface: "template_rest", sandboxId: launched.id });
+      expect(sample.stages.map(({ name }: { name: string }) => name)).toEqual([
+        "admission",
+        "provider_resolution",
+        "template_execution",
+      ]);
+      expect(sample.stages[0].sqlStatements).toBeGreaterThan(0);
+      expect(sample.stages[2].sqlStatements).toBeGreaterThan(0);
+      expect(sample.sqlStatements).toBe(
+        sample.stages.reduce((sum: number, stage: { sqlStatements: number }) => sum + stage.sqlStatements, 0),
+      );
+    } finally {
+      log.mockRestore();
     }
-    const tombstoneReplay = await f.api(request);
-    expect(tombstoneReplay.status).toBe(200);
-    expect(await tombstoneReplay.json()).toEqual(launched);
-    expect(f.physical.forks).toHaveLength(1);
-    expect(f.prompts()).toBe(1);
-    // Resume reads the admitted manifest, not the mutable current variable source.
-    expect(
-      (
-        await readRuntimeTemplateEnvironment(
-          f.sql,
-          { userId: f.people.owner, orgId: f.people.org },
-          launched.id,
-          "modal",
-        )
-      ).variables,
-    ).toEqual({
-      APP_REGION: "original\n$(not-a-command)",
-    });
   });
 
 test("Modal template selection rejects foreign provider/harness, invalid pins and mixed source overrides before allocation", async () => {

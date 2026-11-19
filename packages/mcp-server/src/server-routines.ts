@@ -7,7 +7,7 @@ import {
 } from "@armada/core/server";
 import type { ControlOptions } from "./control.ts";
 import type { DataSource } from "./data.ts";
-import { templateRuntime } from "./launch-control.ts";
+import { launchTemplate, templateRuntime } from "./launch-control.ts";
 import { observeRoutinePrompt } from "./routine-observer.ts";
 
 interface ServerRoutineOptions {
@@ -67,27 +67,33 @@ export function createServerRoutineScheduler({ sql, control, templates, provider
         ).rows[0];
         if (!grant) throw new VaultError("forbidden", "Routine owner authorization changed.");
       };
-      return templates.command(caller, "launch", input, {
-        ...runtime,
-        beforeDockerReserve: async (tx: Sql, id: string) => {
-          await authorize(tx);
-          await admission.beforeFork(tx);
-          await runtime.options?.beforeFork?.(id);
-        },
-        beforeDockerStart: () => authorize(),
-        options: {
-          ...runtime.options,
-          beforeFork: async (id) => {
-            await authorize();
+      return launchTemplate(
+        templates,
+        caller,
+        input,
+        {
+          ...runtime,
+          beforeDockerReserve: async (tx: Sql, id: string) => {
+            await authorize(tx);
+            await admission.beforeFork(tx);
             await runtime.options?.beforeFork?.(id);
-            await admission.beforeFork();
           },
-          beforeStart: async (provider, sandbox) => {
-            await authorize();
-            await runtime.options?.beforeStart?.(provider, sandbox);
+          beforeDockerStart: () => authorize(),
+          options: {
+            ...runtime.options,
+            beforeFork: async (id) => {
+              await authorize();
+              await runtime.options?.beforeFork?.(id);
+              await admission.beforeFork();
+            },
+            beforeStart: async (provider, sandbox) => {
+              await authorize();
+              await runtime.options?.beforeStart?.(provider, sandbox);
+            },
           },
         },
-      });
+        "routine",
+      );
     },
   });
 }

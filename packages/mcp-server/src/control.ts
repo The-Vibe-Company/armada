@@ -78,7 +78,7 @@ import {
 } from "./golden-control.ts";
 import { GOLDEN_ADOPTION_REQUEST } from "./golden-rest-schemas.ts";
 import type { Invitations } from "./invitations.ts";
-import { launchActor, launchRoute, templateRuntime } from "./launch-control.ts";
+import { launchActor, launchRoute, launchTemplate, templateRuntime } from "./launch-control.ts";
 import { exposedSecrets, launchCredentials } from "./launch-credentials.ts";
 import { launchOptions, launchProviderOptions } from "./launch-options.ts";
 import {
@@ -352,7 +352,9 @@ export async function dispatchControlCommand(
   }
   if (route.startsWith("templates/")) {
     if (!options.templates) throw new VaultError("unavailable", "Templates unavailable.");
-    return options.templates.command(caller, route.slice(10), body, templateRuntime(options, caller));
+    const runtime = templateRuntime(options, caller);
+    if (route === "templates/launch") return launchTemplate(options.templates, caller, body, runtime, "template_rest");
+    return options.templates.command(caller, route.slice(10), body, runtime);
   }
 
   if (route.startsWith("variables/") || route.startsWith("secrets/")) {
@@ -946,26 +948,32 @@ export async function dispatchControlCommand(
           const input = Object.fromEntries(
             PINNED_MODAL_TEMPLATE_FIELDS.filter((key) => body[key] !== undefined).map((key) => [key, body[key]]),
           );
-          return options.templates.command(caller, "launch", input, {
-            validateDefinition: (definition) => {
-              if (definition.provider !== "modal" || definition.harness !== body.harness)
-                throw new VaultError("invalid", "Modal runtime templates require the selected Modal harness.");
+          return launchTemplate(
+            options.templates,
+            caller,
+            input,
+            {
+              validateDefinition: (definition) => {
+                if (definition.provider !== "modal" || definition.harness !== body.harness)
+                  throw new VaultError("invalid", "Modal runtime templates require the selected Modal harness.");
+              },
+              stores: {
+                goldens: base.stores.goldens,
+                sandboxes: base.stores.sandboxes,
+                credentials: launchCredentials(
+                  options.store,
+                  options.encryptionKey,
+                  undefined,
+                  options.modelAuth,
+                  options.github ? { ...options.github, store: options.store } : undefined,
+                ),
+                ...(options.runtimeMcp ? { connections: options.runtimeMcp.connections } : {}),
+              },
+              provider: (golden) => options.modalRuntimeHostFor!({ ...golden, runtimeTransport: "dialout" }, caller),
+              options: { ...base.options, runtime: options.modalRuntimeLaunch },
             },
-            stores: {
-              goldens: base.stores.goldens,
-              sandboxes: base.stores.sandboxes,
-              credentials: launchCredentials(
-                options.store,
-                options.encryptionKey,
-                undefined,
-                options.modelAuth,
-                options.github ? { ...options.github, store: options.store } : undefined,
-              ),
-              ...(options.runtimeMcp ? { connections: options.runtimeMcp.connections } : {}),
-            },
-            provider: (golden) => options.modalRuntimeHostFor!({ ...golden, runtimeTransport: "dialout" }, caller),
-            options: { ...base.options, runtime: options.modalRuntimeLaunch },
-          });
+            "template_rest",
+          );
         }
         return canonicalLaunchResponse(await launchRoute(options, caller, body, "modal"));
       }

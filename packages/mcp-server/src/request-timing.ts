@@ -78,6 +78,7 @@ type GoldenLaunchPhase =
   | "provider_resolution"
   | "receipt_admission"
   | "shared_launcher"
+  | "template_execution"
   | "response_publication";
 
 export type GoldenLaunchTiming = {
@@ -88,8 +89,9 @@ export type GoldenLaunchTiming = {
 const launchSql = new AsyncLocalStorage<{ statements: number }>();
 
 export async function observeGoldenLaunch<T>(
-  surface: "rest" | "mcp",
+  surface: "rest" | "mcp" | "template_rest" | "routine",
   work: (timing: GoldenLaunchTiming) => Promise<T>,
+  finalPhase: "response_publication" | "template_execution" = "response_publication",
 ) {
   const sql = { statements: 0 };
   const started = performance.now();
@@ -112,7 +114,7 @@ export async function observeGoldenLaunch<T>(
     }),
   );
   if (sandboxId) {
-    checkpoint("response_publication");
+    checkpoint(finalPhase);
     try {
       console.info(
         JSON.stringify({
