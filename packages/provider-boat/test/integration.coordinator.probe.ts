@@ -30,8 +30,18 @@ async function ready(provider: Provider, sandboxId: string) {
   );
 }
 
+const boundedFetch: typeof fetch = Object.assign(
+  (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+    const timeout = AbortSignal.timeout(120_000);
+    const signal = init?.signal ? AbortSignal.any([init.signal, timeout]) : timeout;
+    return fetch(input, { ...init, signal });
+  },
+  { preconnect: fetch.preconnect },
+);
+
 const provider = createBoatProvider({
   apiKey,
+  fetch: boundedFetch,
   ...(process.env.BOAT_BASE_URL ? { baseUrl: process.env.BOAT_BASE_URL } : {}),
 });
 const cleanup: Array<() => Promise<unknown>> = [];
