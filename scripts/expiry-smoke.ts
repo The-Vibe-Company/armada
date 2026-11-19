@@ -13,6 +13,7 @@ interface Case {
   reasoningEffort?: string;
 }
 interface Io {
+  launch<T>(body: object, keepHandle: (id: string) => void): Promise<T>;
   request<T>(path: string, body: object): Promise<T>;
   step<T>(name: string, action: () => Promise<T>): Promise<T>;
   withCleanup<T>(action: () => Promise<T>): Promise<T>;
@@ -79,17 +80,22 @@ export async function runExpiryCase(item: Case, io: Io): Promise<boolean> {
   try {
     await io.step("expiry_launch", async () => {
       attempted = true;
-      const result = await api<{ sandbox: { id: string; provider: string }; promptId?: string }>("launch", {
-        golden: item.golden,
-        provider: item.provider,
-        harness: item.harness,
-        model: item.model,
-        credentialId: item.modelAccountId,
-        ...(item.reasoningEffort ? { reasoningEffort: item.reasoningEffort } : {}),
-        connections: [],
-        skipSkillDefaults: true,
-        ttlSeconds: TTL,
-      });
+      const result = await io.launch<{ sandbox: { id: string; provider: string }; promptId?: string }>(
+        {
+          golden: item.golden,
+          provider: item.provider,
+          harness: item.harness,
+          model: item.model,
+          credentialId: item.modelAccountId,
+          ...(item.reasoningEffort ? { reasoningEffort: item.reasoningEffort } : {}),
+          connections: [],
+          skipSkillDefaults: true,
+          ttlSeconds: TTL,
+        },
+        (handle) => {
+          id = handle;
+        },
+      );
       if (typeof result?.sandbox?.id === "string" && result.sandbox.id) id = result.sandbox.id;
       if (!id || result.sandbox.provider !== item.provider || result.promptId)
         throw new ExpirySmokeFailure("invalid_receipt");
