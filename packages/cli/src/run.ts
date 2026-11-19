@@ -20,16 +20,14 @@ import { acceptedOptions, flag, oneName, parseArgs, providerFlag, single, values
 import { ArmadaApiError, createArmadaApiClient, resolveArmadaOrigin } from "./armada-api.ts";
 import { type AuthIo, loginCommand, productionAuthIo } from "./auth-commands.ts";
 import { commandWords, HELP } from "./command-catalog.ts";
-import { findCommand } from "./commands/index.ts";
+import { findCommand, focusedHelp } from "./commands/index.ts";
 import { dockerSnapshotCommand } from "./docker-snapshots.ts";
 import { failureHint } from "./failure-hint.ts";
 import { type LocalHostIo, localHostCommand, productionLocalHostIo } from "./local-host.ts";
-import { onboardingHelp } from "./onboarding-help.ts";
 import { profileStores, selectProfile } from "./profiles.ts";
 import { sizePolicyCommand } from "./size-policy-command.ts";
 import { skillCommand } from "./skill-install.ts";
 import { snapshotText } from "./snapshot-text.ts";
-import { credsCommand, vaultIo } from "./vault-commands.ts";
 
 export interface Io {
   out(text: string): void;
@@ -69,22 +67,17 @@ export async function run(argv: readonly string[], io: Io, deps: Deps = {}): Pro
             ...(deps.readStdin ? { readStdin: deps.readStdin } : {}),
           }),
       );
-    if (localArgs.length === 1 && ["snapshot", "golden", "creds", "skill"].includes(localArgs[0] ?? "")) {
-      const family = localArgs[0] === "golden" ? "snapshot" : (localArgs[0] ?? "");
-      if (family === "skill") return skillCommand(["--help"], io);
-      io.out(onboardingHelp([family, "--help"]) ?? HELP);
-      return 0;
-    }
+    if (localArgs.length === 1 && localArgs[0] === "skill") return skillCommand(["--help"], io);
     const bareCommand = localArgs.length === 1 ? findCommand(localArgs[0] ?? "") : undefined;
     if (bareCommand?.helpWhenBare) {
       io.out(bareCommand.help);
       return 0;
     }
-    const focusedHelp = onboardingHelp(localArgs);
-    if (focusedHelp) {
+    const help = focusedHelp(localArgs);
+    if (help) {
       const registered = localArgs.length === 2 ? findCommand(localArgs[0] ?? "") : undefined;
       if (registered?.validateProfileForHelp) selectProfile(argv, deps.env ?? deps.auth?.env ?? process.env);
-      io.out(focusedHelp);
+      io.out(help);
       return 0;
     }
     const selected = selectProfile(argv, deps.env ?? deps.auth?.env ?? process.env);
@@ -202,8 +195,7 @@ function failureExitCode(error: { code: string }): number {
 }
 
 async function dispatch(argv: readonly string[], io: Io, deps: Deps): Promise<number> {
-  const [requestedCommand, ...original] = argv;
-  const command = requestedCommand === "snapshot" ? "golden" : requestedCommand;
+  const [command, ...original] = argv;
   if (command === "skill") return skillCommand(original, io);
   // Command discovery must work before login or organization selection.
   if (
@@ -222,11 +214,7 @@ async function dispatch(argv: readonly string[], io: Io, deps: Deps): Promise<nu
   const useSelectedOrg = registered?.useSelectedOrg;
   const commandUsesSelection =
     typeof useSelectedOrg === "function" ? useSelectedOrg(rest) : registered && useSelectedOrg !== false;
-  if (
-    command &&
-    (commandUsesSelection || command === "golden" || (command === "creds" && rest[0] === "list")) &&
-    !optionArgs.some((arg) => arg === "--org" || arg.startsWith("--org="))
-  ) {
+  if (command && commandUsesSelection && !optionArgs.some((arg) => arg === "--org" || arg.startsWith("--org="))) {
     const auth = authOf(io, deps);
     const selected = await auth.preferences?.read(await resolveArmadaOrigin(auth));
     if (selected) {
@@ -247,16 +235,12 @@ async function dispatch(argv: readonly string[], io: Io, deps: Deps): Promise<nu
     case "help":
       io.out(HELP);
       return 0;
-    case "golden":
-      return golden(rest, io, deps);
-    case "creds":
-      return credsCommand(rest, vaultIo(authOf(io, deps), deps));
     default:
       throw new AuthError(`unknown command '${command}'. Run 'armada --help'.`, "usage");
   }
 }
 
-async function golden(argv: readonly string[], io: Io, deps: Deps): Promise<number> {
+export async function snapshotCommand(argv: readonly string[], io: Io, deps: Deps): Promise<number> {
   const [subcommand, ...rest] = argv;
   if (subcommand === undefined || subcommand === "--help" || subcommand === "-h") {
     io.out(HELP);
