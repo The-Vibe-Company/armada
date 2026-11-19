@@ -14,7 +14,24 @@ import { INTERRUPTED_LAUNCH_REASON } from "./turns.ts";
 import { preserveBeforeStop, recordStopDispatch } from "./work-preservation.ts";
 
 export const UNENROLLED_RESUME_STOP = "runtime_resume_unenrolled";
+const BOAT_ACTIVATION_PHASES = new Set(["init", "provisioning", "provisioned", "cloning"]);
 const OPERATOR_CLEANUP_PREFIX = "Operator cleanup required:";
+
+export async function deferAmbiguousBoatResume(
+  tx: Sql,
+  sandboxId: string,
+  requestId: string,
+  generation: number | undefined,
+) {
+  await tx.query(
+    `update public.sandboxes set activity_until=clock_timestamp(),reconcile_after=clock_timestamp()
+     where id=$1 and provider='boat' and boat_runtime and status='starting'
+       and activity_lease_id=$2 and lifecycle_generation=$3 and activity_until>clock_timestamp()
+       and stop_requested_at is null and deleted_at is null and expires_at>clock_timestamp()
+       and (reconcile_lease_until is null or reconcile_lease_until<=clock_timestamp())`,
+    [sandboxId, requestId, generation],
+  );
+}
 
 export async function requestFailedRuntimeResumeStop(
   tx: Sql,
@@ -290,6 +307,28 @@ export function createSandboxLifecycle(
           return info;
         };
         let info = await observe();
+        if (
+          row.interrupted_resume &&
+          !expired &&
+          !row.stop_requested_at &&
+          !row.application_secret_tainted &&
+          info.id === row.provider_sandbox_id &&
+          info.state === "starting" &&
+          BOAT_ACTIVATION_PHASES.has(info.providerState) &&
+          !info.physicalExitConfirmed
+        ) {
+          handingOffObservedResume = true;
+          await sql.query(
+            `update public.sandboxes set reconcile_after=now()+interval '1 minute',
+               reconcile_lease=null,reconcile_lease_until=null
+             where id=$1 and reconcile_lease=$2 and lifecycle_generation=$3 and status='starting'
+               and reconcile_lease_until>clock_timestamp() and activity_lease_id=$4
+               and activity_until<=clock_timestamp() and expires_at>clock_timestamp()
+               and stop_requested_at is null and deleted_at is null and not application_secret_tainted`,
+            [row.id, token, row.lifecycle_generation, row.activity_lease_id],
+          );
+          return true;
+        }
         if (
           row.interrupted_resume &&
           (info.state === "stopped" ||

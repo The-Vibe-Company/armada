@@ -13,7 +13,7 @@ import { createRuntimeEnrolments } from "./runtime-enrolment.ts";
 import type { RuntimeGitHub } from "./runtime-github.ts";
 import type { RuntimeMcp } from "./runtime-mcp.ts";
 import { refuseConversationSelector, SINGLE_CONVERSATION_GUIDANCE } from "./sandbox-conversation.ts";
-import { requestFailedRuntimeResumeStop } from "./sandbox-lifecycle.ts";
+import { deferAmbiguousBoatResume, requestFailedRuntimeResumeStop } from "./sandbox-lifecycle.ts";
 
 export interface RuntimeResumeInput {
   id: string;
@@ -44,6 +44,12 @@ interface Operation {
   verified_at: string | null;
   receipt: RuntimeResumeReceipt | null;
 }
+export class BoatResumeActivationUncertain extends Error {
+  constructor(cause: unknown) {
+    super("Boat runtime activation outcome is uncertain.", { cause });
+  }
+}
+
 export interface RuntimeResumePlacement {
   start(
     signal: AbortSignal,
@@ -382,13 +388,13 @@ export function createRuntimeResume(
             )
           ).rows[0];
           if (runtime?.live && runtime.epoch === admitted.op.target_epoch) return;
-          const retained = Boolean(
-            found.provider === "boat" &&
-              runtime &&
-              (runtime.activation_confirmed || preActivationArchive) &&
-              !runtime.live &&
-              runtime.epoch === admitted.op.source_epoch,
-          );
+          const boatSourceEpoch =
+            found.provider === "boat" && runtime && !runtime.live && runtime.epoch === admitted.op.source_epoch;
+          const retained = Boolean(boatSourceEpoch && (runtime.activation_confirmed || preActivationArchive));
+          if (boatSourceEpoch && !retained && error instanceof BoatResumeActivationUncertain) {
+            await deferAmbiguousBoatResume(tx, found.id, requestId, admitted.current.lifecycleGeneration);
+            return;
+          }
           const status = await requestFailedRuntimeResumeStop(
             tx,
             found.id,
