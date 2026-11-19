@@ -22,11 +22,7 @@ export function snapshotActionFailure(
     return action === "build"
       ? "The build may still finish. Reload Snapshots and check its status before trying again."
       : SNAPSHOT_ACTION_UNCONFIRMED;
-  const absent =
-    error.code === "unknown_route" ||
-    ((error.code === "not_found" || error.code === undefined) &&
-      ["Unknown route.", "not_found"].includes(error.message));
-  if ((error.status === 404 || error.status === 405) && absent)
+  if (error.status === 404 && error.code === "unknown_route")
     return `This Armada server does not offer ${FEATURES[action]} yet. Ask an Armada administrator to finish setup, then reload Snapshots.`;
   if (action === "build" && error.code === "docker_host_upgrade_required") return error.message;
   if (error.code === "host_draining")

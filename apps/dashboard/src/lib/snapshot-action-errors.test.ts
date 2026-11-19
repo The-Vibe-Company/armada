@@ -14,7 +14,7 @@ test("snapshot action errors suppress diagnostics and give permission or observa
 });
 
 test("only definite missing routes imply unsupported snapshot features", () => {
-  expect(snapshotActionFailure(new ControlError("Unknown route.", 404, "not_found"), "size")).toContain(
+  expect(snapshotActionFailure(new ControlError("Unknown route.", 404, "unknown_route"), "size")).toContain(
     "does not offer machine size defaults",
   );
   expect(snapshotActionFailure(new ControlError(diagnostic, 404), "size")).not.toContain("does not offer");

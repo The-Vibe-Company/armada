@@ -342,13 +342,13 @@ describe("usage", () => {
   });
 
   test("a server that does not offer usage is null; a failure for the account itself is an error", async () => {
-    const answer = (status: number, message: string) =>
+    const answer = (status: number, message: string, code?: string) =>
       createAccountControl({
         serverUrl: "https://armada.test/mcp",
         token: "session",
-        fetch: (async () => Response.json({ error: { message } }, { status })) as unknown as typeof fetch,
+        fetch: (async () => Response.json({ error: { code, message } }, { status })) as unknown as typeof fetch,
       });
-    expect(await answer(404, "Unknown route.").usage(uuid(1))).toBeNull();
+    expect(await answer(404, "Unknown route.", "unknown_route").usage(uuid(1))).toBeNull();
     // The server's read worked but its window is not one this dashboard reads: not a failure, not "no allowance".
     const unreadable = createAccountControl({
       serverUrl: "https://armada.test/mcp",
