@@ -179,7 +179,7 @@ and Docker host daemon protocol retain their own rollout rules.
 | POST | `sandbox/{checkpoint-runtime-v1,resume-runtime-v1,mcp-preflight-v1,github-preflight-v1}` | Public entries for direct-server runtime proof calls; keep off the dashboard proxy | #2774 |
 | GET | `auth/{methods,authorize}` | Public sign-in entries | #2775 |
 | POST | `auth/{exchange,email/start,email/verify,refresh}` | Public sign-in entries | #2775 |
-| GET, POST | `github/oauth/callback` | Two public callback entries | #2775 |
+| GET, POST | `github/oauth/callback` | Public callback and CLI relay entries in `public-auth.ts` | #2775 |
 | POST | `github/{refresh,runtime-status}` | Public entries | #2775 |
 | POST | `templates/launch` | `launchTemplate` (public) | #2775 |
 | POST | `golden/{list,capabilities,adopt}` | Public entries | #2775 |
