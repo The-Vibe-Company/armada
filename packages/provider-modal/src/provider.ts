@@ -2133,7 +2133,11 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
   ) as unknown as ModalProvider;
 }
 
-async function boundModalApp(client: ModalClient, appName: string, binding: ModalBinding): Promise<App> {
+export async function boundModalApp(
+  client: Pick<ModalClient, "apps">,
+  appName: string,
+  binding: ModalBinding,
+): Promise<App> {
   const app = await client.apps.fromName(appName, { environment: binding.environment, createIfMissing: false });
   // The globally unique App ID reached by the explicit credential verifies the binding.
   if (app.appId !== binding.appId) throw refusal("forbidden", "Modal App does not match the immutable binding.");
@@ -2159,17 +2163,18 @@ export function createModalInventory(
   };
 }
 
-async function* listModalInventory(
-  client: ModalClient,
+export async function* listModalInventory(
+  client: Pick<ModalClient, "cpClient">,
   bound: () => Promise<App>,
-  deploymentId: string | undefined,
+  deploymentId: string | undefined | null,
   signal?: AbortSignal,
 ): AsyncGenerator<ProviderInventoryMachine> {
-  if (!deploymentId) throw refusal("provider_routing_unavailable", "Modal inventory requires a deployment identity.");
+  if (deploymentId === undefined || deploymentId === "")
+    throw refusal("provider_routing_unavailable", "Modal inventory requires a deployment identity.");
   signal?.throwIfAborted();
   try {
     const { appId } = await abortable(bound(), signal);
-    const tags = [{ tagName: DEPLOYMENT_TAG, tagValue: deploymentId }];
+    const tags = deploymentId ? [{ tagName: DEPLOYMENT_TAG, tagValue: deploymentId }] : [];
     let beforeTimestamp: number | undefined;
     // The SDK iterator discards creation times. Use its listing RPC, which covers both
     // Modal sandbox backends and scopes the query by the verified environment's App ID.
@@ -2183,7 +2188,8 @@ async function* listModalInventory(
       for (const sandbox of sandboxes) {
         signal?.throwIfAborted();
         const ownership = new Map(sandbox.tags.map(({ tagName, tagValue }) => [tagName, tagValue]));
-        if (ownership.get(DEPLOYMENT_TAG) !== deploymentId || sandbox.appId !== appId) continue;
+        const owner = ownership.get(DEPLOYMENT_TAG);
+        if (!owner || (deploymentId && owner !== deploymentId) || sandbox.appId !== appId) continue;
         const createdAt = new Date(sandbox.createdAt * 1000);
         if (sandbox.createdAt <= 0 || !Number.isFinite(createdAt.getTime()))
           throw refusal("unavailable", "Modal inventory returned an invalid creation time.");
@@ -2191,7 +2197,7 @@ async function* listModalInventory(
         const generation = ownership.get("armada_generation");
         yield {
           machineId: sandbox.id,
-          deploymentId,
+          deploymentId: owner,
           createdAt,
           ...(sandboxId ? { sandboxId } : {}),
           ...(generation ? { generation } : {}),
