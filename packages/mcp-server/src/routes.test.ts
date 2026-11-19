@@ -209,6 +209,44 @@ test.each([
 });
 
 test.each([
+  ["sandbox/bind-credential", { org: 42 }, 400, "invalid", "org must be text."],
+  [
+    "sandbox/test-model-connection",
+    { id: "sandbox", model: "deployment" },
+    400,
+    "invalid",
+    "id must be an Armada sandbox UUID.",
+  ],
+  ["sandbox/mcp-preflight-v1", { runtimeVersion: 2 }, 503, "dependency_unavailable", "Runtime MCP v1 is unavailable."],
+  [
+    "sandbox/mcp-preflight-v1",
+    { runtimeVersion: 1, toolInventory: "true" },
+    400,
+    "invalid",
+    "toolInventory must be boolean.",
+  ],
+  [
+    "sandbox/github-preflight-v1",
+    { runtimeVersion: 1, org: "example", golden: "base", repository: null },
+    400,
+    "invalid",
+    "repository is required.",
+  ],
+] as const)("%s preserves the refusal for %j", async (route, body, status, code, message) => {
+  const preflight = () => {
+    throw new Error("Invalid input reached the preflight service.");
+  };
+  const error = await dispatchControlCommand(route, caller, body, {
+    ...options,
+    runtimeMcp: { preflight } as unknown as NonNullable<ControlOptions["runtimeMcp"]>,
+    runtimeGitHub: { preflight } as unknown as NonNullable<ControlOptions["runtimeGitHub"]>,
+  }).catch((reason) => reason);
+  const response = controlFailureResponse(error);
+  expect(response.status).toBe(status);
+  expect(await response.json()).toMatchObject({ error: { code, message } });
+});
+
+test.each([
   [{ ttlSeconds: 1.5 }, "invalid"],
   [{ ttlSeconds: Number.MAX_SAFE_INTEGER + 1 }, "invalid"],
   [{ ttlSeconds: MAX_SANDBOX_EXTENSION_TTL_SECONDS + 1 }, "extension_maximum"],

@@ -1,6 +1,8 @@
 import { beforeAll, describe, expect, test } from "bun:test";
+import { sandboxCheckOperations } from "@armada/core/contract";
 import { createSqlVaultStore, encryptSecret, type GitHubRuntimeConfiguration } from "@armada/core/server";
 import { GitHubBroker } from "../../agent-runtime/src/github-broker.ts";
+import { type ControlOptions, dispatchControlCommand } from "../src/control.ts";
 import { createRuntimeCheckpoint } from "../src/runtime-checkpoint.ts";
 import { createRuntimeGitHub } from "../src/runtime-github.ts";
 import { rowOnlyDatabase } from "./row-only-database.ts";
@@ -136,6 +138,28 @@ test.each(["modal"] as const)(
     }
   },
 );
+
+test("GitHub preflight returns the verified repository and connection identity", async () => {
+  const { f, service } = await fixture("modal");
+  try {
+    const golden = (await f.db.query<{ name: string }>("select name from goldens where id=$1", [f.row.goldenId]))
+      .rows[0]!;
+    const result = await dispatchControlCommand(
+      "sandbox/github-preflight-v1",
+      f.caller,
+      { org: f.people.org, golden: golden.name, repository: "example/web", runtimeVersion: 1 },
+      { runtimeGitHub: service } as ControlOptions,
+    );
+    expect(sandboxCheckOperations.postSandboxGithubPreflightV1.output.parse(result)).toEqual({
+      githubReady: true,
+      provider: "modal",
+      repository: "example/web",
+      login: "owner",
+    });
+  } finally {
+    await f.close();
+  }
+});
 
 test("GitHub preflight rejects a cross-provider ambiguous golden name before requesting GitHub credentials", async () => {
   const x = await fixture("modal"),

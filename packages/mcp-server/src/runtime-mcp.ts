@@ -2,6 +2,7 @@ import { createHash, createHmac, randomUUID } from "node:crypto";
 import { type McpConfiguration, validateMcpConfiguration } from "@armada/agent-runtime";
 import type { Harness } from "@armada/core";
 import { MAX_MCP_CONNECTIONS, parsePinnedMcpStdio } from "@armada/core";
+import { sandboxCheckOperations } from "@armada/core/contract";
 import {
   createSqlMcpLaunchPort,
   createSqlMcpLeasePort,
@@ -76,16 +77,6 @@ export function createRuntimeMcp(options: {
   const gatewayServer = (id: string, token: string) => httpServer(`/mcp/gateway/${id}`, token);
   const selfServer = (binding: Parameters<typeof selfFinishToken>[1]) =>
     httpServer("/api/v1/orchestrator-tools/mcp", selfFinishToken(key, binding));
-  const ids = (values: string[]) => {
-    if (
-      !Array.isArray(values) ||
-      !values.length ||
-      values.length > MAX_MCP_CONNECTIONS ||
-      values.some((v) => typeof v !== "string" || !/^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/i.test(v))
-    )
-      throw new VaultError("invalid", `Select 1–${MAX_MCP_CONNECTIONS} MCP connection UUIDs.`);
-    return [...new Set(values.map((v) => v.toLowerCase()))].sort();
-  };
   async function connections(db: Sql, caller: Pick<Caller, "userId">, org: string, selected: string[]) {
     const { rows: result } = await db.query<
       ConnectionDefinition & {
@@ -124,9 +115,12 @@ export function createRuntimeMcp(options: {
     }
     return result.map(({ id, transport }) => ({ id, transport }));
   }
-  async function preflight(caller: Caller, input: { org: string; connections: string[]; toolInventory?: boolean }) {
+  async function preflight(caller: Caller, input: { org: string; connections: unknown; toolInventory?: boolean }) {
     if (!caller.orgs.some((m) => m.orgId === input.org)) return deny();
-    const selected = ids(input.connections);
+    const { connections: selection } = sandboxCheckOperations.postSandboxMcpPreflightV1.input.body.shape;
+    const parsed = selection.safeParse(input.connections);
+    if (!parsed.success) throw new VaultError("invalid", `Select 1–${MAX_MCP_CONNECTIONS} MCP connection UUIDs.`);
+    const selected = [...new Set(parsed.data.map((id) => id.toLowerCase()))].sort();
     const definitions = await connections(sql, caller, input.org, selected);
     const inventory: { connectionId: string; tools: string[] }[] = [];
     for (const { id, transport } of definitions) {

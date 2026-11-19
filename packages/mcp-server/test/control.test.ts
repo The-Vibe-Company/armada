@@ -20,7 +20,7 @@ import {
   VaultError,
   type VaultStore,
 } from "@armada/core";
-import { launchEnvelope } from "@armada/core/contract";
+import { launchEnvelope, sandboxCheckOperations } from "@armada/core/contract";
 import { createSkillDefaultsService, createSqlVaultStore, createTemplateService } from "@armada/core/server";
 import { appendModalEvents, createSqlModalStore, type Machine, type Scope, scopeKey } from "@armada/provider-modal";
 import type { PGlite } from "@electric-sql/pglite";
@@ -2062,7 +2062,9 @@ test.each(["claude", "codex"] as const)(
       expect(attempts.map((result) => result.code).sort()).toEqual([0, 1]);
       // The loser lost the compare-and-swap; it was not refused for its org name.
       expect(attempts.find((result) => result.code === 1)!.err).toContain("bound");
-      const winner = JSON.parse(attempts.find((result) => result.code === 0)!.out);
+      const winner = sandboxCheckOperations.bindSandboxCredential.output.parse(
+        JSON.parse(attempts.find((result) => result.code === 0)!.out),
+      );
       expect([chosen, alternate]).toContain(winner.credentialId);
       expect(winner).toMatchObject({ id, credentialVersion: 1, harness, status: "bound" });
       expect(JSON.stringify(attempts)).not.toContain("chosen-token");
@@ -2642,8 +2644,25 @@ test("CLI/API connection checks require the owner and current bound revision, ex
       code: "invalid_api_key",
     });
     expect(rejected.out).not.toContain(key);
-    receipt = { ok: true, status: 200, error: null, code: null };
-    expect((await owner.run(args)).code).toBe(0);
+    const checkModel = (body: Record<string, unknown>) =>
+      handleControlRequest(
+        new Request("https://armada.test/api/v1/sandbox/test-model-connection", {
+          method: "POST",
+          headers: {
+            authorization: `Bearer eyJhbGciOiJIUzI1NiJ9.${btoa(JSON.stringify({ sub: STAN })).replace(/=+$/, "")}.sig`,
+          },
+          body: JSON.stringify(body),
+        }),
+        options,
+      );
+    const success = { ok: true, status: 200, error: null, code: null };
+    receipt = success;
+    const accepted = await checkModel({ id, model: "deployment" });
+    expect(accepted?.status).toBe(200);
+    expect(sandboxCheckOperations.testSandboxModelConnection.output.parse(await accepted?.json())).toEqual({
+      id,
+      test: success,
+    });
     expect(
       (await db.query<{ conversation_ids: string[] }>("select conversation_ids from sandboxes where id=$1", [id]))
         .rows[0]?.conversation_ids,
@@ -2657,16 +2676,7 @@ test("CLI/API connection checks require the owner and current bound revision, ex
     expect(badFlags.code).not.toBe(0);
     expect(badFlags.err).toContain("accept only --model");
     expect(calls).toBe(before);
-    const extra = await handleControlRequest(
-      new Request("https://armada.test/api/v1/sandbox/test-model-connection", {
-        method: "POST",
-        headers: {
-          authorization: `Bearer eyJhbGciOiJIUzI1NiJ9.${btoa(JSON.stringify({ sub: STAN })).replace(/=+$/, "")}.sig`,
-        },
-        body: JSON.stringify({ id, model: "deployment", apiKey: key }),
-      }),
-      options,
-    );
+    const extra = await checkModel({ id, model: "deployment", apiKey: key });
     expect(extra?.status).toBe(400);
     expect(await extra?.text()).not.toContain(key);
     expect(calls).toBe(before);
