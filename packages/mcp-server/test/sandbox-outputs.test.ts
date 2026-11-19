@@ -132,6 +132,45 @@ test("collected outputs survive stop, deduplicate webhook events and enforce int
   expect(await routeFor(service, people.owner, people.org)(new Request(malformed))).toBeNull();
 });
 
+test("output dispatch preserves path, method, and range refusals", async () => {
+  const { people, id, sql } = await fixture();
+  const provider = { readOutputs: async () => [file("a b.txt", "document")] };
+  const service = createSandboxOutputs(sql, KEY, async () => provider);
+  await captureFinalOutputs(sql, provider, id, { key: KEY });
+  const route = routeFor(service, people.owner, people.org);
+  const url = `https://armada.example/api/v1/sandboxes/${id}/outputs`;
+  const download = `${url}/a%20b.txt`;
+
+  expect(await route(new Request(`${url}/a/b.txt`))).toBeNull();
+  expect(await route(new Request(`${url}/`))).toBeNull();
+  const wrongMethod = await route(new Request(url, { method: "POST" }));
+  expect(wrongMethod?.status).toBe(405);
+  expect(await wrongMethod?.json()).toEqual({ error: "Use GET" });
+
+  for (const segment of ["%ZZ", "a%2Fb.txt", "a%00b.txt"]) {
+    const response = await route(new Request(`${url}/${segment}`));
+    expect(response?.status).toBe(400);
+    expect(await response?.json()).toEqual({ error: "invalid_name" });
+  }
+  for (const range of ["bytes=-", "bytes=1-0", "bytes=8-", "bytes=0-1,2-3", "bytes=0-9007199254740992"]) {
+    const response = await route(new Request(download, { headers: { range } }));
+    expect(response?.status).toBe(416);
+    expect(response?.headers.get("content-range")).toBe("bytes */8");
+    expect(response?.body).toBeNull();
+  }
+  for (const [range, expected] of [
+    ["bytes=-3", "ent"],
+    ["bytes=6-", "nt"],
+  ]) {
+    const response = await route(new Request(download, { headers: { range } }));
+    expect(response?.status).toBe(206);
+    expect(await response?.text()).toBe(expected);
+  }
+  const changed = await route(new Request(download, { headers: { range: "bytes=-", "if-range": '"stale"' } }));
+  expect(changed?.status).toBe(200);
+  expect(await changed?.text()).toBe("document");
+});
+
 test.each([
   [
     "interrupted launch",
