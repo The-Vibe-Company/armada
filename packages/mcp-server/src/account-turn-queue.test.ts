@@ -106,9 +106,7 @@ test("an accepted request creates one generation-fenced dispatch job across iden
     generation: string;
     state: string;
     payload_enc: Uint8Array<ArrayBuffer>;
-  }>(
-    "select kind,sandbox_id,org_id,generation::text,state,payload_enc from public.jobs",
-  );
+  }>("select kind,sandbox_id,org_id,generation::text,state,payload_enc from public.jobs");
   expect(rows).toEqual([
     {
       kind: "turn_dispatch",
