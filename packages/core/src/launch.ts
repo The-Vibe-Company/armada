@@ -25,6 +25,7 @@ import {
   resolveLaunchSkills,
 } from "./launch-plan.ts";
 import { runtimeLaunch } from "./launch-runtime.ts";
+import { LaunchSecretRefusal } from "./launch-secrets.ts";
 import type { LaunchStage } from "./launch-stages.ts";
 import { isLaunchTtlSeconds, validateLaunchSkillPins } from "./launch-validation.ts";
 import { type MachineSize, resolveMachineSize } from "./machine-size.ts";
@@ -651,6 +652,10 @@ export async function launchSandbox(
         /* Best effort only. */
       }
     };
+    const startFailure = (error: unknown) =>
+      record.runtimeTransport === "dialout" && provider.id === "modal" && error instanceof LaunchSecretRefusal
+        ? new LaunchError("conflict", error.message, { cause: error, sandboxId: record.id })
+        : withSandbox(error, record.id, secrets);
     const start = async (signal: AbortSignal) => {
       if ((record.boatRuntime === true || record.runtimeTransport === "dialout") !== (strategy.kind === "enrolled"))
         throw new LaunchError("start_failed", "The sandbox runtime selection was not persisted; no agent was started.");
@@ -799,7 +804,7 @@ export async function launchSandbox(
                   golden.config.init.reduce((sum, command) => sum + initCommand(command).timeoutSeconds, 0)),
             failurePatch: (error) => ({
               status: "failed",
-              statusReason: withSandbox(error, record.id, secrets).message,
+              statusReason: startFailure(error).message,
             }),
           }),
         );
@@ -809,7 +814,7 @@ export async function launchSandbox(
       await stores.sandboxes.update(record.id, completed.patch);
       return reportTiming(completed.result);
     } catch (error) {
-      const failure = withSandbox(error, record.id, secrets);
+      const failure = startFailure(error);
       if (!activityLeaseId)
         await quietly(() => stores.sandboxes.update(record.id, { status: "failed", statusReason: failure.message }));
       await quietly(() => provider.stop({ sandboxId: forked.id }));
