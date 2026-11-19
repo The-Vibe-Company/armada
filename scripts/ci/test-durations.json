@@ -203,7 +203,7 @@
     "packages/core/test/ssh-readable-variables.test.ts": 0.137,
     "packages/core/test/token-redaction.test.ts": 0.014,
     "packages/core/test/turn-model.test.ts": 0.007,
-    "packages/core/test/vault-db.test.ts": 7.424,
+    "packages/core/test/vault-db.test.ts": 2.262,
     "packages/core/test/version.test.ts": 0.007,
     "packages/core/test/vm-resource-reading.test.ts": 0.008,
     "packages/core/test/work-preservation.test.ts": 2.982,

@@ -386,8 +386,8 @@ describe("Skillpack registry credentials", () => {
 });
 
 describe("named model accounts", () => {
-  test("account creation defaults agree across legacy and named paths without resetting overrides", async () => {
-    await withVault(async ({ store, people }) => {
+  test("legacy account creation applies defaults and replacement preserves overrides", async () => {
+    await withVault(async ({ db, store, people }) => {
       const org = await createOrg(store, people.stan, "Defaults");
       for (const scope of ["user", "org"] as const) {
         const owner = scope === "user" ? people.stan : org.id;
@@ -395,10 +395,17 @@ describe("named model accounts", () => {
           const expected = kind === "morph" ? 2 : null;
           const write = () =>
             setCredential(store, KEY, people.stan, { scope, org: org.id, kind, value: "model_key_placeholder" });
-          const current = async () =>
-            (await store.listCredentials(scope, owner)).find((row) => row.kind === kind && row.status !== "deleted")!;
+          const current = async () => {
+            const { rows } = await db.query<{ id: string; max_agents: number | null }>(
+              "select id, max_agents from credentials where scope=$1 and owner_id=$2 and kind=$3 and status<>'deleted'",
+              [scope, owner, kind],
+            );
+            expect(rows).toHaveLength(1);
+            return rows[0]!;
+          };
           await write();
-          expect((await current()).maxAgents).toBe(expected);
+          const initial = await current();
+          expect(initial.max_agents).toBe(expected);
           for (const maxAgents of [5, null]) {
             await store.mutateAccount!(
               people.stan,
@@ -406,14 +413,14 @@ describe("named model accounts", () => {
                 action: "limits",
                 scope,
                 org: org.id,
-                id: (await current()).id!,
+                id: initial.id,
                 maxAgents,
               },
               undefined,
               KEY,
             );
             await write();
-            expect((await current()).maxAgents).toBe(maxAgents);
+            expect(await current()).toEqual({ id: initial.id, max_agents: maxAgents });
           }
           await store.mutateAccount!(
             people.stan,
@@ -421,24 +428,23 @@ describe("named model accounts", () => {
               action: "remove",
               scope,
               org: org.id,
-              id: (await current()).id!,
+              id: initial.id,
             },
             undefined,
             KEY,
           );
           await write();
-          expect((await current()).maxAgents).toBe(expected);
-          await store.mutateAccount!(
-            people.stan,
-            {
-              action: "remove",
-              scope,
-              org: org.id,
-              id: (await current()).id!,
-            },
-            undefined,
-            KEY,
-          );
+          expect((await current()).max_agents).toBe(expected);
+        }
+      }
+    });
+  });
+
+  test("named account creation applies kind defaults and accepts explicit unlimited", async () => {
+    await withVault(async ({ store, people }) => {
+      const org = await createOrg(store, people.stan, "Defaults");
+      for (const scope of ["user", "org"] as const) {
+        for (const kind of ["morph", "openai"] as const) {
           const named = await store.mutateAccount!(
             people.stan,
             {
@@ -450,7 +456,7 @@ describe("named model accounts", () => {
             new Uint8Array([1]),
             KEY,
           );
-          expect(named.maxAgents).toBe(expected);
+          expect(named.maxAgents).toBe(kind === "morph" ? 2 : null);
           const unlimited = await store.mutateAccount!(
             people.stan,
             {
@@ -464,8 +470,6 @@ describe("named model accounts", () => {
             KEY,
           );
           expect(unlimited.maxAgents).toBeNull();
-          for (const id of [named.id!, unlimited.id!])
-            await store.mutateAccount!(people.stan, { action: "remove", scope, org: org.id, id }, undefined, KEY);
         }
       }
     });
@@ -883,26 +887,30 @@ describe("GitHub connections", () => {
         create trigger refuse_profile before update on github_connections
           for each row execute function refuse_profile();
       `);
-      const result = await resolveGitHubAccess(
-        {
-          store,
-          encryptionKey: KEY,
-          app: { clientId: "app", clientSecret: "secret" },
-          fetch: (async (url) =>
-            Response.json(
-              String(url).includes("access_token")
-                ? { access_token: "access-after", refresh_token: "refresh-after", expires_in: 28800 }
-                : { id: 1, login: "renamed", name: null },
-            )) as typeof fetch,
-        },
-        people.stan,
-      );
-      expect(result.status).toBe("connected");
-      const saved = await store.getGitHubConnection(people.stan);
-      expect(saved?.login).toBe("before");
-      expect(saved?.accessTokenEnc).not.toBeNull();
-      if (!saved) throw new Error("Connection disappeared");
-      expect(await decryptSecret(new Uint8Array(saved.refreshTokenEnc), KEY)).toBe("refresh-after");
+      try {
+        const result = await resolveGitHubAccess(
+          {
+            store,
+            encryptionKey: KEY,
+            app: { clientId: "app", clientSecret: "secret" },
+            fetch: (async (url) =>
+              Response.json(
+                String(url).includes("access_token")
+                  ? { access_token: "access-after", refresh_token: "refresh-after", expires_in: 28800 }
+                  : { id: 1, login: "renamed", name: null },
+              )) as typeof fetch,
+          },
+          people.stan,
+        );
+        expect(result.status).toBe("connected");
+        const saved = await store.getGitHubConnection(people.stan);
+        expect(saved?.login).toBe("before");
+        expect(saved?.accessTokenEnc).not.toBeNull();
+        if (!saved) throw new Error("Connection disappeared");
+        expect(await decryptSecret(new Uint8Array(saved.refreshTokenEnc), KEY)).toBe("refresh-after");
+      } finally {
+        await db.exec("drop trigger refuse_profile on github_connections; drop function refuse_profile()");
+      }
     });
   });
 
@@ -1028,13 +1036,7 @@ async function withVault(run: VaultRun, db = database()): Promise<void> {
     "insert into auth.users (id, email) values ($1, 'stan@example.com'), ($2, 'ada@example.com'), ($3, 'bob@example.com')",
     [people.stan, people.ada, people.bob],
   );
-  try {
-    await run({ db, store: createSqlVaultStore(db), people });
-  } finally {
-    await db.exec(
-      "reset role; reset all; set search_path=public; drop trigger if exists refuse_profile on github_connections; drop function if exists refuse_profile()",
-    );
-  }
+  await run({ db, store: createSqlVaultStore(db), people });
 }
 
 // Token resolution in these fixtures must not leak audit records to stdout.
