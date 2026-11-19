@@ -204,8 +204,7 @@ export function createJobsStore(sql: Sql, encryptionKey?: string) {
       );
     },
     async complete(job, owner, result) {
-      const nextRun = "after" in result ? result.after : null;
-      const state = nextRun ? "queued" : result.status === "fail" ? "failed" : "done";
+      const state = result.status === "retry" ? "queued" : result.status === "fail" ? "failed" : "done";
       const outcome = result.outcome === undefined ? null : JSON.stringify(result.outcome);
       const complete = async (db: Sql, generation: string | null) => {
         const { rows } = await db.query<{ completed: boolean }>(
@@ -218,19 +217,15 @@ export function createJobsStore(sql: Sql, encryptionKey?: string) {
             generation,
             state,
             outcome,
-            nextRun,
+            result.status === "retry" ? result.after : null,
             result.status === "fail" ? result.reason : null,
           ],
         );
-        if (rows[0]?.completed) {
-          if (result.status === "reschedule")
-            await db.query("update public.jobs set attempts = 0 where id = $1", [job.id]);
-          await result.commit?.(db);
-        }
+        if (rows[0]?.completed) await result.commit?.(db);
         return rows[0]?.completed === true;
       };
       if (job.kind === "turn_dispatch") return (await withLockedTurnGeneration(job, owner, complete)) ?? false;
-      if (result.commit || result.status === "reschedule") {
+      if (result.commit) {
         if (!sql.transaction) throw new Error("Job completion requires a transaction.");
         return sql.transaction((tx) => complete(tx, job.generation));
       }

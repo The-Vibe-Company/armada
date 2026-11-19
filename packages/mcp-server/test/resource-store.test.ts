@@ -1,8 +1,9 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { machineCapacity, type ProviderResourceObservation, type Sql } from "@armada/core";
 import type { Caller } from "../src/caller.ts";
+import { createJobsStore } from "../src/jobs/store.ts";
 import { createResourceStore, pruneResourceObservations } from "../src/resource-store.ts";
-import { retentionMaintenanceJob } from "../src/retention-maintenance.ts";
+import { retentionMaintenanceJob, seedRetentionMaintenance } from "../src/retention-maintenance.ts";
 import { migratedDatabase } from "./migrated-database.ts";
 
 // Synthetic protocol/counter inputs only; these are not measured provider usage.
@@ -287,14 +288,18 @@ test("vault purge failure cannot skip expired resource evidence pruning or leak 
     (line) => messages.push(line),
     () => cutoff,
   );
-  const result = await job.run();
+  const jobs = createJobsStore(sql);
+  await seedRetentionMaintenance(jobs);
+  const claim = await jobs.claim("maintenance", "test-owner", 30, 1);
+  expect(claim).not.toBeNull();
+  const result = await job.run(claim!);
   const rows = await db.query<{ count: number }>(
     "select count(*)::integer as count from resource_observations where sandbox_id=$1",
     [id],
   );
   expect(rows.rows[0]?.count).toBe(0);
   expect(messages).toEqual(["armada: retention maintenance unavailable; retrying."]);
-  expect(result).toEqual({ status: "reschedule", after: new Date(cutoff.getTime() + 600_000) });
+  expect(result).toMatchObject({ status: "retry", after: new Date(cutoff.getTime() + 600_000) });
 });
 
 test("unknown launch/capacity and arbitrary extra transport fields never become evidence", async () => {

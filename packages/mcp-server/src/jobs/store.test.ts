@@ -272,7 +272,7 @@ test("the registered jobs lane retries a lost seed reply and preserves the sched
         },
       },
     },
-  } as Parameters<LaneFactory>[0];
+  } as unknown as Parameters<LaneFactory>[0];
   const lane = factory(services)!;
   expect(await lane.reconcileOne(signal)).toBe(true);
   await lane.drain();
@@ -310,7 +310,8 @@ test("a failed recurring completion rolls back its schedule and the next lease r
         retryExpiredCompletion = () => store.complete(job, owner, result);
         return store.complete(job, owner, {
           ...result,
-          async commit() {
+          async commit(tx) {
+            await result.commit?.(tx);
             throw new Error("Completion interrupted before commit.");
           },
         });

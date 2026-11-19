@@ -1,6 +1,6 @@
 import type { ApplicationVault, Sql } from "@armada/core/server";
-import type { JobResult } from "./jobs/runner.ts";
-import type { createJobsStore } from "./jobs/store.ts";
+import type { Job, JobResult } from "./jobs/runner.ts";
+import { type createJobsStore, rescheduleRecurringJob } from "./jobs/store.ts";
 import { pruneResourceObservations } from "./resource-store.ts";
 
 const INTERVAL_MS = 10 * 60_000;
@@ -21,7 +21,7 @@ export function retentionMaintenanceJob(
 ) {
   return {
     concurrency: 1,
-    async run(): Promise<JobResult> {
+    async run(job: Job): Promise<JobResult> {
       const cutoff = now();
       const results = await Promise.allSettled([
         Promise.resolve().then(() => vault?.purgeExpired()),
@@ -30,7 +30,8 @@ export function retentionMaintenanceJob(
       if (results.some((result) => result.status === "rejected"))
         log("armada: retention maintenance unavailable; retrying.");
 
-      return { status: "reschedule", after: new Date(now().getTime() + INTERVAL_MS) };
+      const after = new Date(now().getTime() + INTERVAL_MS);
+      return { status: "retry", after, commit: (tx) => rescheduleRecurringJob(tx, job, after) };
     },
   };
 }
