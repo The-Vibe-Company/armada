@@ -15,15 +15,14 @@ import { parseTtl } from "../operations.ts";
 import { printOptionalResourceAdvice } from "../resource-advice.ts";
 import type { Command } from "./command.ts";
 
-/** The control API serializes Date fields as ISO strings; convert only at the CLI boundary. */
 type LaunchWireResult = Omit<LaunchResult, "expiresAt"> & { expiresAt?: string | null };
 
-function decodeLaunchResult(result: LaunchWireResult): LaunchResult {
+function decodeLaunchResult(result: LaunchWireResult) {
   const { expiresAt, ...launch } = result;
   return {
     ...launch,
     ...(expiresAt === null || expiresAt === undefined ? {} : { expiresAt: new Date(expiresAt) }),
-  };
+  } satisfies LaunchResult;
 }
 
 const run: Command["run"] = async (argv, { io, deps, auth }) => {
@@ -206,7 +205,7 @@ Example: armada launch "Inspect the repository" --provider docker --host worksta
   run,
 } satisfies Command;
 
-function launchText(result: LaunchResult, now: Date): string {
+function launchText(result: LaunchResult, now: Date) {
   const { sandbox, golden } = result;
   const lines = [
     `Launched ${sandbox.harness} sandbox from snapshot ${golden.name}.`,
@@ -239,7 +238,7 @@ function launchText(result: LaunchResult, now: Date): string {
   return `${lines.join("\n")}\n`;
 }
 
-function githubLine(result: LaunchResult, now: Date): string {
+function githubLine(result: LaunchResult, now: Date) {
   const { github } = result;
   if (github.status === "connected") {
     const expiry = github.tokenExpiresAt ? new Date(github.tokenExpiresAt) : null;
@@ -256,7 +255,7 @@ function githubLine(result: LaunchResult, now: Date): string {
   return `GitHub: not set up. ${github.message ?? ""}`.trim();
 }
 
-function modelDefaults(): string {
+function modelDefaults() {
   return Object.entries(MODEL_CATALOG)
     .map(([h, e]) => `${h} ${e.defaultModel} ${e.defaultReasoningEffort}`)
     .join(", ");

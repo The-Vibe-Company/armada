@@ -225,7 +225,7 @@ export const optionWords = [
   ]),
 ];
 
-export function completion(argv: readonly string[], auth: Pick<AuthIo, "out">): number {
+export function completion(argv: readonly string[], auth: Pick<AuthIo, "out">) {
   if (argv.length !== 1 || !["bash", "zsh", "fish"].includes(argv[0] ?? ""))
     throw new AuthError("Run armada completion bash|zsh|fish, then source the generated script.", "usage");
   const words = [...commandWords, ...optionWords].join(" ");
