@@ -331,6 +331,7 @@ test("an unenrolled Boat resume returns to a confirmed retained stop before anot
 const observationErrors = new Map([
   ["transient observation failure", 503],
   ["unavailable observation without retry marker", 502],
+  ["non-retryable observation conflict", 409],
 ]);
 
 const interruptedResumeProofs = [
