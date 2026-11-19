@@ -774,6 +774,30 @@ export type Database = {
           },
         ];
       };
+      docker_machine_bindings: {
+        Row: {
+          sandbox_id: string;
+          machine_generation: number;
+          host_id: string;
+          installation_id: string;
+          daemon_generation: string;
+        };
+        Insert: {
+          sandbox_id: string;
+          machine_generation: number;
+          host_id: string;
+          installation_id: string;
+          daemon_generation?: string;
+        };
+        Update: {
+          sandbox_id?: string;
+          machine_generation?: number;
+          host_id?: string;
+          installation_id?: string;
+          daemon_generation?: string;
+        };
+        Relationships: [];
+      };
       docker_queued_prompts: {
         Row: {
           sandbox_id: string;

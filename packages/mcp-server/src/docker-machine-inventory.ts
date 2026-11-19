@@ -1,7 +1,7 @@
 import type { ProviderInventoryMachine, SandboxStatus } from "@armada/core";
 import type { ProviderReaperSource } from "./provider-reaper.ts";
 
-interface DockerInventoryContainer extends ProviderInventoryMachine {
+export interface DockerInventoryContainer extends ProviderInventoryMachine {
   sandboxId: string;
   generation: string;
   containerName: string;
