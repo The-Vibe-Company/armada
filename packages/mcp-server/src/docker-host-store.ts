@@ -36,7 +36,7 @@ import {
   hostResourcePolicy,
 } from "./docker-capacity.ts";
 import { hostDrainingSql } from "./docker-host-drain.ts";
-import { dockerHostSupportsSnapshotBaseline } from "./docker-host-version.ts";
+import { supportsDockerHostProtocol } from "./docker-host-version.ts";
 import { authorizeSnapshotBuild, resolveDockerSnapshot } from "./docker-snapshot-data.ts";
 import { recordLaunchStageForActivation } from "./launch-stage-record.ts";
 import { collectOutputTransfers, DOCKER_RETAINED_OUTPUT_STOP } from "./output-transfers.ts";
@@ -518,7 +518,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
           machine_memory_bytes: number | string | null;
           running: number;
           daemon_version: string | null;
-          snapshot_baseline_version: number | null;
+          daemon_protocol: number | null;
           name: string | null;
           retention_seconds: number | null;
           reported_retention_seconds: number | null;
@@ -534,7 +534,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
                 and exists(select 1 from public.members m where m.org_id=h.org_id and m.user_id=h.owner_id)
                 and h.last_seen_at>=now()-interval '60 seconds' then 'online'
               else 'offline' end as state,
-            h.retention_seconds,h.reported_retention_seconds,h.next_cleanup_at,h.disk_free_bytes,h.stopped_sandbox_bytes,h.created_at,h.last_seen_at,h.revoked_at,h.daemon_version,h.snapshot_baseline_version,h.name,h.owner_id,h.resource_policy_version,h.machine_cpus,h.machine_memory_bytes,h.available_cpus,h.available_memory_bytes,h.sandbox_cpus,h.sandbox_memory_bytes,h.max_sandboxes,
+            h.retention_seconds,h.reported_retention_seconds,h.next_cleanup_at,h.disk_free_bytes,h.stopped_sandbox_bytes,h.created_at,h.last_seen_at,h.revoked_at,h.daemon_version,h.daemon_protocol,h.name,h.owner_id,h.resource_policy_version,h.machine_cpus,h.machine_memory_bytes,h.available_cpus,h.available_memory_bytes,h.sandbox_cpus,h.sandbox_memory_bytes,h.max_sandboxes,
             (${DOCKER_CAPACITY_USAGE_SQL})::integer as running,
             (select count(*)::integer from public.sandboxes s
               where s.org_id=h.org_id and s.docker_host_id=h.id
@@ -569,14 +569,8 @@ export function createDockerHostStore(sql: Sql, key: string) {
           limitsSupported: host.resource_policy_version === 1,
           sandboxes: host.sandboxes,
           version: host.daemon_version,
-          ...(host.daemon_version === null && host.snapshot_baseline_version === null
-            ? {}
-            : {
-                snapshotBuildSupported: dockerHostSupportsSnapshotBaseline(
-                  host.daemon_version,
-                  host.snapshot_baseline_version,
-                ),
-              }),
+          protocol: host.daemon_protocol,
+          upgradeRequired: !supportsDockerHostProtocol(host.daemon_protocol),
         }));
       });
     },
@@ -1213,7 +1207,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
       stoppedSandboxBytes?: number | null,
       /** Request IDs the daemon reports as still executing (#2561). */
       running: readonly string[] = [],
-      snapshotBaselineVersion?: number,
+      protocol?: number | null,
     ): Promise<Job | null> {
       // A revoked host or a removed owner can never authenticate again. Retire its
       // undispatchable work in its own committed transaction before the normal
@@ -1261,14 +1255,14 @@ export function createDockerHostStore(sql: Sql, key: string) {
             ? await reconcileHost(tx, hostToken, installationId, hint.bound_actor_id ?? undefined)
             : await authenticate(tx, hostToken, installationId, hint?.bound_actor_id ?? undefined);
         await tx.query(
-          `update public.docker_hosts set last_seen_at=now(),daemon_version=$2,resource_policy_version=$3,available_cpus=null,available_memory_bytes=null,disk_free_bytes=$4,stopped_sandbox_bytes=$5,snapshot_baseline_version=$6 where id=$1`,
+          `update public.docker_hosts set last_seen_at=now(),daemon_version=$2,resource_policy_version=$3,available_cpus=null,available_memory_bytes=null,disk_free_bytes=$4,stopped_sandbox_bytes=$5,daemon_protocol=coalesce($6::integer,daemon_protocol) where id=$1`,
           [
             host.id,
             version ?? null,
             resourcePolicyVersion ?? null,
             diskFreeBytes ?? null,
             stoppedSandboxBytes ?? null,
-            snapshotBaselineVersion ?? null,
+            protocol ?? null,
           ],
         );
         if (resources) {

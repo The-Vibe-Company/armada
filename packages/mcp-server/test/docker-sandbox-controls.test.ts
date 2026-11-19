@@ -824,7 +824,7 @@ test("ordinary Docker send resumes once and never wakes a stopped sandbox for a 
   await service.prompt(f.actor, f.sandbox.id, first);
   await complete(session, { promptId: randomUUID(), conversationId, status: "finished" });
   await service.prompt(f.actor, f.sandbox.id, first);
-  await db.query("update public.docker_hosts set daemon_version='2.28.0' where id=$1", [f.hostId]);
+  await db.query("update public.docker_hosts set daemon_protocol=1 where id=$1", [f.hostId]);
   const stop = async () => {
     const requestId = randomUUID();
     await reservations.stop(f.actor, f.sandbox.id, requestId);
@@ -900,7 +900,7 @@ test("resuming on a draining host names the uninstall, not a generic unavailable
   const db = database();
   const f = await fixture();
   await ready(f);
-  await db.query("update public.docker_hosts set daemon_version='2.28.0' where id=$1", [f.hostId]);
+  await db.query("update public.docker_hosts set daemon_protocol=1 where id=$1", [f.hostId]);
   const stopId = randomUUID();
   await reservations.stop(f.actor, f.sandbox.id, stopId);
   await hosts.complete(f.hostToken, f.installationId, { requestId: stopId, outcome: "completed" });
@@ -1102,7 +1102,7 @@ test("a resume refused by host cleanup is a non-retryable conflict, not a provid
   const db = database();
   const f = await fixture();
   await ready(f);
-  await db.query("update public.docker_hosts set daemon_version='2.28.0' where id=$1", [f.hostId]);
+  await db.query("update public.docker_hosts set daemon_protocol=1 where id=$1", [f.hostId]);
   const requestId = randomUUID();
   await reservations.stop(f.actor, f.sandbox.id, requestId);
   await hosts.complete(f.hostToken, f.installationId, { requestId, outcome: "completed" });
@@ -1162,7 +1162,7 @@ test("reclaimed workspace status and resume report the durable disk cause", asyn
 test("a resume refused by the host disk floor returns the actionable disk cause", async () => {
   const f = await fixture();
   await ready(f);
-  await database().query("update public.docker_hosts set daemon_version='2.28.0' where id=$1", [f.hostId]);
+  await database().query("update public.docker_hosts set daemon_protocol=1 where id=$1", [f.hostId]);
   const stopId = randomUUID();
   await reservations.stop(f.actor, f.sandbox.id, stopId);
   await hosts.complete(f.hostToken, f.installationId, { requestId: stopId, outcome: "completed" });
