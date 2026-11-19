@@ -157,7 +157,9 @@ function ToolMenu({
           </Button>
         )}
         <Button asChild variant="ghost" size="sm" className="ml-auto">
-          <Link ref={connectLink} href="/tools">Connect a tool</Link>
+          <Link ref={connectLink} href="/tools">
+            Connect a tool
+          </Link>
         </Button>
       </div>
     </div>
