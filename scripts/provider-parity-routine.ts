@@ -24,6 +24,7 @@ export class RoutineProbeError extends Error {
     readonly code:
       | "invalid_routine_receipt"
       | "routine_occurrence_failed"
+      | "routine_occurrence_unresolved"
       | "routine_due_outside_budget"
       | "routine_cleanup_unconfirmed",
   ) {
@@ -216,7 +217,8 @@ export async function probeRoutine(
       if (["failed", "skipped"].includes(occurrence.state)) throw new RoutineProbeError("routine_occurrence_failed");
       if (occurrence.state === "succeeded") return occurrence;
     });
-    if (!run || !uuid(run.sandboxId) || !uuid(run.templateRequestId) || run.reason !== null) fail();
+    if (!run) throw new RoutineProbeError("routine_occurrence_unresolved");
+    if (!uuid(run.sandboxId) || !uuid(run.templateRequestId) || run.reason !== null) fail();
     const state = await request<{
       id: string;
       provider?: string;

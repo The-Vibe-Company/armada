@@ -730,7 +730,6 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
             if (row.id === id && (row.status === "ready" || (provider === "docker" && row.status === "running")))
               return row;
           });
-          // Owner inventory identifies the allocation but omits snapshot provenance.
           if (sandbox && !dockerSnapshot) result = { sandbox };
           else {
             keyedLaunchUnconfirmed = id === undefined;
