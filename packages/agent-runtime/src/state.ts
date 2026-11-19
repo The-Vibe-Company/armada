@@ -9,15 +9,27 @@ export interface Redactor {
   (text: string): string;
   register(values: readonly string[]): void;
 }
+function secretForms(value: string): string[] {
+  return [value, JSON.stringify(value).slice(1, -1), encodeURIComponent(value)];
+}
+
+function escapePattern(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+export function shortSecretTextPattern(values: readonly string[]): RegExp | undefined {
+  const forms = new Set(values.filter((value) => value.length > 0 && value.length < 8).flatMap(secretForms));
+  if (forms.size === 0) return undefined;
+  const alternatives = [...forms].sort((a, b) => b.length - a.length).map(escapePattern);
+  return new RegExp(["\\[REDACTED\\]", ...alternatives].join("|"), "g");
+}
+
 export function createRedactor(values: readonly string[]): Redactor {
   let secrets: string[] = [];
   const register = (values: readonly string[]) => {
-    const next = [
-      ...new Set([
-        ...secrets,
-        ...values.filter(Boolean).flatMap((v) => [v, JSON.stringify(v).slice(1, -1), encodeURIComponent(v)]),
-      ]),
-    ].sort((a, b) => b.length - a.length);
+    const next = [...new Set([...secrets, ...values.filter(Boolean).flatMap(secretForms)])].sort(
+      (a, b) => b.length - a.length,
+    );
     if (next.reduce((size, v) => size + Buffer.byteLength(v), 0) > 4 * 1024 * 1024)
       throw Error("mcp_secret_budget_exceeded");
     secrets = next;
@@ -28,7 +40,7 @@ export function createRedactor(values: readonly string[]): Redactor {
       .reduce((out, v) => {
         if (v.length >= 8) return out.split(v).join("[REDACTED]");
         if (identifier) return out;
-        const escaped = v.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+        const escaped = escapePattern(v);
         return out.replace(new RegExp(`(?<![A-Za-z0-9])${escaped}(?![A-Za-z0-9])`, "g"), "[REDACTED]");
       }, text)
       // A restart loses the epoch's memory-only registry before native restore.

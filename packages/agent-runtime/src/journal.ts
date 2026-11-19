@@ -4,7 +4,7 @@ import { HARNESSES, isFinalPromptStatus } from "@armada/core";
 import { HarnessError } from "./errors.ts";
 import { checkpointIdentity, checkpointIdentityKey } from "./identity.ts";
 import type { CheckpointIdentity, StoredPrompt } from "./protocol.ts";
-import { createRedactor } from "./state.ts";
+import { createRedactor, shortSecretTextPattern } from "./state.ts";
 
 /** Cut a preview without splitting a surrogate pair into a lone UTF-16 code unit. */
 function boundedPreview(text: string, limit: number): string {
@@ -16,8 +16,15 @@ export class Journal {
   readonly db: Database;
   readonly redact: (text: string) => string;
   private dynamicRedactor = createRedactor([]);
+  private applicationSecrets = new Set<string>();
+  private shortApplicationSecrets: RegExp | undefined;
   registerSecrets(values: readonly string[]) {
     this.dynamicRedactor.register(values);
+  }
+  registerApplicationSecrets(values: readonly string[]) {
+    this.registerSecrets(values);
+    for (const value of values) if (value.length > 0 && value.length < 8) this.applicationSecrets.add(value);
+    this.shortApplicationSecrets = shortSecretTextPattern([...this.applicationSecrets]);
   }
   constructor(path: string, redact: (text: string) => string) {
     this.redact = (text) => this.dynamicRedactor(redact(text));
@@ -43,6 +50,18 @@ export class Journal {
     )
       control = { ...event, text: `${boundedPreview(this.redact(event.text), 16000)}… [truncated]` };
     let body = this.redact(JSON.stringify(control));
+    if (
+      this.shortApplicationSecrets &&
+      (event.kind === "message" || (event.kind === "other" && event.type === "harness_stderr"))
+    ) {
+      const masked = JSON.parse(body) as AgentEvent;
+      if (masked.kind === "message") masked.text = masked.text.replace(this.shortApplicationSecrets, "[REDACTED]");
+      if (masked.kind === "other" && masked.type === "harness_stderr") {
+        const data = masked.data as { text?: unknown } | null;
+        if (typeof data?.text === "string") data.text = data.text.replace(this.shortApplicationSecrets, "[REDACTED]");
+      }
+      body = JSON.stringify(masked);
+    }
     const oversized = Buffer.byteLength(body) > 262144;
     if (oversized)
       body = JSON.stringify({
