@@ -837,7 +837,7 @@ export class Journal {
   }
   sanitize() {
     this.db.transaction(() => {
-      for (const table of ["events", "prompts", "requests", "processes"]) {
+      for (const table of ["events", "prompts", "requests", "processes"] as const) {
         // A batch is one row: retain O(largest body + its redacted copy), not
         // cumulative history. Prompts/requests/processes have no body-size cap.
         // Keyset reads finish before UPDATE; text preserves every SQLite rowid without numeric rounding.
