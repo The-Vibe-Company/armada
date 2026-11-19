@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { createMemoryAuthStore, createServiceToken, generateToken, sha256Hex } from "@armada/auth";
 import type { VaultStore } from "@armada/core";
+import { tokenOperations } from "@armada/core/contract";
 import { type ControlOptions, createHandler, handleControlRequest } from "../src/index.ts";
 
 const ALICE = "11111111-1111-4111-8111-111111111111";
@@ -91,12 +92,16 @@ test("session callers can create and list only their own tokens in memberships",
   const { call } = makeServer();
   const created = await call("token/create", jwt(ALICE), { org: "Alpha", label: "worker" });
   expect(created.status).toBe(200);
-  const dto = (await created.json()) as { id: string; token: string; orgName: string };
+  tokenOperations.createServiceToken.successHeaders["Cache-Control"].parse(created.headers.get("cache-control"));
+  const dto = tokenOperations.createServiceToken.output.parse(await created.json());
   expect(dto.orgName).toBe("Alpha");
   expect(dto.token).toMatch(/^armada_/);
   const list = await call("token/list", jwt(ALICE));
   expect(list.status).toBe(200);
-  expect((await list.json()) as unknown).toMatchObject({ tokens: [{ id: dto.id, orgName: "Alpha", label: "worker" }] });
+  tokenOperations.listServiceTokens.successHeaders["Cache-Control"].parse(list.headers.get("cache-control"));
+  expect(tokenOperations.listServiceTokens.output.parse(await list.json())).toMatchObject({
+    tokens: [{ id: dto.id, orgName: "Alpha", label: "worker" }],
+  });
 
   const legacySelector = await call("token/create", jwt(ALICE), { orgName: "Beta" });
   expect(legacySelector.status).toBe(200);
@@ -132,6 +137,8 @@ test("only an owner can revoke their service token, including for an organizatio
   expect(denied.status).toBe(403);
   const revoked = await call("token/revoke", jwt(ALICE), { id: aliceToken.id });
   expect(revoked.status).toBe(200);
+  tokenOperations.revokeServiceToken.successHeaders["Cache-Control"].parse(revoked.headers.get("cache-control"));
+  expect(tokenOperations.revokeServiceToken.output.parse(await revoked.json())).toEqual({ ok: true });
   const parent = await createServiceToken(store, { userId: ALICE, orgName: "Alpha", now: now() });
   const serviceDenied = await call("token/revoke", parent.token, { id: bobToken.id });
   expect(serviceDenied.status).toBe(403);

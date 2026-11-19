@@ -6,8 +6,8 @@
  * the actor. Every other state keeps the web flow and its state cookie, unchanged.
  */
 
-export const CLI_STATE_PREFIX = "armada_cli_";
-export const CLI_CALLBACK_PATH = "/api/v1/github/oauth/callback";
+const CLI_STATE_PREFIX = "armada_cli_";
+const CLI_CALLBACK_PATH = "/api/v1/github/oauth/callback";
 /** The public page that tells the person to go back to their terminal. */
 export const CLI_DONE_PATH = "/github/cli";
 
@@ -15,9 +15,9 @@ const CLI_STATE = /^armada_cli_[A-Za-z0-9_-]{32,256}$/;
 const CODE = /^[A-Za-z0-9_-]{1,512}$/;
 const RELAY_TIMEOUT_MS = 15_000;
 
-export type CliOutcome = "connected" | "denied" | "failed";
+type CliOutcome = "connected" | "denied" | "failed";
 
-export type CliCallback = { kind: "relay"; state: string; code: string } | { kind: "done"; outcome: CliOutcome };
+type CliCallback = { kind: "relay"; state: string; code: string } | { kind: "done"; outcome: CliOutcome };
 
 /**
  * Null when the callback belongs to the web flow (no state carries the CLI prefix). Otherwise the checked input,

@@ -193,7 +193,9 @@ export function httpApi(
         authorization: `Bearer ${token}`,
         "content-type": "application/json",
         [DOCKER_HOST_PROTOCOL_HEADER]: String(DOCKER_HOST_PROTOCOL),
-        ...(endpoint === "poll" ? { "x-armada-docker-host-delete-physical": "1" } : {}),
+        ...(endpoint === "poll"
+          ? { "x-armada-docker-host-delete-physical": "1", "x-armada-docker-host-restore": "1" }
+          : {}),
       },
       body: JSON.stringify(body),
     });

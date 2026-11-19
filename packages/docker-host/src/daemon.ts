@@ -34,6 +34,7 @@ export type Receipt = {
 } & (
   | { operation: "create" | "stop" | "delete" }
   | { operation: "bootstrap" | "resume" | "deletePhysical"; inputHash: string }
+  | { operation: "restore"; inputHash: string; predecessorKey: string }
   | {
       operation: "buildSnapshot";
       inputHash: string;
@@ -119,6 +120,10 @@ export interface Executor {
   ): Promise<DockerSnapshotBuildReceipt>;
   startRuntime?(request: DockerMachineRequest, bootstrap: BootstrapDescriptor): Promise<unknown>;
   resume?(request: DockerMachineRequest): Promise<unknown>;
+  restore?(
+    request: DockerMachineRequest,
+    predecessor: Extract<Job, { operation: "restore" }>["predecessor"],
+  ): Promise<unknown>;
   create(request: DockerMachineRequest): Promise<unknown>;
   stop(request: DockerMachineRequest): Promise<unknown>;
   delete(request: DockerMachineRequest, target?: { scope: "physical-only"; machineId: string }): Promise<unknown>;
@@ -219,7 +224,10 @@ function updateActiveTtl(state: State, receipt: Receipt): void {
   ) {
     state.activeTtl = active.filter((id) => !same(id));
   } else if (
-    (receipt.operation === "create" || receipt.operation === "bootstrap" || receipt.operation === "resume") &&
+    (receipt.operation === "create" ||
+      receipt.operation === "bootstrap" ||
+      receipt.operation === "resume" ||
+      receipt.operation === "restore") &&
     !active.some(same) &&
     !state.receipts.some(
       (item) =>
@@ -259,7 +267,12 @@ export function createPhysicalExpirySweep(store: Store, executor: Executor) {
       const active = state.activeTtl ? new Set(state.activeTtl) : undefined;
       for (const receipt of state.receipts) {
         if (active && !active.has(receipt.requestId)) continue;
-        if (receipt.operation === "create" || receipt.operation === "bootstrap" || receipt.operation === "resume") {
+        if (
+          receipt.operation === "create" ||
+          receipt.operation === "bootstrap" ||
+          receipt.operation === "resume" ||
+          receipt.operation === "restore"
+        ) {
           if (!receipt.expired) candidates.set(generationKey(receipt.request), receipt.request);
         }
       }
@@ -301,6 +314,8 @@ export type TickOptions = {
   sandboxes?: ReadonlySet<string>;
   /** Snapshot builds still executing in this process; when given, it replaces `skipSnapshots` after the poll. */
   snapshots?: ReadonlySet<string>;
+  deferRestores?: ReadonlySet<string>;
+  restoreConflicts?: Map<string, string>;
   /**
    * Receives an admitted machine operation instead of awaiting it, so the next
    * tick can take another sandbox's job. The durable receipt is already saved;
@@ -366,6 +381,7 @@ export async function tick(
 export const DOCKER_HOST_CONCURRENT_JOBS = 4;
 /** How long the daemon asks the server to hold an idle poll open. */
 export const DOCKER_HOST_POLL_WAIT_SECONDS = 20;
+const MAX_POLL_EXCLUSIONS = 16;
 /** Pause after a failed tick, or between polls when the server cannot hold one. */
 export const DOCKER_HOST_IDLE_MS = 20_000;
 
@@ -395,6 +411,8 @@ export async function runJobs(
   // Counts finished operations. If work finished after the tick refused a job
   // as busy (it is then no longer in `settled()`), the loop polls again at once.
   let finished = 0;
+  let deferRestores = new Set<string>();
+  const restoreConflicts = new Map<string, string>();
   const settled = () => Promise.race(running.values());
   try {
     while (!loop.stopping()) {
@@ -404,14 +422,21 @@ export async function runJobs(
         continue;
       }
       const finishedBefore = finished;
+      const deferred = deferRestores;
+      deferRestores = new Set();
       let outcome: TickOutcome;
       try {
         outcome = await tick(store, api, executor, live.snapshots.size > 0, loop.now ?? Date.now, {
           waitSeconds: DOCKER_HOST_POLL_WAIT_SECONDS,
           ...live,
+          deferRestores: deferred,
+          restoreConflicts,
           dispatch(job, work) {
             const done = work
-              .catch(() => loop.failed?.("job"))
+              .catch((error) => {
+                if (job.operation === "restore" && isUncertainDockerFailure(error)) deferRestores.add(job.requestId);
+                loop.failed?.("job");
+              })
               .finally(() => {
                 running.delete(job.requestId);
                 live.running.delete(job.requestId);
@@ -483,6 +508,10 @@ async function admitLocked(
   // Claims cannot outlive the allocation's immutable physical expiry. A
   // server cannot admit a resume beyond this same frozen expiry, so releasing
   // the hold here is safe even while offline. Retain its historical ACK.
+  const restoreStillRecoverable = (receipt: Receipt) =>
+    options.running?.has(receipt.requestId) || (receipt.request.expiresAt ?? 0) > now();
+  const readyForRetention = (receipt: Receipt) =>
+    receipt.outcome !== undefined || (receipt.operation === "restore" && !restoreStillRecoverable(receipt));
   const expired = (ledger: State) =>
     new Set(
       [...ledger.receipts, ...(ledger.retention ?? [])]
@@ -513,7 +542,7 @@ async function admitLocked(
     }
     // An admitted but unfinished operation may still be recovered below. Absence
     // before its first execution is not loss of a completed allocation.
-    const values = [...candidates.values()].filter((receipt) => receipt.outcome);
+    const values = [...candidates.values()].filter(readyForRetention);
     const after = values.findIndex((receipt) => receipt.requestId === state.retentionScanAfter);
     const receipt = values[(after + 1) % values.length];
     if (receipt) {
@@ -557,6 +586,20 @@ async function admitLocked(
   // A save error therefore
   // ends this tick before polling: everything computed above is derived again
   // from the durable ledger on the next tick, and physical expiry runs on its own.
+  const exclusions = new Set(options.running);
+  for (const requestId of options.deferRestores ?? []) exclusions.add(requestId);
+  if (options.restoreConflicts?.size) {
+    const pending = new Set(
+      state.receipts
+        .filter((receipt) => receipt.operation === "restore" && !receipt.outcome && restoreStillRecoverable(receipt))
+        .map((receipt) => receipt.requestId),
+    );
+    for (const [requestId, owner] of options.restoreConflicts) {
+      if (pending.has(owner)) exclusions.add(requestId);
+      else options.restoreConflicts.delete(requestId);
+    }
+  }
+  const excludedRequestIds = [...exclusions].slice(0, MAX_POLL_EXCLUSIONS);
   const reload = Boolean(options.running?.size || api.retainedOutputs);
   if (reload) await store.save(state);
   lock.release();
@@ -567,7 +610,10 @@ async function admitLocked(
       skipSnapshots,
       ...(options.waitSeconds === undefined
         ? {}
-        : { waitSeconds: options.waitSeconds, running: [...(options.running ?? [])] }),
+        : {
+            waitSeconds: options.waitSeconds,
+            running: excludedRequestIds,
+          }),
     });
   } catch (error) {
     pollError = error;
@@ -579,6 +625,13 @@ async function admitLocked(
     state.retention ??= [];
     expiredGenerations = expired(state);
   }
+  const restoreHolds = new Map<string, string>();
+  for (const receipt of state.receipts) {
+    if (receipt.operation === "restore" && !receipt.outcome && restoreStillRecoverable(receipt)) {
+      restoreHolds.set(receipt.predecessorKey, receipt.requestId);
+      restoreHolds.set(generationKey(receipt.request), receipt.requestId);
+    }
+  }
   // A claim and cleanup authorization are serialized by this single durable
   // host ledger. Merely requesting a resume on the server never admits it.
   let unacknowledged = 0;
@@ -588,6 +641,7 @@ async function admitLocked(
     if (!claim) {
       const key = generationKey(intent);
       const lost =
+        restoreHolds.has(key) ||
         expiredGenerations.has(key) ||
         state.cleanupGenerations?.includes(key) ||
         state.retention.some(
@@ -633,17 +687,33 @@ async function admitLocked(
     const key = generationKey(request);
     if (!expiredGenerations.has(key)) claimed.add(key);
   }
+  let job: Job | undefined;
   if (polled?.job) {
     try {
       const observed = parseDockerHostJob(polled.job);
+      job = observed;
       if (observed.operation === "bootstrap" || observed.operation === "resume")
         if (!expiredGenerations.has(generationKey(observed.request))) claimed.add(generationKey(observed.request));
     } catch {
       // An invalid mailbox payload is rejected when it is executed below.
     }
   }
+  const restoreDeliveryKeys = new Set<string>();
+  if (
+    job?.operation === "restore" &&
+    (job.request.expiresAt ?? 0) > now() &&
+    !state.receipts.some((receipt) => receipt.requestId === job?.requestId && receipt.outcome) &&
+    !state.retired?.some((receipt) => receipt[0] === job?.requestId)
+  ) {
+    restoreDeliveryKeys.add(generationKey(job.request));
+    restoreDeliveryKeys.add(generationKey(job.predecessor.request));
+  }
+  const protectedByRestore = (key: string) => restoreHolds.has(key) || restoreDeliveryKeys.has(key);
   if (claimed.size)
-    state.retention = state.retention.filter((entry) => entry.deleted || !claimed.has(generationKey(entry.request)));
+    state.retention = state.retention.filter((entry) => {
+      const key = generationKey(entry.request);
+      return entry.deleted || protectedByRestore(key) || !claimed.has(key);
+    });
   if (polled) {
     executor.configureLimits?.(polled.limits);
     if (polled.retentionSeconds !== undefined) {
@@ -657,9 +727,8 @@ async function admitLocked(
     }
     state.lastPollAt = new Date().toISOString();
   }
-  // Pressure cleanup shares the same durable authorization as retention. Discovery
-  // stays restricted to known completed operations; physical ownership is checked
-  // by isStopped and again by deleteStopped. Claims survive disconnected polls.
+  // Pressure cleanup shares the same durable authorization as retention.
+  // Physical ownership is checked by isStopped and again by deleteStopped.
   const pressure = async () => {
     const bytes = await executor.diskFreeBytes?.();
     return typeof bytes === "number" && Number.isSafeInteger(bytes) && bytes >= 0 && bytes < DOCKER_DISK_FLOOR_BYTES;
@@ -670,11 +739,12 @@ async function admitLocked(
       if (receipt.operation !== "deletePhysical") latest.set(generationKey(receipt.request), receipt);
     for (const [key, receipt] of latest) {
       if (
-        !receipt.outcome ||
+        !readyForRetention(receipt) ||
         receipt.cleaned ||
         receipt.operation === "delete" ||
         receipt.operation === "buildSnapshot" ||
         claimed.has(key) ||
+        protectedByRestore(key) ||
         state.resumeClaims?.some((claim) => claim.active && claim.accepted && generationKey(claim) === key) ||
         state.retention.some((entry) => generationKey(entry.request) === key)
       )
@@ -710,6 +780,7 @@ async function admitLocked(
       if (
         entry.deleted ||
         claimed.has(key) ||
+        protectedByRestore(key) ||
         state.resumeClaims?.some((claim) => claim.active && claim.accepted && generationKey(claim) === key)
       )
         continue;
@@ -740,7 +811,7 @@ async function admitLocked(
   // Reporting is deliberately deferred until after all local physical TTL work.
   const deleteAfter = state.retention.findIndex((entry) => entry.requestId === state.retentionDeleteAfter);
   const due = [...state.retention.slice(deleteAfter + 1), ...state.retention.slice(0, deleteAfter + 1)].find(
-    (entry) => !entry.deleted && entry.deadline <= now(),
+    (entry) => !entry.deleted && entry.deadline <= now() && !protectedByRestore(generationKey(entry.request)),
   );
   if (due && executor.deleteStopped) {
     try {
@@ -794,7 +865,7 @@ async function admitLocked(
       // Disk failure must not disable local physical expiry.
     }
     const receipt = state.receipts.find((r) => r.requestId === id);
-    if (receipt) {
+    if (receipt && !(receipt.operation === "restore" && options.running?.has(receipt.requestId))) {
       try {
         if ((await executor.stopIfExpired(receipt.request)) === true) {
           receipt.expired = true;
@@ -939,6 +1010,9 @@ async function admitLocked(
           await executor.resume(receipt.request);
         }
         await executor.startRuntime(receipt.request, job.bootstrap);
+      } else if (receipt.operation === "restore") {
+        if (job.operation !== "restore" || !executor.restore) throw Error("Restore unavailable");
+        await executor.restore(receipt.request, job.predecessor);
       } else if (receipt.operation === "deletePhysical") {
         if (job.operation !== "deletePhysical") throw Error("Changed host job");
         await executor.delete(receipt.request, { scope: "physical-only", machineId: job.machineId });
@@ -947,6 +1021,7 @@ async function admitLocked(
       }
       receipt.outcome = "completed";
     } catch (error) {
+      if (receipt.operation === "restore" && isUncertainDockerFailure(error)) throw error;
       receipt.outcome = "failed";
       if (receipt.operation === "stop" && !refusal && polled?.retainedStopProof && executor.isRetainedStop)
         receipt.retentionProofPending = true;
@@ -994,7 +1069,14 @@ async function admitLocked(
     // A claim this host cannot acknowledge would end every held poll at once.
     return polled.held && !unacknowledged ? "held" : "idle";
   }
-  const job = parseDockerHostJob(polled.job);
+  if (!job) throw new Error("Invalid host job");
+  const machineKey = generationKey(job.request);
+  const restoreKey = job.operation === "restore" ? generationKey(job.predecessor.request) : undefined;
+  const restoreOwner = (key: string) => {
+    const owner = restoreHolds.get(key);
+    return owner === job.requestId ? undefined : owner;
+  };
+  const pendingOwner = restoreOwner(machineKey) ?? (restoreKey === undefined ? undefined : restoreOwner(restoreKey));
   if ((job.operation === "bootstrap" || job.operation === "resume") && job.bootstrap.serverUrl !== state.server)
     throw new Error("Wrong bootstrap origin");
   // A server that cannot exclude running work re-delivers it; never treat
@@ -1005,7 +1087,20 @@ async function admitLocked(
   // job's outcome is recorded, and it records one without the host when it
   // cancels queued work (revocation, owner removal, snapshot build expiry). So
   // this host keeps each sandbox, and snapshot builds, serial itself.
+  if (pendingOwner && polled.held && options.restoreConflicts && !excludedRequestIds.includes(job.requestId)) {
+    const conflicts = options.restoreConflicts;
+    conflicts.delete(job.requestId);
+    if (conflicts.size >= MAX_POLL_EXCLUSIONS - DOCKER_HOST_CONCURRENT_JOBS) {
+      const oldest = conflicts.keys().next();
+      if (!oldest.done) conflicts.delete(oldest.value);
+    }
+    conflicts.set(job.requestId, pendingOwner);
+    await store.save(state);
+    return "held";
+  }
   if (
+    pendingOwner !== undefined ||
+    options.deferRestores?.has(job.requestId) ||
     options.running?.has(job.requestId) ||
     (options.running?.size && !polled.held) ||
     options.sandboxes?.has(job.request.sandboxId) ||
@@ -1018,6 +1113,7 @@ async function admitLocked(
     job.operation === "bootstrap" ||
     job.operation === "resume" ||
     job.operation === "buildSnapshot" ||
+    job.operation === "restore" ||
     job.operation === "deletePhysical"
       ? createHash("sha256")
           .update(JSON.stringify({ requestId: job.requestId, input: canonicalDockerHostJob(job) }))
@@ -1059,8 +1155,8 @@ async function admitLocked(
       oldGeneration.some((r) => r[3] !== digest(fingerprint(job))) ||
       oldGeneration.some(
         (r) =>
-          r[4] === job.operation &&
-          (job.operation === "create" || job.operation === "bootstrap" || job.operation === "buildSnapshot"),
+          ((r[4] === "create" || r[4] === "restore") && (job.operation === "create" || job.operation === "restore")) ||
+          (r[4] === job.operation && (job.operation === "bootstrap" || job.operation === "buildSnapshot")),
       )
     )
       throw new Error("Retired machine generation");
@@ -1078,18 +1174,26 @@ async function admitLocked(
       generation.some(
         (r) =>
           fingerprint(r) !== fingerprint(job) ||
-          (r.operation === "create" && job.operation === "create") ||
+          ((r.operation === "create" || r.operation === "restore") &&
+            (job.operation === "create" || job.operation === "restore")) ||
           (r.operation === "bootstrap" && job.operation === "bootstrap"),
       )
     )
       throw new Error("Changed machine generation");
     const base = { requestId: job.requestId, request: { ...job.request } };
     const created: Receipt =
-      job.operation === "buildSnapshot"
-        ? { ...base, operation: "buildSnapshot", inputHash: inputHash as string }
-        : job.operation === "bootstrap" || job.operation === "resume" || job.operation === "deletePhysical"
-          ? { ...base, operation: job.operation, inputHash: inputHash as string }
-          : { ...base, operation: job.operation };
+      job.operation === "restore"
+        ? {
+            ...base,
+            operation: "restore",
+            inputHash: inputHash as string,
+            predecessorKey: generationKey(job.predecessor.request),
+          }
+        : job.operation === "buildSnapshot"
+          ? { ...base, operation: "buildSnapshot", inputHash: inputHash as string }
+          : job.operation === "bootstrap" || job.operation === "resume" || job.operation === "deletePhysical"
+            ? { ...base, operation: job.operation, inputHash: inputHash as string }
+            : { ...base, operation: job.operation };
     receipt = created;
     state.receipts.push(created);
     updateActiveTtl(state, created);
@@ -1097,7 +1201,22 @@ async function admitLocked(
     admitted = true;
   }
   const accepted = receipt;
-  const refusal = accepted.outcome ? undefined : await prepare(accepted);
+  let refusal = accepted.outcome ? undefined : await prepare(accepted);
+  if (job.operation === "restore" && !accepted.outcome) {
+    const predecessorKey = generationKey(job.predecessor.request);
+    if (
+      (job.request.expiresAt ?? 0) <= now() ||
+      [machineKey, predecessorKey].some(
+        (key) =>
+          state.cleanupGenerations?.includes(key) ||
+          state.retention?.some(
+            (entry) => generationKey(entry.request) === key && (entry.cleanupAuthorized || entry.deleted),
+          ) ||
+          state.resumeClaims?.some((claim) => claim.active && claim.accepted && generationKey(claim) === key),
+      )
+    )
+      refusal = new Error("Restore generation unavailable");
+  }
   return {
     job,
     held: polled.held === true,
@@ -1117,6 +1236,10 @@ async function admitLocked(
       }
     },
   };
+}
+
+function isUncertainDockerFailure(error: unknown) {
+  return error instanceof DockerMachineError && error.code === "docker_failed";
 }
 
 function digest(value: string): string {
