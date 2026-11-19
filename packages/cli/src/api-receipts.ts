@@ -1,6 +1,5 @@
 import { PROMPT_STATUSES } from "@armada/core";
 
-/** Validate the wire fields consumed by CLI operations, before any success output. */
 export function validApiReceipt(path: string, value: unknown): boolean {
   if (!record(value)) return false;
   const text = (key: string) => typeof value[key] === "string" && value[key] !== "";
@@ -62,7 +61,6 @@ export function validApiReceipt(path: string, value: unknown): boolean {
         )
       );
     default:
-      // API control routes return JSON objects, including explicit empty acknowledgements ({}).
       return true;
   }
 }
