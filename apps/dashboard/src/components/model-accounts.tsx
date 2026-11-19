@@ -500,7 +500,7 @@ export function AccountRow({
           <span className="block text-xs text-muted-foreground">
             {info.label} · {account.scope === "user" ? "Only you" : orgName}
           </span>
-          {exhaustion && <span className="block text-xs text-warning">{exhaustion}</span>}
+          {exhaustion && <span className="block text-xs text-foreground">{exhaustion}</span>}
         </span>
         <span className={cn("shrink-0 text-xs", STATE_TONE[state.tone])}>
           {state.label === "Ready" ? "Connected" : state.label}
@@ -565,7 +565,7 @@ export function AccountRow({
               {state.label === "Ready" ? "Connected" : state.label === "Expired" ? "Sign-in expired" : state.label}
             </p>
           </div>
-          {exhaustion && <p className="text-sm text-warning">{exhaustion}</p>}
+          {exhaustion && <p className="text-sm text-foreground">{exhaustion}</p>}
           {canManage && <InlineDisplayName account={account} orgId={orgId} onResult={setResult} />}
           <div className="text-sm">
             <span className="text-muted-foreground">Works with: </span>
