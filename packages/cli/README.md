@@ -26,8 +26,8 @@ for empty acknowledgements.
 Armada browser sign-in uses PKCE through the Armada server and keeps provider
 details out of the CLI. Email links carry only a state-bound PKCE code. Sign-in
 prefers email when the CLI remembers an address and email is enabled. Otherwise
-it prefers an enabled browser method. Interactive prompts read from the
-terminal so the login flow does not consume piped input.
+it prefers an enabled browser method. The prompts for the sign-in method
+and email address require an interactive terminal.
 
 The saved Armada API session is local, holds no provider configuration and
 uses file mode `0600`. Its login ID identifies the sign-in across token
