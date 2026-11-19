@@ -20,7 +20,6 @@ import {
 } from "./golden-rest-schemas.ts";
 import { GOLDEN_LIST_RESPONSE, requestJsonSchema, responseJsonSchema } from "./launch-response-schemas.ts";
 import { PUBLISHED_REST_ROUTES } from "./public-rest-routes.ts";
-import { deleteSandboxAliasContract } from "./sandbox-rest-controls.ts";
 import { DRAIN_REFUSAL } from "./server-request-drain.ts";
 import { createRestToolServer, type ToolContext } from "./tools.ts";
 
@@ -31,7 +30,6 @@ const REST_TOOL_ROUTES: Readonly<Record<string, string>> = {
 /** HTTP 200 bodies that differ from the MCP tool output (or that have no tool). */
 const REST_RESPONSES: Readonly<Record<string, z.ZodType>> = {
   "golden/list": GOLDEN_LIST_RESPONSE,
-  "sandbox/delete": deleteSandboxAliasContract.output,
   "golden/adopt": GOLDEN_ADOPTION_RESPONSE,
   "golden/capabilities": GOLDEN_CAPABILITIES_RESPONSE,
   "sandbox/launch": launch.output,
@@ -41,10 +39,6 @@ const REST_RESPONSES: Readonly<Record<string, z.ZodType>> = {
 const REST_ONLY: Readonly<
   Record<string, { description: string; input: { properties?: Record<string, unknown>; [key: string]: unknown } }>
 > = {
-  "sandbox/delete": {
-    description: deleteSandboxAliasContract.description,
-    input: requestJsonSchema(deleteSandboxAliasContract.input.extend({ org: z.string().optional() })),
-  },
   "golden/list": {
     description:
       "The goldens you can launch from: your orgs', and your own private ones. A golden without a providerSnapshotId cannot be launched yet. The same name may exist on several providers.",
@@ -251,7 +245,9 @@ export async function generateOpenApi() {
     const paths: Record<string, unknown> = {};
     for (const route of PUBLISHED_REST_ROUTES) {
       const github = isGitHubRestControl(route) ? GITHUB_REST_CONTRACTS[route] : undefined;
-      const sandbox = Object.values(operations).find((entry) => entry.route.path === `/api/v1/${route}`);
+      const sandbox = Object.values(operations).find(
+        (entry) => entry.route.method === "POST" && entry.route.path === `/api/v1/${route}`,
+      );
       const restOnly: (typeof REST_ONLY)[string] | undefined = github
         ? {
             description: github.description,
@@ -370,6 +366,43 @@ export async function generateOpenApi() {
       };
     }
     Object.assign(paths, OUTPUT_OPERATIONS);
+    const { deleteSandbox } = operations;
+    paths[deleteSandbox.route.path] = {
+      [deleteSandbox.route.method.toLowerCase()]: {
+        operationId: "sandbox_delete",
+        description: deleteSandbox.description,
+        security: [{ serviceToken: [] }],
+        parameters: [
+          { name: "id", in: "path", required: true, schema: requestJsonSchema(deleteSandbox.input.path.id) },
+          ...Object.entries(deleteSandbox.input.query.shape).map(([name, schema]) => ({
+            name,
+            in: "query",
+            schema: requestJsonSchema(schema),
+          })),
+        ],
+        responses: {
+          "200": {
+            description: "Success",
+            content: { "application/json": { schema: responseJsonSchema(deleteSandbox.output) } },
+          },
+          "503": {
+            description: "Temporarily unavailable or the server is draining. Honor Retry-After when present.",
+            headers: { "Retry-After": { schema: { type: "integer", minimum: 0 } } },
+            content: {
+              "application/json": {
+                schema: {
+                  anyOf: [{ $ref: "#/components/schemas/Failure" }, { $ref: "#/components/schemas/DrainRefusal" }],
+                },
+              },
+            },
+          },
+          default: {
+            description: "Public API failure",
+            content: { "application/json": { schema: { $ref: "#/components/schemas/Failure" } } },
+          },
+        },
+      },
+    };
     return {
       openapi: "3.1.0",
       info: {

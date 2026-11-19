@@ -8,7 +8,6 @@ import { LATEST_PROTOCOL_VERSION, SUPPORTED_PROTOCOL_VERSIONS } from "@modelcont
 import { endpoint, GatewayError, publicFetch, restrictedFetch } from "./network.ts";
 
 export interface GatewayLease {
-  /** Unique lease generation; restore must create a fresh lease. */
   id: string;
   actorId: string;
   sandboxId: string;
@@ -18,23 +17,17 @@ export interface GatewayLease {
   transport: "http" | "sse";
 }
 export interface GatewayAuthorization {
-  /** Verify a narrow gateway bearer (never the Armada API bearer), org/private visibility and active sandbox binding. */
   authenticate(request: Request): Promise<GatewayLease>;
-  /** Recheck live lease, connection enabled state, grant revocation and membership on every message in BOTH directions. */
   assertActive(lease: GatewayLease): Promise<void>;
-  /** Real method/tool authorization, not upstream annotations. Must include server-initiated requests. */
   allow(lease: GatewayLease, direction: "upstream" | "downstream", message: JSONRPCMessage): Promise<boolean>;
-  /** Obtain vault credentials server-side; NEVER derive these headers from the incoming request. */
   upstreamHeaders(lease: GatewayLease): Promise<Headers>;
 }
 export interface GatewayOptions {
   authorization: GatewayAuthorization;
   fetch?: FetchLike;
   now?: () => number;
-  /** Exact public gateway origin. Browser Origin, if present, must equal this. */
   origin: string;
   maxSessions?: number;
-  /** Independent upstream DELETE budget; integer 1..30000ms, default 5000ms. */
   cleanupTimeoutMs?: number;
 }
 interface Session {
@@ -61,7 +54,6 @@ export function createMcpGateway(options: GatewayOptions) {
   async function create(lease: GatewayLease) {
     if (all.size >= (options.maxSessions ?? 1000)) throw new GatewayError("busy", "Gateway session capacity reached.");
     const url = endpoint(lease.url);
-    // Legacy SSE may advertise a different message path, but never a different origin.
     const fetcher = restrictedFetch(
       options.fetch ?? publicFetch,
       (target) => target.origin === url.origin && (lease.transport === "sse" || target.href === url.href),
@@ -141,9 +133,7 @@ export function createMcpGateway(options: GatewayOptions) {
           void reader.cancel().catch(() => {});
           try {
             controller.close();
-          } catch {
-            /* Response may already be cancelled. */
-          }
+          } catch {}
         };
         const body = new ReadableStream<Uint8Array>({
           start(value) {
@@ -199,14 +189,10 @@ export function createMcpGateway(options: GatewayOptions) {
             }, cleanupTimeoutMs);
             cancelDeadline = () => clearTimeout(timer);
           });
-          // The SDK has no per-termination signal argument. Scope the cleanup's
-          // signal into its authenticated DELETE fetch, not sibling requests.
-          // Observe late failure even if a custom fetch ignores abort entirely.
           const attempt = terminationScope.run(controller.signal, () => upstream.terminateSession()).catch(() => {});
           await Promise.race([attempt, deadline]);
         }
       } catch {
-        // Cleanup cannot revive credentials or hold local lifecycle hostage.
       } finally {
         try {
           cancelDeadline();
@@ -217,11 +203,6 @@ export function createMcpGateway(options: GatewayOptions) {
       }
     }
     all.add(session);
-    // SDK 1.32.2's HTTP client calls onmessage from its POST SSE/JSON reader
-    // without extra correlation metadata. Async-local send scope follows that
-    // exact reader, including across awaits, without guessing among active IDs.
-    // Initialized notifications and replies deliberately start an uncorrelated
-    // scope, so the SDK's standalone GET cannot inherit a tool's POST identity.
     const postRequest = new AsyncLocalStorage<RequestId | undefined>();
     async function relay(message: JSONRPCMessage, direction: "upstream" | "downstream", relatedRequestId?: RequestId) {
       const responseId = "id" in message && !("method" in message) ? message.id : undefined;
@@ -248,8 +229,6 @@ export function createMcpGateway(options: GatewayOptions) {
           message.method === "initialize" &&
           !SUPPORTED_PROTOCOL_VERSIONS.includes(String(message.params?.protocolVersion))
         ) {
-          // This bridge terminates HTTP transport, so negotiate only a version
-          // its pinned SDK actually supports, even when the client is newer.
           message = { ...message, params: { ...message.params, protocolVersion: LATEST_PROTOCOL_VERSION } };
         }
         if (
@@ -316,7 +295,6 @@ export function createMcpGateway(options: GatewayOptions) {
     return session;
   }
   return {
-    /** Mount on one dedicated gateway URL. Sticky routing is required; unknown sessions are never recreated. */
     async handle(request: Request) {
       try {
         if (
@@ -370,7 +348,6 @@ export function createMcpGateway(options: GatewayOptions) {
         );
       }
     },
-    /** Registry must call this immediately on disable/revoke/stop; closes live streams, not just future requests. */
     async invalidate(connectionId: string) {
       await Promise.all(
         [...all].filter((session) => session.lease.connectionId === connectionId).map((session) => session.close()),

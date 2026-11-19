@@ -1191,7 +1191,15 @@ test("the normal HTTP route accepts the dashboard body and returns a launched sa
     id: f.body.requestId,
     status: "stopped",
   });
-  expect(await post("sandbox/delete", { ...scope, id: f.body.requestId })).toEqual({
+  const deleted = await handleControlRequest(
+    new Request(`https://armada.example/api/v1/sandboxes/${f.body.requestId}?org=${scope.org}`, {
+      method: "DELETE",
+      headers: { authorization: `Bearer ${bearer}` },
+    }),
+    options,
+  );
+  expect(deleted?.status).toBe(200);
+  expect(await deleted?.json()).toEqual({
     id: f.body.requestId,
     status: "deleted",
   });

@@ -44,11 +44,20 @@ https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization
   Error codes: `denied`, `unsafe_endpoint`, `unsupported`, `needs_reconnect`,
   `busy`, `upstream`; `action` is safe actionable text, not upstream response text.
 
+The client metadata handler serves a static document from trusted deployment
+configuration, without credentials or request-selected redirect targets.
+`GatewayOptions.origin` is the public gateway origin. A request with an
+`Origin` header must match it exactly.
+
 ### Required adapter semantics (security boundary)
 
 `OAuthStore` must persist **only vault ciphertext** and state hashes. Implement
 `SecretBox` using the existing core `encryptSecret`/`decryptSecret` scheme; encode
 ciphertext bytes for the string port. No new encryption key or plaintext column.
+`readGrant` returns the ciphertext record. In `OAuthBrokerOptions.authorize`,
+check organization membership, enforce ownership for private connections, and
+reject disabled or revoked connections. A null expected version in
+`saveGrant` is for initial creation only.
 
 `generation(connectionId)` snapshots the connect generation even before any grant
 exists. `StoredGrant` carries generation as well as version. `saveGrant(id, version,
@@ -71,7 +80,11 @@ a deliberate new connect lifecycle must do so under coordinator authorization.
 `takePending` is one-time atomic consumption bound to actor and expiry. Store
 pending ciphertext for at most ten minutes. Never log callback query strings,
 upstream bodies, credentials or sealed-plaintext inputs. Store authorization
-checks remain mandatory even when a state record exists.
+checks remain mandatory even when a state record exists. Failed pending-state
+checks must return no record. Only trusted deployment configuration can enable
+HTTP for a fixed loopback browser callback. A service binding is trusted server
+policy, supplied by the registry and encrypted with the grant and pending flow.
+Never accept it from a public request.
 
 `GatewayAuthorization.authenticate` must accept **only narrowly scoped gateway
 leases**, not general Armada API bearers. Bind each immutable lease generation to
@@ -102,7 +115,8 @@ is rejected. Full 2026-only protocol features require a newer official SDK/adapt
 this is an explicit compatibility limit, not claimed conformance. Initialization capabilities, tools/resources/prompts, cursors, notifications,
 progress, cancellations and bidirectional messages retain their protocol payloads.
 Separate upstream transport per downstream actor/lease/session. HTTP and explicit
-legacy upstream SSE are supported; downstream is Streamable HTTP. No stdio process
+legacy upstream SSE are supported; downstream is Streamable HTTP. A legacy
+SSE peer may advertise a different message path on the same origin. No stdio process
 is run here (#523 owns sandbox bootstrap).
 
 Live SSE is streamed. A downstream request abort/cancel closes only that HTTP
@@ -113,8 +127,9 @@ still pass through policy/transport. Upstream transport errors close the session
 Explicit downstream DELETE attempts upstream HTTP `terminateSession` before local
 close; upstream 405 or unavailable/revoked credentials do not prevent local cleanup.
 The attempt has a cleanup-owned AbortController and deadline, independent of caller
-request disconnects. `GatewayOptions.cleanupTimeoutMs` defaults to 5000ms and accepts
-integers 1..30000. Cleanup uses ordinary setTimeout/clearTimeout with no exported
+request disconnects. The SDK has no per-termination signal parameter, so the
+gateway scopes the cleanup signal to the authenticated DELETE fetch.
+`GatewayOptions.cleanupTimeoutMs` defaults to 5000ms and accepts integers 1..30000. Cleanup uses ordinary setTimeout/clearTimeout with no exported
 timer-injection port. The deadline also bounds credential lookup and
 an injected fetch that ignores abort. Local session deregistration and both transport
 closes run in finally; late attempt rejection remains observed. The scheduled deadline
@@ -176,6 +191,10 @@ not automated. No third-party grant was created during development.
 
 Tests use an actual SDK client through the gateway to an independent SDK server,
 including HTTP and an injected legacy SSE wire, plus injected OAuth HTTP fixtures.
+The POST-only correlation test returns a tool result to end the finite POST
+stream before awaiting sampling and elicitation replies. Its client drains the
+stream before sending those replies, so waiting for them inside the stream
+would hang the fixture.
 No external network or wall sleeps. The malformed-status regression uses a raw
 loopback HTTP peer and a process-isolated test dial override, exercising the native
 Node HTTPS response callback with HTTP status 600. It does not mock Response and

@@ -301,6 +301,15 @@ the lifecycle transition. Check status for completion. Resuming a stopped
 sandbox depends on retaining recoverable work. See the
 [lifecycle state model](../state-model.md).
 
+## Delete a stopped sandbox
+
+Send `DELETE /api/v1/sandboxes/{id}` with your bearer token. Use the optional
+`org` query parameter to select an organization. For Docker, send a UUID as
+`requestId` and reuse it after an uncertain response to identify the same
+deletion request. A confirmed deletion returns
+`{"id":"<sandbox-id>","status":"deleted"}` and removes the sandbox's recovery
+archives.
+
 ## Receive signed webhooks
 
 An organization admin registers a public HTTPS receiver with

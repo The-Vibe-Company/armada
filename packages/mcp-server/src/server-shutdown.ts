@@ -8,6 +8,7 @@ interface ShutdownResources {
   workersDone: Promise<void>;
   stopSockets(): Promise<void>;
   closeDocker(): Promise<void> | undefined;
+  drainModalArtifacts?(): Promise<void> | undefined;
   requests: ReadonlySet<Promise<unknown>>;
   closeMcp(): Promise<void>;
   closePools(): Promise<unknown>;
@@ -31,6 +32,7 @@ export function installServerShutdown(server: ShutdownServer, resources: Shutdow
     shutdown = Promise.all([
       resources.workersDone,
       resources.closeDocker(),
+      resources.drainModalArtifacts?.(),
       socketsStopped,
       (async () => {
         while (resources.requests.size) await Promise.allSettled([...resources.requests]);
