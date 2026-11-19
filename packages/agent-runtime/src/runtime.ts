@@ -859,28 +859,23 @@ export class Runner {
     });
     child.stdin.on("error", () => {});
     child.stdin.end(r.command);
-    let stdout = "",
-      stderr = "",
-      truncated = false,
-      timedOut = false;
-    const collect = (stream: "stdout" | "stderr", chunk: Buffer) => {
-      const text = chunk.toString();
-      if (stream === "stdout") {
-        stdout += text;
-        if (stdout.length > 65536) {
-          stdout = stdout.slice(0, 65536);
-          truncated = true;
-        }
-      } else {
-        stderr += text;
-        if (stderr.length > 65536) {
-          stderr = stderr.slice(0, 65536);
-          truncated = true;
-        }
-      }
+    const output = {
+      stdout: { text: "", truncated: false },
+      stderr: { text: "", truncated: false },
     };
-    child.stdout.on("data", (c) => collect("stdout", c));
-    child.stderr.on("data", (c) => collect("stderr", c));
+    let timedOut = false;
+    for (const stream of ["stdout", "stderr"] as const) {
+      child[stream].setEncoding("utf8");
+      child[stream].on("data", (text: string) => {
+        const capture = output[stream];
+        if (capture.truncated) return;
+        capture.text += text;
+        if (capture.text.length > 65536) {
+          capture.text = capture.text.slice(0, 65536);
+          capture.truncated = true;
+        }
+      });
+    }
     await new Promise<void>((resolve, reject) => {
       child.once("spawn", resolve);
       child.once("error", reject);
@@ -932,10 +927,10 @@ export class Runner {
         const result: ExecResult = {
           detached: false,
           exitCode,
-          stdout: this.journal.redact(stdout),
-          stderr: this.journal.redact(stderr),
+          stdout: this.journal.redactCommandOutput(output.stdout.text, output.stdout.truncated),
+          stderr: this.journal.redactCommandOutput(output.stderr.text, output.stderr.truncated),
           timedOut,
-          truncated,
+          truncated: output.stdout.truncated || output.stderr.truncated,
         };
         save({ pid, status: "exited", identity, ...result });
         resolve(result);

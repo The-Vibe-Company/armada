@@ -45,6 +45,12 @@ export class Journal {
     for (const value of values) if (value.length > 0 && value.length < 8) this.applicationSecrets.add(value);
     this.redactShortApplicationText = createShortSecretTextRedactor([...this.applicationSecrets]);
   }
+  redactCommandOutput(text: string, truncated: boolean): string {
+    const mask = this.redactShortApplicationText;
+    if (mask && truncated) return "[REDACTED]";
+    const scrubbed = this.redact(text);
+    return mask ? maskText(text, scrubbed, mask) : scrubbed;
+  }
   constructor(path: string, redact: (text: string) => string) {
     this.redact = (text) => this.dynamicRedactor(redact(text));
     this.db = new Database(path, { create: true });
