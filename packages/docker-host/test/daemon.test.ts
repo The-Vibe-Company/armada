@@ -25,7 +25,7 @@ function fail(): never {
 }
 
 function fixture(
-  operation: Exclude<Job["operation"], "bootstrap" | "resume" | "buildSnapshot"> = "create",
+  operation: Exclude<Job["operation"], "bootstrap" | "resume" | "buildSnapshot" | "deletePhysical"> = "create",
   bootstrap?: BootstrapDescriptor,
 ) {
   const job: Job = {
@@ -124,6 +124,43 @@ test.each(["create", "stop", "delete"] as const)(
     expect(f.acknowledgements).toEqual(["completed", "completed"]);
   },
 );
+
+test("physical-only mailbox delete replays an uncommitted result for the same immutable ID", async () => {
+  const { job, store, api, executor, acknowledgements, state } = fixture();
+  const machineId = "a".repeat(64);
+  const physical: Job = { ...job, operation: "deletePhysical", machineId };
+  api.poll = async () => ({ job: physical });
+  const save = store.save;
+  let loseCompletion = true;
+  store.save = async (next) => {
+    if (loseCompletion && next.receipts.some((receipt) => receipt.outcome === "completed")) {
+      throw new Error("completion write lost");
+    }
+    await save(next);
+  };
+  const targets: unknown[] = [];
+  executor.delete = async (request, target) => {
+    expect(state().receipts.find((receipt) => receipt.requestId === job.requestId)?.outcome).toBeUndefined();
+    expect(request).toEqual(job.request);
+    targets.push(target);
+  };
+
+  await expect(tick(store, api, executor)).rejects.toThrow("completion write lost");
+  expect(acknowledgements).toEqual([]);
+  expect(state().cleanupGenerations).toBeUndefined();
+  api.poll = async () => ({ job: { ...physical, machineId: "b".repeat(64) } });
+  await expect(tick(store, api, executor)).rejects.toThrow("Changed host job");
+
+  api.poll = async () => ({ job: physical });
+  loseCompletion = false;
+  await tick(store, api, executor);
+  await tick(store, api, executor);
+  expect(targets).toEqual([
+    { scope: "physical-only", machineId },
+    { scope: "physical-only", machineId },
+  ]);
+  expect(acknowledgements).toEqual(["completed", "completed"]);
+});
 
 test("recovers a persisted pending operation after interruption without issuing a new identity", async () => {
   const f = fixture();
