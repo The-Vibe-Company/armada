@@ -1,4 +1,4 @@
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, spyOn, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import { createMemoryAuthStore } from "@armada/auth";
 import { createSqlVaultStore, DelegatedAuthority, type Provider } from "@armada/core/server";
 import { fakeBoat, retainedSandbox, sandbox as sdkSandbox } from "../../provider-boat/test/support.ts";
@@ -17,7 +17,7 @@ import { createRuntimeServing } from "../src/runtime-serving.ts";
 import { createSandboxArmadaAccess } from "../src/sandbox-armada-access.ts";
 import { createSandboxLifecycle } from "../src/sandbox-lifecycle.ts";
 import { rowOnlyDatabase } from "./row-only-database.ts";
-import { runtimeFixture } from "./runtime.fixture.ts";
+import { runtimeFixture, scopedRuntimeFixture } from "./runtime.fixture.ts";
 import { ENCRYPTION_KEY, PUBLIC_URL } from "./support.ts";
 
 const sharedDatabase = rowOnlyDatabase();
@@ -47,17 +47,14 @@ const input = (id: string) => ({
 });
 
 describe("Modal user stop and wake-on-send", () => {
-  let f: Awaited<ReturnType<typeof runtimeFixture>>;
-  beforeEach(async () => {
-    f = await runtimeFixture(await sharedDatabase(), "modal");
-  });
-  afterEach(async () => {
-    await f?.close();
+  const fixture = scopedRuntimeFixture(async () => runtimeFixture(await sharedDatabase(), "modal"), {
+    perTest: true,
   });
 
   test.each([false, true])(
     "wake restores the same native conversation after Modal stop (recover=%s)",
     async (recover) => {
+      const f = await fixture();
       let needsRetry = recover;
       let state: "ready" | "stopped" = "ready";
       let retained: { epoch: string; watermark: number } | undefined;
@@ -154,17 +151,12 @@ describe.each([
   ["modal", "claude"],
   ["modal", "opencode"],
 ] as const)("retained runtime resume (%s/%s)", (provider, harness) => {
-  let f: Awaited<ReturnType<typeof stopped>>;
   // Cold WASM/migrations and building the stopped checkpoint are prerequisites,
   // not resume/replay work. Keep the behavior timeout and real assertions intact.
-  beforeAll(async () => {
-    f = await stopped(harness, provider);
-  }, 20_000);
-  afterAll(async () => {
-    await f?.close();
-  });
+  const fixture = scopedRuntimeFixture(() => stopped(harness, provider), { timeout: 20_000 });
 
   test("explicit resume wakes a checkpointed runtime in the same conversation; replay never activates or starts a turn twice", async () => {
+    const f = await fixture();
     const old = f.active;
     let activations = 0;
     let preparations = 0;
@@ -288,18 +280,13 @@ test("an already enrolled uncertain resume reconciles on a fresh server without 
 describe.each(["missing-proof", "prefix", "taint", "account", "owner", "expired"] as const)(
   "unsafe resume (%s)",
   (mode) => {
-    let f: Awaited<ReturnType<typeof stopped>>;
     // Building the stopped checkpoint is a prerequisite, not refusal work: under a
     // contended CI shard it alone exceeded the 5s test budget (#2592). The refusal
     // itself and every assertion stay inside the timed test.
-    beforeAll(async () => {
-      f = await stopped();
-    }, 20_000);
-    afterAll(async () => {
-      await f?.close();
-    });
+    const fixture = scopedRuntimeFixture(() => stopped(), { timeout: 20_000 });
 
     test(`resume refuses unsafe state before preparing or activating compute (${mode})`, async () => {
+      const f = await fixture();
       let calls = 0;
       if (mode === "missing-proof") await f.db.query("delete from runtime_checkpoints where sandbox_id=$1", [f.row.id]);
       if (mode === "prefix")
@@ -996,14 +983,9 @@ describe.each([
   ["modal", "claude"],
   ["modal", "opencode"],
 ] as const)("empty retained runtime wake (%s/%s)", (provider, harness) => {
-  let f: Awaited<ReturnType<typeof stopped>>;
-  beforeAll(async () => {
-    f = await stopped(harness, provider, true);
-  });
-  afterAll(async () => {
-    await f?.close();
-  });
+  const fixture = scopedRuntimeFixture(() => stopped(harness, provider, true));
   test("one fresh-epoch first conversation survives replay without inventing native history", async () => {
+    const f = await fixture();
     expect(f.starts).toEqual([]);
     const scoped = provider === "modal" && harness === "codex";
     const authority = new DelegatedAuthority(f.sql, async () => {});
@@ -1099,14 +1081,9 @@ describe.each([
 });
 
 describe("uncertain empty Modal wake", () => {
-  let f: Awaited<ReturnType<typeof stopped>>;
-  beforeAll(async () => {
-    f = await stopped("codex", "modal", true);
-  });
-  afterAll(async () => {
-    await f?.close();
-  });
+  const fixture = scopedRuntimeFixture(() => stopped("codex", "modal", true));
   test("fresh server reconciles the first conversation without reactivation or another model turn", async () => {
+    const f = await fixture();
     let activations = 0;
     const resume = createRuntimeResume(f.sql, ENCRYPTION_KEY, f.bridge, async () => ({
       async start(_signal, restore) {
