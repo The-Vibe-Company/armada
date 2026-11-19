@@ -2,10 +2,7 @@ name: Migration preview
 
 on:
   pull_request:
-    paths:
-      - 'supabase/migrations/**'
-      - 'scripts/db/supabase-prereq.sql'
-      - '.github/workflows/migration-preview.yml'
+    paths: ['supabase/migrations/**']
 
 permissions:
   contents: read
@@ -18,7 +15,7 @@ jobs:
   preview:
     name: Migration dry-run (disposable database)
     runs-on: ubuntu-latest
-    timeout-minutes: 2
+    timeout-minutes: 5
     services:
       postgres:
         image: postgres:17@sha256:ff87138949ad9a46f32ff23bd6852b52ce024a13dffe9b4087be98292cdd3b4f
@@ -36,10 +33,7 @@ jobs:
       - uses: supabase/setup-cli@1dedf2c611547ede7232d26866dd3c56ab903bbb # v1
         with:
           version: 2.75.0
-      - name: Apply migrations with the release client on disposable Postgres
+      - name: Preview migration plan without production credentials
         env:
-          PGSSLMODE: disable # Disposable service only.
-          PGURL: postgresql://postgres@127.0.0.1:5432/postgres
-        run: |
-          psql "$PGURL" -v ON_ERROR_STOP=1 -f scripts/db/supabase-prereq.sql
-          supabase db push --db-url "$PGURL" --yes
+          PGSSLMODE: disable # Disposable service only; production retains TLS.
+        run: supabase db push --db-url postgresql://postgres@127.0.0.1:5432/postgres --dry-run

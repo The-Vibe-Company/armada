@@ -95,7 +95,7 @@ test("tracks real transaction boundaries and ignores SQL inside comments and bod
   expect(
     transactionErrors(`
       -- begin;
-      do $$ begin perform 'LOCK TABLE jobs'; end $$;
+      do $$ begin lock table public.jobs; end; $$;
       start transaction;
       savepoint migration;
       rollback to migration;
