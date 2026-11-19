@@ -374,6 +374,54 @@ CLI case with direct service calls using injected systemd operations. The
 other two runtime installer cases use in-process machine and fetch fixtures.
 The daemon archive case replaces `Bun.spawn` with a mock.
 
+## Process-spawning unit cases in the Boat adapter
+
+The [process-test allowlist](../scripts/ci/process-tests.txt) identifies four
+Boat adapter files by direct subprocess syntax. The table records each case
+that reaches a local process, including subprocesses behind guest exec
+fixtures. Timings measure whole cases from one focused Linux run with Bun
+1.4.2 on main at `7dc693ad`. The run used local fixtures and made no calls to
+Boat or any deployed service.
+
+| File under `packages/provider-boat/test` | Case | Local subprocess boundary | Local |
+| --- | --- | --- | ---: |
+| `native-claude-mcp.test.ts` | ordinary Claude needs no Python bridge and managed installation refuses a missing interpreter before mutation | Bash runs the ordinary wrapper and the managed installer with Python absent from PATH. | 5.79 ms |
+| `native-claude-mcp.test.ts` | Claude refresh ACK gates turns, removes tools and preserves the process/session and internal MCP | Bash starts the managed Python bridge with a local Claude stream-JSON peer. | 108.85 ms |
+| `native-cwd.test.ts` | installs the codex VM wrapper and preserves dynamic argv without recursion | Bash runs the Linux installer with a local sudo shim, then the wrapper launches a shell peer. | 59.92 ms |
+| `native-cwd.test.ts` | installs the claude VM wrapper and preserves dynamic argv without recursion | Bash runs the Linux installer with a local sudo shim, then the wrapper launches a shell peer. | 36.38 ms |
+| `native-cwd.test.ts` | Codex wrapper enforces Boat's thread/turn protocol cwd, not only process cwd | Bash runs the relocated installer on Linux. The installed wrapper and a local Codex peer exercise transport refusal and stdio. | 361.22 ms |
+| `native-cwd.test.ts` | generic GitHub preparation preserves the managed Claude MCP bridge and rejects a tampered wrapper | Bash runs both Linux installer variants. The installed wrapper starts the managed Python bridge and a local Claude peer. | 123.53 ms |
+| `native-cwd.test.ts` | Codex bridge refuses a second message until the first turn/start replies, then recovers | The installed wrapper starts the Python bridge and a local Codex peer over stdio after Linux shell setup. | 95.99 ms |
+| `native-cwd.test.ts` | Codex lone startup abort returns readable relaunch guidance on the pending RPC | After Linux shell setup, the installed wrapper starts a local Codex peer that aborts by signal. | 83.05 ms |
+| `native-cwd.test.ts` | Codex lone startup exit returns readable relaunch guidance on the pending RPC | After Linux shell setup, the installed wrapper starts a local Codex peer that exits nonzero. | 90.81 ms |
+| `native-cwd.test.ts` | Codex boot abort before initialize still answers the later first request | After Linux shell setup, the installed wrapper starts a local Codex peer that aborts before reading stdin. | 86.15 ms |
+| `native-cwd.test.ts` | Boat-framed Codex input reaches admitted native usage through the real bridge | A stubbed guest exec runs usage commands in a local shell. Python drives the wrapper and a local Codex peer. | 179.37 ms |
+| `native-cwd.test.ts` | Boat external subscription bridge consumes refresh RPC privately and completes the same native turn | OpenSSL creates a temporary certificate. The wrapper starts a local Codex peer and the bridge calls a loopback HTTPS fixture. | 332.25 ms |
+| `native-cwd.test.ts` | Boat plan exhaustion reaches a public outcome with only validated reset evidence (updated, true) | Bash starts the Python bridge and a local Codex peer that emits the fixture error. | 77.39 ms |
+| `native-cwd.test.ts` | Boat plan exhaustion reaches a public outcome with only validated reset evidence (updated, false) | Bash starts the Python bridge and a local Codex peer that emits the fixture error. | 72.78 ms |
+| `native-cwd.test.ts` | Boat plan exhaustion reaches a public outcome with only validated reset evidence (read, true) | Bash starts the Python bridge and a local Codex peer that emits the fixture error. | 70.69 ms |
+| `native-cwd.test.ts` | Boat plan exhaustion reaches a public outcome with only validated reset evidence (read, false) | Bash starts the Python bridge and a local Codex peer that emits the fixture error. | 71.01 ms |
+| `native-cwd.test.ts` | Boat plan exhaustion reaches a public outcome with only validated reset evidence (raced, true) | Bash starts the Python bridge and a local Codex peer that emits the fixture error. | 69.96 ms |
+| `native-cwd.test.ts` | Boat plan exhaustion reaches a public outcome with only validated reset evidence (raced, false) | Bash starts the Python bridge and a local Codex peer that emits the fixture error. | 74.88 ms |
+| `native-cwd.test.ts` | Boat plan exhaustion reaches a public outcome with only validated reset evidence (unauthorized, true) | Bash starts the Python bridge and a local Codex peer that emits the fixture error. | 75.26 ms |
+| `native-cwd.test.ts` | Boat plan exhaustion reaches a public outcome with only validated reset evidence (unknown, true) | Bash starts the Python bridge and a local Codex peer that emits the fixture error. | 73.14 ms |
+| `native-usage.test.ts` | multi-turn Codex cumulative counters yield deltas, retries do not add | Python executes the embedded guest usage code with temporary state. | 28.51 ms |
+| `native-usage.test.ts` | a valid stale flush is never frozen at admission or attributed to the next turn | Python executes the embedded guest usage code with temporary state. | 28.02 ms |
+| `native-usage.test.ts` | missing resume baseline, symlink, mismatched session identity fail closed | Python executes the embedded guest usage code with temporary state. | 27.39 ms |
+| `native-usage.test.ts` | an interrupted native turn leaves counters unknown without poisoning later closed turns | Python executes the embedded guest usage code with temporary state. | 29.39 ms |
+| `native-usage.test.ts` | Claude cumulative files without a proven native boundary remain unknown | Python executes the embedded guest usage code with temporary state. | 26.53 ms |
+| `native-usage.test.ts` | expired and rejected admissions recover without letting late callbacks claim newer prompts | Python executes the embedded guest usage code with temporary state. | 28.72 ms |
+| `native-usage.test.ts` | wire codec rejects ambiguous context and legacy admissions without losing safe recovery | Python executes the embedded guest usage code with temporary state. | 27.50 ms |
+| `native-usage.test.ts` | a warm legacy bridge cannot consume a new admission whose raw text aliases an old envelope | Python executes the embedded guest usage code with temporary state. | 26.25 ms |
+| `native-usage.test.ts` | collection explains the failed stage without exposing raw state or changing counters | Python executes the embedded guest usage code with temporary state. | 26.19 ms |
+| `native-usage.test.ts` | identical ambiguous inputs stay unknown while later distinct admissions and fresh forks recover | Python executes the embedded guest usage code with temporary state. | 25.67 ms |
+| `usage-probe.test.ts` | diagnostic probe exports only metadata and does not mutate guest state | Python runs the guest metadata probe against temporary state. | 20.95 ms |
+
+The native reader transport-error case in `native-usage.test.ts` injects the
+exec response in process. The other Boat adapter unit files use in-process
+helpers or fake fetch for provider calls. Explicit conformance and the
+coordinator probe are outside unit discovery.
+
 ## Evidence owed after merge
 
 Run the existing publishing release validation on the exact release SHA. Verify
