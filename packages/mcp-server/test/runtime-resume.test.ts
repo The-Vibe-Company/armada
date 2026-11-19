@@ -335,7 +335,7 @@ const interruptedResumeProofs = [
   "observed running",
   "transient observation failure",
   "unrecognized state",
-] as const;
+];
 
 test.each(interruptedResumeProofs)(
   "the worker reconciles an interrupted Boat resume with %s evidence",
