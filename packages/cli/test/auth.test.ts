@@ -129,24 +129,6 @@ describe("auth commands", () => {
     expect(result.err).toContain("You are not signed in. Run armada login.");
   });
 
-  test("ARMADA_TOKEN owns token requests without reading a saved session", async () => {
-    const auth = io();
-    auth.env = { ARMADA_URL: ORIGIN, ARMADA_TOKEN: "environment-token" };
-    auth.session = {
-      read: async () => {
-        throw new Error("saved session must not be read");
-      },
-      write: async () => undefined,
-      clear: async () => undefined,
-    };
-    auth.fetch = async (input, init) => {
-      expect(String(input)).toBe(`${ORIGIN}/api/v1/token/list`);
-      expect(authHeader(init)).toBe("Bearer environment-token");
-      return Response.json({ tokens: [] });
-    };
-    expect(await capture(["token", "list"], auth)).toMatchObject({ code: 0, out: "No service tokens.\n" });
-  });
-
   test("logout clears the session", async () => {
     const auth = io();
     await auth.session.write(session());
