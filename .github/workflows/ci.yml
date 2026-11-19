@@ -85,6 +85,10 @@ jobs:
         if: matrix.shard == 1
         run: bun test scripts/db/check-migrations.test.ts
 
+      - name: Check npm package contents and trusted publishers
+        if: matrix.shard == 2
+        run: bun scripts/ci/npm-pack-check.ts
+
       # Native/namespace conformance belongs to publishing release validation.
       - run: bun scripts/prepare-runtime.ts
       - name: Run balanced unit shard

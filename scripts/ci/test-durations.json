@@ -1,5 +1,5 @@
 {
-  "static": { "1": 36.5 },
+  "static": { "1": 36.5, "2": 1 },
   "files": {
     "apps/dashboard/test/account-recovery.test.ts": 0.014,
     "apps/dashboard/test/action.test.ts": 0.007,
