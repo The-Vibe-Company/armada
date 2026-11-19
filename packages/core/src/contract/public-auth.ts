@@ -4,17 +4,25 @@ import type { Operation } from "./index.ts";
 export const signInMethod = z.enum(["email", "github", "google"]);
 const browserProvider = z.enum(["github", "google"]);
 const pkce = z.string().regex(/^[A-Za-z0-9._~-]{43,128}$/);
-const loopback = z.url().refine((value) => {
-  const callback = new URL(value);
-  return (
-    callback.protocol === "http:" &&
-    ["127.0.0.1", "localhost"].includes(callback.hostname) &&
-    !!callback.port &&
-    !callback.username &&
-    !callback.password &&
-    !callback.hash
-  );
-}, "Use an HTTP localhost or 127.0.0.1 callback with an explicit non-default port, no credentials, and no fragment.");
+const loopback = z
+  .string()
+  .refine((value) => {
+    if (!URL.canParse(value)) return false;
+    const callback = new URL(value);
+    return (
+      callback.protocol === "http:" &&
+      ["127.0.0.1", "localhost"].includes(callback.hostname) &&
+      !!callback.port &&
+      !callback.username &&
+      !callback.password &&
+      !callback.hash
+    );
+  })
+  .meta({
+    format: "uri",
+    description:
+      "HTTP localhost or 127.0.0.1 callback with an explicit non-default port, no credentials, and no fragment.",
+  });
 const callbackFields = {
   redirect_uri: loopback,
   code_challenge: pkce,
@@ -79,7 +87,7 @@ export const publicAuthOperations = {
           cli_email_link: z
             .boolean()
             .optional()
-            .describe("Allow the email link to return through /callback with no query."),
+            .describe("When true, redirect_uri must use the /callback path with no query."),
         })
         .refine(({ cli_email_link, redirect_uri }) => {
           if (!cli_email_link || !URL.canParse(redirect_uri)) return !cli_email_link;

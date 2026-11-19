@@ -1,11 +1,13 @@
 import { publicAuthOperations } from "./contract/public-auth.ts";
 
+const githubCallback = { "github/oauth/callback": ["GET", "POST"] } as const;
+
 /** Public control routes shared by the server dispatcher and dashboard transport. */
-export const PUBLIC_CONTROL_ROUTES: Readonly<Record<string, readonly string[]>> = {
+export const PUBLIC_CONTROL_ROUTES: typeof githubCallback & Readonly<Record<string, readonly string[]>> = {
   ...Object.fromEntries(
     Object.values(publicAuthOperations).map(({ route }) => [route.path.slice("/api/v1/".length), [route.method]]),
   ),
-  "github/oauth/callback": ["GET", "POST"],
+  ...githubCallback,
 };
 
 /**

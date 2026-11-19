@@ -1437,7 +1437,8 @@
             "schema": {
               "$schema": "http://json-schema.org/draft-07/schema#",
               "type": "string",
-              "format": "uri"
+              "format": "uri",
+              "description": "HTTP localhost or 127.0.0.1 callback with an explicit non-default port, no credentials, and no fragment."
             }
           },
           {
@@ -1664,7 +1665,8 @@
                   },
                   "redirect_uri": {
                     "type": "string",
-                    "format": "uri"
+                    "format": "uri",
+                    "description": "HTTP localhost or 127.0.0.1 callback with an explicit non-default port, no credentials, and no fragment."
                   },
                   "code_challenge": {
                     "type": "string",
@@ -1675,7 +1677,7 @@
                     "pattern": "^[A-Za-z0-9._~-]{8,512}$"
                   },
                   "cli_email_link": {
-                    "description": "Allow the email link to return through /callback with no query.",
+                    "description": "When true, redirect_uri must use the /callback path with no query.",
                     "type": "boolean"
                   }
                 },
