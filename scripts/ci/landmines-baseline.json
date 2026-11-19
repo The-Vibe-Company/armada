@@ -1,8 +1,4 @@
 {
-  "landmines-structure/colocated-tests": {
-    "apps/dashboard/test/routine-staging-transport.test.ts": 1,
-    "apps/dashboard/test/staging-check-route-parity.test.ts": 1
-  },
   "landmines-style/no-comments": {
     ".railway/railway.ts": 3,
     "apps/dashboard/e2e/fixture-expiry.ts": 1,
@@ -242,8 +238,6 @@
     "apps/dashboard/test/fixtures/rsc.ts": 3,
     "apps/dashboard/test/invitations.test.ts": 2,
     "apps/dashboard/test/proxy.test.ts": 2,
-    "apps/dashboard/test/routine-staging-transport.test.ts": 2,
-    "apps/dashboard/test/staging-check-route-parity.test.ts": 1,
     "apps/ios/scripts/generate-presentation.ts": 1,
     "docs/design/refonte-2026-11-16/support.js": 34,
     "packages/agent-runtime/build-compiled.ts": 1,
@@ -628,7 +622,7 @@
     "packages/core/test/vm-resource-reading.test.ts": 1,
     "packages/core/test/work-preservation.probe.ts": 5,
     "packages/docker-host/src/artifact-cache.ts": 7,
-    "packages/docker-host/src/daemon.ts": 108,
+    "packages/docker-host/src/daemon.ts": 107,
     "packages/docker-host/src/main.ts": 7,
     "packages/docker-host/src/native.ts": 16,
     "packages/docker-host/src/runtime-install.ts": 7,
