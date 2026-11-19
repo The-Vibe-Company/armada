@@ -21,7 +21,6 @@ beforeAll(async () => {
 });
 
 afterEach(async () => {
-  // Cases only mutate sandbox rows. Foreign keys remove their recovery artifacts.
   await fixture?.db.exec("delete from sandboxes");
 });
 
