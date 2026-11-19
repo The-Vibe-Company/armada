@@ -2,19 +2,13 @@ import { expect, test } from "bun:test";
 import { readdirSync } from "node:fs";
 import { resolve } from "node:path";
 import ts from "typescript";
-import { operation } from "../../../packages/cli/src/operations.ts";
-import { memorySessionStore } from "../../../packages/cli/src/session.ts";
-import { forwardControl } from "../src/app/api/v1/[...path]/control-proxy.ts";
+import { operation } from "../../../../../../../packages/cli/src/operations.ts";
+import { memorySessionStore } from "../../../../../../../packages/cli/src/session.ts";
+import { forwardControl } from "./control-proxy.ts";
 
-const cli = resolve(import.meta.dir, "../../../packages/cli/src");
+const cli = resolve(import.meta.dir, "../../../../../../../packages/cli/src");
 const id = "11111111-1111-4111-8111-111111111111";
 
-// Independent architecture contract: inventory the CLI, never the proxy's allow-list.
-// Literal/flow-union routes are static; sandbox and MCP mutable dispatch is exercised
-// with the CLI's source-declared commands/actions. Unknown route expressions fail closed.
-// For a new routing pattern, extend strings() with finite CLI-derived values, or
-// add a real-dispatch probe below for mutable routing. Never copy the proxy list;
-// mutation-check that removing the new route makes this guard fail.
 test("CLI user POST routes reach the dashboard proxy while machine-token routes stay outside it", async () => {
   const files = readdirSync(cli)
     .filter((name) => name.endsWith(".ts"))
@@ -23,9 +17,7 @@ test("CLI user POST routes reach the dashboard proxy while machine-token routes 
     moduleResolution: ts.ModuleResolutionKind.Bundler,
     module: ts.ModuleKind.ESNext,
     strict: true,
-    // Route inference needs imported CLI types, not every installed ambient package.
     types: [],
-    // Collection/utility types drive route inference; DOM declarations do not.
     lib: ["lib.es2023.d.ts"],
   });
   const checker = program.getTypeChecker();
@@ -36,14 +28,14 @@ test("CLI user POST routes reach the dashboard proxy while machine-token routes 
     ts.forEachChild(node, visit);
   };
   for (const source of sources) visit(source);
-  const owner = (node: ts.Node): ts.FunctionDeclaration | undefined => {
+  const owner = (node: ts.Node) => {
     for (let parent = node.parent; parent; parent = parent.parent) if (ts.isFunctionDeclaration(parent)) return parent;
     return undefined;
   };
-  const fail = (node: ts.Node): never => {
+  const fail = (node: ts.Node) => {
     throw new Error(`Unresolved CLI route: ${node.getSourceFile().fileName}: ${node.getText()}`);
   };
-  const finiteType = (type: ts.Type): string[] | undefined => {
+  const finiteType: (type: ts.Type) => string[] | undefined = (type) => {
     if (type.isStringLiteral()) return [type.value];
     if (type.isUnion()) {
       const values = type.types.map(finiteType);
@@ -52,7 +44,7 @@ test("CLI user POST routes reach the dashboard proxy while machine-token routes 
     const constraint = checker.getBaseConstraintOfType(type);
     return constraint && constraint !== type ? finiteType(constraint) : undefined;
   };
-  const strings = (node: ts.Expression, seen = new Set<ts.Node>()): string[] => {
+  const strings: (node: ts.Expression, seen?: Set<ts.Node>) => string[] = (node, seen = new Set<ts.Node>()) => {
     if (seen.has(node)) return fail(node);
     const next = new Set(seen).add(node);
     const typed = finiteType(checker.getTypeAtLocation(node));
@@ -74,7 +66,6 @@ test("CLI user POST routes reach the dashboard proxy while machine-token routes 
       ts.isIdentifier(node.expression) &&
       node.expression.text === "encodeURIComponent"
     ) {
-      // Opaque IDs may vary; action/path segments must still be finitely resolved.
       const argument = node.arguments[0];
       if (argument && /^(?:command\.id(?: \?\? "")?)$/.test(argument.getText())) return [id];
     }
@@ -90,8 +81,6 @@ test("CLI user POST routes reach the dashboard proxy while machine-token routes 
       if (arguments_.length && arguments_.every((argument) => argument !== undefined))
         return arguments_.flatMap((argument) => strings(argument as ts.Expression, next));
     }
-    // Array.includes does not narrow strings in TypeScript (golden retirement).
-    // Use the CLI's actual validation array, not a second route inventory.
     if (ts.isIdentifier(node)) {
       const same = (expression: ts.Expression) =>
         checker.getSymbolAtLocation(expression) === checker.getSymbolAtLocation(node);
@@ -112,10 +101,10 @@ test("CLI user POST routes reach the dashboard proxy while machine-token routes 
         ts.isPropertyAccessExpression(validation.expression) &&
         ts.isArrayLiteralExpression(validation.expression.expression)
       ) {
-        const handled = (condition: ts.Expression): string[] => {
+        const earlyReturnValues: (condition: ts.Expression) => string[] = (condition) => {
           if (!ts.isBinaryExpression(condition)) return [];
           if (condition.operatorToken.kind === ts.SyntaxKind.BarBarToken)
-            return [...handled(condition.left), ...handled(condition.right)];
+            return [...earlyReturnValues(condition.left), ...earlyReturnValues(condition.right)];
           return condition.operatorToken.kind === ts.SyntaxKind.EqualsEqualsEqualsToken &&
             same(condition.left) &&
             ts.isStringLiteral(condition.right)
@@ -128,7 +117,7 @@ test("CLI user POST routes reach the dashboard proxy while machine-token routes 
             statement.end < node.pos &&
             ts.isBlock(statement.thenStatement) &&
             statement.thenStatement.statements.some(ts.isReturnStatement)
-              ? handled(statement.expression)
+              ? earlyReturnValues(statement.expression)
               : [],
           ) ?? [];
         return validation.expression.expression.elements
@@ -139,7 +128,7 @@ test("CLI user POST routes reach the dashboard proxy while machine-token routes 
     return fail(node);
   };
 
-  const routes = new Set<string>();
+  const userRoutes = new Set<string>();
   const machineRoutes = new Set<string>();
   for (const call of calls) {
     const declaration = checker.getResolvedSignature(call)?.declaration;
@@ -148,18 +137,15 @@ test("CLI user POST routes reach the dashboard proxy while machine-token routes 
       ts.isFunctionDeclaration(declaration) &&
       declaration.getSourceFile().fileName === resolve(cli, "control.ts");
     if (control) {
-      // Both mutable command owners are exercised below through the real operation entry point.
       const mutableOwner = owner(call);
       const realDispatch =
         (mutableOwner?.name?.text === "operation" && call.getSourceFile().fileName === resolve(cli, "operations.ts")) ||
         (mutableOwner?.name?.text === "mcpCommand" &&
           call.getSourceFile().fileName === resolve(cli, "mcp-commands.ts"));
       if (realDispatch && call.arguments[1]?.getText() === "route") continue;
-      for (const route of strings(call.arguments[1] ?? fail(call))) routes.add(`/api/v1/${route}`);
+      for (const route of strings(call.arguments[1] ?? fail(call))) userRoutes.add(`/api/v1/${route}`);
       continue;
     }
-    // Each explicit POST call supplies its URL before its RequestInit. This also
-    // inventories golden build wrapper callers and unauthenticated login calls.
     const optionsIndex = call.arguments.findIndex(
       (argument) =>
         ts.isObjectLiteralExpression(argument) &&
@@ -174,20 +160,14 @@ test("CLI user POST routes reach the dashboard proxy while machine-token routes 
     if (optionsIndex < 1 || owner(call)?.name?.text === "control") continue;
     let path = call.arguments[optionsIndex - 1] ?? fail(call);
     if (ts.isNewExpression(path) && path.expression.getText() === "URL") path = path.arguments?.[0] ?? fail(path);
-    // The authenticated client's fetch forwards its path argument unchanged;
-    // its caller inventory above owns URLs, not the transport's local URL object.
     if (call.getSourceFile().fileName === resolve(cli, "armada-api.ts") && path.getText() === "url") continue;
-    // A local install targets the machine API with a one-use registration token,
-    // not the dashboard's user-token control proxy. Its validated HTTPS origin is
-    // runtime-selected; a single static pathname suffix is still independently
-    // discoverable. Dynamic/unknown routing patterns continue to fail closed.
     const machinePath =
       ts.isTemplateExpression(path) && path.head.text === "" && path.templateSpans.length === 1
         ? path.templateSpans[0]?.literal.text
         : undefined;
     for (const route of machinePath?.startsWith("/api/docker-host/") ? [machinePath] : strings(path)) {
       if (route.startsWith("/api/docker-host/")) machineRoutes.add(route);
-      else routes.add(route);
+      else userRoutes.add(route);
     }
   }
 
@@ -216,7 +196,7 @@ test("CLI user POST routes reach the dashboard proxy while machine-token routes 
     expect(response.status).toBe(503);
   };
   try {
-    for (const route of routes) await admitted(route);
+    for (const route of userRoutes) await admitted(route);
     for (const route of machineRoutes) {
       const path = route.slice("/api/".length);
       const response = await forwardControl(
@@ -265,7 +245,7 @@ test("CLI user POST routes reach the dashboard proxy while machine-token routes 
     expect(commands).toContain("mcp");
     expect(actions?.length).toBeGreaterThan(0);
     for (const command of commands) {
-      if (command === "rm") continue; // DELETE is a separate contract.
+      if (command === "rm") continue;
       for (const action of command === "mcp" ? (actions ?? []) : [undefined]) {
         const argv =
           command === "mcp"
@@ -320,7 +300,6 @@ test("CLI user POST routes reach the dashboard proxy while machine-token routes 
           },
           async () => "{}",
         ).catch((error: unknown) => {
-          // Expected: the fake upstream refuses execution after proving admission.
           if (!requested) throw error;
         });
         if (admissionFailure) throw admissionFailure;
