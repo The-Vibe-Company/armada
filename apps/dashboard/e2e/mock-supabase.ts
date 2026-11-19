@@ -1196,11 +1196,7 @@ function mcp(message: RpcMessage, userId: string | null): Response {
       return text({ events: events.slice(since), cursor: String(events.length), hasMore: false });
     }
     case "send": {
-      // As the server does: the named conversation, else the latest, else a new one; the sandbox is running after.
-      const conversationId =
-        typeof args.conversation_id === "string"
-          ? args.conversation_id
-          : (conversations.at(-1) ?? `conv-${events.length}`);
+      const conversationId = conversations.at(-1) ?? `conv-${events.length}`;
       if (!conversations.includes(conversationId)) target.conversation_ids = [...conversations, conversationId];
       target.status = "running";
       // A send to a stopped sandbox restores it: the server clears its stop time.
@@ -1218,7 +1214,7 @@ function mcp(message: RpcMessage, userId: string | null): Response {
       return text({ id: target.id, promptId, conversationId, status: "running" });
     }
     case "steer": {
-      const conversationId = typeof args.conversation_id === "string" ? args.conversation_id : conversations.at(-1);
+      const conversationId = conversations.at(-1);
       events.push({
         id: `steer-${events.length}`,
         at: Date.now(),
@@ -1230,15 +1226,15 @@ function mcp(message: RpcMessage, userId: string | null): Response {
       return text({ id: target.id, promptId: "steered", conversationId, delivery, mode: null });
     }
     case "interrupt": {
+      const conversationId = conversations.at(-1);
       const running = [...events]
         .reverse()
         .find(
-          (event) =>
-            event.kind === "prompt" && event.status === "running" && event.conversationId === args.conversation_id,
+          (event) => event.kind === "prompt" && event.status === "running" && event.conversationId === conversationId,
         );
       if (running)
         events.push({ ...running, id: `interrupted-${events.length}`, at: Date.now(), status: "interrupted" });
-      return text({ id: target.id, interrupted: true });
+      return text({ id: target.id, interrupted: !!running });
     }
     case "stop":
       target.status = "stopped";

@@ -16,18 +16,6 @@ export function modelChange(fields: ModelFields): "none" | "changed" | "incomple
 export const INCOMPLETE_MODEL = "Enter the model id, or choose a listed model.";
 export const STEER_KEEPS_MODEL = "A model or effort change needs a new turn. Send it instead.";
 
-/** The conversation field: empty lets the server choose (a sandbox with none yet), otherwise one of this sandbox's. */
-export function chosenConversation(
-  value: string,
-  recorded: readonly string[],
-): { ok: true; id: string | undefined } | { ok: false; error: string } {
-  const id = value.trim();
-  if (!id) return { ok: true, id: undefined };
-  return recorded.includes(id)
-    ? { ok: true, id }
-    : { ok: false, error: "That conversation is not part of this sandbox." };
-}
-
 /** On an owned Docker host the model and effort chosen at launch serve every message (#1526). */
 export const PINNED_MODEL = "This sandbox keeps the model and effort chosen at launch for every message.";
 
@@ -81,7 +69,7 @@ function plainSendFailure(message: string): string {
 export function messageKeyFor(previous: LaunchKey | null, data: FormData, fresh?: () => string): LaunchKey {
   return launchKeyFor(
     previous,
-    ["sandbox", "prompt", "conversation", "model", "other_model", "reasoning_effort"].map(
+    ["sandbox", "prompt", "model", "other_model", "reasoning_effort"].map(
       (field) => [field, String(data.get(field) ?? "")] as [string, string],
     ),
     fresh,

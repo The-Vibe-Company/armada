@@ -134,7 +134,8 @@ armada status SANDBOX --json
 ```
 
 Send starts a new turn in the sandbox's conversation. Launch another sandbox
-for a separate conversation. Steer redirects an active turn:
+for a separate conversation. The dashboard transcript shows sandbox history
+and its composer targets the sandbox automatically. Steer redirects an active turn:
 `armada steer SANDBOX "Keep the public API unchanged"`. Use
 `armada interrupt SANDBOX` to request interruption, then inspect status before
 sending replacement work. Do not treat steer as a guaranteed new turn or send

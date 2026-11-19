@@ -78,7 +78,7 @@ for (const mode of [
             expect(body.params.name).toBe("send");
             const args = body.params.arguments;
             expect(args.id).toBe(ids[active]);
-            expect(args.conversation_id).toBe(conversation);
+            expect(args).not.toHaveProperty("conversation_id");
             expect(args.request_id).toMatch(/^[a-f0-9-]{36}$/);
             expect(args).not.toHaveProperty("model");
             expect(args).not.toHaveProperty("reasoning_effort");

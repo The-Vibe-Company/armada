@@ -17,7 +17,7 @@ type AttentionActionProps = {
   configured: boolean;
   busy: boolean;
   attention: Attention;
-  resend: { text: string; conversationId: string | null } | null;
+  resend: string | null;
   ackKey: string;
   dismissed: boolean;
 };
@@ -29,8 +29,7 @@ export function SandboxAttentionActions(props: AttentionActionProps) {
     props.sandboxId,
     props.ackKey,
     props.attention,
-    props.attention === "interrupted" ? props.resend?.text : CONTINUE_PROMPT,
-    props.attention === "interrupted" ? props.resend?.conversationId : null,
+    props.attention === "interrupted" ? props.resend : CONTINUE_PROMPT,
   ]);
   return <RecoverySend key={identity} {...props} />;
 }
@@ -39,7 +38,7 @@ function RecoverySend({ sandboxId, name, status, configured, busy, attention, re
   const [state, action, pending] = useMutationState(sendToSandbox);
   const [requestId] = useState(() => crypto.randomUUID());
   const canSend = configured && !busy && ["ready", "running", "stopped"].includes(status);
-  const prompt = attention === "interrupted" ? resend?.text : attention === "unconcluded" ? CONTINUE_PROMPT : null;
+  const prompt = attention === "interrupted" ? resend : attention === "unconcluded" ? CONTINUE_PROMPT : null;
   return (
     <div className="space-y-2">
       {state && (
@@ -56,9 +55,6 @@ function RecoverySend({ sandboxId, name, status, configured, busy, attention, re
             <input type="hidden" name="send_key" value={requestId} />
             <input type="hidden" name="sandbox" value={sandboxId} />
             <input type="hidden" name="prompt" value={prompt} />
-            {attention === "interrupted" && resend?.conversationId && (
-              <input type="hidden" name="conversation" value={resend.conversationId} />
-            )}
             <Button
               type="submit"
               size="sm"

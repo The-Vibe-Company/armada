@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { type ChatItem, conversationsOf, eventsOf, projectChat, toolText } from "../src/lib/chat.ts";
+import { type ChatItem, chatTurnRunning, projectChat, toolText } from "../src/lib/chat.ts";
 import { type ChatEvent, mergeEvents } from "../src/lib/events.ts";
 import { describeFailure } from "../src/lib/failure.ts";
 
@@ -128,14 +128,21 @@ describe("chat projection", () => {
     });
   });
 
-  test("each conversation shows its own events and the sandbox's, recorded conversations first", () => {
-    const events: ChatEvent[] = [
-      prompt("a", "finished", { conversationId: "c2", promptId: "q" }),
-      prompt("b", "finished"),
-      { id: "s", at: 1, kind: "other", type: "sandbox", data: {} },
-    ];
-    expect(conversationsOf(events, ["c1"])).toEqual(["c1", "c2"]);
-    expect(eventsOf(events, "c1").map((event) => event.id)).toEqual(["b", "s"]);
-    expect(eventsOf(events, null)).toHaveLength(3);
+  test("historical status does not override the current conversation's transcript state", () => {
+    expect(chatTurnRunning({ state: "running", conversationId: "old" }, "current", false)).toBe(false);
+    expect(chatTurnRunning({ state: "finished", conversationId: "old" }, "current", true)).toBe(true);
+    expect(chatTurnRunning({ state: "running", conversationId: "current" }, "current", false)).toBe(true);
+  });
+
+  test("historical prompts stay visible without marking the current conversation as running", () => {
+    const chat = projectChat(
+      [
+        prompt("old", "running", { text: "Historical prompt" }),
+        prompt("current", "finished", { conversationId: "c2", promptId: "p2", text: "Current prompt" }),
+      ],
+      "c2",
+    );
+    expect(view(chat.items)).toEqual(["user:Historical prompt", "user:Current prompt"]);
+    expect(chat.running).toBe(false);
   });
 });
