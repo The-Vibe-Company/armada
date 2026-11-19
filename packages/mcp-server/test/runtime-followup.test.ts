@@ -167,7 +167,6 @@ test("a generation change after the prompt probe refuses admission even if the t
     const generation = before.lifecycleGeneration!;
     const taskPromptId = before.taskPromptId!;
     f.race(async () => {
-      // Exercise the existing lifecycle-fenced activity path and preserve the enrolled epoch.
       const activityToken = crypto.randomUUID();
       await store.update(f.row.id, {
         status: "running",
