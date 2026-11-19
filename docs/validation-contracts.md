@@ -517,16 +517,18 @@ The [process-test allowlist](../scripts/ci/process-tests.txt) finds eight
 Server files with direct spawn syntax. The push-ledger fixture and the SSH
 executor also start real processes from tests outside the allowlist. The
 table records whole-case timings from untraced Linux runs with Bun 1.4.2
-(744846f84). The control case ran on its own at `f9e67913`. The remaining cases
-ran in per-file invocations at `c8f81db1`. Separate execution traces and source
+(744846f84). The control and GitHub broker cases ran at `f9e67913` and
+`4718766a`, respectively. The remaining cases ran in per-file invocations
+at `c8f81db1`. Separate execution traces and source
 inspection identify process boundaries.
 
 | File under `packages/mcp-server/test` | Case | Local subprocess boundary | Local |
 | --- | --- | --- | ---: |
 | `boat-orchestrator-private.test.ts` | Boat private epoch script rejects older writes/boot mismatch and exact hash cleanup preserves newer authority without disk secrets | Bash runs the emitted control and bridge scripts with local Node processes, a Unix socket, and temporary state. | 428.27 ms |
-| `control.test.ts` | GitHub refresh preserves the closed hydration failure over HTTP | The SSH executor starts local `ssh-keygen`. The fake provider refuses key registration before any SSH connection. | 229.90 ms |
+| `control.test.ts` | control API > GitHub refresh preserves the closed hydration failure over HTTP | The SSH executor starts local `ssh-keygen`. The fake provider refuses key registration before any SSH connection. | 229.90 ms |
 | `docker-host-install.test.ts` | installer publishes both build digests without credentials and refuses missing artifacts | POSIX sh checks the generated installer syntax. Route requests are in process. | 3.35 ms |
 | `docker-host-install.test.ts` | one-line installer verifies bytes, delivers the one-use token privately and confirms a poll | POSIX sh runs the installer with local command and artifact stubs for download, service, registration, and package runners. | 125.71 ms |
+| `github-boat.test.ts` | generated GitHub broker fits the private transport before SSH registration | The SSH executor starts local `ssh-keygen`. The fake provider refuses key registration before any SSH connection. | 91.77 ms |
 | `main.test.ts` | standalone server entrypoint reports configuration errors without starting the CLI | A fresh Bun process runs the standalone server entrypoint and rejects missing configuration. | 459.24 ms |
 | `managed-inspection.test.ts` | native argv sentinel inspection excludes its exec command and ancestors, but catches an actual native-looking child leak | A local Node wrapper invokes Bash to install the sentinel and inspect Linux procfs while fixture Node CLI processes supply argv. | 301.53 ms |
 | `mcp-codex-bridge.test.ts` | Codex reload control is private, preserves unmanaged params, and rejects unsafe config without killing the app-server | Bash installs the wrapper and managed MCP configuration. The installed wrapper runs the Python bridge and a local Python app-server peer over stdio. | 170.77 ms |
