@@ -1,4 +1,5 @@
-import { CONTROL_BODY_MAX_BYTES, PUBLIC_CONTROL_ROUTES } from "@armada/core";
+import { CONTROL_BODY_MAX_BYTES } from "@armada/core";
+import { PUBLIC_CONTROL_ROUTES } from "@armada/core/contract";
 import { NextResponse } from "next/server";
 
 const CONTROL_PREFIX = "/api/v1/";

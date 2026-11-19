@@ -126,3 +126,12 @@ export const publicAuthOperations = {
     errors: ["invalid", "usage", "unauthorized", "unavailable"],
   },
 } as const satisfies Record<string, Operation<z.ZodType, z.ZodType | undefined>>;
+
+const githubCallback = { "github/oauth/callback": ["GET", "POST"] } as const;
+
+export const PUBLIC_CONTROL_ROUTES: typeof githubCallback & Readonly<Record<string, readonly string[]>> = {
+  ...Object.fromEntries(
+    Object.values(publicAuthOperations).map(({ route }) => [route.path.slice("/api/v1/".length), [route.method]]),
+  ),
+  ...githubCallback,
+};

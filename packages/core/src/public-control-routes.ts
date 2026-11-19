@@ -1,15 +1,3 @@
-import { publicAuthOperations } from "./contract/public-auth.ts";
-
-const githubCallback = { "github/oauth/callback": ["GET", "POST"] } as const;
-
-/** Public control routes shared by the server dispatcher and dashboard transport. */
-export const PUBLIC_CONTROL_ROUTES: typeof githubCallback & Readonly<Record<string, readonly string[]>> = {
-  ...Object.fromEntries(
-    Object.values(publicAuthOperations).map(({ route }) => [route.path.slice("/api/v1/".length), [route.method]]),
-  ),
-  ...githubCallback,
-};
-
 /**
  * Largest serialized JSON request body the public control API accepts, in bytes. The
  * dashboard proxy (`/api/v1/*`) and the server dispatcher both refuse a larger body with

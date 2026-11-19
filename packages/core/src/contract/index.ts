@@ -14,7 +14,7 @@ import { sandboxViewerOperations } from "./sandbox-viewer.ts";
 export type { CreatedInboundTrigger } from "./inbound-trigger.ts";
 export { dockerHostLaunchFields, dockerSnapshotLaunchFields, type LaunchInput } from "./launch.ts";
 export { type LaunchEnvelope, launchEnvelope, templateLaunchResponse } from "./launch-response.ts";
-export { publicAuthOperations, signInMethod } from "./public-auth.ts";
+export { PUBLIC_CONTROL_ROUTES, publicAuthOperations, signInMethod } from "./public-auth.ts";
 export { githubOperations, goldenOperations, launchTemplateOperation } from "./resources.ts";
 export {
   DEFAULT_WAIT_SECONDS,
