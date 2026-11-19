@@ -421,6 +421,7 @@ for (const outcome of [
     if (outcome === "snapshot-owner-removed")
       expect((await db.query("select id from sandbox_transitions where sandbox_id=$1", [id])).rows).toEqual([]);
     if (waitingForRetention) {
+      if (!before) throw Error("Missing sandbox before retention settlement");
       expect(row.stop_time_finite).toBeNull();
       const intent = await readStopIntent();
       expect(intent).toEqual({
@@ -454,7 +455,7 @@ for (const outcome of [
         {
           actor: "reconciler",
           code: "stop_requested",
-          generation: before?.lifecycle_generation,
+          generation: before.lifecycle_generation,
           from_status: "running",
           to_status: "stopping",
         },
