@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
-import type { Sql } from "@armada/core/server";
+import { decryptSecret, type Sql } from "@armada/core/server";
 import { PGlite } from "@electric-sql/pglite";
 import { AuthUnavailable, type CallerResult } from "./caller.ts";
 import { inboundTriggerAdminRoute } from "./inbound-trigger-admin.ts";
@@ -61,20 +61,25 @@ const templateOwner = "949426bc-9c76-49eb-beba-e8e271d012da";
 const template = "124fb448-6103-47ee-8f51-80e080217237";
 const foreignTemplate = "e2debec7-563a-43f7-8f2c-04b8761b1ee5";
 const trigger = "bb995c90-964c-4140-83f7-f4dc3a5093d7";
+const rotationTrigger = "221401da-7f7e-42a6-87bc-f6a55047983d";
+const disableTrigger = "3dfcb001-e5bb-4a9d-8c8a-dfa8427c6346";
 const foreignTrigger = "21c61603-5156-4d2f-ad35-15bf65840f7d";
 beforeAll(async () => {
   await db.exec(`
     create table public.launch_templates (id uuid, org_id uuid, scope text, owner_id uuid);
     create table public.triggers (id uuid, org_id uuid, template_id uuid, pool_harness text,
-      enabled bool, rate_per_minute int, concurrency int, rate_refusals int, secret_enc bytea);
+      enabled bool, rate_per_minute int, concurrency int, rate_refusals int, secret_enc bytea, key_revision int);
+    create table public.members (org_id uuid, user_id uuid, role text);
+    create table public.trigger_admin_audit (org_id uuid, trigger_id uuid, actor_id uuid, action text);
+    insert into public.members values ('${org}', '${id}', 'admin');
     create table public.jobs (id uuid, org_id uuid, kind text, state text, payload_enc bytea);
     create table public.trigger_deliveries (trigger_id uuid, delivery_id text, received_at timestamptz, job_id uuid);
     insert into public.launch_templates values
       ('${template}', '${org}', 'personal', '${templateOwner}'),
       ('${foreignTemplate}', '${otherOrg}', 'org', null);
     insert into public.triggers values
-      ('${trigger}', '${org}', '${template}', 'codex', true, 25, 2, 1, 'opaque'),
-      ('${foreignTrigger}', '${otherOrg}', '${foreignTemplate}', 'codex', true, 2, 1, 0, 'opaque');
+      ('${trigger}', '${org}', '${template}', 'codex', true, 25, 2, 1, 'opaque', 1),
+      ('${foreignTrigger}', '${otherOrg}', '${foreignTemplate}', 'codex', true, 2, 1, 0, 'opaque', 1);
     insert into public.jobs
       select md5(i::text)::uuid, '${org}', 'trigger', 'queued', 'opaque' from generate_series(1, 102) i;
     insert into public.trigger_deliveries
@@ -123,4 +128,80 @@ test("lists the latest 100 admitted deliveries without queued payloads", async (
 
 test("returns 404 for a trigger in a different organization", async () => {
   expect((await inspect(request(`/${foreignTrigger}/deliveries`)))?.status).toBe(404);
+});
+
+const encryptionKey = Buffer.alloc(32, 42).toString("base64");
+const manage = inboundTriggerAdminRoute(db, async () => ({ ok: true, caller: admin }), encryptionKey);
+
+function post(triggerId: string, action: string) {
+  return new Request(request(`/${triggerId}/${action}`), { method: "POST" });
+}
+
+async function addManagedTrigger(triggerId: string) {
+  await db.query("insert into public.triggers values ($1, $2, $3, 'codex', true, 25, 2, 0, 'opaque', 7)", [
+    triggerId,
+    org,
+    template,
+  ]);
+}
+
+test("rotation advances ingress key revision and returns the new key only in its non-cacheable response", async () => {
+  await addManagedTrigger(rotationTrigger);
+  const response = await manage(post(rotationTrigger, "rotate"));
+  expect(response?.status).toBe(200);
+  expect(response?.headers.get("cache-control")).toBe("no-store");
+  const signingSecret = (await response?.json())?.signingSecret;
+  expect(Buffer.from(signingSecret, "base64")).toHaveLength(32);
+  const { rows } = await db.query<{ key_revision: number; ciphertext: string }>(
+    "select key_revision, encode(secret_enc, 'hex') as ciphertext from public.triggers where id = $1",
+    [rotationTrigger],
+  );
+  expect(rows[0]?.key_revision).toBe(8);
+  const sealed = Uint8Array.from(Buffer.from(rows[0]!.ciphertext, "hex"));
+  expect((await decryptSecret(sealed, encryptionKey)) === signingSecret).toBe(true);
+  const inspection = await (await manage(request()))?.json();
+  expect(inspection?.triggers.find((entry: { id: string }) => entry.id === rotationTrigger)).toEqual({
+    id: rotationTrigger,
+    templateId: null,
+    poolHarness: "codex",
+    enabled: true,
+    ratePerMinute: 25,
+    concurrency: 2,
+    rateRefusals: 0,
+  });
+  expect(
+    (
+      await db.query("select org_id, actor_id, action from public.trigger_admin_audit where trigger_id = $1", [
+        rotationTrigger,
+      ])
+    ).rows,
+  ).toEqual([{ org_id: org, actor_id: id, action: "rotate" }]);
+});
+
+test("disable stops admission and writes one audit event across repeated calls", async () => {
+  await addManagedTrigger(disableTrigger);
+  expect((await manage(post(disableTrigger, "disable")))?.status).toBe(204);
+  expect((await manage(post(disableTrigger, "disable")))?.status).toBe(204);
+  expect((await manage(post(disableTrigger, "rotate")))?.status).toBe(404);
+  expect(
+    (await db.query("select enabled, key_revision from public.triggers where id = $1", [disableTrigger])).rows,
+  ).toEqual([{ enabled: false, key_revision: 7 }]);
+  expect(
+    (await db.query("select action from public.trigger_admin_audit where trigger_id = $1", [disableTrigger])).rows,
+  ).toEqual([{ action: "disable" }]);
+});
+
+test("rotation cannot target a trigger in another organization", async () => {
+  expect((await manage(post(foreignTrigger, "rotate")))?.status).toBe(404);
+});
+
+test("a stale admin claim cannot mutate a trigger after membership revocation", async () => {
+  const stale = inboundTriggerAdminRoute(db, async () => ({
+    ok: true,
+    caller: { ...admin, userId: templateOwner },
+  }));
+  expect((await stale(post(trigger, "disable")))?.status).toBe(404);
+  expect((await db.query("select enabled from public.triggers where id = $1", [trigger])).rows).toEqual([
+    { enabled: true },
+  ]);
 });

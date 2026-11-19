@@ -1,4 +1,4 @@
-import type { Sql } from "@armada/core/server";
+import { EncryptionKeyError, encryptSecret, type Sql, toBytea } from "@armada/core/server";
 import { AuthUnavailable, type CallerResult } from "./caller.ts";
 import { UUID } from "./control-input.ts";
 import { fail } from "./control-response.ts";
@@ -22,13 +22,79 @@ interface DeliverySummary {
 
 const basePath = "/api/v1/triggers";
 const deliveriesPath = /^\/api\/v1\/triggers\/([^/]+)\/deliveries$/;
+const mutationPath = /^\/api\/v1\/triggers\/([^/]+)\/(rotate|disable)$/;
 const noStore = { "cache-control": "no-store" };
 
-export function inboundTriggerAdminRoute(sql: Sql, authenticate: (request: Request) => Promise<CallerResult>) {
+async function mutate(
+  sql: Sql,
+  org: string,
+  actor: string,
+  triggerId: string,
+  action: "rotate" | "disable",
+  encryptionKey: string | undefined,
+) {
+  let secret: string | null = null;
+  let sealed: string | null = null;
+  if (action === "rotate") {
+    secret = Buffer.from(crypto.getRandomValues(new Uint8Array(32))).toString("base64");
+    try {
+      sealed = toBytea(await encryptSecret(secret, encryptionKey));
+    } catch (error) {
+      if (!(error instanceof EncryptionKeyError)) throw error;
+      recordOperatorFailure("inbound_trigger.encryption", error);
+      return fail(503, "dependency_unavailable", "Trigger signing key encryption is temporarily unavailable.");
+    }
+  }
+
+  // Lock current membership until the trigger change and its audit row commit.
+  // Updating the trigger row serializes with ingress admission.
+  const { rows } = await sql.query<{ id: string }>(
+    `with admin as materialized (
+       select 1 from public.members where org_id = $1 and user_id = $2 and role = 'admin' for share
+     ), changed as (
+       update public.triggers
+       set secret_enc = coalesce($4::text::bytea, secret_enc),
+           key_revision = key_revision + case when $4::text::bytea is null then 0 else 1 end,
+           enabled = enabled and $5::text <> 'disable'
+       where org_id = $1 and id = $3 and enabled and exists (select 1 from admin)
+       returning id
+     ), audited as (
+       insert into public.trigger_admin_audit (org_id, trigger_id, actor_id, action)
+       select $1, id, $2, $5 from changed
+       returning trigger_id
+     )
+     select id from changed join audited on audited.trigger_id = changed.id`,
+    [org, actor, triggerId, sealed, action],
+  );
+  if (!rows.length) {
+    // Idempotent disable still succeeds for an already-disabled trigger in scope.
+    if (action === "disable") {
+      const { rows: disabled } = await sql.query(
+        `select 1 from public.triggers t
+         join public.members m on m.org_id = t.org_id
+         where t.org_id = $1 and m.user_id = $2 and m.role = 'admin' and t.id = $3 and not t.enabled`,
+        [org, actor, triggerId],
+      );
+      if (disabled.length) return new Response(null, { status: 204, headers: noStore });
+    }
+    return fail(404, "not_found", "Active trigger not found.");
+  }
+
+  return secret === null
+    ? new Response(null, { status: 204, headers: noStore })
+    : Response.json({ signingSecret: secret }, { headers: noStore });
+}
+
+export function inboundTriggerAdminRoute(
+  sql: Sql,
+  authenticate: (request: Request) => Promise<CallerResult>,
+  encryptionKey?: string,
+) {
   return async (request: Request) => {
     const url = new URL(request.url);
     const deliveryMatch = deliveriesPath.exec(url.pathname);
-    if (url.pathname !== basePath && !deliveryMatch) return null;
+    const mutationMatch = mutationPath.exec(url.pathname);
+    if (url.pathname !== basePath && !deliveryMatch && !mutationMatch) return null;
 
     let auth: CallerResult;
     try {
@@ -38,16 +104,23 @@ export function inboundTriggerAdminRoute(sql: Sql, authenticate: (request: Reque
       recordOperatorFailure("inbound_trigger.authentication", error);
       return fail(503, "dependency_unavailable", "Authentication is temporarily unavailable.");
     }
-    if (!auth.ok) return fail(401, "unauthorized", "Sign in to inspect inbound triggers.");
+    if (!auth.ok) return fail(401, "unauthorized", "Sign in to manage inbound triggers.");
     const org = url.searchParams.get("org")?.toLowerCase();
     if (!org || !UUID.test(org)) return fail(400, "invalid_request", "Supply the organization UUID.");
     if (!auth.caller.orgs.some((membership) => membership.orgId === org && membership.role === "admin")) {
       return fail(403, "forbidden", "Organization admin access is required.");
     }
-    if (request.method !== "GET") {
-      const response = fail(405, "method_not_allowed", "Use GET to inspect inbound triggers.");
-      response.headers.set("allow", "GET");
+    const method = mutationMatch ? "POST" : "GET";
+    if (request.method !== method) {
+      const response = fail(405, "method_not_allowed", `Use ${method} for this inbound trigger operation.`);
+      response.headers.set("allow", method);
       return response;
+    }
+
+    if (mutationMatch) {
+      const [, triggerId, action] = mutationMatch;
+      if (!triggerId || !UUID.test(triggerId)) return fail(400, "invalid_request", "Supply the trigger UUID.");
+      return mutate(sql, org, auth.caller.userId, triggerId, action === "rotate" ? "rotate" : "disable", encryptionKey);
     }
 
     if (!deliveryMatch) {
