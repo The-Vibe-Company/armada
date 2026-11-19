@@ -161,8 +161,11 @@ export const goldenOperations = {
   },
 } as const satisfies Record<string, Operation<z.ZodType, z.ZodType>>;
 
-// biome-ignore lint/suspicious/noControlCharactersInRegex: template text excludes NUL and requires a non-whitespace character.
-const templateText = z.string().regex(/^(?![\s\S]*\x00)[\s\S]*\S/);
+const templateText = z
+  .string()
+  // oxlint-disable-next-line landmines-style/no-comments -- Keep the narrow Biome exception for the NUL validator.
+  // biome-ignore lint/suspicious/noControlCharactersInRegex: NUL is excluded from template text.
+  .regex(/^(?![\s\S]*\x00)[\s\S]*\S/);
 
 export const launchTemplateOperation = {
   name: "launchTemplate",
