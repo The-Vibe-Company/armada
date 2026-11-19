@@ -1,5 +1,5 @@
 import { providerRateLimitDetails } from "@armada/core";
-import { sandboxExtensionLifetime, sandboxIdInput, sandboxRestOperations } from "@armada/core/contract";
+import { sandboxExtensionLifetime, sandboxRestOperations } from "@armada/core/contract";
 import { GoldenError, isNonMutatingProviderRefusal, ProviderError, VaultError } from "@armada/core/server";
 import { z } from "zod";
 import { validateProviderResourceObservation } from "../../core/src/resource-validation.ts";
@@ -17,14 +17,7 @@ import { ToolApiError } from "./tool-api.ts";
 import { ToolError } from "./tool-error.ts";
 import { describeToolFailure } from "./tool-failure.ts";
 
-export const deleteSandboxAliasContract = {
-  description:
-    "Owner/admin only. Permanently removes provider resources and recovery archives. Stop first. Legacy orchestrator parents and children are refused; ordinary delegated children require a deleted parent.",
-  input: z.object({ id: sandboxIdInput, request_id: z.string().uuid().optional() }),
-  output: z.object({ id: z.string(), status: z.literal("deleted") }),
-};
-
-const contracts = { ...sandboxRestOperations, deleteSandbox: deleteSandboxAliasContract };
+const contracts = sandboxRestOperations;
 type SandboxRestOperation = keyof typeof contracts;
 
 async function dispatchSandboxRestControl(
@@ -99,7 +92,9 @@ async function dispatchSandboxRestControl(
         );
       }
       case "deleteSandbox": {
-        const args = parseControl("delete", deleteSandboxAliasContract.input);
+        const { input } = contracts[name];
+        const { id, requestId } = parseControl("delete", input.query.extend(input.path));
+        const args = { id, request_id: requestId?.toLowerCase() };
         const routed = await options.dockerControls?.invoke(caller, "delete", args);
         if (routed?.handled) return routed.result;
         if (!data.sandboxes.assertDeletionAllowed)
@@ -202,9 +197,11 @@ async function dispatchSandboxRestControl(
   }
 }
 
+const { deleteSandbox, ...postOperations } = sandboxRestOperations;
+
 export const sandboxRestRoutes = defineRoutes("sandbox REST", {
   ...Object.fromEntries(
-    Object.values(sandboxRestOperations).map(
+    Object.values(postOperations).map(
       ({ name, route }) =>
         [
           route.path.slice("/api/v1/".length),
@@ -212,15 +209,19 @@ export const sandboxRestRoutes = defineRoutes("sandbox REST", {
         ] as const,
     ),
   ),
-  "sandbox/delete": (context) => sandboxRestRoute("deleteSandbox", context),
-  "sandboxes/{id}": {
-    methods: ["DELETE"],
+  [deleteSandbox.route.path.slice("/api/v1/".length)]: {
+    methods: [deleteSandbox.route.method],
     pattern: /^sandboxes\/[0-9a-f-]+$/i,
     readBody(request) {
       const url = new URL(request.url);
-      return { id: url.pathname.split("/").at(-1), org: url.searchParams.get("org") ?? undefined };
+      return {
+        id: url.pathname.split("/").at(-1),
+        ...Object.fromEntries(
+          Object.keys(deleteSandbox.input.query.shape).map((key) => [key, url.searchParams.get(key) ?? undefined]),
+        ),
+      };
     },
-    handler: (context) => sandboxRestRoute("deleteSandbox", context),
+    handler: (context) => sandboxRestRoute(deleteSandbox.name, context),
   },
 });
 

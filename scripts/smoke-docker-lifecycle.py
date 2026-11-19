@@ -58,6 +58,12 @@ def normal_launch_receipt(api, launch, timeout, require_github=False):
         time.sleep(2)
 
 
+def sandbox_cleanup(api, operation, sandbox, request_id):
+    if operation == "delete":
+        return api("sandboxes/" + sandbox, {"requestId": request_id}, normal=True, method="DELETE")
+    return api("sandbox/stop", {"id": sandbox, "request_id": request_id}, normal=True)
+
+
 def placement_smoke(api, args, host_id, harness):
     """Real coordinator proof only: no synthetic prompt/receipt or manual routine dispatch."""
     from datetime import datetime, timedelta, timezone
@@ -197,7 +203,7 @@ def placement_smoke(api, args, host_id, harness):
                 for operation in ("stop", "delete"):
                     request_id = str(uuid.uuid4())
                     print("PLACEMENT_" + operation.upper() + "_REQUEST_ID=" + request_id, flush=True)
-                    receipt = api("sandbox/" + operation, {"id": sandbox, "request_id": request_id}, normal=True)
+                    receipt = sandbox_cleanup(api, operation, sandbox, request_id)
                     if receipt.get("status") not in (("stopped", "failed", "deleted") if operation == "stop" else ("deleted",)):
                         raise RuntimeError("Placement cleanup unconfirmed; reconcile printed sandbox IDs")
             except RuntimeError as error:
@@ -356,12 +362,16 @@ def main():
 
     opener = urllib.request.build_opener(NoRedirect)
 
-    def api(path, body, normal=False):
-        request = urllib.request.Request(server + ("/api/v1/" if normal else "/api/v1/docker/") + path,
-            data=json.dumps({"org": args.org, **body}).encode(), method="POST",
+    def api(path, body, normal=False, method="POST"):
+        url = server + ("/api/v1/" if normal else "/api/v1/docker/") + path
+        fields = {"org": args.org, **body}
+        if method == "DELETE":
+            url += "?" + urllib.parse.urlencode(fields)
+        request = urllib.request.Request(url,
+            data=None if method == "DELETE" else json.dumps(fields).encode(), method=method,
             headers={"authorization": "Bearer " + token, "content-type": "application/json"})
         try:
-            with opener.open(request, timeout=600 if normal and path in ("sandbox/launch", "templates/launch") else 120 if normal and path in ("sandbox/stop", "sandbox/delete", "sandbox/resume") else 30) as response:
+            with opener.open(request, timeout=600 if normal and path in ("sandbox/launch", "templates/launch") else 120 if normal and (method == "DELETE" or path in ("sandbox/stop", "sandbox/resume")) else 30) as response:
                 return json.load(response)
         except urllib.error.HTTPError as error:
             # Do not print response bodies, request headers or private capabilities.
@@ -766,7 +776,7 @@ def main():
                     request_id = str(uuid.uuid4())
                     print(operation.upper() + "_ID=" + request_id, flush=True)
                     if args.normal_controls:
-                        reply = api("sandbox/" + operation, {"id": sandbox_id, "request_id": request_id}, normal=True)
+                        reply = sandbox_cleanup(api, operation, sandbox_id, request_id)
                         expected = ("stopped", "failed", "deleted") if operation == "stop" else ("deleted",)
                         if reply.get("status") not in expected:
                             raise RuntimeError("Normal Docker cleanup ACK was not confirmed")

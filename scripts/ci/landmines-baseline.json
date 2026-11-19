@@ -1383,7 +1383,7 @@
     "apps/dashboard/src/lib/composer.ts": 6,
     "apps/dashboard/src/lib/connection-presets.ts": 2,
     "apps/dashboard/src/lib/connections.ts": 32,
-    "apps/dashboard/src/lib/control.ts": 26,
+    "apps/dashboard/src/lib/control.ts": 25,
     "apps/dashboard/src/lib/credentials.ts": 4,
     "apps/dashboard/src/lib/data/account-recovery.ts": 1,
     "apps/dashboard/src/lib/data/connections.ts": 3,

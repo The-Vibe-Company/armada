@@ -20,7 +20,6 @@ export const PRIVATE_POST_PATHS: ReadonlySet<string> = new Set([
   "golden/adopt",
   "github/runtime-status",
   "sandbox/resume",
-  "sandbox/delete",
   "skillpack/connection",
   "creds/accounts/models",
   "creds/defaults/set",
