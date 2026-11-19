@@ -741,16 +741,19 @@ test("resume starts the retained container before fresh runtime bootstrap and ne
 
 test.each([
   ["verified retention", true, true, "exited false", true],
+  ["workspace lost after acknowledgement is lost", true, true, "reclaimed", true],
   ["volume without a container", true, true, "", false],
   ["container without its owned workspace", true, false, "exited false", false],
   ["container still running", true, true, "running true", false],
-  ["container replaced during inspection", true, true, "replaced", false],
+  ["container with a foreign workspace mount", true, true, "foreign", false],
+  ["container never started", true, true, "created", false],
   ["server without the capability", false, true, "exited false", false],
 ] as const)(
   "failed stop reports %s through the negotiated results route",
   async (_, supported, owned, status, proof) => {
     const f = fixture("stop");
     let delivered = false;
+    let workspacePresent = owned;
     const results: unknown[] = [];
     const api = httpApi((async (url, options) => {
       if (String(url).endsWith("/poll")) {
@@ -766,11 +769,13 @@ test.each([
       const receipt = (await f.store.load()).receipts[0];
       expect(receipt?.outcome).toBe("failed");
       results.push(JSON.parse(String(options?.body)));
-      if (proof && results.length === 1) throw new Error("lost response");
+      if (proof && results.length === 1) {
+        if (status === "reclaimed") workspacePresent = false;
+        throw new Error("lost response");
+      }
       return new Response(null, { status: 204 });
     }) as typeof fetch);
     let stops = 0;
-    let inspections = 0;
     const state = f.state();
     const request = f.job.request;
     const name = `armada-${state.installationId}-${state.hostId}-${request.sandboxId}-${request.generation}`;
@@ -786,36 +791,35 @@ test.each([
         "expires-at": "61000",
       }).map(([key, value]) => [`dev.armada.machine.${key}`, value]),
     );
-    const cli: Parameters<typeof observeRetainedStop>[0] = {
+    const cli: Parameters<typeof observeRetainedStop>[0]["cli"] = {
       async run(args) {
         const container = args[0] === "container";
         const resourceName = container ? name : `${name}-home`;
-        if (args[1] === "ls")
-          return { exitCode: 0, stdout: container ? JSON.stringify(name) : owned ? JSON.stringify(resourceName) : "" };
-        expect(args.at(-1)).toBe(resourceName);
-        if (args[2] === "--format") {
-          const replaced = status === "replaced";
-          const id = (replaced && ++inspections > 1 ? "b" : "a").repeat(64);
-          return { stdout: `${id} ${replaced ? "exited false" : status}`, exitCode: status ? 0 : 1 };
+        if (args[1] === "ls") {
+          const exists = container ? status !== "" : workspacePresent;
+          return { exitCode: 0, stdout: exists ? JSON.stringify(resourceName) : "" };
         }
+        expect(args.at(-1)).toBe(resourceName);
         const resource = container
           ? {
+              Id: "a".repeat(64),
               Name: `/${name}`,
               Config: { Image: request.image, User: "1000:1000", Labels: labels },
               HostConfig: { Privileged: false },
-              Mounts: [{ Type: "volume", Name: `${name}-home`, Destination: "/home/user", RW: true }],
-              State: { Running: false },
+              Mounts: [
+                {
+                  Type: "volume",
+                  Name: status === "foreign" ? "unrelated" : `${name}-home`,
+                  Destination: "/home/user",
+                  RW: true,
+                },
+              ],
+              State: { Running: status === "running true", Status: status === "created" ? "created" : "exited" },
             }
           : { Name: resourceName, Driver: "local", Options: {}, Labels: labels };
         return { stdout: JSON.stringify([resource]), exitCode: 0 };
       },
     };
-    const machine = createDockerMachineExecutor({
-      hostId: state.hostId,
-      installationId: state.installationId,
-      cli,
-      now: () => 1000,
-    });
     const executor: Executor = {
       ...f.executor,
       async stop() {
@@ -823,7 +827,10 @@ test.each([
         throw new Error("stop response unknown");
       },
       isRetainedStop(request) {
-        return observeRetainedStop(cli, state, request, machine.isStopped);
+        return observeRetainedStop(
+          { hostId: state.hostId, installationId: state.installationId, cli, now: () => 1000 },
+          request,
+        );
       },
     };
     if (proof) {
@@ -839,7 +846,8 @@ test.each([
       outcome: "failed",
       ...(proof ? { retained: true } : {}),
     };
-    expect(results).toEqual(proof ? [result, result] : [result]);
+    const { retained: _retained, ...ordinaryFailure } = result;
+    expect(results).toEqual(proof ? [result, status === "reclaimed" ? ordinaryFailure : result] : [result]);
     expect(stops).toBe(1);
   },
 );

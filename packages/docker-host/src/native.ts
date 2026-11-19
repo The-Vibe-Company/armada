@@ -8,7 +8,11 @@ import type {
   DockerHostPollResponse,
   DockerHostResultRequest,
 } from "../../core/src/docker-host-wire.ts";
-import type { DockerMachineCli, DockerMachineRequest } from "../../core/src/docker-machine.ts";
+import {
+  createDockerMachineExecutor,
+  type DockerMachineCli,
+  type DockerMachineRequest,
+} from "../../core/src/docker-machine.ts";
 import { DOCKER_OUTPUT_DIRECTORY_MISSING } from "../../core/src/docker-output-archive.ts";
 import { type DockerHostResources, dockerHostResources } from "../../core/src/docker-resources.ts";
 import { OUTPUT_ARCHIVE_LIMIT } from "../../core/src/sandbox-output-limits.ts";
@@ -418,24 +422,29 @@ export function httpApi(
 }
 
 export async function observeRetainedStop(
-  cli: DockerMachineCli,
-  state: Pick<State, "installationId" | "hostId">,
+  options: Parameters<typeof createDockerMachineExecutor>[0],
   request: DockerMachineRequest,
-  isStopped: (request: DockerMachineRequest) => Promise<boolean>,
 ) {
-  const ids = [state.installationId, state.hostId, request.sandboxId, request.generation];
-  if (!ids.every(validId)) return false;
-  async function exitedContainerId() {
-    const report = await cli.run(
-      ["container", "inspect", "--format", "{{.Id}} {{.State.Status}} {{.State.Running}}", `armada-${ids.join("-")}`],
-      undefined,
-      { timeoutMs: 3000 },
-    );
-    if (report.exitCode !== 0) return undefined;
-    return /^([a-f0-9]{64}) exited false$/.exec(report.stdout.trim())?.[1];
-  }
-  const containerId = await exitedContainerId();
-  return !!containerId && (await isStopped(request)) && (await exitedContainerId()) === containerId;
+  let exitedContainer = false;
+  const executor = createDockerMachineExecutor({
+    ...options,
+    cli: {
+      async run(args, stdin, runOptions) {
+        const result = await options.cli.run(args, stdin, runOptions);
+        if (args[0] === "container" && args[1] === "inspect" && result.exitCode === 0) {
+          const rows: unknown = JSON.parse(result.stdout);
+          const container = Array.isArray(rows) && rows.length === 1 ? rows[0] : undefined;
+          exitedContainer =
+            typeof container?.Id === "string" &&
+            /^[a-f0-9]{64}$/.test(container.Id) &&
+            container.State?.Status === "exited" &&
+            container.State.Running === false;
+        }
+        return result;
+      },
+    },
+  });
+  return (await executor.isStopped(request)) && exitedContainer;
 }
 
 /** Never a shell, never inherited output; inspect can contain secrets. */
