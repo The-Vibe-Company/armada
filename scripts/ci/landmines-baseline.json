@@ -899,7 +899,6 @@
     "packages/mcp-server/src/docker-launch-account.ts": 1,
     "packages/mcp-server/src/docker-launch-environment.ts": 1,
     "packages/mcp-server/src/docker-launch-identity.ts": 5,
-    "packages/mcp-server/src/docker-launch-request-schema.ts": 6,
     "packages/mcp-server/src/docker-normal-launch.ts": 29,
     "packages/mcp-server/src/docker-normal-send.ts": 9,
     "packages/mcp-server/src/docker-outputs.ts": 23,

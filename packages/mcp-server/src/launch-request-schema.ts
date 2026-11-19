@@ -1,37 +1,20 @@
-import {
-  HARNESSES,
-  MACHINE_SIZES,
-  MAX_EXTERNAL_REF_LENGTH,
-  MAX_LAUNCH_TTL_SECONDS,
-  MAX_MCP_CONNECTIONS,
-  SANDBOX_PROVIDERS,
-  SKILL_PIN_PATTERN,
-} from "@armada/core";
+import { MACHINE_SIZES, MAX_LAUNCH_TTL_SECONDS, SANDBOX_PROVIDERS, SKILL_PIN_PATTERN } from "@armada/core";
 import { launch } from "@armada/core/contract";
 import { z } from "zod";
 
 const dockerLaunchVariants = launch.input.body.options.filter((variant) => variant.shape.provider.value === "docker");
 
-// Explicit case classes: JSON Schema patterns drop regex flags, so an `/i` flag would not be published.
-const launchUuid = z.string().regex(/^[0-9A-Fa-f]{8}-(?:[0-9A-Fa-f]{4}-){3}[0-9A-Fa-f]{12}$/);
+const [boatLaunch] = launch.input.body.options;
+const { credentialId, connections, externalRef, harness, idempotencyKey, skipSkillDefaults, stopWhenWorkMerged } =
+  boatLaunch.shape;
+const launchUuid = credentialId.unwrap();
 const sharedRestLaunchFields = {
-  harness: z.enum(HARNESSES),
-  credentialId: launchUuid.optional(),
+  harness,
+  credentialId,
   skills: z.array(z.string().regex(SKILL_PIN_PATTERN)).max(20).optional(),
-  skipSkillDefaults: z.boolean().optional(),
-  connections: z.array(launchUuid).max(MAX_MCP_CONNECTIONS).optional(),
-  stopWhenWorkMerged: z.boolean().optional(),
-};
-
-const launchCorrelationFields = {
-  idempotencyKey: z.string().min(16).max(128).optional(),
-  externalRef: z
-    .string()
-    .min(1)
-    .max(MAX_EXTERNAL_REF_LENGTH)
-    // biome-ignore lint/suspicious/noControlCharactersInRegex: controls are explicitly excluded from external references
-    .regex(/^[^\x00-\x1f\x7f-\x9f]+(?![\s\S])/)
-    .optional(),
+  skipSkillDefaults,
+  connections,
+  stopWhenWorkMerged,
 };
 
 const goldenFields = {
@@ -46,7 +29,8 @@ const goldenFields = {
   repo: z.string().min(1).optional().describe("Configured directory or owner/repo from the golden."),
   visibility: z.enum(["private", "org"]).optional(),
   ...sharedRestLaunchFields,
-  ...launchCorrelationFields,
+  idempotencyKey,
+  externalRef,
 };
 
 const goldenLaunch = z
@@ -99,7 +83,7 @@ const pinnedTemplateFields = {
   repo: z.string().min(1).max(200).optional(),
   skills: sharedRestLaunchFields.skills.nullable(),
   skipSkillDefaults: sharedRestLaunchFields.skipSkillDefaults,
-  externalRef: launchCorrelationFields.externalRef,
+  externalRef,
   stopWhenWorkMerged: sharedRestLaunchFields.stopWhenWorkMerged,
 };
 
@@ -109,7 +93,7 @@ export const PINNED_MODAL_LAUNCH_REQUEST = z
   .strictObject({
     ...pinnedTemplateFields,
     provider: z.literal("modal"),
-    harness: z.enum(["codex", "claude", "opencode"]),
+    harness,
     runtimeVersion: z.literal(1),
     runtimeTransport: z.literal("dialout"),
   })

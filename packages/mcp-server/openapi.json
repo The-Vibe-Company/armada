@@ -306,13 +306,13 @@
           "content": {
             "application/json": {
               "schema": {
+                "$schema": "http://json-schema.org/draft-07/schema#",
                 "type": "object",
                 "properties": {
                   "org": {
                     "type": "string"
                   }
-                },
-                "$schema": "http://json-schema.org/draft-07/schema#"
+                }
               }
             }
           }
@@ -577,6 +577,7 @@
           "content": {
             "application/json": {
               "schema": {
+                "$schema": "http://json-schema.org/draft-07/schema#",
                 "type": "object",
                 "properties": {
                   "org": {
@@ -589,8 +590,7 @@
                       "modal"
                     ]
                   }
-                },
-                "$schema": "http://json-schema.org/draft-07/schema#"
+                }
               }
             }
           }
@@ -601,6 +601,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "$schema": "http://json-schema.org/draft-07/schema#",
                   "type": "object",
                   "properties": {
                     "provider": {
@@ -653,7 +654,6 @@
                     "provider",
                     "maxGoldens"
                   ],
-                  "$schema": "http://json-schema.org/draft-07/schema#",
                   "additionalProperties": false
                 }
               }
@@ -725,6 +725,7 @@
           "content": {
             "application/json": {
               "schema": {
+                "$schema": "http://json-schema.org/draft-07/schema#",
                 "type": "object",
                 "properties": {
                   "id": {
@@ -743,8 +744,7 @@
                 },
                 "required": [
                   "id"
-                ],
-                "$schema": "http://json-schema.org/draft-07/schema#"
+                ]
               }
             }
           }
@@ -755,6 +755,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "$schema": "http://json-schema.org/draft-07/schema#",
                   "type": "object",
                   "properties": {
                     "goldenId": {
@@ -772,7 +773,6 @@
                     "dryRun",
                     "confirmation"
                   ],
-                  "$schema": "http://json-schema.org/draft-07/schema#",
                   "additionalProperties": false
                 }
               }
@@ -3720,6 +3720,7 @@
           "content": {
             "application/json": {
               "schema": {
+                "$schema": "http://json-schema.org/draft-07/schema#",
                 "type": "object",
                 "properties": {
                   "id": {
@@ -3737,8 +3738,7 @@
                 },
                 "required": [
                   "id"
-                ],
-                "$schema": "http://json-schema.org/draft-07/schema#"
+                ]
               }
             }
           }
@@ -3749,6 +3749,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "$schema": "http://json-schema.org/draft-07/schema#",
                   "type": "object",
                   "properties": {
                     "archive": {
@@ -3761,7 +3762,6 @@
                   "required": [
                     "archive"
                   ],
-                  "$schema": "http://json-schema.org/draft-07/schema#",
                   "additionalProperties": false
                 }
               }
@@ -3833,6 +3833,7 @@
           "content": {
             "application/json": {
               "schema": {
+                "$schema": "http://json-schema.org/draft-07/schema#",
                 "type": "object",
                 "properties": {
                   "id": {
@@ -3845,8 +3846,7 @@
                 },
                 "required": [
                   "id"
-                ],
-                "$schema": "http://json-schema.org/draft-07/schema#"
+                ]
               }
             }
           }
@@ -3857,6 +3857,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "$schema": "http://json-schema.org/draft-07/schema#",
                   "type": "object",
                   "properties": {
                     "advice": {}
@@ -3864,7 +3865,6 @@
                   "required": [
                     "advice"
                   ],
-                  "$schema": "http://json-schema.org/draft-07/schema#",
                   "additionalProperties": false
                 }
               }
@@ -4774,6 +4774,7 @@
           "content": {
             "application/json": {
               "schema": {
+                "$schema": "http://json-schema.org/draft-07/schema#",
                 "type": "object",
                 "properties": {
                   "id": {
@@ -4791,8 +4792,7 @@
                 },
                 "required": [
                   "id"
-                ],
-                "$schema": "http://json-schema.org/draft-07/schema#"
+                ]
               }
             }
           }
@@ -4803,6 +4803,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "$schema": "http://json-schema.org/draft-07/schema#",
                   "type": "object",
                   "properties": {
                     "id": {
@@ -4817,7 +4818,6 @@
                     "id",
                     "status"
                   ],
-                  "$schema": "http://json-schema.org/draft-07/schema#",
                   "additionalProperties": false
                 }
               }
@@ -6772,8 +6772,8 @@
                       "harness": {
                         "type": "string",
                         "enum": [
-                          "codex",
                           "claude",
+                          "codex",
                           "opencode"
                         ]
                       },

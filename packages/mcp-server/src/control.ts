@@ -32,6 +32,7 @@ import {
   listOrgs,
   mutateCredentialAccount,
   type Provider,
+  ProviderError,
   type ProviderRegistry,
   type ProviderTarget,
   parseCredentialKind,
