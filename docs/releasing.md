@@ -60,18 +60,28 @@ The coordinator runs the [fixture E2E journeys](e2e-retirement.md) against the
 candidate SHA from release metadata. After the report is green, approve only
 `production-deploy` through the
 [pending deployments API](https://docs.github.com/en/rest/actions/workflow-runs#review-pending-deployments-for-a-workflow-run).
-Use the coordinator's authenticated GitHub CLI session. Set `run_id` to the
-numeric ID of the release run and `release_sha` to its tested candidate SHA.
+Use the coordinator's authenticated GitHub CLI session with Actions read and
+Deployments write access. Set `run_id` to the numeric ID of the release run
+and `release_sha` to the SHA from the green report. The command checks the
+candidate in the release metadata job logs because the workflow trigger SHA can
+differ from the tested candidate.
 
 ```bash
-pending="repos/The-Vibe-Company/armada/actions/runs/${run_id}/pending_deployments"
+repo="The-Vibe-Company/armada"
+run="repos/$repo/actions/runs/$run_id"
+pending="$run/pending_deployments"
+metadata_job=$(gh api --paginate "$run/jobs" --jq \
+  '.jobs[] | select(.name == "Validate the release version and source SHA" and .conclusion == "success") | .id')
+candidate_sha=$(gh api "repos/$repo/actions/jobs/$metadata_job/logs" |
+  sed -nE 's/^.*Release candidate SHA: ([0-9a-f]{40})[[:space:]]*$/\1/p')
 environment_id=$(gh api "$pending" --jq \
   '.[] | select(.environment.name == "production-deploy" and .current_user_can_approve) | .environment.id')
-if [[ "$environment_id" =~ ^[0-9]+$ && "$release_sha" =~ ^[0-9a-f]{40}$ ]]; then
+if [[ "$environment_id" =~ ^[0-9]+$ && "$candidate_sha" =~ ^[0-9a-f]{40}$ &&
+      "$candidate_sha" == "$release_sha" ]]; then
   printf '{"environment_ids":[%s],"state":"approved","comment":"E2E journeys green for %s"}\n' \
     "$environment_id" "$release_sha" | gh api --method POST "$pending" --input -
 else
-  echo "Expected one approvable production-deploy environment and a full release SHA." >&2
+  echo "Approval requires a pending production-deploy and a matching tested SHA." >&2
 fi
 ```
 

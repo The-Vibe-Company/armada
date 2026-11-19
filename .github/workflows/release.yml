@@ -186,9 +186,11 @@ jobs:
           done
           [[ -z "$EXPECTED_VERSION" || "$version" == "$EXPECTED_VERSION" ]]
           case "$version" in *-*) dist_tag=next ;; *) dist_tag=latest ;; esac
+          sha=$(git rev-parse HEAD)
+          echo "Release candidate SHA: $sha"
           echo "Version $version, dist-tag $dist_tag, publish $PUBLISH."
           {
-            echo "sha=$(git rev-parse HEAD)"
+            echo "sha=$sha"
             echo "version=$version"
             echo "dist_tag=$dist_tag"
             echo "publish=$PUBLISH"
