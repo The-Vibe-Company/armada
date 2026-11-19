@@ -31,6 +31,10 @@ export type FailureCode =
   | "busy"
   | "denied"
   | "upstream";
+/**
+ * An Armada request failure. When `retryAfterSeconds` is set from the `Retry-After`
+ * header or the failure body, wait at least that many seconds before retrying.
+ */
 export class ArmadaError extends Error {
   override readonly name = "ArmadaError";
   constructor(
