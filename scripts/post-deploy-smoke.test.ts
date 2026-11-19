@@ -311,14 +311,14 @@ test("waits for readiness and retries only rejected sends with bounded injected 
   let reads = 0;
   let sends = 0;
   const fake = fixture((call) => {
-    if (call.path === "sandbox/status" && !sends) return json({ status: ++reads < 3 ? "starting" : "ready" });
-    if (call.path === "sandbox/send" && ++sends < 3)
+    if (call.path === "sandbox/status" && !sends) return json({ status: ++reads < 2 ? "starting" : "ready" });
+    if (call.path === "sandbox/send" && ++sends < 2)
       return json({ error: { code: "sandbox_not_ready", message: "secret" } }, 409);
   });
   expect(await postDeploySmoke(env, [], fake.io)).toBe(true);
-  expect(reads).toBe(3);
-  expect(sends).toBe(3);
-  expect(fake.io.now()).toBe(4000);
+  expect(reads).toBe(2);
+  expect(sends).toBe(2);
+  expect(fake.io.now()).toBe(2000);
   expect(fake.receipts()).toContainEqual({ case: 0, step: "send", pass: true });
 });
 
@@ -336,7 +336,7 @@ test("bounds readiness and send rejection polling and still cleans up", async ()
     expect(await postDeploySmoke(env, [], fake.io)).toBe(false);
     expect(fake.receipts()).toContainEqual({ case: 0, step: phase, pass: false, code: "poll_limit_exceeded" });
     expect(fake.receipts().at(-1)).toEqual({ case: 0, step: "cleanup_sandbox", pass: true });
-    expect(fake.io.now()).toBe(119000);
+    expect(fake.io.now()).toBe(deadlines[phase]);
   }
 });
 
@@ -1541,6 +1541,18 @@ test("lifecycle records readiness and confirms extend/list, closed idle steer re
       .every((line) => line.pass && !line.leftoverSandboxIds.length && !line.launchOutcomeUnknown),
   ).toBe(true);
   expect(fake.lines.join("")).not.toContain("secret");
+});
+
+test("a resumed send admitted after its measured deadline fails without replay and still cleans up", async () => {
+  const fake = lifecycleFixture("none", (call) => {
+    if (call.path !== "sandbox/send" || !fake.calls.some((entry) => entry.path === "sandbox/stop")) return;
+    fake.advance(deadlines.resume_send + 1);
+  });
+  expect(await fake.run()).toBe(false);
+  expect(fake.receipts()).toContainEqual({ case: 0, step: "resume_send", pass: false, code: "poll_limit_exceeded" });
+  expect(fake.calls.filter((call) => call.path === "sandbox/send")).toHaveLength(2);
+  expect(fake.calls.at(-2)?.path).toBe("sandbox/stop");
+  expect(fake.calls.at(-1)?.path).toBe("sandbox/status");
 });
 
 test("a resumed turn receipt arriving after its measured deadline fails and the sandbox is stopped", async () => {
