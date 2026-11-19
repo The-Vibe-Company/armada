@@ -7,13 +7,7 @@ import { sandboxToolRoutes } from "./control-tool-routes.ts";
 import { launchCredentials } from "./launch-credentials.ts";
 import { type ControlRouteContext, defineRoutes } from "./routes.ts";
 
-// Parse fields at the same authorization and availability boundaries as before.
-function field<T extends z.ZodType>(
-  schema: T,
-  body: Record<string, unknown>,
-  name: string,
-  invalidText?: string,
-): z.output<T> {
+function field<T extends z.ZodType>(schema: T, body: Record<string, unknown>, name: string, invalidText?: string) {
   const value = body[name];
   const parsed = schema.safeParse(value);
   if (parsed.success) return parsed.data;

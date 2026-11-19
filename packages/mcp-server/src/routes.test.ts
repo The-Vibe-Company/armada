@@ -238,8 +238,8 @@ test.each([
   };
   const error = await dispatchControlCommand(route, caller, body, {
     ...options,
-    runtimeMcp: { preflight } as ControlOptions["runtimeMcp"],
-    runtimeGitHub: { preflight } as ControlOptions["runtimeGitHub"],
+    runtimeMcp: { preflight } as unknown as NonNullable<ControlOptions["runtimeMcp"]>,
+    runtimeGitHub: { preflight } as unknown as NonNullable<ControlOptions["runtimeGitHub"]>,
   }).catch((reason) => reason);
   const response = controlFailureResponse(error);
   expect(response.status).toBe(status);
