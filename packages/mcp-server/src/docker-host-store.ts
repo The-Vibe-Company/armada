@@ -399,7 +399,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
   }
   async function settleRefusedResume(tx: Sql, row: Sandbox, job: StoredJob) {
     const generation = job.refused_resume_generation;
-    if (!generation) return false;
+    if (!generation || job.cancelled_at || (await supersededLifecycle(tx, job))) return false;
     const actorId = job.bound_actor_id ?? deny();
     let epoch: string;
     try {
@@ -1566,7 +1566,12 @@ export function createDockerHostStore(sql: Sql, key: string) {
           )
         ).rows[0];
         const host = peek?.bound_sandbox_id
-          ? await reconcileHost(tx, hostToken, installationId)
+          ? await reconcileHost(
+              tx,
+              hostToken,
+              installationId,
+              peek.bound_operation === "resume" ? (peek.bound_actor_id ?? undefined) : undefined,
+            )
           : await authenticate(
               tx,
               hostToken,
@@ -1678,8 +1683,11 @@ export function createDockerHostStore(sql: Sql, key: string) {
         // A repeated same-outcome machine fact also repairs a logical transition
         // missed by an earlier server; conflicting facts still fail above.
         if (logical) {
-          if (result.outcome === "failed") await startupFailed(tx, logical, job, result.reason);
-          else await settleRefusedResume(tx, logical, job);
+          if (result.outcome === "completed") {
+            await settleRefusedResume(tx, logical, job);
+          } else if (job.outcome !== null || !(await settleRefusedResume(tx, logical, job))) {
+            await startupFailed(tx, logical, job, result.reason);
+          }
         }
         // Persist terminal receipts below, but never replay old stop/delete
         // effects onto a lifecycle admitted after that job.

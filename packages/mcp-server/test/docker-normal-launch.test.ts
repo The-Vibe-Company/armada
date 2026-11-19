@@ -77,7 +77,6 @@ const officialImage = `ghcr.io/the-vibe-company/armada-sandbox@sha256:${"a".repe
 const key = Buffer.alloc(32, 19).toString("base64");
 const hosts = createDockerHostStore(sql, key);
 const authority = createRuntimeEnrolments(sql, key);
-const commands = createRuntimeCommands(authority, key);
 const credentials = launchCredentials(createSqlVaultStore(sql), key);
 const bootstrap = createDockerBootstrapService(sql, key, {
   enabled: true,
@@ -178,6 +177,14 @@ async function fixture(
   const jobs: unknown[] = [],
     native: unknown[] = [],
     checkoutStatuses: string[] = [];
+  const clock = {
+    now: () => now,
+    async wait(ms: number) {
+      now += ms;
+      if (drive) await step();
+    },
+  };
+  const commands = createRuntimeCommands(authority, key, clock);
   async function step() {
     for (const claim of await hosts.resumeClaimsForHost(host.hostToken, installationId))
       await hosts.claimResume(host.hostToken, installationId, claim.requestId, true);
@@ -233,6 +240,19 @@ async function fixture(
             (await db.query<{ status: string }>("select status from public.sandboxes where id=$1", [body.requestId]))
               .rows[0]!.status,
           );
+        if (command.op === "readOutputs") {
+          await commands.complete(session.runtimeToken, session.epoch, {
+            epoch: session.epoch,
+            requestId: command.requestId,
+            status: 200,
+            body: {
+              version: 1,
+              requestId: command.requestId,
+              result: command.part === undefined ? { files: [] } : { values: [] },
+            },
+          });
+          return;
+        }
         await commands.complete(session.runtimeToken, session.epoch, {
           epoch: session.epoch,
           requestId: command.requestId,
@@ -287,13 +307,6 @@ async function fixture(
       }
     }
   }
-  const clock = {
-    now: () => now,
-    async wait(ms: number) {
-      now += ms;
-      if (drive) await step();
-    },
-  };
   let resolutions = 0;
   const publicRepositoryAccess = options.publicRepositoryAccess
     ? launchCredentials(createSqlVaultStore(sql), key, undefined, undefined, {
@@ -528,6 +541,7 @@ test("normal launch drives create, bootstrap, health and one first prompt, seals
   expect(f.resolutions()).toBe(1);
   const cleanup = createDockerSandboxControls(sql, key, { clock: f.clock });
   await cleanup.invoke(f.caller, "stop", { id: f.body.requestId });
+  expect(f.native.at(-1)).toMatchObject({ op: "readOutputs", part: null });
   await cleanup.invoke(f.caller, "delete", { id: f.body.requestId });
   // The user stop adds exactly one bounded final output read (#2570) after the four launch commands.
   const commands = async () =>
