@@ -192,7 +192,13 @@ export function createDockerHostStore(sql: Sql, key: string) {
     );
     return result.rows[0] ?? deny();
   }
-  async function authenticate(tx: Sql, hostToken: string, installationId: string, actorId?: string) {
+  async function authenticate(
+    tx: Sql,
+    hostToken: string,
+    installationId: string,
+    actorId?: string,
+    refusalActors: readonly string[] = [],
+  ) {
     id(installationId);
     const result = await tx.query<Host>(
       `select id,org_id,owner_id from public.docker_hosts
@@ -201,8 +207,8 @@ export function createDockerHostStore(sql: Sql, key: string) {
     );
     const host = result.rows[0] ?? deny();
     const member = await tx.query<{ user_id: string }>(
-      `select user_id from public.members where org_id=$1 and user_id in ($2,$3) order by user_id for update`,
-      [host.org_id, host.owner_id, actorId ?? host.owner_id],
+      `select user_id from public.members where org_id=$1 and user_id=any($2::uuid[]) order by user_id for update`,
+      [host.org_id, [host.owner_id, actorId ?? host.owner_id, ...refusalActors]],
     );
     if (!member.rows.some((row) => row.user_id === host.owner_id)) deny();
     // Membership -> host -> job is the lock order for every operation. Recheck the
@@ -215,14 +221,21 @@ export function createDockerHostStore(sql: Sql, key: string) {
     return locked.rows[0] ?? deny();
   }
   // Retained credentials accept physical facts, never new launch authority.
-  async function reconcileHost(tx: Sql, hostToken: string, installationId: string, actorId?: string) {
+  async function reconcileHost(
+    tx: Sql,
+    hostToken: string,
+    installationId: string,
+    actorId?: string,
+    refusalActors: readonly string[] = [],
+  ) {
     id(installationId);
-    if (actorId) {
+    const actorIds = actorId ? [actorId, ...refusalActors] : refusalActors;
+    if (actorIds.length) {
       // Preserve membership -> host lock order for cleanup dispatch authorization.
       await tx.query(
         `select m.user_id from public.members m join public.docker_hosts h on h.org_id=m.org_id
-         where h.hash=$1 and h.installation_id=$2 and m.user_id=$3 for update of m`,
-        [hash(hostToken), installationId, actorId],
+         where h.hash=$1 and h.installation_id=$2 and m.user_id=any($3::uuid[]) order by m.user_id for update of m`,
+        [hash(hostToken), installationId, actorIds],
       );
     }
     const result = await tx.query<Host>(
@@ -1314,10 +1327,20 @@ export function createDockerHostStore(sql: Sql, key: string) {
             [hash(hostToken), installationId, skipSnapshots, running, supportsPhysicalDelete],
           )
         ).rows[0];
+        const refusals = (
+          await tx.query<StoredJob>(
+            `select j.* from public.docker_host_jobs j join public.sandboxes s on s.id=j.bound_sandbox_id
+             join public.docker_hosts h on h.id=j.host_id
+             where h.hash=$1 and h.installation_id=$2 and ${settledRefusedResumeSql}
+             order by j.position`,
+            [hash(hostToken), installationId],
+          )
+        ).rows;
+        const refusalActors = refusals.flatMap((job) => (job.bound_actor_id ? [job.bound_actor_id] : []));
         const host =
           hint?.bound_sandbox_id && ["stop", "delete"].includes(hint.bound_operation ?? "")
-            ? await reconcileHost(tx, hostToken, installationId, hint.bound_actor_id ?? undefined)
-            : await authenticate(tx, hostToken, installationId, hint?.bound_actor_id ?? undefined);
+            ? await reconcileHost(tx, hostToken, installationId, hint.bound_actor_id ?? undefined, refusalActors)
+            : await authenticate(tx, hostToken, installationId, hint?.bound_actor_id ?? undefined, refusalActors);
         await tx.query(
           `update public.docker_hosts set last_seen_at=now(),daemon_version=$2,resource_policy_version=$3,available_cpus=null,available_memory_bytes=null,disk_free_bytes=$4,stopped_sandbox_bytes=$5,daemon_protocol=coalesce($6::integer,daemon_protocol) where id=$1`,
           [
@@ -1349,14 +1372,6 @@ export function createDockerHostStore(sql: Sql, key: string) {
           "update public.docker_host_jobs j set outcome='failed',completed_at=now() from public.docker_snapshots s where j.snapshot_id=s.id and j.host_id=$1 and j.outcome is null and s.status='failed'",
           [host.id],
         );
-        const refusals = (
-          await tx.query<StoredJob>(
-            `select j.* from public.docker_host_jobs j join public.sandboxes s on s.id=j.bound_sandbox_id
-             where j.host_id=$1 and ${settledRefusedResumeSql}
-             order by j.position`,
-            [host.id, installationId],
-          )
-        ).rows;
         for (const refusal of refusals) {
           const logical = await boundMachine(tx, refusal, host, installationId);
           await settleRefusedResume(tx, logical, refusal);
