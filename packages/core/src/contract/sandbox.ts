@@ -301,6 +301,7 @@ function sandboxOperation<Input extends z.ZodRawShape, Output extends z.ZodRawSh
   tool: {
     title: string;
     description: string;
+    mcpDescription?: string;
     input: Input;
     output: Output;
     readOnly?: boolean;
@@ -319,6 +320,7 @@ function sandboxOperation<Input extends z.ZodRawShape, Output extends z.ZodRawSh
     destructive: tool.destructive ?? false,
     audience,
     description: tool.description,
+    ...(tool.mcpDescription === undefined ? {} : { mcpDescription: tool.mcpDescription }),
     errors: [
       "unauthorized",
       "dependency_unavailable",
@@ -343,6 +345,15 @@ const sandboxControlErrors = [
   "outcome_unknown",
 ] as const;
 
+const stopDescription =
+  "Stops the machine. Modal keeps its disk only if checkpoint succeeds; fallback termination returns " +
+  "checkpoint_failed_disk_not_retained and cannot resume. Other retained stops can resume on send. Use it when the " +
+  "agent is done, so the sandbox stops costing.";
+const statusDescription =
+  "Where a sandbox and its latest turn are. Modal uses authorized stored observations; physical state is refreshed by the lifecycle worker. Boat is read live. prompt.state is " +
+  "queued (accepted by a starting Docker sandbox, not yet admitted by its runtime), running, finished, interrupted or failed; failed includes a usage limit or an expired login, with " +
+  "the reason. settled is true when the agent is not working.";
+
 export const sandboxOperations = {
   reportSandbox: sandboxOperation("reportSandbox", "/api/v1/sandbox/report", "report", "agent", {
     title: "Report a task outcome",
@@ -353,6 +364,9 @@ export const sandboxOperations = {
   }),
   sendPrompt: sandboxOperation("sendPrompt", "/api/v1/sandbox/send", "send", "agent", {
     title: "Send a prompt",
+    mcpDescription:
+      "Start a new turn, or set steer to redirect a running turn. Model and effort overrides apply only to new turns. " +
+      "Runtime follow-up requires a request ID. Reuse that ID with identical input after uncertain delivery.",
     errors: sandboxControlErrors,
     description:
       "Gives the agent its next instruction as a new turn. The first send of an idle sandbox opens its " +
@@ -458,10 +472,10 @@ export const sandboxOperations = {
   stopSandbox: sandboxOperation("stopSandbox", "/api/v1/sandbox/stop", "stop", "agent", {
     title: "Stop a sandbox",
     errors: ["conflict", "credential_binding_unsafe", "rate_limited", "outcome_unknown"],
-    description:
-      "Stops the machine. Modal keeps its disk only if checkpoint succeeds; fallback termination returns " +
-      "checkpoint_failed_disk_not_retained and cannot resume. Other retained stops can resume on send. Use it when the " +
-      "agent is done, so the sandbox stops costing.",
+    description: stopDescription,
+    mcpDescription:
+      `${stopDescription} Set turn to interrupt the current turn and keep the machine up. ` +
+      "Set after to wait for settlement and stop only if still idle. On timeout this call does not request a stop.",
     input: { id, request_id: z.string().uuid().optional(), only_if_idle: z.boolean().optional() },
     output: { id: z.string(), status: z.enum(SANDBOX_STATUSES), preservationNote: z.string().optional() },
     destructive: true,
@@ -485,10 +499,8 @@ export const sandboxOperations = {
   sandboxStatus: sandboxOperation("sandboxStatus", "/api/v1/sandbox/status", "status", "agent", {
     title: "Sandbox status",
     errors: ["conflict", "rate_limited"],
-    description:
-      "Where a sandbox and its latest turn are. Modal uses authorized stored observations; physical state is refreshed by the lifecycle worker. Boat is read live. prompt.state is " +
-      "queued (accepted by a starting Docker sandbox, not yet admitted by its runtime), running, finished, interrupted or failed; failed includes a usage limit or an expired login, with " +
-      "the reason. settled is true when the agent is not working.",
+    description: statusDescription,
+    mcpDescription: `${statusDescription} Set wait to block until settled or timed out.`,
     input: {
       id,
       prompt_id: z.string().min(1).optional().describe("A specific turn. Default: the latest."),

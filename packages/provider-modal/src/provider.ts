@@ -24,12 +24,10 @@ import {
   OUTPUT_COLLECTOR,
   OUTPUT_COLLECTOR_PROBE,
   outputEntryCollector,
-  preserveWork,
   readCollectorChunk,
   readCollectorEntries,
   readCollectorProbeResult,
   readCollectorResult,
-  runtimeBootstrapScript,
   SHARED_ARTIFACT_CACHE_PATH,
   type WorkPreservation,
 } from "@armada/core/server";
@@ -37,7 +35,7 @@ import { NotFoundError, type Sandbox } from "modal";
 import { chooseManagementAuthority, matchesManagementAuthority } from "./authority.ts";
 import { abortable, boundModalApp, type ModalConnection, modalConnection } from "./client.ts";
 import { lifecycleStep, ModalOperationError, modalBuilderImageError, modalError, refusal } from "./errors.ts";
-import { executeGoldenCommand, executeWorkspaceCommand } from "./golden-exec.ts";
+import { executeGoldenCommand } from "./golden-exec.ts";
 import { createImageCollection, trackDetachedCollection } from "./image-collection.ts";
 import { DEPLOYMENT_TAG } from "./inventory.ts";
 import type {
@@ -51,7 +49,7 @@ import type {
   Scope,
   SshPreparation,
 } from "./ports.ts";
-import { quiesceSandboxProcesses } from "./process-scope.ts";
+import { createRuntimeLifecycle } from "./runtime-lifecycle.ts";
 import { createSnapshotTombstones } from "./snapshot-tombstones.ts";
 import { createSshPreparation, SSH_PORT } from "./ssh.ts";
 import { scopeKey } from "./store.ts";
@@ -502,39 +500,49 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
       throw refusal("invalid_request", "Modal machine TTL must be 1–86400 seconds (maximum 24 hours).");
     let imageId: string | undefined;
     let sourceImage: Machine["sourceImage"];
+    let runtimeSourceId: string | undefined;
     if ("from" in request) {
       const snapshot = await source.store.image(request.from);
       assertAuthority(snapshot);
       if (snapshot.info.status !== "ready" || !snapshot.imageId)
         throw refusal("sandbox_not_ready", "Snapshot is not ready.");
+      if (options.commonRuntime) {
+        const sourceRow = await source.store.get(snapshot.sourceId);
+        if (sourceRow.commonRuntime) throw refusal("invalid_request", "Enrolled Modal forks are not enabled.");
+        runtimeSourceId = snapshot.sourceId;
+      }
       imageId = snapshot.imageId;
       sourceImage = { scopeKey: scopeKey(source.scope), name: request.from, imageId };
     }
     const key = request.idempotencyKey ?? randomUUID();
     const id = `modal_${randomUUID()}`;
-    const row = await store.reserve(key, {
-      info: {
-        id,
-        name: request.name ?? id,
-        state: "starting",
-        providerState: "reserved",
-        labels: request.labels ?? {},
-        createdAt: new Date(),
+    const row = await store.reserve(
+      key,
+      {
+        info: {
+          id,
+          name: request.name ?? id,
+          state: "starting",
+          providerState: "reserved",
+          labels: request.labels ?? {},
+          createdAt: new Date(),
+        },
+        generation: 1,
+        ...(!golden && options.commonRuntime ? { commonRuntime: true as const } : {}),
+        ...(!golden ? { runtimePolicy: "explicit-vm-v1" as const } : {}),
+        launchUserId: options.scope.userId,
+        managementAuthority: { ...managementAuthority },
+        modelDefaults: mapHarnesses((_, harness) => resolveModelChoice(harness, {})),
+        phase: "reserved",
+        golden,
+        ttlSeconds: ttl,
+        ...(size === undefined ? {} : { size }),
+        physicalName: `armada-${createHash("sha256").update(id).digest("hex").slice(0, 32)}-1`,
+        ...(imageId ? { imageId } : {}),
+        ...(sourceImage ? { sourceImage } : {}),
       },
-      generation: 1,
-      ...(!golden && options.commonRuntime ? { commonRuntime: true as const } : {}),
-      ...(!golden ? { runtimePolicy: "explicit-vm-v1" as const } : {}),
-      launchUserId: options.scope.userId,
-      managementAuthority: { ...managementAuthority },
-      modelDefaults: mapHarnesses((_, harness) => resolveModelChoice(harness, {})),
-      phase: "reserved",
-      golden,
-      ttlSeconds: ttl,
-      ...(size === undefined ? {} : { size }),
-      physicalName: `armada-${createHash("sha256").update(id).digest("hex").slice(0, 32)}-1`,
-      ...(imageId ? { imageId } : {}),
-      ...(sourceImage ? { sourceImage } : {}),
-    });
+      runtimeSourceId,
+    );
     const needsBoot = (row: Machine) => {
       if (
         row.golden !== golden ||
@@ -924,6 +932,7 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
           throw refusal("invalid_request", "Size must be small, medium, large or xlarge.");
         }
       }
+      if (options.commonRuntime) return launch(r, false);
       const snapshot = await source.store.image(r.from);
       assertAuthority(snapshot);
       let admitted = false;
@@ -947,275 +956,16 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
         throw error;
       }
     },
-    async startRuntime(input) {
-      const server = new URL(input.serverUrl);
-      if (
-        server.protocol !== "https:" ||
-        server.origin !== input.serverUrl.replace(/\/$/, "") ||
-        !input.cacheDir.startsWith("/") ||
-        input.cacheDir === "/" ||
-        input.cacheDir.includes("\0") ||
-        !/^[a-f0-9]{64}$/.test(input.artifact.sha256) ||
-        !Number.isSafeInteger(input.artifact.bytes) ||
-        input.artifact.bytes <= 0 ||
-        input.artifact.bytes > 512 * 1024 * 1024 ||
-        !/^armada_enrol_[a-f0-9]{64}$/.test(input.enrolmentToken)
-      )
-        throw refusal("invalid_request", "Invalid enrolled Modal bootstrap.");
-      await store.lease(input.sandboxId, async (row, save) => {
-        assertMachineSource(row);
-        if (
-          !row.commonRuntime ||
-          row.golden ||
-          row.phase !== "active" ||
-          row.runtimeStartAttempted ||
-          row.runtimeResumeGeneration !== input.resumeGeneration
-        )
-          throw refusal("conflict", "Enrolled runtime bootstrap requires a fresh host-only incarnation.");
-        const sb = await physical(row);
-        if ((await sb.poll()) !== null) throw refusal("sandbox_not_ready", "Physical machine has exited.");
-        // Persist before remote dispatch: retrying an uncertain spawn can create two runtimes.
-        row.runtimeStartAttempted = true;
-        await save(row);
-        try {
-          const child = await sb.exec(
-            [
-              "/usr/bin/env",
-              "-i",
-              "PATH=/usr/local/bin:/usr/bin:/bin",
-              "node",
-              "-e",
-              runtimeBootstrapScript(server.origin, input.artifact, input.cacheDir, SHARED_ARTIFACT_CACHE_PATH),
-            ],
-            { env: {}, secrets: [], timeoutMs: 150_000, workdir: "/home/user", stdout: "ignore", stderr: "ignore" },
-          );
-          await child.stdin.writeText(
-            JSON.stringify({ serverUrl: server.origin, enrolmentToken: input.enrolmentToken }),
-          );
-          await child.stdin.close();
-          if ((await child.wait()) !== 0) throw Error();
-        } catch {
-          throw refusal("unavailable", "Enrolled Modal bootstrap failed; spawn outcome must be reconciled.");
-        }
-      });
-    },
-    async captureRuntimeWork({ sandboxId, physicalGeneration, signal, context, onWorkAtRisk }) {
-      signal.throwIfAborted();
-      const row = await store.get(sandboxId);
-      if (
-        !row.commonRuntime ||
-        row.golden ||
-        row.phase !== "active" ||
-        !row.physicalId ||
-        String(row.generation) !== physicalGeneration
-      )
-        throw refusal("sandbox_not_ready", "Work capture requires the exact active common runtime incarnation.");
-      const sandbox = await physical(row, signal);
-      signal.throwIfAborted();
-      if ((await abortable(sandbox.poll(), signal)) !== null)
-        throw refusal("sandbox_not_ready", "Work capture requires live physical compute.");
-      signal.throwIfAborted();
-      await abortable(quiesceSandboxProcesses(sandbox, row, signal), signal);
-      signal.throwIfAborted();
-      return preserveWork(
-        {
-          exec(request) {
-            request.signal?.throwIfAborted();
-            return abortable(executeWorkspaceCommand(sandbox, request), request.signal);
-          },
-        },
-        sandboxId,
-        signal,
-        onWorkAtRisk,
-        context,
-      );
-    },
-    async stopRuntime(input) {
-      if (!/^[1-9][0-9]{0,18}$/.test(input.epoch) || !Number.isSafeInteger(input.watermark) || input.watermark < 0)
-        throw refusal("invalid_request", "A durable common checkpoint epoch and watermark are required.");
-      await bound();
-      let observed: Machine | undefined;
-      try {
-        await store.lease(input.sandboxId, async (row, save) => {
-          observed = row;
-          assertMachineSource(row);
-          if (
-            !row.commonRuntime ||
-            row.golden ||
-            !row.physicalId ||
-            input.physicalGeneration !== String(row.generation)
-          )
-            throw refusal("conflict", "Retained stop requires the exact enrolled physical incarnation.");
-          const expected = {
-            epoch: input.epoch,
-            watermark: input.watermark,
-            physicalId: row.physicalId,
-            generation: row.generation,
-          };
-          const prior = row.runtimeCheckpoint;
-          if (
-            prior &&
-            prior.generation === row.generation &&
-            (prior.epoch !== expected.epoch ||
-              prior.watermark !== expected.watermark ||
-              prior.physicalId !== expected.physicalId)
-          )
-            throw refusal("conflict", "Retained stop belongs to another checkpoint.");
-          if (row.phase === "stopped") {
-            if (!row.recoveryImageId || !prior) throw refusal("conflict", "No retained common checkpoint exists.");
-            return;
-          }
-          if (!["active", "checkpoint", "terminate"].includes(row.phase))
-            throw refusal("conflict", "Snapshot outcome is unknown; retain the physical source for reconciliation.");
-          const sb = await physical(row);
-          if (row.phase !== "terminate") {
-            if ((await sb.poll()) !== null) throw refusal("sandbox_not_ready", "Checkpoint source has exited.");
-            delete row.runtimeResumeGeneration;
-            row.runtimeCheckpoint = expected;
-            row.phase = "checkpoint";
-            row.info.state = "stopping";
-            await save(row);
-            if (!row.quiesced) {
-              // Scrub SSH and kill all post-baseline writers, including the dial-out process.
-              // SQLite journal/native session files survive, but are never snapshotted live.
-              await distribution.prepareSnapshot(sb, row);
-              row.quiesced = true;
-              await save(row);
-            }
-            row.phase = "snapshot";
-            await save(row);
-            const image = await sb.snapshotFilesystem({ ttlMs: null });
-            if (row.recoveryImageId)
-              row.retainedRecoveryIds = [...(row.retainedRecoveryIds ?? []), row.recoveryImageId];
-            row.recoveryImageId = image.imageId;
-            row.phase = "terminate";
-            await save(row); // Persist retained image before destroying the source.
-          } else if (!row.recoveryImageId || !prior || !row.quiesced) {
-            throw refusal("conflict", "Termination lacks a retained common checkpoint.");
-          }
-          await sb.terminate({ wait: true });
-          if ((await sb.poll()) === null) throw refusal("unavailable", "Termination has not completed.");
-          row.phase = "stopped";
-          row.info.state = "stopped";
-          row.info.providerState = "stopped";
-          row.info.stoppedAt = new Date();
-          await save(row);
-        });
-      } catch (error) {
-        if (observed) throw new ModalOperationError(error, await resourceReceipt(observed));
-        throw error;
-      }
-    },
-    async resumeRuntime(input, signal, onResumeStage) {
-      const { epoch, watermark } = input.checkpoint;
-      if (
-        !/^[1-9][0-9]{0,18}$/.test(epoch) ||
-        !Number.isSafeInteger(watermark) ||
-        watermark < 0 ||
-        !Number.isSafeInteger(input.generation) ||
-        input.generation < 1 ||
-        !Number.isInteger(input.ttlSeconds) ||
-        input.ttlSeconds < 1 ||
-        input.ttlSeconds > 86400
-      )
-        throw refusal("invalid_request", "Common resume requires a checkpoint and a valid physical TTL.");
-      signal?.throwIfAborted();
-      await bound();
-      let observed: Machine | undefined;
-      try {
-        return await store.lease(input.sandboxId, async (row, save) => {
-          signal?.throwIfAborted();
-          observed = row;
-          assertMachineSource(row);
-          const checkpoint = row.runtimeCheckpoint;
-          if (
-            !row.commonRuntime ||
-            row.golden ||
-            !row.recoveryImageId ||
-            !checkpoint ||
-            checkpoint.epoch !== epoch ||
-            checkpoint.watermark !== watermark
-          )
-            throw refusal("conflict", "No matching retained common checkpoint is available.");
-          if (row.phase === "stopped") {
-            if (row.runtimeResumeGeneration !== undefined && input.generation <= row.runtimeResumeGeneration)
-              throw refusal("conflict", "Resume generation has already been rolled back.");
-            if (checkpoint.generation !== row.generation || checkpoint.physicalId !== row.physicalId)
-              throw refusal("conflict", "Retained source incarnation does not match.");
-            row.generation++;
-            row.runtimeResumeGeneration = input.generation;
-            row.ttlSeconds = input.ttlSeconds;
-            row.imageId = row.recoveryImageId;
-            row.phase = "reserved";
-            row.info.state = "starting";
-            row.quiesced = false;
-            row.physicalName = `armada-${createHash("sha256").update(row.info.id).digest("hex").slice(0, 32)}-${row.generation}`;
-            delete row.physicalId;
-            delete row.processBaseline;
-            delete row.runtimeStartAttempted;
-            delete row.ordinaryStopAttempted;
-            delete row.info.stopNote;
-            delete row.info.stoppedAt;
-            await save(row); // Persist the new physical generation before remote activation.
-          }
-          if (
-            row.runtimeResumeGeneration !== input.generation ||
-            row.generation !== checkpoint.generation + 1 ||
-            row.imageId !== row.recoveryImageId ||
-            row.ttlSeconds !== input.ttlSeconds
-          )
-            throw refusal("conflict", "Common resume belongs to another activation.");
-          signal?.throwIfAborted();
-          if (["reserved", "creating", "booting"].includes(row.phase)) return create(row, save, {}, onResumeStage);
-          if (row.phase !== "active" || (await (await physical(row)).poll()) !== null)
-            throw refusal("conflict", "Resume activation outcome is unavailable; do not allocate again.");
-          return sandboxInfo(row);
-        });
-      } catch (error) {
-        if (observed) throw new ModalOperationError(error, await resourceReceipt(observed));
-        throw error;
-      }
-    },
-    async rollbackRuntimeResume({ sandboxId, generation }) {
-      await bound();
-      await store.lease(sandboxId, async (row, save) => {
-        assertMachineSource(row);
-        const checkpoint = row.runtimeCheckpoint;
-        if (
-          !row.commonRuntime ||
-          row.runtimeResumeGeneration !== generation ||
-          !row.recoveryImageId ||
-          row.imageId !== row.recoveryImageId ||
-          !checkpoint ||
-          !row.physicalId
-        )
-          throw refusal("conflict", "Rollback requires the exact retained resume.");
-        if (
-          row.phase === "stopped" &&
-          checkpoint.generation === row.generation &&
-          checkpoint.physicalId === row.physicalId
-        )
-          return;
-        if (row.generation !== checkpoint.generation + 1 || !["active", "terminate"].includes(row.phase))
-          throw refusal("conflict", "Rollback requires the exact replacement incarnation.");
-        if (row.phase !== "terminate") {
-          row.phase = "terminate";
-          row.info.state = "stopping";
-          await save(row);
-        }
-        const replacement = await physical(row);
-        if ((await replacement.poll()) === null) {
-          await replacement.terminate({ wait: true });
-          if ((await replacement.poll()) === null) throw refusal("unavailable", "Replacement exit is unconfirmed.");
-        }
-        row.runtimeCheckpoint = { ...checkpoint, physicalId: row.physicalId, generation: row.generation };
-        row.phase = "stopped";
-        row.info.state = "stopped";
-        row.info.providerState = "stopped";
-        row.info.stoppedAt = new Date();
-        await save(row);
-      });
-    },
+    ...createRuntimeLifecycle({
+      store,
+      distribution,
+      bound,
+      assertMachineSource,
+      physical,
+      resourceReceipt,
+      create,
+      sandboxInfo,
+    }),
     outputReadBytes: OUTPUT_MAX_READ_BYTES,
     listOutputEntries(request) {
       return collectOutputs(request, outputEntryCollector(null), readCollectorEntries);

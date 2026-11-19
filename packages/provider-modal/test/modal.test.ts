@@ -1046,6 +1046,58 @@ test("overlapping forks refuse source contention definitively before allocating"
     await first;
   }
 });
+test("enrolled Modal forks from one snapshot can boot concurrently", async () => {
+  const f = fixture(scope, fixtureSql, undefined, undefined, true);
+  const { name } = await savedGolden(f);
+  const entered = deferred();
+  const release = deferred();
+  const prepare = f.distribution.prepareFreshMachine!;
+  let firstBoot = true;
+  f.distribution.prepareFreshMachine = async (sandbox, row) => {
+    if (firstBoot) {
+      firstBoot = false;
+      entered.resolve();
+      await release.promise;
+    }
+    await prepare(sandbox, row);
+  };
+  const first = f.provider.fork({ from: name });
+  await Promise.race([entered.promise, first]);
+  try {
+    const second = await f.provider.fork({ from: name });
+    expect(second.state).toBe("ready");
+    release.resolve();
+    expect((await first).id).not.toBe(second.id);
+  } finally {
+    release.resolve();
+    await first;
+  }
+});
+
+test("enrolled Modal fork refuses a snapshot retired before reservation", async () => {
+  const source = fixture();
+  const { name } = await savedGolden(source);
+  const fork = fixture(
+    scope,
+    {
+      query: fixtureSql.query,
+      async transaction(work) {
+        await source.provider.deleteSnapshot(name);
+        return db.transaction(work);
+      },
+    },
+    undefined,
+    undefined,
+    true,
+  );
+  const requestKey = crypto.randomUUID();
+  await expect(fork.provider.fork({ from: name, idempotencyKey: requestKey })).rejects.toMatchObject({
+    code: "not_found",
+  });
+  expect(await fork.store.findByRequestKey(requestKey)).toBeNull();
+  expect(fork.creates).toBe(0);
+});
+
 test("snapshot retirement refuses a live enrolled Modal fork reference", async () => {
   const f = fixture(scope, fixtureSql, undefined, undefined, true);
   const { name } = await savedGolden(f);
