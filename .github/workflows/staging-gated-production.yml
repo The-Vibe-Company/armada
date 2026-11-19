@@ -53,6 +53,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 85
     environment: staging
+    permissions:
+      contents: read
+      actions: read
+      issues: write
+      statuses: write
     concurrency:
       group: ${{ inputs.source_sha != '' && 'post-deploy-smoke-staging-pinned' || 'release-production' }}
       queue: max
@@ -81,6 +86,7 @@ jobs:
         with:
           ref: ${{ inputs.source_sha || (github.event_name == 'workflow_run' && 'main') || github.sha }}
           persist-credentials: false
+          fetch-depth: ${{ inputs.source_sha == '' && 50 || 1 }}
       - uses: ./.github/actions/setup-bun
       - name: Authenticate ordinary staging source after acquiring admission
         id: admission
@@ -190,6 +196,8 @@ jobs:
             unzip -p "$RUNNER_TEMP/smoke-journal.zip" sandboxes.json > .smoke/sandboxes.json
           fi
       - name: Smoke pinned staging
+        id: smoke
+        shell: bash
         if: (steps.evidence.outputs.reused != 'true' && steps.deployment.outputs.superseded != 'true')
         env:
           ARMADA_SMOKE: create_real_compute
@@ -197,12 +205,12 @@ jobs:
         run: |
           # Read probes receive only the existing staging bearer, never deployment secrets.
           env -i PATH="$PATH" HOME="$HOME" ARMADA_URL="$ARMADA_URL" ARMADA_TOKEN="$ARMADA_TOKEN" \
-            ARMADA_SMOKE_CASES="$ARMADA_SMOKE_CASES" bun scripts/dashboard-read-smoke.ts &
+            ARMADA_SMOKE_CASES="$ARMADA_SMOKE_CASES" bun scripts/dashboard-read-smoke.ts | tee "$RUNNER_TEMP/dashboard-smoke.jsonl" &
           dashboard_pid=$!
           status=0
           env -i PATH="$PATH" HOME="$HOME" ARMADA_URL="$ARMADA_URL" ARMADA_TOKEN="$ARMADA_TOKEN" \
             ARMADA_SMOKE_CASES="$ARMADA_SMOKE_CASES" ARMADA_SMOKE="$ARMADA_SMOKE" ARMADA_SMOKE_JOURNAL="$ARMADA_SMOKE_JOURNAL" \
-            bun scripts/post-deploy-smoke.ts --work-preservation --templates-skills --lifecycle --vault --default-skills --scoped-access --github-refresh --golden-runtime --expiry || status=$?
+            bun scripts/post-deploy-smoke.ts --work-preservation --templates-skills --lifecycle --vault --default-skills --scoped-access --github-refresh --golden-runtime --expiry | tee "$RUNNER_TEMP/armada-smoke.jsonl" || status=$?
           wait "$dashboard_pid" || status=1
           exit "$status"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -217,3 +225,17 @@ jobs:
       - name: Report blocked production
         if: (steps.evidence.outputs.reused != 'true' && failure())
         run: echo "::error::Staging deployment or smoke failed; production migrations and deployments are blocked."
+
+      - name: Record ordinary main staging smoke result
+        if: ${{ !cancelled() && github.ref == 'refs/heads/main' && inputs.source_sha == '' && (steps.smoke.outcome == 'success' || steps.smoke.outcome == 'failure') }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          SMOKE_OUTCOME: ${{ steps.smoke.outcome }}
+        run: |
+          if [[ "$SMOKE_OUTCOME" == failure ]]; then
+            STAGING_HISTORY=$(git rev-list --first-parent --max-count=50 "$RELEASE_SHA")
+            export STAGING_HISTORY
+          fi
+          bun .release-tools/scripts/release/staging-status.ts \
+            "$RUNNER_TEMP/armada-smoke.jsonl" "$RUNNER_TEMP/dashboard-smoke.jsonl"

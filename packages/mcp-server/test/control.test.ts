@@ -20,7 +20,7 @@ import {
   VaultError,
   type VaultStore,
 } from "@armada/core";
-import { createSkillDefaultsService, createSqlVaultStore } from "@armada/core/server";
+import { createSkillDefaultsService, createSqlVaultStore, createTemplateService } from "@armada/core/server";
 import { appendModalEvents, createSqlModalStore, type Machine, type Scope, scopeKey } from "@armada/provider-modal";
 import type { PGlite } from "@electric-sql/pglite";
 import { AppService } from "modal";
@@ -42,7 +42,7 @@ import { createRuntimeFollowup } from "../src/runtime-followup.ts";
 import { createRuntimeHistory } from "../src/runtime-history.ts";
 import { createRuntimeStartup } from "../src/runtime-startup.ts";
 import { callSharedTool } from "../src/tool-api.ts";
-import { publishedRequest, publishedResponse } from "./published-response.ts";
+import { publishedFailure, publishedRequest, publishedResponse } from "./published-response.ts";
 import { rowOnlyConnection } from "./row-only-database.ts";
 import { fakeBoat } from "./support.ts";
 
@@ -3432,5 +3432,68 @@ test("Modal promptless HTTP launch publishes ready without inference and retains
         }).sandboxes.get(launched.sandbox.id)
       )?.status,
     ).toBe("ready");
+  });
+});
+
+test("pinned Modal launch resolves personal org references and respects scoped tokens", async () => {
+  await withServer(async ({ db, options }) => {
+    const org = await options.store.createOrg("modal-team", STAN);
+    const other = await options.store.createOrg("other-team", STAN);
+    for (const member of [org, other])
+      options.authStore.addMembership(STAN, { orgId: member.id, name: member.name, role: "admin" });
+
+    const service = generateToken("service");
+    await options.authStore.insertToken("service", {
+      userId: STAN,
+      orgId: org.id,
+      hash: await sha256Hex(service),
+      label: "ci",
+      createdAt: new Date().toISOString(),
+    });
+    const personal = `eyJhbGciOiJIUzI1NiJ9.${btoa(JSON.stringify({ sub: STAN })).replace(/=+$/, "")}.sig`;
+    options.templates = createTemplateService({
+      query: (query, values) => db.query(query, values),
+      transaction: (work) => db.transaction((tx) => work(tx)),
+    });
+    options.modalRuntimeHostFor = async () => {
+      throw Error("Missing template must never reach the provider");
+    };
+    options.modalRuntimeLaunch = {
+      async start() {
+        throw Error("Missing template must never reach runtime startup");
+      },
+    };
+    const launch = (token: string, overrides: Record<string, unknown>) =>
+      handleControlRequest(
+        new Request("https://armada.test/api/v1/sandbox/launch", {
+          method: "POST",
+          headers: { authorization: `Bearer ${token}` },
+          body: JSON.stringify({
+            id: crypto.randomUUID(),
+            revision: 1,
+            requestKey: "launch-probe",
+            provider: "modal",
+            harness: "codex",
+            runtimeVersion: 1,
+            runtimeTransport: "dialout",
+            prompt: "Probe",
+            ...overrides,
+          }),
+        }),
+        options,
+      );
+
+    const byId = await launch(personal, { org: org.id });
+    expect(byId?.status).toBe(404);
+    const byName = await launch(personal, { org: org.name });
+    expect(byName?.status).toBe(404);
+    expect(await byName?.json()).toEqual(await byId?.json());
+    expect((await launch(service, {}))?.status).toBe(404);
+    expect((await launch(service, { org: other.id }))?.status).toBe(403);
+    for (const malformed of [{ golden: "mixed-source" }, { ttlSeconds: PROVIDER_LIMITS.modal.maxTtlSeconds + 1 }]) {
+      const refused = await launch(personal, { org: org.name, ...malformed });
+      expect(refused?.status).toBe(400);
+      expect(publishedFailure().parse(await refused?.json())).toMatchObject({ error: { code: "invalid" } });
+    }
   });
 });

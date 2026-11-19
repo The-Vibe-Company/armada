@@ -42,6 +42,7 @@ import { recordLaunchStageForActivation } from "./launch-stage-record.ts";
 import { collectOutputTransfers, DOCKER_RETAINED_OUTPUT_STOP } from "./output-transfers.ts";
 import { noteAdmission } from "./request-observability.ts";
 import { createRuntimeEnrolments, scopedRuntimeSql } from "./runtime-enrolment.ts";
+import { failDockerResumeActivation } from "./sandbox-lifecycle.ts";
 import { deferTransactionWake } from "./wake-bus.ts";
 
 type Actor = { userId: string; orgId: string };
@@ -77,6 +78,7 @@ type Sandbox = {
   effective_ttl_seconds: number;
   expires_at: Date | string;
   status: string;
+  lifecycle_generation: string | number;
   status_reason?: string | null;
   stop_requested_at: unknown;
   deleted_at: unknown;
@@ -391,19 +393,21 @@ export function createDockerHostStore(sql: Sql, key: string) {
     if (input(delivered) !== input({ ...delivered, request: frozen })) deny();
     return logical;
   }
-  async function startupFailed(tx: Sql, row: Sandbox, operation: string | null, reason?: DockerJobFailureReason) {
-    if (operation !== "create" && operation !== "bootstrap" && operation !== "resume") return;
+  async function startupFailed(tx: Sql, row: Sandbox, job: StoredJob, reason?: DockerJobFailureReason) {
+    const operation = job.bound_operation;
+    const message =
+      reason === "disk_full"
+        ? DOCKER_LAUNCH_FAILURE_MESSAGES.disk
+        : reason === "image_unavailable" && operation === "create"
+          ? DOCKER_IMAGE_UNAVAILABLE_MESSAGE
+          : DOCKER_LAUNCH_FAILURE_MESSAGES.startup;
+    if (operation === "resume")
+      return failDockerResumeActivation(tx, row.id, row.lifecycle_generation, job.request_id, message);
+    if (operation !== "create" && operation !== "bootstrap") return;
     await tx.query(
       `update public.sandboxes set status='failed',status_reason=$2,
        lifecycle_generation=lifecycle_generation+1 where id=$1 and status in ('starting','ready','running') and stop_requested_at is null`,
-      [
-        row.id,
-        reason === "disk_full"
-          ? DOCKER_LAUNCH_FAILURE_MESSAGES.disk
-          : reason === "image_unavailable" && operation === "create"
-            ? DOCKER_IMAGE_UNAVAILABLE_MESSAGE
-            : DOCKER_LAUNCH_FAILURE_MESSAGES.startup,
-      ],
+      [row.id, message],
     );
   }
   /** Retire queued work the server can no longer dispatch. This is cancellation,
@@ -1246,7 +1250,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
             // valid facts or ordinary pending work.
           }
           if (verified) {
-            await startupFailed(tx, verified, historical.bound_operation);
+            await startupFailed(tx, verified, historical);
             break;
           }
         }
@@ -1319,7 +1323,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
               await recordLaunchStageForActivation(tx, logical.id, 1, "provider_claimed");
           } catch (error) {
             if (!(error instanceof DockerHostDenied)) throw error;
-            if (verified) await startupFailed(tx, verified, row.bound_operation);
+            if (verified) await startupFailed(tx, verified, row);
             await tx.query(
               `update public.docker_host_jobs set outcome='failed',completed_at=now() where request_id=$1 and outcome is null`,
               [row.request_id],
@@ -1602,8 +1606,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
         } else if (result.imageId !== undefined) deny();
         // A repeated same-outcome machine fact also repairs a logical transition
         // missed by an earlier server; conflicting facts still fail above.
-        if (result.outcome === "failed" && logical)
-          await startupFailed(tx, logical, job.bound_operation, result.reason);
+        if (result.outcome === "failed" && logical) await startupFailed(tx, logical, job, result.reason);
         // Persist terminal receipts below, but never replay old stop/delete
         // effects onto a lifecycle admitted after that job.
         const staleCleanup =

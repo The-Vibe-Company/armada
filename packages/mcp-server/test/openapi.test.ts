@@ -126,6 +126,9 @@ test("published launch request keeps golden, pinned Modal template and Docker so
     runtimeVersion: 1,
   };
   expect(launch.safeParse(template).success).toBe(true);
+  expect(launch.safeParse({ ...template, org: "team" }).success).toBe(true);
+  const { org: _org, ...templateWithoutOrg } = template;
+  expect(launch.safeParse(templateWithoutOrg).success).toBe(true);
   expect(launch.safeParse({ ...template, golden: "web" }).success).toBe(false);
   const docker = { org, provider: "docker", hostId: org, harness: "codex", requestId: org };
   expect(launch.safeParse(docker).success).toBe(true);

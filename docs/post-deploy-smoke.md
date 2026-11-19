@@ -24,6 +24,18 @@ User-facing saved environments are **snapshots**. Existing API/MCP names,
 case keys such as `golden`/`goldenId`, and flags/step identifiers such as
 `--golden-runtime` retain their wire spelling; do not rename them in smoke JSON.
 
+## Ordinary main smoke status
+
+A failed ordinary main smoke opens or updates the single `staging red` issue
+with the tested SHA range, failing smoke step codes and workflow run link. The
+range starts at the latest green status found within 50 first-parent main
+commits. The next passing ordinary smoke sets `staging/smoke` to `success`
+on the tested commit and closes the issue with a comment naming that SHA.
+Pinned release smokes skip this reporting.
+
+The coordinator cuts a train from a main commit with a green `staging/smoke`
+status and waits while `staging red` is open.
+
 ## Configure staging
 
 The GitHub environment **staging** uses the following exact configuration names.
