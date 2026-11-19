@@ -252,7 +252,7 @@ finally:
                 os.killpg(group,signal.SIGKILL)
         with suppress(ProcessLookupError):
             os.killpg(p.pid,signal.SIGKILL)
-        p.wait()
+        p.wait(timeout=5)
         raise
 `;
     const configure = async (phase: string) => {
