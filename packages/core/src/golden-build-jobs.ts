@@ -443,7 +443,10 @@ export class GoldenBuildJobs {
         ],
       )
     ).rows[0];
-    if (!row) return;
+    if (row) await this.recoverReceipt(row);
+  }
+
+  private async recoverReceipt(row: Job) {
     const reservationRecovery = HOST_CAPABILITIES[row.provider].goldenBuilderRecovery === "dispose-reservation";
     // Fairness bookkeeping only: retained, unauthorized or temporarily unavailable heads
     // must not starve other abandoned jobs. Never change their fence/state/capacity/proof.
@@ -482,7 +485,7 @@ export class GoldenBuildJobs {
       return;
     }
     // A recovery row's snapshot is the candidate its worker recorded under the fence before
-    // publication (see runOne's candidate). Publication commits only together with complete(),
+    // publication (see executeReceipt's candidate). Publication commits only together with complete(),
     // which requires this fence in state running under the same row lock; a committed row in
     // recovery_required therefore proves that candidate was never published and never can be.
     const rolledBack = row.snapshot;
@@ -602,10 +605,17 @@ export class GoldenBuildJobs {
   }
   /** One bounded worker tick. Queued admissions expire after one hour; running work stays fenced for recovery. */
   async runOne(): Promise<boolean> {
+    const job = await this.claimOne();
+    if (!job) return false;
+    if (job.state === "running") await this.executeReceipt(job);
+    return true;
+  }
+
+  private async claimOne() {
     await this.options.sql.query(
       "update public.golden_build_jobs set state='recovery_required',error_code='build_failed',updated_at=now() where state='running' and (lease_until<=clock_timestamp() or deadline<=clock_timestamp())",
     );
-    const job = await this.transaction(async (sql) => {
+    return this.transaction(async (sql) => {
       const row = (
         await sql.query<Job & { expired: boolean }>(
           "select *, created_at <= clock_timestamp()-interval '60 minutes' as expired from public.golden_build_jobs where state='queued' order by created_at for update skip locked limit 1",
@@ -638,8 +648,9 @@ export class GoldenBuildJobs {
         )
       ).rows[0]!;
     });
-    if (!job) return false;
-    if (job.state !== "running") return true;
+  }
+
+  private async executeReceipt(job: Job) {
     let safeToRelease = true;
     // The candidate this attempt tried to record before publication, kept even when that record
     // failed: an unsafe outcome retries it under the fence in the final write.
@@ -756,7 +767,6 @@ export class GoldenBuildJobs {
     } finally {
       if (heartbeat) clearInterval(heartbeat);
     }
-    return true;
   }
 }
 
