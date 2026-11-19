@@ -51,6 +51,9 @@ const launchOptionsOutput = z
 
 export const launchOptionsOperation = {
   name: "launchOptions",
+  toolName: "launch_options",
+  mcpDescription:
+    "Read the server-wide launch catalog: harnesses, models, credential kinds, machine sizes, TTL limits, and provider capabilities. The MCP launch tool accepts Boat and Modal goldens.",
   route: { method: "POST", path: "/api/v1/launch/options" },
   input: { body: z.object({}) },
   output: launchOptionsOutput,

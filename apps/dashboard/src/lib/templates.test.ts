@@ -1,6 +1,6 @@
 import { describe, expect, spyOn, test } from "bun:test";
-import { createTemplateControl, LAUNCH_TIMEOUT_MS } from "../src/lib/control.ts";
-import { launchTarget } from "../src/lib/template-launch.ts";
+import { createTemplateControl, LAUNCH_TIMEOUT_MS } from "./control.ts";
+import { launchTarget } from "./template-launch.ts";
 import {
   agentSummary,
   canManageTemplate,
@@ -15,7 +15,7 @@ import {
   templateState,
   ttlChoice,
   ttlOptions,
-} from "../src/lib/templates.ts";
+} from "./templates.ts";
 
 const ORG = "00000000-0000-4000-8000-000000000010";
 const ALICE = "00000000-0000-4000-8000-000000000001";
@@ -40,9 +40,9 @@ const header = {
 };
 const definition = {
   goldenId: SHARED,
-  provider: "boat",
+  provider: "boat" as const,
   goldenBinding: null,
-  harness: "claude",
+  harness: "claude" as const,
   model: "claude-opus-5-5",
   reasoningEffort: "high",
   connections: [DOCS],
@@ -66,19 +66,20 @@ const lookups: TemplateLookups = {
   ],
 };
 
-const form = (fields: Partial<TemplateFormFields> = {}): TemplateFormFields => ({
-  name: " Backend ",
-  scope: "personal",
-  goldenId: SHARED,
-  harness: "claude",
-  model: "claude-opus-5-5",
-  otherModel: "",
-  reasoningEffort: "high",
-  connections: [],
-  variables: [],
-  skills: [],
-  ...fields,
-});
+const form = (fields: Partial<TemplateFormFields> = {}) =>
+  ({
+    name: " Backend ",
+    scope: "personal",
+    goldenId: SHARED,
+    harness: "claude",
+    model: "claude-opus-5-5",
+    otherModel: "",
+    reasoningEffort: "high",
+    connections: [],
+    variables: [],
+    skills: [],
+    ...fields,
+  }) satisfies TemplateFormFields;
 
 describe("template DTOs", () => {
   test("a header and a revision keep only their known fields; a deleted or malformed one is dropped", () => {
@@ -170,7 +171,6 @@ describe("template state", () => {
       }),
       lookups,
     );
-    // Two aliases of the same stale source require the same single revision fix, not duplicate warnings.
     expect(stale.problems).toHaveLength(1);
     expect(stale).toMatchObject({ bucket: "action", tone: "warning", label: "Variable changed" });
     expect(stale.problems[0]?.text).toContain("save a new version");
@@ -257,6 +257,7 @@ describe("template form", () => {
 describe("template revision from the form", () => {
   const previous = {
     connections: [DOCS],
+    skills: [],
     variables: [{ key: "DEPLOY_REGION", variableId: REGION, version: 2 }],
   };
 
@@ -271,6 +272,7 @@ describe("template revision from the form", () => {
   test("every key bound to one variable is kept, not collapsed to the first", () => {
     const twice = {
       connections: [],
+      skills: [],
       variables: [
         { key: "DEPLOY_REGION", variableId: REGION, version: 2 },
         { key: "FALLBACK_REGION", variableId: REGION, version: 2 },
@@ -291,7 +293,6 @@ describe("template revision from the form", () => {
     });
     const variables = templateRequest(form({ connections: [DOCS] }), { ...lookups, variables: null }, previous);
     expect(variables.ok ? null : variables.error).toContain("variables would be lost");
-    // A new template has nothing to lose.
     expect(templateRequest(form(), { ...lookups, connections: null, variables: null }).ok).toBe(true);
   });
 });
@@ -302,7 +303,7 @@ describe("template launch", () => {
     for (const [reason, action] of [
       ["model_account_ambiguous", "Set a default in Models"],
       ["model_account_refused", "Reconnect the model account"],
-    ]) {
+    ] as const) {
       const message = templateFailure(409, `Template launch refused: ${reason}.`);
       expect(message).toContain(action);
       expect(message).not.toContain("newer version");
@@ -458,7 +459,6 @@ test("a chosen model account pins its current revision and refuses unusable, inc
   expect(implicit.ok && implicit.value.definition).not.toHaveProperty("modelAccount");
 });
 
-// Unknown control responses must not cross into action forms, even without a typed API code.
 test("template control failures suppress arbitrary diagnostics and retain account/access recovery", () => {
   const diagnostic = "HTTP 502: model_account_id digest sha256:example";
   for (const status of [undefined, 401, 502]) expect(templateFailure(status, diagnostic)).not.toContain(diagnostic);
