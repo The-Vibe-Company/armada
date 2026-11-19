@@ -110,6 +110,10 @@ test("Large: launch on the online Docker host", { session: "large" }, async ({ a
 test("Acme: a disconnected tool cannot be selected", { session: "alice" }, async ({ app, screen }) => {
   await app.open("/sandboxes");
   await screen.getByRole("button", "Launch a sandbox").tap();
-  await reveal(screen, "Options settings", /^Stops after:/);
-  await expect(screen.getByRole("checkbox", "Acme Sentry")).toBeDisabled();
+  await screen.getByRole("button", /^Tools/).tap();
+  await screen.getByRole("textbox", "Search tools").fill("Acme Sentry");
+  const attention = screen.getByRole("region", "Needs attention");
+  await expect(attention).toContainText("Acme Sentry");
+  await expect(attention.getByRole("link", "Reconnect")).toBeVisible();
+  await expect(attention.getByRole("switch")).toHaveCount(0);
 });

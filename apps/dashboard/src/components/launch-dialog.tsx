@@ -8,7 +8,6 @@ import { type ReactNode, useEffect, useId, useRef, useState } from "react";
 import { launchFromDockerSnapshot } from "@/app/actions/docker-snapshots";
 import { launchFromGolden, readLaunchDialogOptions } from "@/app/actions/sandboxes";
 import { ActionForm, SubmitButton } from "@/components/action-form";
-import { ConnectionStatusBadge } from "@/components/connections";
 import { DockerLaunchForm } from "@/components/docker-launch";
 import { LaunchAccountNotice, LaunchSentence } from "@/components/launch-sentence";
 import {
@@ -22,6 +21,7 @@ import {
   LaunchTaskField,
   useLaunchSurface,
 } from "@/components/launch-surface";
+import { LaunchTools } from "@/components/launch-tools";
 import { MachineSizeField } from "@/components/machine-size-field";
 import { SubmitShortcut } from "@/components/mod-key";
 import type { ModelCatalog } from "@/components/model-fields";
@@ -44,7 +44,6 @@ import { initialLaunchSelection, type LaunchStartTarget } from "@/lib/launch-pic
 import { accountProblem, accountsFor, type LaunchAccounts } from "@/lib/model-accounts";
 import type { TemplateLaunchTarget } from "@/lib/template-launch";
 import { ttlOptions } from "@/lib/templates";
-import { cn } from "@/lib/utils";
 
 /** The selected org's connections for the launch dialog, or why they are not listed. */
 export type LaunchConnections = { connections: McpConnection[] } | { unavailable: string };
@@ -410,8 +409,10 @@ function LaunchForm({
         <input type="hidden" name="org" value={orgId} />
         {/* Untouched, or not listed: the launch names no connections and the server applies the defaults (#681). */}
         <input type="hidden" name={CONNECTION_CHOICE_FIELD} value={access.explicit ? "explicit" : "defaults"} />
+        {access.inputs}
         <LaunchFields>
           <LaunchTaskField idPrefix={id} value={task} onChange={onTask} />
+          <LaunchTools access={access} idPrefix={id} />
           {!task?.trim() && templateChooser}
           <div className="space-y-2">
             <p className="text-[13px] font-medium">Settings</p>
@@ -481,11 +482,10 @@ function LaunchForm({
                     ?.label.replace("Default (", "")
                     .replace(")", "") ?? "4 hours"
                 }`}
-                description={`Private sandbox · ${mcpFact(access)}`}
+                description="Private sandbox"
               >
                 <LaunchChoice label="Stops after" value={ttl} options={ttlOptions(provider)} onChange={setTtl} />
                 <input type="hidden" name="ttl" value={ttl} />
-                {access.fields(id)}
                 <p className="mt-3 text-xs text-muted-foreground">
                   The machine pauses without activity and wakes on your next message, until the time is up.
                 </p>
@@ -541,10 +541,6 @@ export function useLaunchAccess(connections: LaunchConnections) {
     setPicked(on ? [...chosen, connectionId] : chosen.filter((item) => item !== connectionId));
   }
 
-  const selected = list.filter(
-    (connection) => chosen.includes(connection.id) && launchBlocker(connection) === null,
-  ).length;
-
   const alerts = (onContinue: () => void, idPrefix: string): ReactNode => (
     <>
       {unready.length > 0 && (
@@ -582,130 +578,21 @@ export function useLaunchAccess(connections: LaunchConnections) {
     </>
   );
 
-  const fields = (idPrefix: string): ReactNode => {
-    const personal = list.filter((item) => item.scope === "personal");
-    const shared = list.filter((item) => item.scope === "org");
-    return (
-      <>
-        {"connections" in connections && (
-          <fieldset className="min-w-0 space-y-2">
-            <legend className="text-sm leading-none font-medium">Tools the agent can call</legend>
-            {list.length === 0 ? (
-              <p className="rounded-md border border-dashed p-3 text-sm text-muted-foreground">
-                No connections.{" "}
-                <Link href="/tools" className="underline">
-                  Add one
-                </Link>
-              </p>
-            ) : (
-              <div className="space-y-3">
-                {(
-                  [
-                    ["Personal", personal],
-                    ["Org", shared],
-                  ] as const
-                ).map(([title, items]) =>
-                  items.length === 0 ? null : (
-                    <div key={title} className="space-y-1">
-                      <p className="text-xs font-medium text-muted-foreground">{title}</p>
-                      <ul className="divide-y rounded-md border">
-                        {items.map((connection) => (
-                          <ConnectionOption
-                            key={connection.id}
-                            idPrefix={idPrefix}
-                            connection={connection}
-                            blocker={launchBlocker(connection)}
-                            checked={chosen.includes(connection.id)}
-                            onChange={(on) => toggle(connection.id, on)}
-                          />
-                        ))}
-                      </ul>
-                    </div>
-                  ),
-                )}
-              </div>
-            )}
-          </fieldset>
-        )}
-      </>
-    );
-  };
-
+  const selectedTools = list.filter((tool) => chosen.includes(tool.id) && launchBlocker(tool) === null);
   return {
-    // Only a listed selection the person changed is sent; otherwise the server snapshots the defaults.
     explicit: picked !== null && "connections" in connections,
-    selected,
-    selectedName: list.find((connection) => chosen.includes(connection.id) && launchBlocker(connection) === null)?.name,
     held: unready.length > 0,
     unavailable: "unavailable" in connections,
     alerts,
-    fields,
+    list,
+    chosen,
+    selectedTools,
+    changed: picked !== null,
+    toggle,
+    reset: () => {
+      setPicked(null);
+      setWaived([]);
+    },
+    inputs: selectedTools.map((tool) => <input key={tool.id} type="hidden" name="connections" value={tool.id} />),
   };
-}
-
-function ConnectionOption({
-  idPrefix,
-  connection,
-  blocker,
-  checked,
-  onChange,
-}: {
-  idPrefix: string;
-  connection: McpConnection;
-  blocker: string | null;
-  checked: boolean;
-  onChange: (on: boolean) => void;
-}) {
-  const inputId = `${idPrefix}-connection-${connection.id}`;
-  const hint =
-    blocker ??
-    [
-      connection.accountLabel ? `As ${connection.accountLabel}` : null,
-      connection.transport === "stdio"
-        ? "Starts inside the sandbox"
-        : connection.toolCount !== undefined
-          ? `${connection.toolCount} ${connection.toolCount === 1 ? "tool" : "tools"}`
-          : null,
-    ]
-      .filter(Boolean)
-      .join(" · ");
-  return (
-    <li className={cn("flex items-start gap-3 px-3 py-2.5", blocker && "opacity-70")}>
-      <Checkbox
-        id={inputId}
-        name="connections"
-        value={connection.id}
-        checked={checked && !blocker}
-        disabled={blocker !== null}
-        onCheckedChange={(value) => onChange(value === true)}
-        aria-describedby={hint ? `${inputId}-hint` : undefined}
-        className="mt-0.5"
-      />
-      <div className="min-w-0 flex-1 space-y-0.5">
-        <div className="flex flex-wrap items-center gap-2">
-          <Label htmlFor={inputId} className="font-medium">
-            {connection.name}
-          </Label>
-          <ConnectionStatusBadge connection={connection} />
-          {connection.defaultForLaunch && (
-            <span className="text-xs text-muted-foreground" data-default-for-launch>
-              Default
-            </span>
-          )}
-        </div>
-        {hint && (
-          <p id={`${inputId}-hint`} className="text-xs text-muted-foreground">
-            {hint}
-          </p>
-        )}
-      </div>
-    </li>
-  );
-}
-
-/** The Tools the agent can call a launch gets, as one summary fact. */
-export function mcpFact(access: { unavailable: boolean; selected: number; selectedName?: string | undefined }): string {
-  if (access.unavailable) return "Tools unavailable";
-  if (access.selected === 1 && access.selectedName) return `${access.selectedName} connected`;
-  return access.selected === 0 ? "No tools" : `${access.selected} ${access.selected === 1 ? "tool" : "tools"}`;
 }
