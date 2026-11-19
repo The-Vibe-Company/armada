@@ -1040,6 +1040,44 @@ export type Database = {
           },
         ];
       };
+      event_log: {
+        Row: {
+          id: number;
+          org_id: string;
+          sandbox_id: string;
+          sequence: number | null;
+          kind: string;
+          ref: number;
+          created_at: string;
+        };
+        Insert: {
+          id?: number;
+          org_id: string;
+          sandbox_id: string;
+          sequence?: number | null;
+          kind: string;
+          ref: number;
+          created_at?: string;
+        };
+        Update: {
+          id?: number;
+          org_id?: string;
+          sandbox_id?: string;
+          sequence?: number | null;
+          kind?: string;
+          ref?: number;
+          created_at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "event_log_sandbox_id_fkey";
+            columns: ["sandbox_id"];
+            isOneToOne: false;
+            referencedRelation: "sandboxes";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
       github_authorizations: {
         Row: {
           id: string;
