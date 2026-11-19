@@ -6,6 +6,7 @@ import {
   createSqlMcpLaunchPort,
   createSqlMcpLeasePort,
   createSqlMcpRegistry,
+  decryptSecret,
   type Sql,
   VaultError,
 } from "@armada/core/server";
@@ -21,11 +22,27 @@ const deny = (): never => {
   throw new VaultError("forbidden", "Runtime MCP access is unavailable.");
 };
 const serverName = (id: string) => `armada_${id.replaceAll("-", "_")}`;
-function pinnedServer(definition: { command?: string | null; args?: string[] }) {
+type ConnectionDefinition = {
+  id: string;
+  transport: "http" | "sse" | "stdio";
+  command: string | null;
+  args: string[];
+  value_enc: Uint8Array<ArrayBuffer> | null;
+};
+async function pinnedServer(definition: ConnectionDefinition, key: string) {
+  let launcher: ReturnType<typeof parsePinnedMcpStdio>;
   try {
-    return { type: "stdio" as const, ...parsePinnedMcpStdio(definition.command ?? "", definition.args ?? []) };
+    launcher = parsePinnedMcpStdio(definition.command ?? "", definition.args);
   } catch {
     throw new VaultError("invalid", "Runtime MCP requires an exact pinned stdio launcher and valid arguments.");
+  }
+  if (definition.value_enc === null) return { type: "stdio" as const, ...launcher };
+  try {
+    // The complete wire snapshot is validated before enqueue, including env shape and limits.
+    const env: Record<string, string> = JSON.parse(await decryptSecret(definition.value_enc, key));
+    return { type: "stdio" as const, ...launcher, env };
+  } catch {
+    throw new VaultError("invalid", "Runtime MCP could not read the stdio grant environment.");
   }
 }
 function validateConfiguration(configuration: McpConfiguration) {
@@ -65,15 +82,22 @@ export function createRuntimeMcp(options: {
     return [...new Set(values.map((v) => v.toLowerCase()))].sort();
   };
   async function connections(db: Sql, caller: Pick<Caller, "userId">, org: string, selected: string[]) {
-    const registry = createSqlMcpRegistry(db, key),
-      result = [],
-      servers: McpConfiguration["servers"] = {};
-    for (const id of selected) {
-      const c = await registry.get(caller.userId, org, id);
-      if (c.status !== "connected") return deny();
+    const { rows: result } = await db.query<ConnectionDefinition & { connected: boolean }>(
+      `select c.id,c.transport,c.command,c.args,
+        case when c.transport='stdio' then g.value_enc end as value_enc,
+        not c.disabled and public.mcp_grant_effective_status(g.status,g.revoked_at,g.refresh_consumed,g.refresh_until)='connected' as connected
+      from public.mcp_connections c join public.mcp_grants g on g.connection_id=c.id
+      join public.members m on m.org_id=c.org_id and m.user_id=$1
+      where c.org_id=$2 and c.id=any($3::uuid[]) and (c.scope='org' or c.owner_id=$1)
+      order by c.id`,
+      [caller.userId, org, selected],
+    );
+    if (result.length !== selected.length) throw new VaultError("not_found", "No such MCP connection.");
+    if (result.some((c) => !c.connected)) return deny();
+    const servers: McpConfiguration["servers"] = {};
+    for (const c of result) {
       servers[serverName(c.id)] =
-        c.transport === "stdio" ? pinnedServer(c) : gatewayServer(c.id, `armada_gw_${"a".repeat(43)}`);
-      result.push(c);
+        c.transport === "stdio" ? await pinnedServer(c, key) : gatewayServer(c.id, `armada_gw_${"a".repeat(43)}`);
     }
     if (result.some((c) => c.transport === "stdio")) {
       // Budget for the full wire configuration, including the largest database epoch and generation.
@@ -86,7 +110,7 @@ export function createRuntimeMcp(options: {
       });
       validateConfiguration({ revision: "0".repeat(64), servers });
     }
-    return result;
+    return result.map(({ id, transport }) => ({ id, transport }));
   }
   async function preflight(caller: Caller, input: { org: string; connections: string[]; toolInventory?: boolean }) {
     if (!caller.orgs.some((m) => m.orgId === input.org)) return deny();
@@ -143,15 +167,9 @@ export function createRuntimeMcp(options: {
     const current = await scope(db, s.id, epoch);
     // Read a bound definition and its effective grant generation from the same snapshot.
     const definitions = (
-      await db.query<{
-        id: string;
-        generation: number;
-        transport: "http" | "sse" | "stdio";
-        url: string | null;
-        command: string | null;
-        args: string[];
-      }>(
-        `select c.id,g.generation,c.transport,c.url,c.command,c.args
+      await db.query<ConnectionDefinition & { generation: number; url: string | null }>(
+        `select c.id,g.generation,c.transport,c.url,c.command,c.args,
+          case when c.transport='stdio' then g.value_enc end as value_enc
         from public.mcp_bindings b join public.mcp_connections c on c.id=b.connection_id
         join public.mcp_grants g on g.id=b.grant_id and g.connection_id=c.id
         join public.members m on m.org_id=c.org_id and m.user_id=$2
@@ -168,7 +186,7 @@ export function createRuntimeMcp(options: {
       const { generation } = c;
       const name = serverName(c.id);
       if (c.transport === "stdio") {
-        servers[name] = pinnedServer(c);
+        servers[name] = await pinnedServer(c, key);
         continue;
       }
       const payload = JSON.stringify([
