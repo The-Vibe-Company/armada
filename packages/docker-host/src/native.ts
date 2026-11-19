@@ -9,6 +9,7 @@ import { type DockerHostResources, dockerHostResources } from "../../core/src/do
 import { OUTPUT_ARCHIVE_LIMIT } from "../../core/src/sandbox-output-limits.ts";
 import { SNAPSHOT_BASELINE_VERSION } from "../../core/src/snapshot-baseline.ts";
 import { VERSION } from "../../core/src/version.ts";
+import { createDockerContainerInventory } from "./container-inventory.ts";
 import { type Api, compactReceipts, type State, type Store, serverOrigin, validId, validToken } from "./daemon.ts";
 
 const MAX_STATE_BYTES = 16 * 1024 * 1024;
@@ -155,16 +156,23 @@ class HostRequestDenied extends Error {
 }
 
 /** Outbound HTTPS only. Redirects cannot forward host credentials to another origin. */
+type NativeApi = Api & {
+  retainedOutputs(state: State, requestId: string, read: () => Promise<Uint8Array<ArrayBuffer> | null>): Promise<void>;
+  unregister(state: State): Promise<boolean>;
+  reuseRegistration(state: State, token: string): Promise<{ hostId: string; name: string | null }>;
+  drainInventory(): Promise<void>;
+};
+
 export function httpApi(
   request: typeof fetch = fetch,
   resources?: (state: State) => Promise<DockerHostResources>,
   diskFreeBytes?: () => Promise<number | null>,
   stoppedBytes?: (state: State) => Promise<number | null>,
-): Api & {
-  retainedOutputs(state: State, requestId: string, read: () => Promise<Uint8Array<ArrayBuffer> | null>): Promise<void>;
-  unregister(state: State): Promise<boolean>;
-  reuseRegistration(state: State, token: string): Promise<{ hostId: string; name: string | null }>;
-} {
+  inventory?: { cli: DockerMachineCli; now: () => number; failed: () => void },
+): NativeApi {
+  let nextInventoryAt = -Infinity;
+  let pendingInventory: Promise<void> | undefined;
+
   async function post(
     server: string,
     endpoint: string,
@@ -188,7 +196,11 @@ export function httpApi(
       await response.body?.cancel();
       throw new HostRequestDenied(response.status);
     }
-    if (endpoint === "results") {
+    if (endpoint === "container-inventory" && response.status !== 204) {
+      await response.body?.cancel();
+      throw new Error("Docker host inventory report was not acknowledged");
+    }
+    if (endpoint === "results" || endpoint === "container-inventory") {
       await response.body?.cancel();
       return undefined;
     }
@@ -210,7 +222,10 @@ export function httpApi(
     }
     return JSON.parse(Buffer.concat(parts).toString("utf8"));
   }
-  return {
+  const api: NativeApi = {
+    async drainInventory() {
+      await pendingInventory;
+    },
     async reuseRegistration(state, token) {
       if (!validToken(token)) throw new Error("Invalid registration token");
       const result = await post(state.server, "reuse-registration", token, { hostId: state.hostId });
@@ -451,6 +466,29 @@ export function httpApi(
         if (!(error instanceof HostRequestDenied) || error.status !== 400) throw error;
         await post(state.server, "results", state.hostToken, body, undefined, baselineVersion);
       }
+    },
+  };
+
+  return {
+    ...api,
+    async poll(state, options) {
+      const reply = await api.poll(state, options);
+      if (reply.containerInventory === 1 && inventory && !pendingInventory && inventory.now() >= nextInventoryAt) {
+        nextInventoryAt = inventory.now() + 5 * 60_000;
+        const source = createDockerContainerInventory(inventory.cli, { load: async () => state });
+        pendingInventory = Array.fromAsync(source.listInventory(AbortSignal.timeout(30_000)))
+          .then(async (containers) => {
+            await post(state.server, "container-inventory", state.hostToken, {
+              installationId: state.installationId,
+              containers,
+            });
+          })
+          .catch(() => inventory.failed())
+          .finally(() => {
+            pendingInventory = undefined;
+          });
+      }
+      return reply;
     },
   };
 }
