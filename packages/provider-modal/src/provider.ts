@@ -5,9 +5,7 @@ import type {
   ExecResult,
   ForkRequest,
   Harness,
-  ModalBinding,
   Provider,
-  ProviderInventoryMachine,
   ResumeStageObserver,
   SandboxInfo,
   SnapshotInfo,
@@ -35,11 +33,13 @@ import {
   SHARED_ARTIFACT_CACHE_PATH,
   type WorkPreservation,
 } from "@armada/core/server";
-import { type App, type ModalClient, NotFoundError, type Sandbox } from "modal";
+import { NotFoundError, type Sandbox } from "modal";
 import { chooseManagementAuthority, matchesManagementAuthority } from "./authority.ts";
-import { type ModalConnection, modalConnection } from "./client.ts";
+import { abortable, boundModalApp, type ModalConnection, modalConnection } from "./client.ts";
 import { lifecycleStep, ModalOperationError, modalBuilderImageError, modalError, refusal } from "./errors.ts";
 import { executeGoldenCommand, executeWorkspaceCommand } from "./golden-exec.ts";
+import { createImageCollection, trackDetachedCollection } from "./image-collection.ts";
+import { DEPLOYMENT_TAG } from "./inventory.ts";
 import type {
   Machine,
   McpConfiguration,
@@ -58,7 +58,6 @@ import { scopeKey } from "./store.ts";
 
 /** In-request retry delays after the first attempt for deletion's image cleanup. */
 const CLEANUP_RETRY_MS = [1_000, 5_000];
-const DEPLOYMENT_TAG = "armada_deployment";
 
 export type ModalPromptPhase =
   | "modal_prepare"
@@ -71,7 +70,7 @@ export type ModalPromptPhase =
   | "modal_sandbox_create"
   | `modal_boot_${"binding" | "runtime" | "baseline" | "fresh" | "start" | "health" | "active_publication"}`;
 export interface ModalProviderOptions extends ModalConnection {
-  /** Stable, server-owned inventory identity. Direct callers without one cannot list inventory. */
+  /** Stable, server-owned inventory tag for allocation. */
   deploymentId?: string;
   /** Trusted staging opt-in: allocate host only, never start the tunnel listener. */
   commonRuntime?: true;
@@ -104,7 +103,6 @@ export interface ModalProviderOptions extends ModalConnection {
   beforePrompt?(provider: ModalProvider, sandboxId: string): Promise<void>;
 }
 export interface ModalProvider extends Provider {
-  listInventory: NonNullable<Provider["listInventory"]>;
   startRuntime(input: {
     sandboxId: string;
     serverUrl: string;
@@ -151,10 +149,6 @@ export interface ModalProvider extends Provider {
     sandboxId: string;
     key: string;
   }): Promise<{ sshEndpoint: string; hostKey: string; username?: "user" | "root" }>;
-  prepareSsh(
-    sandboxId: string,
-    publicKey: string,
-  ): Promise<{ endpoint: string; hostPublicKey: string; username?: "user" | "root" }>;
 }
 /** Both scopes are assembled by the authenticated server, never by runner/request JSON. */
 export function assertSourceTargetScopes(source: Scope, target: Scope): void {
@@ -167,16 +161,6 @@ export function assertSourceTargetScopes(source: Scope, target: Scope): void {
     (source.visibility === "private" && target.visibility !== "private")
   )
     throw refusal("forbidden", "Source golden and target machine authority do not match.");
-}
-const detachedCollections = new Set<Promise<void>>();
-function trackDetachedCollection(work: () => Promise<void>) {
-  const run = work().finally(() => detachedCollections.delete(run));
-  detachedCollections.add(run);
-}
-/** Settles every detached retired-image collection. The server awaits this before closing SQL,
- * so shutdown never interrupts a claim or purge mid-collection. */
-export async function settleDetachedModalCollections(): Promise<void> {
-  while (detachedCollections.size) await Promise.allSettled([...detachedCollections]);
 }
 export function createModalProvider(options: ModalProviderOptions): ModalProvider {
   const { store, distribution } = options;
@@ -198,6 +182,12 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
   }
   const ssh = options.ssh ?? createSshPreparation();
   const client = modalConnection(options);
+  const { collectAfterRetirement, collectImages, collectRetiredSnapshot } = createImageCollection(
+    client,
+    source.store,
+    managementAuthority,
+    detachCollection,
+  );
   const deploymentId = options.deploymentId?.trim();
   const bound = () => measure("modal_app_lookup", () => boundModalApp(client, options.appName, options.scope.binding));
   async function snapshotBackend() {
@@ -272,8 +262,6 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
       armada_generation: String(row.generation),
     };
   }
-  const listInventory: ModalProvider["listInventory"] = (signal) =>
-    listModalInventory(client, bound, deploymentId, signal);
   async function namedOwned(row: Machine): Promise<Sandbox> {
     assertMachineSource(row);
     // Name reconciliation exists because the create outcome is unknown: a missing App must
@@ -780,94 +768,6 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
     row.info.stoppedAt = new Date();
     await save(row);
   }
-  /** Collects retired images in scope, or only the tombstone `name` when given. Every image is
-   * attempted: one failing image never blocks another, and the first failure is rethrown last. */
-  async function collectFrom(imagesStore: ModalStore, skipBusy = false, sources?: string[], name?: string) {
-    let failure: { error: unknown } | undefined;
-    // Visit only sources with retired images. Every scope machine ever launched stays in the
-    // store, so a full scan made each sandbox deletion cost minutes of SQL round trips.
-    for (const sourceId of sources ?? (await imagesStore.tombstoneSources())) {
-      const source = await imagesStore.get(sourceId);
-      if (!matchesManagementAuthority(source.managementAuthority, managementAuthority)) continue;
-      const retired = async () =>
-        (await imagesStore.images(source.info.id)).filter(
-          (x): x is SavedImage & { imageId: string } =>
-            Boolean(x.deleted && x.imageId) &&
-            (name === undefined || x.info.name === name) &&
-            matchesManagementAuthority(x.managementAuthority, managementAuthority),
-        );
-      // Lease a source only to claim a tombstone that can be removed now. A tombstone still
-      // referenced by a live machine stays put, and leasing its source for nothing would refuse
-      // that source's own lifecycle requests. The lease re-checks every condition before a claim.
-      let claimable = false;
-      for (const image of await retired())
-        if (!image.collecting && !(await imagesStore.imageReferenced(image.imageId))) {
-          claimable = true;
-          break;
-        }
-      if (claimable) {
-        const claim = imagesStore.lease(source.info.id, async () => {
-          for (const image of await retired())
-            if (!image.collecting && !(await imagesStore.imageReferenced(image.imageId)))
-              await imagesStore.claimImage(image.info.name, image.sourceId, image.imageId);
-        });
-        // Another controller owns this source now (a golden prompt, snapshot, restore or a
-        // concurrent delete). Its tombstones stay durable for the next collection in scope.
-        await (skipBusy
-          ? claim.catch((error) => {
-              if (modalError(error).providerCode !== "lifecycle_lease_busy") throw error;
-            })
-          : claim);
-      }
-      // The source lease is released before any remote call: a slow or failing image deletion
-      // never refuses the source's own lifecycle (delete, snapshot, fork). A claim survives a
-      // failure or crash and is retried by the next collection in scope, again without the lease.
-      // Only the holder of the exclusive dispatch claim issues the RPC: a concurrent sweep skips a
-      // live claim instead of multiplying deletions of the same physical image.
-      for (const image of await retired()) {
-        if (!image.collecting || (await imagesStore.imageReferenced(image.imageId))) continue;
-        const token = randomUUID();
-        if (!(await imagesStore.takeImage(image.info.name, image.sourceId, image.imageId, token))) continue;
-        try {
-          await client.images.delete(image.imageId);
-        } catch (error) {
-          if (modalError(error).code !== "not_found") {
-            failure ??= { error };
-            // Best-effort: an unreleased claim expires, and must not stop the remaining images.
-            await imagesStore.releaseImage(image.info.name, image.sourceId, image.imageId, token).catch(() => {});
-            continue;
-          }
-        }
-        await imagesStore.purgeImage(image.info.name, image.sourceId, image.imageId);
-      }
-    }
-    if (failure) throw failure.error;
-  }
-  function logDeferredCollection(context: Record<string, string>) {
-    return (error: unknown) => {
-      const safe = modalError(error);
-      console.warn(
-        JSON.stringify({
-          event: "modal_retired_collection_deferred",
-          ...context,
-          code: safe.code,
-          ...(safe.providerCode ? { providerCode: safe.providerCode } : {}),
-        }),
-      );
-    };
-  }
-  /** After a tombstone is committed, the retirement has succeeded: nothing after it may fail the
-   * call. Its own image is collected best-effort now (the retirement worker retries it through
-   * collectRetiredSnapshot); other retired images are collected detached, once. */
-  async function collectAfterRetirement(snapshot: string, sourceId?: string) {
-    await collectFrom(source.store, true, sourceId ? [sourceId] : undefined, snapshot).catch(
-      logDeferredCollection({ snapshot }),
-    );
-    detachCollection(() => collectImages(true).catch(logDeferredCollection({ snapshot, scope: "unrelated" })));
-  }
-  async function collectImages(skipBusy = false) {
-    await collectFrom(source.store, skipBusy);
-  }
   /** Retries a transient image-service failure inside the delete request, so one DELETE
    * completes. A persistent failure still fails the delete; the durable phase resumes it. */
   async function cleanupStep(sandboxId: string, step: () => Promise<void>) {
@@ -992,7 +892,6 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
 
   const provider: ModalProvider = {
     id: "modal",
-    listInventory,
     backendIdentity: async () => {
       await bound();
       return {
@@ -1950,18 +1849,7 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
           "Snapshot collection requires the golden-source provider scope, not a private-fork adapter.",
         );
       await snapshotBackend();
-      const owner = async () => {
-        for (const sourceId of await source.store.tombstoneSources())
-          if ((await source.store.images(sourceId)).some((image) => image.deleted && image.info.name === name))
-            return sourceId;
-      };
-      const sourceId = await owner();
-      if (!sourceId) return "collected";
-      // Only this snapshot's own tombstone, for both claim and deletion: another retired image,
-      // of this source or another, never blocks it. A busy source is skipped, not failed: the
-      // caller (the retirement worker) retries later.
-      await collectFrom(source.store, true, [sourceId], name);
-      return (await owner()) ? "pending" : "collected";
+      return collectRetiredSnapshot(name);
     },
     quiesce: (r) => call(r.sandboxId, "interrupt", r),
     async extendLifetime({ sandboxId, ttlSeconds }) {
@@ -2167,20 +2055,12 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
         };
       });
     },
-    async prepareSsh(id, publicKey) {
-      const connection = await provider.sshKey({ sandboxId: id, key: publicKey });
-      return {
-        endpoint: connection.sshEndpoint,
-        hostPublicKey: connection.hostKey,
-        ...(connection.username ? { username: connection.username } : {}),
-      };
-    },
   };
   // Normalize all public failures, without leaking SDK request/token diagnostics.
   return Object.fromEntries(
     Object.entries(provider).map(([key, value]) => [
       key,
-      typeof value === "function" && value !== listInventory
+      typeof value === "function"
         ? async (...args: unknown[]) => {
             try {
               return await value(...args);
@@ -2191,100 +2071,4 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
         : value,
     ]),
   ) as unknown as ModalProvider;
-}
-
-export async function boundModalApp(
-  client: Pick<ModalClient, "apps">,
-  appName: string,
-  binding: ModalBinding,
-): Promise<App> {
-  const app = await client.apps.fromName(appName, { environment: binding.environment, createIfMissing: false });
-  // The globally unique App ID reached by the explicit credential verifies the binding.
-  if (app.appId !== binding.appId) throw refusal("forbidden", "Modal App does not match the immutable binding.");
-  return app;
-}
-
-export function modalDeploymentId(environment: string, publicUrl: string): string {
-  return createHash("sha256")
-    .update(JSON.stringify([environment, new URL(publicUrl).origin]))
-    .digest("hex");
-}
-
-/** Inventory-only connection for the server reaper, independent of runner and store authority. */
-export function createModalInventory(
-  client: ModalClient,
-  appName: string,
-  binding: ModalBinding,
-  deploymentId: string,
-) {
-  return {
-    listInventory: (signal?: AbortSignal) =>
-      listModalInventory(client, () => boundModalApp(client, appName, binding), deploymentId, signal),
-  };
-}
-
-export async function* listModalInventory(
-  client: Pick<ModalClient, "cpClient">,
-  bound: () => Promise<App>,
-  deploymentId: string | undefined | null,
-  signal?: AbortSignal,
-): AsyncGenerator<ProviderInventoryMachine> {
-  if (deploymentId === undefined || deploymentId === "")
-    throw refusal("provider_routing_unavailable", "Modal inventory requires a deployment identity.");
-  signal?.throwIfAborted();
-  try {
-    const { appId } = await abortable(bound(), signal);
-    const tags = deploymentId ? [{ tagName: DEPLOYMENT_TAG, tagValue: deploymentId }] : [];
-    let beforeTimestamp: number | undefined;
-    // The SDK iterator discards creation times. Use its listing RPC, which covers both
-    // Modal sandbox backends and scopes the query by the verified environment's App ID.
-    while (true) {
-      signal?.throwIfAborted();
-      const { sandboxes } = await client.cpClient.sandboxListV2(
-        { appId, tags, includeFinished: false, ...(beforeTimestamp === undefined ? {} : { beforeTimestamp }) },
-        signal ? { signal } : undefined,
-      );
-      if (sandboxes.length === 0) return;
-      for (const sandbox of sandboxes) {
-        signal?.throwIfAborted();
-        const ownership = new Map(sandbox.tags.map(({ tagName, tagValue }) => [tagName, tagValue]));
-        const owner = ownership.get(DEPLOYMENT_TAG);
-        if (!owner || (deploymentId && owner !== deploymentId) || sandbox.appId !== appId) continue;
-        const createdAt = new Date(sandbox.createdAt * 1000);
-        if (sandbox.createdAt <= 0 || !Number.isFinite(createdAt.getTime()))
-          throw refusal("unavailable", "Modal inventory returned an invalid creation time.");
-        const sandboxId = ownership.get("armada_sandbox");
-        const generation = ownership.get("armada_generation");
-        yield {
-          machineId: sandbox.id,
-          deploymentId: owner,
-          createdAt,
-          ...(sandboxId ? { sandboxId } : {}),
-          ...(generation ? { generation } : {}),
-        };
-      }
-      const nextTimestamp = sandboxes.at(-1)?.createdAt;
-      if (
-        nextTimestamp === undefined ||
-        !Number.isFinite(nextTimestamp) ||
-        nextTimestamp <= 0 ||
-        (beforeTimestamp !== undefined && nextTimestamp >= beforeTimestamp)
-      )
-        throw refusal("unavailable", "Modal inventory pagination did not advance.");
-      beforeTimestamp = nextTimestamp;
-    }
-  } catch (error) {
-    signal?.throwIfAborted();
-    throw modalError(error);
-  }
-}
-
-function abortable<T>(work: Promise<T>, signal: AbortSignal | undefined) {
-  if (!signal) return work;
-  signal.throwIfAborted();
-  return new Promise<T>((resolve, reject) => {
-    const abort = () => reject(signal.reason);
-    signal.addEventListener("abort", abort, { once: true });
-    work.then(resolve, reject).finally(() => signal.removeEventListener("abort", abort));
-  });
 }

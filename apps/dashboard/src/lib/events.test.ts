@@ -1,15 +1,16 @@
 import { describe, expect, test } from "bun:test";
 import type { AgentEvent } from "@armada/core";
-import { isActiveStatus, mergeEvents, parseEventPage } from "../src/lib/events.ts";
+import { isActiveStatus, mergeEvents, parseEventPage } from "./events.ts";
 
-const message = (id: string, text: string): AgentEvent => ({
-  id,
-  at: 1,
-  kind: "message",
-  text,
-  partial: false,
-  tools: [],
-});
+const message = (id: string, text: string) =>
+  ({
+    id,
+    at: 1,
+    kind: "message",
+    text,
+    partial: false,
+    tools: [],
+  }) satisfies AgentEvent;
 
 describe("events", () => {
   test("a page is appended once, in arrival order; an event read again keeps its place and takes the newer body", () => {
