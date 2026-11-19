@@ -1543,21 +1543,7 @@ test("public MCP inventory and schemas expose operation contracts", async () => 
   const mcp = await client(await token(people.member));
   const { tools } = await mcp.listTools();
   expect(tools.map((tool) => tool.name).sort()).toEqual(
-    [
-      "exec",
-      "github_refresh",
-      "interrupt",
-      "launch",
-      "list",
-      "logs",
-      "report",
-      "send",
-      "runtime_github_status",
-      "status",
-      "steer",
-      "stop",
-      "wait",
-    ].sort(),
+    ["exec", "interrupt", "launch", "list", "logs", "report", "send", "status", "steer", "stop", "wait"].sort(),
   );
   for (const tool of tools) expect(tool.outputSchema).toBeDefined();
   const launch = tools.find((tool) => tool.name === "launch");

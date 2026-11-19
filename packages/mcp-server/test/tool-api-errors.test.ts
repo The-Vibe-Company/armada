@@ -9,6 +9,9 @@ function context(error: Error, conversationIds: readonly string[] = []): ToolCon
     caller: { userId: "owner", orgs: [{ orgId: "org", role: "member" }], via: "service" },
     data: {
       sandboxes: {
+        list: async () => {
+          throw error;
+        },
         get: async () => ({
           id: "sandbox",
           ownerId: "owner",
@@ -21,11 +24,6 @@ function context(error: Error, conversationIds: readonly string[] = []): ToolCon
       },
     },
     provider: async () => ({ id: "boat", get: async () => ({ state: "running" }) }),
-    launchCredentials: {
-      refreshGitHub: async () => {
-        throw error;
-      },
-    },
     logError: () => {},
     now: () => new Date(),
   } as unknown as ToolContext;
@@ -54,7 +52,7 @@ test.each([
   },
 ])("shared tool preserves $error.code diagnostics and public status", async ({ error, details, status }) => {
   try {
-    await callSharedTool(context(error), "github_refresh", { id: "sandbox" });
+    await callSharedTool(context(error), "list", {});
     throw new Error("Expected a tool failure");
   } catch (caught) {
     expect(caught).toBeInstanceOf(ToolApiError);
@@ -89,7 +87,7 @@ test.each([
     ],
   });
   try {
-    await expect(callSharedTool(context(new Error()), "github_refresh", { id: "sandbox" })).rejects.toMatchObject({
+    await expect(callSharedTool(context(new Error()), "list", {})).rejects.toMatchObject({
       code: "outcome_unknown",
       message: "Check status before retrying.",
       status: 503,
@@ -110,7 +108,7 @@ test("bridge falls back to legacy text when structured code/message is invalid",
     ],
   });
   try {
-    await expect(callSharedTool(context(new Error()), "github_refresh", { id: "sandbox" })).rejects.toMatchObject({
+    await expect(callSharedTool(context(new Error()), "list", {})).rejects.toMatchObject({
       code: "forbidden",
       message: "Legacy refusal.",
       status: 403,
@@ -128,14 +126,14 @@ test("start failures log missing-relation causes without changing the public err
   });
   const ctx = context(error);
   ctx.logError = (line) => logs.push(line);
-  await expect(callSharedTool(ctx, "github_refresh", { id: "sandbox" })).rejects.toMatchObject({
+  await expect(callSharedTool(ctx, "list", {})).rejects.toMatchObject({
     code: "start_failed",
     message: "The sandbox could not start. Check its recorded status, correct the provider setup and launch again.",
   });
   expect(logs).toHaveLength(1);
   expect(JSON.parse(logs[0] ?? "")).toMatchObject({
     event: "operator_failure",
-    phase: "tool.github_refresh",
+    phase: "tool.list",
     message: 'relation "public.skill_defaults" does not exist',
   });
 
@@ -146,7 +144,7 @@ test("start failures log missing-relation causes without changing the public err
   });
   const unsafeCtx = context(unsafe);
   unsafeCtx.logError = (line) => logs.push(line);
-  await expect(callSharedTool(unsafeCtx, "github_refresh", { id: "sandbox" })).rejects.toMatchObject({
+  await expect(callSharedTool(unsafeCtx, "list", {})).rejects.toMatchObject({
     code: "start_failed",
   });
   expect(logs).toHaveLength(1);
@@ -163,7 +161,7 @@ test("provider start-limit reset survives the real MCP to HTTP bridge", async ()
     message: "private_diagnostic",
     details: { provider: "boat", window: "day", nextStartAt: "2026-11-17T00:00:00.000Z", secret: "private_diagnostic" },
   });
-  await expect(callSharedTool(context(error), "github_refresh", { id: "sandbox" })).rejects.toMatchObject({
+  await expect(callSharedTool(context(error), "list", {})).rejects.toMatchObject({
     code: "rate_limited",
     status: 429,
     details: { provider: "boat", window: "day", nextStartAt: "2026-11-17T00:00:00.000Z" },

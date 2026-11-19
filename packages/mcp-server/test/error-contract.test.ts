@@ -11,6 +11,9 @@ function toolContext(error: Error): ToolContext {
     caller: { userId: "owner", orgs: [{ orgId: "org", role: "member" }], via: "service" },
     data: {
       sandboxes: {
+        list: async () => {
+          throw error;
+        },
         get: async () => ({
           id: "sandbox",
           ownerId: "owner",
@@ -22,11 +25,6 @@ function toolContext(error: Error): ToolContext {
       },
     },
     provider: async () => ({ id: "boat", get: async () => ({ state: "running" }) }),
-    launchCredentials: {
-      refreshGitHub: async () => {
-        throw error;
-      },
-    },
     logError: () => {},
     now: () => new Date(),
   } as unknown as ToolContext;
@@ -34,7 +32,7 @@ function toolContext(error: Error): ToolContext {
 
 async function sharedFailure(error: Error) {
   try {
-    await callSharedTool(toolContext(error), "github_refresh", { id: "sandbox" });
+    await callSharedTool(toolContext(error), "list", {});
   } catch (caught) {
     if (!(caught instanceof ToolApiError)) throw caught;
     return controlFailureResponse(caught);
@@ -198,8 +196,6 @@ test.each([
   ["credential_binding_unsupported", "credential_binding_unsupported"],
 ] as const)("shared tool preserves VaultError %s category", async (code, expected) => {
   await expect(
-    callSharedTool(toolContext(new VaultError(code, "public explanation")), "github_refresh", {
-      id: "sandbox",
-    }),
+    callSharedTool(toolContext(new VaultError(code, "public explanation")), "list", {}),
   ).rejects.toMatchObject({ code: expected, message: "public explanation" });
 });
