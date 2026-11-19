@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { operations } from "@armada/core/contract";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { createArmadaServer, createRestToolServer, type ToolContext } from "../src/tools.ts";
@@ -47,5 +48,46 @@ test("list-only registration retains SDK validation and listing while normal MCP
       await client.close();
       await server.close();
     }
+  }
+});
+
+test("owner MCP publishes the bound agent operations and their descriptions", async () => {
+  const context = { caller: { userId: "owner", orgs: [] }, data: {} } as unknown as ToolContext;
+  const server = createArmadaServer(context, "test");
+  const client = new Client({ name: "test", version: "test" });
+  const [a, b] = InMemoryTransport.createLinkedPair();
+  try {
+    await server.connect(a);
+    await client.connect(b);
+    const { tools } = await client.listTools();
+    expect(tools.map((tool) => tool.name).sort()).toEqual([
+      "exec",
+      "launch",
+      "list",
+      "logs",
+      "report",
+      "send",
+      "status",
+      "stop",
+    ]);
+    for (const tool of tools) expect(tool.outputSchema).toBeDefined();
+    const launch = tools.find((tool) => tool.name === "launch");
+    expect(launch?.inputSchema.anyOf).toEqual(
+      ["boat", "modal"].map((provider) =>
+        expect.objectContaining({
+          properties: expect.objectContaining({ provider: expect.objectContaining({ const: provider }) }),
+          required: expect.arrayContaining(["provider", "harness", "golden"]),
+        }),
+      ),
+    );
+    const agentOperations = Object.values(operations).filter(
+      (operation) => operation.audience === "agent" && "toolName" in operation,
+    );
+    expect(Object.fromEntries(tools.map((tool) => [tool.name, tool.description]))).toEqual(
+      Object.fromEntries(agentOperations.map((operation) => [operation.toolName, operation.description])),
+    );
+  } finally {
+    await client.close();
+    await server.close();
   }
 });

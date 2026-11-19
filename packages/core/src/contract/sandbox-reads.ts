@@ -69,6 +69,7 @@ const paginationNumber = z
 
 export const readLogsOperation = {
   name: "readLogs",
+  toolName: "logs",
   route: { method: "POST", path: "/api/v1/logs/read" },
   input: {
     body: z.object({
@@ -93,7 +94,7 @@ export const readLogsOperation = {
   destructive: false,
   audience: "agent",
   description:
-    "Read the agent's events, oldest first. The default is one bounded page. Pass the returned cursor as cursor to read only what is new.",
+    "Read the agent's events, oldest first. The default is one bounded page. Pass the returned cursor to read only what is new.",
   errors: [
     "invalid",
     "invalid_request",

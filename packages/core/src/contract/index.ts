@@ -29,6 +29,7 @@ export { sandboxViewerOperations, VIEWER_ACCESS_DENIED } from "./sandbox-viewer.
 
 export interface Operation<Input extends z.ZodType, Output extends z.ZodType | undefined = undefined> {
   readonly name: string;
+  readonly toolName?: string;
   readonly route: { readonly method: string; readonly path: `/api/v1/${string}` };
   readonly input: {
     readonly body: Input;
@@ -49,6 +50,7 @@ export interface Operation<Input extends z.ZodType, Output extends z.ZodType | u
 
 export const launch = {
   name: "launch",
+  toolName: "launch",
   route: { method: "POST", path: "/api/v1/sandbox/launch" },
   input: { body: launchInput },
   output: launchOutput,
