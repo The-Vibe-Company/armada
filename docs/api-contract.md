@@ -77,9 +77,9 @@ authorization in admission. Docker REST and admission use the shared request
 schema, and the standalone Docker schema has been deleted. Pinned Modal REST
 launch also uses the shared schema and resolves the org to a UUID before
 template admission. MCP `launch` projects the ordinary Boat and Modal golden variants, excluding scoped
-Armada access, and publishes their camel-case fields. Golden REST admission
-consumes the parsed request from `launch-request-schema.ts`. The remaining
-REST cutover moves that request and its OpenAPI variants to the shared operation.
+Armada access, and publishes their camel-case fields. Explicit Boat and Modal runtime golden REST launches and their OpenAPI variants
+use the shared operation. Default golden REST launch still parses through
+`launch-request-schema.ts` pending the caller cutover to explicit provider selection.
 The separate `templates/launch` endpoint keeps its `requestKey` and durable
 receipt, and shares applicable field schemas.
 

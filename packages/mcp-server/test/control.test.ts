@@ -2938,11 +2938,15 @@ test("versioned runtime launch is explicit/default-off and never selects native 
       { ...body, boatRuntime: false },
       { ...body, harness: "unknown_harness" },
       { ...body, provider: "modal" },
+      { ...body, provider: undefined },
       { ...body, connections: "invalid" },
       { ...body, skills: ["not-a-pin"] },
-    ])
-      expect((await request("sandbox/launch", bad))?.status).toBe(400);
-    expect((await request("sandbox/launch", { ...body, runtimeTransport: "dialout" }))?.status).toBe(400);
+      { ...body, runtimeTransport: "dialout" },
+    ]) {
+      const invalid = await request("sandbox/launch", bad);
+      expect(invalid?.status).toBe(400);
+      expect(await invalid?.json()).toMatchObject({ error: { code: "invalid" } });
+    }
     expect(host.forks).toHaveLength(0);
     const response = await request("sandbox/launch", { ...body, skills: [skillPin] });
     expect(response?.status).toBe(200);

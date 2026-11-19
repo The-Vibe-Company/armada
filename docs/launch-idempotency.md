@@ -115,6 +115,15 @@ After deployment, sending the same key with the new fields can return
 up the sandbox by `externalRef` and escalate to an operator if needed. Keep the
 original key throughout reconciliation.
 
+Before deploying the shared schema for explicit runtime golden REST launches,
+reconcile outstanding requests whose bodies it now rejects. For example, the
+previous explicit Modal golden schema accepted `null` for `org`, `model`, or
+`reasoningEffort`. After deployment those bodies return `invalid` before
+receipt lookup. Omitting the null fields can change the request fingerprint and
+return `conflict` with the original receipt UUID. Keep the original key, look
+up that UUID or the sandbox's `externalRef`, and escalate unresolved launches
+to an operator.
+
 Template launches follow the same rule with `requestKey`: a replay answers the
 recorded state (`succeeded`, `failed`, `reconciling`), and `reconciling` is
 never re-dispatched.
@@ -148,9 +157,10 @@ providers. The CLI's `golden` field remains a name or null.
 ## Explicit runtime launch
 
 For explicit runtime launches from a golden, send the selectors to `POST /api/v1/sandbox/launch`.
-Use `runtimeVersion: 1` and `boatRuntime: true` for Boat. Use `runtimeVersion: 1`,
-`provider: "modal"` and `runtimeTransport: "dialout"` for Modal. Runtime admission checks
-and server opt-ins apply. For a pinned Modal template, send the same Modal selectors
+Use `provider: "boat"`, `runtimeVersion: 1` and `boatRuntime: true` for Boat. Use
+`provider: "modal"`, `runtimeVersion: 1` and `runtimeTransport: "dialout"` for Modal.
+Both golden paths require a harness and are subject to runtime admission checks
+and server opt-ins. For a pinned Modal template, send the same Modal selectors
 with `id`, `revision`, `requestKey` and the template's `harness` to `sandbox/launch`.
 Personal sessions can provide an org slug or UUID. Scoped tokens can omit `org`
 or send their scoped UUID. The shared schema refuses TTLs above 86,400 seconds

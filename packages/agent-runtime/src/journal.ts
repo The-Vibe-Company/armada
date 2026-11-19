@@ -103,6 +103,8 @@ export class Journal {
   private eventBody(event: AgentEvent, appending: boolean) {
     const mask = this.redactShortApplicationText;
     const body = this.redact(JSON.stringify(event));
+    if (event.kind === "prompt") return JSON.stringify({ ...JSON.parse(body), kind: event.kind, status: event.status });
+    if (event.kind === "steer") return JSON.stringify({ ...JSON.parse(body), kind: event.kind });
     if (event.kind === "message") {
       const scrubbed = JSON.parse(body) as typeof event;
       scrubbed.kind = event.kind;
@@ -121,17 +123,19 @@ export class Journal {
         })),
       });
     }
-    if (!mask || event.kind !== "other") return body;
+    if (event.kind !== "other") return body;
+    const scrubbed = { ...JSON.parse(body), kind: event.kind };
+    if (!mask) return JSON.stringify(scrubbed);
     if (event.type === "armada/opencodeMcp") {
-      const proof = JSON.parse(body) as typeof event & {
+      const proof = scrubbed as typeof event & {
         data: { input?: unknown; result?: { output: unknown } };
       };
       if (proof.data?.input !== undefined) proof.data.input = maskPayload(proof.data.input, mask);
       if (proof.data?.result) proof.data.result.output = maskPayload(proof.data.result.output, mask);
       return JSON.stringify(proof);
     }
-    if (event.type !== "harness_stderr") return body;
-    const masked = JSON.parse(body) as { data?: { text?: unknown } | null };
+    if (event.type !== "harness_stderr") return JSON.stringify(scrubbed);
+    const masked = scrubbed as { data?: { text?: unknown } | null };
     const original = (event.data as { text?: unknown } | null)?.text;
     if (typeof original === "string" && typeof masked.data?.text === "string")
       masked.data.text = maskText(original, masked.data.text, mask);
@@ -205,6 +209,10 @@ export class Journal {
       )
       .all(after, conversation ?? null, conversation ?? null, limit) as { seq: number; body: string }[];
     return rows.map((r) => ({ sequence: r.seq, event: JSON.parse(r.body) as AgentEvent }));
+  }
+
+  redactEvent(event: AgentEvent) {
+    return JSON.parse(this.eventBody(event, false)) as AgentEvent;
   }
 
   highWatermark(): number {

@@ -105,6 +105,7 @@ export interface Api {
     DockerHostVersionOffer & {
       job: Job | null;
       containerInventory?: 1;
+      containerInventoryDeploymentId?: string;
       /** The server held this poll until work existed or its hold elapsed. */
       held?: true;
       limits?: DockerSandboxLimits;

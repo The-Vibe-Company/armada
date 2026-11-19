@@ -69,7 +69,7 @@ async function fixture() {
   return { db, sql, userId, memberId, orgId, store, authenticate, route, post };
 }
 
-function inventoryRouteFixture() {
+function inventoryRouteFixture(requestOrigin?: string) {
   const hostId = "10000000-0000-0000-0000-000000000001";
   const installationId = "10000000-0000-0000-0000-000000000002";
   const publicUrl = `https://${"a".repeat(63)}.${"b".repeat(63)}.${"c".repeat(63)}.example`;
@@ -83,13 +83,19 @@ function inventoryRouteFixture() {
   );
   const records: unknown[] = [];
   const route = createDockerHostRoutes(
-    { ...store, inventoryOwnership: async () => ({ hostId, rows: [] }) },
+    {
+      ...store,
+      inventoryOwnership: async () => ({ hostId, rows: [] }),
+      retentionForHost: async () => ({ hostId, retentionSeconds: undefined }),
+      poll: async () => null,
+      pendingStartsForHost: async () => [],
+    },
     async () => ({ ok: false }),
     { publicUrl, log: (line) => records.push(JSON.parse(line)) },
   );
-  const send = (body: string) =>
+  const send = (body: string, endpoint = "container-inventory") =>
     route(
-      new Request(`${publicUrl}/api/docker-host/container-inventory`, {
+      new Request(`${requestOrigin ?? publicUrl}/api/docker-host/${endpoint}`, {
         method: "POST",
         headers: { authorization: `Bearer ${"f".repeat(64)}` },
         body,
@@ -111,6 +117,33 @@ test("a full Docker inventory with long container names reaches the reaper", asy
   const body = JSON.stringify({ installationId, containers });
   expect((await send(body))?.status).toBe(204);
   expect(records[0]).toMatchObject({ metric: "reaper_unknown_machines", count: 4096, complete: true });
+});
+
+test("an HTTPS alias poll supplies the deployment identity accepted by the inventory receiver", async () => {
+  const alias = "https://alias.example";
+  const { hostId, installationId, publicUrl, records, send } = inventoryRouteFixture(alias);
+  const poll = await send(JSON.stringify({ installationId }), "poll");
+  expect(poll?.status).toBe(200);
+  const offer = (await poll?.json()) as { containerInventoryDeploymentId?: string };
+  const deploymentId = offer.containerInventoryDeploymentId ?? `${alias}/${hostId}/${installationId}`;
+  const response = await send(
+    JSON.stringify({
+      installationId,
+      containers: [
+        {
+          machineId: "a".repeat(64),
+          sandboxId: hostId,
+          generation: installationId,
+          deploymentId,
+          createdAt: "2026-11-18T00:00:00.000Z",
+          containerName: "observed-container",
+        },
+      ],
+    }),
+  );
+  expect(response?.status).toBe(204);
+  expect(records[0]).toMatchObject({ metric: "reaper_unknown_machines", count: 1, complete: true });
+  expect(deploymentId).toBe(`${publicUrl}/${hostId}/${installationId}`);
 });
 
 test("an oversized Docker inventory is refused before reaching the reaper", async () => {

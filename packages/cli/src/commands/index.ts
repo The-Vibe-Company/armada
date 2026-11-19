@@ -5,6 +5,7 @@ import api from "./api.ts";
 import { secrets, vars } from "./application-vault.ts";
 import type { Command, UsageGroup } from "./command.ts";
 import completion from "./completion.ts";
+import creds from "./creds.ts";
 import detail from "./detail.ts";
 import doctor from "./doctor.ts";
 import exec from "./exec.ts";
@@ -23,6 +24,7 @@ import report from "./report.ts";
 import rm from "./rm.ts";
 import routine from "./routine.ts";
 import send from "./send.ts";
+import snapshot from "./snapshot.ts";
 import status from "./status.ts";
 import steer from "./steer.ts";
 import stop from "./stop.ts";
@@ -63,12 +65,14 @@ export const commands: readonly Command[] = [
   secrets,
   mcp,
   bindCredential,
+  snapshot,
+  creds,
 ];
 
 const byName = new Map(commands.map((command) => [command.name, command]));
 
 export function findCommand(name: string) {
-  return byName.get(name);
+  return byName.get(name === "golden" ? "snapshot" : name);
 }
 
 export function sandboxUsage(group: UsageGroup): string {
@@ -76,4 +80,18 @@ export function sandboxUsage(group: UsageGroup): string {
     .map(({ usage }) => (typeof usage === "string" ? (group === "sandbox" ? usage : undefined) : usage[group]))
     .filter(Boolean)
     .join("\n");
+}
+
+export function focusedHelp(argv: readonly string[]) {
+  if (!["--help", "-h"].includes(argv.at(-1) ?? "")) return undefined;
+  const parts = argv.slice(0, -1);
+  if (parts[0] === "golden") {
+    if (parts.length > 1 && !Object.hasOwn(snapshot.subcommandHelp, `snapshot ${parts[1]}`)) return undefined;
+    parts[0] = "snapshot";
+  }
+  const path = parts.join(" ");
+  const command = byName.get(path);
+  if (command) return command.help;
+  const nested = byName.get(path.split(" ", 1)[0] ?? "")?.subcommandHelp;
+  return nested && Object.hasOwn(nested, path) ? nested[path] : undefined;
 }
