@@ -1,9 +1,36 @@
-# Codex custom endpoints (Modal)
+# Codex custom endpoints
 
-This first #1162 implementation slice reuses a named OpenAI account. Its sealed
-value can be either the existing plain API key or the JSON object below. Account
-IDs, versions, ownership, defaults, revocation, launch and template selectors
-remain unchanged. Listing accounts never returns this object or its key.
+A named OpenAI account can use a custom Responses API endpoint on Modal,
+Docker, or runtime-backed Boat. Use an HTTPS base URL without userinfo, a query,
+or a fragment. Armada accepts a pasted URL ending in `/responses` and
+normalizes it while preserving the upstream project path.
+
+## Create an account from the CLI
+
+Supply the exact upstream model IDs with `--models`. For Azure Foundry, use
+the resource's deployment names. Saves to official Azure addresses send a
+small billable request per deployment before storing the account. Read the
+API key from stdin or a private file.
+
+```sh
+armada creds set openai --name foundry --base-url 'https://RESOURCE.services.ai.azure.com/api/projects/PROJECT/openai/v1/responses' --models my-deployment --file /path/to/private-key
+armada creds list --json
+```
+
+For services that require an API version, pass `--api-version VERSION`. Leave
+it unset for the Foundry v1 route shown above. For organization scope, pass
+`--org NAME` to both commands. To replace a connection, use
+`--id UUID --expected-version N` in place of `--name` and supply the endpoint
+fields and new key again. At launch, use the account ID with `--credential-id`
+and its deployment name with `--model`.
+
+The CLI also accepts connection JSON from stdin or a private file when you
+omit `--base-url`. Include the deployment names in the `models` array and keep
+the key out of command arguments.
+
+```sh
+armada creds set openai --name foundry --file /path/to/private-connection.json
+```
 
 ```json
 {
@@ -11,112 +38,35 @@ remain unchanged. Listing accounts never returns this object or its key.
     "version": 1,
     "baseUrl": "https://RESOURCE.services.ai.azure.com/api/projects/PROJECT/openai/v1"
   },
-  "apiKey": "<supply privately>"
+  "apiKey": "<supply privately>",
+  "models": ["my-deployment"]
 }
 ```
 
-Use `armada creds set openai --name foundry --file <private-file>` (or stdin)
-to create the account. Do not put the key in arguments. Delete the private input
-file afterwards. Find the account ID with `armada creds list --json`, then pick it with the existing launch
-`--credential-id` option and supply your Azure deployment name as `--model`.
-The dedicated connection form and endpoint-test action are subsequent slices;
-the existing dashboard OpenAI account value field also accepts this JSON.
+## Create or replace an account in the dashboard
 
-Both the base above and a pasted URL ending in `/responses` are accepted.
-Normalization preserves the project path. No `api-version` is required for this
-v1 Foundry route. Other Responses-compatible services can optionally specify
-`endpoint.apiVersion`; this becomes Codex's `api-version` query parameter.
-Only HTTPS URLs without userinfo, query strings or fragments are accepted.
-Codex only supports the Responses API, not chat-completions-only endpoints.
+Under **What agents have → Models**, open **Add account** and expand **Other
+providers and custom endpoints**. Select **Azure AI Foundry** or **Custom
+endpoint for Codex** and enter a name. Enter the HTTPS URL, exact deployment
+or model IDs, and API key. Leave the API version empty for the Foundry v1
+route. Official Azure addresses receive a small billable request per deployment
+before saving. If a check fails, the dashboard does not save the account.
+Choose **Test and add account** for the Foundry preset or **Add account** for
+the custom endpoint. Select the saved account and deployment at launch.
 
-The runtime writes private `CODEX_HOME/config.toml` with a named provider,
-`wire_api = "responses"`, and `env_key = "OPENAI_API_KEY"`. The secret stays
-in the selected harness environment, not TOML, argv or logs. This versioned
-endpoint object can also be delivered by future enrolment without changing
-its shape. Today's Modal bootstrap carries it through the existing private
-environment envelope. Runtime-owned config is removed when absent on restart.
-Boat native launches refuse custom connections before provisioning a machine.
+To rotate a key, open the account menu and choose **Replace key**. Select the
+provider preset or **Custom endpoint (Modal)** and re-enter the connection
+details and key. Select **OpenAI default endpoint** when switching to the vendor
+endpoint. The current custom endpoint label includes “Modal” even when you use
+the saved account on Docker or runtime-backed Boat.
 
-Configuration fields verified against the
-[official Codex configuration reference](https://developers.openai.com/codex/config-reference/).
-Actual endpoint compatibility remains a staging check, not a unit-test claim.
+Replacing a key creates a new account revision. Sandboxes bound to the previous
+revision keep their files and conversations, but refuse new messages. Launch
+a new sandbox to use the new revision.
 
-## Coordinator staging check (real key stays with coordinator)
+## Runtime delivery
 
-1. On staging create the named account using the private JSON input above,
-   choose a Modal snapshot, and launch Codex using its account ID and the
-   owner-provided Azure deployment/model. Ask “Reply exactly MODEL_OK”.
-   Expect MODEL_OK; listing accounts must contain neither key nor JSON value.
-2. Send a second prompt, then stop/resume and send another. Expect MODEL_OK on
-   each turn through the same endpoint and bound account. Repeat with the
-   pasted URL ending in `/responses`; expect no duplicated suffix.
-3. Replace with an invalid key using account revision fencing, then launch a
-   **new** Modal sandbox with the updated account. Expect a harness failure,
-   never fallback to OpenAI/subscription. The older bound sandbox must refuse
-   the changed revision. Revoke the account and expect restore to refuse it.
-4. Try the account on Boat: expect “currently require Modal” and no machine.
-   Launch existing plain OpenAI and Codex subscription accounts on Modal;
-   expect unchanged MODEL_OK.
-5. Inspect runtime journal/API errors and process argv: no key. No request to
-   the real endpoint was made by the implementation worker.
-
-Deployment prerequisites: rebuild/publish the runtime artifact with the server.
-No schema migration or new environment setting is required.
-
-## CLI endpoint fields
-
-Instead of preparing connection JSON, read **only the key** from stdin or a
-private file and supply the non-secret endpoint separately:
-
-```sh
-armada creds set openai --name foundry --base-url 'https://RESOURCE.services.ai.azure.com/api/projects/PROJECT/openai/v1/responses' --file /path/to/private-key
-```
-
-The optional `--api-version VERSION` is for services that require it; omit it
-for the owner-verified Foundry v1 route. To replace an account, use `--id UUID
---expected-version N` in place of `--name`. Personal scope is the default;
-`--org NAME` chooses organization scope. `--json` retains the existing
-write-only `{ok:true}` output. Keys are never command-line options.
-
-Coordinator staging addition: run the command above with the owner-held key
-file, list the ID, launch a Modal snapshot using that `--credential-id` and
-Azure deployment `--model`, and request MODEL_OK. Expect MODEL_OK on initial
-and later turns. Repeat with the base URL without `/responses`, omit
-api-version in both cases, and expect identical success. Inspect output and
-argv: no key. No schema migration or new deployment prerequisite for the CLI.
-
-## Dashboard creation fields
-
-Under **What agents have → Models**, open **Add account**, select **OpenAI** (API key),
-and name the account. Check **Use a custom
-endpoint (Modal)**. Paste the Foundry base URL (with or without `/responses`),
-leave API version empty for v1, and paste the key in the password field.
-Save with **Add account**; the named account is available in existing launch
-and template account selectors. Choose a Modal snapshot and supply your Azure
-model/deployment name at launch.
-
-Coordinator staging check: repeat that creation flow for both pasted URL
-forms using the owner-held endpoint/key, then launch each account and request
-MODEL_OK on initial and subsequent turns. Expect success and no duplicated
-suffix. Inspect account listings/page text: neither key nor connection JSON
-is returned. The separate endpoint-test action remains a subsequent slice. Replacement
-uses the explicit destination flow below.
-
-
-## Replacing a Codex connection
-
-Use the account menu → Replace key. Existing endpoint details cannot be read
-back from the sealed account, so **Connection type** starts unselected.
-Choose **Custom endpoint (Modal)** and re-enter the full endpoint configuration
-and new key to keep custom routing. Choose **OpenAI default endpoint** only
-when deliberately switching to OpenAI (or rotating an existing default key).
-Changing the destination clears any key already typed. Keys are not prefilled,
-and connection JSON is refused in the default-key mode.
-
-Coordinator staging check: rotate a saved Foundry account through Custom
-endpoint with the owner-held new key and either pasted URL form. Expect the
-same account ID/name/default, a higher version, and a new Modal launch returning
-MODEL_OK. The old version-bound sandbox must refuse later messages, without
-losing files/conversations. A second tab holding the old version must report a
-conflict instead of overwriting the rotation. Existing subscription replacement
-is unchanged. No migration/new setting; dashboard rollout only.
+Codex uses a named provider with `wire_api = "responses"` and
+`env_key = "OPENAI_API_KEY"` in its runtime-owned configuration. The key is
+delivered through the harness environment. Boat needs the shared-runtime
+artifacts to launch with a custom endpoint.
