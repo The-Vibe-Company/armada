@@ -11849,6 +11849,2777 @@
           }
         }
       }
+    },
+    "/api/v1/orchestrator-tools/finish": {
+      "post": {
+        "operationId": "orchestrator_tools_finish",
+        "description": "Declare the calling sandbox finished and request its stop. Docker completion also schedules permanent removal of the container and home volume. Push work before finishing because runtime Git archives are unavailable. The response confirms the stop request, with status stopping.",
+        "x-armada-direct-server": true,
+        "security": [
+          {
+            "epochGrant": []
+          },
+          {
+            "finishGrant": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "description": "Send at most 131072 bytes of serialized JSON.",
+          "x-max-body-bytes": 131072,
+          "x-oversized-body-status": 400,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$schema": "http://json-schema.org/draft-07/schema#",
+                "type": "object",
+                "properties": {},
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$schema": "http://json-schema.org/draft-07/schema#",
+                  "type": "object",
+                  "properties": {
+                    "result": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string",
+                          "format": "uuid",
+                          "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                        },
+                        "status": {
+                          "type": "string",
+                          "const": "stopping"
+                        },
+                        "preservationNote": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "status"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "result"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request could not be completed, including when the serialized body exceeds 131072 bytes.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$schema": "http://json-schema.org/draft-07/schema#",
+                      "type": "object",
+                      "properties": {
+                        "error": {
+                          "type": "object",
+                          "properties": {
+                            "code": {
+                              "type": "string",
+                              "enum": [
+                                "invalid_epoch_authority",
+                                "use_post",
+                                "scoped_method_denied",
+                                "invalid_scoped_request",
+                                "scoped_authority_denied",
+                                "scoped_operation_unavailable"
+                              ]
+                            },
+                            "message": {
+                              "type": "string",
+                              "enum": [
+                                "invalid_epoch_authority",
+                                "use_post",
+                                "scoped_method_denied",
+                                "invalid_scoped_request",
+                                "scoped_authority_denied",
+                                "scoped_operation_unavailable"
+                              ]
+                            }
+                          },
+                          "required": [
+                            "code",
+                            "message"
+                          ],
+                          "additionalProperties": false
+                        }
+                      },
+                      "required": [
+                        "error"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "$ref": "#/components/schemas/Failure"
+                    },
+                    {
+                      "$ref": "#/components/schemas/DrainRefusal"
+                    },
+                    {
+                      "type": "object",
+                      "required": [
+                        "error"
+                      ],
+                      "properties": {
+                        "error": {
+                          "const": "internal"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Temporarily unavailable: a structured failure, or the bare refusal sent before dispatch while the server drains. Honor Retry-After when present.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$schema": "http://json-schema.org/draft-07/schema#",
+                      "type": "object",
+                      "properties": {
+                        "error": {
+                          "type": "object",
+                          "properties": {
+                            "code": {
+                              "type": "string",
+                              "enum": [
+                                "invalid_epoch_authority",
+                                "use_post",
+                                "scoped_method_denied",
+                                "invalid_scoped_request",
+                                "scoped_authority_denied",
+                                "scoped_operation_unavailable"
+                              ]
+                            },
+                            "message": {
+                              "type": "string",
+                              "enum": [
+                                "invalid_epoch_authority",
+                                "use_post",
+                                "scoped_method_denied",
+                                "invalid_scoped_request",
+                                "scoped_authority_denied",
+                                "scoped_operation_unavailable"
+                              ]
+                            }
+                          },
+                          "required": [
+                            "code",
+                            "message"
+                          ],
+                          "additionalProperties": false
+                        }
+                      },
+                      "required": [
+                        "error"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "$ref": "#/components/schemas/Failure"
+                    },
+                    {
+                      "$ref": "#/components/schemas/DrainRefusal"
+                    },
+                    {
+                      "type": "object",
+                      "required": [
+                        "error"
+                      ],
+                      "properties": {
+                        "error": {
+                          "const": "internal"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Public API failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$schema": "http://json-schema.org/draft-07/schema#",
+                      "type": "object",
+                      "properties": {
+                        "error": {
+                          "type": "object",
+                          "properties": {
+                            "code": {
+                              "type": "string",
+                              "enum": [
+                                "invalid_epoch_authority",
+                                "use_post",
+                                "scoped_method_denied",
+                                "invalid_scoped_request",
+                                "scoped_authority_denied",
+                                "scoped_operation_unavailable"
+                              ]
+                            },
+                            "message": {
+                              "type": "string",
+                              "enum": [
+                                "invalid_epoch_authority",
+                                "use_post",
+                                "scoped_method_denied",
+                                "invalid_scoped_request",
+                                "scoped_authority_denied",
+                                "scoped_operation_unavailable"
+                              ]
+                            }
+                          },
+                          "required": [
+                            "code",
+                            "message"
+                          ],
+                          "additionalProperties": false
+                        }
+                      },
+                      "required": [
+                        "error"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "$ref": "#/components/schemas/Failure"
+                    },
+                    {
+                      "$ref": "#/components/schemas/DrainRefusal"
+                    },
+                    {
+                      "type": "object",
+                      "required": [
+                        "error"
+                      ],
+                      "properties": {
+                        "error": {
+                          "const": "internal"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/orchestrator-tools/launch": {
+      "post": {
+        "operationId": "orchestrator_tools_launch",
+        "description": "Scoped own-child operation. No owner/admin/credential/general sandbox authority.",
+        "x-armada-direct-server": true,
+        "security": [
+          {
+            "epochGrant": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "$schema": "http://json-schema.org/draft-07/schema#",
+              "type": "string",
+              "pattern": "^[ -~]{1,128}$"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "description": "Send at most 131072 bytes of serialized JSON.",
+          "x-max-body-bytes": 131072,
+          "x-oversized-body-status": 400,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$schema": "http://json-schema.org/draft-07/schema#",
+                "type": "object",
+                "properties": {
+                  "selection": {
+                    "type": "object",
+                    "properties": {
+                      "goldenId": {
+                        "type": "string",
+                        "format": "uuid",
+                        "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                      },
+                      "harness": {
+                        "type": "string",
+                        "enum": [
+                          "claude",
+                          "codex",
+                          "opencode"
+                        ]
+                      },
+                      "credentialId": {
+                        "type": "string",
+                        "format": "uuid",
+                        "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                      },
+                      "credentialVersion": {
+                        "type": "integer",
+                        "exclusiveMinimum": 0,
+                        "maximum": 9007199254740991
+                      },
+                      "model": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 200,
+                        "description": "Child launch admission requires a non-blank model."
+                      },
+                      "skills": {
+                        "description": "Skills require distinct org/slug@exact-version or slug@exact-version pins (maximum 20). Each pin is at most 256 characters. Slugs must be unique across namespaces and versions. The armada-tools slug is reserved.",
+                        "maxItems": 20,
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      },
+                      "reasoningEffort": {
+                        "description": "If supplied, child launch admission requires non-blank reasoning effort.",
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "repo": {
+                        "description": "If supplied, child launch admission requires a non-blank repository.",
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "prompt": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 100000,
+                        "pattern": "\\S"
+                      },
+                      "size": {
+                        "type": "string",
+                        "enum": [
+                          "small",
+                          "medium",
+                          "large",
+                          "xlarge"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "goldenId",
+                      "harness",
+                      "credentialId",
+                      "credentialVersion",
+                      "model"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "required": [
+                  "selection"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$schema": "http://json-schema.org/draft-07/schema#",
+                  "type": "object",
+                  "properties": {
+                    "result": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string",
+                          "format": "uuid",
+                          "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                        },
+                        "state": {
+                          "type": "string",
+                          "enum": [
+                            "pending",
+                            "succeeded",
+                            "failed",
+                            "uncertain"
+                          ]
+                        },
+                        "sandboxId": {
+                          "type": "string",
+                          "format": "uuid",
+                          "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "state",
+                        "sandboxId"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "result"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request could not be completed, including when the serialized body exceeds 131072 bytes.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$schema": "http://json-schema.org/draft-07/schema#",
+                      "type": "object",
+                      "properties": {
+                        "error": {
+                          "type": "object",
+                          "properties": {
+                            "code": {
+                              "type": "string",
+                              "enum": [
+                                "invalid_epoch_authority",
+                                "use_post",
+                                "scoped_method_denied",
+                                "invalid_scoped_request",
+                                "scoped_authority_denied",
+                                "scoped_operation_unavailable"
+                              ]
+                            },
+                            "message": {
+                              "type": "string",
+                              "enum": [
+                                "invalid_epoch_authority",
+                                "use_post",
+                                "scoped_method_denied",
+                                "invalid_scoped_request",
+                                "scoped_authority_denied",
+                                "scoped_operation_unavailable"
+                              ]
+                            }
+                          },
+                          "required": [
+                            "code",
+                            "message"
+                          ],
+                          "additionalProperties": false
+                        }
+                      },
+                      "required": [
+                        "error"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "$ref": "#/components/schemas/Failure"
+                    },
+                    {
+                      "$ref": "#/components/schemas/DrainRefusal"
+                    },
+                    {
+                      "type": "object",
+                      "required": [
+                        "error"
+                      ],
+                      "properties": {
+                        "error": {
+                          "const": "internal"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Temporarily unavailable: a structured failure, or the bare refusal sent before dispatch while the server drains. Honor Retry-After when present.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$schema": "http://json-schema.org/draft-07/schema#",
+                      "type": "object",
+                      "properties": {
+                        "error": {
+                          "type": "object",
+                          "properties": {
+                            "code": {
+                              "type": "string",
+                              "enum": [
+                                "invalid_epoch_authority",
+                                "use_post",
+                                "scoped_method_denied",
+                                "invalid_scoped_request",
+                                "scoped_authority_denied",
+                                "scoped_operation_unavailable"
+                              ]
+                            },
+                            "message": {
+                              "type": "string",
+                              "enum": [
+                                "invalid_epoch_authority",
+                                "use_post",
+                                "scoped_method_denied",
+                                "invalid_scoped_request",
+                                "scoped_authority_denied",
+                                "scoped_operation_unavailable"
+                              ]
+                            }
+                          },
+                          "required": [
+                            "code",
+                            "message"
+                          ],
+                          "additionalProperties": false
+                        }
+                      },
+                      "required": [
+                        "error"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "$ref": "#/components/schemas/Failure"
+                    },
+                    {
+                      "$ref": "#/components/schemas/DrainRefusal"
+                    },
+                    {
+                      "type": "object",
+                      "required": [
+                        "error"
+                      ],
+                      "properties": {
+                        "error": {
+                          "const": "internal"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Public API failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$schema": "http://json-schema.org/draft-07/schema#",
+                      "type": "object",
+                      "properties": {
+                        "error": {
+                          "type": "object",
+                          "properties": {
+                            "code": {
+                              "type": "string",
+                              "enum": [
+                                "invalid_epoch_authority",
+                                "use_post",
+                                "scoped_method_denied",
+                                "invalid_scoped_request",
+                                "scoped_authority_denied",
+                                "scoped_operation_unavailable"
+                              ]
+                            },
+                            "message": {
+                              "type": "string",
+                              "enum": [
+                                "invalid_epoch_authority",
+                                "use_post",
+                                "scoped_method_denied",
+                                "invalid_scoped_request",
+                                "scoped_authority_denied",
+                                "scoped_operation_unavailable"
+                              ]
+                            }
+                          },
+                          "required": [
+                            "code",
+                            "message"
+                          ],
+                          "additionalProperties": false
+                        }
+                      },
+                      "required": [
+                        "error"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "$ref": "#/components/schemas/Failure"
+                    },
+                    {
+                      "$ref": "#/components/schemas/DrainRefusal"
+                    },
+                    {
+                      "type": "object",
+                      "required": [
+                        "error"
+                      ],
+                      "properties": {
+                        "error": {
+                          "const": "internal"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/orchestrator-tools/read": {
+      "post": {
+        "operationId": "orchestrator_tools_read",
+        "description": "Scoped own-child operation. No owner/admin/credential/general sandbox authority.",
+        "x-armada-direct-server": true,
+        "security": [
+          {
+            "epochGrant": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "description": "Send at most 131072 bytes of serialized JSON.",
+          "x-max-body-bytes": 131072,
+          "x-oversized-body-status": 400,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$schema": "http://json-schema.org/draft-07/schema#",
+                "type": "object",
+                "properties": {
+                  "sandboxId": {
+                    "type": "string",
+                    "format": "uuid",
+                    "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                  }
+                },
+                "required": [
+                  "sandboxId"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$schema": "http://json-schema.org/draft-07/schema#",
+                  "type": "object",
+                  "properties": {
+                    "result": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string",
+                          "format": "uuid",
+                          "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                        },
+                        "provider": {
+                          "type": "string",
+                          "enum": [
+                            "boat",
+                            "modal"
+                          ]
+                        },
+                        "providerSandboxId": {
+                          "type": "string"
+                        },
+                        "goldenId": {
+                          "type": "string",
+                          "format": "uuid",
+                          "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                        },
+                        "orgId": {
+                          "type": "string",
+                          "format": "uuid",
+                          "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                        },
+                        "ownerId": {
+                          "type": "string",
+                          "format": "uuid",
+                          "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                        },
+                        "harness": {
+                          "type": "string",
+                          "enum": [
+                            "claude",
+                            "codex",
+                            "opencode"
+                          ]
+                        },
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "starting",
+                            "ready",
+                            "running",
+                            "stopping",
+                            "stopped",
+                            "failed",
+                            "deleted"
+                          ]
+                        },
+                        "conversationIds": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        },
+                        "createdAt": {
+                          "type": "string"
+                        },
+                        "stoppedAt": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "deletedAt": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "statusReason": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "repositoryDir": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "model": {
+                          "description": "The requested next-send default, not proof of the observed model.",
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "reasoningEffort": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "credentialId": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "credentialVersion": {
+                          "anyOf": [
+                            {
+                              "type": "integer",
+                              "minimum": -9007199254740991,
+                              "maximum": 9007199254740991
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "boatRuntime": {
+                          "type": "boolean",
+                          "const": true
+                        },
+                        "runtimeTransport": {
+                          "type": "string",
+                          "const": "dialout"
+                        },
+                        "visibility": {
+                          "type": "string",
+                          "enum": [
+                            "org",
+                            "private"
+                          ]
+                        },
+                        "expiresAt": {
+                          "type": "string"
+                        },
+                        "effectiveTtlSeconds": {
+                          "type": "number"
+                        },
+                        "requestedTtlSeconds": {
+                          "type": [
+                            "number",
+                            "null"
+                          ]
+                        },
+                        "lastObservedAt": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "lifecycleError": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "lifecycleGeneration": {
+                          "type": "integer",
+                          "exclusiveMinimum": 0,
+                          "maximum": 9007199254740991
+                        },
+                        "stopRequestedAt": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "preservationNote": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "usage": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "properties": {
+                                "computeSeconds": {
+                                  "type": [
+                                    "number",
+                                    "null"
+                                  ]
+                                },
+                                "turnCount": {
+                                  "type": [
+                                    "number",
+                                    "null"
+                                  ]
+                                },
+                                "cost": {
+                                  "type": "object",
+                                  "properties": {
+                                    "classification": {
+                                      "type": "string",
+                                      "enum": [
+                                        "priced",
+                                        "included_in_subscription",
+                                        "unknown"
+                                      ]
+                                    },
+                                    "currency": {
+                                      "type": "string",
+                                      "const": "USD"
+                                    },
+                                    "usd": {
+                                      "type": [
+                                        "string",
+                                        "null"
+                                      ]
+                                    },
+                                    "basis": {
+                                      "anyOf": [
+                                        {
+                                          "type": "string",
+                                          "enum": [
+                                            "estimated",
+                                            "api_equivalent"
+                                          ]
+                                        },
+                                        {
+                                          "type": "null"
+                                        }
+                                      ]
+                                    },
+                                    "unknown": {
+                                      "anyOf": [
+                                        {
+                                          "type": "string",
+                                          "enum": [
+                                            "admission",
+                                            "coverage",
+                                            "price",
+                                            "tokens",
+                                            "pricing_dimensions"
+                                          ]
+                                        },
+                                        {
+                                          "type": "null"
+                                        }
+                                      ]
+                                    },
+                                    "unpricedTurns": {
+                                      "anyOf": [
+                                        {
+                                          "type": "integer",
+                                          "minimum": 0,
+                                          "maximum": 9007199254740991
+                                        },
+                                        {
+                                          "type": "null"
+                                        }
+                                      ]
+                                    }
+                                  },
+                                  "required": [
+                                    "classification",
+                                    "currency",
+                                    "usd",
+                                    "basis",
+                                    "unknown",
+                                    "unpricedTurns"
+                                  ],
+                                  "additionalProperties": false
+                                },
+                                "tokenTotals": {
+                                  "type": "object",
+                                  "properties": {
+                                    "incomplete": {
+                                      "type": "boolean"
+                                    },
+                                    "inputTokens": {
+                                      "type": [
+                                        "number",
+                                        "null"
+                                      ]
+                                    },
+                                    "outputTokens": {
+                                      "type": [
+                                        "number",
+                                        "null"
+                                      ]
+                                    },
+                                    "cachedTokens": {
+                                      "type": [
+                                        "number",
+                                        "null"
+                                      ]
+                                    },
+                                    "cacheWriteTokens": {
+                                      "type": [
+                                        "number",
+                                        "null"
+                                      ]
+                                    },
+                                    "reasoningTokens": {
+                                      "type": [
+                                        "number",
+                                        "null"
+                                      ]
+                                    }
+                                  },
+                                  "required": [
+                                    "inputTokens",
+                                    "outputTokens",
+                                    "cachedTokens",
+                                    "cacheWriteTokens",
+                                    "reasoningTokens"
+                                  ],
+                                  "additionalProperties": false
+                                },
+                                "turns": {
+                                  "type": "array",
+                                  "items": {
+                                    "type": "object",
+                                    "properties": {
+                                      "promptId": {
+                                        "type": "string"
+                                      },
+                                      "model": {
+                                        "type": [
+                                          "string",
+                                          "null"
+                                        ]
+                                      },
+                                      "inputTokens": {
+                                        "type": [
+                                          "number",
+                                          "null"
+                                        ]
+                                      },
+                                      "outputTokens": {
+                                        "type": [
+                                          "number",
+                                          "null"
+                                        ]
+                                      },
+                                      "cachedTokens": {
+                                        "type": [
+                                          "number",
+                                          "null"
+                                        ]
+                                      },
+                                      "cacheWriteTokens": {
+                                        "type": [
+                                          "number",
+                                          "null"
+                                        ]
+                                      },
+                                      "reasoningTokens": {
+                                        "type": [
+                                          "number",
+                                          "null"
+                                        ]
+                                      },
+                                      "pricing": {
+                                        "description": "Versioned server USD quote from a frozen snapshot; null means unpriced, never zero.",
+                                        "anyOf": [
+                                          {},
+                                          {
+                                            "type": "null"
+                                          }
+                                        ]
+                                      },
+                                      "unavailableReason": {
+                                        "type": "object",
+                                        "properties": {
+                                          "code": {
+                                            "type": "string",
+                                            "enum": [
+                                              "admission_missing",
+                                              "admission_expired",
+                                              "admission_superseded",
+                                              "legacy_disabled",
+                                              "native_start_unobserved",
+                                              "native_input_unmatched",
+                                              "native_turn_unobserved",
+                                              "native_terminal_unobserved",
+                                              "native_history_unavailable",
+                                              "native_boundary_unverified",
+                                              "unsafe_reader_state",
+                                              "reader_unavailable",
+                                              "compute_inactive",
+                                              "unsupported_harness"
+                                            ]
+                                          },
+                                          "message": {
+                                            "type": "string",
+                                            "maxLength": 600
+                                          }
+                                        },
+                                        "required": [
+                                          "code",
+                                          "message"
+                                        ],
+                                        "additionalProperties": false
+                                      },
+                                      "cacheWriteTokensByTtl": {
+                                        "type": "object",
+                                        "properties": {
+                                          "fiveMinute": {
+                                            "type": [
+                                              "number",
+                                              "null"
+                                            ]
+                                          },
+                                          "oneHour": {
+                                            "type": [
+                                              "number",
+                                              "null"
+                                            ]
+                                          },
+                                          "conflicted": {
+                                            "type": "boolean",
+                                            "const": true
+                                          }
+                                        },
+                                        "required": [
+                                          "fiveMinute",
+                                          "oneHour"
+                                        ],
+                                        "additionalProperties": false
+                                      }
+                                    },
+                                    "required": [
+                                      "promptId",
+                                      "model",
+                                      "inputTokens",
+                                      "outputTokens",
+                                      "cachedTokens"
+                                    ],
+                                    "additionalProperties": false
+                                  }
+                                }
+                              },
+                              "required": [
+                                "computeSeconds",
+                                "turnCount",
+                                "turns"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "taskOutcome": {
+                          "anyOf": [
+                            {
+                              "oneOf": [
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "state": {
+                                      "type": "string",
+                                      "const": "ready"
+                                    },
+                                    "prNumber": {
+                                      "type": "integer",
+                                      "exclusiveMinimum": 0,
+                                      "maximum": 9007199254740991
+                                    },
+                                    "prUrl": {
+                                      "type": "string",
+                                      "maxLength": 2048,
+                                      "format": "uri"
+                                    },
+                                    "headSha": {
+                                      "type": "string",
+                                      "pattern": "^[A-Fa-f0-9]{40}$"
+                                    }
+                                  },
+                                  "required": [
+                                    "state"
+                                  ],
+                                  "additionalProperties": false
+                                },
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "state": {
+                                      "type": "string",
+                                      "const": "blocked"
+                                    },
+                                    "reason": {
+                                      "type": "string",
+                                      "minLength": 1,
+                                      "maxLength": 1000
+                                    }
+                                  },
+                                  "required": [
+                                    "state",
+                                    "reason"
+                                  ],
+                                  "additionalProperties": false
+                                }
+                              ]
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "pullRequests": {
+                          "anyOf": [
+                            {
+                              "type": "array",
+                              "items": {
+                                "type": "object",
+                                "properties": {
+                                  "repository": {
+                                    "type": "string"
+                                  },
+                                  "number": {
+                                    "type": "integer",
+                                    "exclusiveMinimum": 0,
+                                    "maximum": 9007199254740991
+                                  },
+                                  "url": {
+                                    "type": "string",
+                                    "format": "uri"
+                                  },
+                                  "headBranch": {
+                                    "type": "string"
+                                  },
+                                  "state": {
+                                    "type": "string",
+                                    "enum": [
+                                      "open",
+                                      "merged",
+                                      "closed"
+                                    ]
+                                  },
+                                  "checkedAt": {
+                                    "type": "string"
+                                  }
+                                },
+                                "required": [
+                                  "repository",
+                                  "number",
+                                  "url",
+                                  "headBranch",
+                                  "state",
+                                  "checkedAt"
+                                ],
+                                "additionalProperties": false
+                              }
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "externalRef": {
+                          "description": "Opaque reference given at launch; absent when none.",
+                          "type": "string"
+                        },
+                        "taskPromptId": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "skills": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "reference": {
+                                "type": "string"
+                              },
+                              "version": {
+                                "type": "string"
+                              },
+                              "skillId": {
+                                "type": "string"
+                              },
+                              "checksum": {
+                                "type": "string"
+                              },
+                              "origin": {
+                                "type": "string"
+                              },
+                              "workspaceId": {
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "reference",
+                              "version",
+                              "skillId",
+                              "checksum",
+                              "origin"
+                            ],
+                            "additionalProperties": false
+                          }
+                        },
+                        "resourceProject": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "properties": {
+                                "version": {
+                                  "type": "number",
+                                  "const": 1
+                                },
+                                "url": {
+                                  "type": "string"
+                                },
+                                "branch": {
+                                  "type": "string"
+                                },
+                                "dir": {
+                                  "type": "string"
+                                }
+                              },
+                              "required": [
+                                "version",
+                                "url",
+                                "branch",
+                                "dir"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "machineSize": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "properties": {
+                                "version": {
+                                  "type": "number",
+                                  "const": 1
+                                },
+                                "requested": {
+                                  "anyOf": [
+                                    {
+                                      "type": "string",
+                                      "enum": [
+                                        "small",
+                                        "medium",
+                                        "large",
+                                        "xlarge"
+                                      ]
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ]
+                                },
+                                "effective": {
+                                  "anyOf": [
+                                    {
+                                      "type": "string",
+                                      "enum": [
+                                        "small",
+                                        "medium",
+                                        "large",
+                                        "xlarge"
+                                      ]
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ]
+                                },
+                                "source": {
+                                  "type": "string",
+                                  "enum": [
+                                    "override",
+                                    "repository",
+                                    "golden",
+                                    "legacy"
+                                  ]
+                                },
+                                "repositoryDir": {
+                                  "type": [
+                                    "string",
+                                    "null"
+                                  ]
+                                },
+                                "capacity": {
+                                  "anyOf": [
+                                    {
+                                      "type": "object",
+                                      "properties": {
+                                        "provider": {
+                                          "type": "string",
+                                          "enum": [
+                                            "boat",
+                                            "modal"
+                                          ]
+                                        },
+                                        "provenance": {
+                                          "type": "string",
+                                          "const": "requested-provider-resources"
+                                        },
+                                        "vcpus": {
+                                          "type": "number"
+                                        },
+                                        "memoryMiB": {
+                                          "type": "number"
+                                        },
+                                        "cpuPhysicalCores": {
+                                          "type": [
+                                            "number",
+                                            "null"
+                                          ]
+                                        },
+                                        "cpuLimitPhysicalCores": {
+                                          "type": [
+                                            "number",
+                                            "null"
+                                          ]
+                                        },
+                                        "memoryLimitMiB": {
+                                          "type": [
+                                            "number",
+                                            "null"
+                                          ]
+                                        },
+                                        "boatType": {
+                                          "anyOf": [
+                                            {
+                                              "type": "string",
+                                              "enum": [
+                                                "small",
+                                                "default",
+                                                "large",
+                                                "xlarge"
+                                              ]
+                                            },
+                                            {
+                                              "type": "null"
+                                            }
+                                          ]
+                                        }
+                                      },
+                                      "required": [
+                                        "provider",
+                                        "provenance",
+                                        "vcpus",
+                                        "memoryMiB",
+                                        "cpuPhysicalCores",
+                                        "cpuLimitPhysicalCores",
+                                        "memoryLimitMiB",
+                                        "boatType"
+                                      ],
+                                      "additionalProperties": false
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "version",
+                                "requested",
+                                "effective",
+                                "source",
+                                "repositoryDir",
+                                "capacity"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "events": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "id": {
+                                "type": "string"
+                              },
+                              "at": {
+                                "type": "number"
+                              },
+                              "kind": {
+                                "type": "string",
+                                "enum": [
+                                  "prompt",
+                                  "message",
+                                  "steer",
+                                  "other"
+                                ]
+                              },
+                              "conversationId": {
+                                "type": "string"
+                              },
+                              "promptId": {
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "id",
+                              "at",
+                              "kind"
+                            ],
+                            "additionalProperties": {}
+                          }
+                        },
+                        "cursor": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "hasMore": {
+                          "type": "boolean"
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "provider",
+                        "providerSandboxId",
+                        "goldenId",
+                        "orgId",
+                        "ownerId",
+                        "harness",
+                        "status",
+                        "conversationIds",
+                        "createdAt",
+                        "stoppedAt",
+                        "deletedAt",
+                        "statusReason",
+                        "repositoryDir",
+                        "model",
+                        "reasoningEffort",
+                        "credentialId",
+                        "credentialVersion",
+                        "stopRequestedAt",
+                        "preservationNote",
+                        "usage",
+                        "taskOutcome",
+                        "taskPromptId",
+                        "skills",
+                        "resourceProject",
+                        "machineSize",
+                        "events",
+                        "cursor",
+                        "hasMore"
+                      ],
+                      "additionalProperties": {}
+                    }
+                  },
+                  "required": [
+                    "result"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request could not be completed, including when the serialized body exceeds 131072 bytes.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$schema": "http://json-schema.org/draft-07/schema#",
+                      "type": "object",
+                      "properties": {
+                        "error": {
+                          "type": "object",
+                          "properties": {
+                            "code": {
+                              "type": "string",
+                              "enum": [
+                                "invalid_epoch_authority",
+                                "use_post",
+                                "scoped_method_denied",
+                                "invalid_scoped_request",
+                                "scoped_authority_denied",
+                                "scoped_operation_unavailable"
+                              ]
+                            },
+                            "message": {
+                              "type": "string",
+                              "enum": [
+                                "invalid_epoch_authority",
+                                "use_post",
+                                "scoped_method_denied",
+                                "invalid_scoped_request",
+                                "scoped_authority_denied",
+                                "scoped_operation_unavailable"
+                              ]
+                            }
+                          },
+                          "required": [
+                            "code",
+                            "message"
+                          ],
+                          "additionalProperties": false
+                        }
+                      },
+                      "required": [
+                        "error"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "$ref": "#/components/schemas/Failure"
+                    },
+                    {
+                      "$ref": "#/components/schemas/DrainRefusal"
+                    },
+                    {
+                      "type": "object",
+                      "required": [
+                        "error"
+                      ],
+                      "properties": {
+                        "error": {
+                          "const": "internal"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Temporarily unavailable: a structured failure, or the bare refusal sent before dispatch while the server drains. Honor Retry-After when present.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$schema": "http://json-schema.org/draft-07/schema#",
+                      "type": "object",
+                      "properties": {
+                        "error": {
+                          "type": "object",
+                          "properties": {
+                            "code": {
+                              "type": "string",
+                              "enum": [
+                                "invalid_epoch_authority",
+                                "use_post",
+                                "scoped_method_denied",
+                                "invalid_scoped_request",
+                                "scoped_authority_denied",
+                                "scoped_operation_unavailable"
+                              ]
+                            },
+                            "message": {
+                              "type": "string",
+                              "enum": [
+                                "invalid_epoch_authority",
+                                "use_post",
+                                "scoped_method_denied",
+                                "invalid_scoped_request",
+                                "scoped_authority_denied",
+                                "scoped_operation_unavailable"
+                              ]
+                            }
+                          },
+                          "required": [
+                            "code",
+                            "message"
+                          ],
+                          "additionalProperties": false
+                        }
+                      },
+                      "required": [
+                        "error"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "$ref": "#/components/schemas/Failure"
+                    },
+                    {
+                      "$ref": "#/components/schemas/DrainRefusal"
+                    },
+                    {
+                      "type": "object",
+                      "required": [
+                        "error"
+                      ],
+                      "properties": {
+                        "error": {
+                          "const": "internal"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Public API failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$schema": "http://json-schema.org/draft-07/schema#",
+                      "type": "object",
+                      "properties": {
+                        "error": {
+                          "type": "object",
+                          "properties": {
+                            "code": {
+                              "type": "string",
+                              "enum": [
+                                "invalid_epoch_authority",
+                                "use_post",
+                                "scoped_method_denied",
+                                "invalid_scoped_request",
+                                "scoped_authority_denied",
+                                "scoped_operation_unavailable"
+                              ]
+                            },
+                            "message": {
+                              "type": "string",
+                              "enum": [
+                                "invalid_epoch_authority",
+                                "use_post",
+                                "scoped_method_denied",
+                                "invalid_scoped_request",
+                                "scoped_authority_denied",
+                                "scoped_operation_unavailable"
+                              ]
+                            }
+                          },
+                          "required": [
+                            "code",
+                            "message"
+                          ],
+                          "additionalProperties": false
+                        }
+                      },
+                      "required": [
+                        "error"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "$ref": "#/components/schemas/Failure"
+                    },
+                    {
+                      "$ref": "#/components/schemas/DrainRefusal"
+                    },
+                    {
+                      "type": "object",
+                      "required": [
+                        "error"
+                      ],
+                      "properties": {
+                        "error": {
+                          "const": "internal"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/orchestrator-tools/message": {
+      "post": {
+        "operationId": "orchestrator_tools_message",
+        "description": "Scoped own-child operation. No owner/admin/credential/general sandbox authority.",
+        "x-armada-direct-server": true,
+        "security": [
+          {
+            "epochGrant": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "$schema": "http://json-schema.org/draft-07/schema#",
+              "type": "string",
+              "pattern": "^[ -~]{1,128}$"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "description": "Send at most 131072 bytes of serialized JSON.",
+          "x-max-body-bytes": 131072,
+          "x-oversized-body-status": 400,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$schema": "http://json-schema.org/draft-07/schema#",
+                "type": "object",
+                "properties": {
+                  "sandboxId": {
+                    "type": "string",
+                    "format": "uuid",
+                    "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                  },
+                  "text": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 100000,
+                    "pattern": "\\S"
+                  }
+                },
+                "required": [
+                  "sandboxId",
+                  "text"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$schema": "http://json-schema.org/draft-07/schema#",
+                  "type": "object",
+                  "properties": {
+                    "result": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string",
+                          "format": "uuid",
+                          "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                        },
+                        "state": {
+                          "type": "string",
+                          "enum": [
+                            "pending",
+                            "succeeded",
+                            "failed",
+                            "uncertain"
+                          ]
+                        },
+                        "sandboxId": {
+                          "type": "string",
+                          "format": "uuid",
+                          "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "state",
+                        "sandboxId"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "result"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request could not be completed, including when the serialized body exceeds 131072 bytes.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$schema": "http://json-schema.org/draft-07/schema#",
+                      "type": "object",
+                      "properties": {
+                        "error": {
+                          "type": "object",
+                          "properties": {
+                            "code": {
+                              "type": "string",
+                              "enum": [
+                                "invalid_epoch_authority",
+                                "use_post",
+                                "scoped_method_denied",
+                                "invalid_scoped_request",
+                                "scoped_authority_denied",
+                                "scoped_operation_unavailable"
+                              ]
+                            },
+                            "message": {
+                              "type": "string",
+                              "enum": [
+                                "invalid_epoch_authority",
+                                "use_post",
+                                "scoped_method_denied",
+                                "invalid_scoped_request",
+                                "scoped_authority_denied",
+                                "scoped_operation_unavailable"
+                              ]
+                            }
+                          },
+                          "required": [
+                            "code",
+                            "message"
+                          ],
+                          "additionalProperties": false
+                        }
+                      },
+                      "required": [
+                        "error"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "$ref": "#/components/schemas/Failure"
+                    },
+                    {
+                      "$ref": "#/components/schemas/DrainRefusal"
+                    },
+                    {
+                      "type": "object",
+                      "required": [
+                        "error"
+                      ],
+                      "properties": {
+                        "error": {
+                          "const": "internal"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Temporarily unavailable: a structured failure, or the bare refusal sent before dispatch while the server drains. Honor Retry-After when present.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$schema": "http://json-schema.org/draft-07/schema#",
+                      "type": "object",
+                      "properties": {
+                        "error": {
+                          "type": "object",
+                          "properties": {
+                            "code": {
+                              "type": "string",
+                              "enum": [
+                                "invalid_epoch_authority",
+                                "use_post",
+                                "scoped_method_denied",
+                                "invalid_scoped_request",
+                                "scoped_authority_denied",
+                                "scoped_operation_unavailable"
+                              ]
+                            },
+                            "message": {
+                              "type": "string",
+                              "enum": [
+                                "invalid_epoch_authority",
+                                "use_post",
+                                "scoped_method_denied",
+                                "invalid_scoped_request",
+                                "scoped_authority_denied",
+                                "scoped_operation_unavailable"
+                              ]
+                            }
+                          },
+                          "required": [
+                            "code",
+                            "message"
+                          ],
+                          "additionalProperties": false
+                        }
+                      },
+                      "required": [
+                        "error"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "$ref": "#/components/schemas/Failure"
+                    },
+                    {
+                      "$ref": "#/components/schemas/DrainRefusal"
+                    },
+                    {
+                      "type": "object",
+                      "required": [
+                        "error"
+                      ],
+                      "properties": {
+                        "error": {
+                          "const": "internal"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Public API failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$schema": "http://json-schema.org/draft-07/schema#",
+                      "type": "object",
+                      "properties": {
+                        "error": {
+                          "type": "object",
+                          "properties": {
+                            "code": {
+                              "type": "string",
+                              "enum": [
+                                "invalid_epoch_authority",
+                                "use_post",
+                                "scoped_method_denied",
+                                "invalid_scoped_request",
+                                "scoped_authority_denied",
+                                "scoped_operation_unavailable"
+                              ]
+                            },
+                            "message": {
+                              "type": "string",
+                              "enum": [
+                                "invalid_epoch_authority",
+                                "use_post",
+                                "scoped_method_denied",
+                                "invalid_scoped_request",
+                                "scoped_authority_denied",
+                                "scoped_operation_unavailable"
+                              ]
+                            }
+                          },
+                          "required": [
+                            "code",
+                            "message"
+                          ],
+                          "additionalProperties": false
+                        }
+                      },
+                      "required": [
+                        "error"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "$ref": "#/components/schemas/Failure"
+                    },
+                    {
+                      "$ref": "#/components/schemas/DrainRefusal"
+                    },
+                    {
+                      "type": "object",
+                      "required": [
+                        "error"
+                      ],
+                      "properties": {
+                        "error": {
+                          "const": "internal"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/orchestrator-tools/stop": {
+      "post": {
+        "operationId": "orchestrator_tools_stop",
+        "description": "Scoped own-child operation. No owner/admin/credential/general sandbox authority.",
+        "x-armada-direct-server": true,
+        "security": [
+          {
+            "epochGrant": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "$schema": "http://json-schema.org/draft-07/schema#",
+              "type": "string",
+              "pattern": "^[ -~]{1,128}$"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "description": "Send at most 131072 bytes of serialized JSON.",
+          "x-max-body-bytes": 131072,
+          "x-oversized-body-status": 400,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$schema": "http://json-schema.org/draft-07/schema#",
+                "type": "object",
+                "properties": {
+                  "sandboxId": {
+                    "type": "string",
+                    "format": "uuid",
+                    "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                  }
+                },
+                "required": [
+                  "sandboxId"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$schema": "http://json-schema.org/draft-07/schema#",
+                  "type": "object",
+                  "properties": {
+                    "result": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string",
+                          "format": "uuid",
+                          "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                        },
+                        "state": {
+                          "type": "string",
+                          "enum": [
+                            "pending",
+                            "succeeded",
+                            "failed",
+                            "uncertain"
+                          ]
+                        },
+                        "sandboxId": {
+                          "type": "string",
+                          "format": "uuid",
+                          "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "state",
+                        "sandboxId"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "result"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request could not be completed, including when the serialized body exceeds 131072 bytes.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$schema": "http://json-schema.org/draft-07/schema#",
+                      "type": "object",
+                      "properties": {
+                        "error": {
+                          "type": "object",
+                          "properties": {
+                            "code": {
+                              "type": "string",
+                              "enum": [
+                                "invalid_epoch_authority",
+                                "use_post",
+                                "scoped_method_denied",
+                                "invalid_scoped_request",
+                                "scoped_authority_denied",
+                                "scoped_operation_unavailable"
+                              ]
+                            },
+                            "message": {
+                              "type": "string",
+                              "enum": [
+                                "invalid_epoch_authority",
+                                "use_post",
+                                "scoped_method_denied",
+                                "invalid_scoped_request",
+                                "scoped_authority_denied",
+                                "scoped_operation_unavailable"
+                              ]
+                            }
+                          },
+                          "required": [
+                            "code",
+                            "message"
+                          ],
+                          "additionalProperties": false
+                        }
+                      },
+                      "required": [
+                        "error"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "$ref": "#/components/schemas/Failure"
+                    },
+                    {
+                      "$ref": "#/components/schemas/DrainRefusal"
+                    },
+                    {
+                      "type": "object",
+                      "required": [
+                        "error"
+                      ],
+                      "properties": {
+                        "error": {
+                          "const": "internal"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Temporarily unavailable: a structured failure, or the bare refusal sent before dispatch while the server drains. Honor Retry-After when present.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$schema": "http://json-schema.org/draft-07/schema#",
+                      "type": "object",
+                      "properties": {
+                        "error": {
+                          "type": "object",
+                          "properties": {
+                            "code": {
+                              "type": "string",
+                              "enum": [
+                                "invalid_epoch_authority",
+                                "use_post",
+                                "scoped_method_denied",
+                                "invalid_scoped_request",
+                                "scoped_authority_denied",
+                                "scoped_operation_unavailable"
+                              ]
+                            },
+                            "message": {
+                              "type": "string",
+                              "enum": [
+                                "invalid_epoch_authority",
+                                "use_post",
+                                "scoped_method_denied",
+                                "invalid_scoped_request",
+                                "scoped_authority_denied",
+                                "scoped_operation_unavailable"
+                              ]
+                            }
+                          },
+                          "required": [
+                            "code",
+                            "message"
+                          ],
+                          "additionalProperties": false
+                        }
+                      },
+                      "required": [
+                        "error"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "$ref": "#/components/schemas/Failure"
+                    },
+                    {
+                      "$ref": "#/components/schemas/DrainRefusal"
+                    },
+                    {
+                      "type": "object",
+                      "required": [
+                        "error"
+                      ],
+                      "properties": {
+                        "error": {
+                          "const": "internal"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Public API failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$schema": "http://json-schema.org/draft-07/schema#",
+                      "type": "object",
+                      "properties": {
+                        "error": {
+                          "type": "object",
+                          "properties": {
+                            "code": {
+                              "type": "string",
+                              "enum": [
+                                "invalid_epoch_authority",
+                                "use_post",
+                                "scoped_method_denied",
+                                "invalid_scoped_request",
+                                "scoped_authority_denied",
+                                "scoped_operation_unavailable"
+                              ]
+                            },
+                            "message": {
+                              "type": "string",
+                              "enum": [
+                                "invalid_epoch_authority",
+                                "use_post",
+                                "scoped_method_denied",
+                                "invalid_scoped_request",
+                                "scoped_authority_denied",
+                                "scoped_operation_unavailable"
+                              ]
+                            }
+                          },
+                          "required": [
+                            "code",
+                            "message"
+                          ],
+                          "additionalProperties": false
+                        }
+                      },
+                      "required": [
+                        "error"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "$ref": "#/components/schemas/Failure"
+                    },
+                    {
+                      "$ref": "#/components/schemas/DrainRefusal"
+                    },
+                    {
+                      "type": "object",
+                      "required": [
+                        "error"
+                      ],
+                      "properties": {
+                        "error": {
+                          "const": "internal"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/orchestrator-tools/extend": {
+      "post": {
+        "operationId": "orchestrator_tools_extend",
+        "description": "Scoped own-child operation. No owner/admin/credential/general sandbox authority.",
+        "x-armada-direct-server": true,
+        "security": [
+          {
+            "epochGrant": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "$schema": "http://json-schema.org/draft-07/schema#",
+              "type": "string",
+              "pattern": "^[ -~]{1,128}$"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "description": "Send at most 131072 bytes of serialized JSON.",
+          "x-max-body-bytes": 131072,
+          "x-oversized-body-status": 400,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$schema": "http://json-schema.org/draft-07/schema#",
+                "type": "object",
+                "properties": {
+                  "sandboxId": {
+                    "type": "string",
+                    "format": "uuid",
+                    "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                  },
+                  "ttlSeconds": {
+                    "type": "integer",
+                    "exclusiveMinimum": 0,
+                    "maximum": 2591700
+                  }
+                },
+                "required": [
+                  "sandboxId",
+                  "ttlSeconds"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$schema": "http://json-schema.org/draft-07/schema#",
+                  "type": "object",
+                  "properties": {
+                    "result": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string",
+                          "format": "uuid",
+                          "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                        },
+                        "state": {
+                          "type": "string",
+                          "enum": [
+                            "pending",
+                            "succeeded",
+                            "failed",
+                            "uncertain"
+                          ]
+                        },
+                        "sandboxId": {
+                          "type": "string",
+                          "format": "uuid",
+                          "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "state",
+                        "sandboxId"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "result"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request could not be completed, including when the serialized body exceeds 131072 bytes.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$schema": "http://json-schema.org/draft-07/schema#",
+                      "type": "object",
+                      "properties": {
+                        "error": {
+                          "type": "object",
+                          "properties": {
+                            "code": {
+                              "type": "string",
+                              "enum": [
+                                "invalid_epoch_authority",
+                                "use_post",
+                                "scoped_method_denied",
+                                "invalid_scoped_request",
+                                "scoped_authority_denied",
+                                "scoped_operation_unavailable"
+                              ]
+                            },
+                            "message": {
+                              "type": "string",
+                              "enum": [
+                                "invalid_epoch_authority",
+                                "use_post",
+                                "scoped_method_denied",
+                                "invalid_scoped_request",
+                                "scoped_authority_denied",
+                                "scoped_operation_unavailable"
+                              ]
+                            }
+                          },
+                          "required": [
+                            "code",
+                            "message"
+                          ],
+                          "additionalProperties": false
+                        }
+                      },
+                      "required": [
+                        "error"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "$ref": "#/components/schemas/Failure"
+                    },
+                    {
+                      "$ref": "#/components/schemas/DrainRefusal"
+                    },
+                    {
+                      "type": "object",
+                      "required": [
+                        "error"
+                      ],
+                      "properties": {
+                        "error": {
+                          "const": "internal"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Temporarily unavailable: a structured failure, or the bare refusal sent before dispatch while the server drains. Honor Retry-After when present.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$schema": "http://json-schema.org/draft-07/schema#",
+                      "type": "object",
+                      "properties": {
+                        "error": {
+                          "type": "object",
+                          "properties": {
+                            "code": {
+                              "type": "string",
+                              "enum": [
+                                "invalid_epoch_authority",
+                                "use_post",
+                                "scoped_method_denied",
+                                "invalid_scoped_request",
+                                "scoped_authority_denied",
+                                "scoped_operation_unavailable"
+                              ]
+                            },
+                            "message": {
+                              "type": "string",
+                              "enum": [
+                                "invalid_epoch_authority",
+                                "use_post",
+                                "scoped_method_denied",
+                                "invalid_scoped_request",
+                                "scoped_authority_denied",
+                                "scoped_operation_unavailable"
+                              ]
+                            }
+                          },
+                          "required": [
+                            "code",
+                            "message"
+                          ],
+                          "additionalProperties": false
+                        }
+                      },
+                      "required": [
+                        "error"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "$ref": "#/components/schemas/Failure"
+                    },
+                    {
+                      "$ref": "#/components/schemas/DrainRefusal"
+                    },
+                    {
+                      "type": "object",
+                      "required": [
+                        "error"
+                      ],
+                      "properties": {
+                        "error": {
+                          "const": "internal"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Public API failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$schema": "http://json-schema.org/draft-07/schema#",
+                      "type": "object",
+                      "properties": {
+                        "error": {
+                          "type": "object",
+                          "properties": {
+                            "code": {
+                              "type": "string",
+                              "enum": [
+                                "invalid_epoch_authority",
+                                "use_post",
+                                "scoped_method_denied",
+                                "invalid_scoped_request",
+                                "scoped_authority_denied",
+                                "scoped_operation_unavailable"
+                              ]
+                            },
+                            "message": {
+                              "type": "string",
+                              "enum": [
+                                "invalid_epoch_authority",
+                                "use_post",
+                                "scoped_method_denied",
+                                "invalid_scoped_request",
+                                "scoped_authority_denied",
+                                "scoped_operation_unavailable"
+                              ]
+                            }
+                          },
+                          "required": [
+                            "code",
+                            "message"
+                          ],
+                          "additionalProperties": false
+                        }
+                      },
+                      "required": [
+                        "error"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "$ref": "#/components/schemas/Failure"
+                    },
+                    {
+                      "$ref": "#/components/schemas/DrainRefusal"
+                    },
+                    {
+                      "type": "object",
+                      "required": [
+                        "error"
+                      ],
+                      "properties": {
+                        "error": {
+                          "const": "internal"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -11861,6 +14632,16 @@
         "type": "http",
         "scheme": "bearer",
         "description": "A short-lived sandbox viewer grant."
+      },
+      "epochGrant": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "A scoped epoch grant for the required worker authority."
+      },
+      "finishGrant": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "A sandbox runtime grant that authorizes self-finish."
       }
     },
     "schemas": {

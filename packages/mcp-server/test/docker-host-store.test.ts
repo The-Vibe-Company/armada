@@ -16,6 +16,7 @@ import { SNAPSHOT_COLUMNS } from "../src/docker-snapshot-data.ts";
 import { createSandboxAccessServices } from "../src/sandbox-access-services.ts";
 import { createFinishedDockerCleanup, requestSandboxFinish, selfFinishToken } from "../src/sandbox-finish.ts";
 import { migratedDatabase } from "./migrated-database.ts";
+import { publishedResponse } from "./published-response.ts";
 
 let connection: Awaited<ReturnType<typeof migratedDatabase>> | undefined;
 function database() {
@@ -1506,6 +1507,7 @@ test("runtime self completion needs no child access and retries failed stop/dele
   );
   expect(response?.status).toBe(200);
   const report = (await response?.json()) as { result: { preservationNote: string } };
+  expect(publishedResponse("orchestrator-tools/finish").safeParse(report).success).toBe(true);
   expect(report.result.preservationNote).toContain("Unpushed Git work is not preserved");
   const stopping = (await finishState())!;
   expect(Number(stopping.lifecycle_generation)).toBe(Number(initial.lifecycle_generation) + 1);
