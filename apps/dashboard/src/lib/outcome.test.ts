@@ -7,17 +7,21 @@ import {
   reportedPullRequest,
   safeHref,
   settledOutcome,
-} from "../src/lib/outcome.ts";
+} from "./outcome.ts";
 
 const SHA = "0123456789abcdef0123456789ABCDEF01234567";
 const ID = "00000000-0000-4000-8000-000000000032";
 
 describe("parseTaskOutcome", () => {
   test("keeps an outcome the database allows", () => {
-    const ready = { state: "ready", prNumber: 768, prUrl: "https://github.com/acme/web/pull/768", headSha: SHA };
+    const ready = {
+      state: "ready",
+      prNumber: 768,
+      prUrl: "https://github.com/acme/web/pull/768",
+      headSha: SHA,
+    } as const;
     expect(parseTaskOutcome(ready)).toEqual(ready);
     expect(parseTaskOutcome({ state: "ready" })).toEqual({ state: "ready" });
-    // Characters, not UTF-16 units: 600 emoji are within the 1000 the database allows.
     expect(parseTaskOutcome({ state: "blocked", reason: "🚧".repeat(600) })).not.toBeNull();
     expect(parseTaskOutcome({ state: "blocked", reason: "  Needs a key  " })).toEqual({
       state: "blocked",
@@ -68,7 +72,6 @@ describe("outcomeView", () => {
       pr: { label: "PR #3", href: null },
     });
     expect(outcomeView({ state: "ready", prUrl: "http://github.com/x" })).toMatchObject({ pr: null });
-    // The agent writes the address: another site is never labelled as its pull request.
     expect(outcomeView({ state: "ready", prNumber: 4, prUrl: "https://evil.example/pull/4" })).toMatchObject({
       pr: { label: "PR #4", href: null },
     });
@@ -88,14 +91,15 @@ describe("outcomeView", () => {
 });
 
 describe("reported pull request confirmed by GitHub", () => {
-  const confirmed = (state: SandboxPullRequest["state"], repository = "acme/web", number = 42): SandboxPullRequest => ({
-    repository,
-    number,
-    url: `https://github.com/${repository}/pull/${number}`,
-    headBranch: "topic",
-    state,
-    checkedAt: "2026-11-18T08:00:00.000Z",
-  });
+  const confirmed = (state: SandboxPullRequest["state"], repository = "acme/web", number = 42) =>
+    ({
+      repository,
+      number,
+      url: `https://github.com/${repository}/pull/${number}`,
+      headBranch: "topic",
+      state,
+      checkedAt: "2026-11-18T08:00:00.000Z",
+    }) satisfies SandboxPullRequest;
   const ready = { state: "ready", prNumber: 42, prUrl: "https://github.com/acme/web/pull/42" } as const;
 
   test("a reported ready pull request reads Merged once GitHub confirms that same pull request merged", () => {
@@ -109,9 +113,7 @@ describe("reported pull request confirmed by GitHub", () => {
     expect(outcomeView(ready, [confirmed("merged", "acme/other")])).toMatchObject({ merged: false });
     expect(outcomeView(ready, [confirmed("merged", "acme/web", 43)])).toMatchObject({ merged: false });
     expect(reportedPullRequest(ready, [confirmed("merged", "ACME/Web")])?.state).toBe("merged");
-    // The link and the number disagree: the outcome names no single pull request.
     expect(reportedPullRequest({ ...ready, prNumber: 43 }, [confirmed("merged")])).toBeNull();
-    // A number without a link names no repository: another repository's merged #42 never reads as this one.
     expect(outcomeView({ state: "ready", prNumber: 42 }, [confirmed("merged", "acme/other")])).toMatchObject({
       merged: false,
     });

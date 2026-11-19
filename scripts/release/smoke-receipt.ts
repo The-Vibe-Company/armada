@@ -9,7 +9,7 @@ export interface ReceiptRun {
   run_attempt?: number;
 }
 
-function authenticateReleaseIdentity(run: ReceiptRun, repository: string): boolean {
+function authenticateReleaseIdentity(run: ReceiptRun, repository: string) {
   return (
     run.head_repository?.full_name === repository &&
     (run.head_branch === "main" || /^v[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.-]+)?$/.test(run.head_branch)) &&
@@ -18,24 +18,24 @@ function authenticateReleaseIdentity(run: ReceiptRun, repository: string): boole
   );
 }
 
-export function authenticateReleaseCompletion(run: ReceiptRun, repository: string): boolean {
+export function authenticateReleaseCompletion(run: ReceiptRun, repository: string) {
   return run.status === "completed" && authenticateReleaseIdentity(run, repository);
 }
 
-export function authenticateSmokeReceiptProducer(run: ReceiptRun, repository: string): boolean {
+export const authenticateSmokeReceiptProducer: (run: ReceiptRun, repository: string) => boolean = (run, repository) => {
   if (run.head_repository?.full_name !== repository) return false;
   if (run.event === "workflow_run") {
     return run.path === ".github/workflows/staging-gated-production.yml" && run.head_branch === "main";
   }
   return authenticateSmokeReceipt(run, repository);
-}
+};
 
 export function authenticateSmokeReceipt(
   run: ReceiptRun,
   repository: string,
   release?: ReceiptRun,
   currentRunId?: number,
-): boolean {
+) {
   const trusted = (candidate: ReceiptRun) =>
     candidate.head_repository?.full_name === repository &&
     (candidate.head_branch === "main" || /^v[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.-]+)?$/.test(candidate.head_branch));

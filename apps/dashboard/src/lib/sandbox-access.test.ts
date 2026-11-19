@@ -1,12 +1,12 @@
 import { expect, test } from "bun:test";
 import type { SandboxListMetadata } from "@armada/core";
-import { parseSandboxListMetadata, skippedRowsNote } from "../src/lib/sandbox-access.ts";
-import { filterSandboxes, parseSandboxFilters, sandboxFacetCounts } from "../src/lib/sandbox-filters.ts";
+import { parseSandboxListMetadata, skippedRowsNote } from "./sandbox-access.ts";
+import { filterSandboxes, parseSandboxFilters, sandboxFacetCounts } from "./sandbox-filters.ts";
 
 const ORG = "00000000-0000-4000-8000-000000000011";
 const BOB = "00000000-0000-4000-8000-000000000002";
 
-function row(overrides: Partial<SandboxListMetadata> = {}): SandboxListMetadata {
+function row(overrides: Partial<SandboxListMetadata> = {}) {
   const id = overrides.id ?? "00000000-0000-4000-8000-000000000031";
   return {
     id,
@@ -30,12 +30,11 @@ function row(overrides: Partial<SandboxListMetadata> = {}): SandboxListMetadata 
     canOpen: false,
     canManage: false,
     ...overrides,
-  };
+  } satisfies SandboxListMetadata;
 }
 
 test("only the contract's fields of a listed sandbox reach the page, with PostgREST timestamps made ISO", () => {
   const listed = row({ expiresAt: "2026-11-08T18:05:00.000Z" });
-  // An interior field a producer might return by mistake is dropped, never displayed.
   const {
     rows: [parsed],
   } = parseSandboxListMetadata([
@@ -66,7 +65,6 @@ test("a row that does not match the contract is left out and reported, never gue
   ] as const)
     expect(parseSandboxListMetadata([broken, good])).toEqual({ rows: [good], skipped: [{ id: row().id, reason }] });
   expect(parseSandboxListMetadata(["x"]).skipped).toEqual([{ id: null, reason: "not an object" }]);
-  // A response that is not a list at all is still a failed read.
   expect(() => parseSandboxListMetadata({ rows: [] })).toThrow("did not match its contract");
   expect(skippedRowsNote(0)).toBeNull();
   expect(skippedRowsNote(1)).toBe("1 sandbox could not be shown.");

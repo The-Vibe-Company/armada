@@ -575,6 +575,7 @@ export async function createServerServices(env: Record<string, string | undefine
     ...(config.encryptionKey ? [createDockerOutputReader(sql, config.encryptionKey)] : []),
   );
   const handlerOptions: Omit<HandlerOptions, "routes"> = {
+    launchDiscovery: control,
     ...(dockerControls ? { dockerControls } : {}),
     runtimeSend,
     accountTurns,
