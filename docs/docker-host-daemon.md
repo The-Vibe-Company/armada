@@ -789,7 +789,7 @@ revision and apply `20261113150000_docker_host_version.sql` through the normal
 operator release process before using it. No deployment or remote migration was
 performed here.
 
-Use **Add a host** in the dashboard or `armada host add --org ORG_UUID`.
+Use **Register a Docker host** in the dashboard or `armada host add --org ORG_UUID`.
 Paste its one command on the Linux Docker machine; the one-use token is included
 under the owner-approved five-minute registration-token exception. Never share
 or persist the command. Requires curl, sha256sum, util-linux flock/loginctl
@@ -821,7 +821,7 @@ path; it is an open question for the owner, not a new command.
 Single coordinator check on the real machine previously registered as
 `70bde9cd-36c9-40af-b15e-65b2f9d3c2a2`: record container/volume baseline,
 reconcile/delete its old sandboxes, revoke and remove the hand-made installation
-using the manual runbook. Run the new Add-a-host command interactively there.
+using the manual runbook. Run the command from **Register a Docker host** interactively there.
 Retain the new registration's host ID, not the revoked ID. Run the existing smoke
 with server/org/credential/SSH/image arguments plus
 `--host-id NEW_HOST_ID --service-install`. It restarts only the user service,
@@ -902,7 +902,7 @@ CLI follow-up. Existing `--service-install` real-host acceptance remains pending
 
 ### Default model accounts on normal Docker launch (#1579)
 
-Docker launches such as `armada launch --provider docker --agent codex`
+Docker launches such as `armada launch --provider docker --agent codex --host HOST_UUID`
 can omit `--credential-id`. With an account omitted, the server uses the same compatible
 personal-default policy as ordinary launches: a personal subscription marked as
 default wins over a personal API key. Explicit account choices still win; an

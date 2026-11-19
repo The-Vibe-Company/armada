@@ -30,7 +30,7 @@ An org admin registers hosts. Hosts and new Docker placements are separate serve
 opt-ins: a visible host list does not guarantee new launches are enabled.
 `armada host list --org ORG_UUID --json` reports `placement` and host states.
 
-If Self-hosted or Docker launch is absent/disabled, confirm your org and admin
+If the Docker hosts tab is missing or Docker launches are disabled, confirm your org and admin
 role, then ask the Armada server operator whether host registration and Docker
 placement are enabled and whether your architecture is supported. Do not assume
 the public deployment enables them. Choose Boat/Modal in the meantime.
