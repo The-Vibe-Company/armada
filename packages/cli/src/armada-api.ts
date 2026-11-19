@@ -37,7 +37,6 @@ interface ArmadaApiOptions {
   url?: string;
   /** Retain safe server error codes for versioned API clients. */
   preserveServerErrors?: boolean;
-  /** Return JSON without command-specific receipt validation or provider normalization. */
   rawJson?: boolean;
 }
 

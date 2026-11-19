@@ -26,7 +26,7 @@ async function invoke(
       now: unused,
       open: unused,
       session: memorySessionStore({ accessToken, refreshToken, expiresAt, armadaUrl: origin }),
-      fetch: async (input, init) => respond(new Request(input, init)),
+      fetch: async (input, init) => respond(new Request(String(input), init)),
     },
   });
   return { code, stdout, stderr };
