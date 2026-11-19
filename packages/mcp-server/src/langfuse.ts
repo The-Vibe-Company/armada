@@ -237,11 +237,24 @@ export function createLangfuse(
     if (!(await canDispatch())) return null;
     signal.throwIfAborted();
     const { provider, providerSandboxId } = await nativeProviderFor(job.sandbox_id, job.generation);
-    if (!(await canDispatch())) return null;
-    signal.throwIfAborted();
     if (providerSandboxId !== job.provider_sandbox_id) return null;
     const request = { sandboxId: providerSandboxId, promptId: job.prompt_id, signal };
-    const read = await readPromptEvents(provider, request);
+    const read = await readPromptEvents(
+      {
+        id: provider.id,
+        async events(page) {
+          signal.throwIfAborted();
+          const binding = await sql.query(
+            "select 1 from public.sandboxes where id=$1 and lifecycle_generation=$2 and provider_sandbox_id=$3",
+            [job.sandbox_id, job.generation, providerSandboxId],
+          );
+          if (!binding.rows.length || !(await canDispatch())) throw Error("Native export history binding changed.");
+          signal.throwIfAborted();
+          return provider.events(page);
+        },
+      },
+      request,
+    );
     signal.throwIfAborted();
     return {
       events: read.events.filter((e) => e.promptId === job.prompt_id),
@@ -427,8 +440,8 @@ export function createLangfuse(
           (select d.request_enc from public.docker_launch_requests d where d.sandbox_id=j.sandbox_id) as docker_request_enc
         from public.langfuse_turn_exports j join public.sandboxes s on s.id=j.sandbox_id
         left join public.org_langfuse c on c.org_id=j.org_id and c.enabled
-        where j.sandbox_id=$1 and j.prompt_id=$2 and s.lifecycle_generation=$3 and s.org_id=j.org_id`,
-          [claim.sandbox_id, promptId, claim.generation],
+        where j.sandbox_id=$1 and j.prompt_id=$2 and s.org_id=j.org_id`,
+          [claim.sandbox_id, promptId],
         )
       ).rows[0];
       if (!job) return { status: "done" };

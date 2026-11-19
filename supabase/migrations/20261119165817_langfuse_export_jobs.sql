@@ -6,11 +6,14 @@ create function public.queue_langfuse_export() returns trigger
 language plpgsql set search_path = '' as $$
 begin
   if new.completed_at is null then
-    insert into public.jobs(kind, sandbox_id, org_id, generation, idem_key, run_after, attempts, max_attempts, outcome)
-    select 'langfuse_export', new.sandbox_id, new.org_id, s.lifecycle_generation,
-      jsonb_build_array('internal', new.org_id, 'langfuse_export', new.sandbox_id, s.lifecycle_generation, new.prompt_id)::text,
-      greatest(new.observed_at, new.lease_until), new.attempts, 35, jsonb_build_object('promptId', new.prompt_id)
-    from public.sandboxes s where s.id = new.sandbox_id and s.org_id = new.org_id
+    insert into public.jobs(kind, sandbox_id, org_id, idem_key, run_after, attempts, max_attempts, outcome)
+    select 'langfuse_export', new.sandbox_id, new.org_id,
+      jsonb_build_array('internal', new.org_id, 'langfuse_export', new.sandbox_id, null, new.prompt_id)::text,
+      greatest(new.observed_at, new.lease_until),
+      -- An in-flight legacy claim cannot record its outcome after transfer.
+      -- Give that reservation back so the last possible send can be replayed.
+      greatest(0, new.attempts - coalesce((new.lease_id is not null and new.lease_until > clock_timestamp())::int, 0)),
+      35, jsonb_build_object('promptId', new.prompt_id)
     on conflict (idem_key) do nothing;
 
     -- Keep the receipt as the producer's deduplication record. Retire its

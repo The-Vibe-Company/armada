@@ -418,26 +418,97 @@ async function settledBoatTurn(prompt: string, mode: "metadata" | "full" = "full
   return { db, counters, org: people.org };
 }
 
-test("generation change during native history prevents sending and accounting", async () => {
+test("cutover transfers pending receipts and fences a legacy worker that already claimed one", async () => {
+  const { db } = await settledBoatTurn("turn");
+  const migration = await Bun.file(
+    new URL("../../../supabase/migrations/20261119165817_langfuse_export_jobs.sql", import.meta.url),
+  ).text();
+  const lease = crypto.randomUUID();
+  const leaseUntil = new Date("2050-01-01T00:00:00.000Z");
+  await db.transaction(async (tx) => {
+    await tx.exec("drop trigger queue_langfuse_export on langfuse_turn_exports; drop function queue_langfuse_export()");
+    await tx.exec("delete from jobs");
+    await tx.query(`update langfuse_turn_exports set attempts=5,lease_id=$1,lease_until=$2 where prompt_id='turn'`, [
+      lease,
+      leaseUntil,
+    ]);
+    await tx.exec(`
+      select public.enqueue_webhook_turn(sandbox_id,'unclaimed','finished') from langfuse_turn_exports
+      where prompt_id='turn';
+      select public.enqueue_webhook_turn(sandbox_id,'already_sent','finished') from langfuse_turn_exports
+      where prompt_id='turn';
+      update langfuse_turn_exports set completed_at=now() where prompt_id='already_sent';
+    `);
+    await tx.exec(migration);
+  });
+  expect(
+    (
+      await db.query(
+        "select outcome->>'promptId' as prompt,attempts,run_after=$1 as deferred from jobs order by prompt",
+        [leaseUntil],
+      )
+    ).rows,
+  ).toEqual([
+    { prompt: "turn", attempts: 4, deferred: true },
+    { prompt: "unclaimed", attempts: 0, deferred: false },
+  ]);
+  expect(
+    (
+      await db.query(
+        "select prompt_id from langfuse_turn_exports where completed_at is null and (lease_until is null or lease_until<now())",
+      )
+    ).rows,
+  ).toEqual([]);
+  const legacyCompletion = await db.query(
+    "update langfuse_turn_exports set completed_at=now() where prompt_id='turn' and lease_id=$1 returning org_id",
+    [lease],
+  );
+  expect(legacyCompletion.rows).toEqual([]);
+});
+
+test("native history fences every page and exports the receipt after an activity change", async () => {
   const { db, counters } = await settledBoatTurn("turn");
+  let reads = 0;
   const provider = {
     id: "boat",
     events: async () => {
-      await db.query("update sandboxes set lifecycle_generation=lifecycle_generation+1 where boat_id='boat_export'");
+      if (++reads === 1) {
+        await db.query("update sandboxes set lifecycle_generation=lifecycle_generation+1 where boat_id='boat_export'");
+        return { events: [], olderCursor: "previous", cursor: "native", hasMore: true };
+      }
       return { events, cursor: "native", hasMore: false };
     },
   } satisfies Pick<Provider, "id" | "events">;
+  const generations: string[] = [];
   let sends = 0;
-  const exporter = createLangfuse(db, key, async () => ({ provider, providerSandboxId: "boat_export" }), (async () => {
-    sends++;
-    return new Response();
-  }) as typeof fetch);
+  const clock = Date.UTC(2050, 0, 1);
+  const exporter = createLangfuse(
+    db,
+    key,
+    async (_id, generation) => {
+      generations.push(generation);
+      return { provider, providerSandboxId: "boat_export" };
+    },
+    (async (_input: RequestInfo | URL) => {
+      sends++;
+      return new Response();
+    }) as typeof fetch,
+    undefined,
+    () => clock,
+  );
   expect(await runExport(db, exporter)).toBe(true);
+  expect(reads).toBe(1);
   expect(sends).toBe(0);
-  expect(await counters()).toEqual([]);
-  expect((await db.query("select state,outcome->>'reason' as reason from jobs")).rows).toEqual([
-    { state: "failed", reason: "stale_generation" },
-  ]);
+  expect((await db.query<{ run_after: Date }>("select run_after from jobs")).rows[0]?.run_after.getTime()).toBe(
+    clock + 2000,
+  );
+  await db.query("update jobs set run_after=now()");
+  expect(await runExport(db, exporter)).toBe(true);
+  expect(generations).toHaveLength(2);
+  expect(BigInt(generations[1]!)).toBe(BigInt(generations[0]!) + 1n);
+  expect(reads).toBe(2);
+  expect(sends).toBe(1);
+  expect(await counters()).toEqual([{ exported: "1", failed: "0" }]);
 });
 
 test("an interrupted completion replays the same OTLP identities and accounts once", async () => {
