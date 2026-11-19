@@ -1,7 +1,7 @@
 import { ProviderError, type Sql, sandboxActivity, VaultError } from "@armada/core/server";
 import type { Caller } from "./caller.ts";
 import { createSqlData } from "./data.ts";
-import { createModalRuntimeEnvironment } from "./modal-runtime-environment.ts";
+import { createGoldenRuntimeEnvironment } from "./golden-runtime-environment.ts";
 import { runtimeBridgeTarget } from "./provider-runtime-admission.ts";
 import { lockRuntimeAccount } from "./runtime-account-admission.ts";
 import { runtimeAgentFor } from "./runtime-agent.ts";
@@ -34,7 +34,7 @@ export function createRuntimeFollowup(
   resume?: RuntimeResume,
 ) {
   const authority = createRuntimeEnrolments(sql, key);
-  const modalEnvironment = createModalRuntimeEnvironment(sql, key);
+  const environment = createGoldenRuntimeEnvironment(sql, key);
   return async (caller: Caller, input: RuntimeFollowupInput) => {
     refuseConversationSelector(input);
     const requestId = input.request_id?.toLowerCase();
@@ -106,8 +106,8 @@ export function createRuntimeFollowup(
       if (!last.done) throw new VaultError("conflict", "Wait for the current runtime prompt to finish.");
     }
     const configuredEpoch =
-      previous.state === "missing" && found.provider === "modal"
-        ? await modalEnvironment.deliver({ userId: caller.userId, orgId: found.orgId }, found.id)
+      previous.state === "missing" && (found.provider === "modal" || found.provider === "boat")
+        ? await environment.deliver(found.provider, { userId: caller.userId, orgId: found.orgId }, found.id)
         : undefined;
     if (!sql.transaction) throw new VaultError("unavailable", "Runtime send requires transactional admission.");
     const admitted = await sql.transaction(async (tx) => {
