@@ -114,7 +114,7 @@ never re-dispatched.
 
 ## Reading the reference back
 
-- `sandbox/status` (and MCP `status`/`wait`) return `externalRef` when set.
+- `sandbox/status` (and MCP `status`, including wait mode) return `externalRef` when set.
 - `sandbox/list` returns `externalRef` and accepts it as a filter. Both are
   interior-only: a member who cannot open another member's sandbox sees the row
   without its reference, and filtering by reference never matches it.

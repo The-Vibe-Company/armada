@@ -149,6 +149,10 @@ and its composer targets the sandbox automatically. Steer redirects an active tu
 sending replacement work. Do not treat steer as a guaranteed new turn or send
 as a safe interruption mechanism. Capture returned prompt/turn identifiers.
 
+On MCP, use `send` with `steer: true` and the instruction in `prompt`,
+`status` with `wait: true` and optional `timeout_seconds`, or `stop` with
+`turn: true` to interrupt while keeping compute up.
+
 Use blocking wait instead of tight status loops. --timeout is in seconds,
 accepts 0–600 and defaults to 60; the example waits at most 120 seconds. A
 still-running result can be waited on again, not relaunched. A wait response is
