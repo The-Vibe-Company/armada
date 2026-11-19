@@ -8,7 +8,7 @@ import type {
   DockerHostPollResponse,
   DockerHostResultRequest,
 } from "../../core/src/docker-host-wire.ts";
-import type { DockerMachineCli } from "../../core/src/docker-machine.ts";
+import type { DockerMachineCli, DockerMachineRequest } from "../../core/src/docker-machine.ts";
 import { DOCKER_OUTPUT_DIRECTORY_MISSING } from "../../core/src/docker-output-archive.ts";
 import { type DockerHostResources, dockerHostResources } from "../../core/src/docker-resources.ts";
 import { OUTPUT_ARCHIVE_LIMIT } from "../../core/src/sandbox-output-limits.ts";
@@ -179,6 +179,7 @@ export function httpApi(
     body: unknown,
     timeoutMs = 8_000,
     signal?: AbortSignal,
+    onResponse?: (response: Response) => void,
   ): Promise<unknown> {
     const response = await request(`${serverOrigin(server)}/api/docker-host/${endpoint}`, {
       method: "POST",
@@ -196,6 +197,7 @@ export function httpApi(
       await response.body?.cancel();
       throw new HostRequestDenied(response.status);
     }
+    onResponse?.(response);
     if (endpoint === "results" || endpoint === "container-inventory") {
       await response.body?.cancel();
       return undefined;
@@ -218,7 +220,7 @@ export function httpApi(
     }
     return JSON.parse(Buffer.concat(parts).toString("utf8"));
   }
-  function postResult(state: State, body: DockerHostResultRequest) {
+  function postResult(state: State, body: DockerHostResultRequest & { retained?: true }) {
     return post(state.server, "results", state.hostToken, body);
   }
 
@@ -286,7 +288,10 @@ export function httpApi(
     },
     async poll(state, options) {
       async function poll(body: DockerHostPollRequest, timeoutMs?: number) {
-        const result = (await post(state.server, "poll", state.hostToken, body, timeoutMs)) as DockerHostPollResponse;
+        let retainedStopProof = false;
+        const result = (await post(state.server, "poll", state.hostToken, body, timeoutMs, undefined, (response) => {
+          retainedStopProof = response.headers.get("x-armada-docker-retained-stop") === "1";
+        })) as DockerHostPollResponse;
         if (
           inventory &&
           !inventoryStop.signal.aborted &&
@@ -306,7 +311,7 @@ export function httpApi(
               inventoryReport = undefined;
             });
         }
-        return result;
+        return { ...result, retainedStopProof: retainedStopProof ? (true as const) : undefined };
       }
 
       const body = {
@@ -388,11 +393,12 @@ export function httpApi(
       const archive = await read();
       if (archive && (await send(archive)) !== 204) throw new Error("Retained output upload not acknowledged");
     },
-    async result(state, receipt, expired) {
+    async result(state, receipt, expired, retained) {
       if (!expired && !receipt.outcome) throw new Error("Missing host receipt outcome");
-      const body: DockerHostResultRequest = {
+      const body: DockerHostResultRequest & { retained?: true } = {
         installationId: state.installationId,
         requestId: receipt.requestId,
+        ...(!expired && retained && receipt.operation === "stop" && receipt.outcome === "failed" ? { retained } : {}),
         ...(expired ? { expired: true } : { outcome: receipt.outcome! }),
         ...(receipt.operation === "buildSnapshot" && receipt.imageId ? { imageId: receipt.imageId } : {}),
       };
@@ -409,6 +415,22 @@ export function httpApi(
       });
     },
   };
+}
+
+export async function observeRetainedStop(
+  cli: DockerMachineCli,
+  state: Pick<State, "installationId" | "hostId">,
+  request: DockerMachineRequest,
+  isStopped: (request: DockerMachineRequest) => Promise<boolean>,
+) {
+  const ids = [state.installationId, state.hostId, request.sandboxId, request.generation];
+  if (!ids.every(validId) || !(await isStopped(request))) return false;
+  const inspected = await cli.run(
+    ["container", "inspect", "--format", "{{.State.Status}} {{.State.Running}}", `armada-${ids.join("-")}`],
+    undefined,
+    { timeoutMs: 3000 },
+  );
+  return inspected.exitCode === 0 && inspected.stdout.trim() === "exited false";
 }
 
 /** Never a shell, never inherited output; inspect can contain secrets. */

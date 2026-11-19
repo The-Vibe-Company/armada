@@ -25,6 +25,7 @@ export type Receipt = {
   outcome?: "completed" | "failed";
   /** Why a failed machine operation failed, when it is one the person can act on (#1507). */
   reason?: DockerJobFailureReason;
+  retentionProofPending?: true;
   /** Durable positive local stop proof, separate from the original job outcome. */
   expired?: true;
   cleaned?: true;
@@ -85,6 +86,7 @@ export type State = {
   activeTtl?: string[];
   /** Fair bounded retries across retained confirmations and process restarts. */
   expiryReportAfter?: string;
+  retentionProofAfter?: string;
 };
 export interface Store {
   load(): Promise<State>;
@@ -101,8 +103,8 @@ export interface Api {
       /** Request IDs still executing here; the server hands out other sandboxes' jobs. */
       running?: string[];
     },
-  ): Promise<DockerHostPollResponse>;
-  result(state: State, receipt: Receipt, expired?: true): Promise<void>;
+  ): Promise<DockerHostPollResponse & { retainedStopProof?: true }>;
+  result(state: State, receipt: Receipt, expired?: true, retained?: true): Promise<void>;
   retainedOutputs?(state: State, requestId: string, read: () => Promise<Uint8Array<ArrayBuffer> | null>): Promise<void>;
   claim?(state: State, requestId: string, accepted: boolean): Promise<void>;
   cleaned?(state: State, requestId: string, reason?: "retention_elapsed" | "disk_pressure"): Promise<void>;
@@ -126,6 +128,7 @@ export interface Executor {
   isAbsent?(request: DockerMachineRequest): Promise<boolean>;
   stoppedAt?(request: DockerMachineRequest): Promise<number | null>;
   isStopped?(request: DockerMachineRequest): Promise<boolean>;
+  isRetainedStop?(request: DockerMachineRequest): Promise<boolean>;
 }
 /** One independent archive read/upload per host. Expiry reporting and cleanup remain independent. */
 export function createExpiryOutputSweep(
@@ -848,6 +851,41 @@ async function admitLocked(
       // Offline/unknown ACK: retry this same durable fact on a later fair turn.
     }
   }
+  async function reportRetainedStop(ledger: State, receipt: Receipt) {
+    const key = generationKey(receipt.request);
+    const eligible =
+      !receipt.cleaned &&
+      !receipt.expired &&
+      !expired(ledger).has(key) &&
+      !claimed.has(key) &&
+      !ledger.cleanupGenerations?.includes(key) &&
+      !ledger.retention?.some(
+        (entry) => generationKey(entry.request) === key && (entry.deleted || entry.cleanupAuthorized),
+      ) &&
+      !ledger.resumeClaims?.some((claim) => claim.active && claim.accepted && generationKey(claim) === key);
+    const retained = eligible && (await executor.isRetainedStop?.(receipt.request).catch(() => false));
+    await api.result(ledger, receipt, undefined, retained ? true : undefined);
+    delete receipt.retentionProofPending;
+    await store.save(ledger);
+  }
+
+  if (polled?.retainedStopProof && !pollError) {
+    const pending = state.receipts.filter((receipt) => receipt.retentionProofPending);
+    const after = pending.findIndex((receipt) => receipt.requestId === state.retentionProofAfter);
+    const report = [...pending.slice(after + 1), ...pending.slice(0, after + 1)].find(
+      (receipt) => receipt.requestId !== polled?.job?.requestId && !options.sandboxes?.has(receipt.request.sandboxId),
+    );
+    if (report) {
+      state.retentionProofAfter = report.requestId;
+      try {
+        await store.save(state);
+        await reportRetainedStop(state, report);
+      } catch {
+        // Keep the durable obligation and let other mailbox work continue.
+      }
+    }
+  }
+
   /** Ledger-side preconditions, inside the serialized section. Returns a refusal. */
   async function prepare(receipt: Receipt): Promise<unknown> {
     try {
@@ -912,6 +950,8 @@ async function admitLocked(
       receipt.outcome = "completed";
     } catch (error) {
       receipt.outcome = "failed";
+      if (receipt.operation === "stop" && !refusal && polled?.retainedStopProof && executor.isRetainedStop)
+        receipt.retentionProofPending = true;
       if (error instanceof DockerDiskFloorError) receipt.reason = "disk_full";
       else if (receipt.operation === "buildSnapshot") {
         receipt.reason = "snapshot_build_failed";
@@ -1068,7 +1108,15 @@ async function admitLocked(
         await perform(accepted, job, admitted, refusal);
         await exclusive(store, () => finish(accepted));
       }
-      await api.result(state, accepted);
+      if (accepted.retentionProofPending && polled?.retainedStopProof) {
+        await exclusive(store, async () => {
+          const latest = await store.load();
+          const saved = latest.receipts.find((item) => item.requestId === accepted.requestId);
+          if (saved?.retentionProofPending) await reportRetainedStop(latest, saved);
+        });
+      } else {
+        await api.result(state, accepted);
+      }
     },
   };
 }
@@ -1096,7 +1144,7 @@ export function compactReceipts(state: State): void {
     }
   }
   state.receipts = state.receipts.filter((receipt) => {
-    if (!receipt.outcome || retired.length >= state.cleanupLimit!) return true;
+    if (!receipt.outcome || receipt.retentionProofPending || retired.length >= state.cleanupLimit!) return true;
     const closed =
       receipt.cleaned ||
       receipt.operation === "stop" ||

@@ -18,7 +18,7 @@ import {
   type Store,
   tick,
 } from "../src/daemon.ts";
-import { fileStore, httpApi, readDockerOutputArchive } from "../src/native.ts";
+import { fileStore, httpApi, observeRetainedStop, readDockerOutputArchive } from "../src/native.ts";
 
 function fail(): never {
   throw new Error("missing receipt");
@@ -738,6 +738,77 @@ test("resume starts the retained container before fresh runtime bootstrap and ne
   expect(calls).toEqual(["start", "bootstrap"]);
   expect(f.acknowledgements).toEqual(["completed", "completed"]);
 });
+
+test.each([
+  ["verified retention", true, true, "exited false", true],
+  ["volume without a container", true, true, "", false],
+  ["container without its owned workspace", true, false, "exited false", false],
+  ["container still running", true, false, "running true", false],
+  ["server without the capability", false, true, "exited false", false],
+] as const)(
+  "failed stop reports %s through the negotiated results route",
+  async (_, supported, owned, status, proof) => {
+    const f = fixture("stop");
+    let delivered = false;
+    const results: unknown[] = [];
+    const api = httpApi((async (url, options) => {
+      if (String(url).endsWith("/poll")) {
+        const job = delivered ? null : f.job;
+        delivered = true;
+        return Response.json(
+          { job },
+          {
+            headers: supported ? { "x-armada-docker-retained-stop": "1" } : {},
+          },
+        );
+      }
+      const receipt = (await f.store.load()).receipts[0];
+      expect(receipt?.outcome).toBe("failed");
+      results.push(JSON.parse(String(options?.body)));
+      if (proof && results.length === 1) throw new Error("lost response");
+      return new Response(null, { status: 204 });
+    }) as typeof fetch);
+    let stops = 0;
+    const executor: Executor = {
+      ...f.executor,
+      async stop() {
+        stops++;
+        throw new Error("stop response unknown");
+      },
+      isRetainedStop(request) {
+        return observeRetainedStop(
+          {
+            async run(args) {
+              const state = f.state();
+              expect(args.at(-1)).toBe(
+                `armada-${state.installationId}-${state.hostId}-${request.sandboxId}-${request.generation}`,
+              );
+              return { stdout: status, exitCode: status ? 0 : 1 };
+            },
+          },
+          f.state(),
+          request,
+          async () => owned,
+        );
+      },
+    };
+    if (proof) {
+      await expect(tick(f.store, api, executor)).rejects.toThrow("lost response");
+      await tick(f.store, api, executor);
+      await tick(f.store, api, executor);
+    } else {
+      await tick(f.store, api, executor);
+    }
+    const result = {
+      installationId: f.state().installationId,
+      requestId: f.job.requestId,
+      outcome: "failed",
+      ...(proof ? { retained: true } : {}),
+    };
+    expect(results).toEqual(proof ? [result, result] : [result]);
+    expect(stops).toBe(1);
+  },
+);
 
 test("unregister distinguishes a pending drain from confirmed revocation and rejects unknown responses", async () => {
   const state = fixture().state();

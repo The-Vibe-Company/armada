@@ -21,7 +21,7 @@ import {
 } from "./daemon.ts";
 import { dockerDiskFreeBytes, stoppedSandboxBytes, withDiskFloor } from "./disk.ts";
 import { cleanupOfficialImages } from "./image-retention.ts";
-import { dockerCli, fileStore, httpApi, readDockerOutputArchive } from "./native.ts";
+import { dockerCli, fileStore, httpApi, observeRetainedStop, readDockerOutputArchive } from "./native.ts";
 import { dockerRuntimeStarter } from "./runtime-install.ts";
 import {
   installService,
@@ -225,6 +225,7 @@ async function main(args: string[]) {
     const runtime = withDiskFloor(
       {
         ...executor,
+        isRetainedStop: (request) => observeRetainedStop(dockerCli, state, request, executor.isStopped),
         diskFreeBytes: sampleDisk,
         cleanupImages: () => cleanupOfficialImages(dockerCli),
         configureLimits(next: DockerSandboxLimits | undefined) {
