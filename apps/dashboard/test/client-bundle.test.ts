@@ -24,7 +24,7 @@ test("the dashboard imports only browser-safe Armada core entry points", () => {
     const source = readFileSync(path, "utf8");
     expect(source).not.toMatch(/@armada\/provider-|@boatdev\/sdk|createBoatProvider/);
     for (const [, specifier] of source.matchAll(/from\s+["'](@armada\/[^"']+)["']/g))
-      expect(["@armada/core", "@armada/core/contract"]).toContain(specifier);
+      expect(["@armada/core", "@armada/core/contract", "@armada/core/launch-workdir"]).toContain(specifier);
   }
 });
 
