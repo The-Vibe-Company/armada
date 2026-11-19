@@ -67,10 +67,14 @@ function count(counter: Counter, files: Files) {
   return total;
 }
 
-function matchContext({ path, content, index, text }: { path: string; content: string; index: number; text: string }) {
+function matchContext({ content, index, text }: { content: string; index: number; text: string }) {
   const from = index === 0 ? 0 : content.lastIndexOf("\n", index - 1) + 1;
   const to = content.indexOf("\n", index + text.length);
-  return JSON.stringify([path, text, content.slice(from, to === -1 ? undefined : to).trim()]);
+  return JSON.stringify([text, content.slice(from, to === -1 ? undefined : to).trim()]);
+}
+
+function increment(counts: Map<string, number>, key: string) {
+  counts.set(key, (counts.get(key) ?? 0) + 1);
 }
 
 function take(counts: Map<string, number>, key: string) {
@@ -86,20 +90,32 @@ export function compare(base: Files | undefined, head: Files) {
     const after = count(counter, head);
     const added: { path: string; line: number; text: string }[] = [];
     if (base !== undefined && before !== undefined && after > before) {
-      const exact = new Map<string, number>();
-      const remaining = new Map<string, number>();
+      const sameFile = new Map<string, number>();
+      const sameLine = new Map<string, number>();
+      const sameToken = new Map<string, number>();
       for (const match of matches(counter, base)) {
-        const key = matchContext(match);
-        exact.set(key, (exact.get(key) ?? 0) + 1);
-        remaining.set(match.text, (remaining.get(match.text) ?? 0) + 1);
+        const context = matchContext(match);
+        increment(sameFile, match.path + "\0" + context);
+        increment(sameLine, context);
+        increment(sameToken, match.text);
       }
-      const unmatched = [];
+      const movedOrNew = [];
       for (const match of matches(counter, head)) {
-        if (take(exact, matchContext(match))) take(remaining, match.text);
-        else unmatched.push(match);
+        const context = matchContext(match);
+        if (take(sameFile, match.path + "\0" + context)) {
+          take(sameLine, context);
+          take(sameToken, match.text);
+        } else {
+          movedOrNew.push({ match, context });
+        }
       }
-      for (const { path, content, index, text } of unmatched) {
-        if (!take(remaining, text)) {
+      const changedLines = [];
+      for (const { match, context } of movedOrNew) {
+        if (take(sameLine, context)) take(sameToken, match.text);
+        else changedLines.push(match);
+      }
+      for (const { path, content, index, text } of changedLines) {
+        if (!take(sameToken, text)) {
           added.push({ path, line: content.slice(0, index).split("\n").length, text });
         }
       }

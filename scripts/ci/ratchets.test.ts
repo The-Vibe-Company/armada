@@ -66,3 +66,12 @@ test("counts case-insensitive deprecation headers only in server source", () => 
   ]);
   expect(compare(new Map(), head)[2]).toMatchObject({ before: 0, after: 2 });
 });
+
+test("reports the added occurrence when the same branch token also moves", () => {
+  const base = new Map([[stop, branch]]);
+  const head = new Map([
+    [finish, 'if (provider === "modal") audit();'],
+    [server + "turns.ts", branch],
+  ]);
+  expect(compare(base, head)[0]?.added).toEqual([{ path: finish, line: 1, text: '=== "modal"' }]);
+});
