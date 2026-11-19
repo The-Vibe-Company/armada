@@ -57,7 +57,9 @@ export async function database(): Promise<{ db: PGlite; people: People }> {
 }
 
 /** Seed the common launch fixtures into an empty database owned by the caller. */
-export async function seedDatabase(db: PGlite): Promise<{ db: PGlite; people: People }> {
+export async function seedDatabase(
+  db: PGlite,
+): Promise<{ db: PGlite; people: People; sharedGoldenId: string; openaiCredentialId: string }> {
   const people: People = {
     org: crypto.randomUUID(),
     otherOrg: crypto.randomUUID(),
@@ -65,52 +67,57 @@ export async function seedDatabase(db: PGlite): Promise<{ db: PGlite; people: Pe
     member: crypto.randomUUID(),
     admin: crypto.randomUUID(),
   };
-  await db.query("insert into auth.users (id) values ($1), ($2), ($3)", [people.owner, people.member, people.admin]);
-  await db.query("insert into orgs (id, name, boat_api_key_enc) values ($1, 'Example', $2), ($3, 'Other', null)", [
-    people.org,
-    await encryptSecret(SECRETS.orgBoat, ENCRYPTION_KEY),
-    people.otherOrg,
-  ]);
-  await db.query(
-    `insert into members (org_id, user_id, role) values
-      ($1, $2, 'member'), ($1, $3, 'member'), ($1, $4, 'admin'), ($5, $3, 'admin')`,
-    [people.org, people.owner, people.member, people.admin, people.otherOrg],
-  );
   const config = JSON.stringify({
     repos: [{ url: "https://github.com/example/web.git", branch: "main", dir: "web" }],
     init: ["bun install"],
   });
-  await db.query(
-    `insert into goldens (org_id, name, visibility, owner_id, boat_snapshot_id, config) values
-      ($1, 'mine', 'private', $2, $5, $8::jsonb),
-      ($1, 'shared', 'org', $3, $6, $8::jsonb),
-      ($4, 'elsewhere', 'org', $9, $7, $8::jsonb)`,
+  const [orgBoat, ownerClaude, personalBoat, orgClaude, orgOpenai] = await Promise.all(
+    [SECRETS.orgBoat, SECRETS.ownerClaude, SECRETS.personalBoat, SECRETS.orgClaude, SECRETS.orgOpenai].map((value) =>
+      encryptSecret(value, ENCRYPTION_KEY),
+    ),
+  );
+  const { rows: goldens } = await db.query<{ id: string }>(
+    `with users as (
+      insert into auth.users (id) values ($1::uuid), ($2::uuid), ($3::uuid)
+    ), organizations as (
+      insert into orgs (id, name, boat_api_key_enc) values ($4::uuid, 'Example', $6), ($5::uuid, 'Other', null)
+    ), memberships as (
+      insert into members (org_id, user_id, role) values
+        ($4, $1, 'member'), ($4, $2, 'member'), ($4, $3, 'admin'), ($5, $2, 'admin')
+    ), seeded_goldens as (
+      insert into goldens (org_id, name, visibility, owner_id, boat_snapshot_id, config) values
+        ($4, 'mine', 'private', $1, $7, $10::jsonb),
+        ($4, 'shared', 'org', $3, $8, $10::jsonb),
+        ($5, 'elsewhere', 'org', $2, $9, $10::jsonb)
+      returning id, name
+    )
+    select id from seeded_goldens where name='shared'`,
     [
-      people.org,
       people.owner,
+      people.member,
       people.admin,
+      people.org,
       people.otherOrg,
+      orgBoat,
       `a${"1".repeat(62)}`,
       `a${"2".repeat(62)}`,
       `a${"3".repeat(62)}`,
       config,
-      people.member,
     ],
   );
-  const [ownerClaude, personalBoat, orgClaude, orgOpenai] = await Promise.all(
-    [SECRETS.ownerClaude, SECRETS.personalBoat, SECRETS.orgClaude, SECRETS.orgOpenai].map((value) =>
-      encryptSecret(value, ENCRYPTION_KEY),
-    ),
-  );
-  await db.query(
-    `insert into credentials (scope, owner_id, kind, value_enc) values
-      ('user', $1, 'claude_oauth', $3),
-      ('user', $1, 'boat', $4),
-      ('org', $2, 'claude_oauth', $5),
-      ('org', $2, 'openai', $6)`,
+  const { rows: credentials } = await db.query<{ id: string }>(
+    `with seeded_credentials as (
+      insert into credentials (scope, owner_id, kind, value_enc) values
+        ('user', $1, 'claude_oauth', $3),
+        ('user', $1, 'boat', $4),
+        ('org', $2, 'claude_oauth', $5),
+        ('org', $2, 'openai', $6)
+      returning id, kind
+    )
+    select id from seeded_credentials where kind='openai'`,
     [people.owner, people.org, ownerClaude, personalBoat, orgClaude, orgOpenai],
   );
-  return { db, people };
+  return { db, people, sharedGoldenId: goldens[0]!.id, openaiCredentialId: credentials[0]!.id };
 }
 
 interface FakeSandbox {
