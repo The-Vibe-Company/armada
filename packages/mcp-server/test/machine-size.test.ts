@@ -107,7 +107,7 @@ test("canonical HTTP launch validates sizes and applies overrides or golden defa
         new Request(`${PUBLIC_URL}/api/v1/sandbox/launch`, {
           method: "POST",
           headers: { authorization: `Bearer ${token}` },
-          body: JSON.stringify({ golden: "shared", harness: "claude", ...body }),
+          body: JSON.stringify({ provider: "boat", golden: "shared", harness: "claude", ...body }),
         }),
         control,
       );

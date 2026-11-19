@@ -78,8 +78,8 @@ schema, and the standalone Docker schema has been deleted. Pinned Modal REST
 launch also uses the shared schema and resolves the org to a UUID before
 template admission. MCP `launch` projects the ordinary Boat and Modal golden variants, excluding scoped
 Armada access, and publishes their camel-case fields. Explicit Boat and Modal runtime golden REST launches and their OpenAPI variants
-use the shared operation. Default golden REST launch still parses through
-`launch-request-schema.ts` pending the caller cutover to explicit provider selection.
+use the shared operation, as do default golden REST launches. All variants require
+an explicit provider and harness.
 The separate `templates/launch` endpoint keeps its `requestKey` and durable
 receipt, and shares applicable field schemas.
 

@@ -24,8 +24,8 @@ permissions. Keep this bearer out of browsers, URLs and logs. Send
 
 `POST /api/v1/sandbox/launch` serves Boat, Modal and Docker, but Docker takes a
 different body (see [Docker launches](#docker-launches)). For Boat and Modal,
-the body takes a snapshot name in `golden` and an agent identifier in
-`harness`. This example assumes a Modal snapshot called `review` and a
+the body requires `provider`, a snapshot name in `golden`, and an agent
+identifier in `harness`. This example assumes a Modal snapshot called `review` and a
 configured Codex account:
 
 ```json
@@ -68,26 +68,23 @@ inherit snapshot visibility. A private snapshot is visible to its owner.
   `externalRef` and receipt UUID when available. The UUID is the logical sandbox
   ID and is recorded in the provider's sandbox ownership label.
 
-The `idempotencyKey`, `externalRef` and recovery rules above apply only to Boat
-and Modal launches. See [idempotency and recovery](../launch-idempotency.md)
+The recovery rules above describe Boat and Modal launches. See [idempotency and recovery](../launch-idempotency.md)
 for receipt lookup and template launch keys.
 
 ### Docker launches
 
-A launch with `"provider":"docker"` goes to a separate handler with its own
-list of accepted fields. It refuses `golden`, `idempotencyKey` and `externalRef`
-with HTTP 400 `invalid_request`. A Docker sandbox therefore has no external
-reference, and `sandbox/list` with `externalRef` never returns it.
+A launch with `"provider":"docker"` takes a host or Docker snapshot as its
+source. Send one replay identifier, either an `idempotencyKey` or a caller-chosen
+`requestId` UUID. The request UUID becomes the sandbox ID when supplied.
+Replay the same inputs with the same identifier. A changed normalized request
+returns 409 `conflict`. Set `externalRef` to look up the sandbox later.
 
-- `org` is required and must be the organization UUID.
-- `requestId` is required and must be a fresh UUID. It becomes the sandbox ID
-  and is the replay key, so store it before you launch. Armada compares the
-  normalized request, so supplying a default explicitly (for example the
-  default `ttlSeconds`) is not a change. A changed body returns 409 `conflict`.
+- Select `org` by slug or UUID with a personal session. A scoped token can
+  omit it or send its scoped UUID.
 - `hostId` (a Docker host UUID) is required, unless you launch from a Docker
   snapshot with `snapshotId` (a snapshot UUID). The snapshot selects its host:
   a different `hostId` returns 404 `not_found`, and `repos` with
-  `snapshotId` returns 400 `invalid_request`.
+  `snapshotId` returns 400 `invalid`.
 - `harness` is required. Optional fields include `credentialId`,
   `credentialVersion`, `model`, `reasoningEffort`, `prompt`, `ttlSeconds`,
   `repos`, `skills` and `"visibility":"private"`.
@@ -96,8 +93,7 @@ The launch call returns as soon as Armada admits the launch. A worker then
 starts the sandbox on the host and sends the prompt. The first response
 therefore normally carries `"status":"starting"` and no `promptId` or
 `conversationId`. To follow the launch, call `sandbox/status` with the
-`requestId` as `id`. A replay with the same `requestId` and body never starts
-a second launch:
+returned sandbox ID. Replaying the same identifier and body starts at most one launch.
 
 - The replay reports the sandbox's current status, not the status of an
   earlier response. Until the worker publishes the launch receipt, a sandbox
@@ -107,7 +103,9 @@ a second launch:
   worker has published the launch receipt and the launch sent a prompt. It
   never carries them before.
 
-After a dropped response, poll `sandbox/status` with the `requestId` as `id`.
+After a dropped response, reissue the same request with the original replay
+identifier to recover the receipt. If you used `requestId`, you can also query
+`sandbox/status` with that UUID as `id`.
 For a launch that sent a prompt, read the prompt receipt by replaying the same
 request and checking the response for `promptId` and `conversationId`, not its
 status. A `starting` response without

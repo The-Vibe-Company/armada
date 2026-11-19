@@ -34,11 +34,11 @@ Review checks the code against the note. A gap in the note is one finding, not o
 
 ## Public surface
 
-Scope: `packages/mcp-server/src/control.ts`, `packages/mcp-server/src/control-tool-routes.ts` and other control route files, `packages/mcp-server/src/tools.ts`, `packages/mcp-server/src/public-rest-routes.ts`, `packages/mcp-server/src/openapi.ts`, `packages/core/src/contract/launch.ts`, `packages/mcp-server/src/launch-request-schema.ts`, `packages/mcp-server/src/launch-response-schemas.ts`, and their callers in `packages/sdk`, `packages/cli`, `apps/dashboard`, `apps/ios` and `.agents/skills/armada`.
+Scope: `packages/mcp-server/src/control.ts`, `packages/mcp-server/src/control-tool-routes.ts` and other control route files, `packages/mcp-server/src/tools.ts`, `packages/mcp-server/src/public-rest-routes.ts`, `packages/mcp-server/src/openapi.ts`, `packages/core/src/contract/launch.ts`, `packages/mcp-server/src/launch-response-schemas.ts`, and their callers in `packages/sdk`, `packages/cli`, `apps/dashboard`, `apps/ios` and `.agents/skills/armada`.
 Authority: `docs/api/README.md`, `docs/sdk.md`.
 
 1. **The schema is what the handler does.** Every shape a handler can return, including refusals, `retryAfter`, nulls and every provider variant, is in its output schema. A test passes the handler's real responses through the published schema.
-2. **One schema per request and response.** Never write a second validator or TypeScript type for the same shape; import the existing one. MCP launch projects the supported golden variants from the launch operation in `@armada/core/contract`. Docker, pinned Modal and explicit runtime golden REST launches use that operation.
+2. **One schema per request and response.** Never write a second validator or TypeScript type for the same shape; import the existing one. MCP launch projects the supported golden variants from the launch operation in `@armada/core/contract`. All REST sandbox launches use that operation.
 3. **No compatibility** (root rule 1). Replacing a route, tool or field deletes the old one. Older released clients may break.
 4. **Admin operations** belong in the dashboard. Add no dedicated MCP tool or CLI command for them.
 5. **The SDK is published.** Changing a public type updates `packages/sdk/test/npm-smoke.types.ts` and `docs/sdk.md` in the same PR.
