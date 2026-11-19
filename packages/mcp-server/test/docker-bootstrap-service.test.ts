@@ -800,3 +800,29 @@ test.each(["cleanup", "claim"] as const)(
     }
   },
 );
+
+test("a failed Docker resume ACK only fails the activation admitted for that request", async () => {
+  const f = await fixture();
+  const stop = async () => {
+    const job = await hosts.enqueueSandbox(f.actor, f.sandbox.id, {
+      operation: "stop",
+      requestId: randomUUID(),
+    });
+    await hosts.complete(f.hostToken, f.installationId, { requestId: job.requestId, outcome: "completed" });
+  };
+  await stop();
+  const first = await admittedResume(f, randomUUID());
+  expect(first.state).toBe("pending");
+  await stop();
+  const current = await admittedResume(f, randomUUID());
+  expect(current.state).toBe("pending");
+
+  const fail = (requestId: string) => hosts.complete(f.hostToken, f.installationId, { requestId, outcome: "failed" });
+  await fail(first.requestId);
+  await fail(first.requestId);
+  expect((await reservations.get(f.actor, f.sandbox.id)).status).toBe("starting");
+  expect((await service.resume(f.actor, f.sandbox.id, first.requestId)).state).toBe("failed");
+
+  await fail(current.requestId);
+  expect((await reservations.get(f.actor, f.sandbox.id)).status).toBe("failed");
+});
