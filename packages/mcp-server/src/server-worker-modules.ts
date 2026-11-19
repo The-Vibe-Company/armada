@@ -1,5 +1,6 @@
 import { createDockerHostStore } from "./docker-host-store.ts";
 import { captureDockerStopOutputs } from "./docker-outputs.ts";
+import { createGoldenBuildJob } from "./golden-worker.ts";
 import { startInvitationWorker } from "./invitations.ts";
 import { createJobsRunner } from "./jobs/runner.ts";
 import { createMcpSandboxProviderResolver } from "./mcp-sandbox-provider.ts";
@@ -37,6 +38,8 @@ export type LaneFactory = (services: WorkerServices) => ServerLifecycleLane | un
 
 const jobsLane: LaneFactory = ({
   githubApp,
+  goldenBuilds,
+  goldenRetirements,
   sql,
   jobs,
   store,
@@ -44,7 +47,6 @@ const jobsLane: LaneFactory = ({
   lifecycleProvider,
   runtimeCommands,
   webhooks,
-  goldenRetirements,
   options,
   outputs,
   langfuse,
@@ -85,16 +87,17 @@ const jobsLane: LaneFactory = ({
   const runner = createJobsRunner(
     jobs,
     {
-      snapshot_retirement: {
-        concurrency: 4,
-        timeoutMs: 30_000,
-        run: (job, context) => goldenRetirements.runJob(job.id, context),
-      },
+      golden_build: createGoldenBuildJob(goldenBuilds),
       langfuse_export: langfuse.exportJob,
       maintenance: retentionMaintenanceJob(sql, control.applicationVault, options.logError),
       webhook: { concurrency: 1, run: webhooks.run },
       ...(prScan ? { pr_scan: prScan } : {}),
       ...(config.encryptionKey ? { [OUTPUTS_CAPTURE]: outputs.captureJob } : {}),
+      snapshot_retirement: {
+        concurrency: 4,
+        timeoutMs: 30_000,
+        run: (job, context) => goldenRetirements.runJob(job.id, context),
+      },
     },
     options.logError,
   );

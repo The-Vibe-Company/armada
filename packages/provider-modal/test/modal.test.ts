@@ -15,6 +15,7 @@ import type { Driver } from "../../agent-runtime/src/protocol.ts";
 import { Runner } from "../../agent-runtime/src/runtime.ts";
 import { createMemoryAuthStore } from "../../auth/src/index.ts";
 import { sandboxFailure } from "../../cli/src/sandbox-errors.ts";
+import { dispatchGoldenBuild } from "../../core/test/support/golden-build-dispatch.ts";
 import { type ControlOptions, handleControlRequest } from "../../mcp-server/src/control.ts";
 import { createSandboxLifecycle } from "../../mcp-server/src/sandbox-lifecycle.ts";
 import {
@@ -617,7 +618,7 @@ test("a failed Modal builder image records safe diagnostics and frees capacity w
   const job = await jobs.admit(provider, actor, input, crypto.randomUUID());
   const log = spyOn(console, "error").mockImplementation(() => {});
   try {
-    expect(await jobs.runOne()).toBe(true);
+    expect(await dispatchGoldenBuild(db, jobs)).toBe(true);
     const diagnostic = `Modal builder image failed. ${upstream}`;
     expect(await jobs.status(scope.userId, job.jobId)).toMatchObject({
       phase: "builder",

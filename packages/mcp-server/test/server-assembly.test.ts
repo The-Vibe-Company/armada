@@ -44,7 +44,7 @@ test("server assembly preserves worker lane order and isolation", () => {
       ],
       "isolated": [
         {
-          "name": "golden-builds",
+          "name": "golden-build-recovery",
           "sweep": true,
         },
         {
@@ -94,22 +94,22 @@ test("the shared jobs lane claims only configured job kinds", async () => {
     {
       githubApp: null,
       encryptionKey: undefined,
-      expected: ["snapshot_retirement", "langfuse_export", "maintenance", "webhook"],
+      expected: ["golden_build", "langfuse_export", "maintenance", "webhook"],
     },
     {
       githubApp: {},
       encryptionKey: undefined,
-      expected: ["snapshot_retirement", "langfuse_export", "maintenance", "webhook", "pr_scan"],
+      expected: ["golden_build", "langfuse_export", "maintenance", "webhook", "pr_scan"],
     },
     {
       githubApp: null,
       encryptionKey: "test",
-      expected: ["snapshot_retirement", "langfuse_export", "maintenance", "webhook", "outputs_capture"],
+      expected: ["golden_build", "langfuse_export", "maintenance", "webhook", "outputs_capture"],
     },
     {
       githubApp: {},
       encryptionKey: "test",
-      expected: ["snapshot_retirement", "langfuse_export", "maintenance", "webhook", "pr_scan", "outputs_capture"],
+      expected: ["golden_build", "langfuse_export", "maintenance", "webhook", "pr_scan", "outputs_capture"],
     },
   ]) {
     const claimed = new Set<string>();
@@ -133,6 +133,6 @@ test("the shared jobs lane claims only configured job kinds", async () => {
       },
     } as unknown as Parameters<LaneFactory>[0]);
     await lane?.reconcileOne(new AbortController().signal);
-    expect(claimed).toEqual(new Set(expected));
+    expect(claimed).toEqual(new Set([...expected, "snapshot_retirement"]));
   }
 });
