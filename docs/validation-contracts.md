@@ -514,15 +514,17 @@ their timings. Focused traces of `private-ssh.test.ts`,
 ## Server subprocess cases
 
 The [process-test allowlist](../scripts/ci/process-tests.txt) finds eight
-Server files with direct spawn syntax. Eleven additional cases in
-`push-ledger.test.ts` reach real processes through `push-ledger-git.ts`.
-The table records whole-case timings from separate, untraced Linux runs of
-each file with Bun 1.4.2 (744846f84) at `c8f81db15c0b0926d010a4b02497669c74e363ed`.
-Separate execution traces and source inspection identify process boundaries.
+Server files with direct spawn syntax. The push-ledger fixture and the SSH
+executor also start real processes from tests outside the allowlist. The
+table records whole-case timings from untraced Linux runs with Bun 1.4.2
+(744846f84). The control case ran on its own at `f9e67913`. The remaining cases
+ran in per-file invocations at `c8f81db1`. Separate execution traces and source
+inspection identify process boundaries.
 
 | File under `packages/mcp-server/test` | Case | Local subprocess boundary | Local |
 | --- | --- | --- | ---: |
 | `boat-orchestrator-private.test.ts` | Boat private epoch script rejects older writes/boot mismatch and exact hash cleanup preserves newer authority without disk secrets | Bash runs the emitted control and bridge scripts with local Node processes, a Unix socket, and temporary state. | 428.27 ms |
+| `control.test.ts` | GitHub refresh preserves the closed hydration failure over HTTP | The SSH executor starts local `ssh-keygen`. The fake provider refuses key registration before any SSH connection. | 229.90 ms |
 | `docker-host-install.test.ts` | installer publishes both build digests without credentials and refuses missing artifacts | POSIX sh checks the generated installer syntax. Route requests are in process. | 3.35 ms |
 | `docker-host-install.test.ts` | one-line installer verifies bytes, delivers the one-use token privately and confirms a poll | POSIX sh runs the installer with local command and artifact stubs for download, service, registration, and package runners. | 125.71 ms |
 | `main.test.ts` | standalone server entrypoint reports configuration errors without starting the CLI | A fresh Bun process runs the standalone server entrypoint and rejects missing configuration. | 459.24 ms |
@@ -545,7 +547,7 @@ Separate execution traces and source inspection identify process boundaries.
 
 The unattributed-push gap case took 1,631.84 ms in the
 [archived unit shard](https://github.com/The-Vibe-Company/armada/actions/runs/44526380196/job/135567940848#logs).
-It creates four local repositories and exercises four push paths in one case.
+It sets up four local launch fixtures and exercises four push paths in one case.
 
 The other cases in `mcp-native.test.ts` execute the installer payload in a
 VM context or call the pin policy in process. The other
