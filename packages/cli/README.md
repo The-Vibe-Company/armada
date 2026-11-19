@@ -43,6 +43,24 @@ transport grace. `send`, `stop`, and `bind-credential` use a 660-second
 request deadline. That budget gives `send` time to restore paused compute
 before admitting the turn. A transport timeout does not trigger a write retry.
 
+## Organization resource commands
+
+Invitation management resolves organization names through the authenticated
+organization list. Pass acceptance tokens through stdin or `--file`. The CLI
+omits rejected arguments from diagnostics and prints only approved invitation
+fields, so extra response fields such as tokens and acceptance URLs stay private.
+
+Select an organization with `armada org use` or `--org UUID` before using MCP
+registry commands. Explicit CLI selectors take precedence over imported JSON
+definitions. The server owns endpoint validation, discovery, and authorization.
+For the sandbox connection list, the CLI sends both the public `sandboxId`
+selector and the control handler's required `id`.
+
+Routine schedules require both a cron expression and a timezone. The API
+validates their values. A golden size-policy file replaces the entire policy.
+The command prints the server's response, including its version and repository
+selectors.
+
 ## Docker host commands and launches
 
 Host names resolve within the selected organization through the host API.
