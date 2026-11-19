@@ -12,7 +12,6 @@ export type Command = {
   group: "Go to" | "Actions";
   /** Other words a person might type for it. */
   keywords?: readonly string[];
-  adminOnly?: boolean;
 };
 
 const CATALOG: readonly Command[] = [
@@ -94,7 +93,6 @@ export const COMMANDS: readonly Command[] = CATALOG.map((command) => {
     ? {
         ...command,
         label: destination.label,
-        adminOnly: destination.adminOnly === true,
         keywords: [
           ...(command.keywords ?? []),
           command.label.toLowerCase(),
@@ -105,7 +103,8 @@ export const COMMANDS: readonly Command[] = CATALOG.map((command) => {
 });
 
 export function commandsForOrganization(isAdmin: boolean) {
-  return COMMANDS.filter((command) => isAdmin || !command.adminOnly);
+  const restricted = NAV_GROUPS.flatMap((group) => group.links).filter((link) => link.adminOnly);
+  return isAdmin ? COMMANDS : COMMANDS.filter((command) => !restricted.some((link) => link.href === command.href));
 }
 
 /**

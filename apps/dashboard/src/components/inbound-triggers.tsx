@@ -1,9 +1,9 @@
 "use client";
 
-import { useEffect, useMemo, useState, useTransition } from "react";
+import { useEffect, useMemo, useRef, useState, useTransition } from "react";
 import { manageInboundTrigger, triggerDeliveries } from "@/app/actions/inbound-triggers";
 import { CopyButton } from "@/components/copy-button";
-import { useResourceSelected } from "@/components/resource-browser";
+import { useResourceSelected, visibleResourcePanelTitle } from "@/components/resource-browser";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -33,6 +33,7 @@ export function TriggerPanel({ org, id, enabled }: TriggerRef & { enabled: boole
 }
 
 function TriggerAction({ org, id, action }: TriggerRef & { action: "rotate" | "disable" }) {
+  const opener = useRef<HTMLButtonElement>(null);
   const [open, setOpen] = useState(false);
   const [result, setResult] = useState<{ signingSecret?: string; error?: string }>({});
   const [pending, startTransition] = useTransition();
@@ -46,7 +47,6 @@ function TriggerAction({ org, id, action }: TriggerRef & { action: "rotate" | "d
   }
 
   function submit() {
-    setResult({});
     startTransition(async () => {
       try {
         const next = await manageInboundTrigger(org, id, action);
@@ -68,19 +68,28 @@ function TriggerAction({ org, id, action }: TriggerRef & { action: "rotate" | "d
       }}
     >
       <DialogTrigger asChild>
-        <Button size="sm" variant={rotate ? "outline" : "destructive-outline"}>
+        <Button ref={opener} size="sm" variant={rotate ? "outline" : "destructive-outline"}>
           {label}
         </Button>
       </DialogTrigger>
-      <DialogContent showCloseButton={false}>
+      <DialogContent
+        showCloseButton={false}
+        onCloseAutoFocus={(event) => {
+          if (rotate || opener.current?.isConnected) return;
+          event.preventDefault();
+          visibleResourcePanelTitle()?.focus();
+        }}
+      >
         <DialogHeader>
-          <DialogTitle>{secret ? "New signing key" : label}</DialogTitle>
+          <DialogTitle tabIndex={-1} ref={secret ? (title) => title?.focus() : undefined}>
+            {secret ? "New signing key" : label}
+          </DialogTitle>
           <DialogDescription>
             {secret
               ? "Copy this key now. It is shown only once."
               : rotate
                 ? "The current signing key will stop working immediately."
-                : "Disabling blocks new deliveries and queued work from starting. Launches already admitted continue."}
+                : "Disabling blocks new deliveries."}
           </DialogDescription>
         </DialogHeader>
         {secret && (
@@ -89,11 +98,7 @@ function TriggerAction({ org, id, action }: TriggerRef & { action: "rotate" | "d
             <CopyButton value={secret} label="Copy signing key" />
           </div>
         )}
-        {result.error && (
-          <p role="alert" className="text-sm text-destructive">
-            {result.error}
-          </p>
-        )}
+        {!pending && result.error && <p role="alert">{result.error}</p>}
         <div className="flex justify-end gap-2">
           <Button variant={secret ? "default" : "outline"} disabled={pending} onClick={close}>
             {secret ? "Done" : "Cancel"}
