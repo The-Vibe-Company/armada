@@ -463,13 +463,24 @@ export function configureTools(
 
       if (found.stopRequestedAt || ["stopping", "stopped"].includes(found.status))
         return { id: found.id, status: found.status };
-      const { provider } = await live(args.id, true);
+      const { provider } = await live(args.id, true, found);
+      const needsCheckpoint =
+        (found.boatRuntime || (found.provider === "modal" && found.runtimeTransport === "dialout")) &&
+        ["ready", "running"].includes(found.status) &&
+        Date.parse(found.expiresAt ?? "") > context.now().getTime();
+      if (needsCheckpoint && !context.runtimeStopCheckpoint)
+        throw new VaultError("unavailable", "Runtime stop checkpoint is unavailable.");
+      const checkpoint = needsCheckpoint ? await context.runtimeStopCheckpoint!(caller, found) : undefined;
       const idleGuard: Pick<ServerSandboxPatch, "onlyIfIdle"> = { onlyIfIdle: args.only_if_idle === true };
+      const retainedGuard: Pick<ServerSandboxPatch, "retainedRuntimeStop"> = checkpoint
+        ? { retainedRuntimeStop: checkpoint.requestId }
+        : {};
       return sandboxActivity(
         data.sandboxes,
         found,
         {
           ...idleGuard,
+          ...retainedGuard,
           status: found.status === "failed" ? "failed" : "stopping",
           stoppedAt: null,
           stopRequested: true,
@@ -504,14 +515,21 @@ export function configureTools(
           try {
             if (provider.collectTurnUsage) await collectSandboxUsage(provider, data.sandboxes, found);
             signal.throwIfAborted();
-            const observed = await stopAndObserve(provider, found.id, found.providerSandboxId, "user_stop", signal);
+            const observed = await stopAndObserve(
+              provider,
+              found.id,
+              found.providerSandboxId,
+              "user_stop",
+              signal,
+              checkpoint !== undefined,
+            );
             terminal =
               observed.state === "stopped" &&
               (provider.id !== "boat" || observed.retainedSnapshot === "usable" || found.status === "failed");
             stoppedAt = observed.stoppedAt;
             preservationNote = observed.stopNote;
           } catch (error) {
-            if (!(error instanceof ProviderError && error.code === "not_found")) throw error;
+            if (checkpoint || !(error instanceof ProviderError && error.code === "not_found")) throw error;
             terminal = provider.id !== "boat";
           }
           signal.throwIfAborted();

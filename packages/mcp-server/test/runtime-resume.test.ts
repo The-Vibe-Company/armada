@@ -8,10 +8,11 @@ import { createSqlData } from "../src/data.ts";
 import { modalRuntimeLaunch } from "../src/modal-runtime-launch.ts";
 import { modalRuntimeResume } from "../src/modal-runtime-resume.ts";
 import { createModelAuthOwnership } from "../src/model-auth.ts";
-import { createRuntimeCheckpoint } from "../src/runtime-checkpoint.ts";
+import { createRuntimeCheckpoint, createRuntimeStopCheckpoint } from "../src/runtime-checkpoint.ts";
 import { createRuntimeFollowup } from "../src/runtime-followup.ts";
 import { createRuntimeHistory } from "../src/runtime-history.ts";
 import { createRuntimeResume } from "../src/runtime-resume.ts";
+import { createRuntimeServing } from "../src/runtime-serving.ts";
 import { createSandboxLifecycle } from "../src/sandbox-lifecycle.ts";
 import { rowOnlyDatabase } from "./row-only-database.ts";
 import { runtimeFixture } from "./runtime.fixture.ts";
@@ -41,6 +42,73 @@ const input = (id: string) => ({
   request_id: crypto.randomUUID(),
   runtimeVersion: 1 as const,
   prompt: "continue the previous conversation",
+});
+
+describe("Modal user stop and wake-on-send", () => {
+  let f: Awaited<ReturnType<typeof runtimeFixture>>;
+  beforeAll(async () => {
+    f = await runtimeFixture(await sharedDatabase(), "modal");
+  });
+  afterAll(async () => {
+    await f?.close();
+  });
+
+  test("the stop route supplies retained Modal stop proof and send restores the same native conversation", async () => {
+    let state: "ready" | "stopped" = "ready";
+    let retained: { epoch: string; watermark: number } | undefined;
+    const host = {
+      id: "modal",
+      async get() {
+        return { id: f.row.providerSandboxId, state, providerState: state, physicalGeneration: "1" };
+      },
+      async captureRuntimeWork() {
+        return { status: "clean" };
+      },
+      async stop() {
+        state = "stopped";
+      },
+      async stopRuntime({ epoch, watermark }: { epoch: string; watermark: number }) {
+        retained = { epoch, watermark };
+        state = "stopped";
+      },
+    } as unknown as Provider;
+    const serve = createRuntimeServing(f.sql, ENCRYPTION_KEY);
+    const resume = createRuntimeResume(f.sql, ENCRYPTION_KEY, f.bridge, async () => ({
+      async start(_signal, restore) {
+        expect(restore).toMatchObject({
+          epoch: retained?.epoch,
+          watermark: retained?.watermark,
+          conversationId: f.first.conversationId,
+        });
+        return f.reboot(restore);
+      },
+      async stop() {
+        throw Error("Unexpected cleanup of healthy resume");
+      },
+    }));
+    const controls = {
+      authStore: createMemoryAuthStore(),
+      supabase: { supabaseUrl: "https://unused.test", anonKey: "fixture" },
+      store: createSqlVaultStore(f.sql),
+      encryptionKey: ENCRYPTION_KEY,
+      data: createSqlData(f.sql),
+      providers: { resolve: (target: Parameters<typeof serve>[1]) => serve(host, target, f.caller) },
+      runtimeStopCheckpoint: createRuntimeStopCheckpoint(
+        f.sql,
+        createRuntimeCheckpoint(f.sql, ENCRYPTION_KEY, f.bridge),
+      ),
+      runtimeSend: createRuntimeFollowup(f.sql, ENCRYPTION_KEY, f.bridge, undefined, resume),
+    };
+    expect(await dispatchControlCommand("sandbox/stop", f.caller, { id: f.row.id }, controls)).toMatchObject({
+      status: "stopped",
+    });
+    expect(await dispatchControlCommand("sandbox/send", f.caller, f.input(), controls)).toMatchObject({
+      conversationId: f.first.conversationId,
+      resumed: true,
+    });
+    expect(retained).toMatchObject({ epoch: "1", watermark: expect.any(Number) });
+    expect(f.starts).toEqual([undefined, "native-thread"]);
+  });
 });
 
 describe.each([

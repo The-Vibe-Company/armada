@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, beforeEach, expect, test } from "bun:test";
+import { afterAll, beforeAll, beforeEach, expect, spyOn, test } from "bun:test";
 import {
   accountModelCountsSql,
   accountWaitingCountSql,
@@ -105,6 +105,39 @@ test("full-account prompts persist, dispatch FIFO after a turn settles, and queu
   expect(await queue.reconcileOne(new AbortController().signal)).toBe(true);
   await queue.drain();
   expect(dispatched).toEqual(["first instruction", "second instruction"]);
+});
+
+test.each(["modal", "boat", "docker"])("a pre-activation %s wake refusal fails the queued prompt", async (provider) => {
+  const input = { id: ids[1]!, request_id: requests[0]!, prompt: "wake rejected" };
+  await db.query(
+    "update sandboxes set provider=$2,boat_runtime=$2='boat',runtime_transport=case when $2='modal' then 'dialout' end,status_reason=case when $2='docker' then 'idle_paused' end,status='stopped',stopped_at=now() where id=$1",
+    [input.id, provider],
+  );
+  expect(await queue.accept(caller, input)).toMatchObject({ status: "queued" });
+  queue.setDispatch(async () => {
+    throw new VaultError("conflict", "No current synchronized checkpoint");
+  });
+  const log = spyOn(console, "info");
+  try {
+    expect(await queue.reconcileOne(new AbortController().signal)).toBe(true);
+    await queue.drain();
+    expect(await queue.status(caller, input.id, input.request_id)).toMatchObject({
+      failed: true,
+      message: "Queued prompt rejected before dispatch; inspect sandbox and account settings before resending.",
+    });
+    expect(
+      log.mock.calls.map(([line]) => String(line)).filter((line) => line.includes("sandbox_resume_dispatch_refused")),
+    ).toEqual([
+      JSON.stringify({
+        event: "sandbox_resume_dispatch_refused",
+        sandboxId: input.id,
+        requestId: input.request_id,
+        code: "conflict",
+      }),
+    ]);
+  } finally {
+    log.mockRestore();
+  }
 });
 
 test("queued sends recheck actor revocation without dispatching or reserving a slot", async () => {

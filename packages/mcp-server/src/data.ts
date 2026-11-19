@@ -56,6 +56,7 @@ export interface SandboxView extends SandboxRecord {
 
 export interface ServerSandboxPatch extends SandboxPatch {
   onlyIfIdle?: boolean;
+  retainedRuntimeStop?: string;
   modalRuntimeExtensionTarget?: string;
 }
 
@@ -832,6 +833,15 @@ export function createSqlData(
           generationParam = params.length;
           fence += ` and s.lifecycle_generation = $${params.length}`;
         }
+        if (patch.retainedRuntimeStop !== undefined) {
+          params.push(patch.retainedRuntimeStop);
+          fence += ` and s.status in ('ready','running') and s.stop_requested_at is null
+            and s.expires_at>clock_timestamp() and not s.application_secret_tainted
+            and exists(select 1 from public.runtime_checkpoints p join public.runtime_enrolments r
+              on r.sandbox_id=p.sandbox_id and r.epoch=p.epoch
+              where p.sandbox_id=s.id and p.request_id=$${params.length}::uuid
+              and p.watermark=(select coalesce(max(sequence),0) from public.runtime_events where sandbox_id=s.id))`;
+        }
         if (patch.deleteRequested)
           fence += ` and s.status in ('stopped','failed')
             and not ${SANDBOX_DELETION_MANAGED}`;
@@ -890,7 +900,11 @@ export function createSqlData(
             params,
           );
         let result: Awaited<ReturnType<typeof applyUpdate>>;
-        if (idleAdmission || patch.modalRuntimeExtensionTarget !== undefined) {
+        if (
+          idleAdmission ||
+          patch.retainedRuntimeStop !== undefined ||
+          patch.modalRuntimeExtensionTarget !== undefined
+        ) {
           if (!sql.transaction) throw new Error("Fenced sandbox admission requires a transaction.");
           result = await sql.transaction(async (tx) => {
             // WARNING: The queue check needs a fresh statement snapshot after acquiring the sandbox lock.

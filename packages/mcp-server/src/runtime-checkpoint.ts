@@ -1,5 +1,6 @@
 import { DelegatedAuthority, decryptSecret, type Sql, VaultError } from "@armada/core/server";
 import type { Caller } from "./caller.ts";
+import type { SandboxView } from "./data.ts";
 import { createSqlData } from "./data.ts";
 import { createDockerSandboxService } from "./docker-sandbox-service.ts";
 import { runtimeHarnessSupported } from "./provider-runtime-admission.ts";
@@ -325,5 +326,28 @@ export function createRuntimeCheckpoint(
     if (!completed)
       throw new VaultError("conflict", "Runtime checkpoint is not yet acknowledged; reuse the original request_id.");
     return completed;
+  };
+}
+
+export function createRuntimeStopCheckpoint(sql: Sql, checkpoint: RuntimeCheckpoint) {
+  return async (caller: Caller, sandbox: SandboxView) => {
+    if (sandbox.ownerId !== caller.userId)
+      throw new VaultError("forbidden", "Only the runtime owner may checkpoint this sandbox.");
+    const current = (
+      await sql.query<{ request_id: string | null; application_secret_tainted: boolean }>(
+        `select p.request_id::text,s.application_secret_tainted from public.sandboxes s
+         left join public.runtime_enrolments r on r.sandbox_id=s.id
+         left join public.runtime_checkpoints p on p.sandbox_id=s.id and p.epoch=r.epoch
+         where s.id=$1 and s.owner_id=$2 and s.org_id=$3 and s.lifecycle_generation=$4`,
+        [sandbox.id, caller.userId, sandbox.orgId, sandbox.lifecycleGeneration],
+      )
+    ).rows[0];
+    if (!current) throw new VaultError("conflict", "Sandbox changed before runtime stop.");
+    if (current.application_secret_tainted) return undefined;
+    return checkpoint(caller, {
+      id: sandbox.id,
+      request_id: current.request_id ?? crypto.randomUUID(),
+      runtimeVersion: 1,
+    });
   };
 }

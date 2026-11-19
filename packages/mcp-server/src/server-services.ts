@@ -58,7 +58,7 @@ import { createOutboundWebhooks } from "./outbound-webhooks.ts";
 import { createProviderMetadata } from "./provider-metadata.ts";
 import type { ProviderReaperSource } from "./provider-reaper.ts";
 import { createRuntimeArtifactSetRoute } from "./runtime-artifacts.ts";
-import { createRuntimeCheckpoint } from "./runtime-checkpoint.ts";
+import { createRuntimeCheckpoint, createRuntimeStopCheckpoint } from "./runtime-checkpoint.ts";
 import { createRuntimeCommands } from "./runtime-commands.ts";
 import { createRuntimeEnrolments } from "./runtime-enrolment.ts";
 import { createRuntimeEvents } from "./runtime-events.ts";
@@ -473,6 +473,7 @@ export async function createServerServices(env: Record<string, string | undefine
     runtimeSend,
     accountTurns,
     runtimeCheckpoint,
+    runtimeStopCheckpoint: createRuntimeStopCheckpoint(sql, runtimeCheckpoint),
     runtimeResume,
     ...(runtimeGitHub ? { runtimeGitHub } : {}),
     runtimeMcp,
