@@ -19,6 +19,7 @@ import { CONNECTION_CHOICE_FIELD } from "@/lib/connections";
 import {
   createDockerLaunchKey,
   dockerLaunchKeyStorage,
+  isDockerLaunchKey,
   PREVIOUS_DOCKER_LAUNCH,
   preferredHarness,
   UNKNOWN_DOCKER_LAUNCH,
@@ -154,9 +155,10 @@ export function DockerLaunchForm({
     // reconciles it instead of starting a second sandbox. A refusal makes the next launch a new request.
     const keyed = (event: Event) => {
       if (!(event instanceof FormDataEvent)) return;
-      const key = launchKeyFor(readKey(storage), event.formData.entries(), createDockerLaunchKey);
+      const previous = readKey(storage);
+      const key = launchKeyFor(previous, event.formData.entries(), createDockerLaunchKey);
       // Kept from now until a definite answer: a reload, a lost connection or a closed tab mid-launch keeps it too.
-      writeKey(storage, key);
+      if (key !== previous || isDockerLaunchKey(key.key)) writeKey(storage, key);
       event.formData.set(LAUNCH_KEY_FIELD, key.key);
     };
     node.addEventListener("reset", keep, true);

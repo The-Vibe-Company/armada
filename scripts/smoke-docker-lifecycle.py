@@ -46,7 +46,8 @@ def normal_launch_receipt(api, launch, timeout, require_github=False, on_admissi
         result = api("sandbox/launch", launch, normal=True)
         sandbox = result.get("sandbox", {})
         received_id = sandbox.get("id")
-        if not is_sandbox_id(received_id) or sandbox.get("provider") != "docker":
+        if (not is_sandbox_id(received_id) or sandbox.get("provider") != "docker"
+                or sandbox.get("externalRef") != launch["externalRef"]):
             raise RuntimeError("Normal launch outcome unknown; retain sandbox ID and launch key")
         if sandbox_id is None:
             sandbox_id = received_id
@@ -794,7 +795,8 @@ def main():
         if submitted_normal_launch and sandbox_id is None:
             try:
                 rows = api("sandbox/list", {"owner": "me", "externalRef": launch["externalRef"]}, normal=True)["sandboxes"]
-                if (len(rows) == 1 and rows[0].get("provider") == "docker"
+                if (isinstance(rows, list) and len(rows) == 1 and isinstance(rows[0], dict)
+                        and rows[0].get("provider") == "docker"
                         and rows[0].get("externalRef") == launch["externalRef"] and is_sandbox_id(rows[0].get("id"))):
                     record_admission(rows[0]["id"])
             except (RuntimeError, KeyError, TypeError):

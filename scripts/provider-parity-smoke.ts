@@ -418,14 +418,15 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
         message: "Launch response could not be read.",
         ...correlation,
       });
-    })) as { provider?: unknown; sandbox?: { id?: unknown; provider?: unknown } } | null;
+    })) as { provider?: unknown; sandbox?: { id?: unknown; provider?: unknown; externalRef?: unknown } } | null;
     if (path === "sandbox/launch") {
       const expected = (body as { provider?: unknown }).provider;
       if (
         (keyedDockerLaunch &&
           (typeof result?.sandbox?.id !== "string" ||
             !UUID.test(result.sandbox.id) ||
-            result?.sandbox?.provider !== "docker" ||
+            result.sandbox.provider !== "docker" ||
+            result.sandbox.externalRef !== (body as { externalRef?: unknown }).externalRef ||
             smokeReceiptProvider(result) !== "docker")) ||
         (modalLaunch &&
           (typeof result?.sandbox?.id !== "string" ||

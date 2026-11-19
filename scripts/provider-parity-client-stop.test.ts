@@ -128,7 +128,7 @@ for (const mode of [
             case "sandbox/launch":
               active = provider;
               states.set(provider, "ready");
-              return Response.json({ sandbox: { id: id[provider], provider } });
+              return Response.json({ sandbox: { id: id[provider], provider, externalRef: body.externalRef } });
             case "sandbox/send": {
               const n = (turns.get(provider) ?? 0) + 1;
               if (n > 1 && mode === "resume_quota")

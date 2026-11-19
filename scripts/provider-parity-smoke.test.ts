@@ -838,6 +838,7 @@ for (const mode of [
                 sandbox: {
                   id: sandboxId(p),
                   provider: p,
+                  externalRef: body.externalRef,
                   ...(p === "docker" && mode.startsWith("snapshot_")
                     ? {
                         snapshotId: mode === "snapshot_wrong_receipt" ? "other-snapshot" : snapshotId,

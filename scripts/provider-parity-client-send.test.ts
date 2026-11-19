@@ -129,7 +129,7 @@ for (const mode of [
             case "sandbox/launch":
               active = provider;
               states.set(provider, "ready");
-              return Response.json({ sandbox: { id: ids[provider], provider } });
+              return Response.json({ sandbox: { id: ids[provider], provider, externalRef: body.externalRef } });
             case "sandbox/status":
               return Response.json({
                 id: body.id,

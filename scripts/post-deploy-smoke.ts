@@ -592,7 +592,7 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
         );
       }
       type ResponseBody = {
-        sandbox?: { id?: unknown; provider?: unknown };
+        sandbox?: { id?: unknown; provider?: unknown; externalRef?: unknown };
         state?: unknown;
         id?: unknown;
         provider?: unknown;
@@ -611,17 +611,21 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
       const id = result?.sandbox?.id;
       if (requireSandboxUuid && (typeof id !== "string" || !SANDBOX_ID.test(id)))
         throw new SmokeFailure("invalid_response", response.status, undefined, launchResponse);
-      // Keep the handle before validating the receipt, as the cleanup journal does.
+      const input = body as { provider?: string; externalRef?: string };
+      if (
+        sandboxLaunch &&
+        input.provider === "docker" &&
+        (result?.sandbox?.provider !== "docker" || result.sandbox.externalRef !== input.externalRef)
+      )
+        throw new SmokeFailure("invalid_response", response.status, undefined, launchResponse);
+      // Keep the trusted handle even when other receipt fields fail validation.
       record(result);
       if (sandboxLaunch) {
         const provider = smokeReceiptProvider(result);
-        const input = body as { provider?: string };
         if (provider === "boat") fail("invalid_response");
         if (provider !== input.provider)
           throw new SmokeFailure("invalid_response", response.status, undefined, launchResponse);
         if (typeof result?.sandbox?.id !== "string" || !result.sandbox.id)
-          throw new SmokeFailure("invalid_response", response.status, undefined, launchResponse);
-        if (input.provider === "docker" && result.sandbox.provider !== "docker")
           throw new SmokeFailure("invalid_response", response.status, undefined, launchResponse);
       }
       if (
@@ -1806,7 +1810,7 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
         .clone()
         .json()
         .catch(() => null)) as {
-        sandbox?: { id?: unknown; provider?: unknown };
+        sandbox?: { id?: unknown; provider?: unknown; externalRef?: unknown };
         provider?: unknown;
         manifest?: { definition?: { provider?: unknown } };
         state?: unknown;
@@ -1818,7 +1822,11 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
       const id = keyedLaunch ? result?.sandbox?.id : (result?.sandbox?.id ?? result?.id);
       const provider = smokeReceiptProvider(result);
       const unverifiedLaunch =
-        keyedLaunch && (!response.ok || provider !== body.provider || result?.sandbox?.provider !== body.provider);
+        keyedLaunch &&
+        (!response.ok ||
+          provider !== body.provider ||
+          result?.sandbox?.provider !== body.provider ||
+          (keyedDockerLaunch && result.sandbox.externalRef !== key));
       if (!unverifiedLaunch && typeof id === "string" && SANDBOX_ID.test(id) && typeof org === "string") {
         const row: SmokeSandboxReceipt = {
           requestKey,
