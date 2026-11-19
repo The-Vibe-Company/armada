@@ -14,10 +14,7 @@
   },
   "overrides": [
     {
-      "files": [
-        "packages/core/src/routine-schedule.ts",
-        "packages/provider-modal/test/artifact.release.ts"
-      ],
+      "files": ["packages/core/src/routine-schedule.ts", "packages/provider-modal/test/artifact.release.ts"],
       "rules": {
         "landmines-testing/no-flake-masking": [
           "error",
