@@ -266,7 +266,6 @@ export async function createServerServices(env: Record<string, string | undefine
   const deployed = await readBoatRuntimeManifest(
     env.ARMADA_BOAT_RUNTIME_MANIFEST ?? imageBoatManifest,
     config.boatAgentPath,
-    env.ARMADA_RUNTIME_ARTIFACT_DIR,
   );
   const runtimeLaunch = deployed
     ? boatRuntimeLaunch({

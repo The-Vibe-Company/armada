@@ -6,7 +6,7 @@ Procedures are listed under "Where truth lives".
 - Armada launches Claude Code, Codex and OpenCode sandboxes on Boat, Modal or a user Docker host through the API, SDK, CLI, MCP and dashboard.
 - Waits, captains and orchestration belong in API clients.
 - `armada-server` is one TypeScript/Bun server on PostgreSQL (Supabase). The `armada` CLI and the SDK are API-only clients.
-- Modal and Boat default to the Armada runtime (`packages/agent-runtime`). Keep both provider-run paths (Boat agent API, Modal runner) until native retirement.
+- Modal defaults to the Armada runtime (`packages/agent-runtime`). Boat defaults to its native agent API. Keep both provider-run paths (Boat agent API, Modal runner) until native retirement.
 - New machine lifecycle adapters implement the server-only `Machine` contract and expose capabilities through the core registry. Integration and cutover follow `docs/machine-contract.md`.
 - `docs/architecture.md` guides new code. Migrate existing code only in program tickets.
 
