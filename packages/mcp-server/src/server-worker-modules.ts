@@ -71,7 +71,23 @@ const idleLane: LaneFactory = ({ sql, config, runtimeCheckpoint, idleDelayMs, do
       : {}),
   });
 
-const jobsLane: LaneFactory = ({ jobs, options }) => createJobsRunner(jobs, {}, options.logError);
+const jobsLane: LaneFactory = ({ jobs, goldenRetirements, options }) =>
+  createJobsRunner(
+    jobs,
+    {
+      snapshot_retirement: {
+        concurrency: 4,
+        run(job, context) {
+          const signal = AbortSignal.any([context.signal, AbortSignal.timeout(30_000)]);
+          return goldenRetirements.runJob(job.id, {
+            signal,
+            canDispatch: async (tx) => !signal.aborted && (await context.canDispatch(tx)) && !signal.aborted,
+          });
+        },
+      },
+    },
+    options.logError,
+  );
 const dockerCleanupLane: LaneFactory = ({ sql, config }) => createFinishedDockerCleanup(sql, config.encryptionKey);
 export const retentionWorker =
   ({ sql, control }: ServerServices) =>

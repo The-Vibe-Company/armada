@@ -80,7 +80,6 @@ export function registerServer(modules: readonly ServerModule[]) {
                 services.goldenBuilds,
                 context.lifecycle,
                 options.logError,
-                services.goldenRetirements,
                 retentionWorker(services),
                 managed.map(({ lane }) => lane),
                 isolated.map(({ lane }) => lane),

@@ -1,5 +1,4 @@
 import { expect, test } from "bun:test";
-
 import { providerRegistry } from "../../mcp-server/src/http.ts";
 import { fakeBoat } from "../../mcp-server/test/support.ts";
 import { encryptSecret } from "../src/crypto.ts";
@@ -15,6 +14,7 @@ import { type LaunchStores, launchSandbox } from "../src/launch.ts";
 import { type Provider, ProviderError, type SnapshotInfo } from "../src/provider.ts";
 import { createSqlVaultStore } from "../src/vault-store.ts";
 import { migratedDatabase } from "./support/database.ts";
+import { runRetirementJob } from "./support/snapshot-retirement-jobs.ts";
 
 const database = migratedDatabase();
 
@@ -135,7 +135,7 @@ async function fixture(sql: Sql, placement: "boat" | "modal" = "boat", visibilit
   };
   const due = async () => {
     await sql.query(
-      "update golden_snapshot_retirements set next_attempt_at=now()-interval '1 second',claim_until=null where golden_id=$1",
+      "update jobs set run_after=now()-interval '1 second' where id in (select id from golden_snapshot_retirements where golden_id=$1)",
       [golden.id],
     );
   };
@@ -153,6 +153,7 @@ async function fixture(sql: Sql, placement: "boat" | "modal" = "boat", visibilit
     vmActions: () => vmActions,
     provider,
     retirement,
+    now: () => Date.UTC(2100, 0, 1),
     publish,
     due,
     fail: (e: unknown) => {
@@ -288,7 +289,7 @@ test.each([
   if (kind === "current-artifact") f.snapshots.get(f.next)!.artifactId = "changed-current";
   if (kind === "current-source") f.snapshots.get(f.next)!.sourceSandboxId = "foreign-current";
   if (kind === "current-missing") f.snapshots.delete(f.next);
-  await f.retirement.runOne();
+  await runRetirementJob(f.sql, f.retirement, f.now);
   expect(f.deleted).toEqual([]);
   expect(f.snapshots.has(f.old)).toBe(true);
   const r = (await db.query<{ state: string; reason: string }>("select state,reason from golden_snapshot_retirements"))
@@ -298,7 +299,7 @@ test.each([
   if (release) {
     await release();
     await f.due();
-    await f.retirement.runOne();
+    await runRetirementJob(f.sql, f.retirement, f.now);
     expect(f.deleted).toEqual([f.old]);
   }
 });
@@ -340,13 +341,13 @@ test.each(["ready", "stopped", "failed"])(
     );
     await f.publish();
 
-    await f.retirement.runOne();
+    await runRetirementJob(f.sql, f.retirement, f.now);
     expect(f.deleted).toEqual([]);
 
     if (status === "failed") await db.query("update sandboxes set stopped_at=now() where id=$1", [sandbox]);
     else await db.query("update sandboxes set status='deleted',deleted_at=now() where id=$1", [sandbox]);
     await f.due();
-    await f.retirement.runOne();
+    await runRetirementJob(f.sql, f.retirement, f.now);
     expect(f.deleted).toEqual([f.old]);
   },
 );
@@ -372,21 +373,21 @@ test.each(["success", "absent", "refusal", "busy", "unknown"])(
         }),
       );
     if (mode === "unknown") f.fail(Error("lost response"));
-    await f.retirement.runOne();
+    await runRetirementJob(f.sql, f.retirement, f.now);
     expect(f.snapshots.has(f.next)).toBe(true);
     if (mode === "refusal" || mode === "busy") {
       f.fail(undefined);
       await f.due();
-      await f.retirement.runOne();
+      await runRetirementJob(f.sql, f.retirement, f.now);
       expect(f.deleted).toEqual([f.old, f.old]);
     }
     if (mode === "unknown") {
       await f.due();
-      await f.retirement.runOne();
+      await runRetirementJob(f.sql, f.retirement, f.now);
       expect(f.deleted).toEqual([f.old]);
       f.snapshots.delete(f.old);
       await f.due();
-      await f.retirement.runOne();
+      await runRetirementJob(f.sql, f.retirement, f.now);
     }
     expect((await db.query<{ state: string }>("select state from golden_snapshot_retirements")).rows[0]!.state).toBe(
       "retired",
@@ -394,10 +395,27 @@ test.each(["success", "absent", "refusal", "busy", "unknown"])(
     expect(f.deleted.every((name) => name === f.old)).toBe(true);
     expect(f.vmActions()).toBe(0);
     await f.due();
-    await f.retirement.runOne();
+    await runRetirementJob(f.sql, f.retirement, f.now);
     await expect(f.store.setSnapshot(f.golden.id, f.old)).rejects.toThrow("unavailable");
   },
 );
+
+test("a job whose lease expires during inspection cannot leave a delete intent", async () => {
+  const db = database();
+  const f = await fixture(db);
+  await f.publish();
+  const getSnapshot = f.provider.getSnapshot;
+  f.provider.getSnapshot = async (name) => {
+    if (name === f.old)
+      await db.query("update jobs set lease_until=now()-interval '1 second' where kind='snapshot_retirement'");
+    return getSnapshot(name);
+  };
+  await runRetirementJob(db, f.retirement, f.now);
+  expect(f.deleted).toEqual([]);
+  f.provider.getSnapshot = getSnapshot;
+  await runRetirementJob(db, f.retirement, f.now);
+  expect(f.deleted).toEqual([f.old]);
+});
 
 test("a deleted snapshot whose artifact awaits collection is retried by the worker, never re-deleted", async () => {
   const db = database();
@@ -405,26 +423,26 @@ test("a deleted snapshot whose artifact awaits collection is retried by the work
   await f.publish();
   // Modal keeps the image as a tombstone while a fork references it or its source is leased.
   f.artifactPending(true);
-  await f.retirement.runOne();
+  await runRetirementJob(f.sql, f.retirement, f.now);
   expect(f.snapshots.has(f.old)).toBe(false);
   const row = async () =>
     (
       await db.query<{ state: string; reason: string; due: boolean }>(
-        "select state,reason,next_attempt_at<=now() as due from golden_snapshot_retirements",
+        "select r.state,r.reason,j.run_after<=now() as due from golden_snapshot_retirements r join jobs j using (id)",
       )
     ).rows[0]!;
   expect(await row()).toEqual({ state: "deferred", reason: "artifact_collection_pending", due: false });
   // A failed collection stays a collection retry; it is never read as an unknown delete outcome.
   f.artifactPending(Error("image service unavailable"));
   await f.due();
-  await f.retirement.runOne();
+  await runRetirementJob(f.sql, f.retirement, f.now);
   expect((await row()).reason).toBe("artifact_collection_pending");
   // The deletion-safety checks on the golden's current revision no longer gate collection.
   f.snapshots.delete(f.next);
   // Once the source lease clears, the next worker pass collects the artifact and retires the row.
   f.artifactPending(false);
   await f.due();
-  await f.retirement.runOne();
+  await runRetirementJob(f.sql, f.retirement, f.now);
   expect(await row()).toMatchObject({ state: "retired", reason: "already_absent" });
   expect(f.deleted).toEqual([f.old]);
   expect(f.vmActions()).toBe(0);
@@ -442,19 +460,19 @@ test("a tombstoned snapshot is collected even after a transient failure overwrot
     f.snapshots.delete(f.old);
     throw Error("connection reset after the tombstone");
   });
-  await f.retirement.runOne();
+  await runRetirementJob(f.sql, f.retirement, f.now);
   expect(await row()).toEqual({ state: "uncertain", reason: "delete_outcome_unknown" });
   // A transient backend identity failure overwrites the diagnostic reason.
   f.account("transient-backend");
   await f.due();
-  await f.retirement.runOne();
+  await runRetirementJob(f.sql, f.retirement, f.now);
   expect((await row()).reason).toBe("authority_changed");
   // Access returns, but the replacement artifact is now unavailable. The collection phase comes
   // from the provider's tombstone, not from the reason, so the row is still collected.
   f.account(f.backend);
   f.snapshots.delete(f.next);
   await f.due();
-  await f.retirement.runOne();
+  await runRetirementJob(f.sql, f.retirement, f.now);
   expect(await row()).toEqual({ state: "retired", reason: "already_absent" });
   expect(f.deleted).toEqual([f.old]);
 });
@@ -519,7 +537,7 @@ test("historical dry-run follows proven succeeded chains, mutates nothing, and n
   expect((await db.query("select old_snapshot from golden_snapshot_retirements")).rows).toEqual([
     { old_snapshot: f.old },
   ]);
-  await f.retirement.runOne();
+  await runRetirementJob(f.sql, f.retirement, f.now);
   expect(f.deleted).toEqual([f.old]);
   expect(f.snapshots.has(f.next)).toBe(true);
   expect(f.snapshots.has(unrelated)).toBe(true);
@@ -564,7 +582,7 @@ test("retirement rechecks live authorization after provider inspection before ad
     await db.query("delete from members where org_id=$1 and user_id=$2", [f.actor.orgId, f.actor.userId]);
     return { id, name: id, state: "stopped", providerState: "stopped", labels: {} };
   };
-  await f.retirement.runOne();
+  await runRetirementJob(f.sql, f.retirement, f.now);
   expect(f.deleted).toEqual([]);
   expect(f.snapshots.has(f.old)).toBe(true);
   expect((await db.query("select state,reason,delete_started from golden_snapshot_retirements")).rows).toEqual([
@@ -592,7 +610,7 @@ test.each(["explicit", "missing", "changed"])(
       });
       const receipts = dry.results.flatMap((r) => (r.receipt ? [r.receipt] : []));
       await f.retirement.forCaller(f.actor.userId, [f.actor.orgId], f.golden.id, 10, true, receipts);
-      await f.retirement.runOne();
+      await runRetirementJob(f.sql, f.retirement, f.now);
       expect(f.deleted).toEqual([f.old]);
       expect(f.snapshots.has(f.next)).toBe(true);
     } else {
@@ -645,7 +663,7 @@ test("known current-revision fence does not pin an unrelated old saved handle", 
     const f = await fixture(db);
     await f.publish();
     release = await beginGoldenOperation(db, f.golden.id, { snapshotId: f.next, sandboxId: null, kind: "launch" });
-    await f.retirement.runOne();
+    await runRetirementJob(f.sql, f.retirement, f.now);
     expect(f.deleted).toEqual([f.old]);
     expect(f.snapshots.has(f.next)).toBe(true);
   } finally {
@@ -693,7 +711,7 @@ test.each(["known-build", "unknown-build", "unknown-fence"])(
         ],
       );
     }
-    await f.retirement.runOne();
+    await runRetirementJob(f.sql, f.retirement, f.now);
     if (mode === "known-build") {
       expect(f.deleted).toEqual([f.old]);
       expect(f.snapshots.has(f.next)).toBe(true);
@@ -728,7 +746,7 @@ test("historical reconciliation uses immutable publication witnesses after an in
     true,
     first.results.flatMap((r) => (r.receipt ? [r.receipt] : [])),
   );
-  await f.retirement.runOne();
+  await runRetirementJob(f.sql, f.retirement, f.now);
   expect(f.deleted).toEqual([middle]);
   const rest = await f.retirement.forCaller(f.actor.userId, [f.actor.orgId], f.golden.id, 20);
   expect(rest.results.find((r) => r.oldSnapshot === f.old)).toMatchObject({
@@ -743,7 +761,7 @@ test("historical reconciliation uses immutable publication witnesses after an in
     true,
     rest.results.flatMap((r) => (r.receipt ? [r.receipt] : [])),
   );
-  await f.retirement.runOne();
+  await runRetirementJob(f.sql, f.retirement, f.now);
   expect(f.deleted).toEqual([middle, f.old]);
   expect(f.snapshots.has(f.next)).toBe(true);
 });

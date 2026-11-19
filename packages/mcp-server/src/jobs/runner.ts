@@ -21,7 +21,7 @@ export type JobResult = (
 
 export interface JobStore {
   claim(kind: string, owner: string, seconds: number, concurrency: number): Promise<Job | undefined>;
-  inspect(job: Job, owner: string): Promise<"dispatch" | "reconcile" | "stale" | "lost">;
+  inspect(job: Job, owner: string, tx?: Sql): Promise<"dispatch" | "reconcile" | "stale" | "lost">;
   retireStale(job: Job, owner: string): Promise<void>;
   renew(job: Job, owner: string, seconds: number): Promise<boolean>;
   complete(job: Job, owner: string, result: JobResult): Promise<boolean>;
@@ -29,7 +29,7 @@ export interface JobStore {
 
 interface JobKind {
   concurrency: number;
-  run(job: Job, context: { signal: AbortSignal; canDispatch(): Promise<boolean> }): Promise<JobResult>;
+  run(job: Job, context: { signal: AbortSignal; canDispatch(tx?: Sql): Promise<boolean> }): Promise<JobResult>;
 }
 
 const LEASE_SECONDS = 30;
@@ -92,8 +92,8 @@ export function createJobsRunner(
       scheduleRenewal();
       const result = await handler.run(job, {
         signal,
-        async canDispatch() {
-          return !signal.aborted && (await store.inspect(job, owner)) === "dispatch" && !signal.aborted;
+        async canDispatch(tx) {
+          return !signal.aborted && (await store.inspect(job, owner, tx)) === "dispatch" && !signal.aborted;
         },
       });
       if (!signal.aborted && !(await store.complete(job, owner, result))) await store.retireStale(job, owner);
