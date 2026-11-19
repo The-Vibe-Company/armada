@@ -8,7 +8,6 @@ import { mcpCommand } from "./mcp-commands.ts";
 import { resourceAdviceText } from "./resource-advice.ts";
 import { sandboxListText } from "./sandbox-list.ts";
 
-/** API-only command boundary: server-side schemas and policy remain authoritative. */
 export async function operation(
   command: Exclude<keyof ArmadaCommandClient["sandboxes"], "launch" | "logs"> | "detail" | "rm" | "mcp",
   argv: readonly string[],
@@ -135,7 +134,6 @@ export async function operation(
     body[command === "send" ? "prompt" : command === "steer" ? "text" : "command"] = rest.join(" ");
   } else if ((command === "list" && id) || rest.length)
     throw new GoldenError("invalid_config", "Unexpected arguments.");
-  // A long operation gets its server budget plus transport grace, without retrying an ambiguous write.
   const seconds =
     command === "wait"
       ? Number(body.timeout_seconds ?? 60)
@@ -144,7 +142,6 @@ export async function operation(
         : undefined;
   if (command === "send" && !flag(args, "--json"))
     auth.err("Sending message… Waking the sandbox if paused; waiting for acceptance.\n");
-  // Match the control proxy ceiling: send may restore paused compute before admitting the turn.
   const signal =
     command === "stop" || command === "bind-credential" || command === "send"
       ? AbortSignal.timeout(660_000)
@@ -155,7 +152,6 @@ export async function operation(
     client.sandboxes[command === "detail" ? "status" : command](body, signal ? { signal } : undefined),
   );
   const result = await request.catch((error: unknown) => {
-    // Stop previously collapsed these versioned reasons into an AuthError.
     if (
       command === "stop" &&
       error instanceof ArmadaApiError &&
@@ -269,7 +265,6 @@ function sandboxListFilters(args: ReturnType<typeof parseArgs>): Record<string, 
   return body;
 }
 
-/** `90`, `90s`, `30m`, `4h` or `2d`. A bare number is seconds. */
 export function parseTtl(value: string): number {
   const match = /^([1-9][0-9]*)([smhd]?)$/.exec(value);
   const unit = { "": 1, s: 1, m: 60, h: 3600, d: 86_400 }[match?.[2] ?? ""];

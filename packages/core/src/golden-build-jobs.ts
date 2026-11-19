@@ -22,7 +22,6 @@ import {
   type ModalBinding,
   PROVIDER_LIMITS,
   type ProviderTarget,
-  SANDBOX_PROVIDERS,
   type SandboxProviderId,
 } from "./sandbox-provider.ts";
 
@@ -410,11 +409,14 @@ export class GoldenBuildJobs {
     buildTarget(job.provider, job.org_id, input);
     return input;
   }
-  private async resolve(job: Job, actor: GoldenActor, input: Input): Promise<Provider> {
+  private async resolve(job: Job, actor: GoldenActor, input: Input, signal?: AbortSignal): Promise<Provider> {
+    signal?.throwIfAborted();
     const provider = await this.options.provider(actor, job.visibility, buildTarget(job.provider, job.org_id, input));
+    signal?.throwIfAborted();
     assertProviderOf(provider, job.provider);
     if (job.reservation_id) {
       const identity = await provider.backendIdentity?.();
+      signal?.throwIfAborted();
       const slot = (
         await this.options.sql.query<{ backend_id: string; provider: string }>(
           "select backend_id,provider from public.golden_backend_slots where build_id=$1",
@@ -428,34 +430,17 @@ export class GoldenBuildJobs {
     }
     return provider;
   }
-  /** Reconcile a fenced abandoned attempt, never restart its commands or delete snapshots. */
-  async reconcileOne(): Promise<void> {
-    const row = (
-      await this.options.sql.query<Job>(
-        "select * from public.golden_build_jobs where state='recovery_required' and (builder_id is not null or snapshot is not null or (provider=any($1::public.sandbox_provider[]) and phase='builder') or (phase='authorization' and fence is not null and builder_id is null and snapshot is null)) order by updated_at limit 1",
-        [
-          // Encode the fixed provider IDs as a PostgreSQL array, not a driver-native JS array.
-          "{" +
-            SANDBOX_PROVIDERS.filter(
-              (id) => HOST_CAPABILITIES[id].goldenBuilderRecovery === "dispose-reservation",
-            ).join(",") +
-            "}",
-        ],
-      )
-    ).rows[0];
-    if (row) await this.recoverReceipt(row);
-  }
-
-  private async recoverReceipt(row: Job) {
+  /** Reconcile only the attempt identified by the shared job. */
+  private async recoverReceipt(row: Job, signal?: AbortSignal) {
     const reservationRecovery = HOST_CAPABILITIES[row.provider].goldenBuilderRecovery === "dispose-reservation";
-    // Fairness bookkeeping only: retained, unauthorized or temporarily unavailable heads
-    // must not starve other abandoned jobs. Never change their fence/state/capacity/proof.
-    const attempted = await this.options.sql.query(
-      "update public.golden_build_jobs set updated_at=clock_timestamp() where id=$1 and state='recovery_required' and fence is not distinct from $2::uuid returning id",
-      [row.id, row.fence],
-    );
-    if (!attempted.rows.length || !row.fence) return;
-    if (row.phase === "authorization" && row.builder_id === null && row.snapshot === null) {
+    const authorizationOnly = row.phase === "authorization" && row.builder_id === null && row.snapshot === null;
+    if (
+      !row.fence ||
+      (!authorizationOnly && !row.builder_id && !row.snapshot && !(reservationRecovery && row.phase === "builder"))
+    )
+      return;
+    signal?.throwIfAborted();
+    if (authorizationOnly) {
       // createGolden is called only after the durable builder phase is fenced.
       // A late authorization callback cannot enter that phase after recovery owns
       // the row. No provider resource exists to stop or inspect in this state.
@@ -473,6 +458,7 @@ export class GoldenBuildJobs {
           current.snapshot !== null
         )
           return;
+        signal?.throwIfAborted();
         if (current.reservation_id) await sqlGoldenBackendSlots(sql).release(current.reservation_id);
         await sql.query(
           "update public.golden_build_jobs set state='failed',failure_reason=coalesce(failure_reason,$2),updated_at=now() where id=$1",
@@ -493,6 +479,7 @@ export class GoldenBuildJobs {
     if (reservationRecovery && !rolledBack && (row.phase === "snapshot" || row.phase === "persist")) return;
     try {
       const actor = await this.transaction((sql) => this.actor(sql, row));
+      signal?.throwIfAborted();
       const input = await this.context(row);
       if (
         input.name !== row.name ||
@@ -500,7 +487,8 @@ export class GoldenBuildJobs {
         (input.existingGolden?.id ?? null) !== row.golden_id
       )
         return;
-      const provider = await this.resolve(row, actor, input);
+      const provider = await this.resolve(row, actor, input, signal);
+      signal?.throwIfAborted();
       if (reservationRecovery && (!provider.findGoldenBuilder || !provider.disposeGoldenBuilder)) return;
       // The unpublished artifact must be gone before the builder or the capacity is released.
       // Recovery resumes wherever the worker stopped: a still-live artifact is retired first (an
@@ -517,6 +505,7 @@ export class GoldenBuildJobs {
           ).rows.length
         )
           return;
+        signal?.throwIfAborted();
         const live = await provider.getSnapshot(rolledBack).then(
           () => true,
           (error: unknown) => {
@@ -524,9 +513,12 @@ export class GoldenBuildJobs {
             throw error;
           },
         );
+        signal?.throwIfAborted();
         if (live) await provider.deleteSnapshot(rolledBack);
+        signal?.throwIfAborted();
         if ((await provider.collectRetiredSnapshot(rolledBack)) !== "collected") return;
       }
+      signal?.throwIfAborted();
       // Proof for the provider that this builder's own snapshot was this collected rolled-back artifact.
       const collected = rolledBack ? { collected: rolledBack } : {};
       let builderId = row.builder_id;
@@ -542,6 +534,7 @@ export class GoldenBuildJobs {
         builderId = found.sandboxId;
         retained = found.disposition !== "disposable";
       } else if (!builderId) return;
+      signal?.throwIfAborted();
       const owned = await this.transaction(async (sql) => {
         const current = (
           await sql.query<Job>("select * from public.golden_build_jobs where id=$1 for update", [row.id])
@@ -562,6 +555,7 @@ export class GoldenBuildJobs {
         )
           return false;
         await this.actor(sql, current);
+        signal?.throwIfAborted();
         // Commit the logical identity under the existing fence BEFORE any provider action.
         const saved = await sql.query(
           "update public.golden_build_jobs set builder_id=$3,updated_at=now() where id=$1 and fence=$2 and state='recovery_required' returning id",
@@ -571,6 +565,7 @@ export class GoldenBuildJobs {
       });
       if (!owned || retained || (reservationRecovery && provider.findGoldenBuilder && !provider.disposeGoldenBuilder))
         return;
+      signal?.throwIfAborted();
       // Reservation disposal performs exact named ownership reconciliation under its lease.
       if (reservationRecovery) {
         const dispose = provider.disposeGoldenBuilder;
@@ -584,6 +579,7 @@ export class GoldenBuildJobs {
         });
         if (receipt.status !== "deleted") return;
       } else await provider.stop({ sandboxId: builderId });
+      signal?.throwIfAborted();
       await this.transaction(async (sql) => {
         const current = (
           await sql.query<Job>("select * from public.golden_build_jobs where id=$1 for update", [row.id])
@@ -596,6 +592,7 @@ export class GoldenBuildJobs {
         )
           return;
         await this.actor(sql, current);
+        signal?.throwIfAborted();
         if (row.reservation_id) await sqlGoldenBackendSlots(sql).release(row.reservation_id);
         await sql.query("update public.golden_build_jobs set state='failed',updated_at=now() where id=$1", [row.id]);
       });
@@ -603,14 +600,22 @@ export class GoldenBuildJobs {
       /* Unknown outcomes retain capacity, source and proof. No exception/payload/SDK logging. */
     }
   }
-  /** Expire the receipt leases still used by running builds during the dispatch cutover. */
-  async expireRunningReceipts(sql = this.options.sql) {
-    await sql.query(
-      "update public.golden_build_jobs set state='recovery_required',error_code='build_failed',updated_at=now() where state='running' and (lease_until<=clock_timestamp() or deadline<=clock_timestamp())",
+  private expireRunningReceipts(sql: Sql, id: string | null) {
+    return sql.query(
+      "update public.golden_build_jobs set state='recovery_required',error_code='build_failed',updated_at=now() where state='running' and ($1::uuid is null or id=$1) and (lease_until<=clock_timestamp() or deadline<=clock_timestamp()) returning id",
+      [id],
     );
   }
 
-  async dispatchReceipt(id: string, leaseEpoch: string) {
+  async dispatchReceipt(
+    id: string,
+    leaseEpoch: string,
+    signal?: AbortSignal,
+    runRecovery = async (work: (signal?: AbortSignal) => Promise<void>) => {
+      await work(signal);
+      return true;
+    },
+  ) {
     const job = await this.transaction(async (sql) => {
       const row = (
         await sql.query<Job & { expired: boolean }>(
@@ -618,12 +623,18 @@ export class GoldenBuildJobs {
           [id],
         )
       ).rows[0];
-      if (!row || row.state !== "queued") return row;
+      if (!row || row.state === "succeeded" || row.state === "failed") return row;
       const lease = await sql.query(
         "select id from public.jobs where id=$1 and kind='golden_build' and state='leased' and lease_epoch=$2 and lease_until>clock_timestamp() for update",
         [id, leaseEpoch],
       );
       if (!lease.rows.length) return row;
+      signal?.throwIfAborted();
+      if (row.state === "running") {
+        const expired = await this.expireRunningReceipts(sql, id);
+        return expired.rows.length ? { ...row, state: "recovery_required" as const, recover: true } : row;
+      }
+      if (row.state === "recovery_required") return { ...row, recover: true };
       if (row.expired) {
         // The same row lock fences other workers' claims. Only a never-started
         // admission can release capacity without reconciling provider resources.
@@ -644,7 +655,7 @@ export class GoldenBuildJobs {
         return { ...row, state, processed: true };
       }
       await sql.query("select pg_advisory_xact_lock(hashtextextended('armada.jobs:golden_build',0))");
-      await this.expireRunningReceipts(sql);
+      await this.expireRunningReceipts(sql, null);
       const available = await sql.query(
         `select id from public.jobs where id=$1 and lease_until>clock_timestamp()
            and not exists (select 1 from public.golden_build_jobs where state='running')`,
@@ -660,8 +671,11 @@ export class GoldenBuildJobs {
     if (!job) return { processed: false, pending: false };
     const processed = "processed" in job;
     let state = job.state;
-    if (processed && state === "running") {
-      await this.executeReceipt(job);
+    if ("recover" in job || (processed && state === "running")) {
+      if ("recover" in job) {
+        if (!(await runRecovery((recoverySignal) => this.recoverReceipt(job, recoverySignal))))
+          return { processed, pending: true };
+      } else await this.executeReceipt(job);
       const { rows } = await this.options.sql.query<Pick<Job, "state">>(
         "select state from public.golden_build_jobs where id=$1",
         [id],
@@ -762,7 +776,7 @@ export class GoldenBuildJobs {
         await sql.query(
           // The candidate stays as durable cleanup work unless its cleanup was confirmed, and is
           // written here if its earlier record failed: this write proves it unpublished (state
-          // running under the fence), so reconcileOne retires and collects it, then frees the
+          // running under the fence), so recovery retires and collects it, then frees the
           // builder and capacity.
           "update public.golden_build_jobs set state=$2,error_code='build_failed',failure_reason=$3,phase=$4,snapshot=case when $5::boolean then null else coalesce(snapshot,$6) end,lease_until=null,updated_at=now() where id=$1",
           [

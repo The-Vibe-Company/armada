@@ -1,8 +1,9 @@
 import type { GoldenBuildJobs } from "../../src/golden-build-jobs.ts";
 import type { Sql } from "../../src/golden-store.ts";
 
-export async function dispatchGoldenBuild(sql: Sql, builds: GoldenBuildJobs) {
-  await builds.expireRunningReceipts();
+export async function dispatchGoldenBuild(sql: Sql, builds: GoldenBuildJobs, dueReceipt?: string) {
+  if (dueReceipt)
+    await sql.query("update public.jobs set run_after='-infinity' where id=$1 and state='queued'", [dueReceipt]);
   const owner = crypto.randomUUID();
   const { rows } = await sql.query<{ id: string; epoch: string }>(
     "select id, lease_epoch::text as epoch from public.claim_job('golden_build',$1,30,1)",

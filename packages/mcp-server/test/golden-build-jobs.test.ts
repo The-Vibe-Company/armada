@@ -98,6 +98,17 @@ async function fixture({
   return { ...server, builds, http, deleted, allocations: () => allocations };
 }
 
+async function runGoldenBuildJob(db: TestServer["db"], builds: GoldenBuildJobs) {
+  const runner = createJobsRunner(
+    createJobsStore(db),
+    { golden_build: createGoldenBuildJob(builds, () => Date.UTC(2026, 0, 1)) },
+    () => {},
+    () => () => {},
+  );
+  expect(await runner.reconcileOne(new AbortController().signal)).toBe(true);
+  await runner.drain();
+}
+
 test("REST durable admission, idempotent acknowledgement recovery and status outlive the request", async () => {
   const s = await fixture();
   try {
@@ -434,9 +445,8 @@ test("expired execution fence cannot publish or replay; reconciliation stops a k
     worker = dispatchGoldenBuild(base.db, base.builds);
     await started;
     await base.db.query("update golden_build_jobs set lease_until=now()-interval '1 second' where id=$1", [job.jobId]);
-    expect(await dispatchGoldenBuild(base.db, base.builds)).toBe(false);
-    expect((await base.builds.status(base.people.admin, job.jobId)).state).toBe("recovery_required");
-    await base.builds.reconcileOne();
+    await base.db.query("update public.jobs set lease_until='-infinity' where id=$1", [job.jobId]);
+    await runGoldenBuildJob(base.db, base.builds);
     expect((await base.builds.status(base.people.admin, job.jobId)).state).toBe("failed");
     release();
     await worker;
@@ -662,8 +672,7 @@ test.each(["create", "rebuild", "builder-evidence", "builder-phase", "live-lease
         ],
       );
       const slotsBefore = (await s.db.query("select * from golden_backend_slots")).rows;
-      expect(await dispatchGoldenBuild(s.db, s.builds)).toBe(false);
-      await s.builds.reconcileOne();
+      await runGoldenBuildJob(s.db, s.builds);
       const status = await s.builds.status(s.people.admin, job.jobId);
       const releasable = mode === "create" || mode === "rebuild";
       expect(status.state).toBe(releasable ? "failed" : mode === "live-lease" ? "running" : "recovery_required");

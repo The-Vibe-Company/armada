@@ -2,7 +2,6 @@ import { expect, test } from "bun:test";
 import { createBoatProvider } from "@armada/provider-boat";
 
 import { retainedSandbox } from "../../provider-boat/test/support.ts";
-import { createGoldenRecoveryLane } from "../src/golden-worker.ts";
 import { createSandboxLifecycle } from "../src/sandbox-lifecycle.ts";
 import { startServerWorkers } from "../src/server-workers.ts";
 import { rowOnlyConnection } from "./row-only-database.ts";
@@ -52,7 +51,6 @@ test("server lifecycle drains multiple rows while independent work is pending; s
   let retirementSignal: AbortSignal | undefined;
   const progress = deferred<void>();
   let buildRunning = false;
-  let recoveryRuns = 0;
   let reconciled = 0;
   const provider = createBoatProvider({
     apiKey: "test-key",
@@ -83,15 +81,13 @@ test("server lifecycle drains multiple rows while independent work is pending; s
     },
     [],
     [
-      createGoldenRecoveryLane({
-        expireRunningReceipts: async () => {
+      {
+        async reconcileOne() {
           buildRunning = true;
-          await build.promise;
+          return build.promise;
         },
-        reconcileOne: async () => {
-          recoveryRuns++;
-        },
-      }),
+        async drain() {},
+      },
       {
         reconcileOne: async (signal) => {
           exportSignal = signal;
@@ -129,7 +125,6 @@ test("server lifecycle drains multiple rows while independent work is pending; s
     build.resolve(false);
     await workers.done;
     expect(done).toBe(true);
-    expect(recoveryRuns).toBe(0);
     const count = reconciled;
     await Promise.resolve();
     expect(reconciled).toBe(count);

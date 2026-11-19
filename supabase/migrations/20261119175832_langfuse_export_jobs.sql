@@ -1,5 +1,6 @@
 -- Transfer receipts transactionally. The producer remains enqueue_webhook_turn,
 -- including for the old server revision during deployment overlap.
+begin;
 lock table public.langfuse_turn_exports in share row exclusive mode;
 
 create function public.queue_langfuse_export() returns trigger
@@ -35,3 +36,5 @@ drop trigger transfer_langfuse_exports on public.langfuse_turn_exports;
 
 create trigger queue_langfuse_export after insert on public.langfuse_turn_exports
   for each row execute function public.queue_langfuse_export();
+
+commit;
