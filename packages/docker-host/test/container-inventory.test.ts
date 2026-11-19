@@ -133,3 +133,44 @@ test("posts a complete authenticated inventory only after the server advertises 
     },
   ]);
 });
+
+test("stopping inventory drains the current Docker call and prevents publishing or starting another scan", async () => {
+  let scans = 0;
+  let reports = 0;
+  const listing = Promise.withResolvers<void>();
+  const api = httpApi(
+    (async (url) => {
+      if (String(url).endsWith("/poll")) return Response.json({ job: null, containerInventory: 1 });
+      reports++;
+      return new Response(null, { status: 204 });
+    }) as typeof fetch,
+    undefined,
+    undefined,
+    undefined,
+    {
+      cli: {
+        async run() {
+          scans++;
+          await listing.promise;
+          return { exitCode: 0, stdout: "" };
+        },
+      },
+      failed: () => {
+        throw new Error("Stopping inventory should not report an error");
+      },
+    },
+  );
+
+  await api.poll(state);
+  let drained = false;
+  const stopping = api.stopInventory().then(() => {
+    drained = true;
+  });
+  await api.poll(state);
+  expect(drained).toBe(false);
+  listing.resolve();
+  await stopping;
+  await api.poll(state);
+  expect(scans).toBe(1);
+  expect(reports).toBe(0);
+});

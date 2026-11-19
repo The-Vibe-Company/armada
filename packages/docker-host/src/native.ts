@@ -163,6 +163,7 @@ export function httpApi(
   stoppedBytes?: (state: State) => Promise<number | null>,
   inventory?: { cli: DockerMachineCli; failed(): void },
 ): Api & {
+  stopInventory(): Promise<void>;
   retainedOutputs(state: State, requestId: string, read: () => Promise<Uint8Array<ArrayBuffer> | null>): Promise<void>;
   unregister(state: State): Promise<boolean>;
   reuseRegistration(state: State, token: string): Promise<{ hostId: string; name: string | null }>;
@@ -174,11 +175,12 @@ export function httpApi(
     body: unknown,
     timeoutMs = 8_000,
     snapshotBaseline = endpoint === "poll" ? SNAPSHOT_BASELINE_VERSION : undefined,
+    signal?: AbortSignal,
   ): Promise<unknown> {
     const response = await request(`${serverOrigin(server)}/api/docker-host/${endpoint}`, {
       method: "POST",
       redirect: "error",
-      signal: AbortSignal.timeout(timeoutMs),
+      signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)]) : AbortSignal.timeout(timeoutMs),
       headers: {
         authorization: `Bearer ${token}`,
         "content-type": "application/json",
@@ -212,17 +214,29 @@ export function httpApi(
     }
     return JSON.parse(Buffer.concat(parts).toString("utf8"));
   }
-  let reporting = false;
+  const inventoryStop = new AbortController();
+  let inventoryReport: Promise<void> | undefined;
   let nextInventoryAt = 0;
   async function reportInventory(cli: DockerMachineCli, state: State) {
-    const containers = await Array.fromAsync(createDockerContainerInventory(cli, state).listInventory());
-    await post(state.server, "container-inventory", state.hostToken, {
-      installationId: state.installationId,
-      containers,
-    });
+    const signal = inventoryStop.signal;
+    const containers = await Array.fromAsync(createDockerContainerInventory(cli, state).listInventory(signal));
+    signal.throwIfAborted();
+    await post(
+      state.server,
+      "container-inventory",
+      state.hostToken,
+      { installationId: state.installationId, containers },
+      undefined,
+      undefined,
+      signal,
+    );
   }
 
   return {
+    async stopInventory() {
+      inventoryStop.abort();
+      await inventoryReport;
+    },
     async reuseRegistration(state, token) {
       if (!validToken(token)) throw new Error("Invalid registration token");
       const result = await post(state.server, "reuse-registration", token, { hostId: state.hostId });
@@ -266,13 +280,20 @@ export function httpApi(
         const result = (await post(state.server, "poll", state.hostToken, body, timeoutMs)) as Awaited<
           ReturnType<Api["poll"]>
         >;
-        if (inventory && result?.containerInventory === 1 && !reporting && performance.now() >= nextInventoryAt) {
-          reporting = true;
-          void reportInventory(inventory.cli, state)
-            .catch(() => inventory.failed())
+        if (
+          inventory &&
+          !inventoryStop.signal.aborted &&
+          result?.containerInventory === 1 &&
+          !inventoryReport &&
+          performance.now() >= nextInventoryAt
+        ) {
+          inventoryReport = reportInventory(inventory.cli, state)
+            .catch(() => {
+              if (!inventoryStop.signal.aborted) inventory.failed();
+            })
             .finally(() => {
               nextInventoryAt = performance.now() + 60_000;
-              reporting = false;
+              inventoryReport = undefined;
             });
         }
         return result;

@@ -259,6 +259,7 @@ async function main(args: string[]) {
     let stopping = false;
     const stop = () => {
       stopping = true;
+      void api.stopInventory();
     };
     process.once("SIGINT", stop);
     process.once("SIGTERM", stop);
@@ -303,7 +304,7 @@ async function main(args: string[]) {
     } finally {
       clearInterval(expiryTimer);
       await Promise.all(scans);
-      await Promise.all([expiry.drain(), outputs.drain()]);
+      await Promise.all([expiry.drain(), outputs.drain(), api.stopInventory()]);
     }
   } finally {
     await release();
