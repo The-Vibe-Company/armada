@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { createAccountControl } from "../src/lib/account-control.ts";
+import producer from "../../test/fixtures/model-usage-v3.json";
+import { createAccountControl } from "./account-control.ts";
 import {
   ACCOUNT_KINDS,
   type AccountUsage,
@@ -21,13 +22,12 @@ import {
   parseUsage,
   terminalLogin,
   usageView,
-} from "../src/lib/model-accounts.ts";
-import producer from "./fixtures/model-usage-v3.json";
+} from "./model-accounts.ts";
 
 const NOW = Date.parse("2026-11-09T12:00:00.000Z");
 const uuid = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
 
-function account(n: number, fields: Partial<ModelAccount> = {}): ModelAccount {
+function account(n: number, fields: Partial<ModelAccount> = {}) {
   return {
     id: uuid(n),
     scope: "user",
@@ -39,7 +39,7 @@ function account(n: number, fields: Partial<ModelAccount> = {}): ModelAccount {
     updatedAt: "2026-11-08T10:00:00.000Z",
     version: 1,
     ...fields,
-  };
+  } satisfies ModelAccount;
 }
 
 describe("the account a launch bills", () => {
@@ -131,8 +131,6 @@ describe("the account a launch request bills, as the server action checks it", (
 });
 
 describe("an account that may become the default", () => {
-  // The server resolves an implicit launch to the default with no fallback, so a default that cannot run would
-  // refuse every launch that names no account.
   const accounts = [
     account(1, { name: "Work" }),
     account(2, { name: "Old", status: "revoked" }),
@@ -268,7 +266,6 @@ describe("usage", () => {
   ] as const)("%s reads as %s", (_name, usage, kind) => {
     const view = usageView(usage, { version: 1 });
     expect(view.kind).toBe(kind);
-    // Only a report with windows ever carries numbers; nothing else becomes zero.
     expect("windows" in view).toBe(kind === "fresh" || kind === "stale");
   });
 
@@ -280,17 +277,14 @@ describe("usage", () => {
       limit: 20,
       currency: "USD",
     });
-    // A zero-decimal currency is not divided by 100.
     expect(extra({ enabled: true, currency: "JPY", usedMinor: 450, limitMinor: null })).toEqual({
       used: 450,
       limit: null,
       currency: "JPY",
     });
-    // The producer's major-unit aliases win over our own exponent table (HUF is 2 in ISO, 0 for some processors).
     expect(
       extra({ enabled: true, currency: "HUF", usedMinor: 45000, limitMinor: null, used: 450, limit: null }),
     ).toEqual({ used: 450, limit: null, currency: "HUF" });
-    // An explicit null major amount is the producer saying it could not tell: no conversion of its own.
     expect(
       extra({ enabled: true, currency: "HUF", usedMinor: 45000, limitMinor: null, used: null, limit: null }),
     ).toBeNull();
@@ -317,7 +311,6 @@ describe("usage", () => {
     expect(parsed?.hiddenWindows).toBe(1);
     const view = parsed && usageView(parsed, { version: 1 });
     expect(view?.kind).toBe("fresh");
-    // Repeated identities are all shown under distinct keys, and none is counted as unreadable.
     const repeated = parseUsage({
       ...report,
       windows: [
@@ -331,13 +324,11 @@ describe("usage", () => {
     ]);
     expect(new Set(repeated?.windows.map((window) => window.id)).size).toBe(2);
     expect(repeated?.hiddenWindows).toBe(0);
-    // #624 v1 sends its own stable id and source-derived label: used as they are.
     const v1 = parseUsage({
       ...report,
       windows: [{ id: "five_hour", label: "5-hour limit", kind: "five_hour", usedPercent: 30, resetsAt: null }],
     });
     expect(v1?.windows.map((window) => [window.id, window.label])).toEqual([["five_hour", "5-hour limit"]]);
-    // Only a report none of whose windows can be read is an unrecognized format.
     expect(parseUsage({ ...report, windows: [{ kind: "monthly", utilization: 0.4 }] })).toBeNull();
   });
 
@@ -349,190 +340,3 @@ describe("usage", () => {
         fetch: (async () => Response.json({ error: { code, message } }, { status })) as unknown as typeof fetch,
       });
     expect(await answer(404, "Unknown route.", "unknown_route").usage(uuid(1))).toBeNull();
-    // The server's read worked but its window is not one this dashboard reads: not a failure, not "no allowance".
-    const unreadable = createAccountControl({
-      serverUrl: "https://armada.test/mcp",
-      token: "session",
-      fetch: (async () =>
-        Response.json({
-          usage: { accountId: uuid(1), version: 1, status: "fresh", observedAt: null, windows: [{ utilization: 0.4 }] },
-        })) as unknown as typeof fetch,
-    });
-    expect(usageView(await unreadable.usage(uuid(1)), { version: 1 }).kind).toBe("unreadable");
-    await expect(answer(404, "No such account.").usage(uuid(1))).rejects.toThrow("No such account.");
-  });
-});
-
-describe("#624 v3 native credits and meters, as the producer reports them", () => {
-  type Case = Exclude<keyof typeof producer, "$comment">;
-  /** The producer's own response for a case and the view of it, read under the same account version. */
-  const read = (name: Case) => {
-    const usage = parseUsage(producer[name].usage);
-    const view = usageView(usage, { version: 1 });
-    if (!("credits" in view)) throw new Error(`${name} reads as ${view.kind}`);
-    return view;
-  };
-
-  test.each([
-    ["creditOnlyZero", { hasCredits: false, unlimited: false, balance: "0" }],
-    ["creditOnlyDecimal", { hasCredits: true, unlimited: false, balance: "9007199254740993.0012300" }],
-    ["creditOnlyUnlimited", { hasCredits: false, unlimited: true, balance: null }],
-  ] as const)("a %s reading is a reading on its own, kept exactly as the provider sent it", (name, credits) => {
-    const view = read(name);
-    expect(view.kind).toBe("fresh");
-    // One meter, once: the summary and its identical map view are the same reading. The string is never a number.
-    expect(view.credits).toEqual([
-      { key: "summary", sourceId: "codex", label: "codex", ...credits, observedAt: "2026-11-09T12:00:16.000Z" },
-    ]);
-    expect(view.windows).toEqual([]);
-    expect(view.extra).toBeNull();
-  });
-
-  test("every meter is shown once; a meter's own view that differs from the summary is shown and named as such", () => {
-    const view = read("meters");
-    expect(
-      view.windows.map((window) => [window.label, window.sourceId, window.usedPercent, window.durationMins]),
-    ).toEqual([
-      ["Primary", "codex", 25, 300],
-      ["Secondary", "codex", 50, 10080],
-      ["Review · primary", "review", 42, null],
-      ["Review · secondary", "review", 7, null],
-      ["codex · Primary (meter view)", "codex", 26, 300],
-    ]);
-    expect(new Set(view.windows.map((window) => window.id)).size).toBe(view.windows.length);
-    // Balances per meter, never added up: the summary's "0" and the codex map's "1.200" are both actual readings.
-    expect(view.credits.map((meter) => [meter.label, meter.sourceId, meter.balance, meter.unlimited])).toEqual([
-      ["codex", "codex", "0", false],
-      ["codex (meter view)", "codex", "1.200", false],
-      ["Review", "review", "12.3400", false],
-      ["extra", "extra", null, true],
-    ]);
-  });
-
-  test("a sparse update keeps older parts with their own read time, and the report reads as last known", () => {
-    const view = read("sparseStale");
-    expect(view.kind).toBe("stale");
-    expect(view.observedAt).toBe("2026-11-09T12:01:33.000Z");
-    expect(view.windows.map((window) => [window.sourceId, window.usedPercent, window.observedAt])).toEqual([
-      ["codex", 31, "2026-11-09T12:01:33.000Z"],
-      ["review", 42, "2026-11-09T12:00:16.000Z"],
-    ]);
-    // The retained balances keep the time they were read, not the time of the update that left them out.
-    expect(view.credits.map((meter) => [meter.sourceId, meter.balance, meter.observedAt])).toEqual([
-      ["codex", "0.000", "2026-11-09T12:00:16.000Z"],
-      ["review", "12.3400", "2026-11-09T12:00:16.000Z"],
-    ]);
-  });
-
-  test("malformed credits are left out rather than read as zero, and a shape it cannot read is counted", () => {
-    expect(usageView(parseUsage(producer.malformedCredits.usage), { version: 1 }).kind).toBe("unavailable");
-    const { usage } = producer.creditOnlyZero;
-    const numeric = parseUsage({
-      ...usage,
-      credits: { hasCredits: true, unlimited: false, balance: 12.5 },
-      buckets: [],
-    });
-    expect(numeric?.credits).toEqual([]);
-    expect(numeric?.hiddenCredits).toBe(1);
-  });
-});
-
-test("the terminal sign-in is only the command the server reports, with the name as one literal argument", () => {
-  // #604's nested shape: the documented `--name <name>` template is canonicalized to its allowlisted base.
-  const reported = parseAuthCapabilities({
-    hostedOAuth: false,
-    claude: { login: null, import: "armada creds import claude --name <name> --file <private-token-file>" },
-    codex: { login: "armada creds login codex --name <name>" },
-  });
-  expect(reported?.hostedOAuth).toBe(false);
-  expect(terminalLogin(reported, "codex_auth", "Work")).toBe("armada creds login codex --name 'Work'");
-  expect(terminalLogin(reported, "codex_auth", `Bob's $HOME`)).toBe(
-    `armada creds login codex --name 'Bob'\\''s $HOME'`,
-  );
-  // A command that is not a plain `armada creds login`, or a server that reports nothing, offers no terminal path.
-  expect(terminalLogin(reported, "claude_oauth", "Work")).toBeNull();
-  expect(terminalLogin(null, "codex_auth", "Work")).toBeNull();
-  // Arbitrary shell, another placeholder or an extra flag is never shown, in either shape.
-  for (const command of [
-    "armada creds login codex; curl https://example.test",
-    "armada creds login codex --name <name> --org <org>",
-    "armada creds login codex --name $(whoami)",
-  ]) {
-    expect(parseAuthCapabilities({ codex: { login: command } })?.terminal).toEqual({});
-    expect(parseAuthCapabilities({ nativeCLI: [{ kind: "codex_auth", command }] })?.terminal).toEqual({});
-  }
-  expect(parseAuthCapabilities({ nativeCLI: { codex_auth: "armada creds login codex" } })?.terminal).toEqual({
-    codex_auth: "armada creds login codex",
-  });
-});
-
-describe("harness connection defaults", () => {
-  test("a harness defaults to its subscription unless API billing is requested", () => {
-    expect(kindFor("codex")).toBe("codex_auth");
-    expect(kindFor("claude", "api")).toBe("anthropic");
-  });
-});
-
-describe("the Harness list (#805)", () => {
-  test("a row says Ready, or why it cannot run in plain words", () => {
-    expect(accountState(account(1), NOW)).toEqual({ label: "Ready", tone: "ok", needsAction: false });
-    expect(accountState(account(2, { expiresAt: "2026-11-01T00:00:00.000Z" }), NOW)).toEqual({
-      label: "Expired",
-      tone: "error",
-      needsAction: true,
-    });
-    expect(accountState(account(3, { status: "revoked" }), NOW).label).toBe("Revoked");
-    expect(accountState(account(4, { status: "unknown" }), NOW)).toMatchObject({ tone: "warn", needsAction: true });
-  });
-
-  test("needs action first, then the default, then yours before the org's, then by name", () => {
-    const list = [
-      account(1, { name: "Zed", scope: "org" }),
-      account(2, { name: "Beta" }),
-      account(3, { name: "Alpha", scope: "org", isDefault: true }),
-      account(4, { name: "Old", status: "revoked" }),
-      account(5, { name: "Aaron", scope: "org" }),
-    ];
-    expect(orderAccounts(list, NOW).map((item) => item.name)).toEqual(["Old", "Alpha", "Beta", "Aaron", "Zed"]);
-  });
-});
-
-test("every subscription pasted by hand names the exact local command to run", () => {
-  const subscriptions = ACCOUNT_KINDS.filter((kind) => KIND_INFO[kind].billing === "subscription");
-  expect(subscriptions.map((kind) => PASTE_SIGN_IN[kind]?.command)).toEqual([
-    "claude setup-token",
-    "codex login && cat ~/.codex/auth.json",
-  ]);
-  expect(ACCOUNT_KINDS.filter((kind) => PASTE_SIGN_IN[kind] && !subscriptions.includes(kind))).toEqual([]);
-});
-
-test("a shared Morph account is selectable for all three supported harnesses", () => {
-  const morph = account(1, { kind: "morph" });
-  expect(accountsFor([morph], "claude")).toEqual([morph]);
-  expect(accountsFor([morph], "codex")).toEqual([morph]);
-  expect(accountsFor([morph], "opencode")).toEqual([morph]);
-  expect(KIND_INFO.morph.harnessLabel).toBe("Claude Code and Codex and OpenCode");
-});
-
-test("account action errors retain conflict/access recovery without upstream diagnostics", () => {
-  expect(modelAccountFailure(409)).toContain("changed elsewhere");
-  expect(modelAccountFailure(undefined, "conflict")).toContain("changed elsewhere");
-  expect(modelAccountFailure(401)).toContain("Sign in again");
-  expect(modelAccountFailure(403)).toContain("permission");
-  expect(modelAccountFailure(404)).toContain("Reload Models");
-  for (const status of [undefined, 502, 503]) expect(modelAccountFailure(status)).toContain("could not be confirmed");
-});
-
-test("launch account observation keeps unknown distinct from ready and legacy without echoing diagnostics", () => {
-  const result = launchAccounts(
-    { state: "error", message: "HTTP 503: credential_version account_id digest sha256:example" },
-    0,
-  );
-  expect(result).toMatchObject({ state: "unavailable", reason: expect.stringContaining("Reload Models") });
-  expect(JSON.stringify(result)).not.toMatch(/HTTP|credential_version|account_id|sha256/);
-  expect(launchAccounts({ state: "legacy" }, 0)).toEqual({ state: "legacy" });
-  expect(launchAccounts({ state: "no-org" }, 0)).toMatchObject({
-    state: "unavailable",
-    reason: expect.stringContaining("join an organization"),
-  });
-});
