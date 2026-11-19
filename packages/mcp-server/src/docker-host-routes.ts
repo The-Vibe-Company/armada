@@ -276,6 +276,7 @@ export function createDockerHostRoutes(
               ...("baselineVersion" in body ? ["baselineVersion"] : []),
               ...("baselineTool" in body ? ["baselineTool"] : []),
               ...("missingRefIndex" in body ? ["missingRefIndex"] : []),
+              ...("outcome" in body && "retained" in body ? ["retained"] : []),
             ]
           : path.endsWith("/poll") && "version" in body
             ? [
@@ -443,7 +444,7 @@ export function createDockerHostRoutes(
             pendingStarts,
             ...(limits === undefined ? {} : { limits }),
           } satisfies DockerHostPollResponse,
-          { headers },
+          { headers: { ...headers, "x-armada-docker-retained-stop": "1" } },
         );
       }
       if ("claimed" in body) {
@@ -476,6 +477,7 @@ export function createDockerHostRoutes(
       const outcome = string(body.outcome);
       if (outcome !== "completed" && outcome !== "failed") throw new InvalidInput();
       const requestId = string(body.requestId);
+      if ("retained" in body && (body.retained !== true || outcome !== "failed")) throw new InvalidInput();
       // A reason explains a failure; it never accompanies a success.
       const reason = body.reason === undefined ? undefined : string(body.reason);
       if (
@@ -515,6 +517,7 @@ export function createDockerHostRoutes(
         ...(typeof baselineVersion === "number" ? { baselineVersion } : {}),
         ...(isSnapshotBaselineTool(baselineTool) ? { baselineTool } : {}),
         ...(typeof missingRefIndex === "number" ? { missingRefIndex } : {}),
+        ...(body.retained === true ? { retained: true } : {}),
       });
       return Response.json({ requestId }, { headers });
     } catch (error) {

@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { statusLook } from "./status-tone.ts";
+import { connectionLook, statusLook } from "./status-tone.ts";
 
 test("each sandbox status has one meaning: in flight, live, in transition, failed or at rest", () => {
   const looks = ["starting", "ready", "running", "stopping", "stopped", "failed", "deleted"].map((status) => [
@@ -22,4 +22,18 @@ test("each sandbox status has one meaning: in flight, live, in transition, faile
 test("a status the dashboard does not know yet is shown as itself, at rest", () => {
   expect(statusLook("hibernating")).toEqual({ tone: "neutral", pulse: false, label: "Hibernating" });
   expect(statusLook("")).toEqual({ tone: "neutral", pulse: false, label: "Unknown" });
+});
+
+test("a connection is live, at rest, failed or in doubt, never two at once", () => {
+  expect(
+    (["connected", "not-connected", "revoked", "unavailable"] as const).map((state) => [
+      connectionLook(state).tone,
+      connectionLook(state).label,
+    ]),
+  ).toEqual([
+    ["success", "Connected"],
+    ["neutral", "Not connected"],
+    ["destructive", "Revoked"],
+    ["warning", "Unavailable"],
+  ]);
 });

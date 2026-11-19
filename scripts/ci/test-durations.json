@@ -58,7 +58,6 @@
     "apps/dashboard/test/proxy.test.ts": 0.088,
     "apps/dashboard/test/routine-staging-transport.test.ts": 0.104,
     "apps/dashboard/test/sandbox-cost.test.ts": 0.021,
-    "apps/dashboard/test/screens.test.ts": 0.011,
     "apps/dashboard/test/staging-check-route-parity.test.ts": 0.14,
     "apps/dashboard/test/stats-db.test.ts": 0.024,
     "apps/dashboard/test/usage-revision.test.ts": 0.013,

@@ -29,7 +29,7 @@ import { diagnosticSandboxId } from "./provider-sandbox-target.ts";
 import { REQUEST_BODY_LIMIT_BYTES, withRequestBodyCeiling } from "./request-body-ceiling.ts";
 import { observeRequest, recordOperatorFailure } from "./request-observability.ts";
 import type { RuntimeFollowup } from "./runtime-followup.ts";
-import { createArmadaServer } from "./tools.ts";
+import { createArmadaServer, type ToolContext } from "./tools.ts";
 
 export const MCP_PATH = "/mcp";
 export const HEALTH_PATH = "/healthz";
@@ -38,6 +38,7 @@ export const HEALTH_PATH = "/healthz";
 export type Route = (request: Request) => Promise<Response | null>;
 
 export interface HandlerOptions {
+  readOutputSnapshot?: ToolContext["readOutputSnapshot"];
   sandboxBillingAccount?: (
     caller: import("./caller.ts").Caller,
     id: string,
@@ -182,6 +183,8 @@ export function createHandler(options: HandlerOptions): (request: Request) => Pr
     const server = createArmadaServer(
       {
         caller,
+        ...(options.readOutputSnapshot ? { readOutputSnapshot: options.readOutputSnapshot } : {}),
+        outputSignal: request.signal,
         ...(options.sandboxBillingAccount
           ? { sandboxBillingAccount: (id: string) => options.sandboxBillingAccount!(caller, id) }
           : {}),
