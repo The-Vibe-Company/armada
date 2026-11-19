@@ -3,6 +3,7 @@ import { createMemoryAuthStore } from "@armada/auth";
 import type { Sql } from "@armada/core/server";
 import { createSqlSandboxStore, createSqlVaultStore, DelegatedAuthority } from "@armada/core/server";
 import { openMigratedDatabase } from "../../../scripts/test-support/migrated-database.ts";
+import { createAccountTurnQueue } from "../src/account-turn-queue.ts";
 import { handleControlRequest } from "../src/control.ts";
 import { createSqlData } from "../src/data.ts";
 import { observeRequest } from "../src/request-observability.ts";
@@ -208,104 +209,139 @@ function stopPort(f: Awaited<ReturnType<typeof runtimeFixture>>) {
 }
 const args = (id: string) => ({ id, request_id: crypto.randomUUID(), runtimeVersion: 1 as const });
 
-test.each(["boat", "modal"] as const)(
-  "%s user stop recovers the original checkpoint after a lost acknowledgement",
-  async (provider) => {
-    const f = await checkpointFixture(provider);
-    try {
-      const input = args(f.row.id);
-      const unavailable = {
-        ...f.bridge,
-        async call() {
-          throw Error("dropped before delivery");
+test("idle-only stop refuses a queued turn before creating a checkpoint", async () => {
+  const f = await checkpointFixture("modal", true);
+  try {
+    const queue = createAccountTurnQueue(f.sql, ENCRYPTION_KEY);
+    const request = f.input();
+    expect(await queue.accept(f.caller, request)).toMatchObject({ status: "queued" });
+    const sandbox = (await f.context.data.sandboxes.get(f.row.id))!;
+    await expect(stopPort(f).context.runtimeStopCheckpoint(f.caller, sandbox, true)).rejects.toThrow("work is pending");
+    expect((await f.db.query("select 1 from runtime_checkpoints where sandbox_id=$1", [f.row.id])).rows).toHaveLength(
+      0,
+    );
+    expect(await queue.status(f.caller, request.id, request.request_id)).toMatchObject({ failed: false });
+  } finally {
+    await f.close();
+  }
+});
+
+test("an organization admin can still stop another member's runtime compute", async () => {
+  const f = await checkpointFixture("modal");
+  try {
+    const admin = {
+      ...f.caller,
+      userId: f.people.admin,
+      orgs: [{ orgId: f.people.org, role: "admin" as const }],
+    };
+    const stop = stopPort(f);
+    await expect(
+      callSharedTool({ ...stop.context, caller: admin, data: createSqlData(f.sql)(admin) }, "stop", { id: f.row.id }),
+    ).resolves.toMatchObject({ status: "stopped" });
+    expect(stop.calls()).toBe(1);
+    expect((await f.db.query("select 1 from runtime_checkpoints where sandbox_id=$1", [f.row.id])).rows).toHaveLength(
+      0,
+    );
+  } finally {
+    await f.close();
+  }
+});
+
+test.each(["boat", "modal"] as const)("%s stop recovers the original checkpoint ACK", async (provider) => {
+  const f = await checkpointFixture(provider);
+  try {
+    const input = args(f.row.id);
+    const unavailable = {
+      ...f.bridge,
+      async call() {
+        throw Error("dropped before delivery");
+      },
+    };
+    await expect(createRuntimeCheckpoint(f.sql, ENCRYPTION_KEY, unavailable)(f.caller, input)).rejects.toMatchObject({
+      code: "conflict",
+    });
+    await expect(f.send(f.caller, f.input("must not run"))).rejects.toMatchObject({ code: "conflict" });
+    expect(f.starts).toHaveLength(1);
+    await expect(
+      createRuntimeCheckpoint(f.sql, ENCRYPTION_KEY, f.bridge)(f.caller, args(f.row.id)),
+    ).rejects.toMatchObject({ code: "conflict" });
+    const lost = {
+      ...f.bridge,
+      async call(...params: Parameters<typeof f.bridge.call>) {
+        await f.bridge.call(...params);
+        throw Error("lost after durable result");
+      },
+    };
+    await expect(createRuntimeCheckpoint(f.sql, ENCRYPTION_KEY, lost)(f.caller, input)).rejects.toMatchObject({
+      code: "conflict",
+    });
+    expect(
+      (await f.db.query("select watermark from runtime_checkpoints where sandbox_id=$1", [f.row.id])).rows[0],
+    ).toEqual({ watermark: null });
+    await expect(f.send(f.caller, f.input())).rejects.toMatchObject({ code: "conflict" });
+    const stop = stopPort(f);
+    await callSharedTool(stop.context, "stop", { id: f.row.id });
+    const recovered = await createRuntimeCheckpoint(f.sql, ENCRYPTION_KEY, f.bridge)(f.caller, input);
+    expect(recovered.checkpoint.state).toBe("complete");
+    const authStore = createMemoryAuthStore();
+    authStore.addMembership(f.people.owner, { orgId: f.people.org, name: "Fixture", role: "member" });
+    const bearer = `eyJhbGciOiJIUzI1NiJ9.${btoa(JSON.stringify({ sub: f.people.owner })).replace(/=+$/, "")}.sig`;
+    const response = await handleControlRequest(
+      new Request("https://armada.test/api/v1/sandbox/checkpoint-runtime-v1", {
+        method: "POST",
+        headers: { authorization: `Bearer ${bearer}` },
+        body: JSON.stringify(input),
+      }),
+      {
+        authStore,
+        store: createSqlVaultStore(f.sql),
+        encryptionKey: ENCRYPTION_KEY,
+        supabase: {
+          supabaseUrl: "https://supabase.test",
+          anonKey: "fixture",
+          fetch: async () => Response.json({ id: f.people.owner }),
         },
-      };
-      await expect(createRuntimeCheckpoint(f.sql, ENCRYPTION_KEY, unavailable)(f.caller, input)).rejects.toMatchObject({
-        code: "conflict",
-      });
-      await expect(f.send(f.caller, f.input("must not run"))).rejects.toMatchObject({ code: "conflict" });
-      expect(f.starts).toHaveLength(1);
-      await expect(
-        createRuntimeCheckpoint(f.sql, ENCRYPTION_KEY, f.bridge)(f.caller, args(f.row.id)),
-      ).rejects.toMatchObject({ code: "conflict" });
-      const lost = {
-        ...f.bridge,
-        async call(...params: Parameters<typeof f.bridge.call>) {
-          await f.bridge.call(...params);
-          throw Error("lost after durable result");
-        },
-      };
-      await expect(createRuntimeCheckpoint(f.sql, ENCRYPTION_KEY, lost)(f.caller, input)).rejects.toMatchObject({
-        code: "conflict",
-      });
-      expect(
-        (await f.db.query("select watermark from runtime_checkpoints where sandbox_id=$1", [f.row.id])).rows[0],
-      ).toEqual({ watermark: null });
-      await expect(f.send(f.caller, f.input())).rejects.toMatchObject({ code: "conflict" });
-      const stop = stopPort(f);
-      await callSharedTool(stop.context, "stop", { id: f.row.id });
-      const recovered = await createRuntimeCheckpoint(f.sql, ENCRYPTION_KEY, f.bridge)(f.caller, input);
-      expect(recovered.checkpoint.state).toBe("complete");
-      const authStore = createMemoryAuthStore();
-      authStore.addMembership(f.people.owner, { orgId: f.people.org, name: "Fixture", role: "member" });
-      const bearer = `eyJhbGciOiJIUzI1NiJ9.${btoa(JSON.stringify({ sub: f.people.owner })).replace(/=+$/, "")}.sig`;
-      const response = await handleControlRequest(
-        new Request("https://armada.test/api/v1/sandbox/checkpoint-runtime-v1", {
-          method: "POST",
-          headers: { authorization: `Bearer ${bearer}` },
-          body: JSON.stringify(input),
-        }),
-        {
-          authStore,
-          store: createSqlVaultStore(f.sql),
-          encryptionKey: ENCRYPTION_KEY,
-          supabase: {
-            supabaseUrl: "https://supabase.test",
-            anonKey: "fixture",
-            fetch: async () => Response.json({ id: f.people.owner }),
+        data: createSqlData(f.sql),
+        runtimeCheckpoint: createRuntimeCheckpoint(f.sql, ENCRYPTION_KEY, unavailable),
+        providers: {
+          async resolve() {
+            throw Error("No compute/provider resolution for cached checkpoint");
           },
-          data: createSqlData(f.sql),
-          runtimeCheckpoint: createRuntimeCheckpoint(f.sql, ENCRYPTION_KEY, unavailable),
-          providers: {
-            async resolve() {
-              throw Error("No compute/provider resolution for cached checkpoint");
-            },
-          },
         },
+      },
+    );
+    expect(response?.status).toBe(200);
+    expect(await response?.json()).toEqual(recovered);
+    await expect(
+      createRuntimeCheckpoint(f.sql, ENCRYPTION_KEY, unavailable)({ ...f.caller, userId: f.people.admin }, input),
+    ).rejects.toMatchObject({ code: "not_found" });
+    for (const role of ["anon", "authenticated"]) {
+      const { rows } = await f.db.query<{ ok: boolean }>(
+        "select has_table_privilege($1,'runtime_checkpoints','select,insert,update,delete') as ok",
+        [role],
       );
-      expect(response?.status).toBe(200);
-      expect(await response?.json()).toEqual(recovered);
-      await expect(
-        createRuntimeCheckpoint(f.sql, ENCRYPTION_KEY, unavailable)({ ...f.caller, userId: f.people.admin }, input),
-      ).rejects.toMatchObject({ code: "not_found" });
-      for (const role of ["anon", "authenticated"]) {
-        const { rows } = await f.db.query<{ ok: boolean }>(
-          "select has_table_privilege($1,'runtime_checkpoints','select,insert,update,delete') as ok",
-          [role],
-        );
-        expect(rows[0]?.ok).toBe(false);
-      }
-      const final = await createSqlData(f.sql)(f.caller).sandboxes.get(f.row.id);
-      if (provider === "boat") expect(final?.preservationNote).toContain("runtime checkpoint acknowledged");
-      else {
-        expect(final?.status).toBe("stopped");
-        expect(final?.preservationNote).toBeNull();
-        expect(
-          (
-            await f.db.query(
-              "select preservation_stop_generation=stop_generation as captured from sandboxes where id=$1",
-              [f.row.id],
-            )
-          ).rows,
-        ).toEqual([{ captured: true }]);
-      }
-      expect(stop.calls()).toBe(1);
-      expect(f.starts).toHaveLength(1);
-    } finally {
-      await f.close();
+      expect(rows[0]?.ok).toBe(false);
     }
-  },
-);
+    const final = await createSqlData(f.sql)(f.caller).sandboxes.get(f.row.id);
+    if (provider === "boat") expect(final?.preservationNote).toContain("runtime checkpoint acknowledged");
+    else {
+      expect(final?.status).toBe("stopped");
+      expect(final?.preservationNote).toBeNull();
+      expect(
+        (
+          await f.db.query(
+            "select preservation_stop_generation=stop_generation as captured from sandboxes where id=$1",
+            [f.row.id],
+          )
+        ).rows,
+      ).toEqual([{ captured: true }]);
+    }
+    expect(stop.calls()).toBe(1);
+    expect(f.starts).toHaveLength(1);
+  } finally {
+    await f.close();
+  }
+});
 
 test("an enrolled scoped parent loses its grant before checkpoint dispatch and scrubs on recovery", async () => {
   const f = await checkpointFixture("modal", true);

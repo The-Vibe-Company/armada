@@ -6,6 +6,7 @@ import { createDockerSandboxService } from "./docker-sandbox-service.ts";
 import { runtimeHarnessSupported } from "./provider-runtime-admission.ts";
 import type { createRuntimeCommands } from "./runtime-commands.ts";
 import { createRuntimeEnrolments } from "./runtime-enrolment.ts";
+import { unsettledRuntimeCommands } from "./runtime-idle-evidence.ts";
 
 interface Intent {
   epoch: string;
@@ -330,7 +331,7 @@ export function createRuntimeCheckpoint(
 }
 
 export function createRuntimeStopCheckpoint(sql: Sql, checkpoint: RuntimeCheckpoint) {
-  return async (caller: Caller, sandbox: SandboxView) => {
+  return async (caller: Caller, sandbox: SandboxView, onlyIfIdle: boolean) => {
     if (sandbox.ownerId !== caller.userId)
       throw new VaultError("forbidden", "Only the runtime owner may checkpoint this sandbox.");
     const current = (
@@ -344,10 +345,22 @@ export function createRuntimeStopCheckpoint(sql: Sql, checkpoint: RuntimeCheckpo
     ).rows[0];
     if (!current) throw new VaultError("conflict", "Sandbox changed before runtime stop.");
     if (current.application_secret_tainted) return undefined;
-    return checkpoint(caller, {
-      id: sandbox.id,
-      request_id: current.request_id ?? crypto.randomUUID(),
-      runtimeVersion: 1,
-    });
+    return checkpoint(
+      caller,
+      { id: sandbox.id, request_id: current.request_id ?? crypto.randomUUID(), runtimeVersion: 1 },
+      async (tx) => {
+        const eligible = await tx.query(
+          `select s.id from public.sandboxes s where s.id=$1 and s.lifecycle_generation=$4 and s.status in ('ready','running')
+             and not s.application_secret_tainted
+             and (not $2::boolean or (s.status='ready'
+               and not exists(select 1 from public.account_turn_queue q where q.sandbox_id=s.id
+                 and q.state in ('queued','dispatching'))
+               and ($3::boolean or not exists(${unsettledRuntimeCommands("s.id", "s.lifecycle_generation")}))))`,
+          [sandbox.id, onlyIfIdle, current.request_id !== null, sandbox.lifecycleGeneration],
+        );
+        if (!eligible.rows.length)
+          throw new VaultError("conflict", "Runtime stop admission changed or work is pending.");
+      },
+    );
   };
 }

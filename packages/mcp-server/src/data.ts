@@ -784,8 +784,12 @@ export function createSqlData(
         if (patch.taskPromptId !== undefined) set("task_prompt_id", patch.taskPromptId, "::text");
         if (patch.status !== undefined) {
           set("status", patch.status, "::public.sandbox_status");
+          const code =
+            patch.retainedRuntimeStop === undefined
+              ? `'sandbox_' || ($${params.length}::public.sandbox_status)::text`
+              : "'runtime_retained_stop'";
           sets.push(`transition_context = case when s.provider in ('boat','modal')
-            then jsonb_build_object('actor','api','code','sandbox_' || ($${params.length}::public.sandbox_status)::text) end`);
+            then jsonb_build_object('actor','api','code',${code}) end`);
         }
         if (patch.conversationIds !== undefined) set("conversation_ids", patch.conversationIds, "::text[]");
         if (patch.stoppedAt !== undefined) set("stopped_at", patch.stoppedAt, "::timestamptz");

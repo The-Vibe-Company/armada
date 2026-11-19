@@ -265,12 +265,11 @@ export function createSandboxLifecycle(
         returning s.id,s.provider_sandbox_id,s.runtime_transport,s.boat_runtime,s.lifecycle_generation,s.expires_at,s.status::text as status,s.status_reason,s.task_prompt_id,s.activity_lease_id,s.application_secret_tainted,s.credential_id,s.credential_version,s.stop_requested_at,s.preservation_note,
           ${mergedWorkProof("s")} as work_merged,due.retained_resume,
           due.modal_resume as protected_resume,
-          (s.status='stopping' and s.stop_requested_at is not null and not s.application_secret_tainted
-            and (s.boat_runtime or (s.provider='modal' and s.runtime_transport='dialout')) and exists(
-              select 1 from public.runtime_enrolments r join public.runtime_checkpoints p
-              on p.sandbox_id=r.sandbox_id and p.epoch=r.epoch
-              where r.sandbox_id=s.id and p.watermark is not null
-            )) as checkpointed_stop,
+          (s.status='stopping' and s.stop_requested_at is not null and exists(
+            select 1 from public.sandbox_transitions t where t.sandbox_id=s.id
+              and t.generation between s.lifecycle_generation-1 and s.lifecycle_generation
+              and t.actor='api' and t.code='runtime_retained_stop' and t.to_status='stopping'
+          )) as checkpointed_stop,
           (s.provider='boat' and s.boat_runtime and s.status='starting' and exists(
             select 1 from public.runtime_resumes r where r.sandbox_id=s.id and r.request_id=s.activity_lease_id
               and r.phase='dispatched' and r.receipt is null
@@ -615,7 +614,10 @@ export function createSandboxLifecycle(
           if (idleStop && !reconcilingStop) await operation(signal, requireIdle);
           const requireRetention =
             !expired &&
-            (retainedResume || idleStop || ["idle_paused", "work_merged"].includes(row.status_reason ?? ""));
+            (row.checkpointed_stop ||
+              retainedResume ||
+              idleStop ||
+              ["idle_paused", "work_merged"].includes(row.status_reason ?? ""));
           recordStopDispatch(row.id, row.provider_sandbox_id, "lifecycle_stop");
           await operation(signal, () =>
             provider.stop({
@@ -665,6 +667,7 @@ export function createSandboxLifecycle(
         if (
           resolved &&
           !rollbackRetainedResume &&
+          (!row.checkpointed_stop || expired) &&
           (providerId !== "boat" || observing) &&
           caught instanceof ProviderError &&
           caught.code === "not_found"

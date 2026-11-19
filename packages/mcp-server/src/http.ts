@@ -28,7 +28,7 @@ import { diagnosticSandboxId } from "./provider-sandbox-target.ts";
 import { REQUEST_BODY_LIMIT_BYTES, withRequestBodyCeiling } from "./request-body-ceiling.ts";
 import { observeRequest, recordOperatorFailure } from "./request-observability.ts";
 import type { RuntimeFollowup } from "./runtime-followup.ts";
-import { createArmadaServer } from "./tools.ts";
+import { createArmadaServer, type ToolContext } from "./tools.ts";
 
 export const MCP_PATH = "/mcp";
 export const HEALTH_PATH = "/healthz";
@@ -43,6 +43,7 @@ export interface HandlerOptions {
   ) => Promise<import("./sandbox-billing-account.ts").SandboxBillingAccount | null>;
   dockerControls?: import("./docker-sandbox-controls.ts").DockerSandboxControls;
   runtimeSend?: RuntimeFollowup;
+  runtimeStopCheckpoint?: ToolContext["runtimeStopCheckpoint"];
   accountTurns?: import("./account-turn-queue.ts").AccountTurnQueue;
   runtimeProviderFor?: (
     apiKey: string | Provider,
@@ -185,6 +186,7 @@ export function createHandler(options: HandlerOptions): (request: Request) => Pr
           : {}),
         ...(options.dockerControls ? { dockerControls: options.dockerControls } : {}),
         ...(options.runtimeSend ? { runtimeSend: options.runtimeSend } : {}),
+        ...(options.runtimeStopCheckpoint ? { runtimeStopCheckpoint: options.runtimeStopCheckpoint } : {}),
         ...(options.accountTurns ? { accountTurns: options.accountTurns } : {}),
         ...(options.skillDefaults ? { skillDefaults: options.skillDefaults } : {}),
         ...(options.connections ? { connections: options.connections } : {}),

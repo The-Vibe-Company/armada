@@ -1,7 +1,8 @@
-import { afterAll, beforeAll, describe, expect, spyOn, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { createMemoryAuthStore } from "@armada/auth";
 import { createSqlVaultStore, type Provider } from "@armada/core/server";
 import { fakeBoat, retainedSandbox, sandbox as sdkSandbox } from "../../provider-boat/test/support.ts";
+import { createAccountTurnQueue } from "../src/account-turn-queue.ts";
 import { boatRuntimeResume } from "../src/boat-runtime-resume.ts";
 import { dispatchControlCommand } from "../src/control.ts";
 import { createSqlData } from "../src/data.ts";
@@ -46,69 +47,103 @@ const input = (id: string) => ({
 
 describe("Modal user stop and wake-on-send", () => {
   let f: Awaited<ReturnType<typeof runtimeFixture>>;
-  beforeAll(async () => {
+  beforeEach(async () => {
     f = await runtimeFixture(await sharedDatabase(), "modal");
   });
-  afterAll(async () => {
+  afterEach(async () => {
     await f?.close();
   });
 
-  test("the stop route supplies retained Modal stop proof and send restores the same native conversation", async () => {
-    let state: "ready" | "stopped" = "ready";
-    let retained: { epoch: string; watermark: number } | undefined;
-    const host = {
-      id: "modal",
-      async get() {
-        return { id: f.row.providerSandboxId, state, providerState: state, physicalGeneration: "1" };
-      },
-      async captureRuntimeWork() {
-        return { status: "clean" };
-      },
-      async stop() {
-        state = "stopped";
-      },
-      async stopRuntime({ epoch, watermark }: { epoch: string; watermark: number }) {
-        retained = { epoch, watermark };
-        state = "stopped";
-      },
-    } as unknown as Provider;
-    const serve = createRuntimeServing(f.sql, ENCRYPTION_KEY);
-    const resume = createRuntimeResume(f.sql, ENCRYPTION_KEY, f.bridge, async () => ({
-      async start(_signal, restore) {
-        expect(restore).toMatchObject({
-          epoch: retained?.epoch,
-          watermark: retained?.watermark,
-          conversationId: f.first.conversationId,
-        });
-        return f.reboot(restore);
-      },
-      async stop() {
-        throw Error("Unexpected cleanup of healthy resume");
-      },
-    }));
-    const controls = {
-      authStore: createMemoryAuthStore(),
-      supabase: { supabaseUrl: "https://unused.test", anonKey: "fixture" },
-      store: createSqlVaultStore(f.sql),
-      encryptionKey: ENCRYPTION_KEY,
-      data: createSqlData(f.sql),
-      providers: { resolve: (target: Parameters<typeof serve>[1]) => serve(host, target, f.caller) },
-      runtimeStopCheckpoint: createRuntimeStopCheckpoint(
-        f.sql,
-        createRuntimeCheckpoint(f.sql, ENCRYPTION_KEY, f.bridge),
-      ),
-      runtimeSend: createRuntimeFollowup(f.sql, ENCRYPTION_KEY, f.bridge, undefined, resume),
-    };
-    expect(await dispatchControlCommand("sandbox/stop", f.caller, { id: f.row.id }, controls)).toMatchObject({
-      status: "stopped",
-    });
-    expect(await dispatchControlCommand("sandbox/send", f.caller, f.input(), controls)).toMatchObject({
-      conversationId: f.first.conversationId,
-      resumed: true,
-    });
-    expect(retained).toMatchObject({ epoch: "1", watermark: expect.any(Number) });
-    expect(f.starts).toEqual([undefined, "native-thread"]);
-  });
+  test.each([false, true])(
+    "wake restores the same native conversation after Modal stop (recover=%s)",
+    async (recover) => {
+      let needsRetry = recover;
+      let state: "ready" | "stopped" = "ready";
+      let retained: { epoch: string; watermark: number } | undefined;
+      const host = {
+        id: "modal",
+        async get() {
+          return { id: f.row.providerSandboxId, state, providerState: state, physicalGeneration: "1" };
+        },
+        async captureRuntimeWork() {
+          return { status: "clean" };
+        },
+        async stop() {
+          state = "stopped";
+        },
+        async stopRuntime({ epoch, watermark }: { epoch: string; watermark: number }) {
+          if (needsRetry) {
+            needsRetry = false;
+            throw Error("Stop response was lost before physical stop was confirmed");
+          }
+          retained = { epoch, watermark };
+          state = "stopped";
+        },
+      } as unknown as Provider;
+      const serve = createRuntimeServing(f.sql, ENCRYPTION_KEY);
+      const resume = createRuntimeResume(f.sql, ENCRYPTION_KEY, f.bridge, async () => ({
+        async start(_signal, restore) {
+          expect(restore).toMatchObject({
+            epoch: retained?.epoch,
+            watermark: retained?.watermark,
+            conversationId: f.first.conversationId,
+          });
+          return f.reboot(restore);
+        },
+        async stop() {
+          throw Error("Unexpected cleanup of healthy resume");
+        },
+      }));
+      const controls = {
+        authStore: createMemoryAuthStore(),
+        supabase: { supabaseUrl: "https://unused.test", anonKey: "fixture" },
+        store: createSqlVaultStore(f.sql),
+        encryptionKey: ENCRYPTION_KEY,
+        data: createSqlData(f.sql),
+        providers: { resolve: (target: Parameters<typeof serve>[1]) => serve(host, target, f.caller) },
+        runtimeStopCheckpoint: createRuntimeStopCheckpoint(
+          f.sql,
+          createRuntimeCheckpoint(f.sql, ENCRYPTION_KEY, f.bridge),
+        ),
+        runtimeSend: createRuntimeFollowup(f.sql, ENCRYPTION_KEY, f.bridge, undefined, resume),
+      };
+      const stop = () => dispatchControlCommand("sandbox/stop", f.caller, { id: f.row.id }, controls);
+      if (recover) {
+        await expect(stop()).rejects.toThrow();
+        await f.db.query("update sandboxes set activity_until=now()-interval '1 second' where id=$1", [f.row.id]);
+        const target = (await controls.data(f.caller).sandboxes.get(f.row.id))!;
+        const provider = await serve(host, target, f.caller);
+        const stopCall = spyOn(provider, "stop");
+        const lifecycle = createSandboxLifecycle(f.sql, async () => provider);
+        expect(await lifecycle.reconcileOne()).toBe(true);
+        await lifecycle.drain();
+        expect(stopCall).toHaveBeenCalledWith({ sandboxId: f.row.providerSandboxId, requireRetention: true });
+        expect((await controls.data(f.caller).sandboxes.get(f.row.id))?.status).toBe("stopped");
+      } else {
+        expect(await stop()).toMatchObject({ status: "stopped" });
+      }
+      const accountTurns = createAccountTurnQueue(f.sql, ENCRYPTION_KEY);
+      accountTurns.setDispatch((caller, request) =>
+        dispatchControlCommand("sandbox/send", caller, { ...request }, controls),
+      );
+      const request = f.input();
+      expect(
+        await dispatchControlCommand("sandbox/send", f.caller, request, { ...controls, accountTurns }),
+      ).toMatchObject({
+        status: "queued",
+      });
+      expect(await accountTurns.reconcileOne(new AbortController().signal)).toBe(true);
+      await accountTurns.drain();
+      expect(await accountTurns.status(f.caller, request.id, request.request_id)).toEqual({
+        nativePromptId: expect.any(String),
+      });
+      expect((await controls.data(f.caller).sandboxes.get(f.row.id))?.conversationIds).toEqual([
+        f.first.conversationId,
+      ]);
+      expect(retained).toMatchObject({ epoch: "1", watermark: expect.any(Number) });
+      expect(f.starts).toEqual([undefined, "native-thread"]);
+    },
+  );
 });
 
 describe.each([

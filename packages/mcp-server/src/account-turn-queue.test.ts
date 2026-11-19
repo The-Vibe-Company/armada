@@ -982,16 +982,16 @@ test("expired native post-admission claims fail visibly without replay after res
   expect((await queue.status(caller, input.id, input.request_id))?.failed).toBe(true);
 });
 
-test("an admitted merge stop fences new queued work until a retained native runtime stops", async () => {
+test.each([true, false])("retained stop intent fences new queued work (merged=%s)", async (merged) => {
   const id = ids[0]!;
   const input = { id, request_id: requests[0]!, prompt: "continue retained work" };
   await db.query("update sandboxes set provider='boat',boat_runtime=true where id=$1", [id]);
   await db.query("insert into runtime_enrolments values($1,1)", [id]);
-  await db.query("insert into runtime_checkpoints values($1,1,true)", [id]);
+  await db.query("insert into runtime_checkpoints values($1,1,$2)", [id, merged]);
 
-  await expect(queue.accept(caller, input)).rejects.toThrow("stopping after its pull requests were merged");
-  await db.query("update sandboxes set status='stopped',status_reason='work_merged',stopped_at=now() where id=$1", [
-    id,
-  ]);
+  await expect(queue.accept(caller, input)).rejects.toThrow(
+    merged ? "stopping after its pull requests were merged" : "Wait for a confirmed retained stop",
+  );
+  await db.query("update sandboxes set status='stopped',stopped_at=now() where id=$1", [id]);
   expect(await queue.accept(caller, input)).toMatchObject({ status: "queued" });
 });

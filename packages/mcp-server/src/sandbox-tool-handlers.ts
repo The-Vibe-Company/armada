@@ -465,12 +465,15 @@ export function configureTools(
         return { id: found.id, status: found.status };
       const { provider } = await live(args.id, true, found);
       const needsCheckpoint =
+        found.ownerId === caller.userId &&
         (found.boatRuntime || (found.provider === "modal" && found.runtimeTransport === "dialout")) &&
         ["ready", "running"].includes(found.status) &&
         Date.parse(found.expiresAt ?? "") > context.now().getTime();
       if (needsCheckpoint && !context.runtimeStopCheckpoint)
         throw new VaultError("unavailable", "Runtime stop checkpoint is unavailable.");
-      const checkpoint = needsCheckpoint ? await context.runtimeStopCheckpoint!(caller, found) : undefined;
+      const checkpoint = needsCheckpoint
+        ? await context.runtimeStopCheckpoint!(caller, found, args.only_if_idle === true)
+        : undefined;
       const idleGuard: Pick<ServerSandboxPatch, "onlyIfIdle"> = { onlyIfIdle: args.only_if_idle === true };
       const retainedGuard: Pick<ServerSandboxPatch, "retainedRuntimeStop"> = checkpoint
         ? { retainedRuntimeStop: checkpoint.requestId }

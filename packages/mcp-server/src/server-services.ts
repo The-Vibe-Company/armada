@@ -110,6 +110,7 @@ export async function createServerServices(env: Record<string, string | undefine
   const runtimeCheckpoint = createRuntimeCheckpoint(sql, config.encryptionKey, runtimeCommands, {
     docker: env.ARMADA_DOCKER_HOSTS === "1" && env.ARMADA_DOCKER_PLACEMENT === "1",
   });
+  const runtimeStopCheckpoint = createRuntimeStopCheckpoint(sql, runtimeCheckpoint);
   let subscriptionMigration: ReturnType<typeof createSubscriptionMigration>;
   const modelAuth = createModelAuthOwnership(sql, config.encryptionKey, undefined, undefined, {
     origin: config.publicUrl,
@@ -473,7 +474,7 @@ export async function createServerServices(env: Record<string, string | undefine
     runtimeSend,
     accountTurns,
     runtimeCheckpoint,
-    runtimeStopCheckpoint: createRuntimeStopCheckpoint(sql, runtimeCheckpoint),
+    runtimeStopCheckpoint,
     runtimeResume,
     ...(runtimeGitHub ? { runtimeGitHub } : {}),
     runtimeMcp,
@@ -578,6 +579,7 @@ export async function createServerServices(env: Record<string, string | undefine
   const handlerOptions: Omit<HandlerOptions, "routes"> = {
     ...(dockerControls ? { dockerControls } : {}),
     runtimeSend,
+    runtimeStopCheckpoint,
     accountTurns,
     ...(control.sandboxBillingAccount ? { sandboxBillingAccount: control.sandboxBillingAccount } : {}),
     ready: createDatabaseReadiness(sql),
