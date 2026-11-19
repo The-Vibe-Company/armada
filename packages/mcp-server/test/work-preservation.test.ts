@@ -79,13 +79,6 @@ test("recovery receipts retain encrypted versions and only current interior owne
       },
       exec: encryptedRecoveryExec(() => archive, boat.provider.exec),
     };
-    boat.setExecOutput({
-      stdout: JSON.stringify({
-        status: "preserved",
-        bytes: Buffer.from(archive, "base64").length,
-        sha256: createHash("sha256").update(Buffer.from(archive, "base64")).digest("hex"),
-      }),
-    });
     const commands = boat.execs.length;
     const pending = {
       ...provider,
@@ -101,17 +94,32 @@ test("recovery receipts retain encrypted versions and only current interior owne
     expect(await preserveBeforeStop(sql, pending, id, "bx_recovery")).toBe("pending");
     expect(boat.execs).toHaveLength(commands);
     expect((await owner.get(id))?.preservationNote).toBeNull();
+    // A failed capture must retain the old archive and allow a later dirty capture.
+    boat.setExecOutput({ stdout: JSON.stringify({ status: "failed", reason: "collector_failed" }) });
     await preserveBeforeStop(sql, provider, id, "bx_recovery");
-    const first = (
+    expect(await owner.readWorkRecovery?.(id, historicalId)).toBe(historicalArchive);
+    expect((await owner.get(id))?.preservationNote).toContain("capture_collector_failed");
+
+    boat.setExecOutput({
+      stdout: JSON.stringify({
+        status: "preserved",
+        bytes: Buffer.from(archive, "base64").length,
+        sha256: createHash("sha256").update(Buffer.from(archive, "base64")).digest("hex"),
+      }),
+    });
+    await preserveBeforeStop(sql, provider, id, "bx_recovery");
+    const captured = (
       await db.query<{ id: string; archive_enc: Uint8Array<ArrayBuffer> }>(
         "select id,archive_enc from sandbox_work_recovery where sandbox_id=$1 and id<>$2",
         [id, historicalId],
       )
     ).rows[0];
-    if (!first) throw new Error("Missing recovery artifact");
-    expect(Buffer.from(first.archive_enc).includes(Buffer.from(archive))).toBe(false);
-    expect(await decryptSecret(first.archive_enc)).toBe(archive);
-    expect((await owner.get(id))?.preservationNote).toBe(`unpushed work preserved at work_recovery:${id}/${first.id}`);
+    if (!captured) throw new Error("Missing recovery artifact");
+    expect(Buffer.from(captured.archive_enc).includes(Buffer.from(archive))).toBe(false);
+    expect(await decryptSecret(captured.archive_enc)).toBe(archive);
+    expect((await owner.get(id))?.preservationNote).toBe(
+      `unpushed work preserved at work_recovery:${id}/${captured.id}`,
+    );
     expect(await owner.readWorkRecovery?.(id)).toBe(archive);
 
     // A clean retry clears the current banner without losing recovery data.
@@ -122,16 +130,11 @@ test("recovery receipts retain encrypted versions and only current interior owne
     expect((await db.query("select id from sandbox_work_recovery where sandbox_id=$1", [id])).rows).toHaveLength(2);
     expect((await owner.get(id))?.preservationNote).toBeNull();
 
-    // Retrying after failed capture surfaces a closed reason without losing earlier data.
-    boat.setExecOutput({ stdout: JSON.stringify({ status: "failed", reason: "collector_failed" }) });
-    await preserveBeforeStop(sql, provider, id, "bx_recovery");
-    expect(await owner.readWorkRecovery?.(id, first.id)).toBe(archive);
-
     expect(await owner.readWorkRecovery?.(id)).toBe(archive);
     expect(await owner.readWorkRecovery?.(id, historicalId)).toBe(historicalArchive);
     expect(await data(people.admin).readWorkRecovery?.(id)).toBe(archive);
     // Stale admin claims cannot upgrade an ordinary org member's interior access.
-    await expect(data(people.member).readWorkRecovery?.(id, first.id)).rejects.toThrow("No such sandbox");
+    await expect(data(people.member).readWorkRecovery?.(id, historicalId)).rejects.toThrow("No such sandbox");
     await expect(data(people.member, people.otherOrg).readWorkRecovery?.(id)).rejects.toThrow("No such sandbox");
     const otherId = crypto.randomUUID();
     expect(await owner.readWorkRecovery?.(id, otherId)).toBeNull();
