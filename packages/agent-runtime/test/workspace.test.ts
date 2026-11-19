@@ -176,6 +176,24 @@ test("workspace output masks split characters and withholds clipped secret prefi
   }
 });
 
+test("workspace JSON output masks a registered value used as an object key or number", async () => {
+  const f = await fixture();
+  try {
+    const pending = f.step("init", "workspace command", f.home);
+    await f.processes.started;
+    const secret = "123456789";
+    f.journal.registerApplicationSecrets([secret]);
+    f.processes.write("stdout", Buffer.from(secret));
+    f.processes.write("stderr", Buffer.from(JSON.stringify({ [secret]: "plain" })));
+    f.processes.close();
+    expect(await (await pending).json()).toMatchObject({
+      result: { stdout: "[REDACTED]", stderr: '{"[REDACTED]":"plain"}', truncated: false },
+    });
+  } finally {
+    await f.close();
+  }
+});
+
 test("workspace cancellation reaps its owned group and fences inference through cleanup and later turns", async () => {
   const f = await fixture(),
     abort = new AbortController();

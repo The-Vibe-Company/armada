@@ -76,7 +76,7 @@ function workspaceReceipt(journal: Journal, requestId: string, output: Awaited<R
   const stderr = journal.redactCommandOutput(output.stderr, commandOutputLimit);
   return JSON.stringify({
     version: 1,
-    requestId: journal.redact(requestId),
+    requestId: journal.redactLiteralText(requestId),
     result: {
       detached: false,
       exitCode: output.exitCode,
