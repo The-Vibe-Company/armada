@@ -160,10 +160,11 @@ an applied migration or reset production.
 ## Preview, retries and PR checks
 
 - On a PR, **Migration dry-run (disposable database)** runs without any production
-  secrets or environment access, including on forks. It previews against empty,
-  disposable PostgreSQL. Existing **Lint, typecheck and test** CI actually applies
-  every SQL migration with Supabase prerequisite roles/schema to disposable
-  PostgreSQL and runs the schema/RLS tests. This is not a remote drift check.
+  secrets or environment access, including on forks. It bootstraps the Supabase
+  prerequisites on disposable PostgreSQL and replays the migration history using
+  the same pinned Supabase CLI as deployment. **Lint, typecheck and test** runs
+  the static migration checks and database unit tests. Remote history comparison
+  is a separate maintainer operation.
 - For a remote-history comparison, an authorized maintainer can run **Database
   migrations → Run workflow**, branch **main**, selecting **mode=migrate**, leaving **dry_run=true**. It links,
   lists history and previews without applying application migrations. The CLI may
