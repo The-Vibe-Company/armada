@@ -413,7 +413,7 @@ export function LaunchComposer({
         <div className="rounded-2xl border bg-background p-2.5 shadow-sm focus-within:ring-2 focus-within:ring-ring">
           <ComposerTask id={id} value={task} onChange={onTask} template={template} />
           <div className="flex flex-wrap items-center justify-between gap-2">
-            <div className="flex flex-wrap gap-2 max-sm:w-full max-sm:flex-nowrap max-sm:[&>button:first-child]:min-w-0 max-sm:[&>button:last-child]:shrink-0">
+            <div className="flex flex-wrap gap-2 max-sm:w-full max-sm:flex-nowrap max-sm:[&>button:first-child]:min-w-0 max-sm:[&>button:first-child]:shrink">
               {tools}
               {skills}
             </div>
