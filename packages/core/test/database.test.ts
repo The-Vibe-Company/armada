@@ -188,7 +188,7 @@ describe("database", () => {
           expect(column.data_type).toBe(id.endsWith("_id") ? "uuid" : "integer");
           continue;
         }
-        if (id === "armada_access_parents.credential_ids") {
+        if (id === "armada_access_parents.credential_ids" || id === "agent_defaults.credential_ids") {
           // Allowlisted account references are UUIDs, never credential values.
           expect(column.data_type).toBe("ARRAY");
           expect(column.udt_name).toBe("_uuid");
