@@ -580,7 +580,7 @@ test.each(["transition", "abandonment"])("an interrupted resume rolls back when 
     });
     const readHandoff = async () =>
       (
-        await f.db.query(
+        await f.db.query<{ phase: string; generation: number; stop_generation: number; edges: number }>(
           `select r.phase, s.lifecycle_generation::int as generation, s.stop_generation::int as stop_generation,
             (select count(*)::int from public.sandbox_transitions t where t.sandbox_id=s.id
               and t.from_status='starting' and t.to_status='stopping'
@@ -590,6 +590,7 @@ test.each(["transition", "abandonment"])("an interrupted resume rolls back when 
         )
       ).rows[0];
     const before = await readHandoff();
+    if (!before) throw Error("Missing dispatched resume.");
     expect(before).toMatchObject({ phase: "dispatched", edges: 0 });
     const worker = createSandboxLifecycle(workerSql, async () => provider);
 
@@ -603,8 +604,8 @@ test.each(["transition", "abandonment"])("an interrupted resume rolls back when 
     expect((await store.get(f.row.id))?.status).toBe("stopping");
     expect(await readHandoff()).toEqual({
       phase: "abandoned",
-      generation: Number(before?.generation) + 1,
-      stop_generation: Number(before?.stop_generation) + 1,
+      generation: before.generation + 1,
+      stop_generation: before.stop_generation + 1,
       edges: 1,
     });
 
@@ -623,7 +624,8 @@ test("an expired reconcile lease cannot commit an interrupted resume stop", asyn
     const {
       rows: [starting],
     } = await f.db.query<{ generation: number }>(
-      `update public.sandboxes set status='starting', activity_until=now()-interval '1 minute',
+      `update public.sandboxes set status='starting', stopped_at=null,
+         activity_lease_id=$2, activity_until=now()-interval '1 minute',
          reconcile_lease=$2, reconcile_lease_until=now()-interval '1 minute'
        where id=$1 returning lifecycle_generation::int as generation`,
       [f.row.id, lease],
