@@ -10,6 +10,7 @@ import {
   ProviderError,
   resolveModelChoice,
   type Sql,
+  VaultError,
 } from "@armada/core/server";
 import * as boatProvider from "@armada/provider-boat";
 import { createAccountTurnQueue } from "../src/account-turn-queue.ts";
@@ -754,29 +755,40 @@ test("pinned Modal replay reports its reserved sandbox while the original reques
   expect(f.prompts()).toBe(1);
 });
 
-test("pinned Modal persists a definite provider refusal and returns its typed code on replay", async () => {
+test.each([
+  {
+    code: "payment_required",
+    status: 402,
+    error: new ProviderError({
+      provider: "modal",
+      code: "payment_required",
+      retryable: false,
+      message: "private provider diagnostics",
+    }),
+  },
+  {
+    code: "conflict",
+    status: 409,
+    error: new VaultError("conflict", "Template launch refused: connection_version_changed."),
+  },
+])("pinned Modal replays a definite $code refusal without redispatch", async ({ code, status, error }) => {
   const f = await fixture();
   const template = await f.create();
   const request = f.request(template.id);
   let attempts = 0;
   f.options.modalRuntimeHostFor = async () => {
     attempts++;
-    throw new ProviderError({
-      provider: "modal",
-      code: "payment_required",
-      retryable: false,
-      message: "private provider diagnostics",
-    });
+    throw error;
   };
   const first = await f.api(request);
-  expect(first.status).toBe(402);
+  expect(first.status).toBe(status);
   const failure = await first.json();
   expect(publishedFailure().parse(failure)).toMatchObject({
-    error: { code: "payment_required", details: { sandboxId: expect.any(String) } },
+    error: { code, details: { sandboxId: expect.any(String) } },
   });
-  expect(JSON.stringify(failure)).not.toContain("private provider diagnostics");
+  expect(JSON.stringify(failure)).not.toContain(error.message);
   const replay = await f.api(request);
-  expect(replay.status).toBe(402);
+  expect(replay.status).toBe(status);
   expect(await replay.json()).toEqual(failure);
   expect(attempts).toBe(1);
   expect(f.physical.forks).toHaveLength(0);

@@ -850,14 +850,17 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
       const refused = error instanceof ProviderError && isNonMutatingProviderRefusal(error);
       const secretRefusal = error instanceof RuntimeLaunchSecretRefusal ? error.refusal : undefined;
       const state = allocating && !refused && !secretRefusal ? "reconciling" : "failed";
+      const failureCode =
+        refused || error instanceof VaultError || error instanceof GoldenError || error instanceof ProviderRoutingError
+          ? error.code
+          : !allocating && error instanceof LaunchError
+            ? error.code
+            : undefined;
       const safeReason = refused
-        ? error.code
+        ? (failureCode ?? "launch_unavailable")
         : (secretRefusal?.reason ??
           refusalReason(error) ??
-          (error instanceof VaultError || error instanceof GoldenError || error instanceof ProviderRoutingError
-            ? error.code
-            : undefined) ??
-          (!allocating && error instanceof LaunchError ? error.code : undefined) ??
+          failureCode ??
           (allocating ? "allocation_or_start_unknown" : "launch_unavailable"));
       // A publication may have committed even if both acknowledgements were lost.
       // Keep its durable success intact; same-key replay reads the saved receipt.
@@ -882,6 +885,7 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
         reason: safeReason,
         ...(message ? { message } : {}),
         ...(secretRefusal ? { code: secretRefusal.code } : {}),
+        ...(runtime.pinnedLaunch && state === "failed" && failureCode ? { failureCode } : {}),
         manifest: m,
       };
       await sql.query(

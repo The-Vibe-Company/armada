@@ -352,6 +352,7 @@ const pinnedModalRefusals = new Map([
   ["invalid_request", "invalid_request"],
   ["no_credentials", "no_credentials"],
   ["unsupported", "unsupported"],
+  ["unavailable", "dependency_unavailable"],
   ["payment_required", "payment_required"],
   ["provider_not_configured", "provider_not_configured"],
   ["provider_routing_unavailable", "provider_routing_unavailable"],
@@ -360,7 +361,7 @@ const pinnedModalRefusals = new Map([
 ]);
 
 function pinnedModalFailure(receipt: Record<string, unknown>) {
-  const recorded = typeof receipt.reason === "string" ? pinnedModalRefusals.get(receipt.reason) : undefined;
+  const recorded = typeof receipt.failureCode === "string" ? pinnedModalRefusals.get(receipt.failureCode) : undefined;
   const code = receipt.state === "failed" ? (recorded ?? "start_failed") : "outcome_unknown";
   return new ToolApiError(
     code,
