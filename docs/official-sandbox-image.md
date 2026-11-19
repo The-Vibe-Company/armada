@@ -2,7 +2,9 @@
 
 Issue #1528. Registry: **GHCR**, package
 `ghcr.io/the-vibe-company/armada-sandbox`. Only the release workflow publishes,
-only for a validated release tag, and only `linux/amd64`. PR CI never builds it.
+only for a validated release source, and only `linux/amd64`. PR CI never builds it.
+The workflow builds a SHA-specific candidate and promotes the tested digest to
+the version tag after staging smoke passes.
 There is no `latest` alias: a release records `version` and `image@sha256:…`
 in the `official-sandbox-image` workflow artifact. Release binary jobs download
 that pin into core before compiling CLI/server, so `officialSandboxImage()`

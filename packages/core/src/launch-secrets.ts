@@ -10,7 +10,7 @@ export class LaunchSecretRefusal extends VaultError {
   }
 }
 
-export class ModalLaunchSecretRefusal extends LaunchError {
+export class RuntimeLaunchSecretRefusal extends LaunchError {
   constructor(
     readonly refusal: LaunchSecretRefusal,
     sandboxId: string,

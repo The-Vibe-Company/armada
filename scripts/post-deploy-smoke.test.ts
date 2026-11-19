@@ -1716,16 +1716,15 @@ test("the launch tracker records every launch handle, awaits launches in flight 
   expect((await tracker.siblings(new Set(), never, idle)).size).toBe(2);
   // A pending launch is unknown, not lost, until it settles.
   expect(tracker.lostLaunch()).toBe(true);
-  let observed: ReadonlySet<string> | undefined;
-  const siblings = tracker.siblings(new Set(["template-sandbox"]), never, idle).then((ids) => {
-    observed = ids;
+  const waiting = Promise.withResolvers<void>();
+  const siblings = tracker.siblings(new Set(["template-sandbox"]), never, () => {
+    waiting.resolve();
+    return idle();
   });
-  await Bun.sleep(0);
-  expect(observed).toBeUndefined();
+  expect(await Promise.race([siblings, waiting.promise])).toBeUndefined();
   finish(null);
-  await siblings;
   await template;
-  expect([...(observed ?? [])].sort()).toEqual(["launched", "parent", "template-sandbox"]);
+  expect([...(await siblings)].sort()).toEqual(["launched", "parent", "template-sandbox"]);
   expect(tracker.lostLaunch()).toBe(false);
   // The wait is bounded: a launch that never answers cannot hold an unexplained row forever.
   tracker.track("sandbox/launch", () => new Promise(() => {}));
