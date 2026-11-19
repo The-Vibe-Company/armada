@@ -304,7 +304,6 @@
     "apps/dashboard/test/mcp-control.test.ts": 2,
     "apps/dashboard/test/model-accounts.test.ts": 17,
     "apps/dashboard/test/model-choice.test.ts": 1,
-    "apps/dashboard/test/model-connection-check.test.ts": 1,
     "apps/dashboard/test/model-picker.test.ts": 2,
     "apps/dashboard/test/outcome.test.ts": 4,
     "apps/dashboard/test/preserved-mutation-form.test.tsx": 2,
@@ -1284,8 +1283,6 @@
   },
   "landmines-testing/no-test-doubles": {
     "apps/dashboard/test/control.test.ts": 1,
-    "apps/dashboard/test/model-connection-check.test.ts": 1,
-    "apps/dashboard/test/templates.test.ts": 1,
     "packages/agent-runtime/test/harness-cache.test.ts": 1,
     "packages/agent-runtime/test/runtime.test.ts": 2,
     "packages/cli/test/email-login.test.ts": 6,
