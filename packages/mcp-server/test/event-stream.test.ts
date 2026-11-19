@@ -142,3 +142,25 @@ test("server drain ends an idle feed so the client can reconnect", async () => {
   drain.abort();
   expect((await pending).done).toBe(true);
 });
+
+test("a drain during authorization sends the retryable drain refusal before streaming", async () => {
+  const f = await fixture();
+  const drain = new AbortController();
+  const { promise: page, resolve } = Promise.withResolvers<[]>();
+  const { promise: reading, resolve: enteredRead } = Promise.withResolvers<void>();
+  f.options.eventFeed = {
+    owner: () => () => {
+      enteredRead();
+      return page;
+    },
+    child: () => async () => null,
+  };
+  const response = handleControlRequest(f.request(), { ...f.options, eventStreamShutdown: drain.signal });
+  await reading;
+  drain.abort();
+  resolve([]);
+  const refusal = await response;
+  expect(refusal?.status).toBe(503);
+  expect(refusal?.headers.get("retry-after")).toBe("5");
+  expect(await refusal?.json()).toEqual({ error: "temporarily_unavailable" });
+});

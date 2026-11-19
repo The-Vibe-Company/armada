@@ -5,6 +5,7 @@ import type { ControlOptions } from "./control-options.ts";
 import { fail } from "./control-response.ts";
 import { EVENT_PAGE_SIZE, type EventFeed } from "./event-feed.ts";
 import { defineRoutes } from "./routes.ts";
+import { drainRefusal } from "./server-request-drain.ts";
 import { isViewerAuthorization, readViewerGrant } from "./viewer-control.ts";
 import { eventFeedWakeKey, runtimeWakes, waitForTimeout } from "./wake-bus.ts";
 
@@ -56,7 +57,7 @@ export function createEventStream(time = { now: () => performance.now(), wait: w
       const initial = await read(cursor);
       if (!initial || signal.aborted) {
         wake.close();
-        return denied();
+        return options.eventStreamShutdown?.aborted ? drainRefusal() : denied();
       }
       options.configureEventStreamRequest?.(request);
       const encoder = new TextEncoder();
