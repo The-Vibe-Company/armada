@@ -15,7 +15,6 @@ import { createDockerMachineBindings } from "../src/docker-machine-bindings.ts";
 import { SNAPSHOT_COLUMNS } from "../src/docker-snapshot-data.ts";
 import { createSandboxAccessServices } from "../src/sandbox-access-services.ts";
 import { createFinishedDockerCleanup, selfFinishToken } from "../src/sandbox-finish.ts";
-import { transitionSandbox } from "../src/sandbox-lifecycle.ts";
 import { migratedDatabase } from "./migrated-database.ts";
 
 let connection: Awaited<ReturnType<typeof migratedDatabase>> | undefined;
@@ -385,25 +384,32 @@ async function boundFixture(registered?: Awaited<ReturnType<typeof fixture>>) {
   return { ...host, sandboxId, generation, owner, create };
 }
 
-function failDockerJobCommit(requestId: string, outcome: "completed" | "failed" | null) {
-  const failure = new Error("Docker job transaction interrupted before commit");
+function interruptDockerCommit(written: (tx: Sql) => Promise<boolean>) {
+  const failure = new Error("Docker transaction interrupted before commit");
   const faultingStore = createDockerHostStore(
     {
       query: sql.query,
       transaction: (work) =>
         database().transaction(async (tx) => {
-          const result = await work({ query: (query, params) => tx.query(query, params) });
-          const written = await tx.query(
-            `select 1 from docker_host_jobs where request_id=$1 and outcome is not distinct from $2::text`,
-            [requestId, outcome],
-          );
-          if (written.rows.length) throw failure;
+          const scoped: Sql = { query: (query, params) => tx.query(query, params) };
+          const result = await work(scoped);
+          if (await written(scoped)) throw failure;
           return result;
         }),
     },
     key,
   );
   return { faultingStore, failure };
+}
+
+function failDockerJobCommit(requestId: string, outcome: "completed" | "failed" | null) {
+  return interruptDockerCommit(async (tx) => {
+    const result = await tx.query(
+      `select 1 from docker_host_jobs where request_id=$1 and outcome is not distinct from $2::text`,
+      [requestId, outcome],
+    );
+    return result.rows.length > 0;
+  });
 }
 
 test("a physical-delete enqueue interrupted before commit can be retried without a conflicting intent", async () => {
@@ -847,6 +853,16 @@ async function lifecycle(sandboxId: string) {
   ).rows[0];
 }
 
+function failDockerObservationCommit(sandboxId: string, code: string) {
+  return interruptDockerCommit(async (tx) => {
+    const result = await tx.query("select 1 from public.sandbox_transitions where sandbox_id=$1 and code=$2", [
+      sandboxId,
+      code,
+    ]);
+    return result.rows.length > 0;
+  });
+}
+
 async function dockerJournal(sandboxId: string, code: string) {
   return (
     await database().query(
@@ -856,23 +872,39 @@ async function dockerJournal(sandboxId: string, code: string) {
   ).rows;
 }
 
-test("a stale Docker mailbox transition leaves the current generation and journal intact", async () => {
+test("Docker stop admission rolls back when the lifecycle CAS rejects its generation", async () => {
+  const db = database();
   const a = await boundFixture();
+  await store.enqueueSandbox(a.owner, a.sandboxId, a.create);
+  await db.query("update public.sandboxes set lifecycle_generation=2 where id=$1", [a.sandboxId]);
   const before = await lifecycle(a.sandboxId);
-  const code = "docker_stop_admitted";
-  expect(before?.status).toBe("starting");
-  const result = await transitionSandbox(sql, {
-    sandboxId: a.sandboxId,
-    expectedGeneration: Number(before?.lifecycle_generation) + 1,
-    fromStates: ["starting"],
-    toState: "stopping",
-    actor: "owner",
-    code,
-    effects: [],
-  });
-  expect(result).toEqual({ kind: "conflict" });
+  const stop = { requestId: randomUUID(), operation: "stop" as const };
+  const staleStore = createDockerHostStore(
+    {
+      query: sql.query,
+      transaction: (work) =>
+        db.transaction((tx) =>
+          work({
+            query: (query, params) => {
+              if (query.includes("from public.sandbox_transition(") && params?.[0] === a.sandboxId) {
+                // The host and sandbox locks normally prevent a stale caller. Inject one at the CAS boundary.
+                const staleParams = [...params];
+                staleParams[1] = "1";
+                return tx.query(query, staleParams);
+              }
+              return tx.query(query, params);
+            },
+          }),
+        ),
+    },
+    key,
+  );
+  await denied(staleStore.enqueueSandbox(a.actor, a.sandboxId, stop));
   expect(await lifecycle(a.sandboxId)).toEqual(before);
-  expect(await dockerJournal(a.sandboxId, code)).toEqual([]);
+  expect(await dockerJournal(a.sandboxId, "docker_stop_admitted")).toEqual([]);
+  expect((await db.query("select 1 from public.docker_host_jobs where request_id=$1", [stop.requestId])).rows).toEqual(
+    [],
+  );
 });
 
 test("host-confirmed frozen expiry fences runtime once, survives owner removal and admits cleanup", async () => {
@@ -883,7 +915,16 @@ test("host-confirmed frozen expiry fences runtime once, survives owner removal a
     // not the server clock or the actor's current grant, is authoritative.
     await db.query(`delete from members where org_id=$1 and user_id=$2`, [a.owner.orgId, a.owner.userId]);
     const before = await lifecycle(a.sandboxId);
-    await store.expired(a.hostToken, a.installationId, { requestId: a.startup.requestId });
+    const expiry = { requestId: a.startup.requestId };
+    if (operation === "create") {
+      const { faultingStore, failure } = failDockerObservationCommit(a.sandboxId, "docker_expiry_observed");
+      await expect(faultingStore.expired(a.hostToken, a.installationId, expiry)).rejects.toMatchObject({
+        cause: failure,
+      });
+      expect(await lifecycle(a.sandboxId)).toEqual(before);
+      expect(await dockerJournal(a.sandboxId, "docker_expiry_observed")).toEqual([]);
+    }
+    await store.expired(a.hostToken, a.installationId, expiry);
     const stopped = await lifecycle(a.sandboxId);
     expect(stopped?.status).toBe("stopped");
     expect(stopped?.status_reason).toBe("expired");
@@ -1359,10 +1400,14 @@ test("retention cleanup authenticates the bound host and permanently fences runt
   await denied(store.cleaned(a.hostToken, randomUUID(), { requestId: a.startup.requestId }));
   await denied(store.cleaned(a.hostToken, a.installationId, { requestId: randomUUID() }));
   const before = await lifecycle(a.sandboxId);
-  await store.cleaned(a.hostToken, a.installationId, {
-    requestId: a.startup.requestId,
-    cleanupReason: "disk_pressure",
+  const cleanup = { requestId: a.startup.requestId, cleanupReason: "disk_pressure" as const };
+  const { faultingStore, failure } = failDockerObservationCommit(a.sandboxId, cleanup.cleanupReason);
+  await expect(faultingStore.cleaned(a.hostToken, a.installationId, cleanup)).rejects.toMatchObject({
+    cause: failure,
   });
+  expect(await lifecycle(a.sandboxId)).toEqual(before);
+  expect(await dockerJournal(a.sandboxId, cleanup.cleanupReason)).toEqual([]);
+  await store.cleaned(a.hostToken, a.installationId, cleanup);
   const deleted = await lifecycle(a.sandboxId);
   expect(deleted?.status).toBe("deleted");
   expect(deleted?.status_reason).toBe("disk_pressure");
@@ -1375,7 +1420,6 @@ test("retention cleanup authenticates the bound host and permanently fences runt
   expect(await dockerJournal(a.sandboxId, "disk_pressure")).toEqual([
     { from_status: before?.status, to_status: "deleted", generation: deleted?.lifecycle_generation },
   ]);
-
   expect(await store.poll(a.hostToken, a.installationId)).toBeNull();
 });
 
