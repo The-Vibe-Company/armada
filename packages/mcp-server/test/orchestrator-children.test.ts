@@ -375,14 +375,15 @@ test("revocation between reservation and dispatch cancels queued allocation", as
       (line) => lines.push(line),
     );
     expect(allocations).toBe(0);
-    expect(receipt?.state).toBe("failed");
+    if (!receipt) throw Error("Missing child receipt.");
+    expect(receipt.state).toBe("failed");
     expect(lines.map((line) => JSON.parse(line))).toContainEqual(
       expect.objectContaining({
         event: "operator_failure",
         phase: "scoped.child_launch.dispatch_admission",
         errorClass: "DelegatedAuthorityDenied",
-        sandboxId: receipt?.sandboxId,
-        operationId: receipt?.id,
+        sandboxId: receipt.sandboxId,
+        operationId: receipt.id,
         requestId: response?.headers.get("x-request-id"),
       }),
     );
@@ -1189,7 +1190,8 @@ test.each(["golden lookup failure", "placement refusal", "parent revocation duri
           receipt = await services.childWorker.launch(token, scenario, selection);
           return new Response();
         }, console.error);
-        expect(receipt?.state).toBe(preallocationRefused ? "failed" : "uncertain");
+        if (!receipt) throw Error("Missing child receipt.");
+        expect(receipt.state).toBe(preallocationRefused ? "failed" : "uncertain");
         if (preallocationRefused) {
           expect(await services.childWorker.launch(token, scenario, selection)).toEqual(receipt);
           const placementRefused = scenario === "placement refusal";
@@ -1202,17 +1204,17 @@ test.each(["golden lookup failure", "placement refusal", "parent revocation duri
               phase: placementRefused ? "scoped.child_launch.provider_placement" : "scoped.child_launch.golden_lookup",
               code: placementRefused ? "unavailable" : "invalid_config",
               errorClass: placementRefused ? "VaultError" : "GoldenError",
-              sandboxId: receipt?.sandboxId,
-              operationId: receipt?.id,
+              sandboxId: receipt.sandboxId,
+              operationId: receipt.id,
               requestId: response?.headers.get("x-request-id"),
             }),
           ]);
           expect(diagnostics.join("\n")).not.toContain("private placement detail");
-          expect((await sql.query("select id from sandboxes where id=$1", [receipt?.sandboxId])).rows).toEqual([]);
+          expect((await sql.query("select id from sandboxes where id=$1", [receipt.sandboxId])).rows).toEqual([]);
           expect(
             (
               await sql.query("select sandbox_id from account_agent_reservations where sandbox_id=$1", [
-                receipt?.sandboxId,
+                receipt.sandboxId,
               ])
             ).rows,
           ).toEqual([]);
