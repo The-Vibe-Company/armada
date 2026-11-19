@@ -3819,6 +3819,7 @@ export type Database = {
           delivered_at: string | null;
           last_status: number | null;
           created_at: string;
+          sandbox_transition_id: number | null;
         };
         Insert: {
           id?: string;
@@ -3830,6 +3831,7 @@ export type Database = {
           delivered_at?: string | null;
           last_status?: number | null;
           created_at?: string;
+          sandbox_transition_id?: number | null;
         };
         Update: {
           id?: string;
@@ -3841,6 +3843,7 @@ export type Database = {
           delivered_at?: string | null;
           last_status?: number | null;
           created_at?: string;
+          sandbox_transition_id?: number | null;
         };
         Relationships: [
           {
@@ -3886,6 +3889,21 @@ export type Database = {
             referencedColumns: ["id"];
           },
         ];
+      };
+      outbound_webhook_transition_handoff: {
+        Row: {
+          sandbox_id: string;
+          transition_id: number;
+        };
+        Insert: {
+          sandbox_id: string;
+          transition_id: number;
+        };
+        Update: {
+          sandbox_id?: string;
+          transition_id?: number;
+        };
+        Relationships: [];
       };
       personal_skill_defaults: {
         Row: {
