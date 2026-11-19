@@ -149,28 +149,35 @@ export function machineConformanceCases(options: MachineConformanceOptions) {
   });
 
   for (const operation of ["bootstrap", "stop", "delete"] as const) {
-    cases.push({
-      name: `stale ${operation} leaves replacement intact`,
-      async run() {
-        const fixture = options.fixture();
-        const { machine, retained } = await retainedSource(fixture);
-        const adapter = fixture.adapter(scope);
-        const replacement = await adapter.resume({ ...next, ...allocation, predecessor: retained });
-        await adapter.bootstrap({ ...replacement, bindingRef: "replacement-binding" });
-        expectPresent(await adapter.observe(replacement), replacement);
-        const stale = { ...machine, machineId: replacement.machineId };
-        const staleOperation = {
-          bootstrap: () => bootstrap(adapter, stale),
-          stop: () => adapter.stop({ ...stale, retain: true }),
-          delete: () => remove(adapter, stale),
-        }[operation];
-        await staleOperation().catch(() => undefined);
-        expectPresent(await adapter.observe(replacement), replacement);
-        expectAllocation(fixture, replacement);
-        expect(fixture.runtimeBindings(replacement)).toEqual(["replacement-binding"]);
-        expect(fixture.readWorkspace(replacement)).toBe(workspace);
-      },
-    });
+    for (const target of ["predecessor", "replacement"] as const) {
+      cases.push({
+        name: `stale ${operation} with ${target} ID leaves replacement intact`,
+        async run() {
+          const fixture = options.fixture();
+          const { machine, retained } = await retainedSource(fixture);
+          const adapter = fixture.adapter(scope);
+          const replacement = await adapter.resume({ ...next, ...allocation, predecessor: retained });
+          await adapter.bootstrap({ ...replacement, bindingRef: "replacement-binding" });
+          const before = await adapter.observe(replacement);
+          if (before.kind !== "present") throw new Error("Replacement was not observable before the stale request");
+          const stale = { ...machine, machineId: target === "predecessor" ? machine.machineId : replacement.machineId };
+          const staleOperation = {
+            bootstrap: () => bootstrap(adapter, stale),
+            stop: () => adapter.stop({ ...stale, retain: true }),
+            delete: () => remove(adapter, stale),
+          }[operation];
+          await staleOperation().catch(() => undefined);
+          expect(await adapter.observe(replacement)).toMatchObject({
+            kind: "present",
+            machine: replacement,
+            phase: before.phase,
+          });
+          expectAllocation(fixture, replacement);
+          expect(fixture.runtimeBindings(replacement)).toEqual(["replacement-binding"]);
+          expect(fixture.readWorkspace(replacement)).toBe(workspace);
+        },
+      });
+    }
   }
 
   type FaultScenario = {
