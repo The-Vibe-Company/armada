@@ -390,3 +390,43 @@ test("event pages stop at the UTF-8 byte limit and resume at the first omitted r
     journal.close();
   }
 });
+
+test("a redacted event that exactly fits is returned intact when another row remains", async () => {
+  const journal = new Journal(":memory:", (text) => text);
+  const runner = new Runner(journal, grant, {});
+  try {
+    const message = {
+      id: "answer",
+      at: 1,
+      kind: "message",
+      textMode: "snapshot",
+      text: "",
+      partial: false,
+      tools: [],
+    } satisfies AgentEvent;
+    const emptyTextBytes = Buffer.byteLength(
+      JSON.stringify({
+        version: 1,
+        requestId: command.requestId,
+        result: { events: [message], cursor: "1", hasMore: true },
+      }),
+    );
+    const padding = "a".repeat(1_048_576 - emptyTextBytes - 1_000_000);
+    journal.append({ ...message, text: "x".repeat(100_000) + padding });
+    journal.append({ ...message, id: "next", text: "done" });
+    journal.registerApplicationSecrets(["x"]);
+
+    const response = await runner.handleDialout({ ...command, op: "events", limit: 1 });
+    const body = await response.text();
+    expect(response.status).toBe(200);
+    expect(Buffer.byteLength(body)).toBe(1_048_576);
+    expect(JSON.parse(body).result).toEqual({
+      events: [{ ...message, text: "[REDACTED]".repeat(100_000) + padding }],
+      cursor: "1",
+      hasMore: true,
+    });
+  } finally {
+    await runner.close();
+    journal.close();
+  }
+});

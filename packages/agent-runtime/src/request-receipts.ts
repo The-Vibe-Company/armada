@@ -76,12 +76,11 @@ function eventsResponse(journal: Journal, requestId: string, selection: EventSel
   let eventsBytes = 0;
   for (const [index, row] of selection.rows.entries()) {
     const cursor = String(row.sequence);
-    const envelopeBytesWithFalseFlag = Buffer.byteLength(
-      JSON.stringify({ ...envelope, result: { events: [], cursor, hasMore: false } }),
-    );
+    const hasMore = selection.hasMore || index + 1 < selection.rows.length;
+    const envelopeBytes = Buffer.byteLength(JSON.stringify({ ...envelope, result: { events: [], cursor, hasMore } }));
     let event = journal.redactEvent(row.event);
     let bytes = Buffer.byteLength(JSON.stringify(event));
-    if (envelopeBytesWithFalseFlag + eventsBytes + bytes + page.events.length > MAX_COMMAND_RESPONSE_BYTES) {
+    if (envelopeBytes + eventsBytes + bytes + page.events.length > MAX_COMMAND_RESPONSE_BYTES) {
       if (page.events.length) break;
       event = truncateEvent(event, bytes);
       bytes = Buffer.byteLength(JSON.stringify(event));
@@ -89,7 +88,7 @@ function eventsResponse(journal: Journal, requestId: string, selection: EventSel
     page.events.push(event);
     eventsBytes += bytes;
     page.cursor = cursor;
-    page.hasMore = selection.hasMore || index + 1 < selection.rows.length;
+    page.hasMore = hasMore;
   }
   const body = JSON.stringify({ ...envelope, result: page });
   if (Buffer.byteLength(body) > MAX_COMMAND_RESPONSE_BYTES) throw Error("invalid_request");
