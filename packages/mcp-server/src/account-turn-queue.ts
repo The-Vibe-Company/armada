@@ -14,6 +14,7 @@ import {
   DISPATCHING_TURN_CANCELLED,
   type DispatchTurn,
   dispatchAccountTurn,
+  QUEUED_DISPATCH_EVIDENCE,
   QUEUED_TURN_CANCELLED,
   RUNTIME_LANE,
   RUNTIME_REQUEST_EVIDENCE,
@@ -408,7 +409,7 @@ export function createAccountTurnQueue(sql: Sql, key: string) {
         await sql.query(`update public.account_turn_queue q set state='failed',
           failure_reason='Queued receipt already has dispatch evidence; inspect sandbox history before resending.'
           from public.sandboxes s where q.sandbox_id=s.id and q.state='queued'
-          and (s.task_prompt_id=q.request_id::text or ${RUNTIME_REQUEST_EVIDENCE})`);
+          and ${QUEUED_DISPATCH_EVIDENCE}`);
         await sql.query(`update public.account_turn_queue q set state='failed',
           failure_reason='Queued prompt cannot start: sandbox stopped, deleted, expired, or stopping.'
           from public.sandboxes s where q.sandbox_id=s.id and q.state='queued'

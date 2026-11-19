@@ -48,6 +48,9 @@ test.each([
   "queued",
   "native evidence",
   "runtime evidence",
+  "current native evidence",
+  "current runtime evidence",
+  "other request evidence",
   "dispatching",
   "stopped with queued",
   "stopped with queued dispatch evidence",
@@ -73,6 +76,11 @@ test.each([
     scenario === "stopped with dispatching" ||
     retargetedBeforeStop;
   const stopped = cancelled || scenario === "wake-on-send";
+  const nativeEvidence = scenario === "native evidence" || scenario === "current native evidence";
+  const runtimeEvidence = scenario === "runtime evidence" || scenario === "current runtime evidence";
+  const otherEvidence = scenario === "other request evidence";
+  const currentGeneration = scenario === "wake-on-send" || scenario.startsWith("current") || otherEvidence;
+  const exactEvidence = nativeEvidence || runtimeEvidence;
   const state =
     scenario === "stopped with dispatching" || scenario === "dispatching"
       ? "dispatching"
@@ -82,7 +90,7 @@ test.each([
   if (retargetedBeforeStop) await db.query("update jobs set generation=3 where id=$1", [id]);
   await db.query("update account_turn_queue set state=$1, native_prompt_id=$2 where sandbox_id=$3", [
     state,
-    scenario === "native evidence" ? "prior-prompt" : null,
+    nativeEvidence ? "prior-prompt" : null,
     sandboxId,
   ]);
   if (scenario !== "failed")
@@ -93,9 +101,9 @@ test.each([
         sandboxId,
         stopped ? "stopped" : "ready",
         stopped ? "2026-01-01" : null,
-        scenario === "runtime evidence" ? requestId : null,
-        scenario === "runtime evidence" ? "infinity" : null,
-        scenario === "wake-on-send" ? 2 : 3,
+        runtimeEvidence ? requestId : otherEvidence ? crypto.randomUUID() : null,
+        runtimeEvidence || otherEvidence ? "infinity" : null,
+        currentGeneration ? 2 : 3,
       ],
     );
   if (scenario === "stopped with queued dispatch evidence")
@@ -118,13 +126,14 @@ test.each([
   expect(await runner.reconcileOne(signal)).toBe(true);
   await runner.drain();
   const retargeted = scenario === "queued";
-  expect(delivered).toHaveLength(retargeted || scenario === "wake-on-send" ? 1 : 0);
+  expect(delivered).toHaveLength(retargeted || scenario === "wake-on-send" || otherEvidence ? 1 : 0);
   if (retargeted) expect(delivered[0]).toMatchObject({ id, generation: "3", payload: { requestId } });
   expect((await db.query("select state, generation::text from jobs where id=$1", [id])).rows).toEqual([
     {
       state:
         retargeted ||
         scenario === "wake-on-send" ||
+        otherEvidence ||
         scenario === "failed" ||
         scenario === "admitted" ||
         scenario === "missing"
@@ -133,14 +142,14 @@ test.each([
       generation: retargeted || retargetedBeforeStop ? "3" : "2",
     },
   ]);
-  if (cancelled)
+  if (cancelled || exactEvidence)
     expect(
       (await db.query("select state, failure_reason from account_turn_queue where request_id=$1", [requestId])).rows,
     ).toEqual([
       {
         state: "failed",
         failure_reason:
-          scenario === "stopped with queued dispatch evidence"
+          scenario === "stopped with queued dispatch evidence" || exactEvidence
             ? "Queued receipt already has dispatch evidence; inspect sandbox history before resending."
             : state === "queued"
               ? "Queued prompt cannot start: sandbox stopped, deleted, expired, or stopping."
