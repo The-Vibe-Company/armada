@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
-import NotFound from "../src/app/(app)/not-found";
+import NotFound from "./not-found";
 
 test("unavailable pages retain an accessible recovery destination and application theme surface", () => {
   const html = renderToStaticMarkup(<NotFound />);
