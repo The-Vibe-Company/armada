@@ -56,7 +56,10 @@ export class DockerMachineError extends Error {
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const dockerContainerId = /^[a-f0-9]{64}$/;
 const prefix = "dev.armada.machine.";
+const restoredFrom = `${prefix}restored-from`;
+const workspaceCopySeconds = 240;
 type Row = Record<string, unknown>;
+type DockerRetainedPredecessor = { request: DockerMachineRequest; machineId: string };
 
 /** A host-local image ID (`sha256:<hex>`), as opposed to a registry reference such as `sha256:base@sha256:<hex>`. */
 const isLocalImage = (image: string) => image.startsWith("sha256:") && !image.includes("@");
@@ -281,8 +284,17 @@ export function createDockerMachineExecutor(options: {
     }
   }
 
-  async function create(request: DockerMachineRequest) {
-    let state = await owned(request);
+  async function allocate(request: DockerMachineRequest, predecessor?: DockerRetainedPredecessor) {
+    const restoreIdentity = predecessor && `${predecessor.request.generation}/${predecessor.machineId}`;
+    async function target() {
+      const state = await owned(request);
+      if (state.volume && object(state.volume.Labels)[restoredFrom] !== restoreIdentity) fail("ownership_mismatch");
+      if (state.container && object(object(state.container.Config).Labels)[restoredFrom] !== restoreIdentity)
+        fail("ownership_mismatch");
+      return state;
+    }
+
+    let state = await target();
     const absoluteCreationTime = request.expiresAt === undefined ? undefined : now();
     if (
       absoluteCreationTime !== undefined &&
@@ -293,17 +305,25 @@ export function createDockerMachineExecutor(options: {
     // An immutable local ID alone is not authorization to consume another host's cache.
     // Approval is checked before any new allocation, never required for retained cleanup/resume.
     if (!state.container) await approveLocalImage(request.image, request.snapshot);
+    if (predecessor && !state.container) {
+      const source = await owned(predecessor.request);
+      if (!source.container) fail("not_found");
+      const status = object(source.container.State);
+      if (source.container.Id !== predecessor.machineId || status.Status !== "exited" || status.Running !== false)
+        fail("ownership_mismatch");
+    }
     if (!state.volume) {
       const created = absoluteCreationTime ?? now();
       const labels = {
         ...state.labels,
+        ...(restoreIdentity === undefined ? {} : { [restoredFrom]: restoreIdentity }),
         [`${prefix}created-at`]: String(created),
         [`${prefix}expires-at`]: String(
           Math.min(request.expiresAt ?? Number.POSITIVE_INFINITY, created + request.ttlSeconds * 1000),
         ),
       };
       await checked(["volume", "create", "--driver", "local", ...labelArgs(labels), state.volumeName]);
-      state = await owned(request);
+      state = await target();
       if (!state.volume) fail("docker_failed");
     }
     if (state.expiresAt === undefined) fail("ownership_mismatch");
@@ -324,6 +344,11 @@ export function createDockerMachineExecutor(options: {
           // A pull that could not run or outlived its bound is a fetch failure too.
         }
         if (!pulled) fail("image_unavailable");
+      }
+      if (predecessor) {
+        if (state.expiresAt <= now()) fail("expired");
+        await copyWorkspace(predecessor.machineId, state.volumeName);
+        if (state.expiresAt <= now()) fail("expired");
       }
       const createArgs = (mountShared: boolean) => [
         "container",
@@ -351,11 +376,11 @@ export function createDockerMachineExecutor(options: {
       ];
       const mountShared = await ensureShared();
       let result = await run(createArgs(mountShared));
-      state = await owned(request);
+      state = await target();
       if (!state.container && mountShared && result.exitCode !== 0) {
         // An engine that cannot bind the host cache (confinement, remote engine) launches without it.
         result = await run(createArgs(false));
-        state = await owned(request);
+        state = await target();
       }
       if (!state.container) fail(result.exitCode === 0 ? "ownership_mismatch" : "docker_failed");
     }
@@ -374,6 +399,62 @@ export function createDockerMachineExecutor(options: {
       await checked(["container", "start", state.containerName]);
     }
     return { containerName: state.containerName, volumeName: state.volumeName, expiresAt: state.expiresAt };
+  }
+
+  async function copyWorkspace(sourceId: string, volumeName: string) {
+    // The stopped source container pins its own volume. A missing source ID cannot
+    // silently create an empty volume. The helper can only write the target volume.
+    const result = await options.cli
+      .run(
+        [
+          "run",
+          "--rm",
+          "--name",
+          `${volumeName}-restore`,
+          "--network",
+          "none",
+          "--read-only",
+          "--workdir",
+          "/",
+          "--memory",
+          "128m",
+          "--pids-limit",
+          "32",
+          "--cap-drop",
+          "ALL",
+          "--cap-add",
+          "CHOWN",
+          "--cap-add",
+          "DAC_OVERRIDE",
+          "--cap-add",
+          "FOWNER",
+          "--cap-add",
+          "FSETID",
+          "--security-opt",
+          "no-new-privileges",
+          "--user",
+          "0:0",
+          "--volumes-from",
+          `${sourceId}:ro`,
+          "--mount",
+          `type=volume,src=${volumeName},dst=/restore,volume-nocopy`,
+          "--entrypoint",
+          "/usr/bin/timeout",
+          officialSandboxImage(),
+          "--kill-after=2s",
+          `${workspaceCopySeconds}s`,
+          "/usr/bin/cp",
+          "--archive",
+          "--remove-destination",
+          "--",
+          "/home/user/.",
+          "/restore",
+        ],
+        undefined,
+        { timeoutMs: (workspaceCopySeconds + 5) * 1000 },
+      )
+      .catch(() => fail("docker_failed"));
+    if (result.exitCode !== 0) fail("docker_failed");
   }
 
   async function resume(request: DockerMachineRequest): Promise<void> {
@@ -472,7 +553,19 @@ export function createDockerMachineExecutor(options: {
 
   return {
     resume,
-    create,
+    create(request: DockerMachineRequest) {
+      return allocate(request);
+    },
+    async restore(request: DockerMachineRequest, predecessor: DockerRetainedPredecessor) {
+      if (
+        !dockerContainerId.test(predecessor.machineId) ||
+        request.sandboxId !== predecessor.request.sandboxId ||
+        request.generation === predecessor.request.generation
+      )
+        fail("invalid_request");
+      context(predecessor.request);
+      return allocate(request, predecessor);
+    },
     bootstrap,
     installRuntime,
     stop,

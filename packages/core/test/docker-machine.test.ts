@@ -31,6 +31,7 @@ function fixture(
     options?: { timeoutMs?: number };
   }[] = [];
   const copies = new Map<string, Uint8Array>();
+  const workspaces = new Map<string, string>();
   let time = 1000;
   let failCommand = "";
   let retainRemoved = false;
@@ -50,6 +51,15 @@ function fixture(
           exitCode: images.has(image) ? 0 : 1,
           stdout: action === "inspect" ? JSON.stringify([images.get(image)]) : "",
         };
+      }
+      if (kind === "run") {
+        const sourceId = argv[argv.indexOf("--volumes-from") + 1]?.replace(/:ro$/, "");
+        const source = [...containers.values()].find((container) => container.Id === sourceId);
+        const destination = argv[argv.indexOf("--mount") + 1]?.match(/^type=volume,src=([^,]+),/)?.[1];
+        if (!source || !destination || !volumes.has(destination)) return { exitCode: 1, stdout: "" };
+        const workspace = workspaces.get(source.Mounts[0].Name) ?? "";
+        workspaces.set(destination, failCommand === "copy" ? workspace.slice(0, 1) : workspace);
+        return { exitCode: failCommand === "copy" ? 1 : 0, stdout: "" };
       }
       if (`${kind} ${action}` === failCommand) return { exitCode: 1, stdout: "SECRET Docker diagnostic" };
       if (kind === "cp") {
@@ -127,6 +137,7 @@ function fixture(
     volumes,
     calls,
     copies,
+    workspaces,
     images,
     setTime: (v: number) => {
       time = v;
@@ -146,6 +157,50 @@ function fixture(
 }
 
 describe("Docker machine executor", () => {
+  test("restore retries an incomplete copy into a separate incarnation and adopts a created target", async () => {
+    const f = fixture();
+    const source = await f.executor.create(request);
+    const sourceContainer = f.containers.get(source.containerName);
+    const predecessor = { request, machineId: sourceContainer.Id };
+    const target = { ...request, generation: "55555555-5555-5555-5555-555555555555" };
+    f.workspaces.set(source.volumeName, "retained workspace");
+    await f.executor.stop(request);
+
+    f.fail("copy");
+    await expect(f.executor.restore(target, predecessor)).rejects.toThrow("docker_failed");
+    expect(f.containers.size).toBe(1);
+    await expect(f.executor.create(target)).rejects.toThrow("ownership_mismatch");
+
+    f.fail("container start");
+    await expect(f.executor.restore(target, predecessor)).rejects.toThrow("docker_failed");
+    const replacement = [...f.containers.values()].find((container) => container.Id !== predecessor.machineId);
+    expect(replacement?.State.Status).toBe("created");
+    f.fail("copy"); // A replay after create must skip the copy.
+    const restored = await f.executor.restore(target, predecessor);
+    expect(f.containers.get(restored.containerName).Id).toBe(replacement?.Id);
+    expect(await f.executor.isRunning(target)).toBe(true);
+    expect(await f.executor.isStopped(request)).toBe(true);
+    expect(f.workspaces.get(restored.volumeName)).toBe("retained workspace");
+    expect(f.workspaces.get(source.volumeName)).toBe("retained workspace");
+    expect(f.copies.size).toBe(0);
+  });
+
+  test("restore rejects a running or different predecessor and cannot adopt an unrelated target", async () => {
+    const f = fixture();
+    const source = await f.executor.create(request);
+    const predecessor = { request, machineId: f.containers.get(source.containerName).Id };
+    const target = { ...request, generation: "55555555-5555-5555-5555-555555555555" };
+    await expect(f.executor.restore(request, predecessor)).rejects.toThrow("invalid_request");
+    await expect(f.executor.restore(target, predecessor)).rejects.toThrow("ownership_mismatch");
+    await f.executor.stop(request);
+    await expect(f.executor.restore(target, { ...predecessor, machineId: "a".repeat(64) })).rejects.toThrow(
+      "ownership_mismatch",
+    );
+    expect(f.volumes.size).toBe(1);
+    await f.executor.create(target);
+    await expect(f.executor.restore(target, predecessor)).rejects.toThrow("ownership_mismatch");
+  });
+
   test("new containers mount the host's shared artifact cache read-only; retained ones without it stay owned", async () => {
     const shared = "/state/artifact-cache";
     let ensured = 0;
