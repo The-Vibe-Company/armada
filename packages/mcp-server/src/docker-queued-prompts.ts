@@ -88,9 +88,9 @@ export function createDockerQueuedPrompts(sql: Sql, key: string) {
       caller: Caller,
       sandboxId: string,
       orgId: string,
-      input: { request_id: string; prompt: string; conversation_id?: string },
+      input: { request_id: string; prompt: string },
     ): Promise<DockerQueuedPromptReceipt | null> {
-      const payload = JSON.stringify({ prompt: input.prompt, conversationId: input.conversation_id ?? null });
+      const payload = JSON.stringify({ prompt: input.prompt, conversationId: null });
       const hash = createHash("sha256").update(payload).digest("hex");
       if (!sql.transaction) throw Error("transaction required");
       return sql.transaction(async (tx) => {
@@ -164,13 +164,6 @@ export function createDockerQueuedPrompts(sql: Sql, key: string) {
               retryable: false,
             });
           const conversationId = await resolveConversation(tx, sandboxId, row.conversation_ids);
-          if (input.conversation_id !== undefined && input.conversation_id !== conversationId)
-            throw new ProviderError({
-              provider: "docker",
-              code: "conflict",
-              message: "Conversation does not match the admitted launch.",
-              retryable: false,
-            });
           queued = (
             await tx.query<QueuedDockerPrompt>(
               `insert into public.docker_queued_prompts(sandbox_id,request_id,prompt_id,owner_id,actor_epoch,lifecycle_generation,input_enc,input_hash,conversation_id,correlation_id)

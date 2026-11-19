@@ -1977,7 +1977,7 @@
     "packages/mcp-server/src/subscription-broker.ts": 9,
     "packages/mcp-server/src/token-control.ts": 6,
     "packages/mcp-server/src/tool-api.ts": 1,
-    "packages/mcp-server/src/tools.ts": 8,
+    "packages/mcp-server/src/tools.ts": 7,
     "packages/mcp-server/src/tracked-operations.ts": 2,
     "packages/mcp-server/src/turn-pricing.ts": 9,
     "packages/mcp-server/src/turns.ts": 13,

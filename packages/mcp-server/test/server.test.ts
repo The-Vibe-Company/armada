@@ -1188,7 +1188,8 @@ describe("tools", () => {
       conversation_id: "selected-conversation",
     });
     expect(selected.isError).toBe(true);
-    expect(selected.text).toContain("Steer targets the sandbox. Omit conversation_id.");
+    expect(selected.text).toContain("Launch another sandbox");
+    expect(selected.text).toContain("error code: conflict");
     await db.query("update sandboxes set conversation_ids=array['older','conv_1'] where id=$1", [codex.data.id]);
     expect((await call(mcp, "send", { id: codex.data.id, steer: true, prompt: "Use bun" })).data).toMatchObject({
       delivery: "restart",

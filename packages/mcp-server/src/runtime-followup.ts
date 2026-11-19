@@ -10,12 +10,12 @@ import { createRuntimeEnrolments, runtimeTransaction } from "./runtime-enrolment
 import type { RuntimeMcp } from "./runtime-mcp.ts";
 import type { RuntimeResume } from "./runtime-resume.ts";
 import { appendConversation } from "./sandbox-activity.ts";
+import { refuseConversationSelector } from "./sandbox-conversation.ts";
 
 export interface RuntimeFollowupInput {
   id: string;
   prompt: string;
   request_id?: string | undefined;
-  conversation_id?: string | undefined;
   model?: string | undefined;
   reasoning_effort?: string | undefined;
 }
@@ -36,6 +36,7 @@ export function createRuntimeFollowup(
   const authority = createRuntimeEnrolments(sql, key);
   const modalEnvironment = createModalRuntimeEnvironment(sql, key);
   return async (caller: Caller, input: RuntimeFollowupInput) => {
+    refuseConversationSelector(input);
     const requestId = input.request_id?.toLowerCase();
     if (!requestId || !/^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/.test(requestId) || !input.prompt.trim())
       throw new VaultError("invalid", "Runtime send requires a request_id UUID and nonempty prompt.");
@@ -74,7 +75,6 @@ export function createRuntimeFollowup(
         request_id: requestId,
         runtimeVersion: 1,
         prompt: input.prompt,
-        ...(input.conversation_id === undefined ? {} : { conversation_id: input.conversation_id }),
       });
     }
     if (
@@ -90,9 +90,9 @@ export function createRuntimeFollowup(
     // A stable server-owned first-conversation ID keeps uncertain first-send
     // payloads identical even after publication adds that conversation to SQL.
     const firstConversation = `first_${requestId}`;
-    const conversation = input.conversation_id ?? found.conversationIds.at(-1) ?? firstConversation;
-    const idleFirst = found.conversationIds.length === 0 && !found.taskPromptId && input.conversation_id === undefined;
-    if (!found.conversationIds.includes(conversation) && !idleFirst)
+    const conversation = found.conversationIds.at(-1) ?? firstConversation;
+    const idleFirst = found.conversationIds.length === 0 && !found.taskPromptId;
+    if (!found.conversationIds.length && !idleFirst)
       throw new VaultError("invalid", "Continue an existing runtime conversation.");
     const commandId = `follow_${requestId}`;
     const agent = runtimeAgentFor(commands, caller.userId, found, {
@@ -133,7 +133,7 @@ export function createRuntimeFollowup(
           current.model !== found.model ||
           current.reasoningEffort !== found.reasoningEffort ||
           !(
-            current.conversationIds.includes(conversation) ||
+            current.conversationIds.at(-1) === conversation ||
             (idleFirst && current.conversationIds.length === 0 && !current.taskPromptId)
           )
         )

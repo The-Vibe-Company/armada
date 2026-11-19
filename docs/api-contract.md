@@ -209,7 +209,7 @@ and Docker host daemon protocol retain their own rollout rules.
 | POST | `webhooks` | `createWebhook` (admin) | #2775 |
 | GET | `webhooks/deliveries` | `listWebhookDeliveries` (admin) | #2775 |
 | DELETE | `webhooks/{id}` | `deleteWebhook` (admin) | #2775 |
-| POST | `docker/sandboxes/{launch,get,bootstrap,ready,prompt,journal,stop,delete,job}` | Admin preview entries; preserve host enablement and bearer restrictions | #2775 |
+| POST | `docker/sandboxes/{launch,get,bootstrap,ready,journal,stop,delete,job}` | Admin preview entries; preserve host enablement and bearer restrictions | #2775 |
 | POST | `orchestrator-tools/{finish,launch,read,message,stop,extend}` | Scoped public REST entries; epoch/finish grant required | #2775 |
 | POST | `orchestrator-tools/mcp` | Scoped MCP transport; retain mount and apply table-based filtering | #2776 |
 

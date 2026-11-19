@@ -144,7 +144,7 @@ for (const mode of [
               }
               expect(body.id).toBe(ids[provider]);
               expect(body.org).toBe(orgs[provider]);
-              expect(body.conversation_id).toBe(conversation);
+              expect(body).not.toHaveProperty("conversation_id");
               expect(body.request_id).toMatch(/^[a-f0-9-]{36}$/);
               expect(body).not.toHaveProperty("model");
               expect(body).not.toHaveProperty("reasoning_effort");

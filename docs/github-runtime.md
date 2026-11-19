@@ -310,7 +310,7 @@ It simulates cache expiry, not the actual passage of eight hours at GitHub.
 
    Require one row, all true, successful remote Git, unchanged boot/native identity
    and conversation. Repeat exec reads and a native turn with
-   `armada send "$ID" '<read-only Git prompt>' --org "$ORG" --conversation "$CONVERSATION" --json`,
+   `armada send "$ID" '<read-only Git prompt>' --org "$ORG" --json`,
    then wait for its specific prompt. Record numeric results and harness survival.
    A timeout/uncertain refresh is failure: do not restore old ciphertext or retry
    the consumed refresh. Follow the ordinary reconnect procedure for this smoke

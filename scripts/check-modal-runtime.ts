@@ -811,7 +811,6 @@ try {
         ? toolsInstruction
         : "Reply exactly with the token I originally asked you to remember. Do not use tools or change files.",
     request_id: followupRequestId,
-    conversation_id: launched.conversationId,
   });
   if (
     followed.requestId !== followupRequestId ||
@@ -920,7 +919,6 @@ if (
       id,
       runtimeVersion: 1,
       request_id: requestId,
-      conversation_id: conversationId,
       prompt:
         mcpMode || variablesMode
           ? `${[...(variablesMode ? [variableInstruction] : []), ...(mcpMode ? [mcpInstruction] : [])].join(" ")} ${recallInstruction}`
@@ -964,7 +962,6 @@ if (
       const sent = await api("sandbox/send", {
         id,
         request_id: requestId,
-        conversation_id: conversationId,
         prompt: toolsInstruction,
       });
       if (

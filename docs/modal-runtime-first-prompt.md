@@ -93,8 +93,7 @@ cleanup, and cleanup alone is not evidence of resume or disk preservation.
 After the first confirmed stop, the script re-reads the **same checkpoint request
 UUID** and requires its original epoch/watermark/ACK, then re-reads both original
 answers from the common archive while compute remains stopped. It dispatches one
-`sandbox/resume-runtime-v1` using a fresh printed request UUID, the original
-conversation ID and a recall prompt that does not contain the memory nonce.
+`sandbox/resume-runtime-v1` using a fresh printed request UUID and a recall prompt that does not contain the memory nonce.
 There is no allocation or activation retry.
 
 The resume receipt must identify that UUID, `resumed:true`, a new prompt ID,
@@ -533,7 +532,7 @@ it is not an additional billable prompt.
 
 Before first send, the receipt must identify a ready sandbox with no conversation
 or prompt, and common archive reads must contain no inference events. The smoke
-records a first-send request UUID before dispatch, omits `conversation_id`, then
+records a first-send request UUID before dispatch, then
 requires the same enrolled epoch and a new conversation/prompt acknowledgement.
 It never retries an uncertain first send. Existing answer, follow-up/session
 recall, checkpoint/stop and optional retained resume checks remain required.

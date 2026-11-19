@@ -54,6 +54,7 @@ import { observeGoldenLaunch } from "./request-timing.ts";
 import type { RuntimeFollowup } from "./runtime-followup.ts";
 import { appendConversation, sandboxActivity } from "./sandbox-activity.ts";
 import { sandboxControlRefusal } from "./sandbox-control-refusal.ts";
+import { refuseConversationSelector } from "./sandbox-conversation.ts";
 import {
   collectSandboxUsage,
   isStatusReadFenced,
@@ -104,14 +105,6 @@ export class ToolError extends Error {
     super(message);
     this.code = code;
   }
-}
-
-export function assertSendConversation(requested: unknown, current: string | undefined): void {
-  if (requested !== undefined && requested !== current)
-    throw new ToolError(
-      "conflict",
-      "A sandbox has one conversation. Launch another sandbox for a separate conversation.",
-    );
 }
 
 export const serverInfo = { name: "armada" } as const;
@@ -498,6 +491,7 @@ function createToolServer(
   ) => {
     const invoke: (args: ToolArgs<In>) => Promise<CallToolResult> = async (args) => {
       try {
+        if (name === "send") refuseConversationSelector(args);
         if (["send", "steer", "exec", "interrupt"].includes(name)) {
           const input = args as Record<string, unknown>;
           const found = data.sandboxes.controlState
@@ -510,8 +504,6 @@ function createToolServer(
             throw new VaultError("credential_binding_required", CREDENTIAL_BINDING_GUIDANCE);
           const refusal = sandboxControlRefusal(found, context.now(), name);
           if (refusal) throw new ToolError("sandbox_terminal", refusal);
-          if (name === "send" && !context.accountTurns && input.conversation_id !== undefined)
-            assertSendConversation(input.conversation_id, found.conversationIds.at(-1));
         }
         if (
           name === "stop" &&
@@ -1100,7 +1092,7 @@ function createToolServer(
       args.model === undefined && args.reasoning_effort === undefined
         ? stored
         : resolveModelChoice(found.harness, { model: args.model, reasoningEffort: args.reasoning_effort }, stored);
-    const conversation = args.conversation_id ?? found.conversationIds.at(-1);
+    const conversation = found.conversationIds.at(-1);
     const machine = await measure("send_state", () => provider.get(found.providerSandboxId));
     if (provider.id === "boat" && machine.state === "stopped" && machine.retainedSnapshot !== "usable")
       throw new ToolError("conflict", "Boat retained data has not been verified.");
@@ -1236,11 +1228,6 @@ function createToolServer(
             "Required for runtime follow-up; reuse with identical input after uncertain delivery. Native providers accept the field for compatibility only; they do not deduplicate.",
           ),
         prompt: z.string().min(1).describe("The instruction."),
-        conversation_id: z
-          .string()
-          .min(1)
-          .optional()
-          .describe("The sandbox's current conversation ID for a new turn. Omit to target it automatically."),
         model: modelInput,
         reasoning_effort: effortInput,
       },
@@ -1613,7 +1600,7 @@ function createToolServer(
         description:
           "Start a new turn, or set steer to redirect a running turn. Model and effort overrides apply only to new turns. " +
           "Runtime follow-up requires a request ID. Reuse that ID with identical input after uncertain delivery.",
-        input: {
+        input: z.looseObject({
           ...sendTool.input,
           request_id: sendTool.input.request_id.describe(
             "Required for runtime follow-up. Optional for runtime steer. Reuse with identical input after uncertain delivery. " +
@@ -1623,7 +1610,7 @@ function createToolServer(
             .boolean()
             .optional()
             .describe("Redirect the running turn. Delivery is native or a restart in the same conversation."),
-        },
+        }),
         output: {
           ...sendTool.output,
           status: sendTool.output.status.optional(),
@@ -1635,8 +1622,11 @@ function createToolServer(
         if (!steer) return sendTool.invoke(args);
         if (args.model !== undefined || args.reasoning_effort !== undefined)
           return invalidToolInput("send", "Model and effort overrides require a new turn.");
-        if (args.conversation_id !== undefined)
-          return invalidToolInput("send", "Steer targets the sandbox. Omit conversation_id.");
+        try {
+          refuseConversationSelector(args);
+        } catch (error) {
+          return errorResult(error, "send", context.logError ?? console.error);
+        }
         return steerTool.invoke({
           id: args.id,
           text: args.prompt,

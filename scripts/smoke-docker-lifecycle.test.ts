@@ -81,7 +81,7 @@ class Opener:
             if mode.startswith(("github", "snapshot")):
                 value["github"] = {"status": "connected", "login": "owner"}
         elif path == "sandbox/send":
-            assert lifecycle and body["conversation_id"] == conversation
+            assert lifecycle and "conversation_id" not in body
             assert marker not in body["prompt"]
             sends += 1
             mcp_turn = "selected MCP tool lookup" in body["prompt"]

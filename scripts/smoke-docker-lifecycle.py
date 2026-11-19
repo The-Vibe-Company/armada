@@ -235,7 +235,7 @@ def main():
     parser.add_argument("--host-id", help="Reuse an existing host registration")
     parser.add_argument("--start-host", action="store_true", help="Start that stopped host daemon; never remove its lock")
     parser.add_argument("--follow-up", action="store_true", help="Prove a second prompt recalls the same conversation")
-    parser.add_argument("--normal-controls", action="store_true", help="Read status/logs and stop/delete through normal sandbox API")
+    parser.add_argument("--normal-controls", action="store_true", help="Stop/delete through normal sandbox API")
     parser.add_argument("--normal-launch", action="store_true", help="Launch and run the first prompt through the normal API; implies --normal-controls")
     parser.add_argument("--normal-lifecycle", action="store_true", help="Prove normal follow-up and same-host stop/resume with retained history; implies --normal-launch")
     parser.add_argument("--template", action="store_true", help="Create a temporary Docker template and prove its native first prompt")
@@ -528,7 +528,7 @@ def main():
             print("BOOTSTRAP_ID=" + bootstrap_id, flush=True)
             api("sandboxes/bootstrap", {"sandboxId": sandbox_id, "requestId": bootstrap_id})
             wait_for("ready", {"sandboxId": sandbox_id, "requestId": str(uuid.uuid4())}, "ready")
-        cursor = None if args.normal_controls else "0"
+        cursor = None
 
         priced_turns = {}
 
@@ -568,15 +568,7 @@ def main():
                 text = secret_task + variable_task + snapshot_proof_task + (github_task if prove_github else "") + text
                 prompt_id = str(uuid.uuid4())
                 print("PROMPT_REQUEST_ID=" + prompt_id, flush=True)
-                body = {"sandboxId": sandbox_id, "requestId": prompt_id, "text": text}
-                if conversation is not None:
-                    body["conversationId"] = conversation
-                if args.normal_controls:
-                    receipt = api("sandbox/send", {"id": sandbox_id, "request_id": prompt_id,
-                                  "prompt": text, **({"conversation_id": conversation} if conversation else {})}, normal=True)
-                else:
-                    admission = wait_for("prompt", body, "admitted")
-                    receipt = admission["receipt"]
+                receipt = api("sandbox/send", {"id": sandbox_id, "request_id": prompt_id, "prompt": text}, normal=True)
             if conversation is not None and receipt["conversationId"] != conversation:
                 raise RuntimeError("Follow-up changed conversation identity")
             native_prompt = receipt["promptId"]
@@ -590,19 +582,15 @@ def main():
             variable_proven = not (prove_environment and variable_binding)
             github_proven = not prove_github
             while True:
-                if args.normal_controls:
-                    page = api("logs/read", {"id": sandbox_id, **({"cursor": cursor} if cursor else {})}, normal=True)
-                    summary = api("sandbox/detail", {"id": sandbox_id}, normal=True)
-                    if summary.get("provider") != "docker" or summary.get("golden") is not None:
-                        raise RuntimeError("Normal Docker status did not match its contract")
-                    page["usage"] = summary.get("usage")
-                    if (args.repository or args.snapshot or variable_binding or secret_binding) and page.get("source") != "armada-runtime":
-                        raise RuntimeError("Repository proof requires the archived Armada runtime journal")
-                else:
-                    page = api("sandboxes/journal", {"sandboxId": sandbox_id, "cursor": cursor})
+                page = api("logs/read", {"id": sandbox_id, **({"cursor": cursor} if cursor else {})}, normal=True)
+                summary = api("sandbox/detail", {"id": sandbox_id}, normal=True)
+                if summary.get("provider") != "docker" or summary.get("golden") is not None:
+                    raise RuntimeError("Normal Docker status did not match its contract")
+                page["usage"] = summary.get("usage")
+                if (args.repository or args.snapshot or variable_binding or secret_binding) and page.get("source") != "armada-runtime":
+                    raise RuntimeError("Repository proof requires the archived Armada runtime journal")
                 cursor = page["cursor"]
-                for item in page["events"]:
-                    event = item if args.normal_controls else item["event"]
+                for event in page["events"]:
                     if require_mcp and event.get("promptId") == native_prompt:
                         used_mcp = successful_mcp_tool(event.get("tools", []), matching_mcp_calls,
                                                        harness, args.mcp, args.mcp_tool) or used_mcp
@@ -730,7 +718,6 @@ def main():
             if not enabled:
                 continue
             receipt = api("sandbox/send", {"id": sandbox_id, "request_id": str(uuid.uuid4()),
-                "conversation_id": conversation,
                 "prompt": "Run the shell command sleep 120, then reply DOCKER_NOT_REDIRECTED. Wait for the command to finish."}, normal=True)
             control = {"id": sandbox_id, "request_id": str(uuid.uuid4())}
             if operation == "steer":

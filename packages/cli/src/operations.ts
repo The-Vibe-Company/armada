@@ -34,7 +34,7 @@ export async function operation(
     detail: ["--prompt-id"],
     recovery: [],
     advice: [],
-    send: ["--request-id", "--conversation", "--model", "--reasoning-effort"],
+    send: ["--request-id", "--model", "--reasoning-effort"],
     exec: ["--cwd", "--timeout"],
     stop: [],
     wait: ["--timeout", "--prompt-id"],
@@ -75,7 +75,6 @@ export async function operation(
     "--org": "org",
     "--model": "model",
     "--reasoning-effort": "reasoning_effort",
-    "--conversation": "conversation_id",
     "--cwd": "cwd",
     "--prompt-id": "prompt_id",
   })) {
