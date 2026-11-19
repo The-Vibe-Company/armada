@@ -1,3 +1,4 @@
+import { accountIneligibility } from "./account-pool.ts";
 import { CLAUDE_ENDPOINT_ENV, parseClaudeEndpoint } from "./claude-endpoint.ts";
 import { CODEX_ENDPOINT_ENV, parseCodexEndpoint } from "./codex-endpoint.ts";
 import type { Harness, Visibility } from "./contract.ts";
@@ -456,18 +457,21 @@ export async function resolveCredentials(
             ? candidates[0]
             : undefined;
     if (!row) throw new VaultError("conflict", "Multiple compatible accounts: choose credentialId or set a default.");
-    if (!kinds.includes(row.kind)) {
-      const supported = harnessesForCredential(row.kind).map((id) => HARNESS_CATALOG[id].label);
+    const harnesses = harnessesForCredential(row.kind);
+    const reason = accountIneligibility(
+      { version: row.version ?? 1, status: row.status ?? "active", expiresAt: row.expiresAt, harnesses },
+      input.harness,
+      Date.now(),
+      input.credentialVersion,
+    );
+    if (reason?.code === "incompatible_harness") {
+      const supported = harnesses.map((id) => HARNESS_CATALOG[id].label);
       throw new VaultError(
         "invalid",
         `This account cannot drive ${HARNESS_CATALOG[input.harness].label}. This account works with ${supported.join(" and ") || "no coding harness"}; for ${HARNESS_CATALOG[input.harness].label} use ${kinds.map(credentialName).join(" or ")}.`,
       );
     }
-    if (
-      (row.status !== undefined && row.status !== "active") ||
-      (row.expiresAt && new Date(row.expiresAt).getTime() <= Date.now()) ||
-      (input.credentialVersion !== undefined && row.version !== input.credentialVersion)
-    ) {
+    if (reason || (input.credentialVersion !== undefined && row.version === undefined)) {
       throw new VaultError(
         "credential_refused",
         "The selected credential is expired, revoked or changed. No fallback was used.",
