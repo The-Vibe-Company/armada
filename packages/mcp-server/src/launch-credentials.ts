@@ -58,6 +58,7 @@ export function launchCredentials(
   /** Runtime preflight only: never add this GitHub token to harness credentials/env. */
   repositoryGithub?: GitHubLaunchOptions,
 ): LaunchCredentialResolver & {
+  admitExistingSandbox: NonNullable<LaunchCredentialResolver["admit"]>;
   resolveModel: (...args: Parameters<LaunchCredentialResolver["resolve"]>) => ReturnType<typeof resolveCredentials>;
 } {
   async function resolveModel(actor: GoldenActor, harness: Harness, credentialId?: string, credentialVersion?: number) {
@@ -69,6 +70,10 @@ export function launchCredentials(
       ...(credentialVersion !== undefined ? { credentialVersion } : {}),
     });
   }
+  const enrollAccount: NonNullable<LaunchCredentialResolver["enrollAccount"]> = async (actor, credentials) => {
+    if (credentials.codexAuthJson && ownership?.broker && credentials.binding)
+      await ownership.broker.enroll(actor, credentials.binding.credentialId, credentials.binding.credentialVersion);
+  };
   const repositoryAccess = github ?? repositoryGithub;
   return {
     resolveModel,
@@ -180,14 +185,14 @@ export function launchCredentials(
       if (!repaired) throw new VaultError("unavailable", "GitHub is not connected for the sandbox owner.");
       return repaired;
     },
-    async enrollAccount(actor, credentials) {
-      if (credentials.codexAuthJson && ownership?.broker && credentials.binding)
-        await ownership.broker.enroll(actor, credentials.binding.credentialId, credentials.binding.credentialVersion);
-    },
+    enrollAccount,
     async admit(actor, credentials, sandboxId, model) {
+      if (credentials.binding) await ownership?.admitLaunch(credentials.binding, sandboxId, model);
+      await enrollAccount(actor, credentials);
+    },
+    async admitExistingSandbox(actor, credentials, sandboxId, model) {
       if (credentials.binding) await ownership?.admitCapacity(credentials.binding.credentialId, sandboxId, model);
-      if (credentials.codexAuthJson && ownership?.broker && credentials.binding)
-        await ownership.broker.enroll(actor, credentials.binding.credentialId, credentials.binding.credentialVersion);
+      await enrollAccount(actor, credentials);
     },
     async releaseAdmission(sandboxId) {
       await ownership?.releaseCapacity(sandboxId);
