@@ -187,8 +187,8 @@ the sandbox and checks provider state.
 
 Default-pin reads and the vault family (no compute) run first, in case order.
 After that every independent sandbox runs concurrently in its own lane, one per
-case and family: `templates`, `expiry` and `lifecycle` (the clean worker, then
-the dirty preservation worker of the same case, in that order). The expiry TTL
+case and family: `templates`, `expiry`, `scoped`, and `lifecycle` (the clean
+worker, then the dirty preservation worker of the same case, in that order). The expiry TTL
 wait therefore overlaps the lifecycle work instead of adding to it (work on one
 model account takes turns, see below).
 Every step receipt from a lane carries its `case` index and `lane`, so
@@ -202,11 +202,12 @@ fails the probe. Verified children are stopped first. Only a row nothing else
 explains waits for launches still in flight to return its handle, until none
 is in flight or for at most the longest launch request timeout (10 minutes).
 When nothing is unexplained there is no wait, so an unrelated launch does not
-delay scoped cleanup or the next preservation worker. A scoped child is registered under its parent's owner and
+delay scoped cleanup or the next scoped parent. A scoped child is registered under its parent's owner and
 golden without an owner API launch, so the run cannot attribute another case's
-child: scoped Codex lifecycle runs that share an org and golden run one after
+child: scoped Codex probes that share an org and golden run one after
 another, from the baseline snapshot through scoped cleanup. Expiry, templates
-and scoped runs on other goldens are not held by that queue.
+and scoped runs on other goldens are not held by that queue. Scoped parent
+launch, ready, and stop receipts have distinct step names in the journal.
 
 A model account admits a bounded number of working agents, possibly one, and
 every launch reserves a slot before its fork. Work that occupies the same

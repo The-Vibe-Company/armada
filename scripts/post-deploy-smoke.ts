@@ -802,32 +802,38 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
   // owner API launch, so the launch tracker cannot attribute another case's child: probe
   // windows that share an org and golden run one after another. Other lanes stay concurrent.
   const scopedWindow = createKeyedQueue();
+  const scopedUnits = scopedAccess
+    ? cases.map(async (item, index) => {
+        if (item.harness !== "codex") {
+          io.out(JSON.stringify({ case: index, step: "scoped_access", skip: true, reason: "codex_only" }));
+          return true;
+        }
+        const { reasoningEffort: _baselineEffort, ...scriptedCase } = item;
+        const scripted = {
+          ...scriptedCase,
+          modelAccountId: item.scriptedModelAccountId!.toLowerCase(),
+          model: "scripted",
+        };
+        const lane = unit(index, "scoped");
+        let passed = true;
+        for (const mode of ["enabled", "no_option"] as const) {
+          const ok = await scopedWindow(`${item.org}\n${item.goldenId}`, () =>
+            accountSlot(scripted.modelAccountId, () => lifecycleUnit(index, scripted, false, lane, mode)),
+          );
+          if (!ok) passed = false;
+        }
+        return passed;
+      })
+    : [];
   const lifecycleUnits = cases.map(async (item, index) => {
-    let passed = true;
-    if (scopedAccess && item.harness === "codex") {
-      const { reasoningEffort: _baselineEffort, ...scriptedCase } = item;
-      const scripted = {
-        ...scriptedCase,
-        modelAccountId: item.scriptedModelAccountId!.toLowerCase(),
-        model: "scripted",
-      };
-      const scopedLane = unit(index, "scoped");
-      for (const mode of ["enabled", "no_option"] as const) {
-        const ok = await scopedWindow(`${item.org}\n${item.goldenId}`, () =>
-          accountSlot(scripted.modelAccountId, () => lifecycleUnit(index, scripted, false, scopedLane, mode)),
-        );
-        if (!ok) passed = false;
-      }
-    } else if (scopedAccess) {
-      io.out(JSON.stringify({ case: index, step: "scoped_access", skip: true, reason: "codex_only" }));
-    }
     const lane = unit(index, "lifecycle");
+    let passed = true;
     for (const dirty of preservation ? [false, true] : [false]) {
       if (!(await accountSlot(item.modelAccountId, () => lifecycleUnit(index, item, dirty, lane)))) passed = false;
     }
     return passed;
   });
-  return (await settled([...templateUnits, ...expiryUnits, ...lifecycleUnits])) && vaultPassed;
+  return (await settled([...templateUnits, ...expiryUnits, ...scopedUnits, ...lifecycleUnits])) && vaultPassed;
   async function lifecycleUnit(
     index: number,
     item: SmokeCase,
@@ -950,7 +956,7 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
         io.out(JSON.stringify({ step: "scoped_access", mode: scope, model: "scripted" }));
         await scoped.prepare();
       }
-      await step("launch", async () => {
+      await step(scoped ? "scoped_parent_launch" : "launch", async () => {
         launchAttempted = true;
         type LaunchReceipt = {
           sandbox: {
@@ -1015,7 +1021,7 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
           });
         launchSkills = result.sandbox.skills;
       });
-      await step("ready", () =>
+      await step(scoped ? "scoped_parent_ready" : "ready", () =>
         poll(
           (timeoutMs) => sandbox<{ status: string }>("status", { id: sandboxId }, timeoutMs),
           (result) => {
@@ -1027,7 +1033,7 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
       );
       if (scoped) {
         await scoped.run(sandboxId!, parentCredentialVersion!);
-        await step("stop", stopSandbox);
+        await step("scoped_parent_stop", stopSandbox);
         return;
       }
       if (lifecycle && !dirty)
@@ -1451,7 +1457,7 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
       }
       if (sandboxId && !stopped) {
         try {
-          await withCleanup(() => step("cleanup_sandbox", stopSandbox));
+          await withCleanup(() => step(scoped ? "scoped_parent_cleanup" : "cleanup_sandbox", stopSandbox));
         } catch {
           passed = false;
         }

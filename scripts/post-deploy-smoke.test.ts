@@ -32,7 +32,7 @@ function fixture(handler?: (call: Call) => Response | undefined | Promise<Respon
   const lines: string[] = [];
   let clock = 0;
   let stopping = false;
-  let lastPromptId = "prompt-id";
+  const promptsBySandbox = new Map<unknown, string>();
   const io = {
     now: () => clock,
     sleep: async (ms: number) => {
@@ -55,7 +55,7 @@ function fixture(handler?: (call: Call) => Response | undefined | Promise<Respon
       calls.push(call);
       if (call.path === "sandbox/launch") stopping = false;
       if (call.path === "sandbox/stop") stopping = true;
-      if (call.path === "sandbox/wait") lastPromptId = String(call.body.prompt_id);
+      if (call.path === "sandbox/wait") promptsBySandbox.set(call.body.id, String(call.body.prompt_id));
       const override = await handler?.(call);
       if (override) {
         if (call.path === "sandbox/status" && override.ok) {
@@ -64,7 +64,9 @@ function fixture(handler?: (call: Call) => Response | undefined | Promise<Respon
             return json({
               ...body,
               usage: {
-                turns: [{ promptId: lastPromptId, inputTokens: 10, outputTokens: 2 }],
+                turns: [
+                  { promptId: promptsBySandbox.get(call.body.id) ?? "prompt-id", inputTokens: 10, outputTokens: 2 },
+                ],
                 tokenTotals: { inputTokens: 10, outputTokens: 2 },
               },
             });
@@ -699,8 +701,7 @@ describe("preservation checks", () => {
         const baselineScopeAccount = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
         const scopeAccount = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
         const childId = crypto.randomUUID();
-        let positiveParent = "";
-        let scopedLaunches = 0;
+        const scriptedParents = new Map<string, boolean>();
         let childExists = false;
         let childStopped = false;
         const scopeEvents = new Map<string, object[]>();
@@ -739,9 +740,8 @@ describe("preservation checks", () => {
             expect(call.body.golden).toBe(defaultGolden);
             return json({
               sandboxes: [
-                ...(positiveParent ? [{ id: positiveParent }] : []),
+                ...[...scriptedParents.keys()].map((id) => ({ id })),
                 ...(childExists ? [{ id: childId }] : []),
-                ...(scopedLaunches === 2 ? [{ id: sandboxId }] : []),
               ],
               hasMore: false,
               nextPage: null,
@@ -763,7 +763,10 @@ describe("preservation checks", () => {
               model: "scripted",
               credentialVersion: 7,
             });
-            if (scopedLaunches === 1) {
+            const parent = String(call.body.id);
+            expect(scriptedParents.has(parent)).toBe(true);
+            expect(launches).toBeGreaterThan(0);
+            if (parent === scriptedParents.keys().next().value) {
               const message = { idempotencyKey: messageKey, text: prefix + JSON.stringify({ lane: "child", answer }) };
               const op = () => ({ id: crypto.randomUUID(), state: "succeeded", sandboxId: childId });
               const tool = (name: string, input: object, result: object) => ({
@@ -774,7 +777,7 @@ describe("preservation checks", () => {
               });
               childExists = true;
               childStopped = true;
-              scopeEvents.set(sandboxId, [
+              scopeEvents.set(parent, [
                 {
                   id: "scoped-tools",
                   kind: "message",
@@ -813,7 +816,7 @@ describe("preservation checks", () => {
                 },
               ]);
             } else
-              scopeEvents.set(sandboxId, [
+              scopeEvents.set(parent, [
                 {
                   id: "no-scope",
                   kind: "message",
@@ -839,15 +842,24 @@ describe("preservation checks", () => {
               status: childStopped ? "stopped" : "ready",
               providerState: childStopped ? "stopped" : "active",
             });
+          const requestedId = String(call.body.id);
+          if (scriptedParents.has(requestedId)) {
+            if (call.path === "sandbox/stop") {
+              scriptedParents.set(requestedId, true);
+              return json({ status: "stopped" });
+            }
+            if (call.path === "sandbox/status") {
+              const stopped = scriptedParents.get(requestedId);
+              return json({ status: stopped ? "stopped" : "ready", providerState: stopped ? "stopped" : "active" });
+            }
+          }
           if (call.path === "sandbox/launch") {
-            stopping = false;
-            sandboxId = crypto.randomUUID();
             if (scopes && call.body.model === "scripted") {
-              scopedLaunches++;
               expect(call.body.credentialId).toBe(scopeAccount);
-              const enabled = scopedLaunches === 1;
+              const enabled = scriptedParents.size === 0;
+              const id = crypto.randomUUID();
+              scriptedParents.set(id, false);
               if (enabled) {
-                positiveParent = sandboxId;
                 expect(call.body.armadaAccessVersion).toBe(1);
                 expect(call.body.armadaAccess).toEqual({ maxActiveChildren: 1 });
               } else {
@@ -857,7 +869,7 @@ describe("preservation checks", () => {
               }
               return json({
                 sandbox: {
-                  id: sandboxId,
+                  id,
                   provider,
                   harness: "codex",
                   model: "scripted",
@@ -869,6 +881,8 @@ describe("preservation checks", () => {
                 ...(enabled ? { armadaAccess: { enabled: true, maxActiveChildren: 1 } } : {}),
               });
             }
+            stopping = false;
+            sandboxId = crypto.randomUUID();
             launches++;
             recoveryReads = 0;
             if (scopes) {
@@ -1014,6 +1028,12 @@ describe("preservation checks", () => {
           );
         }
         if (scopes) {
+          const scriptedSteps = fake.lines
+            .filter((line) => line !== boatNotice)
+            .map((line) => JSON.parse(line))
+            .filter((line) => line.lane === "scoped");
+          expect(scriptedSteps.map((line) => line.step)).not.toContain("launch");
+          expect(scriptedSteps.filter((line) => line.step === "scoped_parent_launch" && line.pass)).toHaveLength(2);
           expect(
             fake.receipts().filter((line) => line.step === "scoped_access" && line.model === "scripted"),
           ).toHaveLength(2);
@@ -1835,7 +1855,7 @@ test("an unrelated launch in flight never holds scoped child cleanup or the next
       },
     },
   );
-  // Both scoped windows of case 0 (clean, then preservation) closed while the other launch was pending.
+  // Both scoped windows of case 0 closed while the other launch was pending.
   expect(releasedAt).toBeGreaterThan(0);
   const before = lines.slice(0, releasedAt).map((line) => JSON.parse(line));
   const summaries = before.filter((line) => line.case === 0 && line.step === "scoped_cleanup_summary");
