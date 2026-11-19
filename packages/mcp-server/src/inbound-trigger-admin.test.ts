@@ -60,7 +60,10 @@ test("reports authentication outages without exposing the dependency error", asy
 const db = new PGlite();
 const templateOwner = "949426bc-9c76-49eb-beba-e8e271d012da";
 const template = "124fb448-6103-47ee-8f51-80e080217237";
+const sharedTemplate = "29578de5-ee88-4f11-b170-c4b28813aa7b";
 const foreignTemplate = "e2debec7-563a-43f7-8f2c-04b8761b1ee5";
+const host = "6eb8079a-05bd-4dd0-906e-63d81f750e9b";
+const credential = "08d603df-dca1-44d1-b457-e36a328a3add";
 const trigger = "bb995c90-964c-4140-83f7-f4dc3a5093d7";
 const rollbackTrigger = "a1365cf6-b29d-478f-9f40-255a9462f682";
 const rotationTrigger = "221401da-7f7e-42a6-87bc-f6a55047983d";
@@ -68,18 +71,33 @@ const disableTrigger = "3dfcb001-e5bb-4a9d-8c8a-dfa8427c6346";
 const foreignTrigger = "21c61603-5156-4d2f-ad35-15bf65840f7d";
 beforeAll(async () => {
   await db.exec(`
-    create table public.launch_templates (id uuid, org_id uuid, scope text, owner_id uuid);
-    create table public.triggers (id uuid, org_id uuid, template_id uuid, pool_harness text,
-      enabled bool, rate_per_minute int, concurrency int, rate_refusals int, secret_enc bytea, key_revision int);
+    create table public.launch_templates (id uuid, org_id uuid, scope text, owner_id uuid,
+      current_revision int default 1, status text default 'active');
+    create table public.launch_template_revisions (id uuid, template_id uuid, revision int, definition jsonb, digest text);
+    create table public.docker_hosts (id uuid, org_id uuid, owner_id uuid, installation_id uuid, revoked_at timestamptz,
+      hash text, registration_hash text);
+    create table public.credentials (id uuid, version int, kind text, status text, expires_at timestamptz,
+      scope text, owner_id uuid);
+    create table public.agent_defaults (user_id uuid, harness text, credential_id uuid);
+    create table public.triggers (id uuid default gen_random_uuid(), org_id uuid, template_id uuid, pool_harness text,
+      enabled bool default true, rate_per_minute int, concurrency int, rate_refusals int default 0, secret_enc bytea,
+      key_revision int default 1, launch_owner_id uuid);
     create table public.members (org_id uuid, user_id uuid, role text);
     create table public.trigger_admin_audit (org_id uuid, trigger_id uuid, actor_id uuid, action text,
-      check (trigger_id <> '${rollbackTrigger}'));
+      check (trigger_id <> '${rollbackTrigger}'), check (action in ('create', 'rotate', 'disable')));
     insert into public.members values ('${org}', '${id}', 'admin');
     create table public.jobs (id uuid, org_id uuid, kind text, state text, payload_enc bytea);
     create table public.trigger_deliveries (trigger_id uuid, delivery_id text, received_at timestamptz, job_id uuid);
     insert into public.launch_templates values
       ('${template}', '${org}', 'personal', '${templateOwner}'),
+      ('${sharedTemplate}', '${org}', 'org', '${id}'),
       ('${foreignTemplate}', '${otherOrg}', 'org', null);
+    insert into public.launch_template_revisions values
+      (gen_random_uuid(), '${sharedTemplate}', 1,
+       '{"provider":"docker","harness":"codex","hostId":"${host}","variables":[],"connections":[]}', 'digest');
+    insert into public.docker_hosts values ('${host}', '${org}', '${id}', gen_random_uuid(), null, 'opaque', null);
+    insert into public.credentials values ('${credential}', 1, 'openai', 'active', null, 'org', '${org}');
+    insert into public.agent_defaults values ('${id}', 'codex', '${credential}');
     insert into public.triggers values
       ('${trigger}', '${org}', '${template}', 'codex', true, 25, 2, 1, 'opaque', 1),
       ('${foreignTrigger}', '${otherOrg}', '${foreignTemplate}', 'codex', true, 2, 1, 0, 'opaque', 1);
@@ -242,4 +260,67 @@ test("an audit write failure rolls back the trigger change", async () => {
   expect((await db.query("select enabled from public.triggers where id = $1", [rollbackTrigger])).rows).toEqual([
     { enabled: true },
   ]);
+});
+
+const configuration = { templateId: sharedTemplate, poolHarness: "codex", ratePerMinute: 10, concurrency: 2 };
+
+function createRequest(overrides: Record<string, unknown> = {}) {
+  return new Request(request(), { method: "POST", body: JSON.stringify({ ...configuration, ...overrides }) });
+}
+
+test("creates an audited trigger and discloses the signing key once", async () => {
+  const response = await manage(createRequest());
+  expect(response?.status).toBe(201);
+  expect(response?.headers.get("cache-control")).toBe("no-store");
+  const result = (await response?.json()) as { triggerId: string; signingSecret: string };
+  expect(Object.keys(result).sort()).toEqual(["signingSecret", "triggerId"]);
+  const { triggerId, signingSecret } = result;
+  const key = await ingress.signingKey(triggerId);
+  expect(key?.revision).toBe(1);
+  expect(key?.key.byteLength).toBe(32);
+  expect(Buffer.from(key!.key).toString("base64") === signingSecret).toBe(true);
+  expect(
+    (
+      await db.query(
+        `select t.launch_owner_id, a.actor_id, a.action from public.triggers t
+         join public.trigger_admin_audit a on a.trigger_id = t.id and a.org_id = t.org_id where t.id = $1`,
+        [triggerId],
+      )
+    ).rows,
+  ).toEqual([{ launch_owner_id: id, actor_id: id, action: "create" }]);
+  const list = (await (await manage(request()))?.json()) as { triggers: { id: string }[] };
+  expect(list.triggers.find((entry) => entry.id === triggerId)).toEqual({
+    ...configuration,
+    id: triggerId,
+    enabled: true,
+    rateRefusals: 0,
+  });
+});
+
+test.each([
+  ["another admin's private template", { templateId: template }, 409],
+  ["a template in another organization", { templateId: foreignTemplate }, 409],
+  ["a pool for a different harness", { poolHarness: "claude" }, 409],
+  ["a limit outside the database range", { concurrency: 2_147_483_648 }, 400],
+  ["an extra credential selector", { credentialId: credential }, 400],
+] as const)("rejects trigger creation with %s", async (_label, overrides, status) => {
+  expect((await manage(createRequest(overrides)))?.status).toBe(status);
+});
+
+test("refuses trigger creation after its bound Docker host is revoked", async () => {
+  await db.query("update public.docker_hosts set revoked_at = now() where id = $1", [host]);
+  try {
+    expect((await manage(createRequest()))?.status).toBe(409);
+  } finally {
+    await db.query("update public.docker_hosts set revoked_at = null where id = $1", [host]);
+  }
+});
+
+test("refuses trigger creation with an account outside the organization's pool", async () => {
+  await db.query("update public.credentials set owner_id = $1 where id = $2", [otherOrg, credential]);
+  try {
+    expect((await manage(createRequest()))?.status).toBe(409);
+  } finally {
+    await db.query("update public.credentials set owner_id = $1 where id = $2", [org, credential]);
+  }
 });

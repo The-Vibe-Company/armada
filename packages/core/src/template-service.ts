@@ -982,6 +982,15 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
       variables: await resolveEnvironment(actor, m),
     });
   }
-  return { command, prepare };
+  /** Recheck the current definition and hold its authorization locks until the caller commits. */
+  async function validateBinding(tx: Sql, actor: ApplicationVaultActor, org: string, templateId: string) {
+    const a = await member(tx, actor, org);
+    if (a.role !== "admin") throw new VaultError("forbidden", "Organization admin access is required.");
+    const h = await header(tx, a, templateId);
+    const { definition } = await revision(tx, h);
+    await references(tx, a, h.scope, definition);
+    return { harness: definition.harness, modelAccount: definition.modelAccount };
+  }
+  return { command, prepare, validateBinding };
 }
 export type TemplateService = ReturnType<typeof createTemplateService>;
