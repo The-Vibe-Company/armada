@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import { createHash } from "node:crypto";
 import {
   createSqlGoldenStore,
@@ -7,10 +7,12 @@ import {
   DelegatedAuthority,
   encryptSecret,
   type Sql,
+  VaultError,
 } from "@armada/core/server";
 import { createSqlData } from "../src/data.ts";
 import { launchCredentials } from "../src/launch-credentials.ts";
 import { createNativeWebhookPrompts } from "../src/native-webhook-prompts.ts";
+import { observeRequest } from "../src/request-observability.ts";
 import { createRuntimeEnrolments } from "../src/runtime-enrolment.ts";
 import { createRuntimeProvider } from "../src/runtime-provider.ts";
 import { launchSandboxChild } from "../src/sandbox-access-child-launch.ts";
@@ -1143,7 +1145,7 @@ test.each(["placement refusal", "parent revocation during configuration"] as con
         runtimePlacements: {
           modal: {
             async provider() {
-              if (scenario === "placement refusal") throw Error("Modal App is unavailable");
+              if (scenario === "placement refusal") throw new VaultError("unavailable", "private placement detail");
               return host;
             },
             credentials,
@@ -1158,8 +1160,41 @@ test.each(["placement refusal", "parent revocation during configuration"] as con
           },
         },
       });
-      const receipt = await services.childWorker.launch(token, scenario, selection);
-      expect(receipt.state).toBe(scenario === "placement refusal" ? "failed" : "uncertain");
+      const log = spyOn(console, "error").mockImplementation(() => {});
+      try {
+        let receipt: Awaited<ReturnType<typeof services.childWorker.launch>> | undefined;
+        const response = await observeRequest(async () => {
+          receipt = await services.childWorker.launch(token, scenario, selection);
+          return new Response();
+        }, console.error);
+        expect(receipt?.state).toBe(scenario === "placement refusal" ? "failed" : "uncertain");
+        if (scenario === "placement refusal") {
+          const diagnostics = log.mock.calls
+            .map(([line]) => String(line))
+            .filter((line) => line.includes("operator_failure"));
+          expect(diagnostics.map((line) => JSON.parse(line))).toEqual([
+            expect.objectContaining({
+              phase: "scoped.child_launch.provider_placement",
+              code: "unavailable",
+              errorClass: "VaultError",
+              sandboxId: receipt?.sandboxId,
+              operationId: receipt?.id,
+              requestId: response?.headers.get("x-request-id"),
+            }),
+          ]);
+          expect(diagnostics.join("\n")).not.toContain("private placement detail");
+          expect((await sql.query("select id from sandboxes where id=$1", [receipt?.sandboxId])).rows).toEqual([]);
+          expect(
+            (
+              await sql.query("select sandbox_id from account_agent_reservations where sandbox_id=$1", [
+                receipt?.sandboxId,
+              ])
+            ).rows,
+          ).toEqual([]);
+        }
+      } finally {
+        log.mockRestore();
+      }
       expect(fake.forks).toHaveLength(scenario === "placement refusal" ? 0 : 1);
       expect(bootstraps).toBe(0);
     } finally {

@@ -12,6 +12,8 @@ import { createAccountTurnQueue } from "./account-turn-queue.ts";
 import type { Caller } from "./caller.ts";
 import { currentRequestId, observeRequest } from "./request-observability.ts";
 
+import { ToolApiError } from "./tool-api.ts";
+
 let connection: PGlite | undefined;
 
 function database() {
@@ -196,6 +198,46 @@ test.each(["modal", "boat", "docker"])("a pre-activation %s wake refusal fails t
         code: "conflict",
       }),
     ]);
+  } finally {
+    log.mockRestore();
+  }
+});
+
+test("a rejected first Modal turn logs bounded evidence and releases its reservation", async () => {
+  const input = { id: ids[1]!, request_id: requests[0]!, prompt: "private instruction" };
+  await database().query("update sandboxes set provider='modal',runtime_transport='dialout' where id=$1", [input.id]);
+  let requestId: string | undefined;
+  await observeRequest(
+    async () => {
+      requestId = currentRequestId();
+      await queue.accept(caller, input);
+      return undefined;
+    },
+    () => {},
+  );
+  queue.setDispatch(async () => {
+    throw new ToolApiError("invalid_request", "private upstream detail");
+  });
+  const log = spyOn(console, "error").mockImplementation(() => {});
+  try {
+    expect(await queue.reconcileOne(new AbortController().signal)).toBe(true);
+    await queue.drain();
+    expect(await queue.status(caller, input.id, input.request_id)).toMatchObject({ failed: true });
+    expect((await database().query("select sandbox_id from account_agent_reservations")).rows).toEqual([]);
+    const lines = log.mock.calls.map(([line]) => String(line));
+    expect(lines.map((line) => JSON.parse(line))).toEqual([
+      expect.objectContaining({
+        event: "operator_failure",
+        phase: "account_turn.dispatch.send",
+        code: "invalid_request",
+        errorClass: "ToolApiError",
+        sandboxId: input.id,
+        operationId: input.request_id,
+        requestId: expect.any(String),
+      }),
+    ]);
+    expect(JSON.parse(lines[0]!).requestId).toBe(requestId);
+    expect(lines.join("\n")).not.toContain("private");
   } finally {
     log.mockRestore();
   }

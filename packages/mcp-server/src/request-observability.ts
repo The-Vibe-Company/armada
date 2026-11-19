@@ -65,7 +65,13 @@ export function recordOperatorFailure(
 export function recordOperatorDiagnostic(
   phase: string,
   diagnostic: FailureDiagnostic,
-  options: { sandboxId?: string | undefined; correlationId?: string | null; log?: Log } = {},
+  options: {
+    sandboxId?: string | undefined;
+    correlationId?: string | null;
+    operationId?: string;
+    code?: string | undefined;
+    log?: Log;
+  } = {},
 ): void {
   const request = current.getStore();
   const log = options.log ?? request?.log ?? stderr;
@@ -76,6 +82,8 @@ export function recordOperatorDiagnostic(
         phase: redactForLog(phase),
         requestId: options.correlationId && serverId.test(options.correlationId) ? options.correlationId : request?.id,
         sandboxId: options.sandboxId && serverId.test(options.sandboxId) ? options.sandboxId : undefined,
+        operationId: options.operationId && serverId.test(options.operationId) ? options.operationId : undefined,
+        code: options.code,
         ...diagnostic,
       }),
     );

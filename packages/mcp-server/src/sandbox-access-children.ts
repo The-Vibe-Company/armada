@@ -339,6 +339,7 @@ export function createSandboxChildren(sql: Sql, authority: ChildAuthority, execu
       return { id: row.id, state: "succeeded", sandboxId: row.target_id };
     } catch (error) {
       const noAllocation = input.action === "launch" && error instanceof ChildLaunchNotAllocated;
+      if (noAllocation) error.record(operation);
       const state = noAllocation ? "failed" : "uncertain";
       if (!recovery)
         await sql.query(
