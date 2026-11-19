@@ -1520,9 +1520,6 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
       await expect(f.provider.sshKey({ sandboxId: row.id, key: "synthetic" })).rejects.toMatchObject({
         code: "sandbox_not_ready",
       });
-      await expect(f.provider.sshKey({ sandboxId: row.id, key: "synthetic" })).rejects.toMatchObject({
-        code: "sandbox_not_ready",
-      });
       expect(f.provisioned).toBe(false);
     });
     await f.provider.snapshot({ sandboxId: row.id, name: crypto.randomUUID() });

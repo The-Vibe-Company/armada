@@ -1,5 +1,5 @@
 import type { ModalBinding } from "@armada/core";
-import { type App, ModalClient } from "modal";
+import { ModalClient } from "modal";
 import { refusal } from "./errors.ts";
 export interface ModalConnection {
   /** Explicit server-owned public SDK client; may use an operator-managed profile. */
@@ -22,13 +22,8 @@ export function modalConnection(options: ModalConnection): ModalClient {
   return new ModalClient({ tokenId, tokenSecret });
 }
 
-export async function boundModalApp(
-  client: Pick<ModalClient, "apps">,
-  appName: string,
-  binding: ModalBinding,
-): Promise<App> {
+export async function boundModalApp(client: Pick<ModalClient, "apps">, appName: string, binding: ModalBinding) {
   const app = await client.apps.fromName(appName, { environment: binding.environment, createIfMissing: false });
-  // The globally unique App ID reached by the explicit credential verifies the binding.
   if (app.appId !== binding.appId) throw refusal("forbidden", "Modal App does not match the immutable binding.");
   return app;
 }

@@ -6,13 +6,12 @@ import { modalError, refusal } from "./errors.ts";
 
 export const DEPLOYMENT_TAG = "armada_deployment";
 
-export function modalDeploymentId(environment: string, publicUrl: string): string {
+export function modalDeploymentId(environment: string, publicUrl: string) {
   return createHash("sha256")
     .update(JSON.stringify([environment, new URL(publicUrl).origin]))
     .digest("hex");
 }
 
-/** Inventory-only connection for the server reaper, independent of runner and store authority. */
 export function createModalInventory(
   client: ModalClient,
   appName: string,
@@ -30,16 +29,14 @@ export async function* listModalInventory(
   bound: () => Promise<App>,
   deploymentId: string | null,
   signal?: AbortSignal,
-): AsyncGenerator<ProviderInventoryMachine> {
-  if (deploymentId === "")
+) {
+  if (deploymentId === undefined || deploymentId === "")
     throw refusal("provider_routing_unavailable", "Modal inventory requires a deployment identity.");
   signal?.throwIfAborted();
   try {
     const { appId } = await abortable(bound(), signal);
     const tags = deploymentId ? [{ tagName: DEPLOYMENT_TAG, tagValue: deploymentId }] : [];
     let beforeTimestamp: number | undefined;
-    // The SDK iterator discards creation times. Use its listing RPC, which covers both
-    // Modal sandbox backends and scopes the query by the verified environment's App ID.
     while (true) {
       signal?.throwIfAborted();
       const { sandboxes } = await client.cpClient.sandboxListV2(
@@ -63,7 +60,7 @@ export async function* listModalInventory(
           createdAt,
           ...(sandboxId ? { sandboxId } : {}),
           ...(generation ? { generation } : {}),
-        };
+        } satisfies ProviderInventoryMachine;
       }
       const nextTimestamp = sandboxes.at(-1)?.createdAt;
       if (
