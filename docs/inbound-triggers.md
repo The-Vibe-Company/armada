@@ -66,3 +66,18 @@ Pass `org` as the organization UUID on both requests.
   latest 100 admitted `deliveries`, newest first, with `deliveryId`,
   `receivedAt` and `jobState` (`queued`, `leased`, `done` or `failed`).
   This is the shared runner's processing state. Launch outcomes are tracked in #2823.
+
+## Rotation and disable API
+
+Use the same organization scope and admin authentication as the inspection API.
+
+- `POST /api/v1/triggers/<trigger UUID>/rotate?org=<org UUID>` replaces the key
+  of an enabled trigger and returns HTTP 200 with `{signingSecret}`. The
+  response is non-cacheable. Decode the base64 value to obtain the 32-byte HMAC
+  key. If the response is lost, rotate again to obtain a new key.
+- `POST /api/v1/triggers/<trigger UUID>/disable?org=<org UUID>` disables
+  admission and returns HTTP 204, including when the trigger is already
+  disabled.
+
+Each state change records the organization, actor, trigger, action and time in
+the server-only audit table. Inspection responses continue to omit keys.

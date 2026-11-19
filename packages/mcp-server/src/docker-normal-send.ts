@@ -7,7 +7,7 @@ import { createDockerRuntimeLifecycle } from "./docker-runtime-lifecycle.ts";
 import { DOCKER_DISPATCH_REQUEST, DOCKER_SEND_REFUSAL } from "./docker-send-request-schema.ts";
 import type { RuntimeGitHub } from "./runtime-github.ts";
 import type { RuntimeMcp } from "./runtime-mcp.ts";
-import { ToolError } from "./tools.ts";
+import { ToolError } from "./tool-error.ts";
 
 /** Normal send shares the preview's fenced, idempotent native admission boundary. */
 export function createDockerNormalSend(
