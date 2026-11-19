@@ -9,6 +9,7 @@ import {
   mapGoldenRow,
   mapSandboxRow,
   type OrgSummary,
+  type PlanLimit,
   recordLaunchStageSql,
   resolveOrg,
   type SandboxListMetadata,
@@ -33,11 +34,13 @@ import {
 import type { Provider } from "@armada/core/server";
 import { assertGoldenBackendBinding, assertSqlGoldenMutation } from "@armada/core/server";
 import { beginGoldenOperation, reconcileGoldenOperations } from "../../core/src/golden-store.ts";
+import { recordNativeAccountExhaustion } from "./account-exhaustion.ts";
 import { publishAccountSpend, unmeasuredUsage } from "./account-spend.ts";
 import type { Caller } from "./caller.ts";
 import { scopedOrg } from "./control-caller.ts";
 import { createResourceStore, type ResourceStore } from "./resource-store.ts";
 import { unsettledRuntimeCommands } from "./runtime-idle-evidence.ts";
+import { SANDBOX_MEMBER, SANDBOX_VISIBLE } from "./sandbox-visibility.ts";
 import { admittedTurnContexts, stampTurnPricing, withServerCost } from "./turn-pricing.ts";
 import { preserveBeforeStop, readWorkRecovery } from "./work-preservation.ts";
 
@@ -77,6 +80,12 @@ export interface ServerSandboxStore extends SandboxStore {
     | "conversationIds"
   > | null>;
   recordAccountRateLimit?(id: string, promptId: string, retryAt: number | null): Promise<void>;
+  recordNativeExhaustion?(
+    id: string,
+    promptId: string,
+    limit: PlanLimit & { resetsAt: string },
+    at: number,
+  ): Promise<void>;
   /** #2560: latest activation's recorded launch stages, for a visible sandbox; null before any. */
   launchTiming?(id: string): Promise<LaunchTiming | null>;
   assertExtensionAllowed?(id: string): Promise<void>;
@@ -146,11 +155,6 @@ const SANDBOX_COLUMNS = `${SANDBOX_USAGE} as usage, s.runtime_transport,s.boat_r
 /** `$1` is the caller's orgs and `$2` the caller. */
 const GOLDEN_VISIBLE = `g.org_id = any($1::uuid[]) and (g.visibility = 'org' or g.owner_id = $2::uuid)
   and exists(select 1 from public.members m where m.org_id=g.org_id and m.user_id=$2::uuid)`;
-const SANDBOX_MEMBER = `not exists(select 1 from public.orchestrators o where o.sandbox_id=s.id)
-  and s.org_id=any($1::uuid[]) and exists(select 1 from public.members m
-  where m.org_id=s.org_id and m.user_id=$2::uuid)`;
-const SANDBOX_VISIBLE = `${SANDBOX_MEMBER} and exists(select 1 from public.members m
-  where m.org_id=s.org_id and m.user_id=$2::uuid and (s.owner_id=$2::uuid or m.role='admin'))`;
 // Ordinary delegated children retain their relation, but permanent parent deletion
 // fences their authority before owner/admin cleanup. Legacy orchestrators keep
 // their dedicated lifecycle. Share the policy between authorization and admission.
@@ -386,6 +390,9 @@ export function createSqlData(
           `update public.sandbox_turn_models set rate_limit_retry_at=$3::timestamptz where sandbox_id=$1::uuid and prompt_id=$2`,
           [id, promptId, retryAt === null ? null : new Date(retryAt).toISOString()],
         );
+      },
+      async recordNativeExhaustion(id, promptId, limit, at) {
+        await recordNativeAccountExhaustion(sql, scope, id, promptId, limit, at);
       },
       async readTurnModel(id, promptId) {
         if (!(await sandboxes.get(id))) throw new DataError("No such sandbox.");
