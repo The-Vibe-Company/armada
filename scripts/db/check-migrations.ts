@@ -67,8 +67,9 @@ function transactionOnlyCommand(tokens: string[], rollbackTo: boolean) {
   if (verb === "savepoint") return "SAVEPOINT";
   if (verb === "release") return "RELEASE SAVEPOINT";
   if (rollbackTo) return "ROLLBACK TO SAVEPOINT";
-  if (verb === "declare" && !tokens.slice(2, tokens.indexOf("for", 2)).includes("hold")) {
-    return "DECLARE CURSOR";
+  if (verb === "declare") {
+    const queryStart = tokens.indexOf("for", 2);
+    if (tokens[queryStart - 2] !== "with" || tokens[queryStart - 1] !== "hold") return "DECLARE CURSOR";
   }
   if (verb === "prepare" && keyword === "transaction") return "PREPARE TRANSACTION";
   return undefined;

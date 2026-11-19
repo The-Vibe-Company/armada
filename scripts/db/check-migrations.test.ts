@@ -105,8 +105,12 @@ test("tracks real transaction boundaries and ignores SQL inside comments and bod
       rollback and no chain;
       lock jobs;
       declare migration cursor with hold for select 1;
+      declare migration cursor without hold for select 1;
     `),
-  ).toEqual(["Line 11: LOCK requires an explicit BEGIN transaction."]);
+  ).toEqual([
+    "Line 11: LOCK requires an explicit BEGIN transaction.",
+    "Line 13: DECLARE CURSOR requires an explicit BEGIN transaction.",
+  ]);
 });
 
 test("finds top-level drops and renames, including quoted names and multi-object statements", () => {
