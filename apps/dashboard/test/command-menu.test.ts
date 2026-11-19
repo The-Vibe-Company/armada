@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { COMMANDS, matchCommands, modifierKey } from "../src/lib/command-menu.ts";
+import { COMMANDS, commandsForOrganization, matchCommands, modifierKey } from "../src/lib/command-menu.ts";
 import { NAV_GROUPS } from "../src/lib/navigation";
 
 const labels = (query: string) => matchCommands(query).map((command) => command.label);
@@ -44,4 +44,9 @@ test("every visible destination is searchable by its navigation label, with hist
   expect(matchCommands("providers").some((command) => command.href === "/providers/cloud")).toBe(true);
   expect(matchCommands("Cloud providers").some((command) => command.href === "/providers/cloud")).toBe(true);
   expect(matchCommands("Settings").some((command) => command.href === "/settings")).toBe(true);
+});
+
+test("webhook search offers inbound triggers only to organization admins", () => {
+  expect(matchCommands("webhook", commandsForOrganization(true)).map((command) => command.href)).toEqual(["/triggers"]);
+  expect(matchCommands("webhook", commandsForOrganization(false))).toEqual([]);
 });
