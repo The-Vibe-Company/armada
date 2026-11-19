@@ -104,6 +104,34 @@ function referenceRead(name: string, input: Row): boolean {
 }
 type Call = { id: string; name: string; input: Row; result: Row; error: boolean; denied: boolean };
 
+const childTools = ["launch", "message", "read", "stop"];
+const knownExtraTools = [
+  "exec_command",
+  "commandExecution",
+  "apply_patch",
+  "web_search",
+  "webSearch",
+  "list_children",
+  "extend",
+  "finish",
+  "delete",
+];
+
+function receiptDiagnostic(call: Call | undefined, key: string) {
+  const state = call?.result.state;
+  return {
+    keyMatches: call?.input.idempotencyKey === key,
+    receiptIdValid: uuid(call?.result.id),
+    receiptSandboxIdValid: uuid(call?.result.sandboxId),
+    receiptState:
+      typeof state === "string" && ["pending", "uncertain", "failed", "succeeded"].includes(state)
+        ? state
+        : "unrecognized",
+    toolError: call?.error ?? null,
+    authorityDenied: call?.denied ?? null,
+  };
+}
+
 export function createScopedProbe(item: ScopedProbeCase, enabled: boolean, io: ScopedProbeIo) {
   const launchKey = `smoke-scoped-${crypto.randomUUID()}`;
   const messageKey = `smoke-scoped-${crypto.randomUUID()}`;
@@ -425,8 +453,19 @@ export function createScopedProbe(item: ScopedProbeCase, enabled: boolean, io: S
             !launch ||
             !successful(launch) ||
             !uuid(launch.result.sandboxId)
-          )
+          ) {
+            io.out(
+              JSON.stringify({
+                step: "scoped_launch_diagnostic",
+                provider: item.provider,
+                launchCount: launches.length,
+                inputFieldCount: launch ? Object.keys(launch.input).length : 0,
+                selectionMatches: !!launch && selected(launch.input),
+                ...receiptDiagnostic(launch, launchKey),
+              }),
+            );
             fail("scoped_launch_unproven");
+          }
           const childId = launch.result.sandboxId;
           if (before?.has(childId) || childId === id) fail("scoped_child_identity");
           return { launch, childId };
@@ -455,18 +494,10 @@ export function createScopedProbe(item: ScopedProbeCase, enabled: boolean, io: S
                 messageCount: messages.length,
                 readCount: reads.length,
                 stopCount: stops.length,
-                keyMatches: call?.input.idempotencyKey === messageKey,
+                ...receiptDiagnostic(call, messageKey),
                 textMatches: call?.input.text === childPrompt,
                 targetMatches: call?.input.sandboxId === childId,
                 receiptTargetMatches: call?.result.sandboxId === childId,
-                receiptIdValid: uuid(call?.result.id),
-                receiptState:
-                  typeof call?.result.state === "string" &&
-                  ["pending", "uncertain", "failed", "succeeded"].includes(call.result.state)
-                    ? call.result.state
-                    : "unrecognized",
-                toolError: call?.error ?? null,
-                authorityDenied: call?.denied ?? null,
               }),
             );
             fail("scoped_message_unproven");
@@ -499,6 +530,7 @@ export function createScopedProbe(item: ScopedProbeCase, enabled: boolean, io: S
         });
         const stop = await io.step("scoped_child_stop", async () => {
           const call = stops[0];
+          const extraTools = tools.filter((tool) => !childTools.includes(tool.name));
           if (
             stops.length !== 1 ||
             !call ||
@@ -506,9 +538,23 @@ export function createScopedProbe(item: ScopedProbeCase, enabled: boolean, io: S
             call.input.sandboxId !== childId ||
             call.result.sandboxId !== childId ||
             !successful(call) ||
-            tools.some((tool) => !["launch", "message", "read", "stop"].includes(tool.name))
-          )
+            extraTools.length > 0
+          ) {
+            io.out(
+              JSON.stringify({
+                step: "scoped_stop_diagnostic",
+                provider: item.provider,
+                stopCount: stops.length,
+                readCount: reads.length,
+                ...receiptDiagnostic(call, stopKey),
+                targetMatches: call?.input.sandboxId === childId,
+                receiptTargetMatches: call?.result.sandboxId === childId,
+                extraToolNames: knownExtraTools.filter((name) => extraTools.some((tool) => tool.name === name)),
+                unknownExtraToolCount: extraTools.filter((tool) => !knownExtraTools.includes(tool.name)).length,
+              }),
+            );
             fail("scoped_stop_unproven");
+          }
           return call;
         });
         await io.step("scoped_child_order", async () => {
