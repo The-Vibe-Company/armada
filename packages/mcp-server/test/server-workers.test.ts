@@ -44,11 +44,9 @@ async function rows() {
 test("server lifecycle drains multiple rows while independent work is pending; stop drains all lanes", async () => {
   const { db, sql, ids } = await rows();
   const build = deferred<boolean>();
-  const retirement = deferred<boolean>();
   const exportJob = deferred<boolean>();
   const exportDrained = deferred<void>();
   let exportSignal: AbortSignal | undefined;
-  let retirementSignal: AbortSignal | undefined;
   const progress = deferred<void>();
   let buildRunning = false;
   let reconciled = 0;
@@ -63,7 +61,7 @@ test("server lifecycle drains multiple rows while independent work is pending; s
       })) as typeof fetch,
   });
   const lifecycle = createSandboxLifecycle(sql, async () => provider);
-  const workers = startServerWorkers(
+  const workers = startServerWorkers([
     {
       drain: () => lifecycle.drain(),
       reconcileOne: async (signal) => {
@@ -72,36 +70,26 @@ test("server lifecycle drains multiple rows while independent work is pending; s
         return result;
       },
     },
-    () => {},
+  ], () => {}, [
     {
-      runOne: async (signal) => {
-        retirementSignal = signal;
-        return retirement.promise;
+      async reconcileOne() {
+        buildRunning = true;
+        return build.promise;
+      },
+      async drain() {},
+    },
+    {
+      reconcileOne: async (signal) => {
+        exportSignal = signal;
+        return exportJob.promise;
+      },
+      async drain() {
+        exportDrained.resolve();
       },
     },
-    [],
-    [
-      {
-        async reconcileOne() {
-          buildRunning = true;
-          return build.promise;
-        },
-        async drain() {},
-      },
-      {
-        reconcileOne: async (signal) => {
-          exportSignal = signal;
-          return exportJob.promise;
-        },
-        async drain() {
-          exportDrained.resolve();
-        },
-      },
-    ],
-  );
+  ]);
   try {
     await progress.promise;
-    expect(retirementSignal).toBeDefined();
     expect(exportSignal).toBeDefined();
     expect(buildRunning).toBe(true);
     const records = await db.query<{ status: string }>("select status from sandboxes where id=any($1::uuid[])", [ids]);
@@ -113,11 +101,7 @@ test("server lifecycle drains multiple rows while independent work is pending; s
     });
     await Promise.resolve();
     expect(done).toBe(false);
-    expect(retirementSignal?.aborted).toBe(true);
     expect(exportSignal?.aborted).toBe(true);
-    expect(done).toBe(false);
-    retirement.resolve(false);
-    await workers.retirementWorker.done;
     expect(done).toBe(false);
     exportJob.resolve(false);
     await exportDrained.promise;
@@ -131,7 +115,6 @@ test("server lifecycle drains multiple rows while independent work is pending; s
   } finally {
     workers.stop();
     build.resolve(false);
-    retirement.resolve(false);
     exportJob.resolve(false);
     await workers.done;
   }
@@ -199,29 +182,30 @@ test("a ready ordinary backlog cannot starve orchestrator work and shutdown drai
   let calls = 0,
     drains = 0;
   const workers = startServerWorkers(
-    {
-      reconcileOne: async () => {
-        if (++calls === 1) return true;
-        ordinarySecond.resolve("ordinary");
-        return held.promise;
+    [
+      {
+        reconcileOne: async () => {
+          if (++calls === 1) return true;
+          ordinarySecond.resolve("ordinary");
+          return held.promise;
+        },
+        drain: async () => {
+          drains++;
+          await ordinaryDrain.promise;
+        },
       },
-      drain: async () => {
-        drains++;
-        await ordinaryDrain.promise;
+      {
+        reconcileOne: async () => {
+          orchEntered.resolve("orchestrator");
+          return true;
+        },
+        drain: async () => {
+          drains++;
+          await orchDrain.promise;
+        },
       },
-    },
+    ],
     () => {},
-    undefined,
-    {
-      reconcileOne: async () => {
-        orchEntered.resolve("orchestrator");
-        return true;
-      },
-      drain: async () => {
-        drains++;
-        await orchDrain.promise;
-      },
-    },
   );
   try {
     expect(await Promise.race([ordinarySecond.promise, orchEntered.promise])).toBe("orchestrator");
@@ -266,10 +250,8 @@ test("managed reconciliation shares the existing lane fairly and shutdown drains
     drain,
   });
   const workers = startServerWorkers(
-    lane("ordinary", async () => {}),
+    [lane("ordinary", async () => {}), lane("parent", async () => {}), lane("child-receipt", () => retained.promise)],
     () => {},
-    undefined,
-    [lane("parent", async () => {}), lane("child-receipt", () => retained.promise)],
   );
   stop = () => workers.stop();
   try {

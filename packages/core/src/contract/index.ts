@@ -6,10 +6,12 @@ import { githubCallbackOperations, publicAuthOperations } from "./public-auth.ts
 import { githubOperations, goldenOperations, launchTemplateOperation } from "./resources.ts";
 import { sandboxOperations } from "./sandbox.ts";
 import { sandboxCheckOperations } from "./sandbox-checks.ts";
+import { streamSandboxEvents } from "./sandbox-events.ts";
 import { sandboxOutputOperations } from "./sandbox-outputs.ts";
 import { launchOptionsOperation, readLogsOperation } from "./sandbox-reads.ts";
 import { sandboxRestOperations } from "./sandbox-rest.ts";
 import { sandboxViewerOperations } from "./sandbox-viewer.ts";
+import { scopedRestOperations } from "./scoped.ts";
 
 export type { CreatedInboundTrigger } from "./inbound-trigger.ts";
 export {
@@ -35,12 +37,20 @@ export function controlRouteKey<Path extends string>(route: { readonly path: `/a
 }
 
 export { sandboxCheckOperations } from "./sandbox-checks.ts";
+export { streamSandboxEvents } from "./sandbox-events.ts";
 export { MCP_OUTPUT_MAX_BYTES, sandboxOutputOperations } from "./sandbox-outputs.ts";
 export { launchOptionsOperation, MAX_LOG_PAGES, readLogsOperation } from "./sandbox-reads.ts";
 export { sandboxExtensionLifetime, sandboxRestOperations } from "./sandbox-rest.ts";
 export { sandboxViewerOperations, VIEWER_ACCESS_DENIED } from "./sandbox-viewer.ts";
 
-export { isScopedMethod, scopedOperations } from "./scoped.ts";
+export {
+  isScopedMethod,
+  ORCHESTRATOR_SCOPED_PATH,
+  SCOPED_REST_BODY_MAX_BYTES,
+  type ScopedErrorCode,
+  scopedOperations,
+  scopedRestOperations,
+} from "./scoped.ts";
 
 export interface Operation<Input extends z.ZodType, Output extends z.ZodType | undefined = undefined> {
   readonly name: string;
@@ -58,6 +68,7 @@ export interface Operation<Input extends z.ZodType, Output extends z.ZodType | u
   readonly output: Output;
   readonly directServer?: true;
   readonly anonymous?: true;
+  readonly scopedAuth?: readonly ("epochGrant" | "finishGrant")[];
   readonly successHeaders?: Readonly<Record<string, z.ZodType>>;
   readonly outputMediaType?: string;
   readonly errorOutput?: z.ZodType;
@@ -120,5 +131,12 @@ export const operations = {
   readViewerLogs: sandboxViewerOperations.logs,
   readViewerStatus: sandboxViewerOperations.status,
   sendViewerPrompt: sandboxViewerOperations.send,
+  streamSandboxEvents,
   streamViewerEvents: sandboxViewerOperations.events,
+  scopedFinish: scopedRestOperations.finish,
+  scopedLaunch: scopedRestOperations.launch,
+  scopedRead: scopedRestOperations.read,
+  scopedMessage: scopedRestOperations.message,
+  scopedStop: scopedRestOperations.stop,
+  scopedExtend: scopedRestOperations.extend,
 } as const;

@@ -12,10 +12,10 @@ import {
 import type { ModalProvider } from "@armada/provider-modal";
 import { releaseAccountCapacity } from "./account-capacity.ts";
 import { mergedWorkProof } from "./merged-work.ts";
-
 import { nativeIdleDue, nativeQuiescent } from "./native-idle.ts";
 import { SANDBOX_VISIBLE } from "./sandbox-visibility.ts";
 import { INTERRUPTED_LAUNCH_REASON } from "./turns.ts";
+import { deferTransactionWake, eventFeedWakeKey, runtimeWakes } from "./wake-bus.ts";
 import { preserveBeforeStop, recordStopDispatch } from "./work-preservation.ts";
 
 export const UNENROLLED_RESUME_STOP = "runtime_resume_unenrolled";
@@ -86,7 +86,107 @@ export async function transitionSandbox(tx: Sql, input: SandboxTransition) {
   if (!result) throw new Error("Sandbox transition did not return a result.");
   if (!result.applied) return { kind: "conflict" } satisfies SandboxTransitionResult;
   if (result.generation === null) throw new Error("Applied sandbox transition did not return a generation.");
+  const wakeKey = eventFeedWakeKey(input.sandboxId);
+  if (!deferTransactionWake(tx, wakeKey)) runtimeWakes.notify(wakeKey);
   return { kind: "applied", generation: Number(result.generation) } satisfies SandboxTransitionResult;
+}
+
+export async function publishDockerRuntimeReady(tx: Sql, sandboxId: string, source: "health" | "prepared_launch") {
+  const {
+    rows: [starting],
+  } = await tx.query<{ generation: string }>(
+    `select s.lifecycle_generation::text as generation from public.sandboxes s
+     where s.id=$1 and s.provider='docker' and s.status='starting'
+     and ($2::boolean or not exists(
+       select 1 from public.docker_launch_requests d where d.sandbox_id=s.id and d.result_enc is null
+     ))`,
+    [sandboxId, source === "prepared_launch"],
+  );
+  if (!starting) return true;
+  const result = await transitionSandbox(tx, {
+    sandboxId,
+    expectedGeneration: starting.generation,
+    fromStates: ["starting"],
+    toState: "ready",
+    actor: "runtime_enrolment",
+    code: "runtime_enrolled",
+    effects: [],
+  });
+  return result.kind === "applied";
+}
+
+export async function finishEnrolledRuntimeReadiness(
+  tx: Sql,
+  scope: [string[], string],
+  sandboxId: string,
+  generation: number,
+  activityToken: string,
+) {
+  const {
+    rows: [sandbox],
+  } = await tx.query<{ enrolled_path: boolean; owned: boolean }>(
+    `select ((s.provider='boat' and s.boat_runtime) or
+             (s.provider='modal' and s.runtime_transport is not distinct from 'dialout')) as enrolled_path,
+      s.owner_id=$2 as owned
+     from public.sandboxes s where s.id=$3::uuid and ${SANDBOX_VISIBLE} for update of s`,
+    [...scope, sandboxId],
+  );
+  if (sandbox && !sandbox.enrolled_path) return "other_path";
+  if (!sandbox?.owned) return "conflict";
+  const live = await tx.query(
+    `select 1 from public.runtime_enrolments where sandbox_id=$1 and lifecycle_generation=$2
+      and runtime_hash is not null for update`,
+    [sandboxId, generation],
+  );
+  if (!live.rows.length) return "conflict";
+  const eligible = await tx.query(
+    `select s.id from public.sandboxes s where s.id=$3 and ${SANDBOX_VISIBLE}
+      and s.activity_lease_id=$4 and s.activity_until>clock_timestamp() and s.expires_at>clock_timestamp()
+      and s.stopped_at is null and s.stop_requested_at is null and s.deleted_at is null
+      and not s.application_secret_tainted
+      and (s.reconcile_lease_until is null or s.reconcile_lease_until<=clock_timestamp())
+      and s.task_prompt_id is null and cardinality(s.conversation_ids)=0`,
+    [...scope, sandboxId, activityToken],
+  );
+  if (!eligible.rows.length) return "conflict";
+  const result = await transitionSandbox(tx, {
+    sandboxId,
+    expectedGeneration: generation,
+    fromStates: ["starting"],
+    toState: "ready",
+    actor: "runtime_enrolment",
+    code: "runtime_enrolled",
+    effects: [],
+  });
+  if (result.kind === "conflict") return "conflict";
+  await tx.query("update public.sandboxes set activity_lease_id=null,activity_until=null where id=$1", [sandboxId]);
+  return "applied";
+}
+
+export async function recordDockerPromptAccepted(
+  tx: Sql,
+  sandboxId: string,
+  generation: string,
+  receipt: { promptId: string; conversationId: string },
+) {
+  const { rows } = await tx.query(
+    `select 1 from public.sandboxes s where s.id=$1 and s.provider='docker' and s.status='ready'
+     and (cardinality(s.conversation_ids)=0 or s.conversation_ids=array[$3]::text[])
+     and not exists(select 1 from public.runtime_idle_turns t
+       where t.sandbox_id=s.id and t.prompt_id=$2 and t.settled)`,
+    [sandboxId, receipt.promptId, receipt.conversationId],
+  );
+  if (!rows.length) return;
+  const result = await transitionSandbox(tx, {
+    sandboxId,
+    expectedGeneration: generation,
+    fromStates: ["ready"],
+    toState: "running",
+    actor: "docker_host",
+    code: "docker_prompt_accepted",
+    effects: [],
+  });
+  if (result.kind === "conflict") throw Error("Docker prompt acceptance lost the lifecycle generation.");
 }
 
 export async function settleRuntimeTurn(tx: Sql, sandboxId: string, generation: number | string, key?: string) {

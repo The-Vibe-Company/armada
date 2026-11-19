@@ -45,6 +45,9 @@ before admitting the turn. A transport timeout does not trigger a write retry.
 
 ## Organization resource commands
 
+The CLI saves non-secret preferences, including the selected organization,
+by Armada server origin in files separate from the saved session.
+
 Invitation management resolves organization names through the authenticated
 organization list. Pass acceptance tokens through stdin or `--file`. The CLI
 omits rejected arguments from diagnostics and prints only approved invitation
@@ -124,6 +127,9 @@ credential to the Armada API and prints a fixed confirmation after the write.
 
 ## Sandbox command output
 
+CLI diagnostics use “snapshot” terminology. API identifiers and JSON error
+codes keep their original spelling.
+
 For sandbox failures, HTTP 401 goes through shared login recovery. Other
 failures use recognised codes or complete, fixed binding and policy messages.
 Arbitrary provider and guest text stays out of diagnostics. The terminal list
@@ -155,3 +161,32 @@ is opened without following symlinks and in nonblocking mode, and the CLI
 checks that the opened object is a regular file before truncating it. This
 protects against a named pipe or other special file replacing the receipt
 between the initial check and open.
+
+## npm launcher and release checks
+
+The npm and Bun installers select the compiled Armada binary through optional
+dependencies constrained by operating system and CPU. The npm launcher runs
+under Node or Bun and dispatches to that binary without a postinstall script.
+The compiled-binary release check uses a local fixture API to verify that
+account selection and launch defaults survive packaging.
+
+## CLI test boundaries
+
+Launch argument validation runs before network I/O. The launch API tests
+cover request translation and preserve omitted, explicit, and empty values
+for server-owned defaults. Credential and provider resolution are covered by
+core and server launch tests. The CLI's golden-create request sends repository
+and init configuration to a durable server-side build job, whose status the
+CLI polls. Golden-list visibility is covered by the API and store tests.
+
+CLI transport tests cover argv conversion, authenticated routing, and error
+redaction. Server tests own authorization and lifetime policy. Template
+replay uses the canonical template ID even if its name disappears after
+admission. The scoped parity tests exercise the HTTP, auth, SQL, and registry
+paths together for filtering, pagination, private-fork visibility, and
+bindings. They also check that revoking membership invalidates org selection
+before the next scoped read.
+
+Native model login has separate tests for the Codex 0.166 JSON-RPC messages
+and for the child-process JSONL and credential-file boundary. The synthetic
+app-server peer runs locally without contacting a provider.

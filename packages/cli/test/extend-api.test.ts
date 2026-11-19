@@ -2,8 +2,6 @@ import { expect, test } from "bun:test";
 import { run } from "../src/run.ts";
 import { memorySessionStore } from "../src/session.ts";
 
-// Owns the CLI transport/duration contract, not the server's authorization or lifetime policy.
-// An incorrect route/unit conversion or accepting malformed input must fail before any real network I/O.
 test("extend posts the parsed lifetime and preserves JSON output, rejecting invalid durations locally", async () => {
   const id = "11111111-1111-4111-8111-111111111111";
   const org = "22222222-2222-4222-8222-222222222222";
@@ -47,7 +45,6 @@ test("extend posts the parsed lifetime and preserves JSON output, rejecting inva
   expect(calls).toHaveLength(1);
 });
 
-// Closed categories are safe to display; arbitrary upstream diagnostics remain redacted.
 test("extend preserves closed refusal codes without exposing upstream text", async () => {
   for (const [code, status] of [
     ["extension_not_found", 404],

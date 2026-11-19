@@ -986,7 +986,7 @@ describe("control API", () => {
       const retiredLaunchPaths = ["sized", "access", "runtime", "modal-runtime"].map(
         (variant) => `/api/v1/sandbox/${["launch", variant, "v1"].join("-")}`,
       );
-      for (const path of ["/api/v1/nope", ...retiredLaunchPaths]) {
+      for (const path of ["/api/v1/nope", "/api/v1/launch/resolve", ...retiredLaunchPaths]) {
         const unknown = await call(path, { method: "POST", headers, body: "{}" });
         expect(unknown?.status).toBe(404);
         expect(await unknown?.json()).toEqual({ error: { code: "unknown_route", message: "Unknown route." } });
@@ -3029,9 +3029,11 @@ test("versioned runtime launch is explicit/default-off and never selects native 
         },
       },
       policy: {
-        async start() {
+        async start({ sandbox }) {
+          const ticket = await authority.issue({ ownerId: STAN, sandboxId: sandbox.id, configuration: {} });
+          const enrolled = await authority.enrol(ticket.enrolmentToken);
           return {
-            epoch: "1",
+            epoch: enrolled.epoch,
             async prepareWorkspace(g) {
               expect(g.config.repos).toHaveLength(1);
               workspacePrepared = true;

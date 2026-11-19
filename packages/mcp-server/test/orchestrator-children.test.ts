@@ -10,6 +10,7 @@ import {
   VaultError,
 } from "@armada/core/server";
 import { createSqlData } from "../src/data.ts";
+import { createEventFeed } from "../src/event-feed.ts";
 import { launchCredentials } from "../src/launch-credentials.ts";
 import { createNativeWebhookPrompts } from "../src/native-webhook-prompts.ts";
 import { observeRequest } from "../src/request-observability.ts";
@@ -721,7 +722,7 @@ for (const proof of [
 
 test("production scoped MCP/API gateway uses epoch child authority and never owner dispatch", async () => {
   const { close, sql, p, id, parent, authority, token, selection } = await fixture("ready");
-  const { ORCHESTRATOR_SCOPED_PATH } = await import("../src/sandbox-access-scoped-gateway.ts");
+  const { ORCHESTRATOR_SCOPED_PATH } = await import("@armada/core/contract");
   const { Client } = await import("@modelcontextprotocol/sdk/client/index.js");
   const { StreamableHTTPClientTransport } = await import("@modelcontextprotocol/sdk/client/streamableHttp.js");
   const { createSandboxScopedGateway } = await import("../src/sandbox-access-scoped-gateway.ts");
@@ -766,6 +767,9 @@ test("production scoped MCP/API gateway uses epoch child authority and never own
         ).rows[0];
         if (!child) throw Error("missing owned child");
         await boat.provider.stop({ sandboxId: child.provider_sandbox_id });
+      },
+      async extend(_op, ttlSeconds) {
+        expect(ttlSeconds).toBe(60);
       },
       async reconcile(op) {
         return { operationId: op.id, sandboxId: op.sandboxId, state: "unknown" };
@@ -847,9 +851,40 @@ test("production scoped MCP/API gateway uses epoch child authority and never own
           body: JSON.stringify(payload),
         }),
       )) ?? new Response(null, { status: 404 });
-    expect((await api("launch", { selection: { ...selection, size: "small" } }, token, "mcp-child")).status).toBe(200);
+    const { publishedResponse } = await import("./published-response.ts");
+    const launchResponse = await api("launch", { selection: { ...selection, size: "small" } }, token, "mcp-child");
+    expect(launchResponse.status).toBe(200);
+    expect(publishedResponse("orchestrator-tools/launch").safeParse(await launchResponse.json()).success).toBe(true);
+    const services = createSandboxAccessServices({
+      sql,
+      providers: { resolve: async () => boat.provider },
+      credentials: launchCredentials(createSqlVaultStore(sql), ENCRYPTION_KEY),
+      connections: undefined,
+      encryptionKey: ENCRYPTION_KEY,
+      scopedMcpUrl: "https://armada.example/mcp",
+    });
+    const readResponse = await services.scopedToolsRoute(
+      new Request(`https://armada.example.com${ORCHESTRATOR_SCOPED_PATH}/read`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}` },
+        body: JSON.stringify({ sandboxId: receipt.sandboxId }),
+      }),
+    );
+    if (!readResponse) throw new Error("Scoped read did not dispatch.");
+    expect(readResponse.status).toBe(200);
+    expect(publishedResponse("orchestrator-tools/read").safeParse(await readResponse.json()).success).toBe(true);
     expect(boat.forks).toHaveLength(1);
-    expect((await api("stop", { sandboxId: receipt.sandboxId }, token, "api-child-stop")).status).toBe(200);
+    for (const [method, body, key] of [
+      ["message", { text: "continue the same ticket" }, "mcp-child-message"],
+      ["extend", { ttlSeconds: 60 }, "api-child-extend"],
+      ["stop", {}, "api-child-stop"],
+    ] as const) {
+      const response = await api(method, { ...body, sandboxId: receipt.sandboxId }, token, key);
+      expect(response.status).toBe(200);
+      const parsed = publishedResponse(`orchestrator-tools/${method}`).safeParse(await response.json());
+      expect(parsed).toMatchObject({ success: true, data: { result: { state: "succeeded" } } });
+    }
+    expect(boat.prompts).toHaveLength(1);
     expect((await api("stop", { sandboxId: receipt.sandboxId }, token, "api-child-stop")).status).toBe(200);
     expect(boat.stops).toHaveLength(1);
     for (const method of ["exec", "credentials", "admin", "owner", "token_create"])
@@ -858,13 +893,14 @@ test("production scoped MCP/API gateway uses epoch child authority and never own
     const denied = await api("read", { sandboxId: unrelated.id });
     expect(denied.status).toBe(403);
     expect((await denied.text()).includes(token)).toBe(false);
+    const oversizedSerializedPrompt = "\\".repeat(70_000);
     expect(
       (
         await route(
           new Request(`https://armada.example.com${ORCHESTRATOR_SCOPED_PATH}/launch`, {
             method: "POST",
-            headers: { authorization: `Bearer ${token}` },
-            body: "x".repeat(129 * 1024),
+            headers: { authorization: `Bearer ${token}`, "idempotency-key": "oversized-launch" },
+            body: JSON.stringify({ selection: { ...selection, prompt: oversizedSerializedPrompt } }),
           }),
         )
       )?.status,
@@ -1417,5 +1453,38 @@ test("scoped child message settles through the native receipt worker into Langfu
     ).toEqual([{ terminal_status: "finished" }]);
   } finally {
     await close();
+  }
+});
+
+test("the event feed grants a scoped bearer access only to its authorized child", async () => {
+  const f = await fixture();
+  try {
+    const child = await createSqlSandboxStore(f.sql).insert({
+      id: crypto.randomUUID(),
+      provider: "boat",
+      providerSandboxId: "event-feed-child",
+      goldenId: f.golden.id,
+      orgId: f.p.org,
+      ownerId: f.p.owner,
+      harness: "codex",
+      model: "m",
+      reasoningEffort: "medium",
+      status: "ready",
+      visibility: "private",
+    });
+    await f.db.query("insert into orchestrator_children values($1,$2,$3,$4)", [child.id, f.id, f.p.org, f.p.owner]);
+    await f.db.query("insert into event_log(org_id,sandbox_id,kind,ref) values($1,$2,'transition',1)", [
+      f.p.org,
+      child.id,
+    ]);
+    const feed = createEventFeed(f.sql, f.authority);
+    expect(await feed.child(f.token, child.id)("0")).toEqual([
+      expect.objectContaining({ sandboxId: child.id, kind: "transition", sequence: null }),
+    ]);
+    expect(await feed.child(f.token, f.parent.id)("0")).toBeNull();
+    await f.db.query("update orchestrator_delegations set revoked_at=now() where orchestrator_id=$1", [f.id]);
+    expect(await feed.child(f.token, child.id)("0")).toBeNull();
+  } finally {
+    await f.close();
   }
 });

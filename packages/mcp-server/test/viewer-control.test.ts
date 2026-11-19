@@ -271,3 +271,18 @@ test("viewer POSTs refuse oversized bodies at their published limits before disp
     expect(await refused!.json()).toEqual({ error: "viewer_access_denied" });
   }
 });
+
+test("the event feed binds a viewer to its grant's sandbox and rechecks the issuer", async () => {
+  const f = await fixture();
+  f.options.eventFeed = {
+    owner: () => async () => [],
+    child: () => async () => null,
+  };
+  const path = `events?sandbox=${f.id}`;
+  const allowed = await f.api(path, f.grant.token);
+  expect(allowed?.headers.get("content-type")).toBe("text/event-stream");
+  await allowed?.body?.cancel();
+  expect((await f.api(`events?sandbox=${crypto.randomUUID()}`, f.grant.token))?.status).toBe(403);
+  await f.revoke();
+  expect((await f.api(path, f.grant.token))?.status).toBe(403);
+});

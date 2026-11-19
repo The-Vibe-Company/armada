@@ -1,7 +1,6 @@
 import { expect, test } from "bun:test";
 import { nativeCodexLogin } from "../src/native-model-login.ts";
 
-// Tests the real child-process JSONL/file boundary, not an invented OAuth server.
 test("native local login returns private auth material but exposes only the approved device challenge", async () => {
   const shown: string[][] = [];
   const result = await nativeCodexLogin({

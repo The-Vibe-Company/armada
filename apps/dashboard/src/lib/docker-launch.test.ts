@@ -1,6 +1,5 @@
 import { expect, test } from "bun:test";
 import { DOCKER_DEFAULT_IMAGE } from "@armada/core";
-import { launchProviderOptions } from "../../../packages/mcp-server/src/launch-options.ts";
 import {
   DOCKER_CAPABILITIES,
   dockerHarnesses,
@@ -12,7 +11,7 @@ import {
   dockerUnavailable,
   launchedDockerSandbox,
   preferredHarness,
-} from "../src/lib/docker-launch.ts";
+} from "./docker-launch.ts";
 
 const ORG = "00000000-0000-4000-8000-000000000010";
 const HOST = "70bde9cd-36c9-40af-b15e-65b2f9d3c2a2";
@@ -51,7 +50,6 @@ test("the Docker launch option is read strictly from launch/options; anything un
   expect(dockerLaunchOption({ providers: [] })).toBeNull();
   expect(dockerLaunchOption(options({ capabilities: { launch: "yes" } }))).toBeNull();
   expect(dockerLaunchOption(options({ harnesses: "codex" }))).toBeNull();
-  // A newer server's unknown values are ignored; a capability it does not name is unsupported.
   const newer = dockerLaunchOption(options({ harnesses: ["codex", "future"], launchSources: ["image", "snapshot"] }));
   expect(newer?.harnesses).toEqual(["codex"]);
   expect(newer?.launchSources).toEqual(["image"]);
@@ -71,7 +69,6 @@ test("a host takes a launch only when the server launches an agent in the offici
     options({ capabilities: capabilities([]), unsupportedReasons: { launch: "Wired in the next increment." } }),
   );
   expect(dockerLaunchBlocker(off, true, { state: "online" })).toBe("Wired in the next increment.");
-  // Before the normal launch ships, placement is false too: the server's own reason is still what is said.
   expect(dockerLaunchBlocker(off, false, { state: "online" })).toBe("Wired in the next increment.");
   expect(
     dockerLaunchBlocker(dockerLaunchOption(options({ harnesses: ["claude"] })), true, { state: "online" }),
@@ -82,7 +79,6 @@ test("a host takes a launch only when the server launches an agent in the offici
   expect(dockerLaunchBlocker(ready, true, { state: "offline" })).toBe("The host must be online to launch on it.");
   expect(dockerLaunchBlocker(ready, true, { state: "revoked" })).toBe("This host is revoked.");
   expect(dockerLaunchBlocker(null, false, { state: "revoked" })).toBe("This host is revoked.");
-  // A draining host is a state refusal naming the uninstall, not an online host refused as unauthorized.
   expect(dockerLaunchBlocker(ready, true, { state: "draining" })).toContain("draining for uninstall");
 });
 
@@ -201,28 +197,29 @@ test("a Docker sandbox's page offers only what the server supports, and gives th
     "Resume",
     "Commands",
   ]);
-  // No readable option: nothing is offered, every control says why.
   const unknown = dockerSandboxControls(null);
   expect(unknown.reasons.stop).toContain("could not be read");
   expect(unknown.reasons.logs).toContain("could not be read");
 });
 
-test("the server's own launch options drive the Docker sandbox page and the launch, enabled or not", () => {
-  const off = dockerLaunchOption({ providers: launchProviderOptions({}) });
-  expect(off?.enabled).toBe(false);
-  expect(dockerSandboxControls(off).reasons.stop).toBe("Docker hosts are not enabled on this server.");
+test("Docker launch options distinguish disabled hosts from hosts that cannot launch yet", () => {
+  const disabledReason = "Docker hosts are not enabled on this server.";
+  const disabled = dockerLaunchOption(
+    options({ enabled: false, capabilities: {}, unsupportedReasons: { stop: disabledReason } }),
+  );
+  expect(disabled?.enabled).toBe(false);
+  expect(dockerSandboxControls(disabled).reasons.stop).toBe(disabledReason);
 
-  const controls = dockerLaunchOption({ providers: launchProviderOptions({ hosts: true, normalApi: true }) });
-  const page = dockerSandboxControls(controls);
-  expect(page.reasons.logs).toBeUndefined();
-  expect(page.reasons.stop).toBeUndefined();
-  expect(page.reasons.delete).toBeUndefined();
-  expect(page.reasons.followupPrompts).toBeString();
-  expect(dockerLaunchBlocker(controls, false, { state: "online" })).toBeString();
+  const launchReason = "Launch is not available on this server.";
+  const controlsOnly = dockerLaunchOption(
+    options({
+      capabilities: { logs: true, stop: true, delete: true },
+      unsupportedReasons: { launch: launchReason },
+    }),
+  );
+  expect(dockerLaunchBlocker(controlsOnly, false, { state: "online" })).toBe(launchReason);
 
-  const launch = dockerLaunchOption({
-    providers: launchProviderOptions({ hosts: true, normalApi: true, placement: true, normalLaunch: true }),
-  });
+  const launch = dockerLaunchOption(options({ capabilities: { launch: true } }));
   expect(dockerLaunchBlocker(launch, true, { state: "online" })).toBeNull();
 });
 

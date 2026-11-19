@@ -63,8 +63,6 @@ async function invoke(
   return { code, out, err, requests };
 }
 
-// Contract owner: CLI argv -> authenticated API body, including public-origin route admission.
-// A renamed route, dropped revision/key/override or leaked provider API would fail here.
 test("template commands use the API contracts for all six dashboard-proxied operations", async () => {
   const cases = [
     {
@@ -280,7 +278,6 @@ test("template failures use closed actionable diagnostics without echoing untrus
   }
 });
 
-// A name can disappear after admission, but the canonical ID must still reach durable replay.
 test("name-based launch prints recovery ID before submission and ID retries bypass mutable name lookup", async () => {
   const args = [
     "--request-key",

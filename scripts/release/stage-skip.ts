@@ -50,12 +50,14 @@ export function recordedStageSucceeded(
   const receiptAttempt = Math.max(...records.map((job) => job.run_attempt));
   return (
     Number.isSafeInteger(receiptAttempt) &&
-    !runJobs.some(
-      (job) =>
+    !runJobs.some((job) => {
+      const name = job.name.split(" / ").at(-1);
+      return (
         job.run_attempt > receiptAttempt &&
         job.conclusion !== "skipped" &&
-        (job.name.startsWith("Binary (") || job.name === "Build candidate sandbox image (linux/amd64)"),
-    )
+        (name?.startsWith("Binary (") || name === "Build candidate sandbox image (linux/amd64)")
+      );
+    })
   );
 }
 

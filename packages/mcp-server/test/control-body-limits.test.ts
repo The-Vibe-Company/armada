@@ -1,9 +1,11 @@
 import { expect, test } from "bun:test";
 import { createMemoryAuthStore } from "@armada/auth";
 import type { VaultStore } from "@armada/core";
+import { isScopedMethod, ORCHESTRATOR_SCOPED_PATH } from "@armada/core/contract";
 import type { Sql } from "@armada/core/server";
 import { type ControlOptions, handleControlRequest } from "../src/control.ts";
 import { createGitHubAccountApi } from "../src/github-account.ts";
+import { createSandboxAccessServices } from "../src/sandbox-access-services.ts";
 
 const userId = "11111111-1111-4111-8111-111111111111";
 const options: ControlOptions = {
@@ -113,6 +115,32 @@ test("every published route refuses a body over its published limit with its pub
       encryptionKey: Buffer.alloc(32).toString("base64"),
     }),
   };
+  const { scopedToolsRoute } = createSandboxAccessServices({
+    sql,
+    providers: {
+      resolve: async () => {
+        throw new Error("Unexpected provider lookup");
+      },
+    },
+    credentials: {
+      resolve: async () => {
+        throw new Error("Unexpected credential lookup");
+      },
+    },
+    connections: undefined,
+    encryptionKey: Buffer.alloc(32).toString("base64"),
+    scopedMcpUrl: "https://armada.test/api/v1/orchestrator-tools/mcp",
+  });
+  const scopedBodies = {
+    finish: {},
+    launch: {
+      selection: { goldenId: userId, harness: "codex", credentialId: userId, credentialVersion: 1, model: "test" },
+    },
+    read: { sandboxId: userId },
+    message: { sandboxId: userId, text: "test" },
+    stop: { sandboxId: userId },
+    extend: { sandboxId: userId, ttlSeconds: 60 },
+  };
   for (const [path, { post }] of Object.entries(published.paths)) {
     const requestBody = post?.requestBody;
     if (
@@ -123,18 +151,25 @@ test("every published route refuses a body over its published limit with its pub
       continue;
     const route = path.slice("/api/v1/".length);
     const limit = requestBody["x-max-body-bytes"];
-    const body =
-      route === "github/oauth/callback"
+    const scopedMethod = path.startsWith(`${ORCHESTRATOR_SCOPED_PATH}/`)
+      ? path.slice(ORCHESTRATOR_SCOPED_PATH.length + 1)
+      : "";
+    const scoped = isScopedMethod(scopedMethod);
+    const body = scoped
+      ? JSON.stringify(scopedBodies[scopedMethod]) + " ".repeat(limit)
+      : route === "github/oauth/callback"
         ? JSON.stringify({ state: `armada_cli_${"0".repeat(72)}`, code: "test" }) + " ".repeat(limit)
         : JSON.stringify({ pad: "x".repeat(limit) });
-    const response = await handleControlRequest(
-      new Request(`https://armada.test/api/v1/${route}`, {
-        method: "POST",
-        headers: { authorization: "Bearer e30.e30.sig", "content-type": "application/json" },
-        body,
-      }),
-      configuredOptions,
-    );
+    const request = new Request(`https://armada.test${path}`, {
+      method: "POST",
+      headers: {
+        authorization: scoped ? `Bearer armada_epoch_${"0".repeat(64)}` : "Bearer e30.e30.sig",
+        "content-type": "application/json",
+        ...(scoped && { "idempotency-key": "body-limit" }),
+      },
+      body,
+    });
+    const response = (await scopedToolsRoute(request)) ?? (await handleControlRequest(request, configuredOptions));
     expect({ route, status: response?.status }).toEqual({ route, status: requestBody["x-oversized-body-status"] });
   }
   expect(authorizationLookups).toBe(0);

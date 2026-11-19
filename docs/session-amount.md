@@ -43,10 +43,13 @@ refreshing the catalog. Tokens remain visible independently of pricing coverage.
 After normal server rollout (the #1205 admission migration must already be in
 place), launch **new** Modal sessions, one Claude and one Codex:
 
+Replace `MODAL_SNAPSHOT` with the snapshot name, and `SANDBOX_UUID`
+with the sandbox ID from the launch receipt.
+
 ```sh
-armada launch <modal-golden> --provider modal --agent claude "Reply OK"
-armada wait <id> --json
-armada status <id> --json | jq '{cost:.usage.cost, turns:.usage.turns}'
+armada launch MODAL_SNAPSHOT --provider modal --agent claude "Reply OK"
+armada wait SANDBOX_UUID --json
+armada status SANDBOX_UUID --json | jq '{cost:.usage.cost, turns:.usage.turns}'
 armada list --json
 ```
 

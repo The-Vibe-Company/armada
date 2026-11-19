@@ -105,6 +105,16 @@ async function complete(session: Awaited<ReturnType<Fixture["enrol"]>>, payload:
   });
   return next.command;
 }
+async function readinessJournal(sandboxId: string) {
+  return (
+    await database().query(
+      `select from_status,to_status,actor,code from public.sandbox_transitions
+       where sandbox_id=$1 and to_status='ready' order by id`,
+      [sandboxId],
+    )
+  ).rows;
+}
+
 async function ready(f: Fixture) {
   const session = await f.enrol(),
     requestId = randomUUID();
@@ -127,6 +137,7 @@ test("Docker readiness rejects an ACK read against an older lifecycle generation
   ).rows[0]!;
   await denied(service.ready(f.actor, f.sandbox.id, randomUUID(), true, row.older_generation));
   expect((await commands.next(session.runtimeToken, session.epoch)).command).toBeNull();
+  expect(await readinessJournal(f.sandbox.id)).toEqual([]);
 });
 
 test("ACK is not readiness: current epoch health proof alone publishes ready without revoking itself", async () => {
@@ -160,6 +171,10 @@ test("ACK is not readiness: current epoch health proof alone publishes ready wit
   await service.ready(f.actor, f.sandbox.id, healthId);
   await complete(session, { ready: true, generation: session.epoch });
   expect(await service.ready(f.actor, f.sandbox.id, healthId)).toEqual({ state: "ready", epoch: session.epoch });
+  await service.ready(f.actor, f.sandbox.id, healthId);
+  expect(await readinessJournal(f.sandbox.id)).toEqual([
+    { from_status: "starting", to_status: "ready", actor: "runtime_enrolment", code: "runtime_enrolled" },
+  ]);
   // The concrete authority still accepts the same live epoch after publication.
   expect(await authority.withSession(session.runtimeToken, session.epoch, async (_tx, scope) => scope.epoch)).toBe(
     session.epoch,
@@ -222,16 +237,6 @@ test("one durable conversation survives lost responses and admits only exact ret
   const f = await fixture(),
     session = await ready(f),
     input = { requestId: randomUUID(), text: "Report the current directory" };
-  await db.exec(
-    "alter table sandbox_transitions add constraint test_reject_enqueue check (code <> 'docker_prompt_enqueued') not valid",
-  );
-  try {
-    await denied(service.prompt(f.actor, f.sandbox.id, input));
-    expect((await commands.next(session.runtimeToken, session.epoch)).command).toBeNull();
-    expect((await reservations.get(f.actor, f.sandbox.id)).status).toBe("ready");
-  } finally {
-    await db.exec("alter table sandbox_transitions drop constraint test_reject_enqueue");
-  }
   let lost = true;
   const lostSql: Sql = {
     ...sql,
@@ -247,8 +252,24 @@ test("one durable conversation survives lost responses and admits only exact ret
   };
   await denied(createDockerRuntimeLifecycle(lostSql, key, { enabled: true }).prompt(f.actor, f.sandbox.id, input));
   expect(await service.prompt(f.actor, f.sandbox.id, input)).toEqual({ state: "pending" });
+  expect((await reservations.get(f.actor, f.sandbox.id)).status).toBe("ready");
   const receipt = { promptId: randomUUID(), conversationId: randomUUID(), status: "queued" as const };
+  await db.exec(
+    "alter table sandbox_transitions add constraint test_reject_acceptance check (code <> 'docker_prompt_accepted') not valid",
+  );
+  try {
+    await expect(complete(session, receipt)).rejects.toThrow();
+    expect(await service.prompt(f.actor, f.sandbox.id, input)).toEqual({ state: "pending" });
+    expect((await reservations.get(f.actor, f.sandbox.id)).status).toBe("ready");
+  } finally {
+    await db.exec("alter table sandbox_transitions drop constraint test_reject_acceptance");
+  }
   const command = await complete(session, { ...receipt, privateField: "never expose reply extras" });
+  expect((await reservations.get(f.actor, f.sandbox.id)).status).toBe("running");
+  expect(
+    (await db.query("select code from sandbox_transitions where sandbox_id=$1 and to_status='running'", [f.sandbox.id]))
+      .rows,
+  ).toEqual([{ code: "docker_prompt_accepted" }]);
   expect(command).toEqual({
     version: 1,
     requestId: `docker_prompt_${input.requestId}`,
@@ -269,7 +290,6 @@ test("one durable conversation survives lost responses and admits only exact ret
   await denied(service.prompt(f.actor, f.sandbox.id, { ...input, text: "Different text" }));
   await denied(service.prompt(f.actor, f.sandbox.id, { ...input, requestId: randomUUID() }));
   expect((await commands.next(session.runtimeToken, session.epoch)).command).toBeNull();
-  expect((await reservations.get(f.actor, f.sandbox.id)).status).toBe("running");
   const projection = await db.query<{
     task_prompt_id: string;
     conversation_ids: string[];
@@ -355,6 +375,48 @@ test("one durable conversation survives lost responses and admits only exact ret
   expect((await commands.next(session.runtimeToken, session.epoch)).command).toBeNull();
 });
 
+test("a Docker receipt arriving after its terminal event does not reopen the turn", async () => {
+  const f = await fixture();
+  const session = await ready(f);
+  const input = { requestId: randomUUID(), text: "Finish before returning the receipt" };
+  expect(await service.prompt(f.actor, f.sandbox.id, input)).toEqual({ state: "pending" });
+  const receipt = { promptId: randomUUID(), conversationId: randomUUID(), status: "queued" };
+  const response = await createRuntimeEvents(authority, key).route(
+    new Request("https://armada.example/api/runtime/events", {
+      method: "POST",
+      headers: { authorization: `Bearer ${session.runtimeToken}`, "x-armada-runtime-epoch": session.epoch },
+      body: JSON.stringify({
+        sandboxId: f.sandbox.id,
+        generation: session.epoch,
+        events: [
+          {
+            sequence: 1,
+            event: {
+              id: "final",
+              at: 1,
+              kind: "prompt",
+              promptId: receipt.promptId,
+              text: input.text,
+              status: "finished",
+            },
+          },
+        ],
+      }),
+    }),
+  );
+  expect(response?.status).toBe(200);
+  await complete(session, receipt);
+  expect(await service.prompt(f.actor, f.sandbox.id, input)).toMatchObject({ state: "admitted", receipt });
+  expect((await reservations.get(f.actor, f.sandbox.id)).status).toBe("ready");
+  expect(
+    (
+      await database().query("select id from sandbox_transitions where sandbox_id=$1 and to_status='running'", [
+        f.sandbox.id,
+      ])
+    ).rows,
+  ).toEqual([]);
+});
+
 test("a reported outcome clears with its turn at the next prompt and keeps the report history", async () => {
   const db = database();
   const f = await fixture(),
@@ -400,6 +462,7 @@ test("prompt receipts cannot replace the allocation conversation and invalid rep
   const receipt = { promptId: randomUUID(), conversationId: randomUUID(), status: "queued" };
   await complete(session, receipt);
   await service.prompt(f.actor, f.sandbox.id, input);
+  await db.query("update public.sandboxes set status='ready' where id=$1", [f.sandbox.id]);
   for (const bad of [
     { ...receipt, conversationId: randomUUID() },
     { ...receipt, conversationId: "not-a-uuid" },
@@ -410,6 +473,7 @@ test("prompt receipts cannot replace the allocation conversation and invalid rep
     await service.prompt(f.actor, f.sandbox.id, followup);
     await complete(session, bad);
     await denied(service.prompt(f.actor, f.sandbox.id, followup));
+    expect((await reservations.get(f.actor, f.sandbox.id)).status).toBe("ready");
   }
   expect(
     (

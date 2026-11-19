@@ -865,6 +865,15 @@ test("prompt-free, image-free launch normalizes UUIDs, uses the default image, h
   const replay = await post("sandbox/launch", { ...base, idempotencyKey, ttlSeconds: 3600 });
   publishedResponse("sandbox/launch").parse(replay);
   expect(replay).toEqual({ ...result, promptId: null, conversationId: null });
+  expect(
+    (
+      await database().query(
+        `select actor,code from public.sandbox_transitions
+         where sandbox_id=$1 and from_status='starting' and to_status='ready'`,
+        [f.body.requestId],
+      )
+    ).rows,
+  ).toEqual([{ actor: "runtime_enrolment", code: "runtime_enrolled" }]);
   expect(await counts(f)).toEqual({ sandboxes: 1, claims: 1, jobs: 2, commands: 3 });
 });
 
@@ -2589,9 +2598,7 @@ test.each([false, true])(
   async (fromSnapshot) => {
     const db = database();
     const f = fromSnapshot ? await snapshotFixture() : await fixture();
-    const snapshotId = fromSnapshot
-      ? await readyTemplateSnapshot(f as Awaited<ReturnType<typeof snapshotFixture>>)
-      : undefined;
+    const snapshotId = fromSnapshot ? await seedReadySnapshot(f) : undefined;
     const templates = createTemplateService(sql, key);
     const variable = await createApplicationVault(sql, undefined).command(f.caller, "variable", "set", {
       org: f.actor.orgId,
@@ -2826,32 +2833,36 @@ async function snapshotFixture(enabled = true, options: Parameters<typeof fixtur
     installationApp: null,
   });
   const adminCaller = { ...f.caller, userId: f.admin.userId, orgs: [{ orgId: f.actor.orgId, role: "admin" as const }] };
-  const config = {
-    repos: [{ url: "https://github.com/example/project.git", branch: "main", dir: "project" }],
-    init: ["printf built > /home/user/proof"],
-  };
-  return { ...f, snapshots, adminCaller, config };
+  return { ...f, snapshots, adminCaller, config: snapshotConfig };
 }
 
-async function readyTemplateSnapshot(f: Awaited<ReturnType<typeof snapshotFixture>>) {
-  const snapshotId = randomUUID();
-  await f.snapshots.command(f.caller, "create", {
-    org: f.actor.orgId,
-    hostId: f.hostId,
-    requestId: snapshotId,
-    name: "template-source",
-    visibility: "private",
-    config: f.config,
-  });
-  const build = await hosts.poll(f.hostToken, f.installationId);
-  if (build?.operation !== "buildSnapshot") throw Error("missing template snapshot build");
-  await hosts.complete(f.hostToken, f.installationId, {
-    requestId: snapshotId,
-    outcome: "completed",
-    imageId: `sha256:${"d".repeat(64)}`,
-    baselineVersion: 1,
-  });
-  return snapshotId;
+const snapshotConfig = {
+  repos: [{ url: "https://github.com/example/project.git", branch: "main", dir: "project" }],
+  init: ["printf built > /home/user/proof"],
+};
+
+async function seedReadySnapshot(f: Awaited<ReturnType<typeof fixture>>, config = snapshotConfig) {
+  const id = randomUUID();
+  await database().query(
+    `insert into public.docker_snapshots(
+       id,org_id,owner_id,host_id,installation_id,name,visibility,config,request_hash,actor_epoch,issuer_epoch,
+       generation,base_image,status,image_id,build_expires_at,built_on_version,baseline_version,required_baseline_version
+     ) values($1,$2,$3,$4,$5,'fixture-snapshot','private',$6,$7,1,1,$8,$9,'ready',$10,now()+interval '1 hour',$11,1,1)`,
+    [
+      id,
+      f.actor.orgId,
+      f.actor.userId,
+      f.hostId,
+      f.installationId,
+      JSON.stringify(config),
+      "b".repeat(64),
+      randomUUID(),
+      officialSandboxImage(),
+      `sha256:${"d".repeat(64)}`,
+      VERSION,
+    ],
+  );
+  return id;
 }
 
 test.each([
@@ -2864,11 +2875,12 @@ test.each([
   "removed_before_launch",
 ] as const)("Docker snapshot templates validate source scope/binding: %s", async (scenario) => {
   const db = database();
-  const f = await snapshotFixture();
-  const snapshotId = await readyTemplateSnapshot(f);
+  const f = await fixture({ daemonVersion: "2.55.0" });
+  const snapshotId = await seedReadySnapshot(f, { repos: [], init: [] });
   const templates = createTemplateService(sql, key);
   const definition = { provider: "docker", hostId: f.hostId, snapshotId, harness: "codex" };
   const request = { org: f.actor.orgId, scope: "personal", name: "snapshot-template", definition };
+  const adminCaller: Caller = { ...f.caller, userId: f.admin.userId, orgs: [{ orgId: f.actor.orgId, role: "admin" }] };
   if (scenario === "private_other")
     await db.query("update docker_snapshots set owner_id=$2 where id=$1", [snapshotId, f.otherId]);
   if (scenario === "org_private") {
@@ -2881,7 +2893,7 @@ test.each([
       snapshotId,
       f.admin.userId,
     ]);
-    const created = await templates.command(f.adminCaller, "create", request);
+    const created = await templates.command(adminCaller, "create", request);
     expect(created.revision).toMatchObject({ definition: { snapshotId, hostId: f.hostId } });
     return;
   }
@@ -2898,7 +2910,7 @@ test.each([
     await db.query("update docker_snapshots set installation_id=$2 where id=$1", [snapshotId, randomUUID()]);
   if (scenario !== "removed_before_launch") {
     await expect(
-      templates.command(scenario === "org_private" ? f.adminCaller : f.caller, "create", request),
+      templates.command(scenario === "org_private" ? adminCaller : f.caller, "create", request),
     ).rejects.toThrow("environment_");
     return;
   }
@@ -3091,23 +3103,7 @@ test.each(["private", "org"] as const)(
 
 test("snapshot caller-access port refuses before Docker host admission with the requested repository remedy", async () => {
   const f = await snapshotFixture(true, { repositoryAccessDenied: true });
-  const id = randomUUID();
-  await f.snapshots.command(f.caller, "create", {
-    org: f.actor.orgId,
-    hostId: f.hostId,
-    requestId: id,
-    name: "access-proof",
-    visibility: "private",
-    config: f.config,
-  });
-  const build = await hosts.poll(f.hostToken, f.installationId);
-  if (build?.operation !== "buildSnapshot") throw Error("Snapshot fixture build missing");
-  await hosts.complete(f.hostToken, f.installationId, {
-    requestId: id,
-    outcome: "completed",
-    imageId: `sha256:${"f".repeat(64)}`,
-    baselineVersion: 1,
-  });
+  const id = await seedReadySnapshot(f);
   const { hostId: _, ...body } = f.body;
   const before = await counts(f);
   await expect(
@@ -3126,23 +3122,7 @@ test.each([false, true])(
   async (deferred) => {
     const db = database();
     const f = await snapshotFixture(true, { publicRepositoryAccess: true });
-    const id = randomUUID();
-    await f.snapshots.command(f.caller, "create", {
-      org: f.actor.orgId,
-      hostId: f.hostId,
-      requestId: id,
-      name: "public-refresh",
-      visibility: "private",
-      config: f.config,
-    });
-    const build = await hosts.poll(f.hostToken, f.installationId);
-    if (build?.operation !== "buildSnapshot") throw Error("Snapshot fixture build missing");
-    await hosts.complete(f.hostToken, f.installationId, {
-      requestId: id,
-      outcome: "completed",
-      imageId: `sha256:${"a".repeat(64)}`,
-      baselineVersion: 1,
-    });
+    const id = await seedReadySnapshot(f);
     const { hostId: _, ...body } = f.body;
     const service = f.service(sql, true, 10000, officialImage, deferred);
     try {
@@ -3177,23 +3157,7 @@ test.each(["timeout", "stop"] as const)(
   async (mode) => {
     const timeoutMs = 5000;
     const f = await snapshotFixture(true, { withholdWorkspace: mode === "timeout" ? { timeoutMs } : "stop" });
-    const id = randomUUID();
-    await f.snapshots.command(f.caller, "create", {
-      org: f.actor.orgId,
-      hostId: f.hostId,
-      requestId: id,
-      name: "bounded-refresh",
-      visibility: "private",
-      config: f.config,
-    });
-    const build = await hosts.poll(f.hostToken, f.installationId);
-    if (build?.operation !== "buildSnapshot") throw Error("Snapshot fixture build missing");
-    await hosts.complete(f.hostToken, f.installationId, {
-      requestId: id,
-      outcome: "completed",
-      imageId: `sha256:${"c".repeat(64)}`,
-      baselineVersion: 1,
-    });
+    const id = await seedReadySnapshot(f);
     const { hostId: _, ...body } = f.body;
     const startedAt = f.clock.now();
     await expect(f.service(sql, true, timeoutMs).launch(f.caller, { ...body, snapshotId: id })).rejects.toMatchObject({
@@ -3212,23 +3176,7 @@ test.each(["auth", "auth-deferred", "network"] as const)(
   async (mode) => {
     const db = database();
     const f = await snapshotFixture(true, { refreshFailure: mode === "network" ? "network" : "auth" });
-    const id = randomUUID();
-    await f.snapshots.command(f.caller, "create", {
-      org: f.actor.orgId,
-      hostId: f.hostId,
-      requestId: id,
-      name: "refresh-policy",
-      visibility: "private",
-      config: f.config,
-    });
-    const build = await hosts.poll(f.hostToken, f.installationId);
-    if (build?.operation !== "buildSnapshot") throw Error("Snapshot fixture build missing");
-    await hosts.complete(f.hostToken, f.installationId, {
-      requestId: id,
-      outcome: "completed",
-      imageId: `sha256:${"e".repeat(64)}`,
-      baselineVersion: 1,
-    });
+    const id = await seedReadySnapshot(f);
     const { hostId: _, ...body } = f.body;
     const request = { ...body, snapshotId: id };
     const service = f.service(sql, true, 10000, officialImage, mode === "auth-deferred");

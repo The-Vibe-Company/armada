@@ -22,6 +22,13 @@ ENV = {"STAGING_URL": "https://armada-staging.example.com", "STAGING_ORG": ID, "
 
 
 class Safety(unittest.TestCase):
+    def setUp(self):
+        # Offline fixtures replace the HTTP transport. Keep the real TLS
+        # context while skipping repeated reads of the host trust store.
+        trust_store = mock.patch.object(check.ssl.SSLContext, "set_default_verify_paths")
+        self.addCleanup(trust_store.stop)
+        trust_store.start()
+
     def test_production_or_nonroot_origins_fail_before_network_and_never_echo_arguments(self):
         for address in ("https://armada.thevibecompany.co", "https://staging.example/a", "http://staging.example", "https://staging.example/?secret=hidden"):
             output = io.StringIO()

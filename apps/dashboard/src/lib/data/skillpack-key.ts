@@ -31,7 +31,7 @@ export async function viewerSkillpackKey() {
   };
 }
 
-export type SkillpackKeyState =
+type SkillpackKeyState =
   | { state: "ready"; keys: SkillpackKeys }
   | { state: "no-org" }
   | { state: "not-configured" }

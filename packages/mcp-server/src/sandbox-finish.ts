@@ -3,6 +3,7 @@ import { DelegatedAuthorityDenied, type Sql } from "@armada/core/server";
 import { createDockerHostStore } from "./docker-host-store.ts";
 import { captureDockerStopOutputs } from "./docker-outputs.ts";
 import { createRuntimeEnrolments, scopedRuntimeSql } from "./runtime-enrolment.ts";
+import { transitionSandbox } from "./sandbox-lifecycle.ts";
 import { runtimePreservationNote } from "./work-preservation.ts";
 
 type Binding = { sandboxId: string; ownerId: string; epoch: string; generation: number };
@@ -34,32 +35,41 @@ function bindingFromToken(key: string, token: string): Binding {
 /** Shared effect after live self authority is locked; no provider I/O on the reporting call. */
 export async function requestSandboxFinish(sql: Sql, key: string, sandboxId: string, ownerId: string) {
   const row = (
-    await sql.query<{ id: string; provider: string; org_id: string }>(
-      `select id,provider::text,org_id from public.sandboxes
-     where id=$1 and owner_id=$2 and status in ('ready','running') and stop_requested_at is null`,
+    await sql.query<{ id: string; provider: string; org_id: string; generation: string }>(
+      `select id,provider::text,org_id,lifecycle_generation::text as generation from public.sandboxes
+     where id=$1 and owner_id=$2 and status in ('ready','running') and stop_requested_at is null for update`,
       [sandboxId, ownerId],
     )
   ).rows[0];
   if (!row) throw new DelegatedAuthorityDenied();
-  let preservationNote: string | undefined;
-  if (row.provider === "docker") {
-    preservationNote = `${await runtimePreservationNote(sql, row.id)} Unpushed Git work is not preserved; agent-declared completion permanently removes the Docker home volume.`;
-    await sql.query("update public.sandboxes set preservation_note=$2 where id=$1", [row.id, preservationNote]);
-    await createDockerHostStore(scopedRuntimeSql(sql), key).enqueueSandbox(
-      { userId: ownerId, orgId: row.org_id },
-      row.id,
-      { requestId: crypto.randomUUID(), operation: "stop" },
-    );
+  const admit = async () => {
+    const transition = await transitionSandbox(sql, {
+      sandboxId: row.id,
+      expectedGeneration: row.generation,
+      fromStates: ["ready", "running"],
+      toState: "stopping",
+      actor: "finish",
+      code: "agent_finished",
+      effects: [],
+    });
+    if (transition.kind === "conflict") throw new DelegatedAuthorityDenied();
+  };
+
+  const result = { id: row.id, status: "stopping" };
+  if (row.provider !== "docker") {
+    await admit();
+    return result;
   }
-  await sql.query(
-    `update public.sandboxes set status='stopping',status_reason='agent_finished',
-     stop_requested_at=coalesce(stop_requested_at,clock_timestamp()),
-     stop_generation=case when stop_requested_at is null then stop_generation+1 else stop_generation end,
-     lifecycle_generation=lifecycle_generation+case when provider='docker' then 0 else 1 end,
-     reconcile_after=now() where id=$1`,
-    [row.id],
+
+  const preservationNote = `${await runtimePreservationNote(sql, row.id)} Unpushed Git work is not preserved; agent-declared completion permanently removes the Docker home volume.`;
+  await sql.query("update public.sandboxes set preservation_note=$2 where id=$1", [row.id, preservationNote]);
+  await admit();
+  await createDockerHostStore(scopedRuntimeSql(sql), key).enqueueSandbox(
+    { userId: ownerId, orgId: row.org_id },
+    row.id,
+    { requestId: crypto.randomUUID(), operation: "stop" },
   );
-  return { id: row.id, status: "stopping", ...(preservationNote ? { preservationNote } : {}) };
+  return { ...result, preservationNote };
 }
 
 export function createRuntimeSelfFinish(
