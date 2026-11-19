@@ -67,6 +67,7 @@ import type { createSqlCredentialList } from "./credential-list-sql.ts";
 import type { DataSource, ScopedData } from "./data.ts";
 import { dockerLaunchRequestId } from "./docker-launch-identity.ts";
 import type { GitHubAccountApi } from "./github-account.ts";
+import { dispatchGitHubRestControl, isGitHubRestControl } from "./github-rest-controls.ts";
 import {
   connectGoldenRoute,
   createGoldenRoute,
@@ -117,7 +118,7 @@ import type { createSandboxArmadaAccess } from "./sandbox-armada-access.ts";
 import { dispatchSandboxRestControl, isSandboxRestControl } from "./sandbox-rest-controls.ts";
 import { tokenCreateRoute, tokenListRoute, tokenRevokeRoute } from "./token-control.ts";
 import { callSharedTool, ToolApiError } from "./tool-api.ts";
-import { describeToolFailure, sandboxListInput } from "./tools.ts";
+import { describeToolFailure, sandboxListInput, type ToolContext } from "./tools.ts";
 
 import { viewerControl } from "./viewer-control.ts";
 
@@ -599,7 +600,7 @@ export async function dispatchControlCommand(
     return dispatchSandboxRestControl(route, scopedCaller, body, { ...options, data, providers });
   }
   const toolName = CONTROL_TOOL_ROUTES[route];
-  if (toolName) {
+  if (toolName || isGitHubRestControl(route)) {
     if (!options.data || !options.providers) throw new VaultError("unavailable", "Sandbox control is not configured.");
     const ref = optional(body, "org");
     const listRef =
@@ -616,48 +617,48 @@ export async function dispatchControlCommand(
           ? { ...caller, orgs: caller.orgs.filter((org) => org.orgId === listOrgId) }
           : caller
         : await selectedCaller(options, caller, ref);
-    const result = await callSharedTool(
-      {
-        caller: scopedCaller,
-        ...(options.sandboxBillingAccount
-          ? { sandboxBillingAccount: (id: string) => options.sandboxBillingAccount!(scopedCaller, id) }
-          : {}),
-        ...(options.dockerControls ? { dockerControls: options.dockerControls } : {}),
-        ...(options.runtimeSend ? { runtimeSend: options.runtimeSend } : {}),
-        ...(options.accountTurns ? { accountTurns: options.accountTurns } : {}),
-        ...(options.runtimeGitHub ? { runtimeGitHub: options.runtimeGitHub } : {}),
-        ...(options.connections ? { connections: options.connections } : {}),
-        data: listRef !== undefined ? options.scopedSandboxData!(scopedCaller, listRef) : options.data(scopedCaller),
-        measure: (phase, work) => measureRequestPhase(options.timing, phase, work),
-        storedProviders: options.storedProviderFor
-          ? {
-              modal: (target) =>
-                measureRequestPhase(options.timing, "stored_provider", () =>
-                  options.storedProviderFor!(target, scopedCaller),
-                ),
-            }
-          : {},
-        provider: (target) =>
-          measureRequestPhase(options.timing, "provider", () =>
-            options.providers
-              ? options.providers.resolve(target, scopedCaller)
-              : Promise.reject(new VaultError("unavailable", "Resource providers are not configured.")),
-          ),
-        launchCredentials: launchCredentials(
-          options.store,
-          options.encryptionKey,
-          options.github ? { ...options.github, store: options.store } : undefined,
-          options.modelAuth,
+    const context: ToolContext = {
+      caller: scopedCaller,
+      ...(options.sandboxBillingAccount
+        ? { sandboxBillingAccount: (id: string) => options.sandboxBillingAccount!(scopedCaller, id) }
+        : {}),
+      ...(options.dockerControls ? { dockerControls: options.dockerControls } : {}),
+      ...(options.runtimeSend ? { runtimeSend: options.runtimeSend } : {}),
+      ...(options.accountTurns ? { accountTurns: options.accountTurns } : {}),
+      ...(options.connections ? { connections: options.connections } : {}),
+      data: listRef !== undefined ? options.scopedSandboxData!(scopedCaller, listRef) : options.data(scopedCaller),
+      measure: (phase, work) => measureRequestPhase(options.timing, phase, work),
+      storedProviders: options.storedProviderFor
+        ? {
+            modal: (target) =>
+              measureRequestPhase(options.timing, "stored_provider", () =>
+                options.storedProviderFor!(target, scopedCaller),
+              ),
+          }
+        : {},
+      provider: (target) =>
+        measureRequestPhase(options.timing, "provider", () =>
+          options.providers
+            ? options.providers.resolve(target, scopedCaller)
+            : Promise.reject(new VaultError("unavailable", "Resource providers are not configured.")),
         ),
-        exposedSecrets: (orgId) =>
-          exposedSecrets(options.store, options.encryptionKey, { userId: caller.userId, orgId }),
-        now: options.now ?? (() => new Date()),
-        sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
-      },
-      toolName,
-      body,
-    );
-    return result;
+      launchCredentials: launchCredentials(
+        options.store,
+        options.encryptionKey,
+        options.github ? { ...options.github, store: options.store } : undefined,
+        options.modelAuth,
+      ),
+      exposedSecrets: (orgId) => exposedSecrets(options.store, options.encryptionKey, { userId: caller.userId, orgId }),
+      now: options.now ?? (() => new Date()),
+      sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+    };
+    if (isGitHubRestControl(route))
+      return dispatchGitHubRestControl(
+        { ...context, ...(options.runtimeGitHub ? { runtimeGitHub: options.runtimeGitHub } : {}) },
+        route,
+        body,
+      );
+    return callSharedTool(context, toolName!, body);
   }
   const { store, encryptionKey } = options;
   const userId = caller.userId;

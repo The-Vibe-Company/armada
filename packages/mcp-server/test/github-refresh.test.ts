@@ -1,12 +1,9 @@
-import { expect, spyOn, test } from "bun:test";
-import { GITHUB_REFRESH_MODAL_NATIVE, GitHubHydrationError, VERSION } from "@armada/core";
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import { callSharedTool } from "../src/tool-api.ts";
+import { expect, test } from "bun:test";
+import { GITHUB_REFRESH_MODAL_NATIVE } from "@armada/core";
+import { dispatchGitHubRestControl } from "../src/github-rest-controls.ts";
 import type { ToolContext } from "../src/tools.ts";
-import { createArmadaServer } from "../src/tools.ts";
 
-// This is the shared HTTP/MCP operation boundary, not a second resolver mock.
+// Exercise the REST handler with the real request and response schemas.
 // It protects owner-only injection into running machines without model credentials.
 test.each([
   { caller: "owner", state: "running", providerId: "boat", expected: "connected" },
@@ -26,26 +23,14 @@ test.each([
   );
   const provider = await context.provider({} as never);
   if (expected === "connected") {
-    // Observe the real initialize handshake, including the HTTP adapter's server identity.
-    const connect = Client.prototype.connect;
-    let serverInfo: ReturnType<Client["getServerVersion"]>;
-    const handshake = spyOn(Client.prototype, "connect").mockImplementation(async function (this: Client, ...args) {
-      await connect.apply(this, args);
-      serverInfo = this.getServerVersion();
+    expect(await dispatchGitHubRestControl(context, "github/refresh", { id: "sandbox" })).toEqual({
+      id: "sandbox",
+      login: "octocat",
+      status: "connected",
     });
-    try {
-      expect(await callSharedTool(context, "github_refresh", { id: "sandbox" })).toEqual({
-        id: "sandbox",
-        login: "octocat",
-        status: "connected",
-      });
-      expect(serverInfo).toEqual({ name: "armada", version: VERSION });
-    } finally {
-      handshake.mockRestore();
-    }
     expect(calls).toEqual([[{ userId: "owner", orgId: "org", role: "member" }, provider, "bx"]]);
   } else {
-    await expect(callSharedTool(context, "github_refresh", { id: "sandbox" })).rejects.toMatchObject({
+    await expect(dispatchGitHubRestControl(context, "github/refresh", { id: "sandbox" })).rejects.toMatchObject({
       code: expected,
       ...(expected === "unsupported" ? { status: 400, message: GITHUB_REFRESH_MODAL_NATIVE } : {}),
     });
@@ -82,31 +67,3 @@ function repairContext(
     now: () => new Date(),
   } as unknown as ToolContext;
 }
-
-// Discovery enables SDK output validation: an error must not masquerade as success structuredContent.
-test("discovery-first MCP clients receive closed hydration error details without success-schema validation failure", async () => {
-  const context = repairContext("owner", "running", async () => {
-    throw new GitHubHydrationError("sudo");
-  });
-  const server = createArmadaServer(context, "test");
-  const client = new Client({ name: "discovery-test", version: "1" });
-  const [a, b] = InMemoryTransport.createLinkedPair();
-  try {
-    await server.connect(a);
-    await client.connect(b);
-    await client.listTools();
-    const result = await client.callTool({ name: "github_refresh", arguments: { id: "sandbox" } });
-    expect(result.isError).toBe(true);
-    expect(result.structuredContent).toBeUndefined();
-    const error = {
-      code: "github_hydration_failed",
-      message: new GitHubHydrationError().message,
-      details: { phase: "sudo" },
-    };
-    expect(result._meta).toEqual({ error });
-    expect(result.content).toContainEqual({ type: "text", text: JSON.stringify({ error }) });
-  } finally {
-    await client.close();
-    await server.close();
-  }
-});
