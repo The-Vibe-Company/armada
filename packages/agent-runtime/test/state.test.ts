@@ -127,7 +127,7 @@ test("checkpoint transcript copies mask embedded short application values and pr
   const journal = new Journal(":memory:", (text) => text);
   const state = new HarnessState(root, journal.redact, (text) => journal.redact(text, "transcript"));
   try {
-    journal.registerApplicationSecrets(["session", "value"]);
+    journal.registerApplicationSecrets(["session", "value", "42"]);
     const dir = join(root, "codex/sessions");
     await mkdir(dir, { recursive: true });
     const file = join(dir, "fixture.jsonl");
@@ -139,14 +139,17 @@ test("checkpoint transcript copies mask embedded short application values and pr
     const toolDir = join(root, "claude/projects/fixture/tool-results");
     await mkdir(toolDir, { recursive: true });
     const toolFile = join(toolDir, "result.txt");
-    await writeFile(toolFile, JSON.stringify({ type: "prefixvalue", prefixvalue: 123 }));
+    await writeFile(toolFile, JSON.stringify({ type: "prefixvalue", prefixvalue: 42 }));
     await state.checkpoint();
     await state.restore();
     expect(JSON.parse(await readFile(file, "utf8"))).toEqual({
       ...frame,
       payload: { ...frame.payload, text: "prefix[REDACTED]", result: { type: { id: "prefix[REDACTED]" } } },
     });
-    expect(JSON.parse(await readFile(toolFile, "utf8"))).toEqual({ type: "prefix[REDACTED]", "prefix[REDACTED]": 123 });
+    expect(JSON.parse(await readFile(toolFile, "utf8"))).toEqual({
+      type: "prefix[REDACTED]",
+      "prefix[REDACTED]": "[REDACTED]",
+    });
   } finally {
     journal.close();
     await rm(root, { recursive: true, force: true });

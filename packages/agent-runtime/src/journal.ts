@@ -185,6 +185,8 @@ const maskJsonText: (
       ? scrubbed
       : maskText(original, scrubbed, mask);
   }
+  if (context === undefined && mask && (typeof original === "number" || typeof original === "boolean"))
+    return maskPayload(original, mask);
   if (Array.isArray(original) && Array.isArray(scrubbed))
     return scrubbed.map((value, index) => maskJsonText(original[index], value, mask, context, `${path}/#`));
   if (!original || typeof original !== "object" || !scrubbed || typeof scrubbed !== "object") return scrubbed;
