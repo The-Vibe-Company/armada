@@ -11,8 +11,17 @@ import { ENCRYPTION_KEY } from "./support.ts";
 
 const sharedDatabase = rowOnlyDatabase();
 
-async function fixture(provider: "boat" | "modal" = "boat", now = Date.now, commandGrantExpiresAt?: number) {
-  const f = await runtimeFixture(await sharedDatabase(), provider, "codex", false, commandGrantExpiresAt);
+async function fixture(
+  provider: "boat" | "modal" = "boat",
+  options: { now?: () => number; commandGrantExpiresAt?: number; idle?: boolean } = {},
+) {
+  const f = await runtimeFixture(
+    await sharedDatabase(),
+    provider,
+    "codex",
+    options.idle,
+    options.commandGrantExpiresAt,
+  );
   await f.db.query("update goldens set provider_snapshot_id='offline-snapshot',config=$2::jsonb where id=$1", [
     f.row.goldenId,
     JSON.stringify({ repos: [{ url: "https://github.com/example/web.git", branch: "main", dir: "web" }], init: [] }),
@@ -50,7 +59,7 @@ async function fixture(provider: "boat" | "modal" = "boat", now = Date.now, comm
       (await service.route(
         url instanceof Request ? new Request(url, options) : new Request(url.toString(), options),
       )) ?? new Response(null, { status: 404 })) as unknown as typeof fetch,
-    now,
+    options.now,
   );
   let configured: GitHubRuntimeConfiguration | undefined;
   f.github(async (value) => {
@@ -84,7 +93,7 @@ async function fixture(provider: "boat" | "modal" = "boat", now = Date.now, comm
 test("Modal runtime GitHub credentials still work beyond the original deadline after extension", async () => {
   let clock = Date.now();
   const ceiling = new Date(clock + 20 * 60_000);
-  const x = await fixture("modal", () => clock, ceiling.getTime()),
+  const x = await fixture("modal", { now: () => clock, commandGrantExpiresAt: ceiling.getTime(), idle: true }),
     { f, service } = x;
   try {
     const { initial } = (
