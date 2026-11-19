@@ -21,12 +21,12 @@ export interface Key {
   privateKey: string;
 }
 
-function base64url(bytes: Uint8Array | string): string {
+function base64url(bytes: Uint8Array | string) {
   return Buffer.from(bytes).toString("base64url");
 }
 
 // ES256 JWT for the App Store Connect API (20 minutes maximum lifetime).
-export async function token(key: Key, nowSeconds: number): Promise<string> {
+export async function token(key: Key, nowSeconds: number) {
   const pem = key.privateKey.replace(/-----(BEGIN|END) PRIVATE KEY-----/g, "").replace(/\s+/g, "");
   const signingKey = await crypto.subtle.importKey(
     "pkcs8",
@@ -55,7 +55,7 @@ export class Client {
     private readonly deps: Deps,
   ) {}
 
-  async request(method: string, path: string, body?: unknown): Promise<{ data?: unknown } | undefined> {
+  async request(method: string, path: string, body?: unknown) {
     const bearer = await token(this.key, Math.floor(this.deps.now() / 1000));
     const init: RequestInit = { method, headers: { authorization: `Bearer ${bearer}` } };
     if (body !== undefined) {
@@ -68,23 +68,24 @@ export class Client {
       // App Store Connect error bodies hold codes and titles, never credentials.
       throw new Error(`App Store Connect ${method} ${path.split("?")[0]} failed with ${response.status}: ${text}`);
     }
-    return text ? JSON.parse(text) : undefined;
+    const result: { data?: unknown } | undefined = text ? JSON.parse(text) : undefined;
+    return result;
   }
 
-  async list(path: string): Promise<Resource[]> {
+  async list(path: string) {
     const result = await this.request("GET", path);
     return (result?.data ?? []) as Resource[];
   }
 }
 
 // Percent-encoded (a space is %20, never "+") so names such as "Armada Internal" match exactly.
-function query(params: Record<string, string>): string {
+function query(params: Record<string, string>) {
   return Object.entries(params)
     .map(([name, value]) => `${encodeURIComponent(name)}=${encodeURIComponent(value)}`)
     .join("&");
 }
 
-export async function downloadProfile(client: Client, name: string): Promise<{ uuid: string; content: Buffer }> {
+export async function downloadProfile(client: Client, name: string) {
   const profiles = await client.list(
     `/v1/profiles?${query({
       "filter[name]": name,
@@ -99,10 +100,11 @@ export async function downloadProfile(client: Client, name: string): Promise<{ u
     throw new Error(`Expected exactly one active App Store profile named "${name}", found ${exact.length}.`);
   }
   const profile = exact[0] as Resource;
-  return {
+  const result: { uuid: string; content: Buffer } = {
     uuid: String(profile.attributes.uuid),
     content: Buffer.from(String(profile.attributes.profileContent), "base64"),
   };
+  return result;
 }
 
 export interface Distribution {
@@ -116,7 +118,7 @@ export interface Distribution {
 const POLL_MS = 30_000;
 const WAIT_MS = 60 * 60_000;
 
-export async function waitForBuild(client: Client, deps: Deps, target: Distribution): Promise<Resource> {
+export async function waitForBuild(client: Client, deps: Deps, target: Distribution) {
   const deadline = deps.now() + WAIT_MS;
   const path = `/v1/builds?${query({
     "filter[app]": target.appId,
@@ -145,7 +147,7 @@ export async function waitForBuild(client: Client, deps: Deps, target: Distribut
 // App Store Connect rejects a What to Test longer than this.
 const WHATS_NEW_LIMIT = 4000;
 
-export async function distribute(client: Client, deps: Deps, target: Distribution): Promise<void> {
+export async function distribute(client: Client, deps: Deps, target: Distribution) {
   if (target.whatToTest.length > WHATS_NEW_LIMIT) {
     throw new Error(`What to Test is ${target.whatToTest.length} characters; the limit is ${WHATS_NEW_LIMIT}.`);
   }
@@ -198,13 +200,13 @@ export async function distribute(client: Client, deps: Deps, target: Distributio
   deps.log(`Build ${target.version} (${target.build}) added to "${target.group}".`);
 }
 
-function required(name: string): string {
+function required(name: string) {
   const value = process.env[name];
   if (!value) throw new Error(`${name} is not set.`);
   return value;
 }
 
-async function main(args: string[]): Promise<void> {
+async function main(args: string[]) {
   const deps: Deps = {
     fetch: (url, init) => fetch(url, init),
     sleep: (ms) => Bun.sleep(ms),

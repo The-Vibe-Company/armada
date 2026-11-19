@@ -20,7 +20,12 @@ The client sends its service token on every request, so `url` must be an `https:
 
 `launch` accepts `DockerLaunchInput` with `provider: "docker"`, `harness`, and either `hostId` (with optional `repos`) or `snapshotId` (which selects its host and workspace). Supply an `idempotencyKey` of 16–128 characters and keep it for retries. An optional `externalRef` lets you find the sandbox later. With a service token, omit `org` or set it to the token's organization UUID. Discover Docker availability with `launch/options`.
 
-Ordinary `launch` calls return the shared `LaunchResult` envelope for Boat, Modal and Docker. Read the Armada ID from `sandbox.id` and the provider ID from `sandbox.providerSandboxId`. Check `golden` before reading `golden.name`, since Docker returns `golden: null`. The required `promptId` and `conversationId` fields are `null` when their IDs are unavailable, including an idle launch. Provider-specific sandbox metadata is available as additional fields with type `unknown`.
+`launch` calls return the shared `LaunchResult` envelope for Boat, Modal and Docker. Read the Armada ID from `sandbox.id` and the provider ID from `sandbox.providerSandboxId`. Check `golden` before reading `golden.name`, since Docker returns `golden: null`. The required `promptId` and `conversationId` fields are `null` when their IDs are unavailable, including an idle launch. Provider-specific sandbox metadata is available as additional fields with type `unknown`.
+
+For a pinned Modal template, pass `PinnedModalLaunchInput` to `launch` with
+`provider: "modal"`, `runtimeVersion: 1`, `runtimeTransport: "dialout"`, the template
+`id`, its `revision` and `harness`, and an `idempotencyKey`. Keep the key for
+identical retries and use `externalRef` to correlate the sandbox.
 
 `send` opens or continues the conversation of the sandbox identified by `id`. Launch another sandbox for a separate conversation.
 

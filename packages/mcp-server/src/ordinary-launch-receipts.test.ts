@@ -4,20 +4,28 @@ import { GoldenError, LaunchError, ProviderError, VaultError } from "@armada/cor
 import { PGlite } from "@electric-sql/pglite";
 import { createOrdinaryLaunchReceipts } from "./ordinary-launch-receipts.ts";
 
-const db = new PGlite();
+let connection: PGlite | undefined;
+
+function database() {
+  if (!connection) throw new Error("Database fixture is not open");
+  return connection;
+}
 beforeAll(async () => {
-  await db.waitReady;
+  connection = new PGlite();
+  await database().waitReady;
 });
 afterAll(async () => {
-  await db.close();
+  const db = connection;
+  connection = undefined;
+  await db?.close();
 });
 
 // Real unique constraint/JSON persistence; no provider network or launch retry mock.
 test("ordinary receipts fence uncertain dispatch and replay a lost successful response", async () => {
-  await db.exec(`CREATE TABLE ordinary_launch_receipts (
+  await database().exec(`CREATE TABLE ordinary_launch_receipts (
       id uuid PRIMARY KEY, org_id text, owner_id text, request_key text,
       fingerprint text, response jsonb, failure jsonb, authority jsonb, UNIQUE(org_id,owner_id,request_key));`);
-  const receipts = createOrdinaryLaunchReceipts(db as unknown as Sql);
+  const receipts = createOrdinaryLaunchReceipts(database() as unknown as Sql);
   const actor = { orgId: "org", userId: "owner" };
   const authority: {
     target: ProviderTarget;
@@ -61,7 +69,7 @@ test("ordinary receipts fence uncertain dispatch and replay a lost successful re
 });
 
 test("known terminal refusals replay typed failures without redispatch", async () => {
-  const receipts = createOrdinaryLaunchReceipts(db as unknown as Sql);
+  const receipts = createOrdinaryLaunchReceipts(database() as unknown as Sql);
   const actor = { orgId: "org", userId: "owner" };
   const authority = {
     target: { provider: "boat", orgId: "org", visibility: "org", modal: null } as ProviderTarget,
@@ -91,7 +99,9 @@ test("known terminal refusals replay typed failures without redispatch", async (
     await expect(receipts.run(actor, key, {}, dispatch, authority)).rejects.toMatchObject({ code: error.code });
     expect(calls).toBe(1);
     if (error instanceof ProviderError) {
-      const { rows } = await db.query("SELECT failure FROM ordinary_launch_receipts WHERE request_key=$1", [key]);
+      const { rows } = await database().query("SELECT failure FROM ordinary_launch_receipts WHERE request_key=$1", [
+        key,
+      ]);
       expect(rows).toHaveLength(1);
       expect(JSON.stringify(rows[0])).not.toContain(error.message);
     }
@@ -100,7 +110,7 @@ test("known terminal refusals replay typed failures without redispatch", async (
 });
 
 test("post-allocation launch failures remain uncertain", async () => {
-  const receipts = createOrdinaryLaunchReceipts(db as unknown as Sql);
+  const receipts = createOrdinaryLaunchReceipts(database() as unknown as Sql);
   const actor = { orgId: "org", userId: "owner" };
   const authority = {
     target: { provider: "boat", orgId: "org", visibility: "org", modal: null } as ProviderTarget,

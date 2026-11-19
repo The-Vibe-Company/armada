@@ -31,20 +31,14 @@ export async function readSetupWith(client: ControlClient, org: string): Promise
 
 /**
  * A control error in words about provider setup (the client's timeout text speaks of golden builds). Only the Armada
- * server's own answer that it has no such route means "unsupported": `unknown_route`, the legacy control router's
- * `not_found` "Unknown route." or its top-level `{ "error": "not_found" }`. A 404 without these (an edge or proxy page while no deployment
- * serves, an unreadable body) is a temporary outage, never a missing capability.
+ * server's `unknown_route` code means "unsupported". An uncoded 404 can come from an edge or proxy outage.
  */
 export function explainSetupError(error: ControlError, replacingNoun?: string): string {
   if (error.outcomeUnknown) return UNCONFIRMED;
   if (error.status === undefined && error.message.startsWith("The Armada server did not answer in time"))
     return "The Armada server did not answer in time. Reload this page before trying again.";
   if (error.status === 404) {
-    const unknownRoute =
-      error.code === "unknown_route" ||
-      (error.code === "not_found" && error.message === "Unknown route.") ||
-      (error.code === undefined && error.message === "not_found");
-    if (unknownRoute) return UNSUPPORTED;
+    if (error.code === "unknown_route") return UNSUPPORTED;
     if (error.code === undefined) return TEMPORARY;
   }
   if (error.status === 400)
