@@ -124,7 +124,6 @@ test("server lifecycle drains multiple rows while independent work is pending; s
     retirement.resolve(false);
     await workers.retirementWorker.done;
     expect(done).toBe(false);
-    // Even after retirement and exports drain, shutdown tracks the outstanding build.
     exportJob.resolve(false);
     await exportDrained.promise;
     expect(done).toBe(false);

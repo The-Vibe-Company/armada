@@ -5,7 +5,7 @@ import type { ServerLifecycleLane } from "./server-workers.ts";
 export function createGoldenBuildLane(
   jobs: Pick<GoldenBuildJobs, "runOne" | "reconcileOne">,
   log: (line: string) => void = console.error,
-): ServerLifecycleLane {
+) {
   return {
     isolatedSweep: true,
     async reconcileOne(signal) {
@@ -20,7 +20,7 @@ export function createGoldenBuildLane(
     },
     // The scheduler already awaits the full tick, including an active build.
     async drain() {},
-  };
+  } satisfies ServerLifecycleLane;
 }
 
 export const goldenBuildModule: ServerModule = ({ workers }) => {
