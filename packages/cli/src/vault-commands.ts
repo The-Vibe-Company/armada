@@ -37,6 +37,10 @@ export interface VaultIo {
   readStdin: () => Promise<string>;
 }
 
+type ListedCredential = CredentialInfo & {
+  monthlySpend?: { periodStart: string; usd: string; unpricedTurns: number };
+};
+
 export function vaultIo(auth: AuthIo, deps: Pick<Deps, "readFile" | "readStdin">, strictUtf8 = false) {
   return {
     auth,
@@ -516,7 +520,10 @@ export async function credsCommand(argv: readonly string[], io: VaultIo): Promis
     }
     case "list": {
       expect(args.positionals, 0, "armada creds list [--org <name>]");
-      const listed = await control<{ user: CredentialInfo[]; orgs: OrgCredentials[] }>(io.auth, "creds/list", { org });
+      const listed = await control<{
+        user: ListedCredential[];
+        orgs: (Omit<OrgCredentials, "credentials"> & { credentials: ListedCredential[] })[];
+      }>(io.auth, "creds/list", { org });
       if (flag(args, "--json")) {
         io.auth.out(`${JSON.stringify(listed)}\n`);
         return 0;
@@ -587,11 +594,20 @@ async function readValue(args: ReturnType<typeof parseArgs>, io: VaultIo): Promi
   }
 }
 
-function section(title: string, rows: CredentialInfo[]): string {
+function monthlyApiSpend(row: ListedCredential): string {
+  if (!row.id || (row.kind !== "openai" && row.kind !== "anthropic" && row.kind !== "opencode")) return "";
+  const spend = row.monthlySpend;
+  const unpriced = spend?.unpricedTurns ?? 0;
+  const usd = spend && (spend.usd !== "0" || unpriced === 0) ? spend.usd : "—";
+  const note = unpriced > 0 ? ` (${unpriced} unpriced ${unpriced === 1 ? "turn" : "turns"})` : "";
+  return `  API: ${usd} USD this month${note}`;
+}
+
+function section(title: string, rows: ListedCredential[]): string {
   if (rows.length === 0) return `${title}: none`;
   const lines = rows.map(
     (row) =>
-      `  ${credentialName(row.kind)}${row.id ? `  ${row.id}  ${row.name}  ${row.status}${row.isDefault ? " (default)" : ""}` : ""}${row.id ? `  ${row.runningAgents ?? 0} working / ${row.waitingAgents ?? 0} waiting-for-slot / ${row.maxAgents ?? "unlimited"} max` : ""}${Object.entries(
+      `  ${credentialName(row.kind)}${row.id ? `  ${row.id}  ${row.name}  ${row.status}${row.isDefault ? " (default)" : ""}` : ""}${row.id ? `  ${row.runningAgents ?? 0} working / ${row.waitingAgents ?? 0} waiting-for-slot / ${row.maxAgents ?? "unlimited"} max` : ""}${monthlyApiSpend(row)}${Object.entries(
         row.modelCounts ?? {},
       )
         .map(
