@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { GITHUB_TOKEN_PATTERN, goldenScript, OUTPUT_COLLECTOR_MANAGED_PROBE, withGoldenDirs } from "../src/server.ts";
@@ -73,6 +73,7 @@ test("real shell: the baseline tolerates a repo with no package.json, pins acros
     expect(result.status).toBe(0);
     expect(result.stdout).toContain("FAKE npm called with: install --global --prefix");
     expect(result.stdout).toContain("bun@9.9.9");
+    expect(readlinkSync(join(bin, "bun"))).toBe(join(home, ".bun-npm", "bin", "bun"));
     expect(result.stdout).toContain("@playwright/test@2.0.0");
     expect(result.stdout).toContain("@anthropic-ai/claude-code@2.1.322");
     expect(result.stdout).toContain("FAKE npm called with: install --global @openai/codex");
