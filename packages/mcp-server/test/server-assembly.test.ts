@@ -44,7 +44,7 @@ test("server assembly preserves worker lane order and isolation", () => {
       ],
       "isolated": [
         {
-          "name": "golden-builds",
+          "name": "golden-build-recovery",
           "sweep": true,
         },
         {
@@ -91,17 +91,25 @@ test("the shared jobs lane claims only configured job kinds", async () => {
   jobsModule({ workers: { managed } } as Parameters<typeof jobsModule>[0]);
   const createLane = managed.get("jobs")!;
   for (const { githubApp, encryptionKey, expected } of [
-    { githubApp: null, encryptionKey: undefined, expected: ["langfuse_export", "maintenance", "webhook"] },
-    { githubApp: {}, encryptionKey: undefined, expected: ["langfuse_export", "maintenance", "webhook", "pr_scan"] },
+    {
+      githubApp: null,
+      encryptionKey: undefined,
+      expected: ["golden_build", "langfuse_export", "maintenance", "webhook"],
+    },
+    {
+      githubApp: {},
+      encryptionKey: undefined,
+      expected: ["golden_build", "langfuse_export", "maintenance", "webhook", "pr_scan"],
+    },
     {
       githubApp: null,
       encryptionKey: "test",
-      expected: ["langfuse_export", "maintenance", "webhook", "outputs_capture"],
+      expected: ["golden_build", "langfuse_export", "maintenance", "webhook", "outputs_capture"],
     },
     {
       githubApp: {},
       encryptionKey: "test",
-      expected: ["langfuse_export", "maintenance", "webhook", "pr_scan", "outputs_capture"],
+      expected: ["golden_build", "langfuse_export", "maintenance", "webhook", "pr_scan", "outputs_capture"],
     },
   ]) {
     const claimed = new Set<string>();

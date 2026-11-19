@@ -39,7 +39,7 @@ import { hostDrainingSql } from "./docker-host-drain.ts";
 import { supportsDockerHostProtocol } from "./docker-host-version.ts";
 import { authorizeSnapshotBuild, resolveDockerSnapshot } from "./docker-snapshot-data.ts";
 import { recordLaunchStageForActivation } from "./launch-stage-record.ts";
-import { collectOutputTransfers, DOCKER_RETAINED_OUTPUT_STOP } from "./output-transfers.ts";
+import { collectOutputTransfers, DOCKER_RETAINED_OUTPUT_STOP, recordDockerOutputUpload } from "./output-transfers.ts";
 import { noteAdmission } from "./request-observability.ts";
 import { createRuntimeEnrolments, preserveResumeRefusalTicket, scopedRuntimeSql } from "./runtime-enrolment.ts";
 import { unsettledRuntimeCommands } from "./runtime-idle-evidence.ts";
@@ -1571,17 +1571,16 @@ export function createDockerHostStore(sql: Sql, key: string) {
             ).rows[0] ?? deny();
           const logical = await boundMachine(tx, job, host, installationId);
           const predicate = `id=$1 and not application_secret_tainted and ${DOCKER_RETAINED_OUTPUT_STOP}`;
-          return (
-            await tx.query<{ id: string; generation: string; scan: string; provider_sandbox_id: string }>(
-              expectedGeneration !== undefined
-                ? `update public.sandboxes set outputs_checked_at=clock_timestamp() where ${predicate}
-                   and lifecycle_generation=$2::bigint
-                   returning id,lifecycle_generation::text as generation,outputs_checked_at::text as scan,provider_sandbox_id`
-                : `select id,lifecycle_generation::text as generation,outputs_checked_at::text as scan,provider_sandbox_id
-                   from public.sandboxes where ${predicate}`,
-              expectedGeneration === undefined ? [logical.id] : [logical.id, expectedGeneration],
+          const row = (
+            await tx.query<{ id: string; generation: string; provider_sandbox_id: string }>(
+              `select id,lifecycle_generation::text as generation,provider_sandbox_id from public.sandboxes
+               where ${predicate} and ($2::bigint is null or lifecycle_generation=$2::bigint)`,
+              [logical.id, expectedGeneration ?? null],
             )
           ).rows[0];
+          if (!row) return;
+          const scan = expectedGeneration === undefined ? null : await recordDockerOutputUpload(tx, row.id);
+          return { ...row, scan };
         });
       }
       const admitted = await authorize();
@@ -1593,7 +1592,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
       // Claim after the entire copy is validated. A failed or truncated copy cannot supersede
       // an in-progress publication or modify the prior downloadable snapshot.
       const row = await authorize(admitted.generation);
-      if (!row) return 204;
+      if (!row?.scan) return 204;
       await collectOutputTransfers(
         sql,
         {

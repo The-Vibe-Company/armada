@@ -2,7 +2,7 @@
 
 ## Two-minute design
 
-Click path: **Build > Skills > Connect Skillpack** → Skillpack sign-in → consent
+Click path: **What agents have → Skills → Connect Skillpack** → Skillpack sign-in → consent
 showing the requesting application, selected workspace and exact read/install
 permissions → return to Armada with “Connected”. Denial leaves the old credential
 untouched. This is a proposal, not an enabled button in this slice.
@@ -20,7 +20,7 @@ requires a current Armada admin and a warning that launches by other members wil
 use that identity. User credentials continue to override org defaults.
 
 Armada stores the resulting credential through `setCredential` (`skillpack`),
-using existing AES-256-GCM encryption and `ARMADA_ENCRYPTION_KEY`; never in a golden.
+using existing AES-256-GCM encryption and `ARMADA_ENCRYPTION_KEY`; never in a snapshot.
 Reconnection replaces it only after a successful exchange and authorization check.
 Skillpack lists/revokes each delegated grant. Removing an Armada credential stops
 future use there but is **not** remote revocation; disclose that distinction.
@@ -72,7 +72,7 @@ This slice intentionally does not implement a speculative callback or token exch
 2. Armada API: durable, expiring, one-use connection attempts; PKCE exchange;
    encrypted credential persistence; revocation/rotation and recovery; enable the
    capability only when configured.
-3. Armada dashboard: Connect/Cancel/Reconnect states in Build > Skills, callback
+3. Armada dashboard: Connect/Cancel/Reconnect states in What agents have → Skills, callback
    result UX, optional admin-only org sharing, and end-to-end coverage.
 
 ## Ready-to-file Skillpack issue (proposal only)
