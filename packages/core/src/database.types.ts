@@ -210,18 +210,21 @@ export type Database = {
           harness: string;
           credential_id: string | null;
           model: string | null;
+          credential_ids: string[];
         };
         Insert: {
           user_id: string;
           harness: string;
           credential_id?: string | null;
           model?: string | null;
+          credential_ids: string[];
         };
         Update: {
           user_id?: string;
           harness?: string;
           credential_id?: string | null;
           model?: string | null;
+          credential_ids?: string[];
         };
         Relationships: [
           {
