@@ -316,6 +316,56 @@ test("an already enrolled uncertain resume reconciles on a fresh server without 
   }
 });
 
+test("a wake that loses its activity lease after prompt acceptance cannot publish", async () => {
+  const f = await stopped();
+  try {
+    const request = input(f.row.id);
+    const replacementLease = crypto.randomUUID();
+    const bridge: typeof f.bridge = {
+      ...f.bridge,
+      async call(...args) {
+        const reply = await f.bridge.call(...args);
+        if (args[1].op === "prompt") {
+          await f.db.query("update sandboxes set activity_lease_id=$2 where id=$1", [f.row.id, replacementLease]);
+        }
+        return reply;
+      },
+    };
+    const resume = createRuntimeResume(f.sql, ENCRYPTION_KEY, bridge, async () => ({
+      start: async (_signal, restore) => f.reboot(restore),
+      async stop() {
+        throw Error("The stale wake no longer owns the sandbox");
+      },
+    }));
+    await expect(resume(f.caller, request)).rejects.toMatchObject({ code: "conflict" });
+    expect(
+      (
+        await f.db.query(
+          `select s.status,s.task_prompt_id,s.activity_lease_id,r.receipt,
+             exists(select 1 from runtime_commands c where c.sandbox_id=s.id
+               and c.request_id='resume_'||r.request_id::text and c.accepted_prompt_id is not null) as accepted,
+             exists(select 1 from sandbox_transitions t where t.sandbox_id=s.id
+               and t.from_status='starting' and t.to_status='running') as journaled
+           from sandboxes s join runtime_resumes r on r.sandbox_id=s.id
+           where s.id=$1 and r.request_id=$2`,
+          [f.row.id, request.request_id],
+        )
+      ).rows,
+    ).toEqual([
+      {
+        status: "starting",
+        task_prompt_id: null,
+        activity_lease_id: replacementLease,
+        receipt: null,
+        accepted: true,
+        journaled: false,
+      },
+    ]);
+  } finally {
+    await f.close();
+  }
+});
+
 describe.each(["missing-proof", "prefix", "taint", "account", "owner", "expired"] as const)(
   "unsafe resume (%s)",
   (mode) => {

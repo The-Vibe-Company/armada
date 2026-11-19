@@ -1262,7 +1262,6 @@ export function createSandboxLifecycle(
   };
 }
 
-/** Complete the wake under the enrolment authority's owner, sandbox and epoch locks. */
 export async function publishRuntimeWake(
   tx: Sql,
   sandboxId: string,
