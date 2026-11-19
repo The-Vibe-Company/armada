@@ -560,6 +560,8 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
     const requestTimeoutMs = Math.min(timeoutMs, remaining);
     const sandboxLaunch = path === "sandbox/launch";
     const signal = AbortSignal.timeout(requestTimeoutMs);
+    const timedOut = (error: unknown) =>
+      signal.aborted || (error instanceof DOMException && error.name === "TimeoutError");
     try {
       const response = await io.fetch(`${origin}/api/v1/${path}`, {
         method: body === undefined ? "GET" : "POST",
@@ -602,7 +604,8 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
       let result: ResponseBody;
       try {
         result = (await response.json()) as ResponseBody;
-      } catch {
+      } catch (error) {
+        if (timedOut(error)) throw error;
         if (path === "sandbox/wait")
           throw new SmokeFailure("invalid_response", response.status, {
             body: "unparseable",
@@ -639,8 +642,7 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
       return result as T;
     } catch (error) {
       if (error instanceof SmokeFailure || error instanceof VaultSmokeFailure) throw error;
-      if (signal.aborted || (error instanceof DOMException && error.name === "TimeoutError"))
-        throw new SmokeFailure("request_failed", undefined, undefined, undefined, requestTimeoutMs);
+      if (timedOut(error)) throw new SmokeFailure("request_failed", undefined, undefined, undefined, requestTimeoutMs);
       fail("request_failed");
     }
   }
