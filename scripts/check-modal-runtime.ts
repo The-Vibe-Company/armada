@@ -636,6 +636,12 @@ try {
     ttlSeconds: 900,
     ...(!idleMode ? { prompt: initialPrompt } : {}),
   });
+  if (
+    templateSource &&
+    !ordinaryTemplate &&
+    (raw.sandbox?.provider !== "modal" || raw.sandbox.externalRef !== templateRequestKey)
+  )
+    throw Error("Pinned Modal launch response does not match its reference; inspect the original allocation.");
   id = ordinaryTemplate ? raw.id : raw.sandbox?.id;
   shouldStop = Boolean(id);
   if (templateSource) {
@@ -643,9 +649,8 @@ try {
     const selectedGolden = ordinaryTemplate ? m?.golden : raw.golden;
     if (
       !id ||
-      (ordinaryTemplate
-        ? raw.state !== "succeeded" || raw.provider !== "modal" || m?.requestKey !== templateRequestKey
-        : raw.sandbox?.provider !== "modal" || raw.sandbox.externalRef !== templateRequestKey) ||
+      (ordinaryTemplate &&
+        (raw.state !== "succeeded" || raw.provider !== "modal" || m?.requestKey !== templateRequestKey)) ||
       !m ||
       m.templateId !== templateId ||
       m.revision !== templateSource.revision ||

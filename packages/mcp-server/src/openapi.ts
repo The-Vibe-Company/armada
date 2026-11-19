@@ -276,7 +276,7 @@ export async function generateOpenApi() {
           }),
         };
         description +=
-          ' Docker uses the other request variants: provider "docker" with no golden, either on a hostId (optionally with repos) or from a snapshotId (no repos). launch/options reports each provider\'s launch sources. Explicit pinned Modal template requests return a durable template launch receipt.';
+          ' Docker uses the other request variants: provider "docker" with no golden, either on a hostId (optionally with repos) or from a snapshotId (no repos). launch/options reports each provider\'s launch sources. Explicit pinned Modal template requests require idempotencyKey and return the shared launch envelope. An unresolved replay returns outcome_unknown with error.details.sandboxId.';
       }
       if (route === "sandbox/send") {
         // One public path, two admissions chosen by the sandbox's provider: Docker

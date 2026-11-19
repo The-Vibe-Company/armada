@@ -275,7 +275,7 @@ const pinnedLaunchEnvelope = (body: RequestBody, idle: boolean) => {
       status: receipt.status,
       goldenId: golden.id,
       runtimeTransport: receipt.runtimeTransport,
-      externalRef: body.externalRef,
+      externalRef: defects.includes("variables-unrelated-launch") ? "another-launch" : body.externalRef,
       skills: skillReceipts,
       templateManifest,
     },
