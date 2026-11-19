@@ -35,6 +35,7 @@ function fixture(
   let failCommand = "";
   let retainRemoved = false;
   let refuseBinds = false;
+  let nextContainerId = 1;
   // Images present on the host (by reference, as `docker image inspect` reports them), and those its registry serves.
   const images = new Map<string, unknown>([[request.image, { Id: request.image }]]);
   const registry = new Set<string>();
@@ -70,7 +71,11 @@ function fixture(
         }
       });
       if (action === "ls") {
-        return { exitCode: 0, stdout: [...store.keys()].map((name) => JSON.stringify(name)).join("\n") };
+        const rows =
+          kind === "container" && value("--format") === "{{.ID}}"
+            ? [...containers.values()].map((container) => container.Id)
+            : [...store.keys()].map((name) => JSON.stringify(name));
+        return { exitCode: 0, stdout: rows.join("\n") };
       }
       if (action === "inspect") return { exitCode: store.has(last) ? 0 : 1, stdout: JSON.stringify([store.get(last)]) };
       if (action === "create" && kind === "volume") {
@@ -89,6 +94,7 @@ function fixture(
               : { Type: mount.type, Name: mount.src, Destination: mount.dst, RW: true },
           );
         store.set(name, {
+          Id: String(nextContainerId++).padStart(64, "0"),
           Name: `/${name}`,
           Config: { Image: argv[argv.indexOf("--entrypoint") + 2], User: value("--user"), Labels: labels },
           HostConfig: { Privileged: false },
@@ -100,7 +106,9 @@ function fixture(
         if (!container) return { exitCode: 1, stdout: "missing" };
         container.State = { Status: action === "start" ? "running" : "exited", Running: action === "start" };
       } else if (action === "rm") {
-        if (!retainRemoved) store.delete(last);
+        const name =
+          kind === "container" ? ([...containers].find(([, container]) => container.Id === last)?.[0] ?? last) : last;
+        if (!retainRemoved) store.delete(name);
       } else if (action !== "exec" && action !== "update") throw new Error("Unexpected fake Docker operation");
       return { exitCode: 0, stdout: "" };
     },
@@ -657,4 +665,36 @@ test("absence requires successful owned inventories and container-only loss stil
   expect(await f.executor.isAbsent(request)).toBe(true);
   f.fail("volume ls");
   await expect(f.executor.isAbsent(request)).rejects.toThrow();
+});
+
+test("physical-only deletion preserves the workspace across replay and refuses a replacement container", async () => {
+  const f = fixture();
+  const { containerName, volumeName } = await f.executor.create(request);
+  const target = { scope: "physical-only", machineId: f.containers.get(containerName).Id } as const;
+  await f.executor.delete(request, target);
+  expect(f.containers.has(containerName)).toBe(false);
+  expect(f.volumes.has(volumeName)).toBe(true);
+  expect(f.calls.find(({ argv }) => argv[0] === "container" && argv[1] === "rm")?.argv.at(-1)).toBe(target.machineId);
+
+  await f.executor.delete(request, target);
+  expect(f.volumes.has(volumeName)).toBe(true);
+
+  await f.executor.create(request);
+  await expect(f.executor.delete(request, target)).rejects.toMatchObject({ code: "ownership_mismatch" });
+  expect(f.containers.has(containerName)).toBe(true);
+  expect(f.volumes.has(volumeName)).toBe(true);
+});
+
+test("physical-only deletion refuses to confirm absence when the target was renamed", async () => {
+  const f = fixture();
+  const { containerName, volumeName } = await f.executor.create(request);
+  const container = f.containers.get(containerName);
+  f.containers.delete(containerName);
+  f.containers.set("renamed", { ...container, Name: "/renamed" });
+
+  await expect(f.executor.delete(request, { scope: "physical-only", machineId: container.Id })).rejects.toMatchObject({
+    code: "ownership_mismatch",
+  });
+  expect(f.containers.has("renamed")).toBe(true);
+  expect(f.volumes.has(volumeName)).toBe(true);
 });
