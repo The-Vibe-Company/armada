@@ -327,22 +327,6 @@ export const HARNESS_PATH = "/harness";
 /** The harness sections of the Harness page and the add dialog, in this order. */
 export const HARNESS_ORDER: readonly Harness[] = HARNESSES;
 
-type Billing = KindInfo["billing"];
-
-/** The account kind that signs `harness` in with `billing`: a subscription (the default) or an API key. */
-export function kindFor(harness: Harness, billing?: Billing): AccountKind {
-  const kind = ACCOUNT_KINDS.find(
-    (value) =>
-      KIND_INFO[value].harness === harness &&
-      harnessesForCredential(value).length === 1 &&
-      KIND_INFO[value].billing === (billing ?? "subscription"),
-  );
-  const selected =
-    kind ?? (billing === undefined ? ACCOUNT_KINDS.find((value) => KIND_INFO[value].harness === harness) : undefined);
-  if (!selected) throw new Error(`no ${billing} kind for ${harness}`);
-  return selected;
-}
-
 export function accountsFor(accounts: readonly ModelAccount[], harness: Harness): ModelAccount[] {
   return accounts.filter((account) => harnessesForCredential(account.kind).includes(harness));
 }

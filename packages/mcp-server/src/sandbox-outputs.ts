@@ -27,6 +27,9 @@ import {
   BOAT_RETAINED_OUTPUT_STOP,
   CAN_WRITE_LIVE,
   collectOutputTransfers,
+  lockOutputSandbox,
+  OUTPUT_SCAN_UNPUBLISHED,
+  recordOutputPublication,
   remainingOutputOrgBytes,
 } from "./output-transfers.ts";
 
@@ -332,10 +335,11 @@ async function collect(
   // expired collection rolls back its files and webhook events.
   const write = sql.transaction(async (tx) => {
     signal?.throwIfAborted();
+    await lockOutputSandbox(tx, id);
     const authority = await tx.query<{ org_id: string }>(
       `select org_id from public.sandboxes where id=$1 and status<>'deleted' and not application_secret_tainted
         and lifecycle_generation=$3::bigint and provider_sandbox_id=$4
-        and (outputs_published_scan is null or outputs_published_scan<$2::timestamptz) for update`,
+        and ${OUTPUT_SCAN_UNPUBLISHED}`,
       [id, scan, generation, providerId],
     );
     // A newer read (e.g. a pre-stop capture claimed after this sample) already committed: never go
@@ -364,7 +368,7 @@ async function collect(
       where sandbox_outputs.digest is distinct from excluded.digest`,
       [id, JSON.stringify(payload)],
     );
-    await tx.query(`update public.sandboxes set outputs_published_scan=$2::timestamptz where id=$1`, [id, scan]);
+    await recordOutputPublication(tx, id, scan);
     signal?.throwIfAborted();
   });
   // A write already in progress is bounded by SQL and settles before the pool closes.
@@ -489,10 +493,19 @@ async function collectRetained(
   if (snapshot === "gone") {
     if (!(await canDispatch())) return false;
     signal.throwIfAborted();
-    const write = sql.query(
-      `update public.sandboxes set outputs_retained_generation=$2::bigint where ${fence} returning id`,
-      args,
-    );
+    if (!sql.transaction) throw Error("output_transaction_unavailable");
+    const write = sql.transaction(async (tx) => {
+      await lockOutputSandbox(tx, row.id);
+      signal.throwIfAborted();
+      const saved = await tx.query(
+        `insert into public.sandbox_output_state(sandbox_id,retained_generation)
+         select id,lifecycle_generation from public.sandboxes where ${fence}
+         on conflict(sandbox_id) do update set retained_generation=excluded.retained_generation returning sandbox_id`,
+        args,
+      );
+      signal.throwIfAborted();
+      return saved;
+    });
     writes.add(write);
     try {
       if ((await write).rows.length) {

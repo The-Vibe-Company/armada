@@ -10,7 +10,6 @@ import {
   checkAccountChoice,
   checkDefaultChoice,
   KIND_INFO,
-  kindFor,
   launchAccounts,
   launchDefault,
   type ModelAccount,
@@ -446,13 +445,6 @@ test("the terminal sign-in is only the command the server reports, with the name
   }
   expect(parseAuthCapabilities({ nativeCLI: { codex_auth: "armada creds login codex" } })?.terminal).toEqual({
     codex_auth: "armada creds login codex",
-  });
-});
-
-describe("harness connection defaults", () => {
-  test("a harness defaults to its subscription unless API billing is requested", () => {
-    expect(kindFor("codex")).toBe("codex_auth");
-    expect(kindFor("claude", "api")).toBe("anthropic");
   });
 });
 
