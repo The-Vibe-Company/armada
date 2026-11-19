@@ -318,7 +318,6 @@ export const goldenRoutes = defineRoutes("golden", {
       throw retainFailureDiagnostic(new ToolApiError(code, message, details), error);
     }
   },
-  // The former switch cases checked token org scope before any route-specific validation.
   "golden/size-policy": async ({ caller, body, options }) => {
     scopedOrg(caller, optional(body, "org"));
     if (!options.data) throw new VaultError("unavailable", "Golden policies are not configured.");
