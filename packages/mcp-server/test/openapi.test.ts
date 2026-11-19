@@ -189,3 +189,12 @@ test("published template launch request lists exactly the fields the template se
   const cli = { org: id, id, requestKey: "k", modelAccount: { id, version: 1 }, externalRef: "tender:1" };
   expect(publishedRequest("templates/launch").safeParse(cli).success).toBe(true);
 });
+
+test("published extension request accepts either lifetime field and nullable org, and refuses both fields together", async () => {
+  const { publishedRequest } = await import("./published-response.ts");
+  const extend = publishedRequest("sandbox/extend");
+  const sandbox = { id: "sandbox", org: null };
+  expect(extend.safeParse({ ...sandbox, ttlSeconds: 60 }).success).toBe(true);
+  expect(extend.safeParse({ ...sandbox, ttl_seconds: 60 }).success).toBe(true);
+  expect(extend.safeParse({ ...sandbox, ttlSeconds: 60, ttl_seconds: 60 }).success).toBe(false);
+});

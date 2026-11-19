@@ -11,7 +11,7 @@ import {
   VERSION,
   vaultControlRoute,
 } from "@armada/core";
-import { launch, sandboxOperations, templateLaunchResponse } from "@armada/core/contract";
+import { launch, sandboxOperations, sandboxRestOperations, templateLaunchResponse } from "@armada/core/contract";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { z } from "zod";
@@ -31,7 +31,7 @@ import {
   responseJsonSchema,
 } from "./launch-response-schemas.ts";
 import { PUBLISHED_REST_GET_ROUTES, PUBLISHED_REST_ROUTES } from "./public-rest-routes.ts";
-import { SANDBOX_REST_CONTRACTS } from "./sandbox-rest-controls.ts";
+import { deleteSandboxAliasContract } from "./sandbox-rest-controls.ts";
 import { DRAIN_REFUSAL } from "./server-request-drain.ts";
 import { createRestToolServer, type ToolContext } from "./tools.ts";
 
@@ -48,11 +48,7 @@ const REST_TOOL_ROUTES: Readonly<Record<string, string>> = {
 const REST_RESPONSES: Readonly<Record<string, z.ZodType>> = {
   "launch/options": LAUNCH_OPTIONS_RESPONSE,
   "golden/list": GOLDEN_LIST_RESPONSE,
-  "sandbox/resume": SANDBOX_REST_CONTRACTS["sandbox/resume"].output,
-  "sandbox/extend": SANDBOX_REST_CONTRACTS["sandbox/extend"].output,
-  "sandbox/delete": SANDBOX_REST_CONTRACTS["sandbox/delete"].output,
-  "sandbox/advice": SANDBOX_REST_CONTRACTS["sandbox/advice"].output,
-  "sandbox/recovery": SANDBOX_REST_CONTRACTS["sandbox/recovery"].output,
+  "sandbox/delete": deleteSandboxAliasContract.output,
   "golden/adopt": GOLDEN_ADOPTION_RESPONSE,
   "golden/capabilities": GOLDEN_CAPABILITIES_RESPONSE,
   "sandbox/launch": launch.output,
@@ -63,25 +59,9 @@ const REST_RESPONSES: Readonly<Record<string, z.ZodType>> = {
 const REST_ONLY: Readonly<
   Record<string, { description: string; input: { properties?: Record<string, unknown>; [key: string]: unknown } }>
 > = {
-  "sandbox/resume": {
-    description: SANDBOX_REST_CONTRACTS["sandbox/resume"].description,
-    input: requestJsonSchema(SANDBOX_REST_CONTRACTS["sandbox/resume"].input.extend({ org: z.string().optional() })),
-  },
-  "sandbox/extend": {
-    description: SANDBOX_REST_CONTRACTS["sandbox/extend"].description,
-    input: requestJsonSchema(SANDBOX_REST_CONTRACTS["sandbox/extend"].input.extend({ org: z.string().optional() })),
-  },
   "sandbox/delete": {
-    description: SANDBOX_REST_CONTRACTS["sandbox/delete"].description,
-    input: requestJsonSchema(SANDBOX_REST_CONTRACTS["sandbox/delete"].input.extend({ org: z.string().optional() })),
-  },
-  "sandbox/advice": {
-    description: SANDBOX_REST_CONTRACTS["sandbox/advice"].description,
-    input: requestJsonSchema(SANDBOX_REST_CONTRACTS["sandbox/advice"].input.extend({ org: z.string().optional() })),
-  },
-  "sandbox/recovery": {
-    description: SANDBOX_REST_CONTRACTS["sandbox/recovery"].description,
-    input: requestJsonSchema(SANDBOX_REST_CONTRACTS["sandbox/recovery"].input.extend({ org: z.string().optional() })),
+    description: deleteSandboxAliasContract.description,
+    input: requestJsonSchema(deleteSandboxAliasContract.input.extend({ org: z.string().optional() })),
   },
   "golden/list": {
     description:
@@ -335,7 +315,9 @@ export async function generateOpenApi() {
     const paths: Record<string, unknown> = {};
     for (const route of PUBLISHED_REST_ROUTES) {
       const github = isGitHubRestControl(route) ? GITHUB_REST_CONTRACTS[route] : undefined;
-      const sandbox = Object.values(sandboxOperations).find((entry) => entry.route.path === `/api/v1/${route}`);
+      const sandbox = Object.values({ ...sandboxOperations, ...sandboxRestOperations }).find(
+        (entry) => entry.route.path === `/api/v1/${route}`,
+      );
       const restOnly: (typeof REST_ONLY)[string] | undefined = github
         ? {
             description: github.description,
