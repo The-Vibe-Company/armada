@@ -242,6 +242,7 @@ describe("database", () => {
         "sandbox_output_chunks.content_enc",
         "sandbox_outputs.content_enc",
         "sandbox_work_recovery.archive_enc",
+        "triggers.secret_enc",
       ]);
 
       const checks = await db.query<{ def: string }>(`
