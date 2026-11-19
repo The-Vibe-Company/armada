@@ -122,6 +122,7 @@ Optional:
 | `ARMADA_GITHUB_RUNTIME_ENABLED` | Managed GitHub broker/wrappers; default off. Only exact `true` enables it. See [github-runtime.md](github-runtime.md) for existing-worker limitations. |
 | `ARMADA_DASHBOARD_URL` | The dashboard origin, when it is not the production one. See [github-cli-relay.md](github-cli-relay.md). |
 | `ARMADA_AUTH_PROVIDERS` | Social login offered to CLI and MCP clients (`github,google`), only for providers enabled in Supabase. Empty: email only. |
+| `ARMADA_BOAT_DEPLOYMENT_ID` | Nonsecret Boat inventory identifier containing the environment and Armada server identity, for example `staging-armada-eu`. Use the same value across replicas and redeploys of one installation, and distinct values for installations sharing a Boat account. New managed Boat launches carry its digest in the `armada.deployment` label. An unset value leaves launches untagged. |
 
 Boat and Modal keys are not server environment: org admins connect them (`armada org connect boat|modal`), and they are stored encrypted per org or per person.
 

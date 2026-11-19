@@ -1,3 +1,5 @@
+import { commands, findCommand } from "./commands/index.ts";
+
 // Exact command boundaries only: never interpret payload or remote arguments as help.
 const HELP: Record<string, string> = {
   "vars list": `Usage: armada vars list [--org NAME|UUID] [--json]
@@ -550,132 +552,12 @@ This is not a full provider lifecycle test or proof that a model request will wo
 Exits 1 if any check is failed, otherwise 0; warnings and unknowns are not passes.
 Example: armada doctor --org ORG_UUID --json
 `,
-  recovery: `Usage: armada recovery <sandbox-id> [--org UUID] [--json]
-Read sandbox work-recovery information after Armada login and server authorization.
-Output is JSON even without --json. This is not credential-account rebinding.
-Use a sandbox ID from armada list --json.
-Example: armada recovery SANDBOX_UUID --org ORG_UUID --json
-`,
   "bind-credential": `Usage: armada bind-credential <sandbox-id> --credential-id UUID [--org UUID] [--json]
 Owner-only legacy Modal credential-binding recovery after Armada login.
 Stop the sandbox safely before rebinding; this command does not restart it.
 Use a sandbox ID from armada list and a credential-account UUID from creds list.
 Do not pass secret credential values. Output is JSON even without --json.
 Example: armada bind-credential SANDBOX_UUID --credential-id ACCOUNT_UUID --org ORG_UUID
-`,
-  extend: `Usage: armada extend <sandbox-UUID> --ttl <duration> [--org UUID] [--json]
-Request a sandbox lifetime extension after Armada login and server authorization.
-TTL is measured from now, not added to the old deadline, and must extend it.
-Duration is a positive integer with optional s, m, h or d; a bare number is seconds.
-Examples: 90, 90s, 30m, 4h, 2d. Server/provider state and lifetime limits still apply.
-Use a sandbox UUID from armada list --json. Output is JSON even without --json.
-Example: armada extend SANDBOX_UUID --ttl 30m --org ORG_UUID --json
-`,
-  rm: `Usage: armada rm <sandbox-UUID> --yes [--org UUID] [--json]
-Permanently delete a stopped sandbox after Armada login and server authorization.
-Warning: deletion removes the disk AND recovery archives. --yes is required confirmation.
-This is not stop. Inspect status and preserve needed work before deleting.
-Use a sandbox UUID from armada list --json; names are not accepted.
-Example: armada rm SANDBOX_UUID --yes --org ORG_UUID --json
-`,
-  status: `Usage: armada status <sandbox-id> [--live] [--org UUID] [--json]
-Read sandbox status after Armada login and server authorization.
-Default: recorded state, without a provider probe. --live reads provider/prompt details.
-Use a sandbox ID from armada list --json. Output is JSON even without --json.
-Recorded state is not proof of current provider readiness.
-Example: armada status SANDBOX_UUID --org ORG_UUID --json
-Example: armada status SANDBOX_UUID --live --org ORG_UUID
-`,
-  detail: `Usage: armada detail <sandbox-id> [--org UUID] [--json]
-Read detailed sandbox information after Armada login and server authorization.
-Use a sandbox ID from armada list --json. Output is JSON even without --json.
-For recorded status without a provider probe, use armada status instead.
-Example: armada detail SANDBOX_UUID --org ORG_UUID --json
-`,
-  wait: `Usage: armada wait <sandbox-id> [--timeout <seconds>] [--org UUID] [--json]
-Wait for sandbox activity through the server after Armada login and authorization.
-Timeout is an integer from 0 to 600 seconds (default 60); zero is accepted.
-Use a sandbox ID from armada list --json. Output is JSON even without --json.
-Inspect the returned state; a bounded wait is not proof that your task is complete.
-Example: armada wait SANDBOX_UUID --timeout 60 --org ORG_UUID --json
-`,
-  stop: `Usage: armada stop <sandbox-id> [--org UUID] [--json]
-Stop the machine after Armada login and server authorization, not just the running turn.
-Modal retains its disk only if checkpoint succeeds; fallback termination cannot resume.
-Inspect the returned status/preservation note; do not assume disk retention.
-After an uncertain outcome, inspect status/list before retrying. This is not permanent rm deletion.
-Output is JSON even without --json.
-Example: armada stop SANDBOX_UUID --org ORG_UUID --json
-`,
-  interrupt: `Usage: armada interrupt <sandbox-id> [--conversation <id>] [--org UUID] [--json]
-Interrupt the running turn of one conversation, or all, after Armada login and authorization.
-The sandbox stays up for the next send. This does not stop or delete the machine.
-Availability depends on the provider/harness; the server can refuse unsupported interruption.
-Output is JSON even without --json.
-Example: armada interrupt SANDBOX_UUID --org ORG_UUID --json
-`,
-  send: `Usage: armada send <sandbox-id> <text> [--conversation <id>] [--model <id>] [--reasoning-effort <level>]
-  [--request-id UUID] [--org UUID] [--json]
-Send a new instruction after Armada login and server authorization.
-Use steer to redirect a running turn. Retained stopped sandboxes can wake on send.
-Native model/effort overrides apply to this turn only; runtime model/effort remain launch-pinned.
-For uncertain runtime delivery, reuse the request ID with identical input.
-Native providers do not deduplicate by request ID; inspect state before retrying.
-Output is JSON; human mode also reports acceptance progress on stderr.
-Put options before -- when the literal text contains option-like words.
-Example: armada send SANDBOX_UUID --org ORG_UUID -- "Review the changes"
-`,
-  steer: `Usage: armada steer <sandbox-id> <text> [--conversation <id>] [--org UUID] [--json]
-Redirect a currently running turn after Armada login and server authorization.
-Refused when no turn is running; use send for a new turn.
-Delivery may join the turn natively or interrupt/restart the same conversation;
-inspect the returned delivery field. Output is JSON even without --json.
-Put options before -- to pass literal option-like text.
-Example: armada steer SANDBOX_UUID --org ORG_UUID -- "Focus on the failing test"
-`,
-  exec: `Usage: armada exec <sandbox-id> <command> [--cwd <path>] [--timeout <seconds>] [--org UUID] [--json]
-Run a shell command after Armada login and server authorization; not an agent prompt.
-Default cwd is /home/user. Timeout is integer seconds 1–600 (default 120).
-Output is JSON with command exitCode, stdout/stderr and timeout/truncation information.
-Inspect exitCode and timedOut; a successful CLI request is not proof the shell command succeeded.
-Put options before -- so command flags are passed literally, not parsed as Armada options.
-Example: armada exec SANDBOX_UUID --org ORG_UUID -- "git status --short"
-`,
-  list: `Usage: armada list [--status <status>] [--agent <harness> | --harness <harness>]
-  [--golden UUID] [--owner UUID|me] [--page <N>] [--limit <N>] [--org UUID] [--json] [--page-info]
-List visible sandboxes after Armada login and server authorization.
-Status: starting, ready, running, stopping, stopped, failed or deleted.
-Deleted sandboxes are excluded by default; request --status deleted to include them.
---agent and --harness are aliases; use only one (claude, codex or opencode).
---golden filters by snapshot UUID. --owner accepts a user UUID or me.
-Page is 1–1000000; limit is 1–200 (default page size 25). This is one page, not all results.
-Human output is a table. --json returns {sandboxes:[...]}; --page-info returns full
-page metadata and exact totals as JSON even without --json.
-Use --org to override a saved selection. Reuse returned IDs with status/logs/send.
-Example: armada list --owner me --page 1 --limit 25 --json
-Example: armada list --org ORG_UUID --page 2 --page-info
-`,
-  advice: `Usage: armada advice <sandbox-id> [--org UUID] [--json]
-Read resource-sizing advice after Armada login and server authorization.
-Collects one bounded sample and considers up to the last 10 comparable sessions.
-Missing or partial evidence can produce no recommendation; do not treat unknowns as measured headroom.
-This never resizes a running machine or changes defaults; recommendations concern future launches.
-Human output summarizes supported advice or the no-recommendation reason.
-Use --json to inspect the full evidence response. Use a sandbox ID from armada list.
-Example: armada advice SANDBOX_UUID --org ORG_UUID --json
-`,
-  report: `Usage: armada report <sandbox-id> ready|blocked --prompt-id <id> [--org UUID] [--json]
-  ready: [--pr-number <N>] [--pr-url <URL>] [--head-sha <SHA>]
-  blocked: --reason <text>
-Report an explicit outcome for the latest finished turn after Armada login.
-Only the sandbox owner or current organization admin may report.
-Call after wait; use the latest finished prompt ID, not an arbitrary earlier turn.
-A new send clears the outcome. Message text alone is not a reported outcome.
-Blocked requires a nonempty reason (maximum 1000 characters).
-Ready accepts optional PR metadata; the report itself does not verify CI or merge a PR.
-Output is JSON even without --json.
-Example: armada report SANDBOX_UUID blocked --prompt-id PROMPT_ID --reason "Need owner input"
-Example: armada report SANDBOX_UUID ready --prompt-id PROMPT_ID --pr-number 123
 `,
   "snapshot retirement": `Usage: armada snapshot retirement dry-run|reconcile <snapshot-UUID> [options]
 Review historical candidates with dry-run; apply reviewed receipts with reconcile.
@@ -845,8 +727,8 @@ Morph defaults to 2 simultaneous agents; other accounts default to unlimited.
 Use --max-agents N or --unlimited on connect, import, login and set.
 Change an existing cap with armada creds limits ACCOUNT_UUID --max-agents 2 or --unlimited.
 Morph: armada creds connect morph --name shared --file /private/morph-key
-One account supports Claude Code, Codex and OpenCode. At launch choose --credential-id ACCOUNT_UUID
-and --model morph-kimik31, morph-dsv41flash or morph-dsv41flash-1017.
+Use Claude Code, Codex or OpenCode on Modal, Docker or runtime-backed Boat.
+At launch choose --credential-id ACCOUNT_UUID and a Morph plan model with --model.
 Example: armada creds connect openai --name personal --file /private/api-key
 `,
   "creds limits": `Usage: armada creds limits <account-id> [--model <model-id>] --max-agents N | --unlimited [--org <name>] [--json]
@@ -1215,6 +1097,8 @@ export function onboardingHelp(argv: readonly string[]): string | undefined {
     parts[0] = "snapshot";
   if (parts.length === 1 && parts[0] === "golden") parts[0] = "snapshot";
   const command = parts.join(" ");
+  const focused = findCommand(command);
+  if (focused) return focused.help;
   return Object.hasOwn(GENERATED_HELP, command)
     ? GENERATED_HELP[command]
     : Object.hasOwn(HELP, command)
@@ -1254,7 +1138,7 @@ const GENERATED_HELP: Record<string, string> = {
 /** Flags from the command help registry also drive shell discovery. */
 export const helpOptionWords = [
   ...new Set(
-    [...Object.values(HELP), ...Object.values(GENERATED_HELP)].flatMap((text) =>
+    [...Object.values(HELP), ...Object.values(GENERATED_HELP), ...commands.map(({ help }) => help)].flatMap((text) =>
       [...text.matchAll(/--[a-z][a-z-]*/g)].map((match) => match[0]),
     ),
   ),

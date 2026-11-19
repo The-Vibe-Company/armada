@@ -50,22 +50,6 @@ test("nested onboarding help is focused and performs no authenticated or secret 
     "golden retirement dry-run",
     "golden retirement reconcile",
 
-    "report",
-    "advice",
-    "list",
-    "send",
-    "steer",
-    "exec",
-
-    "stop",
-    "interrupt",
-    "status",
-    "detail",
-    "wait",
-
-    "extend",
-    "rm",
-    "recovery",
     "bind-credential",
     "doctor",
     "completion",

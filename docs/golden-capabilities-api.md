@@ -1,6 +1,6 @@
 # Snapshot backend capabilities
 
-The authenticated control API and MCP expose the configured provider's snapshot
+The authenticated control API exposes the configured provider's snapshot
 limit without inspecting or modifying snapshots, builders, slots or database rows.
 This is metadata, not a claim that legacy snapshot slots have been reconciled.
 
@@ -40,9 +40,3 @@ armada snapshot capabilities --provider modal --org ORG_UUID --json
 
 The user-facing CLI calls these same `golden`-named API routes. Do not rename
 wire fields such as `maxGoldens`; they remain the contract, not CLI terminology.
-
-## MCP
-
-`golden_capabilities` takes the same optional `org` and `provider` fields and returns
-the same metadata as structured content. It is annotated read-only/non-destructive.
-HTTP and MCP execute the same operation and selected-org/provider resolution.

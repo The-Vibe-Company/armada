@@ -33,12 +33,10 @@ test("size policies use live org admin/private owner authority, persist without 
       400,
     );
     expect((await request(people.admin, "shared", policy))?.status).toBe(200);
+    const read = await request(people.member, "shared", undefined);
+    expect(read?.status).toBe(200);
+    expect(await read?.json()).toMatchObject({ policy });
     const member = await server.client(await server.token(people.member));
-    const read = await call(member, "golden_size_policy", { golden: "shared", org: people.org });
-    expect(read.isError).not.toBe(true);
-    expect(JSON.stringify(read)).toContain('"medium"');
-    const denied = await call(member, "golden_size_policy", { golden: "shared", org: people.org, policy });
-    expect(denied.isError).toBe(true);
     const launched = await call(member, "launch", {
       golden: "shared",
       org: people.org,

@@ -1,5 +1,6 @@
 import type { LaunchOptions } from "@armada/core/server";
 import type { ModalProvider } from "@armada/provider-modal";
+import { createModalRuntimeEnvironment } from "./modal-runtime-environment.ts";
 import type { RuntimeConfigurationInput } from "./runtime-configuration.ts";
 import { createRuntimeLaunch, type RuntimeLaunchOptions } from "./runtime-launch.ts";
 import { runtimeConfigurationWithVariables } from "./runtime-readable-variables.ts";
@@ -11,11 +12,12 @@ export function modalRuntimeLaunch(
   },
 ): NonNullable<LaunchOptions["runtime"]> {
   const startRuntime = createRuntimeLaunch(options);
+  const environment = createModalRuntimeEnvironment(options.sql, options.encryptionKey);
   return {
     async start(input) {
       const { host, actor, sandbox, credentials } = input;
       if (host.id !== "modal" || sandbox.runtimeTransport !== "dialout") throw Error("runtime_selection_required");
-      return startRuntime({
+      const started = await startRuntime({
         input,
         configure: () =>
           runtimeConfigurationWithVariables(
@@ -30,6 +32,8 @@ export function modalRuntimeLaunch(
           return (request) => start.call(host, request);
         },
       });
+      await environment.deliver(actor, sandbox.id, started.epoch, input.signal);
+      return started;
     },
   };
 }

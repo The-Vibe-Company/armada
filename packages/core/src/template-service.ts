@@ -771,7 +771,7 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
                 {
                   ...runtime.options,
                   credentialVersion: m.account.version,
-                  nativeSecretBindings: Boolean(def.secrets?.length),
+                  templateHasSecretBindings: Boolean(def.secrets?.length),
                   newId: () => request.sandbox_id,
                   beforeFork: async (sandboxId) => {
                     await revalidate(actor, org, m);
