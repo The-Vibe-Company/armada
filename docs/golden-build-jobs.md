@@ -25,10 +25,12 @@ then offers manual refresh.
 CLI create/update print the admission key and job ID, then poll short requests.
 --timeout 0..600 is the local wait only (default 60s), not worker execution.
 Each request has a 10-second AbortSignal; timeout:false disables Bun's independent
-idle timer. Poll failures never resubmit builds. Resume with:
+idle timer. Poll failures never resubmit builds. Resume with the returned build
+UUID (`JOB_UUID`) or the saved admission key (`SAVED_KEY`) and organization UUID
+(`ORG_UUID`).
 
-    armada snapshot build-status <job-id>
-    armada snapshot build-status --idempotency-key <saved-key> --org <org-id>
+    armada snapshot build-status JOB_UUID
+    armada snapshot build-status --idempotency-key SAVED_KEY --org ORG_UUID
 
 ## Worker and atomic publication
 
@@ -138,10 +140,12 @@ For staging incident **aa2f54f7**, after migrations/server rollout:
    and current resource/state guards under a job lock, atomically releases only
    that pending reservation, and records failed/provider_payment_required.
    Repeating a completed confirmation is read-only.
-3. The owner runs:
+3. The owner replaces `JOB_UUID` with the original job’s full UUID and
+   `ORG_UUID` with the staging organization UUID. Use the original config
+   file in place of `same-config.json`.
 
-       armada snapshot build-status <full-job-uuid> --json
-       armada snapshot create smoke-boat --provider boat --org <staging-org> --config <same-config> --timeout 600
+       armada snapshot build-status JOB_UUID --json
+       armada snapshot create smoke-boat --provider boat --org ORG_UUID --config same-config.json --timeout 600
 
    Expect the old job failed with failureReason=provider_payment_required
    (build-status exits 1 for terminal failure). Retry with a fresh admission key;

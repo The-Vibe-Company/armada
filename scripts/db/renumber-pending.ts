@@ -16,7 +16,7 @@ import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { FUTURE_WINDOW_MS, formatVersion, guardNow, migrations, versionDate } from "./migration-versions.ts";
 
-export type MigrationRename = { from: string; to: string };
+type MigrationRename = { from: string; to: string };
 
 export function planRenumber(base: ReadonlyMap<string, string>, head: ReadonlyMap<string, string>, now: number) {
   for (const path of base.keys()) {
