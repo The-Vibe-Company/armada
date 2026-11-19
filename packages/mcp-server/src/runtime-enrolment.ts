@@ -2,6 +2,7 @@ import { randomBytes } from "node:crypto";
 import { PROTOCOL_VERSION } from "@armada/agent-runtime";
 import { sha256Hex } from "@armada/auth";
 import { createSqlSandboxStore, decryptSecret, encryptSecret, type Sql } from "@armada/core/server";
+import { createDockerHostStore } from "./docker-host-store.ts";
 import type { Route } from "./http.ts";
 import { runtimeHttpFailure } from "./runtime-http-failure.ts";
 
@@ -178,7 +179,7 @@ export function createRuntimeEnrolments(sql: Sql, encryptionKey: string, options
     const hash = await sha256Hex(enrolmentToken);
     const runtimeToken = token("runtime");
     const runtimeHash = await sha256Hex(runtimeToken);
-    return transaction(async (tx) => {
+    const result = await transaction(async (tx) => {
       const candidate = (
         await tx.query<{ sandbox_id: string }>(
           "select sandbox_id from public.runtime_enrolments where enrolment_hash=$1",
@@ -197,7 +198,19 @@ export function createRuntimeEnrolments(sql: Sql, encryptionKey: string, options
         )
       ).rows[0];
       if (!row) throw new RuntimeEnrolmentDenied();
-      if (!supported) throw new RuntimeProtocolUnsupported(sandbox.id);
+      if (!supported) {
+        if (
+          sandbox.provider === "docker" &&
+          (await createDockerHostStore(tx, encryptionKey).refuseResume(tx, sandbox.id, sandbox.lifecycle_generation))
+        ) {
+          await tx.query(
+            `update public.runtime_enrolments set enrolment_hash=null,enrolment_expires_at=null,configuration_enc=null
+             where sandbox_id=$1`,
+            [sandbox.id],
+          );
+        }
+        return new RuntimeProtocolUnsupported(sandbox.id);
+      }
       if (!row.configuration_enc) throw new RuntimeEnrolmentDenied();
       const configuration: unknown = JSON.parse(await decryptSecret(row.configuration_enc, encryptionKey));
       const updated = (
@@ -211,6 +224,8 @@ export function createRuntimeEnrolments(sql: Sql, encryptionKey: string, options
       if (!updated) throw new RuntimeEnrolmentDenied();
       return { sandboxId: sandbox.id, epoch: updated.epoch, runtimeToken, configuration };
     });
+    if (result instanceof RuntimeProtocolUnsupported) throw result;
+    return result;
   }
   /** Read-only bootstrap reporting does not consume or extend the one-use ticket. */
   async function withBootstrap<T>(enrolmentToken: string, work: (tx: Sql, scope: RuntimeSessionScope) => Promise<T>) {

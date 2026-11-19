@@ -552,6 +552,7 @@ export type Database = {
           snapshot_id: string | null;
           result_image_id: string | null;
           cancelled_at: string | null;
+          refused_resume_generation: number | null;
         };
         Insert: {
           request_id: string;
@@ -568,6 +569,7 @@ export type Database = {
           snapshot_id?: string | null;
           result_image_id?: string | null;
           cancelled_at?: string | null;
+          refused_resume_generation?: number | null;
         };
         Update: {
           request_id?: string;
@@ -584,6 +586,7 @@ export type Database = {
           snapshot_id?: string | null;
           result_image_id?: string | null;
           cancelled_at?: string | null;
+          refused_resume_generation?: number | null;
         };
         Relationships: [
           {
