@@ -1451,11 +1451,12 @@ describe("tools", () => {
     const { token, client, people, boat } = await start();
     const mcp = await client(await token(people.member));
     const { data } = await call(mcp, "launch", { provider: "boat", golden: "shared", harness: "claude", prompt: "go" });
+    const id = launchSandboxId(data);
     boat.finish("bx_1", "prompt_1", "finished");
 
-    const stopped = await call(mcp, "stop", { id: data.id, after: true, timeout_seconds: 3 });
+    const stopped = await call(mcp, "stop", { id, after: true, timeout_seconds: 3 });
     expect(stopped.isError).toBe(false);
-    expect(stopped.data).toMatchObject({ id: data.id, status: "stopped" });
+    expect(stopped.data).toMatchObject({ id, status: "stopped" });
     expect(boat.stops).toEqual(["bx_1"]);
   });
 
@@ -1463,6 +1464,7 @@ describe("tools", () => {
     const { token, client, people, boat, clock } = await start();
     const mcp = await client(await token(people.member));
     const { data } = await call(mcp, "launch", { provider: "boat", golden: "shared", harness: "claude", prompt: "go" });
+    const id = launchSandboxId(data);
     boat.finish("bx_1", "prompt_1", "finished");
     const getPrompt = boat.provider.getPrompt;
     boat.provider.getPrompt = async (args) => {
@@ -1470,9 +1472,9 @@ describe("tools", () => {
       return getPrompt(args);
     };
 
-    const stopped = await call(mcp, "stop", { id: data.id, after: true, timeout_seconds: 3 });
+    const stopped = await call(mcp, "stop", { id, after: true, timeout_seconds: 3 });
     expect(stopped.isError).toBe(false);
-    expect(stopped.data).toMatchObject({ id: data.id, status: "ready", timedOut: true });
+    expect(stopped.data).toMatchObject({ id, status: "ready", timedOut: true });
     expect(boat.stops).toEqual([]);
   });
 
