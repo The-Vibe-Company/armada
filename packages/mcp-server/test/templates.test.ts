@@ -1,7 +1,4 @@
-import { expect, spyOn, test } from "bun:test";
-import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { afterAll, beforeAll, expect, spyOn, test } from "bun:test";
 import { createSqlAuthStore } from "@armada/auth";
 import {
   createApplicationVault,
@@ -21,19 +18,48 @@ import {
   type TemplateRuntime,
   VaultError,
 } from "@armada/core/server";
-import { AUTH_HEADER, CodexDriver, Journal, Runner } from "../../agent-runtime/src/index.ts";
+import { AUTH_HEADER, type Driver, Journal, Runner } from "../../agent-runtime/src/index.ts";
 import { type ControlOptions, handleControlRequest } from "../src/control.ts";
 import { createSqlData } from "../src/data.ts";
 import { createMcpLifecycle } from "../src/mcp-lifecycle.ts";
+import { migratedDatabase } from "./migrated-database.ts";
 import { publishedResponse } from "./published-response.ts";
-import { rowOnlyDatabase } from "./row-only-database.ts";
-import { ENCRYPTION_KEY, fakeBoat } from "./support.ts";
+import { ENCRYPTION_KEY, fakeBoat, seedDatabase } from "./support.ts";
 
-const sharedDatabase = rowOnlyDatabase();
+let database: Awaited<ReturnType<typeof migratedDatabase>> | undefined;
+
+beforeAll(async () => {
+  database = await migratedDatabase();
+});
+
+afterAll(async () => {
+  const db = database;
+  database = undefined;
+  await db?.close();
+});
 
 // Primary contract owner: real migrations + service-role authorization/admission, fake physical provider only.
 async function fixture() {
-  const { db, people } = await sharedDatabase();
+  if (!database) throw new Error("Template database is not open");
+  // Revisions and the last org admin have delete guards, so truncate those tables.
+  await database.exec(`
+    reset role;
+    reset all;
+    set search_path=public;
+    truncate template_launch_requests, launch_template_revisions, launch_templates, members cascade;
+    delete from provider_launch_requests;
+    delete from ordinary_launch_receipts;
+    delete from sandboxes;
+    delete from golden_operation_fences;
+    delete from mcp_connections;
+    delete from readable_variables;
+    delete from application_secrets;
+    delete from credentials;
+    delete from orgs;
+    delete from auth.users;
+    delete from mcp_invalidations;
+  `);
+  const { db, people } = await seedDatabase(database);
   const queries: string[] = [];
   const sql: Sql = {
     query: (s, p) => {
@@ -109,7 +135,6 @@ async function fixture() {
       runtime,
     );
   return {
-    // The file owns the engine; every fixture restores its session identity.
     close: async () => {
       await db.exec("reset role; reset all; set search_path=public");
     },
@@ -836,89 +861,76 @@ test("ordinary prompt admission performs no additional template queries or provi
   }
 });
 
-test.skipIf(process.platform !== "linux")(
-  "a replacement Modal runner receives frozen readable values again before the next native turn",
-  async () => {
-    const f = await fixture();
-    const root = await mkdtemp(join(tmpdir(), "template-restore-"));
-    const generations: { runner: Runner; journal: Journal }[] = [];
-    try {
-      const generation = async (name: string) => {
-        const cwd = join(root, name);
-        await mkdir(cwd);
-        const proof = join(cwd, "proof.json");
-        const driver = new CodexDriver({
-          executable: join(import.meta.dir, "../../agent-runtime/test/fixtures/app-server.ts"),
-          cwd,
-          env: { PATH: process.env.PATH ?? "/usr/bin:/bin", ARMADA_READABLE_INSPECTION: proof },
-        });
-        const journal = new Journal(":memory:", (s) => s);
-        const grant = {
-          token: crypto.randomUUID(),
-          sandboxId: "runtime",
-          generation: name,
-          expiresAt: Date.now() + 60000,
-        };
-        const runner = new Runner(journal, grant, { claude: driver, codex: driver });
-        generations.push({ runner, journal });
-        const inspect = async () => {
-          const turn = driver.start({
-            request: { sandboxId: "runtime", harness: "codex", text: "message-semantics" },
-            signal: new AbortController().signal,
-            session: () => {},
-            emit: () => {},
-          });
-          await turn.done;
-          return JSON.parse(await readFile(proof, "utf8"));
-        };
-        return { runner, grant, inspect };
+test("a replacement runner receives frozen readable values before its next turn", async () => {
+  const f = await fixture();
+  const generations: { runner: Runner; journal: Journal }[] = [];
+  try {
+    const generation = (name: string) => {
+      let readables: Record<string, string> = {};
+      const driver: Driver = {
+        configureReadableVariables: (variables) => {
+          readables = variables;
+        },
+        start: () => {
+          throw new Error("The test only prepares a turn");
+        },
+        close: async () => {},
       };
-      let active = await generation("modal-incarnation-1");
-      // Transparent provider transport into the actual private runner/native driver, not a hydration mock.
-      f.provider.configureReadableVariables = async (input) => {
-        const request = input as { harness: string; variables: Record<string, string> };
-        const result = await active.runner.handle(
-          new Request("https://private-runner", {
-            method: "POST",
-            headers: { [AUTH_HEADER]: active.grant.token },
-            body: JSON.stringify({
-              version: 1,
-              requestId: crypto.randomUUID(),
-              op: "configureReadableVariables",
-              ...request,
-              sandboxId: active.grant.sandboxId,
-            }),
+      const journal = new Journal(":memory:", (s) => s);
+      const grant = {
+        token: crypto.randomUUID(),
+        sandboxId: "runtime",
+        generation: name,
+        expiresAt: Number.MAX_SAFE_INTEGER,
+      };
+      const runner = new Runner(journal, grant, { codex: driver });
+      generations.push({ runner, journal });
+      return { runner, grant, readables: () => readables };
+    };
+    let active = generation("first");
+    // The runtime's readable-variables suite owns native subprocess environment delivery.
+    f.provider.configureReadableVariables = async (input) => {
+      const request = input as { harness: string; variables: Record<string, string> };
+      const result = await active.runner.handle(
+        new Request("https://private-runner", {
+          method: "POST",
+          headers: { [AUTH_HEADER]: active.grant.token },
+          body: JSON.stringify({
+            version: 1,
+            requestId: crypto.randomUUID(),
+            op: "configureReadableVariables",
+            ...request,
+            sandboxId: active.grant.sandboxId,
           }),
-        );
-        if (result.status !== 200) throw Error("Native readable bootstrap refused");
-      };
-      const template = (await f.create()).item as LaunchTemplate;
-      const launched = await f.launch(template.id);
-      expect(launched.state).toBe("succeeded");
-      active = await generation("modal-incarnation-2");
-      expect(await active.inspect()).toEqual({}); // A fresh physical runner has no retained application environment.
-      const lifecycle = createMcpLifecycle({
-        sql: f.sql,
-        registry: createSqlMcpRegistry(f.sql, ENCRYPTION_KEY),
-        encryptionKey: ENCRYPTION_KEY,
-        origin: "https://armada.test",
-        prepareReadableVariables: f.service.prepare,
-      });
-      await lifecycle.beforePrompt(f.provider, launched.providerSandboxId as string, {
-        userId: f.people.owner,
-        orgId: f.people.org,
-      });
-      expect(await active.inspect()).toEqual({ region: "europe\n$(not-a-command)" });
-    } finally {
-      for (const g of generations) {
-        await g.runner.close();
-        g.journal.close();
-      }
-      await f.close();
-      await rm(root, { recursive: true, force: true });
+        }),
+      );
+      if (result.status !== 200) throw Error("Native readable bootstrap refused");
+    };
+    const template = (await f.create()).item as LaunchTemplate;
+    const launched = await f.launch(template.id);
+    expect(launched.state).toBe("succeeded");
+    active = generation("replacement");
+    expect(active.readables()).toEqual({}); // A fresh physical runner has no retained application environment.
+    const lifecycle = createMcpLifecycle({
+      sql: f.sql,
+      registry: createSqlMcpRegistry(f.sql, ENCRYPTION_KEY),
+      encryptionKey: ENCRYPTION_KEY,
+      origin: "https://armada.test",
+      prepareReadableVariables: f.service.prepare,
+    });
+    await lifecycle.beforePrompt(f.provider, launched.providerSandboxId as string, {
+      userId: f.people.owner,
+      orgId: f.people.org,
+    });
+    expect(active.readables()).toEqual({ APP_REGION: "europe\n$(not-a-command)" });
+  } finally {
+    for (const g of generations) {
+      await g.runner.close();
+      g.journal.close();
     }
-  },
-);
+    await f.close();
+  }
+});
 
 // Contract: installation evidence survives request replay, without mutating the
 // admission manifest. Physical transports are covered by the install owners.

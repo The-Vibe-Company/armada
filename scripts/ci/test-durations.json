@@ -343,7 +343,7 @@
     "packages/mcp-server/test/subscription-broker.test.ts": 3.292,
     "packages/mcp-server/test/subscription-migration.test.ts": 2.719,
     "packages/mcp-server/test/task-outcome.test.ts": 3.372,
-    "packages/mcp-server/test/templates.test.ts": 8.397,
+    "packages/mcp-server/test/templates.test.ts": 6.929,
     "packages/mcp-server/test/token-api-authorization.test.ts": 0.346,
     "packages/mcp-server/test/tool-api-errors.test.ts": 0.143,
     "packages/mcp-server/test/turn-pricing.test.ts": 2.396,
