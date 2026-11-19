@@ -13,8 +13,8 @@ import { readBody } from "./control-body.ts";
 import { authenticatedCaller, Unauthorized } from "./control-caller.ts";
 import { optional, required, UUID } from "./control-input.ts";
 import { fail, INTERNAL_FAILURE_MESSAGE, VAULT_STATUS as STATUS } from "./control-response.ts";
-
 import { recordOperatorFailure } from "./request-observability.ts";
+import { defineRoutes } from "./routes.ts";
 
 type TokenControlOptions = Pick<ControlOptions, "authStore" | "supabase" | "now">;
 
@@ -49,8 +49,7 @@ function tokenRouteFailure(error: unknown, revoking = false): Response {
   return fail(500, "internal", INTERNAL_FAILURE_MESSAGE);
 }
 
-export async function tokenRevokeRoute(request: Request, options: TokenControlOptions): Promise<Response> {
-  if (request.method !== "POST") return fail(405, "invalid", "Use POST.");
+async function tokenRevokeRoute(request: Request, options: TokenControlOptions): Promise<Response> {
   try {
     const caller = await authenticatedCaller(request, options);
     const store = tokenRouteStore(options.authStore);
@@ -77,8 +76,7 @@ export async function tokenRevokeRoute(request: Request, options: TokenControlOp
   }
 }
 
-export async function tokenCreateRoute(request: Request, options: TokenControlOptions): Promise<Response> {
-  if (request.method !== "POST") return fail(405, "invalid", "Use POST.");
+async function tokenCreateRoute(request: Request, options: TokenControlOptions): Promise<Response> {
   try {
     const caller = await authenticatedCaller(request, options);
     const store = tokenRouteStore(options.authStore);
@@ -115,8 +113,7 @@ export async function tokenCreateRoute(request: Request, options: TokenControlOp
   }
 }
 
-export async function tokenListRoute(request: Request, options: TokenControlOptions): Promise<Response> {
-  if (request.method !== "POST") return fail(405, "invalid", "Use POST.");
+async function tokenListRoute(request: Request, options: TokenControlOptions): Promise<Response> {
   try {
     const caller = await authenticatedCaller(request, options);
     const store = tokenRouteStore(options.authStore);
@@ -138,3 +135,9 @@ export async function tokenListRoute(request: Request, options: TokenControlOpti
     return tokenRouteFailure(error);
   }
 }
+
+export const tokenRoutes = defineRoutes("token", {
+  "token/list": { methods: ["POST"], respond: tokenListRoute },
+  "token/create": { methods: ["POST"], respond: tokenCreateRoute },
+  "token/revoke": { methods: ["POST"], respond: tokenRevokeRoute },
+});
