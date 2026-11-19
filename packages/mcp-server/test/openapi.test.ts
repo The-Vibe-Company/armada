@@ -52,6 +52,26 @@ test("published OpenAPI matches current server contracts and preserves REST fiel
   });
 });
 
+test("GitHub OAuth publishes both bearer-free callback transports and the relay's refusal", () => {
+  const { get, post } = published.paths["/api/v1/github/oauth/callback"];
+  expect(get.security).toEqual([]);
+  expect(post.security).toEqual([]);
+  expect(get.parameters.map(({ name, required }) => [name, required])).toEqual([
+    ["state", true],
+    ["code", true],
+  ]);
+  expect(post.requestBody).toMatchObject({
+    "x-max-body-bytes": 8192,
+    "x-oversized-body-status": 400,
+    content: { "application/json": { schema: { required: ["state", "code"], additionalProperties: false } } },
+  });
+  expect(post.responses["400"].content["application/json"].schema.anyOf).toContainEqual(
+    expect.objectContaining({
+      properties: { ok: { const: false, type: "boolean" }, status: { const: "failed", type: "string" } },
+    }),
+  );
+});
+
 test("every published operation states the body limit both public boundaries enforce", () => {
   type Operation = {
     post?: {
