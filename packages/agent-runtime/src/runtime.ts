@@ -859,6 +859,7 @@ export class Runner {
     });
     child.stdin.on("error", () => {});
     child.stdin.end(r.command);
+    const outputLimit = 65536;
     const output = {
       stdout: { text: "", truncated: false },
       stderr: { text: "", truncated: false },
@@ -870,8 +871,8 @@ export class Runner {
         const capture = output[stream];
         if (capture.truncated) return;
         capture.text += text;
-        if (capture.text.length > 65536) {
-          capture.text = capture.text.slice(0, 65536);
+        if (capture.text.length > outputLimit) {
+          capture.text = capture.text.slice(0, outputLimit);
           capture.truncated = true;
         }
       });
@@ -924,13 +925,15 @@ export class Runner {
           resolve(safe);
           return;
         }
+        const stdout = this.journal.redactCommandOutput(output.stdout, outputLimit);
+        const stderr = this.journal.redactCommandOutput(output.stderr, outputLimit);
         const result: ExecResult = {
           detached: false,
           exitCode,
-          stdout: this.journal.redactCommandOutput(output.stdout.text, output.stdout.truncated),
-          stderr: this.journal.redactCommandOutput(output.stderr.text, output.stderr.truncated),
+          stdout: stdout.text,
+          stderr: stderr.text,
           timedOut,
-          truncated: output.stdout.truncated || output.stderr.truncated,
+          truncated: stdout.truncated || stderr.truncated,
         };
         save({ pid, status: "exited", identity, ...result });
         resolve(result);

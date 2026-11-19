@@ -126,3 +126,16 @@ test("short application values stay out of streamed message text while snapshots
     journal.close();
   }
 });
+
+test("short application redaction keeps expanded command output within its capture limit", () => {
+  const journal = new Journal(":memory:", (text) => text);
+  try {
+    journal.registerApplicationSecrets(["x"]);
+    expect(journal.redactCommandOutput({ text: "x".repeat(16), truncated: false }, 16)).toEqual({
+      text: "[REDACTED]",
+      truncated: true,
+    });
+  } finally {
+    journal.close();
+  }
+});
