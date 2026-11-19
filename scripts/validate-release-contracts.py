@@ -1,4 +1,4 @@
-"""Run explicitly routed release contracts, rejecting empty or skipped reports."""
+"""Run explicitly routed release contracts, requiring executed testcases or a successful probe exit."""
 import pathlib
 import subprocess
 import tempfile
@@ -18,3 +18,10 @@ for source in FILES:
         if not cases or any(any(case.find(tag) is not None for tag in ("failure", "error", "skipped")) for case in cases):
             raise RuntimeError(f"Release contract must execute without skips: {source}")
         print(f"{source}: {len(cases)} executed, zero skipped", flush=True)
+
+for source in (
+    "packages/mcp-server/test/mcp-codex-bridge.release.probe.ts",
+    "packages/provider-modal/test/artifact.release.probe.ts",
+):
+    subprocess.run(["bun", "./" + source], cwd=ROOT, check=True)
+    print(f"{source}: probe passed", flush=True)

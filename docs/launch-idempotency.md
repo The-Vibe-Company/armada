@@ -6,8 +6,9 @@ fields serve that. Docker has its own [receipt lifecycle](#docker-launches).
 
 | Surface | Exactly-once field | External reference |
 | --- | --- | --- |
-| `POST /api/v1/sandbox/launch` for Boat and Modal | `idempotencyKey`, 16–128 characters | `externalRef` |
-| `POST /api/v1/sandbox/launch` for Docker | `idempotencyKey` or legacy `requestId` | `externalRef` |
+| `POST /api/v1/sandbox/launch` from a Boat or Modal golden | `idempotencyKey`, 16–128 characters | `externalRef` |
+| `POST /api/v1/sandbox/launch` from a pinned Modal template | `idempotencyKey`, 16–128 characters (required) | `externalRef` |
+| `POST /api/v1/sandbox/launch` for Docker | `idempotencyKey`, 16–128 characters (required) | `externalRef` |
 | MCP `launch` | `idempotencyKey`, 16–128 characters | `externalRef` |
 | `POST /api/v1/templates/launch` | `requestKey` (required, see [templates](templates-cli.md)) | `externalRef` |
 
@@ -42,22 +43,23 @@ authority, refuses a keyed launch rather than launching without the guarantee.
 
 ## Docker launches
 
-Send exactly one of these fields with `"provider":"docker"`:
-
-- `idempotencyKey` is a 16–128 character key scoped to the caller and
-  organization. Armada derives the sandbox ID using the server encryption key,
-  so keep that key consistent across servers handling retries.
-- `requestId` is a caller-chosen UUID used by existing clients. It is also the
-  sandbox ID.
+Send a 16–128 character `idempotencyKey` with `"provider":"docker"`.
+The key is scoped to the caller and organization. Armada derives the sandbox ID
+using the server encryption key, so keep that encryption key consistent across
+servers handling retries. Read the assigned ID from `sandbox.id`.
 
 Docker has a separate key namespace from Boat and Modal. Retain the selected
 provider when retrying a launch.
 
-For either field, replay the same launch inputs. After admission, a changed
+To retry, replay the same launch inputs. After admission, a changed
 normalized request, including a changed `externalRef`, is refused. For example,
 spelling out the default TTL is equivalent to omitting it. A refusal before
 admission does not reserve the key. Set `externalRef` to find an admitted
 sandbox with `sandbox/list` even if the original response was lost.
+
+Before upgrading callers, reconcile any unanswered Docker launches submitted using
+`requestId`. Use the original UUID to inspect the sandbox. Submitting that UUID
+as an `idempotencyKey` creates a separate reservation.
 
 Select the organization by name or UUID. You can omit it when you belong to a
 single organization or use an org-scoped token. For a scoped token, an explicit
@@ -152,11 +154,11 @@ key conflicts, keep the key and recover the original attempt by receipt ID or
 `ttlSeconds` and `reasoningEffort` for REST launch requests. Provider-specific
 settings and server opt-ins still apply.
 
-Golden and Docker launches share an envelope. Read the placement and Armada ID
+All `sandbox/launch` sources share an envelope. Read the placement and Armada ID
 at `sandbox.provider` and `sandbox.id`. The `golden` record is null for Docker.
 `promptId`, `conversationId`, `runtime` and `helper` are null when unavailable.
-CLI JSON includes `sandbox.id` and the top-level `id` alias on all three
-providers. The CLI's `golden` field remains a name or null.
+CLI JSON uses the same envelope, including `sandbox.id` and `golden.name`
+when the launch has a golden.
 
 ## Explicit runtime launch
 
@@ -165,15 +167,19 @@ Use `provider: "boat"`, `runtimeVersion: 1` and `boatRuntime: true` for Boat. Us
 `provider: "modal"`, `runtimeVersion: 1` and `runtimeTransport: "dialout"` for Modal.
 Both golden paths require a harness and are subject to runtime admission checks
 and server opt-ins. For a pinned Modal template, send the same Modal selectors
-with `id`, `revision`, `requestKey` and the template's `harness` to `sandbox/launch`.
-Personal sessions can provide an org slug or UUID. Scoped tokens can omit `org`
-or send their scoped UUID. The shared schema refuses TTLs above 86,400 seconds
-before template admission or replay lookup. When admission records a request,
-it returns a durable template launch receipt, including the frozen manifest on
-success. Replay the same body
-and request key to recover that receipt, and use its top-level `id` for sandbox
-operations. A pre-admission refusal has no request ID or sandbox ID. Ordinary
-template launches continue to use `templates/launch`.
+with `id`, `revision`, `idempotencyKey` and the template's `harness` to
+`sandbox/launch`. Personal sessions can provide an org slug or UUID. Scoped
+tokens can omit `org` or send their scoped UUID. An optional `externalRef`
+appears in `sandbox.externalRef` for correlation.
+
+Replay the same body and key to recover the original envelope. The frozen
+revision, account, definition and readable variables appear in
+`sandbox.templateManifest` on success. An unresolved request returns HTTP 503
+`outcome_unknown` with its reserved ID in `error.details.sandboxId`; a recorded
+terminal failure returns a typed failure. Keep using the same key while the
+outcome is uncertain. Reconcile unanswered requests submitted with the former
+wire field before sending a request with a new key. The separate
+`templates/launch` operation uses its own `requestKey` and receipt.
 
 For REST extensions, use `ttlSeconds` on `POST /api/v1/sandbox/extend`
 as well. The server accepts the older `ttl_seconds` spelling for existing

@@ -13,6 +13,7 @@ import { type ControlOptions, createSqlData, handleControlRequest } from "@armad
 import type { PGlite } from "@electric-sql/pglite";
 import { captureGitHubAuditLogs } from "../../../scripts/test-support/github-audit.ts";
 import { openMigratedDatabase } from "../../../scripts/test-support/migrated-database.ts";
+import { dispatchGoldenBuild } from "../../core/test/support/golden-build-dispatch.ts";
 import { goldenHelperReport } from "../../core/test/support/golden-helper.ts";
 import type { AuthIo } from "../src/auth-commands.ts";
 import { run } from "../src/run.ts";
@@ -36,9 +37,6 @@ describe("golden command", () => {
   });
 
   test("create builds, scans and snapshots a multi-repo golden on the server, with no boat account environment", async () => {
-    // golden create is server-orchestrated now (no separate connect/snapshot step for a golden
-    // built this way, and no BOAT_API_KEY): the CLI sends the parsed --repo/--init config to
-    // /api/v1/golden/create, which admits the durable disposable-builder job, then polls its status.
     const db = await openMigratedDatabase();
     try {
       const people = await fixture(db);
@@ -108,7 +106,7 @@ describe("golden command", () => {
         {
           auth,
           sleep: async () => {
-            await controlOptions.goldenBuilds!.runOne();
+            await dispatchGoldenBuild(db, controlOptions.goldenBuilds!);
           },
         },
       );
@@ -129,9 +127,6 @@ describe("golden command", () => {
         { url: "https://github.com/acme/api.git", branch: "dev", dir: "api" },
       ]);
 
-      // golden list itself now always goes through the Armada API (golden-api-list.test.ts,
-      // packages/mcp-server/test/control.test.ts's "golden/list" case); visibility is checked
-      // directly against the store here instead, the same way goldenForLaunch does it at launch.
       const store = createSqlGoldenStore(db);
       const owner = actor(people, "owner");
       expect(await asUser(db, people.owner, () => store.findByName(people.org, "monorepo"))).toHaveLength(1);
@@ -298,7 +293,6 @@ function fakeSupabaseFetch(userId: string): typeof fetch {
   }) as typeof fetch;
 }
 
-/** GitHub's REST surface a golden create needs: `/user`, installations, a repo lookup. */
 function fakeGitHubFetch(): typeof fetch {
   return (async (input: string | URL | Request) => {
     const url = String(input);
@@ -366,5 +360,4 @@ function fakeCreateProvider(): Provider {
   };
 }
 
-// Token resolution in these fixtures must not leak audit records to stdout.
 captureGitHubAuditLogs();

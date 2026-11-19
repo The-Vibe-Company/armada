@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { parityRequest, sandboxDeletePath } from "./provider-parity-delete.fixture.ts";
 import { providerParitySmoke } from "./provider-parity-smoke.ts";
 
 // Actual production client serializers, active/terminal observations and cleanup intent handling.
@@ -60,7 +61,7 @@ for (const mode of [
         },
         out: (line) => lines.push(line),
         fetch: async (url, init) => {
-          const body = JSON.parse(String(init.body)),
+          const body = parityRequest(url, init).body,
             headers = new Headers(init.headers);
           expect(headers.get("authorization")).toBe("Bearer placeholder");
           if (new URL(url).pathname === "/mcp") {
@@ -103,7 +104,7 @@ for (const mode of [
             });
           }
           const provider = body.org === org.modal ? "modal" : "docker";
-          const route = url.split("/api/v1/")[1];
+          const { path: route } = parityRequest(url, init);
           switch (route) {
             case "launch/options":
               return Response.json({
@@ -125,10 +126,9 @@ for (const mode of [
             case "docker/hosts/list":
               return Response.json({ hosts: [{ id: "30000000-0000-4000-8000-000000000001", state: "online" }] });
             case "sandbox/launch":
-              if (provider === "docker") id.docker = body.requestId;
               active = provider;
               states.set(provider, "ready");
-              return Response.json({ sandbox: { id: id[provider], provider } });
+              return Response.json({ sandbox: { id: id[provider], provider, externalRef: body.externalRef } });
             case "sandbox/send": {
               const n = (turns.get(provider) ?? 0) + 1;
               if (n > 1 && mode === "resume_quota")
@@ -189,7 +189,7 @@ for (const mode of [
               expect(states.get(provider)).toBe("stopped");
               states.set(provider, "ready");
               return Response.json({ id: body.id, status: "ready" });
-            case "sandbox/delete":
+            case sandboxDeletePath:
               expect(states.get(provider)).toBe("stopped");
               states.set(provider, "deleted");
               return Response.json({ id: body.id, status: "deleted" });

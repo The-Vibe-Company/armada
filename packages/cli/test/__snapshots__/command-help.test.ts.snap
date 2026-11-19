@@ -41,7 +41,7 @@ Usage:
   armada host limits HOST [--cpus N] [--memory SIZE] [--max-sandboxes N | --auto] [--org UUID]
   armada host retention HOST --retention 24h [--org UUID]
   armada host revoke UUID [--org UUID]
-  armada launch [prompt] --provider docker [--host UUID|NAME | --golden snapshot-UUID] --agent claude|codex|opencode [--credential-id UUID] [--org NAME|UUID] [--repo owner/repo[@branch] ...] [--variable KEY:UUID:VERSION ...] [--secret KEY:UUID:VERSION ...] [--request-id UUID] [--json]
+  armada launch [prompt] --provider docker [--host UUID|NAME | --golden snapshot-UUID] --agent claude|codex|opencode [--credential-id UUID] [--org NAME|UUID] [--repo owner/repo[@branch] ...] [--variable KEY:UUID:VERSION ...] [--secret KEY:UUID:VERSION ...] [--idempotency-key KEY] [--json]
                                            Docker launch through the normal Armada API using the official Armada environment.
   armada doctor [--org UUID] [--json]      Check session, server, GitHub, hosts and model accounts
   armada completion bash|zsh|fish           Print a shell completion script
@@ -96,7 +96,7 @@ Usage:
                                            without one the sandbox waits, ready, for the first prompt. The model
                                            and effort apply to every later turn too. --credential-id UUID selects a model account;
                                            otherwise use your personal or organization default.
-                                           --repo selects the native agent's initial working directory, including when idle.
+                                           --repo selects the agent's initial working directory, including when idle.
                                            Defaults:
                                            claude claude-opus-5-5 medium, codex gpt-6.2-sol medium, opencode armada/deepseek-flash default
   armada list [--status STATUS] [--agent|--harness claude|codex|opencode] [--golden UUID] [--owner UUID|me]
@@ -169,7 +169,7 @@ Usage:
                                            Keep this terminal open; Ctrl-C/shell exit cancels.
   armada creds import claude|codex --name <name> [--file <path>] [--org <name>]
                                            Import a locally obtained native token/auth.json; never pass secrets as arguments
-  armada creds limits <account-id> [--model <model-id>] --max-agents N | --unlimited [--org <name>]
+  armada creds limits <account-id> [--model <model-id>] (--max-agents N | --unlimited) [--org <name>]
                                            Set the maximum simultaneous running agents for a model account
   armada creds presets [--json]             List the same model connection providers as the dashboard
   armada creds connect <preset> --name NAME [--file PATH] [--org NAME]
@@ -182,9 +182,10 @@ Usage:
                                            Model accounts: --name NAME creates; --id UUID --expected-version N replaces
                                            Codex: --base-url URL --models deployment,model [--api-version VERSION]
                                            Key from hidden input, stdin/file; Azure requires actual deployment names, not model catalog IDs
-                                           Codex endpoints require Modal and the Responses API, not chat completions
+                                           Codex endpoints require the Responses API
+                                           Custom endpoints run on Modal, Docker or runtime-backed Boat
                                            Claude: --base-url URL [--endpoint-auth bearer|api-key] (default bearer)
-                                           Claude gateways require Modal and support Claude models only; key from hidden input, stdin/file
+                                           Claude gateways support Claude models only
                                            Endpoint prices: --price-model ID --price-input USD --price-output USD
                                            [--price-cached-input USD]; decimal USD per million tokens, omitted = unknown
                                            Replacing a connection replaces its prices too; re-enter all rates to keep them
@@ -194,7 +195,7 @@ Usage:
   armada secrets --help                    Write-only application secrets: set/list/rotate/revoke/delete
                                            Personal or --org scope. JSON includes values only for vars read; no sandbox delivery.
   armada creds test <sandbox-id> --model <deployment-model> [--org <name>] [--json]
-                                           One tiny billable check of the bound custom connection in a running Modal sandbox
+                                           Checks the bound API-key connection on a running Modal or runtime-backed Boat sandbox; may incur a charge
   armada creds list [--org <name>]         Account IDs, names, defaults and safe metadata; never values
   armada creds rename <id> <name> [--org <name>]
   armada creds default|remove <id> [--org <name>]
@@ -245,7 +246,7 @@ Docker form:
   armada launch [prompt] --provider docker --agent claude|codex|opencode [--org NAME|UUID]
     [--host UUID|NAME | --golden snapshot-UUID] [--credential-id UUID]
     [--repo owner/repo[@branch] ...] [--variable KEY:UUID:VERSION ...]
-    [--secret KEY:UUID:VERSION ...] [--request-id UUID] [--ttl <duration>] [--json]
+    [--secret KEY:UUID:VERSION ...] [--idempotency-key KEY] [--ttl <duration>] [--json]
     [--model <id>] [--reasoning-effort <level>] [--credential-version <version>]
     [--skill org/slug@version|slug@version ...] [--connections <id,...> | --no-connections]
 Uses the official Armada environment or an existing host-local snapshot.
@@ -253,7 +254,7 @@ A snapshot cannot be combined with --repo.
 Boat supports Claude/Codex natively and OpenCode when the server runtime is installed.
 OpenCode is also supported on Modal and Docker.
 --golden is the existing Docker snapshot selector, not a new snapshot command.
-Reuse a saved --request-id with identical input after an uncertain Docker outcome.
+Reuse a saved --idempotency-key with identical input after an uncertain Docker outcome.
 
 In an interactive terminal, bare armada launch opens the launcher.
 Use explicit arguments in scripts; bare noninteractive launch is not supported.
@@ -582,11 +583,12 @@ Native subscription accounts:
   import       Import an existing Claude token or Codex auth JSON securely.
 API connections:
   presets      List built-in provider choices without login.
-  connect      Store a named API connection using a preset.
+  connect      Store a named API connection using a preset, such as morph.
   set          Store a supported credential kind or custom endpoint.
   test         Test a sandbox's bound model connection; may incur a provider charge.
 Account metadata:
   list         List metadata/IDs, never credential values.
+  limits       Set the maximum simultaneous agents for an account or model.
   rename       Rename by account ID.
   default      Select a default account by ID.
   remove       Remove an account by ID.
@@ -605,6 +607,7 @@ Import an existing native credential after Armada login; no native login is star
 Claude: run claude setup-token locally. Codex: supply native auth JSON.
 Read the credential from stdin/hidden input or a private --file, never command arguments.
 Use --name to create; replacement requires --id and a positive integer --expected-version.
+Set the account cap with --max-agents N or --unlimited.
 Omit --org for personal scope; pass it for organization scope.
 Credentials are stored encrypted; allowance information may be unavailable.
 Example: armada creds import claude --name personal --file /private/native-credential

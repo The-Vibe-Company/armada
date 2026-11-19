@@ -1,5 +1,4 @@
 #!/usr/bin/env bun
-// Synthetic local app-server peer. No provider consent or network access.
 import { writeFileSync } from "node:fs";
 import { createInterface } from "node:readline";
 

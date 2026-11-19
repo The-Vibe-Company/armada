@@ -48,18 +48,25 @@ any receipt UUID returned. On success, pass `sandbox.id` to subsequent tools.
   revision specifying a golden, harness and configuration. Use IDs if names clash.
   Use `armada snapshot capabilities --json` for provider capacity and the
   authenticated REST adoption endpoint for canonical Boat golden adoption.
-- For MCP `launch`, choose `provider: "boat"` or `provider: "modal"` from discovery,
+- Call MCP `launch_options` with `{}` for the server’s harnesses, models, sizes and TTL limits.
+- Call MCP `outputs_list` with `id` to list the stored output snapshot. Call `output_read` with `id` and `name` for base64 contents up to 32 KiB. Use the REST output download for larger files.
+  MCP `launch` takes a Boat or Modal golden. Choose `provider: "boat"` or `provider: "modal"`,
   specify `harness`, and use `ttlSeconds` and `reasoningEffort` for launch overrides.
   For scoped tokens, omit `org` or use the scoped org UUID.
 - Choose the provider that owns the golden. A golden built on one provider
   is not automatically available on the other. Check
   `armada snapshot capabilities --provider boat --json` (or substitute modal).
 - All launches through `POST /api/v1/sandbox/launch` require an explicit provider
-  and harness. Personal sessions can select the organization by slug or UUID. For a scoped token, omit `org` or send its org UUID.
+  and harness. The server resolves model credentials during launch. Personal sessions can select the organization by slug or UUID. For a scoped token, omit `org` or send its org UUID.
   A malformed request returns HTTP 400 with error code `invalid`.
   For REST golden and Docker launches, read the Armada ID from `sandbox.id`.
   The TypeScript SDK uses the same `LaunchResult` envelope for ordinary launches.
-  Docker returns `golden: null`. Pinned template launches return a template receipt.
+  Docker returns `golden: null`. Docker REST launches require `idempotencyKey`.
+  Save the key and replay the identical request after an uncertain launch.
+  With `armada launch --provider docker`, pass the saved key as `--idempotency-key`.
+  For a pinned Modal template on `sandbox/launch`, supply `idempotencyKey` and
+  read `sandbox.id`. With `templates/launch` or `armada template launch`, use
+  `requestKey` or `--request-key` and read the template receipt.
 - Ordinary Modal launches default to the enrolled runtime. To confirm the deployed
   default, check `modalRuntime.defaultPath` in the authenticated response to
   `POST /api/v1/launch/options`.
@@ -188,7 +195,8 @@ a substitute for a pushed branch. Modal retains disk only after a successful
 checkpoint; checkpoint_failed_disk_not_retained means it cannot resume. `armada rm SANDBOX --yes` permanently deletes
 a stopped sandbox and recovery archives: require explicit user authorization
 and confirmed recovery first. For direct API callers, use
-`DELETE /api/v1/sandboxes/:id` or `POST /api/v1/sandbox/delete`. The dashboard
+`DELETE /api/v1/sandboxes/{id}`. Reuse the optional `requestId` query parameter
+after an uncertain Docker deletion. The dashboard
 uses the REST operations for extension and stopped Docker sandbox deletion.
 
 For resource advice and preserved archives, use `armada advice SANDBOX --json`

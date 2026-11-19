@@ -1,15 +1,17 @@
 import { expect, test } from "bun:test";
-import { createJobsRunner, type Job, type JobStore } from "./runner.ts";
+import { createGoldenBuildJob } from "../golden-worker.ts";
+import { retentionMaintenanceJob } from "../retention-maintenance.ts";
+import { createJobsRunner, type Job, type JobKind, type JobStore } from "./runner.ts";
 
-function fixture() {
+function fixture(kind = "stop") {
   let now = 0;
   let renewalUnavailable = false;
   const timers = new Map<() => void, number>();
   const rows = ["one", "two"].map((id) => ({
     id,
-    kind: "stop",
-    sandbox_id: id,
-    generation: "1",
+    kind,
+    sandbox_id: kind === "maintenance" ? null : id,
+    generation: kind === "maintenance" ? null : "1",
     lease_epoch: "0",
     attempts: 0,
     max_attempts: 2,
@@ -18,18 +20,20 @@ function fixture() {
     owner: "",
     expires: 0,
     terminal: false,
+    due: 0,
   }));
   const current = (job: Job, owner: string) =>
     rows.find(
       (row) => row.id === job.id && row.owner === owner && row.lease_epoch === job.lease_epoch && row.expires > now,
     );
   const completed: string[] = [];
+  const changed = new Map<string, ReturnType<typeof Promise.withResolvers<void>>>();
   let renewalGate: Promise<void> | undefined;
   const store: JobStore = {
     async claim(kind, owner, seconds, concurrency) {
       const candidates = rows.filter((row) => row.kind === kind && !row.terminal);
       if (candidates.filter((row) => row.expires > now).length >= concurrency) return;
-      const row = candidates.find((row) => row.expires <= now);
+      const row = candidates.find((row) => row.expires <= now && row.due <= now);
       if (!row) return;
       row.owner = owner;
       row.expires = now + seconds * 1000;
@@ -41,6 +45,9 @@ function fixture() {
       return job.attempts <= job.max_attempts ? "dispatch" : "reconcile";
     },
     async retireStale() {},
+    async handoffGeneration() {
+      throw new Error("Unexpected turn admission.");
+    },
     async renew(job, owner, seconds) {
       if (renewalGate) await renewalGate;
       const row = current(job, owner);
@@ -48,18 +55,22 @@ function fixture() {
       row.expires = now + seconds * 1000;
       return true;
     },
-    async complete(job, owner) {
+    async complete(job, owner, result) {
       completed.push(job.id);
       const row = current(job, owner);
-      if (row) row.terminal = true;
-      return Boolean(row);
+      if (!row) return false;
+      row.terminal = result.status !== "retry";
+      if (result.status === "retry") row.due = result.after.getTime();
+      row.expires = now;
+      changed.get(row.id)?.resolve();
+      return true;
     },
   };
   return {
-    runner(run: Parameters<typeof createJobsRunner>[1][string]["run"], concurrency = 1) {
+    runner(run: JobKind["run"], concurrency = 1, options: Pick<JobKind, "drain" | "timeoutMs"> = {}) {
       return createJobsRunner(
         store,
-        { stop: { run, concurrency } },
+        { [kind]: { run, concurrency, ...options } },
         () => {},
         (ms, callback) => {
           timers.set(callback, now + ms);
@@ -77,6 +88,11 @@ function fixture() {
     },
     loseRenewal() {
       renewalUnavailable = true;
+    },
+    settled(id: string) {
+      const settled = Promise.withResolvers<void>();
+      changed.set(id, settled);
+      return settled.promise;
     },
     completed,
     holdRenewal(gate: Promise<void>) {
@@ -150,4 +166,112 @@ test("a second runner respects the registered kind's capacity until the lease is
   expect(await second.reconcileOne(tick)).toBe(true);
   await second.drain();
   expect(f.completed).toEqual(["one", "two"]);
+});
+
+test.each([false, true])("dispatch timeout fences late completion only on ownership loss (%s)", async (takeover) => {
+  const f = fixture();
+  const entered = Promise.withResolvers<AbortSignal>();
+  const finish = Promise.withResolvers<void>();
+  const first = f.runner(
+    async (_job, { signal }) => {
+      entered.resolve(signal);
+      await finish.promise;
+      return { status: "done" };
+    },
+    1,
+    { timeoutMs: 15_000 },
+  );
+  expect(await first.reconcileOne(tick)).toBe(true);
+  const signal = await entered.promise;
+  f.advance(10_000);
+  await Promise.resolve();
+  f.advance(5_000);
+  expect(signal.aborted).toBe(true);
+  if (takeover) {
+    const second = f.runner(async () => ({ status: "done" }));
+    f.advance(25_000);
+    expect(await first.reconcileOne(tick)).toBe(false);
+    expect(await second.reconcileOne(tick)).toBe(true);
+    await second.drain();
+    expect(f.completed).toEqual(["one"]);
+  }
+  finish.resolve();
+  await first.drain();
+  expect(f.completed).toEqual(["one"]);
+});
+
+test("shutdown drains an in-flight retention sweep without completing its lease", async () => {
+  const f = fixture("maintenance");
+  const entered = Promise.withResolvers<void>();
+  const released = Promise.withResolvers<void>();
+  const handler = retentionMaintenanceJob(
+    {
+      async query() {
+        return { rows: [] };
+      },
+    },
+    {
+      async purgeExpired() {
+        entered.resolve();
+        await released.promise;
+      },
+    },
+    () => {},
+    () => new Date(0),
+  );
+  const runner = f.runner(handler.run, handler.concurrency);
+  expect(await runner.reconcileOne(tick)).toBe(true);
+  await entered.promise;
+  runner.stopAdmission();
+  const drained = runner.drain();
+  try {
+    const nextTurn = new Promise<string>((resolve) => setImmediate(() => resolve("pending")));
+    expect(await Promise.race([drained.then(() => "drained"), nextTurn])).toBe("pending");
+  } finally {
+    released.resolve();
+    await drained;
+  }
+  expect(f.completed).toEqual([]);
+});
+
+test("hung golden recovery yields its lease to the next build and stays tracked through drain", async () => {
+  const f = fixture("golden_build");
+  const deadline = new AbortController();
+  const entered = Promise.withResolvers<AbortSignal | undefined>();
+  const released = Promise.withResolvers<void>();
+  const handler = createGoldenBuildJob(
+    {
+      async dispatchReceipt(id, _epoch, _signal, recover) {
+        if (id === "two") return { processed: true, pending: false };
+        await recover?.(async (signal) => {
+          entered.resolve(signal);
+          await released.promise;
+        });
+        return { processed: false, pending: true };
+      },
+    },
+    () => 0,
+    () => deadline.signal,
+  );
+  const runner = f.runner(handler.run, handler.concurrency, { drain: handler.drain });
+  const recoveryRetried = f.settled("one");
+  const nextBuildDone = f.settled("two");
+  try {
+    expect(await runner.reconcileOne(tick)).toBe(true);
+    const signal = await entered.promise;
+    expect(await runner.reconcileOne(tick)).toBe(false);
+    deadline.abort();
+    await recoveryRetried;
+    expect(signal?.aborted).toBe(true);
+    expect(await runner.reconcileOne(tick)).toBe(true);
+    await nextBuildDone;
+    expect(await runner.reconcileOne(tick)).toBe(false);
+    const drained = runner.drain();
+    const nextTurn = new Promise<string>((resolve) => setImmediate(() => resolve("pending")));
+    expect(await Promise.race([drained.then(() => "drained"), nextTurn])).toBe("pending");
+  } finally {
+    deadline.abort();
+    released.resolve();
+    await runner.drain();
+  }
 });

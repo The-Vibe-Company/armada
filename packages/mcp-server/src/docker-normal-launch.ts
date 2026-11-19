@@ -26,7 +26,7 @@ import {
   validateReadableVariables,
   validateSkillPins,
 } from "@armada/core";
-import { type LaunchInput, launch as launchOperation } from "@armada/core/contract";
+import { dockerHostLaunchFields, dockerSnapshotLaunchFields } from "@armada/core/contract";
 import {
   applyLaunchAccountDefaults,
   createSkillDefaultsService,
@@ -43,6 +43,7 @@ import {
   resolveLaunchVariables,
   validateLaunchSkillPins,
 } from "@armada/core/server";
+import { z } from "zod";
 import type { Caller } from "./caller.ts";
 import { isLaunchConnectionList, UUID } from "./control-input.ts";
 import type { createDockerBootstrapService } from "./docker-bootstrap-service.ts";
@@ -68,6 +69,7 @@ import { createRuntimeCommands } from "./runtime-commands.ts";
 import { createRuntimeEnrolments, scopedRuntimeSql } from "./runtime-enrolment.ts";
 import { type RuntimeGitHub, RuntimeGitHubConnectionError, RuntimeGitHubDeliveryError } from "./runtime-github.ts";
 import type { RuntimeMcp } from "./runtime-mcp.ts";
+import { publishDockerRuntimeReady } from "./sandbox-lifecycle.ts";
 
 type Request = {
   repos?: GoldenRepo[];
@@ -188,7 +190,12 @@ function identifier(value: unknown): string {
   if (typeof value !== "string" || !UUID.test(value)) throw failure("invalid_request");
   return value.toLowerCase();
 }
-type DockerAdmissionInput = Extract<LaunchInput, { provider: "docker"; requestId: string }>;
+const reservationId = z.string().regex(UUID);
+const dockerAdmissionInput = z.union([
+  dockerHostLaunchFields.extend({ requestId: reservationId }),
+  dockerSnapshotLaunchFields.extend({ requestId: reservationId }),
+]);
+type DockerAdmissionInput = z.infer<typeof dockerAdmissionInput>;
 
 function normalize(body: DockerAdmissionInput, org: string, hostId: string, image: string): Request {
   const ttlSeconds = body.ttlSeconds ?? DEFAULT_LAUNCH_TTL_SECONDS;
@@ -450,8 +457,8 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
     let reason = "request_validation";
     let diagnosticSandboxId: string | undefined;
     const validate = () => {
-      const parsed = launchOperation.input.body.safeParse(body);
-      if (!parsed.success || parsed.data.provider !== "docker" || !("requestId" in parsed.data))
+      const parsed = dockerAdmissionInput.safeParse(body);
+      if (!parsed.success)
         throw failure(
           "invalid_request",
           body && Object.hasOwn(body, "image")
@@ -877,9 +884,8 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
         await live();
         await createRuntimeEnrolments(sql, key).withOwner(request.requestId, actor.userId, async (tx, scope) => {
           if (scope.epoch !== receipt.epoch) throw failure("sandbox_not_ready");
-          await tx.query(`update public.sandboxes set status='ready' where id=$1 and status='starting'`, [
-            request.requestId,
-          ]);
+          if (!(await publishDockerRuntimeReady(tx, request.requestId, "prepared_launch")))
+            throw failure("sandbox_not_ready");
         });
         reason = "first_prompt";
         phase = DOCKER_LAUNCH_FAILURE_MESSAGES.prompt;

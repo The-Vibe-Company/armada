@@ -14,7 +14,11 @@ type LaunchDetails = {
   action?: LaunchError["action"];
   stage?: LaunchError["stage"];
 };
-type ToolErrorDetails = LaunchDetails | ProviderRateLimitDetails | { phase: GitHubHydrationPhase };
+type ToolErrorDetails =
+  | LaunchDetails
+  | ProviderRateLimitDetails
+  | { phase: GitHubHydrationPhase }
+  | { sandboxId: string };
 
 const launchDetails = z.object({
   reason: z
@@ -106,7 +110,14 @@ export async function callSharedTool(
     throw new ToolApiError("invalid_request", "Turn controls target the sandbox by ID. Omit conversation_id.");
   const measure: NonNullable<ToolContext["measure"]> = context.measure ?? ((_phase, work) => work());
   let invoke: (() => Promise<CallToolResult>) | undefined;
-  bindRestTool(context, name, (_name, config, run) => {
+  let cause: unknown;
+  const localContext: ToolContext = {
+    ...context,
+    onLocalToolError: (error) => {
+      cause = error;
+    },
+  };
+  bindRestTool(localContext, name, (_name, config, run) => {
     invoke = async () => {
       const input =
         parsed ?? (config.input instanceof z.ZodObject ? config.input : z.object(config.input)).safeParse(args);
@@ -150,6 +161,7 @@ export async function callSharedTool(
       code,
       structured?.message ?? (block !== marker ? block?.text : undefined) ?? INTERNAL_FAILURE_MESSAGE,
       details,
+      { cause },
     );
   }
   const response: unknown = result.structuredContent;

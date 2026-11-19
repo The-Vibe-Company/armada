@@ -16,6 +16,9 @@ import { Runner } from "../../agent-runtime/src/runtime.ts";
 import { createMemoryAuthStore } from "../../auth/src/index.ts";
 import { sandboxFailure } from "../../cli/src/sandbox-errors.ts";
 import { type ControlOptions, handleControlRequest } from "../../mcp-server/src/control.ts";
+import { createGoldenBuildJob } from "../../mcp-server/src/golden-worker.ts";
+import { createJobsRunner } from "../../mcp-server/src/jobs/runner.ts";
+import { createJobsStore } from "../../mcp-server/src/jobs/store.ts";
 import { createSandboxLifecycle } from "../../mcp-server/src/sandbox-lifecycle.ts";
 import {
   appendModalEvents,
@@ -578,6 +581,49 @@ async function goldenBuildGitHub(key: string): Promise<typeof fetch> {
   return githubFetch;
 }
 
+function goldenBuildRunner(builds: GoldenBuildJobs, receiptId: string) {
+  const idle = new AbortController().signal;
+  let now = Date.UTC(2100, 0, 1);
+
+  async function tick() {
+    const errors: string[] = [];
+    const runner = createJobsRunner(
+      createJobsStore(db),
+      {
+        golden_build: createGoldenBuildJob(
+          builds,
+          () => now,
+          () => idle,
+        ),
+      },
+      (message) => errors.push(message),
+      () => () => {},
+    );
+    const claimed = await runner.reconcileOne(idle);
+    await runner.drain();
+    expect(errors).toEqual([]);
+    return claimed;
+  }
+
+  async function retry() {
+    now += 60_000;
+    const { rows } = await db.query(
+      "update public.jobs set run_after='-infinity' where id=$1 and state='queued' and run_after=$2 returning id",
+      [receiptId, new Date(now)],
+    );
+    expect(rows).toEqual([{ id: receiptId }]);
+    expect(await tick()).toBe(true);
+  }
+
+  async function expectDone() {
+    const { rows } = await db.query("select state from public.jobs where id=$1", [receiptId]);
+    expect(rows).toEqual([{ state: "done" }]);
+    expect(await tick()).toBe(false);
+  }
+
+  return { tick, retry, expectDone };
+}
+
 test("a failed Modal builder image records safe diagnostics and frees capacity without creating a sandbox", async () => {
   const f = fixture();
   const key = Buffer.alloc(32, 60).toString("base64");
@@ -617,7 +663,9 @@ test("a failed Modal builder image records safe diagnostics and frees capacity w
   const job = await jobs.admit(provider, actor, input, crypto.randomUUID());
   const log = spyOn(console, "error").mockImplementation(() => {});
   try {
-    expect(await jobs.runOne()).toBe(true);
+    const { tick, expectDone } = goldenBuildRunner(jobs, job.jobId);
+    expect(await tick()).toBe(true);
+    await expectDone();
     const diagnostic = `Modal builder image failed. ${upstream}`;
     expect(await jobs.status(scope.userId, job.jobId)).toMatchObject({
       phase: "builder",
@@ -684,6 +732,7 @@ test("durable golden recovery persists an interrupted Modal builder before exact
     { name: "lost-builder", visibility: "private", repos: ["acme/web"], modal: scope.binding },
     crypto.randomUUID(),
   );
+  const { tick, retry, expectDone } = goldenBuildRunner(jobs, job.jobId);
   const fence = crypto.randomUUID();
   await db.query(
     "update golden_build_jobs set state='recovery_required',phase='builder',error_code='build_failed',fence=$2 where id=$1",
@@ -757,14 +806,14 @@ test("durable golden recovery persists an interrupted Modal builder before exact
     await db.query("update golden_build_jobs set fence=$2 where id=$1", [job.jobId, crypto.randomUUID()]);
     return found;
   };
-  await jobs.reconcileOne();
+  expect(await tick()).toBe(true);
   expect((await row()).builder_id).toBeNull();
   expect(f.log).not.toContain("terminate");
   await db.query("update golden_build_jobs set fence=$2 where id=$1", [job.jobId, fence]);
   f.provider.findGoldenBuilder = discover;
   for (const phase of ["snapshot", "persist"]) {
     await db.query("update golden_build_jobs set phase=$2 where id=$1", [job.jobId, phase]);
-    await jobs.reconcileOne();
+    await retry();
     expect((await row()).builder_id).toBeNull();
     expect(f.log).not.toContain("terminate");
   }
@@ -773,20 +822,19 @@ test("durable golden recovery persists an interrupted Modal builder before exact
     reserved.info.id,
     JSON.stringify({ ...originalRecord, snapshotImages: [{ name: "retained-proof", imageId: "im_proof" }] }),
   ]);
-  let concurrentTicks = 0;
+  let competingClaim: boolean | undefined;
   let retainedDiscoveries = 0;
   f.provider.findGoldenBuilder = async (req) => {
     retainedDiscoveries++;
     return discover(req);
   };
   concurrentAfterPersist = async () => {
-    concurrentTicks++;
-    await jobs.reconcileOne();
+    competingClaim = await tick();
   };
-  await jobs.reconcileOne();
-  await jobs.reconcileOne();
-  expect(concurrentTicks).toBe(1);
-  expect(retainedDiscoveries).toBe(3);
+  await retry();
+  await retry();
+  expect(competingClaim).toBe(false);
+  expect(retainedDiscoveries).toBe(2);
   f.provider.findGoldenBuilder = discover;
   expect(await row()).toMatchObject({ builder_id: reserved.info.id, state: "recovery_required" });
   expect(f.log).not.toContain("terminate");
@@ -795,7 +843,7 @@ test("durable golden recovery persists an interrupted Modal builder before exact
     "update modal_machines set record=$2::jsonb,lease_id=$3,lease_until=now()+interval '15 minutes' where id=$1",
     [reserved.info.id, JSON.stringify(originalRecord), crypto.randomUUID()],
   );
-  await jobs.reconcileOne();
+  await retry();
   expect((await row()).state).toBe("recovery_required");
   expect(f.log).not.toContain("terminate");
   await db.query("update modal_machines set lease_until=now()-interval '1 second' where id=$1", [reserved.info.id]);
@@ -807,7 +855,7 @@ test("durable golden recovery persists an interrupted Modal builder before exact
     ]);
     return found;
   };
-  await jobs.reconcileOne();
+  await retry();
   expect((await row()).state).toBe("recovery_required");
   expect(f.log).not.toContain("terminate");
   expect(f.log).not.toContain("delete-image");
@@ -821,7 +869,7 @@ test("durable golden recovery persists an interrupted Modal builder before exact
   });
   for (const name of ["NotFoundError", "TimeoutError"]) {
     f.lookupError(Object.assign(new Error("synthetic SDK private payload"), { name }));
-    await jobs.reconcileOne();
+    await retry();
     expect(await row()).toMatchObject({ builder_id: reserved.info.id, state: "recovery_required" });
     expect((await f.store.get(reserved.info.id)).phase).toBe("creating");
     expect(f.log).not.toContain("terminate");
@@ -854,20 +902,20 @@ test("durable golden recovery persists an interrupted Modal builder before exact
       armada_generation: "1",
       [tag]: "wrong",
     });
-    await jobs.reconcileOne();
+    await retry();
     expect((await row()).state).toBe("recovery_required");
     expect(f.log).not.toContain("terminate");
   }
   f.ownership();
   // A later named lookup succeeds: cleanup only, no SDK create retry or command execution.
-  await jobs.reconcileOne();
+  await retry();
   expect((await row()).state).toBe("failed");
   expect((await f.store.get(reserved.info.id)).phase).toBe("deleted");
   expect(f.creates).toBe(1);
   expect(f.log.filter((x) => x === "terminate")).toHaveLength(1);
   expect(f.log).not.toContain("root-exec");
   expect(f.log).not.toContain("snapshot");
-  await jobs.reconcileOne();
+  await expectDone();
   expect(f.creates).toBe(1);
   expect(f.log.filter((x) => x === "terminate")).toHaveLength(1);
 });
@@ -917,6 +965,7 @@ test.each(["interrupted", "abandoned"] as const)(
       { name: "rolled-back", visibility: "private", repos: ["acme/web"], modal: scope.binding },
       crypto.randomUUID(),
     );
+    const { tick, retry, expectDone } = goldenBuildRunner(jobs, job.jobId);
     const builder = await f.provider.createGolden({ idempotencyKey: job.jobId, labels: { armada: "golden-builder" } });
     const artifact = crypto.randomUUID();
     await f.provider.snapshot({ sandboxId: builder.id, name: artifact });
@@ -953,14 +1002,15 @@ test.each(["interrupted", "abandoned"] as const)(
     const state = async () =>
       (await db.query<{ state: string }>("select state from golden_build_jobs where id=$1", [job.jobId])).rows[0]
         ?.state;
-    await jobs.reconcileOne();
+    expect(await tick()).toBe(true);
     expect(await state()).toBe("recovery_required");
     expect((await f.store.get(builder.id)).phase).toBe(parked);
     // Recovery itself retired a still-live artifact; only the image service blocks its collection.
     await expect(f.provider.getSnapshot(artifact)).rejects.toMatchObject({ code: "not_found" });
     f.onImageDelete(undefined);
-    await jobs.reconcileOne();
+    await retry();
     expect(await state()).toBe("failed");
+    await expectDone();
     expect(await f.provider.collectRetiredSnapshot(artifact)).toBe("collected");
     expect((await f.store.get(builder.id)).phase).toBe("deleted");
     expect(terminations).toBe(mode === "interrupted" ? 2 : 1);
@@ -1046,6 +1096,71 @@ test("overlapping forks refuse source contention definitively before allocating"
     await first;
   }
 });
+test("enrolled Modal forks from one snapshot can boot concurrently", async () => {
+  const f = fixture(scope, fixtureSql, undefined, undefined, true);
+  const { name } = await savedGolden(f);
+  const entered = deferred();
+  const release = deferred();
+  const prepare = f.distribution.prepareFreshMachine!;
+  let firstBoot = true;
+  f.distribution.prepareFreshMachine = async (sandbox, row) => {
+    if (firstBoot) {
+      firstBoot = false;
+      entered.resolve();
+      await release.promise;
+    }
+    await prepare(sandbox, row);
+  };
+  const first = f.provider.fork({ from: name });
+  await Promise.race([entered.promise, first]);
+  try {
+    const second = await f.provider.fork({ from: name });
+    expect(second.state).toBe("ready");
+    release.resolve();
+    expect((await first).id).not.toBe(second.id);
+  } finally {
+    release.resolve();
+    await first;
+  }
+});
+
+test("enrolled Modal fork refuses a snapshot retired before reservation", async () => {
+  const source = fixture();
+  const { name } = await savedGolden(source);
+  const fork = fixture(
+    scope,
+    {
+      query: fixtureSql.query,
+      async transaction(work) {
+        await source.provider.deleteSnapshot(name);
+        return db.transaction(work);
+      },
+    },
+    undefined,
+    undefined,
+    true,
+  );
+  const requestKey = crypto.randomUUID();
+  await expect(fork.provider.fork({ from: name, idempotencyKey: requestKey })).rejects.toMatchObject({
+    code: "not_found",
+  });
+  expect(await fork.store.findByRequestKey(requestKey)).toBeNull();
+  expect(fork.creates).toBe(0);
+});
+
+test("snapshot retirement refuses a live enrolled Modal fork reference", async () => {
+  const f = fixture(scope, fixtureSql, undefined, undefined, true);
+  const { name } = await savedGolden(f);
+  const child = await f.provider.fork({ from: name });
+  const error = await f.provider.deleteSnapshot(name).catch((failure: unknown) => failure);
+  expect(error).toMatchObject({ code: "conflict", providerCode: "snapshot_source_busy" });
+  expect(isNonMutatingProviderRefusal(error)).toBe(true);
+  expect((await f.provider.getSnapshot(name)).name).toBe(name);
+  await f.provider.delete({ sandboxId: child.id });
+  await f.provider.deleteSnapshot(name);
+  await expect(f.provider.getSnapshot(name)).rejects.toMatchObject({ code: "not_found" });
+});
+
 test("enrolled Modal forks mount the environment artifact cache read-only", async () => {
   const f = fixture(scope, db, undefined, undefined, true);
   const volume = new Volume("vo_public_artifacts");
@@ -1931,7 +2046,7 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     await expect(f.provider.getSnapshot(name)).rejects.toMatchObject({ code: "not_found" });
     expect((await f.store.images(builder.id)).find((x) => x.info.name === name)?.collecting).toBe(true);
     // The source is busy with its own lifecycle, and the claimed image is still collected.
-    await f.store.lease(builder.id, () => f.provider.collectGarbage());
+    await f.store.lease(builder.id, () => f.provider.collectRetiredSnapshot(name));
     expect(await f.store.tombstoneSources()).not.toContain(builder.id);
   });
   test("a concurrent sweep skips a live dispatch claim and recovers an expired one", async () => {
@@ -1954,7 +2069,7 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     const retiring = f.provider.deleteSnapshot(name);
     await entered.promise;
     // An overlapping sweep while the claim is live dispatches nothing.
-    await f.provider.collectGarbage();
+    await expect(f.provider.collectRetiredSnapshot(name)).resolves.toBe("pending");
     expect(calls).toBe(1);
     const expire = () =>
       db.query(
@@ -1971,7 +2086,7 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     expect(claimed?.collectToken).toBe("newer");
     // A crashed newer holder's claim expires too, and the next sweep takes and completes it.
     await expire();
-    await f.provider.collectGarbage();
+    await expect(f.provider.collectRetiredSnapshot(name)).resolves.toBe("collected");
     expect(calls).toBe(2);
     expect(await f.store.tombstoneSources()).not.toContain(builder.id);
   });
@@ -2599,15 +2714,12 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     expect(JSON.stringify((await db.query("select record from public.modal_machines")).rows)).not.toContain(
       "synthetic-fallback-secret",
     );
-    // Earlier tests leave tombstones in this shared scope; collect them first so the counts below
-    // concern only this snapshot.
-    await userKey.provider.collectGarbage();
     let calls = f.log.filter((x) => x === "delete-image").length;
     await provider.deleteSnapshot(snapshot);
     expect(f.log.filter((x) => x === "delete-image")).toHaveLength(calls);
     await settleDetachedModalCollections();
     calls = f.log.filter((x) => x === "delete-image").length;
-    await userKey.provider.collectGarbage();
+    await expect(userKey.provider.collectRetiredSnapshot(snapshot)).resolves.toBe("pending");
     expect(f.log.filter((x) => x === "delete-image")).toHaveLength(calls); // Cannot collect another authority's tombstone.
     await restoredConnection.delete({ sandboxId: fork.id });
     expect(f.log.filter((x) => x === "delete-image").length).toBeGreaterThan(calls);
@@ -4009,4 +4121,28 @@ test("connection probe uses only the active runtime and validates its receipt wi
   ).rejects.toMatchObject({ code: "sandbox_not_ready" });
   expect(f.creates).toBe(creates);
   expect(f.log).toEqual([]);
+});
+
+test("a native scan cannot exec on a newer physical incarnation", async () => {
+  const f = fixture();
+  const worker = await activeWorker(f);
+  const { physicalGeneration } = await f.provider.get(worker.id);
+  if (!physicalGeneration) throw new Error("Expected an observed physical generation");
+  const request = {
+    sandboxId: worker.id,
+    command: "true",
+    onlyIfRunning: true,
+    expectedPhysicalGeneration: physicalGeneration,
+  };
+  await f.provider.stop({ sandboxId: worker.id });
+  await f.provider.exec({ sandboxId: worker.id, command: "pwd" });
+  const replacement = await f.provider.get(worker.id);
+  if (!replacement.physicalGeneration) throw new Error("Expected a replacement physical generation");
+  expect(replacement.physicalGeneration).not.toBe(physicalGeneration);
+  const execs = f.log.filter((call) => call === "exec").length;
+
+  await expect(f.provider.exec(request)).rejects.toMatchObject({ code: "conflict" });
+  expect(f.log.filter((call) => call === "exec")).toHaveLength(execs);
+  await f.provider.exec({ ...request, expectedPhysicalGeneration: replacement.physicalGeneration });
+  expect(f.log.filter((call) => call === "exec")).toHaveLength(execs + 1);
 });

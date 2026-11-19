@@ -1,16 +1,16 @@
 # Launch with Skillpack skills (#1007)
 
-This dashboard slice adds **Additional skills** to ordinary environment launches,
-and shows recorded installation receipts inside authorized sandbox Details.
-Templates and default editors follow as separate small slices.
+Open **Skills** in the snapshot launch form to add exact pins. After launch,
+open **Skills** in the sandbox details to see its installation receipts. Use the
+[template editor](template-skills.md) to save pins for template launches.
 
 The picker reads the caller's connected workspace or the public catalog, showing
 name, description, visibility and exact version. Search explicitly covers loaded
 results; additional pages can be loaded. Select a skill, choose a published exact
 version, then add it. Catalog failures do not block a plain launch: exact-pin
-entry remains available. Missing/refused keys link to Build > Skills.
+entry remains available. Missing/refused keys link to **What agents have → Skills**.
 
-Selections are additions/overrides to the existing environment/org/personal
+Selections are additions/overrides to the existing snapshot, organization, and personal
 defaults, not a preview of all resolved defaults. Empty selections omit the
 launch field. Server and browser share a browser-safe exact-pin policy; the
 backend remains the installation/receipt authority. No key is passed to the
@@ -28,6 +28,6 @@ depends on Skillpack's existing anonymous catalog being enabled. Exact-pin entry
 and private browsing are independent of public availability.
 
 Coordinator staging: select a visible workspace skill/version and a public pin,
-launch on Boat and Modal, inspect both receipts, then try a missing/revoked key.
+launch on Modal, inspect both receipts, then try a missing/revoked key.
 Confirm selected skills remain editable after launch refusal and that a member
 without sandbox interior access cannot see its receipts.

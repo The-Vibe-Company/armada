@@ -82,7 +82,7 @@ repo="The-Vibe-Company/armada"
 run="repos/$repo/actions/runs/$run_id"
 pending="$run/pending_deployments"
 metadata_job=$(gh api --paginate "$run/jobs" --jq \
-  '.jobs[] | select(.name == "Validate the release version and source SHA" and .conclusion == "success") | .id')
+  '.jobs[] | select((.name | split(" / ") | last) == "Validate the release version and source SHA" and .conclusion == "success") | .id')
 candidate_sha=$(gh api "repos/$repo/actions/jobs/$metadata_job/logs" |
   sed -nE 's/^.*Release candidate SHA: ([0-9a-f]{40})[[:space:]]*$/\1/p')
 environment_id=$(gh api "$pending" --jq \
@@ -357,13 +357,14 @@ acceptance evidence](merge-queue.md#releases-do-not-freeze-merges-1850). The
 one-time provider cutover freeze above is separate.
 
 Ordinary main workflows retain only the latest pending main without cancelling
-active work. Release holds the shared `release-production` admission lock for its
-whole lifetime; ordinary staging jobs acquire that same lock. Pinned child smoke
-uses a distinct lock to avoid reacquiring its parent's reservation. The shared
-lock is the only admission authority: an ordinary job that acquires it
-proceeds, regardless of stale queued Release rows in the Actions API. Already
-admitted deployments finish safely. Preparation and dry runs briefly serialize on
-the lock too, but do not create a separate reservation or read production configuration.
+active work. Release classifies intent before taking any shared lock. Only a
+publishing pipeline call holds `release-production`, from post-admission
+validation through npm publication. Ordinary staging and rollback acquire the
+same lock. Exact-source child smoke uses a distinct lock, so it can run while
+its parent holds the reservation. Version PR preparation uses its own group
+to serialize writes to the version branch. Dry runs use a run-specific group.
+An ordinary staging job that acquires the shared lock proceeds regardless of
+queued Release preparation runs or stale Actions API rows.
 
 A `workflow_run` completion wakeup (success, failure or cancellation) is the
 sole automatic ordinary staging trigger. The wakeup resolves current main
@@ -686,14 +687,17 @@ The release sequence follows the design in [#2838](https://github.com/The-Vibe-C
 
 ### Admission and recovery
 
-Every main push can enqueue a Release run. The workflow-level
-[`release-production` group](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/control-workflow-concurrency)
-with `queue: max` serializes runs and allows up to 100 pending. Each run reads
-release-by-tag **after admission**, so queued pushes do not all act on the
-same 404. A 404 for the current version with a matching merged version PR
-allows a candidate. A 200 allows ordinary PR preparation and verified label
-reconciliation. Other API responses fail closed. After the SHA is frozen, a
-same-version main advance alone does not invalidate a passing candidate.
+Every main push starts a Release run. Its intent job reads release-by-tag
+without holding the [`release-production` group](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/control-workflow-concurrency).
+A 404 for the current version with a matching merged version PR allows a
+candidate. A 200 allows version PR preparation and verified label reconciliation.
+Other API responses fail closed. Only a candidate or explicit recovery queues
+for the shared lock, with `queue: max`. The publishing pipeline rechecks intent
+after admission, so a queued candidate for a version that was already published
+or superseded exits before opening deployment environments. If the version
+was already published, the run prepares the next version PR after the call
+releases the lock. After the SHA is frozen, a same-version main advance alone
+does not invalidate a passing candidate.
 Before publication, require the candidate version on main and reject a newer
 stable tag. After publication, production and recovery require the latest stable
 version and its exact tag SHA.

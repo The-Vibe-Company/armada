@@ -9,9 +9,10 @@ import { runtimeBridgeTarget } from "./provider-runtime-admission.ts";
 import { lockRuntimeAccount } from "./runtime-account-admission.ts";
 import { runtimeAgentFor } from "./runtime-agent.ts";
 import type { createRuntimeCommands } from "./runtime-commands.ts";
-import { createRuntimeEnrolments } from "./runtime-enrolment.ts";
+import { createRuntimeEnrolments, runtimeTransaction } from "./runtime-enrolment.ts";
 import type { RuntimeGitHub } from "./runtime-github.ts";
 import type { RuntimeMcp } from "./runtime-mcp.ts";
+import type { RestoreScopedRuntimeAccess } from "./sandbox-armada-access.ts";
 import { refuseConversationSelector, SINGLE_CONVERSATION_GUIDANCE } from "./sandbox-conversation.ts";
 import {
   confirmRuntimeResumeActivation,
@@ -77,6 +78,7 @@ export function createRuntimeResume(
   prepare?: RuntimeResumePrepare,
   prepareMcp?: RuntimeMcp["prepare"],
   prepareGitHub?: RuntimeGitHub["prepareLaunch"],
+  restoreScopedAccess?: RestoreScopedRuntimeAccess,
 ) {
   const authority = createRuntimeEnrolments(sql, key);
   const environment = createGoldenRuntimeEnvironment(sql, key);
@@ -260,7 +262,7 @@ export function createRuntimeResume(
         await authority.withOwner(found.id, caller.userId, async (tx, scope) => {
           if (scope.epoch !== admitted.op.target_epoch || !receipt)
             throw new VaultError("conflict", "Resume epoch changed before publication.");
-          await createSqlData(tx)(caller).sandboxes.update(id, patch);
+          await createSqlData(runtimeTransaction(tx))(caller).sandboxes.update(id, patch);
           if (found.runtimeTransport === "dialout") await restoreModalResumeSchedule(tx, id);
           const saved = await tx.query(
             "update public.runtime_resumes set phase='complete',receipt=$3::jsonb where sandbox_id=$1 and request_id=$2 and phase='dispatched' returning request_id",
@@ -308,6 +310,14 @@ export function createRuntimeResume(
               await environment.deliver(found.provider, actor, found.id, admitted.op.target_epoch, signal);
             await prepareGitHub?.(caller, found.id);
             await prepareMcp?.(caller, found.id, signal);
+            if (found.runtimeTransport === "dialout")
+              await restoreScopedAccess?.(
+                caller.userId,
+                found.id,
+                admitted.op.target_epoch,
+                String(admitted.current.lifecycleGeneration),
+                signal,
+              );
           }
           // #2560: restored, verified and reauthorized; the resume prompt's dispatch is not launch time.
           await recordLaunchStageQuietly(sql, found.id, "harness_ready", admitted.current.lifecycleGeneration);

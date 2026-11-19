@@ -6,7 +6,7 @@ import {
   type ProviderErrorCode,
   type VaultErrorCode,
 } from "@armada/core";
-import type { LaunchEnvelope } from "@armada/core/contract";
+import type { LaunchEnvelope, PinnedModalLaunchInput } from "@armada/core/contract";
 import { apiUrl, jsonPost, requestApi, TEMPLATE_LAUNCH_ROUTE } from "./request.ts";
 import { sandboxClient } from "./sandboxes.ts";
 
@@ -112,7 +112,8 @@ type DockerLaunchFields = {
   connections?: string[];
   variables?: { key: string; variableId: string; version: number }[];
   secrets?: { key: string; secretId: string; version: number }[];
-} & ({ requestId: string; idempotencyKey?: never } | { idempotencyKey: string; requestId?: never });
+  idempotencyKey: string;
+};
 /** Launch on a registered Docker host from the official Armada environment. There is no golden. */
 export type DockerHostLaunchInput = DockerLaunchFields & {
   hostId: string;
@@ -128,7 +129,9 @@ export type DockerSnapshotLaunchInput = DockerLaunchFields & {
   repos?: never;
 };
 export type DockerLaunchInput = DockerHostLaunchInput | DockerSnapshotLaunchInput;
-export type LaunchInput = GoldenLaunchInput | DockerLaunchInput;
+/** Explicit Modal runtime launch from an immutable template revision. */
+export type { PinnedModalLaunchInput };
+export type LaunchInput = GoldenLaunchInput | DockerLaunchInput | PinnedModalLaunchInput;
 /** The ordinary launch envelope for Boat, Modal and Docker. */
 export type LaunchResult = LaunchEnvelope;
 type LaunchResponse = Promise<LaunchResult>;

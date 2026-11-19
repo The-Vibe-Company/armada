@@ -38,7 +38,7 @@ function expression(input: unknown): string {
   // intentionally different Vixie DST semantics in the maintained engine.
   return fields.join(" ").toUpperCase();
 }
-function describe(cron: string, timezone: string, parsed: CronPattern): string {
+function formatScheduleDescription(cron: string, timezone: string, parsed: CronPattern): string {
   const options = { use24HourTimeFormat: true, throwExceptionOnParseError: true, locale: "en" };
   const fields = cron.split(" ");
   if (!parsed.starDOM && !parsed.starDOW) {
@@ -110,7 +110,11 @@ export function parseRoutineSchedule(cron: unknown, timezone: unknown): RoutineS
     const parsed = new CronPattern(normalized, tz, { mode: "5-part" });
     // Multiple minutes violate the minimum even on rare dates far beyond a preview.
     if (parsed.minute.filter(Boolean).length !== 1) minimumGap();
-    const schedule = { cron: normalized, timezone: tz, description: describe(normalized, tz, parsed) };
+    const schedule = {
+      cron: normalized,
+      timezone: tz,
+      description: formatScheduleDescription(normalized, tz, parsed),
+    };
     const calendar = job(schedule, new Date("2400-01-01T00:00:00Z"));
     try {
       if (!calendar.nextRun(REFERENCE)) invalid();

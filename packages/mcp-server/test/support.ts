@@ -30,7 +30,7 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import { openMigratedDatabase } from "../../../scripts/test-support/migrated-database.ts";
 import { createSqlData } from "../src/data.ts";
 import { createHandler, type HandlerOptions, type Route } from "../src/http.ts";
-import { sqlOver } from "../src/sql.ts";
+import { type SqlDriver, sqlOver } from "../src/sql.ts";
 
 export const PUBLIC_URL = "https://armada.example.com";
 export const ENCRYPTION_KEY = btoa(String.fromCharCode(...new Uint8Array(32).map((_, index) => index + 1)));
@@ -53,7 +53,21 @@ export interface People {
 
 /** A fresh database with the migrations, two orgs, three people, three goldens and encrypted credentials. */
 export async function database(): Promise<{ db: PGlite; people: People }> {
-  return seedDatabase(await openMigratedDatabase());
+  const db = await openMigratedDatabase();
+  try {
+    return await seedDatabase(db);
+  } catch (error) {
+    return closeAfterSetupFailure(db, error);
+  }
+}
+
+async function closeAfterSetupFailure(db: PGlite, error: unknown): Promise<never> {
+  try {
+    await db.close();
+  } catch (closeError) {
+    throw new AggregateError([error, closeError], "Test database setup and cleanup failed");
+  }
+  throw error;
 }
 
 /** Seed the common launch fixtures into an empty database owned by the caller. */
@@ -392,38 +406,55 @@ function fakeGitHub(db: PGlite) {
  * adapter sent an array literal. Run the server on this and a raw array parameter fails as it did on Railway.
  */
 export function bunLikeSql(db: PGlite, onQuery?: (text: string) => void): Sql {
-  return sqlOver({
-    async unsafe(text, params) {
-      onQuery?.(text);
-      if (params.some((param) => Array.isArray(param))) {
-        throw new Error(
-          'invalid input syntax for type uuid[]: Array value must start with "{" or dimension information.',
-        );
-      }
-      return (await db.query(text, params as unknown[])).rows;
-    },
-  });
+  const driver = (connection: Pick<PGlite, "query">) =>
+    ({
+      async unsafe(text, params) {
+        onQuery?.(text);
+        if (params.some((param) => Array.isArray(param))) {
+          throw new Error(
+            'invalid input syntax for type uuid[]: Array value must start with "{" or dimension information.',
+          );
+        }
+        return (await connection.query(text, params as unknown[])).rows;
+      },
+    }) satisfies SqlDriver;
+  return sqlOver({ ...driver(db), begin: (work) => db.transaction((tx) => work(driver(tx))) });
+}
+
+interface HarnessOptions {
+  /** The `Sql` the data, the credentials and the auth lookups run on. Default: PGlite as is. */
+  sql?: (db: PGlite) => Sql;
+  routes?: readonly Route[];
+  buildSsh?: GoldenCreateOptions["ssh"];
+  /** The store `/mcp` authenticates against. Default: the in-memory one the helpers fill. */
+  authStore?: (db: PGlite) => AuthStore;
+  log?: (line: string) => void;
+  /** The Modal adapter, when a test configures one. Default: none, as on a server before #513. */
+  modalProviderFor?: HandlerOptions["modalProviderFor"];
+  providerFor?: HandlerOptions["providerFor"];
+  modelAuth?: (db: PGlite) => NonNullable<HandlerOptions["modelAuth"]>;
+  connections?: HandlerOptions["connections"];
 }
 
 export async function harness(
-  options: {
-    /** The `Sql` the data, the credentials and the auth lookups run on. Default: PGlite as is. */
-    sql?: (db: PGlite) => Sql;
-    routes?: readonly Route[];
-    buildSsh?: GoldenCreateOptions["ssh"];
-    /** The store `/mcp` authenticates against. Default: the in-memory one the helpers fill. */
-    authStore?: (db: PGlite) => AuthStore;
-    log?: (line: string) => void;
-    /** The Modal adapter, when a test configures one. Default: none, as on a server before #513. */
-    modalProviderFor?: HandlerOptions["modalProviderFor"];
-    providerFor?: HandlerOptions["providerFor"];
-    modelAuth?: (db: PGlite) => NonNullable<HandlerOptions["modelAuth"]>;
-    connections?: HandlerOptions["connections"];
-  } = {},
+  options: HarnessOptions = {},
   /** Caller-owned seeded database; its owner closes it after all clients are done. */
   fixture?: Awaited<ReturnType<typeof database>>,
-): Promise<TestServer> {
-  const { db, people } = fixture ?? (await database());
+) {
+  const seeded = fixture ?? (await database());
+  try {
+    return createTestServer(options, seeded, fixture === undefined);
+  } catch (error) {
+    if (!fixture) return closeAfterSetupFailure(seeded.db, error);
+    throw error;
+  }
+}
+
+function createTestServer(
+  options: HarnessOptions,
+  { db, people }: Awaited<ReturnType<typeof database>>,
+  ownsDatabase: boolean,
+) {
   const boat = fakeBoat();
   const auth = createMemoryAuthStore();
   const clock = { now: new Date("2026-11-08T12:00:00.000Z") };
@@ -548,10 +579,25 @@ export async function harness(
       return client;
     },
     async close() {
-      for (const client of clients) await client.close();
-      if (!fixture) await db.close();
+      const errors: unknown[] = [];
+      for (const client of clients) {
+        try {
+          await client.close();
+        } catch (error) {
+          errors.push(error);
+        }
+      }
+      if (ownsDatabase) {
+        try {
+          await db.close();
+        } catch (error) {
+          errors.push(error);
+        }
+      }
+      if (errors.length === 1) throw errors[0];
+      if (errors.length > 1) throw new AggregateError(errors, "Test server cleanup failed");
     },
-  };
+  } satisfies TestServer;
 }
 
 /** The structured result of a tool call, or the error text when it failed. */

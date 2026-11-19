@@ -2,7 +2,7 @@ import { settleDetachedModalCollections } from "@armada/provider-modal";
 import type { Route } from "./http.ts";
 import { type defineRoutes, registerRoutes } from "./routes.ts";
 import type { ServerServices } from "./server-services.ts";
-import { createWorkerServices, extraReaperLanes, type LaneFactory, retentionWorker } from "./server-worker-modules.ts";
+import { createWorkerServices, extraReaperLanes, type LaneFactory } from "./server-worker-modules.ts";
 import { startServerWorkers } from "./server-workers.ts";
 
 export type MountFactory = (
@@ -63,7 +63,7 @@ export function registerServer(modules: readonly ServerModule[]) {
               const lane = create(context);
               return lane ? [{ name, lane }] : [];
             });
-          const managed = resolve(workers.managed);
+          const managed = [{ name: "sandbox-lifecycle", lane: context.lifecycle }, ...resolve(workers.managed)];
           const isolated = [...resolve(workers.isolated), ...extraReaperLanes(services)];
           const background = Array.from(workers.background).flatMap(([name, prepare]) => {
             const start = prepare(services);
@@ -71,23 +71,18 @@ export function registerServer(modules: readonly ServerModule[]) {
           });
           return {
             description: {
-              managed: ["sandbox-lifecycle", ...managed.map(({ name }) => name)],
+              managed: managed.map(({ name }) => name),
               isolated: isolated.map(({ name, lane }) => ({ name, sweep: lane.isolatedSweep === true })),
               background: background.map(({ name }) => name),
             },
             start() {
               const core = startServerWorkers(
-                services.goldenBuilds,
-                context.lifecycle,
-                options.logError,
-                services.goldenRetirements,
-                retentionWorker(services),
                 managed.map(({ lane }) => lane),
+                options.logError,
                 isolated.map(({ lane }) => lane),
               );
               const started = background.map(({ start }) => start());
               return {
-                goldenWorker: core.goldenWorker,
                 lifecycleWorker: core.lifecycleWorker,
                 done: Promise.all([core.done, ...started.map((worker) => worker.done)]).then(() => {}),
                 stop() {

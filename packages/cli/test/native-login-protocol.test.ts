@@ -1,7 +1,6 @@
 import { expect, test } from "bun:test";
 import { NativeCodexLoginProtocol, validateNativeCodexAuth } from "../src/native-login-protocol.ts";
 
-// Exact 0.166.0 JSON-RPC shapes, no provider/network/process or authorization in these tests.
 const challenge = {
   id: 2,
   result: {

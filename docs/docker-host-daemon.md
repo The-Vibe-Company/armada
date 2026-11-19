@@ -86,9 +86,8 @@ installed-feature discovery, not authorization or account health. With all three
 staging inputs above and a valid installed runtime manifest, Docker advertises
 `capabilities.launch:true` and the host list advertises `placement:true`.
 Host-only opt-in retains normal list/status/logs/stop/delete without admitting new
-placement. A request field cannot enable placement. Docker is a host-bound
-source with no fabricated Boat alias; golden providers
-remain Boat/Modal. The explicit preview API below is unchanged.
+placement. A request field cannot enable placement. Docker launches use a
+host-bound source.
 
 ### Normal dashboard/API/CLI launch
 
@@ -101,7 +100,7 @@ remain Boat/Modal. The explicit preview API below is unchanged.
   "hostId": "HOST_UUID",
   "harness": "codex",
   "credentialId": "MODEL_ACCOUNT_UUID",
-  "requestId": "FRESH_SANDBOX_UUID",
+  "idempotencyKey": "saved-launch-key-0001",
   "visibility": "private",
   "model": "gpt-6.1-sol",
   "reasoningEffort": "medium",
@@ -112,9 +111,11 @@ remain Boat/Modal. The explicit preview API below is unchanged.
 The account's current version is resolved and frozen on first admission; optional
 `credentialVersion` must match if provided. `prompt` and `ttlSeconds` are optional
 (default TTL four hours, maximum one day). The example selects Codex; the launch
-dialog offers the harnesses advertised by the server. Armada selects the environment, or the user selects a host-local
-snapshot with `--golden SNAPSHOT_UUID` (the retained flag spelling, not a cloud
-golden). Boat/Modal snapshots and machine-size policy do not apply.
+dialog offers the harnesses advertised by the server. Armada selects the environment
+unless you select a host-local snapshot with the `--golden SNAPSHOT_UUID` flag.
+Docker uses its own host limits and snapshot builds.
+[Morph model accounts](morph.md) and [per-account simultaneous-agent limits](named-model-credentials.md)
+also apply to Docker launches.
 The server composes durable create, existing enrolment
 and artifact bootstrap, runtime health and first-prompt admission. It returns the
 shared launch envelope with `sandbox`, null `golden` and `helper`, GitHub
@@ -123,9 +124,9 @@ when runtime information is available and is null otherwise. The `promptId` and
 `conversationId` fields are null when their IDs are unavailable. Read the prompt
 output through `/api/v1/logs/read` and status through `/api/v1/sandbox/status`.
 
-`requestId` is the logical sandbox ID and durable replay key. Identical retries
-resume the original phase IDs; changed input conflicts. Store this UUID before
-launch. A timeout is an unknown outcome, not permission to allocate a replacement.
+Store the `idempotencyKey` before launch and use the returned `sandbox.id`
+for sandbox operations. Identical retries resume the original phase IDs.
+Changed input conflicts. A timeout is an unknown outcome, not permission to allocate a replacement.
 The request and receipt are encrypted in a service-only ledger; no model secret
 is copied into it. A completed retry returns its original admission receipt with
 current sandbox metadata (even after stop/delete), never restarts the sandbox.
@@ -144,7 +145,7 @@ progress, and a failed fetch is reported in plain language.
 ```sh
 bun run armada launch --provider docker --org "$ARMADA_ORG" \
   --host "$DOCKER_HOST_ID" \
-  --credential-id "$ARMADA_CREDENTIAL" --request-id "$REQUEST_ID" \
+  --credential-id "$ARMADA_CREDENTIAL" --idempotency-key "$LAUNCH_KEY" \
   --agent codex --json 'Reply with exactly DOCKER_OK.'
 ```
 
@@ -306,8 +307,8 @@ Host ACK is handoff, **not** health, prompt completion or journal commit.
 ## Persisted placement and admission
 
 Reservation atomically stores a private Docker/Codex row and bound create job;
-its stable request UUID is also sandbox/create identity. There is no fake golden,
-Boat alias or movable host/installation/generation/image binding. Current owners
+its stable request UUID is also sandbox/create identity. The host, installation,
+generation and image bindings are fixed. Current owners
 may create/bootstrap; owner or current org admin may stop/delete. Source member
 locks precede credentials, host, sandbox and runtime. Issuer actor epoch, current
 host registration, owner membership and pinned account version are rechecked.
@@ -599,6 +600,8 @@ A daemon paired with the preceding server release derives the identity from
 its registered origin when the poll omits the new field. Alias reporting
 requires both the server and daemon updates. The receiver counts unknown
 containers in the authenticated host installation and performs no deletions.
+The daemon inventories actual allocations for the bound registration, including
+created and stopped containers.
 
 ### Fetching the image (#1507)
 
@@ -788,7 +791,7 @@ revision and apply `20261113150000_docker_host_version.sql` through the normal
 operator release process before using it. No deployment or remote migration was
 performed here.
 
-Use **Add a host** in the dashboard or `armada host add --org ORG_UUID`.
+Use **Register a Docker host** in the dashboard or `armada host add --org ORG_UUID`.
 Paste its one command on the Linux Docker machine; the one-use token is included
 under the owner-approved five-minute registration-token exception. Never share
 or persist the command. Requires curl, sha256sum, util-linux flock/loginctl
@@ -820,7 +823,7 @@ path; it is an open question for the owner, not a new command.
 Single coordinator check on the real machine previously registered as
 `70bde9cd-36c9-40af-b15e-65b2f9d3c2a2`: record container/volume baseline,
 reconcile/delete its old sandboxes, revoke and remove the hand-made installation
-using the manual runbook. Run the new Add-a-host command interactively there.
+using the manual runbook. Run the command from **Register a Docker host** interactively there.
 Retain the new registration's host ID, not the revoked ID. Run the existing smoke
 with server/org/credential/SSH/image arguments plus
 `--host-id NEW_HOST_ID --service-install`. It restarts only the user service,
@@ -901,8 +904,8 @@ CLI follow-up. Existing `--service-install` real-host acceptance remains pending
 
 ### Default model accounts on normal Docker launch (#1579)
 
-`armada launch --provider docker` no longer requires an explicit
-`--credential-id`. With an account omitted, the server uses the same compatible
+Docker launches such as `armada launch --provider docker --agent codex --host HOST_UUID`
+can omit `--credential-id`. With an account omitted, the server uses the same compatible
 personal-default policy as ordinary launches: a personal subscription marked as
 default wins over a personal API key. Explicit account choices still win; an
 invalid default or ambiguous personal choice fails rather than silently using a
@@ -919,7 +922,7 @@ omission on those paths is refused, not silently billed to another account (#157
 Coordinator verification after normal deployment: mark a personal Codex
 subscription default while retaining a personal API-key account, launch on the
 owned Docker host without `--credential-id`, and inspect the returned pin. Repeat
-the same request ID after changing the default: it must return the same sandbox
+the same idempotency key after changing the default: it must return the same sandbox
 without allocation/rebilling. An explicit API-key account must remain explicit.
 This procedure is not evidence that live subscription auth has passed.
 
@@ -1066,9 +1069,10 @@ release path before deploying the server, then upgrade the host daemon.
 Each poll samples Linux MemAvailable and one-minute load, plus the current
 registration's labelled running sandbox containers using
 [Docker stats](https://docs.docker.com/reference/cli/docker/container/stats/).
-The CLI's memory metric excludes inactive file cache. Armada's working-set
-memory and CPU use are credited back, so its own running agents are not charged
-twice. Unrelated containers and host processes consume the remaining headroom.
+The CLI's memory metric excludes inactive file cache. Linux MemAvailable includes
+reclaimable memory. Armada credits back its working-set memory and CPU use to
+avoid charging its running agents twice. Unrelated containers and host processes
+consume the remaining headroom.
 Snapshot builders are conservatively treated as other work during their build.
 
 Headroom decreases immediately and recovers through a quarter-weight EWMA
@@ -1122,9 +1126,9 @@ After normal deployment, with existing staging origin/token and consent:
 ARMADA_SMOKE=create_real_compute bun scripts/post-deploy-smoke.ts --parity --only docker --feature launch-snapshot
 ```
 
-The server must advertise its golden/snapshot launch source and capability. The
-probe launches via normal `sandbox/launch` with only the selected `snapshotId`,
-not an image or explicit repository recipe. Require exact snapshot/host/image/
+The server must advertise its snapshot launch source and capability. The
+probe launches via normal `sandbox/launch` with the selected `snapshotId` and
+`hostId`. Require exact snapshot/host/image/
 organization/owner identity in its receipt, a real finished answer, and confirmed
 stop/delete cleanup. Missing, unready or unavailable fixtures allocate nothing;
 malformed or mismatched identity cannot pass. A rejected receipt with a known
@@ -1133,9 +1137,7 @@ sandbox ID is still journaled and cleaned up.
 Unfiltered parity keeps its ordinary plain-image Docker launch unchanged and
 reports the snapshot cell as not-run with a dedicated-probe-required reason when
 configured (or fixture-not-configured otherwise). It never claims that a plain
-image proved snapshot launch. Cloud golden probes remain unchanged. Boat is not
-part of staging/release acceptance. No deployment or real provider check was
-performed by this worker; these instructions are not acceptance evidence.
+image proved snapshot launch. Staging and release acceptance exclude Boat.
 
 ## Multiple Armada servers on one machine (#2169)
 
@@ -1208,7 +1210,7 @@ Production prerequisites to compare with the passing staging environment:
   proves polling/authentication, not any of the above runtime prerequisites.
 
 After release, the coordinator must retry the owner's normal CLI launch with
-its original body/request ID, inspect any retained reservation first, then verify
+its original body and idempotency key, inspect any retained reservation first, then verify
 host create, runtime enrolment/readiness and an actual harness reply. Neither
 unit tests nor passing staging probes establish that production is configured.
 
@@ -1349,7 +1351,11 @@ container layers plus attached named volumes for this installation's
 exited/dead/created containers. Shared attached volumes are counted once. Volume
 sizes come from `docker system df` (the Engine `/system/df` data); volume inspect
 does not include usage. Docker rounds volume sizes; this is not a
-reclaimable-space guarantee and excludes detached volumes.
+reclaimable-space guarantee and excludes detached volumes. The scan inspects
+only the required container fields in batches of 50 to stay within the CLI's
+output and timeout bounds. It requests only volume rows from the disk usage
+report, so unrelated image, container, and build cache rows consume none of
+the output budget.
 The daemon caches the scan for one minute; unsupported or unreadable inventory
 is unknown. CLI and Machines display it alongside free disk and version guidance.
 Deploy migration `20261117080000_docker_host_stopped_disk_observation.sql` and

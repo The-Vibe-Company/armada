@@ -81,6 +81,14 @@ describe("API client origin and session safety", () => {
     expect(authorization).toBe(`Bearer ${token}`);
   });
 
+  test("golden list rejects a receipt missing the provider", async () => {
+    const client = await createArmadaApiClient({
+      ...io({ ARMADA_TOKEN: token }),
+      fetch: async () => Response.json({ goldens: [{ name: "web", config: { repos: [] } }] }),
+    });
+    await expect(client.golden("list", {})).rejects.toThrow("invalid success receipt");
+  });
+
   test("refuses protocol-relative and backslash paths that escape the API origin", async () => {
     const client = await createArmadaApiClient({
       ...io({ ARMADA_TOKEN: token }),
@@ -129,7 +137,6 @@ test("request cancellation also cancels saved-session refresh, preserving option
   expect(refreshAborted).toBe(true);
 });
 
-// API transport owns redaction; server payloads must not become terminal output.
 for (const path of [
   "sandbox/status",
   "sandbox/send",
@@ -288,7 +295,6 @@ test("closed server failures give actionable CLI help without parsing free text"
   }
 });
 
-// The CLI owns distrust of response diagnostics, including structured phase values.
 test("GitHub repair exposes only a closed server phase to its owner", async () => {
   for (const phase of ["sudo", "directories", "synthetic-secret", null]) {
     const client = await createArmadaApiClient({
@@ -492,7 +498,6 @@ test("refresh refuses a replacement unbound legacy login under the session lock"
     ...state,
     fetch: async () => new Response(null, { status: 401 }),
   });
-  // Old sessions may lack loginId; the binding must still identify a replacement.
   await state.session.write({
     accessToken: "replacement_access",
     refreshToken: "replacement_refresh",

@@ -210,7 +210,7 @@ describe("launch", () => {
         expect(world.forks[0]?.env).toEqual({});
       },
     );
-  test.each(["startup", "account", "provider", "scoped bootstrap"] as const)(
+  test.each(["startup", "account", "provider"] as const)(
     "Modal default refuses %s without native fallback",
     async (failure) => {
       const world = setup({
@@ -249,14 +249,6 @@ describe("launch", () => {
           owner,
           { golden: "web", harness: "codex", prompt: "answer" },
           {
-            ...(failure === "scoped bootstrap"
-              ? {
-                  privateVisibility: true,
-                  async beforeStart() {
-                    throw Error("Scoped bootstrap must not run");
-                  },
-                }
-              : {}),
             modalRuntimeDefault: {
               provider: async () => (failure === "provider" ? { ...compute, id: "boat" } : compute),
               credentials: {
@@ -282,7 +274,6 @@ describe("launch", () => {
           ? { code: "credential_binding_required", message: expect.stringContaining("--credential-id") }
           : {
               code: failure === "startup" ? "start_failed" : "invalid_request",
-              ...(failure === "scoped bootstrap" ? { message: expect.stringContaining("Scoped access") } : {}),
             },
       );
       expect(nativeForks).toBe(0);
@@ -827,21 +818,16 @@ describe("launch", () => {
   });
 
   test.each(["ready", "prompted", "failed"] as const)(
-    "cleanup failures preserve the %s launch outcome and still release the fence",
+    "cleanup failures preserve the %s launch outcome",
     async (outcome) => {
       const world = setup({
         golden: golden("org"),
         ...(outcome === "failed" ? { promptError: new Error("original prompt refusal") } : {}),
       });
       let releases = 0;
-      let fences = 0;
       world.stores.credentials.releaseAdmission = async () => {
         releases++;
         throw new Error("private cleanup details");
-      };
-      world.stores.goldens.beginOperation = async () => async () => {
-        fences++;
-        throw new Error("private fence details");
       };
       const warn = spyOn(console, "warn").mockImplementation(() => {
         throw new Error("diagnostic sink unavailable");
@@ -859,7 +845,6 @@ describe("launch", () => {
           });
         else expect((await launch).sandbox.status).toBe(outcome === "ready" ? "ready" : "running");
         expect(releases).toBe(2);
-        expect(fences).toBe(1);
         expect(JSON.stringify(warn.mock.calls)).not.toContain("private");
       } finally {
         warn.mockRestore();

@@ -1,5 +1,14 @@
-import { createReadStream } from "node:fs";
-import { createInterface } from "node:readline";
+import { createReadStream, type ReadStream } from "node:fs";
+
+async function* historyLines(stream: ReadStream) {
+  let remainder = "";
+  for await (const chunk of stream) {
+    const lines = (remainder + chunk).split("\n");
+    remainder = lines.pop()!;
+    yield* lines;
+  }
+  if (remainder) yield remainder;
+}
 
 /** Read only accounting fields from the native rollout, before dispatching any new work.
  * Never retain transcript text. Missing/unreadable/malformed history stays unknown.
@@ -11,9 +20,8 @@ export async function codexResumeUsage(path: string | null | undefined, sessionI
   let activeTurn: string | null = null;
   let closed = false;
   const stream = createReadStream(path, { encoding: "utf8" });
-  const lines = createInterface({ input: stream, crlfDelay: Infinity });
   try {
-    for await (const line of lines) {
+    for await (const line of historyLines(stream)) {
       const event = JSON.parse(line);
       if (event.type === "session_meta") {
         if (identity || event.payload?.id !== sessionId) return null;
@@ -66,7 +74,6 @@ export async function codexResumeUsage(path: string | null | undefined, sessionI
   } catch {
     return null;
   } finally {
-    lines.close();
     stream.destroy();
   }
 }

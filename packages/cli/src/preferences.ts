@@ -2,7 +2,6 @@ import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import { AuthError } from "@armada/auth";
 
-/** Non-secret per-Armada-origin preferences, deliberately separate from credentials/sessions. */
 export interface Preferences {
   read(origin: string): Promise<string | undefined>;
   write(origin: string, org: string | undefined): Promise<void>;

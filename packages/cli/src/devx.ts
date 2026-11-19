@@ -12,7 +12,6 @@ import { createArmadaApiClient, resolveArmadaOrigin } from "./armada-api.ts";
 import type { AuthIo } from "./auth-commands.ts";
 import { control } from "./control.ts";
 import { listHosts, resolveHostOrganization } from "./host-commands.ts";
-/** Interactive discovery only fills missing choices; ordinary scripted launches retain their exact API contract. */
 export async function prepareLaunch(argv: readonly string[], auth: AuthIo): Promise<readonly string[]> {
   if (!auth.interactive || !auth.chooseLaunch || argv.includes("--json") || argv.includes("--")) return argv;
   const args = parseArgs(
@@ -21,7 +20,7 @@ export async function prepareLaunch(argv: readonly string[], auth: AuthIo): Prom
       "--host",
       "--golden",
       "--skill",
-      "--request-id",
+      "--idempotency-key",
       "--credential-version",
       "--variable",
       "--secret",
@@ -29,7 +28,6 @@ export async function prepareLaunch(argv: readonly string[], auth: AuthIo): Prom
     ],
     ["--armada-access", "--keep-after-merge"],
   );
-  // An explicit launch already describes placement and agent: let normal validation handle it unchanged.
   if (
     single(args, "--org") &&
     single(args, "--credential-id") &&

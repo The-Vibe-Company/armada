@@ -3,14 +3,6 @@ import type { AuthIo } from "../src/auth-commands.ts";
 import { run } from "../src/run.ts";
 import { memorySessionStore } from "../src/session.ts";
 
-// armada launch now does its own credential and provider resolution on the server
-// (POST /api/v1/sandbox/launch), not in the CLI process: the scenarios this file used to cover
-// client-side (the user's credential winning over the org's, Codex's auth.json, a failing init,
-// GitHub identity in the fork's environment, a missing credential or snapshot) are covered where
-// that resolution now actually runs — packages/core/test/launch.test.ts (launchSandbox itself) and
-// packages/mcp-server/test/control.test.ts ("sandbox/launch ...") — and the CLI's own HTTP call is
-// covered by launch-api.test.ts. What is left here, genuinely CLI-only and still true today, is
-// argument validation that happens before any network call.
 describe("launch command", () => {
   test("bad flags and a missing credential fail before anything starts", async () => {
     const calls: string[] = [];

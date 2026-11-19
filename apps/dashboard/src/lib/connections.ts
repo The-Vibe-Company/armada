@@ -11,25 +11,19 @@ import { isRecord } from "@armada/core";
 
 import { mcpLaunchSelection } from "@armada/core";
 
-export const CONNECTION_SCOPES = ["personal", "org"] as const;
-export const CONNECTION_TRANSPORTS = ["http", "sse", "stdio"] as const;
+const CONNECTION_SCOPES = ["personal", "org"] as const;
+const CONNECTION_TRANSPORTS = ["http", "sse", "stdio"] as const;
 /**
  * `auto` (the default) asks the server to probe the URL and resolve to `none` or `oauth`; until that probe ran a
  * connection stays `not_connected`. `bearer` and `headers` are explicit overrides with write-only values.
  */
 export const CONNECTION_AUTH_TYPES = ["auto", "none", "bearer", "headers", "oauth"] as const;
-export const CONNECTION_STATUSES = [
-  "connected",
-  "not_connected",
-  "needs_reconnect",
-  "unavailable",
-  "disabled",
-] as const;
+const CONNECTION_STATUSES = ["connected", "not_connected", "needs_reconnect", "unavailable", "disabled"] as const;
 
 export type ConnectionScope = (typeof CONNECTION_SCOPES)[number];
-export type ConnectionTransport = (typeof CONNECTION_TRANSPORTS)[number];
+type ConnectionTransport = (typeof CONNECTION_TRANSPORTS)[number];
 export type ConnectionAuthType = (typeof CONNECTION_AUTH_TYPES)[number];
-export type ConnectionStatus = (typeof CONNECTION_STATUSES)[number];
+type ConnectionStatus = (typeof CONNECTION_STATUSES)[number];
 
 /** The public connection DTO. `url` is already redacted for display by the server; `lastError` is sanitized. */
 export interface McpConnection {
@@ -253,7 +247,7 @@ export function connectAction(
   return null;
 }
 
-export function isLaunchable(connection: McpConnection): boolean {
+function isLaunchable(connection: McpConnection): boolean {
   return connection.status === "connected";
 }
 
@@ -533,7 +527,7 @@ export function parseStdioImport(raw: string): Parsed<{ name?: string; command: 
  * The provider's redirect to `/auth/mcp/callback`, reduced to what the dashboard relays. Only `state`, `code` and
  * `iss` are kept, each shape-checked; a provider error becomes a fixed outcome and its text is never used.
  */
-export type OAuthCallbackInput =
+type OAuthCallbackInput =
   | { kind: "complete"; state: string; code: string; issuer?: string }
   | { kind: "denied" }
   | { kind: "invalid" };

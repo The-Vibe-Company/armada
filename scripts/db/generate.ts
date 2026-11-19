@@ -154,7 +154,7 @@ export async function generateDatabaseTypes(directory?: string) {
   }
 }
 
-async function introspect(db: Awaited<ReturnType<typeof openDatabase>>): Promise<Schema> {
+async function introspect(db: Awaited<ReturnType<typeof openDatabase>>) {
   const columns = await db.query<{
     table_name: string;
     column_name: string;
@@ -275,12 +275,13 @@ async function introspect(db: Awaited<ReturnType<typeof openDatabase>>): Promise
     });
   }
 
-  return {
+  const schema: Schema = {
     tables: [...tables.values()].sort((a, b) => a.name.localeCompare(b.name)),
     enums: [...enumLabels.entries()]
       .map(([name, labels]) => ({ name, labels }))
       .sort((a, b) => a.name.localeCompare(b.name)),
   };
+  return schema;
 }
 
 function columnType(row: {
@@ -289,7 +290,7 @@ function columnType(row: {
   type_category: string;
   element_name: string | null;
   element_kind: string | null;
-}): string {
+}) {
   if (row.type_category === "A") {
     if (!row.element_name || !row.element_kind) throw new Error(`array ${row.type_name} has no element type`);
     return `${scalarType(row.element_name, row.element_kind)}[]`;
@@ -297,7 +298,7 @@ function columnType(row: {
   return scalarType(row.type_name, row.type_kind);
 }
 
-function scalarType(name: string, kind: string): string {
+function scalarType(name: string, kind: string) {
   if (kind === "e") return `Database["public"]["Enums"]["${name}"]`;
   switch (name) {
     case "uuid":
@@ -324,7 +325,7 @@ function scalarType(name: string, kind: string): string {
   }
 }
 
-function numbers(value: unknown): number[] {
+function numbers(value: unknown) {
   if (Array.isArray(value)) return value.map((item) => Number(item));
   if (typeof value === "string") {
     return value
@@ -336,7 +337,7 @@ function numbers(value: unknown): number[] {
   throw new Error(`expected a postgres int array, got ${typeof value}`);
 }
 
-function names(attributes: Map<string, string>, relid: string, keys: number[]): string[] {
+function names(attributes: Map<string, string>, relid: string, keys: number[]) {
   return keys.map((attnum) => {
     const name = attributes.get(`${relid}:${attnum}`);
     if (!name) throw new Error(`missing attribute ${relid} column ${attnum}`);
@@ -344,14 +345,14 @@ function names(attributes: Map<string, string>, relid: string, keys: number[]): 
   });
 }
 
-function sameSet(left: number[], right: number[]): boolean {
+function sameSet(left: number[], right: number[]) {
   if (left.length !== right.length) return false;
   const sortedLeft = [...left].sort((a, b) => a - b);
   const sortedRight = [...right].sort((a, b) => a - b);
   return sortedLeft.every((value, index) => value === sortedRight[index]);
 }
 
-function render(schema: Schema): string {
+function render(schema: Schema) {
   const tables = schema.tables
     .map((table) => {
       const relationships =
@@ -426,12 +427,12 @@ ${aliases}
 `;
 }
 
-function field(name: string, tsType: string, optional: boolean, notNull: boolean): string {
+function field(name: string, tsType: string, optional: boolean, notNull: boolean) {
   const type = notNull ? tsType : `${tsType} | null`;
   return `          ${name}${optional ? "?" : ""}: ${type};`;
 }
 
-function relationship(key: ForeignKey): string {
+function relationship(key: ForeignKey) {
   return `          {
             foreignKeyName: ${JSON.stringify(key.name)};
             columns: [${key.columns.map((name) => JSON.stringify(name)).join(", ")}];

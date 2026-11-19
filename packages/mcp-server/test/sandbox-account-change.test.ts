@@ -67,12 +67,12 @@ function fixture(status = "stopped", provider = "boat") {
   return { row, writes, caller, bind, selected, quiesce, stopped: () => stops };
 }
 
-test("owner account changes quiesce ready compute, replace stopped pins and replace stopped pins", async () => {
-  for (const status of ["ready", "stopped"]) {
+test("owner account changes quiesce live compute before replacing stopped pins", async () => {
+  for (const status of ["ready", "running", "stopped"]) {
     const f = fixture(status);
     const result = await f.bind(f.caller, { id: f.row.id, credentialId: f.selected }, f.quiesce);
     expect(result).toMatchObject({ credentialId: f.selected, credentialVersion: 2, status: "bound" });
-    expect(f.stopped()).toBe(status === "ready" ? 1 : 0);
+    expect(f.stopped()).toBe(status === "stopped" ? 0 : 1);
     expect(f.writes).toHaveLength(1);
     expect(f.writes[0]?.values).toEqual([f.row.id, f.selected, 2]);
   }
@@ -82,6 +82,7 @@ test("busy, leased and unauthorized sandboxes never stop compute or replace an a
   for (const mode of ["running", "starting", "leased", "other-owner", "wrong-org"]) {
     const f = fixture();
     if (mode === "running" || mode === "starting") f.row.status = mode;
+    if (mode === "running") f.row.boat_runtime = false;
     if (mode === "leased") f.row.leased = true;
     if (mode === "other-owner") f.row.owner_id = crypto.randomUUID();
     await expect(

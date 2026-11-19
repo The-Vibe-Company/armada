@@ -1,40 +1,35 @@
 import type { GoldenBuildJobs } from "@armada/core/server";
+import type { JobKind } from "./jobs/runner.ts";
 
-/** One serialized queue loop per process; SQL fencing owns concurrency across processes.
- * Shutdown stops new ticks, never turns a disconnected HTTP request into cancelled build ownership.
- */
-export function startGoldenWorker(
-  jobs: Pick<GoldenBuildJobs, "runOne" | "reconcileOne">,
-  log: (line: string) => void = console.error,
+export function createGoldenBuildJob(
+  builds: Pick<GoldenBuildJobs, "dispatchReceipt">,
+  now = Date.now,
+  recoveryDeadline = () => AbortSignal.timeout(30_000),
 ) {
-  let stopped = false;
-  let wake: (() => void) | undefined;
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const done = (async () => {
-    while (!stopped) {
-      try {
-        const worked = await jobs.runOne();
-        if (stopped) break;
-        if (worked) continue;
-        await jobs.reconcileOne();
-      } catch {
-        // Upstream SQL/SDK errors may carry credential-bearing request data. Never log them.
-        log("armada: golden worker tick unavailable; durable jobs remain fenced.");
-      }
-      if (!stopped)
-        await new Promise<void>((resolve) => {
-          wake = resolve;
-          timer = setTimeout(resolve, 1000);
-          timer.unref();
-        });
-    }
-  })();
+  const recovering = new Map<string, Promise<void>>();
   return {
-    done,
-    stop() {
-      stopped = true;
-      if (timer) clearTimeout(timer);
-      wake?.();
+    concurrency: 1,
+    async run(job, { signal }) {
+      signal.throwIfAborted();
+      const { pending } = await builds.dispatchReceipt(job.id, job.lease_epoch, signal, async (recover) => {
+        if (recovering.has(job.id) || recovering.size >= 4) return false;
+        const recoverySignal = AbortSignal.any([signal, recoveryDeadline()]);
+        if (recoverySignal.aborted) return false;
+        const interrupted = Promise.withResolvers<false>();
+        const onAbort = () => interrupted.resolve(false);
+        recoverySignal.addEventListener("abort", onAbort, { once: true });
+        const work = recover(recoverySignal).finally(() => recovering.delete(job.id));
+        recovering.set(job.id, work);
+        try {
+          return await Promise.race([work.then(() => true), interrupted.promise]);
+        } finally {
+          recoverySignal.removeEventListener("abort", onAbort);
+        }
+      });
+      return pending ? { status: "retry", after: new Date(now() + 60_000) } : { status: "done" };
     },
-  };
+    async drain() {
+      await Promise.allSettled(recovering.values());
+    },
+  } satisfies JobKind;
 }

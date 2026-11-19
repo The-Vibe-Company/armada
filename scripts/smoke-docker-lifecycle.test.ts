@@ -34,7 +34,7 @@ test.each([
     [
       "-c",
       `
-import contextlib, io, json, os, runpy, sys, types
+import contextlib, io, json, os, runpy, sys, types, uuid
 from unittest.mock import patch
 calls, ssh = [], []
 sandbox, prompt, conversation = None, "native-prompt", "native-conversation"
@@ -48,7 +48,15 @@ class Opener:
     def open(self, request, timeout):
         global sandbox, prompt, marker, answer, sends, stops, snapshot_id
         path = request.full_url.split("/api/v1/", 1)[1]
-        body = json.loads(request.data)
+        if request.get_method() == "DELETE":
+            from urllib.parse import parse_qs
+            path, query = path.split("?", 1)
+            assert path == "sandboxes/" + sandbox and request.data is None
+            body = {key: values[0] for key, values in parse_qs(query).items()}
+            uuid.UUID(body["requestId"])
+            body["id"] = sandbox
+        else:
+            body = json.loads(request.data)
         calls.append((path, body))
         assert request.headers["Authorization"] == "Bearer offline-only"
         assert body["org"] == "org"
@@ -68,7 +76,10 @@ class Opener:
             assert mode == "preview-follow-up" and body["sandboxId"] == sandbox
             value = {"state": "ready" if path.endswith("ready") else "completed"}
         elif path == "sandbox/launch":
-            sandbox = body["requestId"]
+            uuid.UUID(body["idempotencyKey"])
+            assert body["externalRef"] == body["idempotencyKey"]
+            assert "requestId" not in body
+            sandbox = "00000000-0000-4000-8000-000000000001"
             assert timeout == 600
             assert body["hostId"] == "retained-host"
             assert "image" not in body
@@ -85,7 +96,7 @@ class Opener:
                 assert body["repos"] == [{"url": "https://github.com/example/project.git", "branch": "feature/work", "dir": "project"}]
                 assert "git -C /home/user/project log -1" in body["prompt"]
             marker = body["prompt"].split("marker for my next message: ")[1].split(".")[0] if lifecycle else None
-            value = {"sandbox": {"id": sandbox, "provider": "docker", "image": "sha256:" + "d" * 64 if mode.startswith("snapshot") else "image@sha256:" + "a" * 64, "snapshotId": snapshot_id}, "promptId": prompt, "conversationId": conversation}
+            value = {"sandbox": {"id": sandbox, "provider": "docker", "externalRef": body["externalRef"], "image": "sha256:" + "d" * 64 if mode.startswith("snapshot") else "image@sha256:" + "a" * 64, "snapshotId": snapshot_id}, "promptId": prompt, "conversationId": conversation}
             if mode.startswith(("github", "snapshot")):
                 value["github"] = {"status": "connected", "login": "owner"}
         elif path == "sandbox/send":
@@ -151,7 +162,7 @@ class Opener:
             assert mode == "preview-follow-up" and body["sandboxId"] == sandbox
             stops += path.endswith("stop")
             value = {}
-        elif path in ("sandbox/stop", "sandbox/delete"):
+        elif path in ("sandbox/stop", "sandboxes/" + sandbox):
             assert body["id"] == sandbox
             stops += path.endswith("stop")
             value = {"status": "stopped" if path.endswith("stop") else "deleted"}
@@ -208,7 +219,7 @@ if mode == "preview-follow-up":
     assert "PASS: same-conversation follow-up recalled marker" in output.getvalue()
     sys.exit(0)
 assert (not lifecycle or (sends == (3 if mode.endswith("-mcp") else 2) and stops == 2))
-assert lifecycle or [path for path, _ in calls] == ["launch/options", "sandbox/launch", "sandbox/list", "logs/read", "sandbox/status", "sandbox/stop", "sandbox/delete"]
+assert lifecycle or [path for path, _ in calls] == ["launch/options", "sandbox/launch", "sandbox/list", "logs/read", "sandbox/status", "sandbox/stop", "sandboxes/" + sandbox]
 assert "PASS: normal Docker launch route created" in output.getvalue()
 assert "offline-only" not in output.getvalue()
 `,

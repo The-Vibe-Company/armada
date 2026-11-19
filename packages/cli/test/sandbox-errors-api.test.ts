@@ -31,7 +31,6 @@ async function capture(args: string[], status: number, serverCode: unknown, mess
   return { exit, err };
 }
 
-// One owner at run.ts: the routes have different parsing and legacy code mappings.
 test.each(
   [
     ["status", id],

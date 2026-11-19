@@ -48,13 +48,21 @@ test.each([
       const body = JSON.parse(String(init.body));
       switch (new URL(url).pathname) {
         case "/api/v1/sandbox/launch":
+          if (body.provider === "docker") {
+            expect(body.idempotencyKey).toBe(body.externalRef);
+            expect(body).not.toHaveProperty("requestId");
+          }
           launches.push({ provider: body.provider, credentialId: body.credentialId });
           if (body.provider === "docker" && scenario === "recovered Docker launch receipt") {
-            dockerAllocation = { id: body.requestId, externalRef: body.externalRef };
-            return Response.json({ sandbox: { id: id(6) } });
+            dockerAllocation = { id: id(7), externalRef: body.externalRef };
+            return Response.json({ sandbox: { id: id(6), provider: "docker", externalRef: "different-launch" } });
           }
           return Response.json({
-            sandbox: { id: body.provider === "docker" ? body.requestId : id(5), provider: body.provider },
+            sandbox: {
+              id: body.provider === "docker" ? id(7) : id(5),
+              provider: body.provider,
+              externalRef: body.externalRef,
+            },
           });
         case "/api/v1/sandbox/list":
           expect(body.externalRef).toBe(dockerAllocation?.externalRef);
@@ -105,7 +113,10 @@ test.each([
     { provider: "docker", credentialId: docker.modelAccountId },
   ]);
   expect(sent).toHaveLength(2);
-  if (dockerAllocation) expect(stopped.has(dockerAllocation.id)).toBe(true);
+  if (dockerAllocation) {
+    expect(stopped.has(dockerAllocation.id)).toBe(true);
+    expect(stopped.has(id(6))).toBe(false);
+  }
   expect([...stopped].sort()).toEqual([...sent].sort());
   expect(receipts.filter((row) => row.model === "real").map((row) => row.provider)).toEqual(["modal", "docker"]);
   expect(receipts.filter((row) => row.step === "real_model_wait").map((row) => row.code)).toEqual([code, code]);

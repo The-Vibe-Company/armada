@@ -643,7 +643,7 @@ export function createDockerSandboxControls(
       ).rows[0];
       if (job?.outcome === "completed" && done(current)) return result(current);
       if (job?.outcome === "failed")
-        throw failure("conflict", "Docker sandbox cleanup failed. Use a new request_id to retry.");
+        throw failure("conflict", "Docker sandbox cleanup failed. Use a new request ID to retry.");
       if (clock.now() >= deadline)
         throw failure("conflict", "Docker sandbox cleanup is pending. Retry the same request.");
       await clock.wait(Math.min(250, deadline - clock.now()));

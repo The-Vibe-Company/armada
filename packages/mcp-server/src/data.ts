@@ -32,7 +32,7 @@ import {
   withUsageTotals,
 } from "@armada/core";
 import type { Provider } from "@armada/core/server";
-import { assertGoldenBackendBinding, assertSqlGoldenMutation } from "@armada/core/server";
+import { assertGoldenBackendBinding, assertSqlGoldenMutation, beginSnapshotLaunch } from "@armada/core/server";
 import { beginGoldenOperation, reconcileGoldenOperations } from "../../core/src/golden-store.ts";
 import { recordNativeAccountExhaustion } from "./account-exhaustion.ts";
 import { publishAccountSpend, unmeasuredUsage } from "./account-spend.ts";
@@ -40,6 +40,7 @@ import type { Caller } from "./caller.ts";
 import { scopedOrg } from "./control-caller.ts";
 import { createResourceStore, type ResourceStore } from "./resource-store.ts";
 import { unsettledRuntimeCommands } from "./runtime-idle-evidence.ts";
+import { finishEnrolledRuntimeReadiness, recordObservedRuntimeState, settleRuntimeTurn } from "./sandbox-lifecycle.ts";
 import { SANDBOX_MEMBER, SANDBOX_VISIBLE } from "./sandbox-visibility.ts";
 import { admittedTurnContexts, stampTurnPricing, withServerCost } from "./turn-pricing.ts";
 import { preserveBeforeStop, readWorkRecovery, type StopAuthority } from "./work-preservation.ts";
@@ -56,7 +57,10 @@ export interface SandboxView extends SandboxRecord {
 
 export interface ServerSandboxPatch extends SandboxPatch {
   onlyIfIdle?: boolean;
+  retainedRuntimeStop?: string;
   modalRuntimeExtensionTarget?: string;
+  runtimeObservationFrom?: "ready" | "running";
+  turnActivity?: "claim" | "finish";
 }
 
 export interface ServerSandboxStore extends SandboxStore {
@@ -261,6 +265,12 @@ export function createSqlData(
       },
       reconcileOperations: (golden, actor) => reconcileGoldenOperations(sql, golden, actor),
       beginOperation: (id, expected) => beginGoldenOperation(sql, id, expected),
+      beginSnapshotLaunch(golden, actor, sandboxId) {
+        ownOrg(golden.orgId);
+        if (actor.userId !== caller.userId || actor.orgId !== golden.orgId)
+          throw new GoldenError("forbidden", "Caller mismatch.");
+        return beginSnapshotLaunch(sql, golden, actor, sandboxId);
+      },
       assertBackendBinding: (golden, provider) => assertGoldenBackendBinding(sql, golden, provider),
       async assertMutation(golden, actor) {
         if (actor.userId !== caller.userId || !orgIds.includes(golden.orgId))
@@ -432,13 +442,22 @@ export function createSqlData(
           throw new DataError("A sandbox is recorded for its caller only.");
         }
         const result = await sql.query<SandboxViewRow>(
-          `with visible as (select g.id,g.visibility from public.goldens g where ${GOLDEN_VISIBLE} and g.id = $3 and g.org_id = $8::uuid)
+          `with visible as (select g.id,g.visibility from public.goldens g where ${GOLDEN_VISIBLE} and g.id = $3 and g.org_id = $8::uuid), inserted as (
            insert into public.sandboxes (id, provider_sandbox_id, golden_id, org_id, owner_id, harness, status, model,
              reasoning_effort, provider, visibility, access_owner_id, repository_dir, requested_ttl_seconds, effective_ttl_seconds, expires_at, activity_lease_id, activity_until, credential_id, credential_version, machine_size, resource_project, boat_runtime, runtime_transport, external_ref, stop_when_work_merged, pull_request_source)
            select $4::uuid, $5::text, visible.id, $8::uuid, $2::uuid, $6::public.harness, $7::public.sandbox_status,
              $9::text, $10::text, $11::public.sandbox_provider,case when $21::text='private' then 'private'::public.visibility else visible.visibility end,$2::uuid,$12::text,$13::integer,$14::integer,coalesce($20::timestamptz,now()+$14 * interval '1 second'),$15::uuid,case when $15::uuid is not null then now()+interval '2 minutes' else null end,$16::uuid,$17::integer,$18::text::jsonb,$19::text::jsonb, $22::boolean,$23::text,$24::text,$25::boolean,$26::text::jsonb from visible
            returning runtime_transport,boat_runtime, credential_id, credential_version, id, provider::text as provider, provider_sandbox_id, golden_id, org_id, owner_id, harness::text as harness, status::text as status,
-             conversation_ids, created_at, stopped_at, deleted_at, status_reason, model, reasoning_effort,machine_size,resource_project,repository_dir,expires_at,effective_ttl_seconds,requested_ttl_seconds,last_observed_at,lifecycle_error,lifecycle_generation,visibility::text as visibility,access_owner_id,source_golden_visibility::text as source_golden_visibility,external_ref`,
+             conversation_ids, created_at, stopped_at, deleted_at, status_reason, model, reasoning_effort,machine_size,resource_project,repository_dir,expires_at,effective_ttl_seconds,requested_ttl_seconds,last_observed_at,lifecycle_error,lifecycle_generation,visibility::text as visibility,access_owner_id,source_golden_visibility::text as source_golden_visibility,external_ref
+           ), snapshot_reference as (
+             insert into public.sandbox_source_snapshots (sandbox_id,snapshot_id)
+             select id,$27::text from inserted where $27::text is not null
+             returning sandbox_id
+           ), consumed_intent as (
+             delete from public.ordinary_launch_snapshot_intents i using snapshot_reference r
+             where i.sandbox_id=r.sandbox_id
+           )
+           select * from inserted`,
           [
             ...scope,
             input.goldenId,
@@ -465,6 +484,7 @@ export function createSqlData(
             input.externalRef ?? null,
             input.stopWhenWorkMerged ?? true,
             JSON.stringify(input.pullRequestSource ?? null),
+            input.sourceSnapshotId ?? null,
           ],
         );
         const row = result.rows[0];
@@ -737,13 +757,49 @@ export function createSqlData(
         );
       },
       async update(id, patch) {
+        const reason = statusReasonOf(patch);
+        if (patch.runtimeObservationFrom !== undefined) {
+          if (
+            patch.expectedGeneration === undefined ||
+            reason === undefined ||
+            (patch.status !== "failed" && patch.status !== "stopped") ||
+            (patch.status === "stopped" && !patch.stoppedAt)
+          )
+            throw new DataError("Runtime observation publication requires generation and state evidence.");
+          const result = await recordObservedRuntimeState(sql, scope, {
+            sandboxId: id,
+            generation: patch.expectedGeneration,
+            fromState: patch.runtimeObservationFrom,
+            toState: patch.status,
+            reason,
+            stoppedAt: patch.stoppedAt ?? null,
+          });
+          if (result.kind === "conflict")
+            throw new DataError("Runtime state observation is stale.", "sandbox_not_ready");
+          return;
+        }
+        if (
+          patch.finishActivity &&
+          patch.status === "ready" &&
+          patch.expectedGeneration !== undefined &&
+          patch.activityToken
+        ) {
+          if (!sql.transaction) throw new Error("Runtime readiness publication requires a transaction.");
+          const { expectedGeneration, activityToken } = patch;
+          const outcome = await sql.transaction((tx) =>
+            finishEnrolledRuntimeReadiness(tx, scope, id, expectedGeneration, activityToken),
+          );
+          if (outcome === "applied") return;
+          if (outcome === "conflict")
+            throw new DataError("Runtime readiness publication is stale.", "sandbox_not_ready");
+        }
         const sets: string[] = [];
         const params: unknown[] = [...scope, id];
         const set = (column: string, value: unknown, cast: string) => {
           params.push(value);
           sets.push(`${column} = $${params.length}${cast}`);
         };
-        if (patch.advanceGeneration && patch.activityToken) {
+        if ((patch.advanceGeneration || patch.turnActivity === "claim") && patch.activityToken) {
           set("activity_lease_id", patch.activityToken, "::uuid");
           sets.push("activity_until = now() + interval '2 minutes'");
         }
@@ -762,12 +818,14 @@ export function createSqlData(
             );
         }
         if (patch.renewActivity) sets.push("activity_until = now() + interval '2 minutes'");
-        if (patch.finishActivity && patch.expectedGeneration !== undefined && patch.activityToken)
-          sets.push(
-            "activity_lease_id = null",
-            "activity_until = null",
-            "lifecycle_generation = s.lifecycle_generation + 1",
-          );
+        if (
+          (patch.finishActivity || patch.turnActivity === "finish") &&
+          patch.expectedGeneration !== undefined &&
+          patch.activityToken
+        ) {
+          sets.push("activity_lease_id = null", "activity_until = null");
+          if (patch.finishActivity) sets.push("lifecycle_generation = s.lifecycle_generation + 1");
+        }
         if (patch.advanceGeneration && !patch.renewLifecycle)
           sets.push("lifecycle_generation = s.lifecycle_generation + 1");
         if (patch.renewLifecycle) {
@@ -783,8 +841,12 @@ export function createSqlData(
         if (patch.taskPromptId !== undefined) set("task_prompt_id", patch.taskPromptId, "::text");
         if (patch.status !== undefined) {
           set("status", patch.status, "::public.sandbox_status");
+          const code =
+            patch.retainedRuntimeStop === undefined
+              ? `'sandbox_' || ($${params.length}::public.sandbox_status)::text`
+              : "'runtime_retained_stop'";
           sets.push(`transition_context = case when s.provider in ('boat','modal')
-            then jsonb_build_object('actor','api','code','sandbox_' || ($${params.length}::public.sandbox_status)::text) end`);
+            then jsonb_build_object('actor','api','code',${code}) end`);
         }
         if (patch.conversationIds !== undefined) set("conversation_ids", patch.conversationIds, "::text[]");
         if (patch.stoppedAt !== undefined) set("stopped_at", patch.stoppedAt, "::timestamptz");
@@ -794,10 +856,12 @@ export function createSqlData(
         const extensionDeadlineParam = patch.expiresAt === undefined ? undefined : params.length;
         if (patch.effectiveTtlSeconds !== undefined)
           set("effective_ttl_seconds", patch.effectiveTtlSeconds, "::integer");
-        const reason = statusReasonOf(patch);
         if (reason !== undefined) set("status_reason", reason, "::text");
         if (sets.length === 0) return;
         let fence = "";
+        if (patch.turnActivity !== undefined)
+          fence += " and s.status in ('ready','running') and s.stop_requested_at is null and s.deleted_at is null";
+        if (patch.turnActivity === "claim") fence += " and s.activity_lease_id is null";
         if (patch.modalRuntimeExtensionTarget !== undefined) {
           if (extensionDeadlineParam === undefined || patch.expectedGeneration === undefined)
             throw new DataError("Modal runtime extension requires a verified deadline and lifecycle generation.");
@@ -832,6 +896,15 @@ export function createSqlData(
           generationParam = params.length;
           fence += ` and s.lifecycle_generation = $${params.length}`;
         }
+        if (patch.retainedRuntimeStop !== undefined) {
+          params.push(patch.retainedRuntimeStop);
+          fence += ` and s.status in ('ready','running') and s.stop_requested_at is null
+            and s.expires_at>clock_timestamp() and not s.application_secret_tainted
+            and exists(select 1 from public.runtime_checkpoints p join public.runtime_enrolments r
+              on r.sandbox_id=p.sandbox_id and r.epoch=p.epoch
+              where p.sandbox_id=s.id and p.request_id=$${params.length}::uuid
+              and p.watermark=(select coalesce(max(sequence),0) from public.runtime_events where sandbox_id=s.id))`;
+        }
         if (patch.deleteRequested)
           fence += ` and s.status in ('stopped','failed')
             and not ${SANDBOX_DELETION_MANAGED}`;
@@ -844,7 +917,8 @@ export function createSqlData(
           ? "(s.reconcile_lease_until is null or s.reconcile_lease_until < now() or (s.status in ('ready','running') and s.stop_requested_at is null and s.expires_at > clock_timestamp()))"
           : "(s.reconcile_lease_until is null or s.reconcile_lease_until < now())";
         if (supersedeObservation) sets.push("reconcile_lease = null", "reconcile_lease_until = null");
-        const ownsActivity = !!patch.activityToken && (patch.finishActivity || patch.renewActivity);
+        const ownsActivity =
+          !!patch.activityToken && (patch.finishActivity || patch.renewActivity || patch.turnActivity === "finish");
         if (ownsActivity) {
           params.push(patch.activityToken);
           fence += ` and s.activity_lease_id = $${params.length}::uuid`;
@@ -858,7 +932,9 @@ export function createSqlData(
           patch.status === "deleted";
         const idleAdmission = patch.onlyIfIdle === true && patch.stopRequested === true && patch.advanceGeneration;
         if (idleAdmission)
-          fence += ` and s.status='ready' and s.stop_requested_at is null
+          fence += ` and (s.status='ready' or (s.status='running' and
+            ((s.provider='boat' and s.boat_runtime) or (s.provider='modal' and s.runtime_transport='dialout'))))
+            and s.stop_requested_at is null
             and not exists(select 1 from public.account_turn_queue q
               where q.sandbox_id=s.id and q.state in ('queued','dispatching'))
             and not exists(${unsettledRuntimeCommands("s.id", "s.lifecycle_generation")})`;
@@ -890,7 +966,11 @@ export function createSqlData(
             params,
           );
         let result: Awaited<ReturnType<typeof applyUpdate>>;
-        if (idleAdmission || patch.modalRuntimeExtensionTarget !== undefined) {
+        if (
+          idleAdmission ||
+          patch.retainedRuntimeStop !== undefined ||
+          patch.modalRuntimeExtensionTarget !== undefined
+        ) {
           if (!sql.transaction) throw new Error("Fenced sandbox admission requires a transaction.");
           result = await sql.transaction(async (tx) => {
             // WARNING: The queue check needs a fresh statement snapshot after acquiring the sandbox lock.
@@ -899,6 +979,18 @@ export function createSqlData(
               [...scope, id],
             );
             return locked.rows.length ? applyUpdate(tx) : { rows: [] };
+          });
+        } else if (
+          patch.taskPromptId &&
+          patch.expectedGeneration !== undefined &&
+          (patch.status === "running" || patch.turnActivity === "finish") &&
+          sql.transaction
+        ) {
+          const generation = patch.expectedGeneration + (patch.finishActivity ? 1 : 0);
+          result = await sql.transaction(async (tx) => {
+            const published = await applyUpdate(tx);
+            if (published.rows[0]?.id) await settleRuntimeTurn(tx, id, generation);
+            return published;
           });
         } else {
           result = await applyUpdate(sql);
@@ -920,7 +1012,7 @@ export function createSqlData(
         }
         // Names the writer behind any later refusal's activityLeaseId. Lease IDs are random
         // fences, not credentials.
-        if (admission)
+        if (admission || patch.turnActivity === "claim")
           console.info(
             JSON.stringify({
               event: "sandbox_activity_admitted",

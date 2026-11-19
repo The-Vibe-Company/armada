@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { expect, jest, test } from "bun:test";
 import { inspect } from "node:util";
 import type { DockerLaunchRequest, DockerSandboxStatus } from "@armada/core";
 import { launch, launchEnvelope } from "@armada/core/contract";
@@ -90,7 +90,7 @@ test("launch sends a Docker request and returns the Docker receipt without a gol
     provider: "docker",
     hostId: "00000000-0000-4000-8000-000000000002",
     harness: "codex",
-    requestId: "00000000-0000-4000-8000-000000000003",
+    idempotencyKey: "customer_launch_1",
     prompt: "Work",
     repos: [{ url: "https://github.com/acme/app", branch: "main" }],
   } satisfies DockerLaunchInput;
@@ -138,7 +138,7 @@ test("the SDK Docker launch type admits exactly the host and snapshot sources th
     provider: "docker",
     hostId: "00000000-0000-4000-8000-000000000002",
     harness: "codex",
-    requestId: "00000000-0000-4000-8000-000000000003",
+    idempotencyKey: "customer_launch_1",
     repos: [{ url: "https://github.com/acme/app" }],
   } as const;
   const snapshotId = "00000000-0000-4000-8000-000000000004";
@@ -456,25 +456,34 @@ test("the SDK browser bundle reaches no Node builtin, server entry point or work
 });
 
 test("wait uses the per-call deadline, then the client deadline, then the server wait plus a margin", async () => {
-  const deadlines: number[] = [];
-  const timeout = AbortSignal.timeout;
-  AbortSignal.timeout = (milliseconds: number) => {
-    deadlines.push(milliseconds);
-    return new AbortController().signal;
+  let signal: AbortSignal | null | undefined;
+  const fetch: import("../src/index.ts").Fetch = async (_url, init) => {
+    signal = init?.signal;
+    return Response.json({ id: "sandbox_placeholder", timedOut: false });
   };
+  const expectDeadline = (milliseconds: number) => {
+    jest.advanceTimersByTime(milliseconds - 1);
+    expect(signal?.aborted).toBe(false);
+    jest.advanceTimersByTime(1);
+    expect(signal?.reason).toMatchObject({ name: "TimeoutError" });
+  };
+  const configured = new Armada({ token: "service_placeholder", timeoutMs: 2000, fetch });
+  const unconfigured = new Armada({ token: "service_placeholder", fetch });
+
+  jest.useFakeTimers();
   try {
-    const fetch = (async () =>
-      Response.json({ id: "sandbox_placeholder", timedOut: false })) as import("../src/index.ts").Fetch;
-    const configured = new Armada({ token: "service_placeholder", timeoutMs: 2000, fetch });
-    const unconfigured = new Armada({ token: "service_placeholder", fetch });
     await configured.status({ id: "sandbox_placeholder" });
+    expectDeadline(2000);
     await configured.wait({ id: "sandbox_placeholder" });
+    expectDeadline(2000);
     await configured.wait({ id: "sandbox_placeholder" }, { timeoutMs: 3000 });
+    expectDeadline(3000);
     await unconfigured.wait({ id: "sandbox_placeholder", timeout_seconds: 10 });
+    expectDeadline(40_000);
     await unconfigured.status({ id: "sandbox_placeholder" });
-    expect(deadlines).toEqual([2000, 2000, 3000, 40_000, 300_000]);
+    expectDeadline(300_000);
   } finally {
-    AbortSignal.timeout = timeout;
+    jest.useRealTimers();
   }
 });
 

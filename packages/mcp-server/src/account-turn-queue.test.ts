@@ -1,8 +1,9 @@
-import { afterAll, beforeAll, beforeEach, expect, test } from "bun:test";
+import { afterAll, beforeAll, beforeEach, expect, spyOn, test } from "bun:test";
 import {
   accountModelCountsSql,
   accountWaitingCountSql,
   accountWorkingCountSql,
+  decryptSecret,
   type Sql,
   VaultError,
 } from "@armada/core/server";
@@ -11,7 +12,15 @@ import { createAccountTurnQueue } from "./account-turn-queue.ts";
 import type { Caller } from "./caller.ts";
 import { currentRequestId, observeRequest } from "./request-observability.ts";
 
-const db = new PGlite();
+import { callSharedTool, ToolApiError } from "./tool-api.ts";
+import type { ToolContext } from "./tools.ts";
+
+let connection: PGlite | undefined;
+
+function database() {
+  if (!connection) throw new Error("Database fixture is not open");
+  return connection;
+}
 const org = "10000000-0000-4000-8000-000000000001";
 const owner = "10000000-0000-4000-8000-000000000002";
 const account = "10000000-0000-4000-8000-000000000003";
@@ -19,19 +28,20 @@ const ids = [1, 2, 3].map((n) => `20000000-0000-4000-8000-${String(n).padStart(1
 const requests = [1, 2].map((n) => `30000000-0000-4000-8000-${String(n).padStart(12, "0")}`);
 const caller: Caller = { userId: owner, via: "service", orgs: [{ orgId: org, role: "member" }] };
 const sql = {
-  query: (q: string, values?: unknown[]) => db.query(q, values),
+  query: (q: string, values?: unknown[]) => database().query(q, values),
   transaction: (work: (tx: Sql) => Promise<unknown>) =>
-    db.transaction((tx) => work({ query: (q, v) => tx.query(q, v) } as Sql)),
+    database().transaction((tx) => work({ query: (q, v) => tx.query(q, v) } as Sql)),
 } as Sql;
 const queue = createAccountTurnQueue(sql, btoa("x".repeat(32)));
 beforeAll(async () => {
-  await db.exec(`create table credentials(id uuid primary key,name text,max_agents int,version int,status text,expires_at timestamptz,scope text,owner_id uuid);
+  connection = new PGlite();
+  await database().exec(`create table credentials(id uuid primary key,name text,max_agents int,version int,status text,expires_at timestamptz,scope text,owner_id uuid);
     create table orgs(id uuid primary key);
     create table members(org_id uuid,user_id uuid,role text);
     create table mcp_actor_epochs(org_id uuid,user_id uuid,epoch bigint);
     create table sandboxes(id uuid primary key,harness text default 'codex',provider text,boat_runtime boolean,runtime_transport text,model text,reasoning_effort text,credential_id uuid,credential_version int,org_id uuid,owner_id uuid,
       conversation_ids text[],visibility text default 'private',status_reason text,preservation_note text,status text,deleted_at timestamptz,stopped_at timestamptz,stop_requested_at timestamptz,expires_at timestamptz,
-      activity_lease_id uuid,task_prompt_id text,lifecycle_generation bigint default 0,reconcile_lease_until timestamptz);
+      activity_lease_id uuid,task_prompt_id text,lifecycle_generation bigint default 1,reconcile_lease_until timestamptz);
     create table runtime_commands(sandbox_id uuid,sequence bigint,request_id text);
     create table runtime_enrolments(sandbox_id uuid,epoch bigint);
     create table runtime_checkpoints(sandbox_id uuid,epoch bigint,merge_stop boolean);
@@ -44,40 +54,217 @@ beforeAll(async () => {
     new URL("../../../supabase/migrations/20261115123000_account_turn_queue.sql", import.meta.url),
   ).text();
   // Role grants are outside the admission contract and these roles do not exist in PGlite.
-  await db.exec(migration.split("alter table")[0]!);
-  await db.exec("create role anon; create role authenticated");
-  await db.exec(
+  await database().exec(migration.split("alter table")[0]!);
+  await database().exec("create role anon; create role authenticated; create role service_role");
+  await database().exec(
     await Bun.file(
       new URL("../../../supabase/migrations/20261116060000_repair_account_turn_queue.sql", import.meta.url),
     ).text(),
   );
-  await db.query("insert into credentials values($1,'Shared account',1,1,'active',null,'user',$2)", [account, owner]);
-  await db.exec(
+  await database().exec(
+    await Bun.file(new URL("../../../supabase/migrations/20261119024017_jobs.sql", import.meta.url)).text(),
+  );
+  await database().query("insert into credentials values($1,'Shared account',1,1,'active',null,'user',$2)", [
+    account,
+    owner,
+  ]);
+  await database().exec(
     "alter table credentials add column model_limits jsonb not null default '{}'::jsonb; alter table account_agent_reservations add column model text; alter table account_turn_queue add column model text",
   );
-  await db.exec(
+  await database().exec(
     await Bun.file(
       new URL("../../../supabase/migrations/20261117190000_resolve_uncertain_native_capacity.sql", import.meta.url),
     ).text(),
   );
-  await db.query("insert into orgs values($1)", [org]);
-  await db.query("insert into members values($1,$2,'member')", [org, owner]);
-  await db.query("insert into mcp_actor_epochs values($1,$2,1)", [org, owner]);
+  await database().query("insert into orgs values($1)", [org]);
+  await database().query("insert into members values($1,$2,'member')", [org, owner]);
+  await database().query("insert into mcp_actor_epochs values($1,$2,1)", [org, owner]);
   for (const id of ids)
-    await db.query(
+    await database().query(
       "insert into sandboxes(id,credential_id,credential_version,org_id,owner_id,conversation_ids,status,expires_at) values($1,$2,1,$3,$4,array['history'],'ready',now()+interval '1 day')",
       [id, account, org, owner],
     );
 });
-afterAll(() => db.close());
+afterAll(async () => {
+  const db = connection;
+  connection = undefined;
+  await db?.close();
+});
 beforeEach(async () => {
-  await db.exec(
-    "update credentials set max_agents=1,model_limits='{}'::jsonb; delete from runtime_commands; delete from runtime_checkpoints; delete from runtime_enrolments; delete from docker_host_jobs; delete from runtime_resumes; delete from account_turn_queue; delete from account_agent_reservations; delete from runtime_idle_turns; update sandboxes set status='ready',status_reason=null,task_prompt_id=null,stopped_at=null,stop_requested_at=null,lifecycle_generation=0,activity_lease_id=null,provider=null,boat_runtime=false,runtime_transport=null; update mcp_actor_epochs set epoch=1;",
+  await database().exec(
+    "update credentials set max_agents=1,model_limits='{}'::jsonb; delete from runtime_commands; delete from runtime_checkpoints; delete from runtime_enrolments; delete from docker_host_jobs; delete from runtime_resumes; delete from jobs; delete from account_turn_queue; delete from account_agent_reservations; delete from runtime_idle_turns; update sandboxes set status='ready',status_reason=null,task_prompt_id=null,stopped_at=null,stop_requested_at=null,lifecycle_generation=1,activity_lease_id=null,provider=null,boat_runtime=false,runtime_transport=null; update mcp_actor_epochs set epoch=1;",
   );
 });
 
+test("an accepted request creates one generation-fenced dispatch job across identical retries", async () => {
+  const input = { id: ids[0]!, request_id: requests[0]!, prompt: "next instruction" };
+  await database().query("update sandboxes set lifecycle_generation=7 where id=$1", [input.id]);
+  expect(await queue.accept(caller, input)).toMatchObject({ status: "queued" });
+  await database().query("update sandboxes set lifecycle_generation=8 where id=$1", [input.id]);
+  expect(await queue.accept(caller, input)).toMatchObject({ status: "queued" });
+  const { rows } = await database().query<{
+    kind: string;
+    sandbox_id: string;
+    org_id: string;
+    generation: string;
+    state: string;
+    payload_enc: Uint8Array<ArrayBuffer>;
+  }>("select kind,sandbox_id,org_id,generation::text,state,payload_enc from public.jobs");
+  expect(rows).toEqual([
+    {
+      kind: "turn_dispatch",
+      sandbox_id: input.id,
+      org_id: org,
+      generation: "7",
+      state: "queued",
+      payload_enc: expect.any(Uint8Array),
+    },
+  ]);
+  expect(JSON.parse(await decryptSecret(rows[0]!.payload_enc, btoa("x".repeat(32))))).toEqual({
+    requestId: input.request_id,
+  });
+});
+
+test("dispatch job insertion failure rolls back the queued prompt", async () => {
+  const input = { id: ids[0]!, request_id: requests[0]!, prompt: "next instruction" };
+  await database().exec("alter table public.jobs add constraint reject_dispatch check (kind <> 'turn_dispatch')");
+  try {
+    await expect(queue.accept(caller, input)).rejects.toThrow("reject_dispatch");
+    expect(await queue.status(caller, input.id, input.request_id)).toBeNull();
+  } finally {
+    await database().exec("alter table public.jobs drop constraint reject_dispatch");
+  }
+  expect(await queue.accept(caller, input)).toMatchObject({ status: "queued" });
+});
+
+test("the worker seeds missing nonterminal dispatch jobs using their original generation", async () => {
+  const callerRequest = requests[0]!;
+  const legacy = ids[0]!;
+  const existing = ids[1]!;
+  const terminal = ids[2]!;
+  const dispatchingRequest = requests[1]!;
+  for (const [id, request_id] of [
+    [legacy, callerRequest],
+    [legacy, dispatchingRequest],
+    [existing, callerRequest],
+    [terminal, callerRequest],
+  ])
+    await queue.accept(caller, { id: id!, request_id, prompt: "next instruction" });
+  await database().query("delete from public.jobs where sandbox_id <> $1", [existing]);
+  await database().query("update public.account_turn_queue set state='failed' where sandbox_id=$1", [terminal]);
+  await database().query(
+    "update public.account_turn_queue set state='dispatching',dispatch_generation=2,dispatch_until='infinity' where sandbox_id=$1 and request_id=$2",
+    [legacy, dispatchingRequest],
+  );
+  await database().query("update public.sandboxes set lifecycle_generation=2 where id=$1", [legacy]);
+  await database().exec("update public.credentials set max_agents=0");
+  const dispatch = spyOn({ send: async () => ({}) }, "send");
+  queue.setDispatch(dispatch);
+
+  const readJobs = () =>
+    database().query<{ id: string; sandbox_id: string; generation: string; payload_enc: Uint8Array<ArrayBuffer> }>(
+      "select id,sandbox_id,generation::text,payload_enc from public.jobs order by id",
+    );
+  const [existingJob] = (await readJobs()).rows;
+  const signal = new AbortController().signal;
+  expect(await queue.reconcileOne(signal)).toBe(false);
+  const { rows } = await readJobs();
+  expect(await queue.reconcileOne(signal)).toBe(false);
+  expect((await readJobs()).rows).toEqual(rows);
+  expect(rows.find((job) => job.sandbox_id === existing)).toEqual(existingJob);
+  expect(rows).toHaveLength(3);
+  const recovered = await Promise.all(
+    rows
+      .filter((job) => job.sandbox_id === legacy)
+      .map(async (job) => ({
+        generation: job.generation,
+        payload: JSON.parse(await decryptSecret(job.payload_enc, btoa("x".repeat(32)))),
+      })),
+  );
+  expect(recovered).toEqual(
+    expect.arrayContaining([
+      { generation: "1", payload: { requestId: callerRequest } },
+      { generation: "1", payload: { requestId: dispatchingRequest } },
+    ]),
+  );
+  expect(dispatch).not.toHaveBeenCalled();
+});
+
+test("a failed backfill write does not stop the existing dispatcher", async () => {
+  const input = { id: ids[0]!, request_id: requests[0]!, prompt: "next instruction" };
+  await queue.accept(caller, input);
+  await database().query("delete from public.jobs where sandbox_id=$1", [input.id]);
+  await database().exec("alter table public.jobs add constraint reject_dispatch check (kind <> 'turn_dispatch')");
+  const receipt = { promptId: "accepted", conversationId: "history", status: "running" };
+  queue.setDispatch(async () => receipt);
+  try {
+    expect(await queue.reconcileOne(new AbortController().signal)).toBe(true);
+    await queue.drain();
+    expect(await queue.accept(caller, input)).toEqual(receipt);
+  } finally {
+    await database().exec("alter table public.jobs drop constraint reject_dispatch");
+  }
+});
+
+test("backfill advances past a page of terminal history to reach a waiting request", async () => {
+  const history = { id: ids[0]!, request_id: requests[0]!, prompt: "earlier instruction" };
+  await queue.accept(caller, history);
+  await database().query(
+    `insert into public.account_turn_queue
+       (sandbox_id,request_id,account_id,owner_id,org_id,actor_epoch,credential_version,input_hash,input_enc,conversation_id,state)
+     select sandbox_id,gen_random_uuid(),account_id,owner_id,org_id,actor_epoch,credential_version,input_hash,input_enc,conversation_id,'failed'
+     from public.account_turn_queue cross join generate_series(1,20) where sandbox_id=$1`,
+    [history.id],
+  );
+  await database().query("update public.account_turn_queue set state='failed' where sandbox_id=$1", [history.id]);
+  const waiting = { id: ids[1]!, request_id: requests[1]!, prompt: "next instruction" };
+  await queue.accept(caller, waiting);
+  await database().query("delete from public.jobs where sandbox_id=$1", [waiting.id]);
+  await database().exec("update public.credentials set max_agents=0");
+  const worker = createAccountTurnQueue(sql, btoa("x".repeat(32)));
+  worker.setDispatch(async () => ({}));
+  const signal = new AbortController().signal;
+  const jobsForWaiting = async () =>
+    (await database().query("select id from public.jobs where sandbox_id=$1", [waiting.id])).rows;
+
+  expect(await worker.reconcileOne(signal)).toBe(false);
+  expect(await jobsForWaiting()).toHaveLength(0);
+  expect(await worker.reconcileOne(signal)).toBe(false);
+  expect(await jobsForWaiting()).toHaveLength(1);
+});
+
+test("a backfill sweep wraps to retry a failed insert while newer rows are arriving", async () => {
+  const waiting = { id: ids[0]!, request_id: requests[0]!, prompt: "next instruction" };
+  await queue.accept(caller, waiting);
+  const addHistory = () =>
+    database().query(
+      `insert into public.account_turn_queue
+         (sandbox_id,request_id,account_id,owner_id,org_id,actor_epoch,credential_version,input_hash,input_enc,conversation_id,state)
+       select sandbox_id,gen_random_uuid(),account_id,owner_id,org_id,actor_epoch,credential_version,input_hash,input_enc,conversation_id,'failed'
+       from public.account_turn_queue cross join generate_series(1,20) where sandbox_id=$1 and request_id=$2`,
+      [waiting.id, waiting.request_id],
+    );
+  await addHistory();
+  await database().exec("update public.credentials set max_agents=0; delete from public.jobs");
+  const worker = createAccountTurnQueue(sql, btoa("x".repeat(32)));
+  worker.setDispatch(async () => ({}));
+  const signal = new AbortController().signal;
+  await database().exec("alter table public.jobs add constraint reject_dispatch check (kind <> 'turn_dispatch')");
+  try {
+    expect(await worker.reconcileOne(signal)).toBe(false);
+  } finally {
+    await database().exec("alter table public.jobs drop constraint reject_dispatch");
+  }
+
+  for (let pass = 0; pass < 2; pass++) {
+    await addHistory();
+    expect(await worker.reconcileOne(signal)).toBe(false);
+  }
+  expect((await database().query("select id from public.jobs where sandbox_id=$1", [waiting.id])).rows).toHaveLength(1);
+});
+
 test("full-account prompts persist, dispatch FIFO after a turn settles, and queued IDs resolve to actual receipts", async () => {
-  await db.query("update sandboxes set status='running',task_prompt_id='active_turn' where id=$1", [ids[0]]);
+  await database().query("update sandboxes set status='running',task_prompt_id='active_turn' where id=$1", [ids[0]]);
   const first = { id: ids[1]!, request_id: requests[0]!, prompt: "first instruction" };
   const second = { id: ids[2]!, request_id: requests[1]!, prompt: "second instruction" };
   expect((await queue.accept(caller, first))?.status).toBe("queued");
@@ -86,12 +273,15 @@ test("full-account prompts persist, dispatch FIFO after a turn settles, and queu
   const dispatched: string[] = [];
   queue.setDispatch(async (_caller, input) => {
     dispatched.push(input.prompt);
-    await db.query("update sandboxes set task_prompt_id=$2,status='running' where id=$1", [input.id, input.request_id]);
-    await db.query("delete from account_agent_reservations where sandbox_id=$1", [input.id]);
+    await database().query("update sandboxes set task_prompt_id=$2,status='running' where id=$1", [
+      input.id,
+      input.request_id,
+    ]);
+    await database().query("delete from account_agent_reservations where sandbox_id=$1", [input.id]);
     return { id: input.id, promptId: `actual_${input.request_id}`, conversationId: "history", status: "running" };
   });
   expect(await queue.reconcileOne(new AbortController().signal)).toBe(false);
-  await db.query("insert into runtime_idle_turns values($1,'active_turn',true)", [ids[0]]);
+  await database().query("insert into runtime_idle_turns values($1,'active_turn',true)", [ids[0]]);
   expect(await queue.reconcileOne(new AbortController().signal)).toBe(true);
   await queue.drain();
   expect(dispatched).toEqual(["first instruction"]);
@@ -101,16 +291,113 @@ test("full-account prompts persist, dispatch FIFO after a turn settles, and queu
   });
   expect(await queue.status(caller, ids[1]!, requests[0])).toEqual({ nativePromptId: `actual_${requests[0]}` });
   expect(await queue.reconcileOne(new AbortController().signal)).toBe(false);
-  await db.query("insert into runtime_idle_turns values($1,$2,true)", [ids[1], requests[0]]);
+  await database().query("insert into runtime_idle_turns values($1,$2,true)", [ids[1], requests[0]]);
   expect(await queue.reconcileOne(new AbortController().signal)).toBe(true);
   await queue.drain();
   expect(dispatched).toEqual(["first instruction", "second instruction"]);
 });
 
+test.each(["modal", "boat", "docker"])("a pre-activation %s wake refusal fails the queued prompt", async (provider) => {
+  const input = { id: ids[1]!, request_id: requests[0]!, prompt: "wake rejected" };
+  await database().query(
+    "update sandboxes set provider=$2,boat_runtime=$2='boat',runtime_transport=case when $2='modal' then 'dialout' end,status_reason=case when $2='docker' then 'idle_paused' end,status='stopped',stopped_at=now() where id=$1",
+    [input.id, provider],
+  );
+  expect(await queue.accept(caller, input)).toMatchObject({ status: "queued" });
+  queue.setDispatch(async () => {
+    throw new VaultError("conflict", "No current synchronized checkpoint");
+  });
+  const log = spyOn(console, "error");
+  try {
+    expect(await queue.reconcileOne(new AbortController().signal)).toBe(true);
+    await queue.drain();
+    expect(await queue.status(caller, input.id, input.request_id)).toMatchObject({
+      failed: true,
+      message: "Queued prompt rejected before dispatch; inspect sandbox and account settings before resending.",
+    });
+    const lines = log.mock.calls.map(([line]) => String(line));
+    expect(lines.map((line) => JSON.parse(line))).toEqual([
+      expect.objectContaining({
+        event: "operator_failure",
+        phase: "account_turn.dispatch.send",
+        sandboxId: input.id,
+        operationSequence: expect.any(String),
+        code: "conflict",
+        errorClass: "VaultError",
+      }),
+    ]);
+    expect(lines.join("\n")).not.toContain(input.request_id);
+  } finally {
+    log.mockRestore();
+  }
+});
+
+test("a rejected first Modal turn logs bounded evidence and releases its reservation", async () => {
+  const input = { id: ids[1]!, request_id: requests[0]!, prompt: "private instruction" };
+  await database().query("update sandboxes set provider='modal',runtime_transport='dialout' where id=$1", [input.id]);
+  let requestId: string | undefined;
+  await observeRequest(
+    async () => {
+      requestId = currentRequestId();
+      await queue.accept(caller, input);
+      return undefined;
+    },
+    () => {},
+  );
+  queue.setDispatch((actor, request) =>
+    callSharedTool(
+      {
+        caller: actor,
+        now: () => new Date(0),
+        data: {
+          sandboxes: {
+            get: async () => ({
+              id: input.id,
+              provider: "modal",
+              status: "ready",
+              credentialId: account,
+              runtimeTransport: "dialout",
+            }),
+          },
+        },
+        async runtimeSend() {
+          throw new VaultError("invalid", "private upstream detail");
+        },
+      } as unknown as ToolContext,
+      "send",
+      { ...request },
+    ),
+  );
+  const log = spyOn(console, "error");
+  try {
+    expect(await queue.reconcileOne(new AbortController().signal)).toBe(true);
+    await queue.drain();
+    expect(await queue.status(caller, input.id, input.request_id)).toMatchObject({ failed: true });
+    expect((await database().query("select sandbox_id from account_agent_reservations")).rows).toEqual([]);
+    const lines = log.mock.calls.map(([line]) => String(line));
+    expect(lines.map((line) => JSON.parse(line))).toEqual([
+      expect.objectContaining({
+        event: "operator_failure",
+        phase: "account_turn.dispatch.send",
+        code: "invalid",
+        errorClass: "VaultError",
+        sandboxId: input.id,
+        operationSequence: expect.any(String),
+        requestId: expect.any(String),
+      }),
+    ]);
+    expect(JSON.parse(lines[0]!).requestId).toBe(requestId);
+    expect(lines.join("\n")).not.toContain("private");
+    expect(lines.join("\n")).not.toContain(input.request_id);
+  } finally {
+    log.mockRestore();
+  }
+});
+
 test("queued sends recheck actor revocation without dispatching or reserving a slot", async () => {
   const input = { id: ids[1]!, request_id: requests[0]!, prompt: "authorized initially" };
   await queue.accept(caller, input);
-  await db.exec("update mcp_actor_epochs set epoch=2");
+  await database().exec("update mcp_actor_epochs set epoch=2");
   let dispatched = false;
   queue.setDispatch(async () => {
     dispatched = true;
@@ -118,7 +405,7 @@ test("queued sends recheck actor revocation without dispatching or reserving a s
   expect(await queue.reconcileOne(new AbortController().signal)).toBe(false);
   expect(dispatched).toBe(false);
   expect((await queue.status(caller, ids[1]!, requests[0]))?.failed).toBe(true);
-  expect((await db.query("select * from account_agent_reservations")).rows).toEqual([]);
+  expect((await database().query("select * from account_agent_reservations")).rows).toEqual([]);
 });
 
 test("send replay keeps the original receipt while new sends target the current conversation", async () => {
@@ -128,44 +415,44 @@ test("send replay keeps the original receipt while new sends target the current 
   queue.setDispatch(async () => receipt);
   expect(await queue.reconcileOne(new AbortController().signal)).toBe(true);
   await queue.drain();
-  await db.query("update sandboxes set conversation_ids=array['history','current'] where id=$1", [input.id]);
+  await database().query("update sandboxes set conversation_ids=array['history','current'] where id=$1", [input.id]);
   try {
     await expect(queue.accept(caller, input)).resolves.toMatchObject(receipt);
     await expect(queue.accept(caller, { ...input, request_id: requests[1]! })).resolves.toMatchObject({
       conversationId: "current",
     });
   } finally {
-    await db.query("update sandboxes set conversation_ids=array['history'] where id=$1", [input.id]);
+    await database().query("update sandboxes set conversation_ids=array['history'] where id=$1", [input.id]);
   }
 });
 
 test("uncertain native dispatch is not retried and confirmed stop releases the account for the next queued turn", async () => {
   for (const stopBeforeFailure of [false, true]) {
-    await db.exec(
-      "delete from account_turn_queue; delete from account_agent_reservations; update sandboxes set status='ready',stopped_at=null,stop_requested_at=null,lifecycle_generation=0,activity_lease_id=null,model=null",
+    await database().exec(
+      "delete from jobs; delete from account_turn_queue; delete from account_agent_reservations; update sandboxes set status='ready',stopped_at=null,stop_requested_at=null,lifecycle_generation=1,activity_lease_id=null,model=null",
     );
     const first = { id: ids[1]!, request_id: requests[0]!, prompt: "uncertain instruction", model: "gpt-5.4" };
     const second = { id: ids[2]!, request_id: requests[1]!, prompt: "next instruction", model: "gpt-5.4" };
-    await db.exec("update credentials set max_agents=null,model_limits='{\"gpt-5.4\":1}'::jsonb");
+    await database().exec("update credentials set max_agents=null,model_limits='{\"gpt-5.4\":1}'::jsonb");
     await queue.accept(caller, first);
     await queue.accept(caller, second);
     let calls = 0;
     queue.setDispatch(async () => {
       calls++;
-      await db.query(
+      await database().query(
         "update sandboxes set lifecycle_generation=lifecycle_generation+1,model='default_model',activity_lease_id=id where id=$1",
         [ids[1]],
       );
       // Normal dispatch cleanup releases the transient reservation even on error.
-      await db.query("delete from account_agent_reservations where sandbox_id=$1", [ids[1]]);
+      await database().query("delete from account_agent_reservations where sandbox_id=$1", [ids[1]]);
       if (stopBeforeFailure)
-        await db.query("update sandboxes set status='stopped',stopped_at=now() where id=$1", [ids[1]]);
+        await database().query("update sandboxes set status='stopped',stopped_at=now() where id=$1", [ids[1]]);
       throw Error("uncertain");
     });
     expect(await queue.reconcileOne(new AbortController().signal)).toBe(true);
     await queue.drain();
     if (!stopBeforeFailure) {
-      const usage = await db.query<{ total: number; default_model: number; override_model: number }>(
+      const usage = await database().query<{ total: number; default_model: number; override_model: number }>(
         `select ${accountWorkingCountSql("$1")} as total,
           ${accountWorkingCountSql("$1", "null::uuid", "'default_model'")} as default_model,
           ${accountWorkingCountSql("$1", "null::uuid", "'gpt-5.4'")} as override_model`,
@@ -177,28 +464,28 @@ test("uncertain native dispatch is not retried and confirmed stop releases the a
       expect(await queue.reconcileOne(new AbortController().signal)).toBe(false);
       expect(calls).toBe(1);
       // Exec/steer can advance generations without resolving the uncertain prompt.
-      await db.query("update sandboxes set lifecycle_generation=lifecycle_generation+2 where id=$1", [ids[1]]);
+      await database().query("update sandboxes set lifecycle_generation=lifecycle_generation+2 where id=$1", [ids[1]]);
       expect(await queue.reconcileOne(new AbortController().signal)).toBe(false);
       expect((await queue.status(caller, first.id, first.request_id))?.failed).toBe(true);
-      expect((await db.query("select state from account_turn_queue where sandbox_id=$1", [first.id])).rows).toEqual([
-        { state: "failed" },
-      ]);
-      await db.query(
+      expect(
+        (await database().query("select state from account_turn_queue where sandbox_id=$1", [first.id])).rows,
+      ).toEqual([{ state: "failed" }]);
+      await database().query(
         "update sandboxes set status='stopping',stop_requested_at=now(),lifecycle_generation=lifecycle_generation+2 where id=$1",
         [ids[1]],
       );
       expect(await queue.reconcileOne(new AbortController().signal)).toBe(false);
       expect(calls).toBe(1);
-      await db.query("update sandboxes set status='failed' where id=$1", [ids[1]]);
+      await database().query("update sandboxes set status='failed' where id=$1", [ids[1]]);
       expect(await queue.reconcileOne(new AbortController().signal)).toBe(false);
       expect(calls).toBe(1);
-      await db.query(
+      await database().query(
         "update sandboxes set status='stopped',stopped_at=now(),lifecycle_generation=lifecycle_generation+1 where id=$1",
         [ids[1]],
       );
     }
     // A later resume must not resurrect the old uncertain model charge.
-    await db.query(
+    await database().query(
       "update sandboxes set status='ready',stopped_at=null,stop_requested_at=null,activity_lease_id=null,lifecycle_generation=lifecycle_generation+1 where id=$1",
       [ids[1]],
     );
@@ -220,18 +507,18 @@ test("uncertain native dispatch is not retried and confirmed stop releases the a
 test("cancellation during dispatch keeps the uncertain model charge until physical stop", async () => {
   const first = { id: ids[1]!, request_id: requests[0]!, prompt: "uncertain instruction", model: "gpt-5.4" };
   const second = { id: ids[2]!, request_id: requests[1]!, prompt: "next instruction", model: "gpt-5.4" };
-  await db.exec("update credentials set max_agents=null,model_limits='{\"gpt-5.4\":1}'::jsonb");
+  await database().exec("update credentials set max_agents=null,model_limits='{\"gpt-5.4\":1}'::jsonb");
   await queue.accept(caller, first);
   await queue.accept(caller, second);
   queue.setDispatch(async () => {
     // Admission advances the generation, then ordinary cleanup releases the reservation.
-    await db.query(
+    await database().query(
       "update sandboxes set lifecycle_generation=lifecycle_generation+1,model='default_model',activity_lease_id=id where id=$1",
       [ids[1]],
     );
-    await db.query("delete from account_agent_reservations where sandbox_id=$1", [ids[1]]);
+    await database().query("delete from account_agent_reservations where sandbox_id=$1", [ids[1]]);
     // A stop becomes pending while the dispatch handler is still running.
-    await db.query(
+    await database().query(
       "update sandboxes set status='stopping',stop_requested_at=now(),activity_lease_id=null where id=$1",
       [ids[1]],
     );
@@ -241,7 +528,7 @@ test("cancellation during dispatch keeps the uncertain model charge until physic
   });
   expect(await queue.reconcileOne(new AbortController().signal)).toBe(true);
   await queue.drain();
-  const usage = await db.query<{ total: number; default_model: number; override_model: number }>(
+  const usage = await database().query<{ total: number; default_model: number; override_model: number }>(
     `select ${accountWorkingCountSql("$1")} as total,
       ${accountWorkingCountSql("$1", "null::uuid", "'default_model'")} as default_model,
       ${accountWorkingCountSql("$1", "null::uuid", "'gpt-5.4'")} as override_model`,
@@ -260,7 +547,7 @@ test("cancellation during dispatch keeps the uncertain model charge until physic
   await queue.drain();
   expect(calls).toBe(0);
   // Confirmed physical stop releases the charge.
-  await db.query("update sandboxes set status='stopped',stopped_at=now() where id=$1", [ids[1]]);
+  await database().query("update sandboxes set status='stopped',stopped_at=now() where id=$1", [ids[1]]);
   expect(await queue.reconcileOne(new AbortController().signal)).toBe(true);
   await queue.drain();
   expect(calls).toBe(1);
@@ -443,13 +730,13 @@ test("bounded queue scans advance past full accounts without starving another ac
     const accountId = `80000000-0000-4000-8000-${suffix}`;
     const sandboxId = `90000000-0000-4000-8000-${suffix}`;
     const requestId = `70000000-0000-4000-8000-${suffix}`;
-    await db.query("insert into credentials values($1,$2,$3,1,'active',null,'user',$4)", [
+    await database().query("insert into credentials values($1,$2,$3,1,'active',null,'user',$4)", [
       accountId,
       `Account ${i}`,
       i === 21 ? 1 : 0,
       owner,
     ]);
-    await db.query(
+    await database().query(
       "insert into sandboxes(id,credential_id,credential_version,org_id,owner_id,conversation_ids,status,expires_at) values($1,$2,1,$3,$4,array['history'],'ready',now()+interval '1 day')",
       [sandboxId, accountId, org, owner],
     );
@@ -484,14 +771,15 @@ test("a proven pre-dispatch rejection requeues without leaking the account reser
     expect(dispatched).toEqual(input);
     calls++;
     if (calls === 1) {
-      await db.query("insert into runtime_commands values($1,1,'readonly_get_prompt')", [input.id]);
-      throw new VaultError("conflict", "reconcile lease won admission after getPrompt probe");
+      await database().query("insert into runtime_commands values($1,1,'readonly_get_prompt')", [input.id]);
+      const cause = new VaultError("conflict", "reconcile lease won admission after getPrompt probe");
+      throw new ToolApiError("conflict", cause.message, undefined, { cause });
     }
     return { promptId: "accepted_after_retry", conversationId: "history", status: "running" };
   });
   expect(await queue.reconcileOne(new AbortController().signal)).toBe(true);
   await queue.drain();
-  expect((await db.query("select * from account_agent_reservations")).rows).toEqual([]);
+  expect((await database().query("select * from account_agent_reservations")).rows).toEqual([]);
   expect((await queue.status(caller, input.id, input.request_id))?.message).toContain("waiting for sandbox dispatch");
   const replay = await admit();
   expect(replay?.status).toBe(202);
@@ -511,7 +799,7 @@ test("uppercase request UUIDs preserve one queue identity and status alias", asy
     requestId: uppercase.toLowerCase(),
     status: "queued",
   });
-  expect((await db.query("select * from account_turn_queue")).rows).toHaveLength(1);
+  expect((await database().query("select * from account_turn_queue")).rows).toHaveLength(1);
   expect(await queue.status(caller, input.id, uppercase)).toMatchObject({
     requestId: uppercase.toLowerCase(),
     failed: false,
@@ -526,11 +814,11 @@ test.each(["docker", "boat", "modal"] as const)(
   "pending %s runtime wake reconciles only its original durable request",
   async (provider) => {
     const input = { id: ids[1]!, request_id: requests[0]!, prompt: "resume the same conversation" };
-    await db.query(
+    await database().query(
       "update sandboxes set provider=$2,boat_runtime=$3,runtime_transport=$4,status='stopped',status_reason='idle_paused',stopped_at=now() where id=$1",
       [input.id, provider, provider === "boat", provider === "modal" ? "dialout" : null],
     );
-    await db.query("update sandboxes set status_reason=$2 where id=$1", [
+    await database().query("update sandboxes set status_reason=$2 where id=$1", [
       input.id,
       provider === "docker" ? "idle_paused" : null,
     ]);
@@ -539,20 +827,20 @@ test.each(["docker", "boat", "modal"] as const)(
     queue.setDispatch(async (_caller, request) => {
       requestsSeen.push(request);
       if (requestsSeen.length === 1) {
-        await db.query(
+        await database().query(
           "update sandboxes set status='starting',stopped_at=null,lifecycle_generation=lifecycle_generation+1,activity_lease_id=$2 where id=$1",
           [input.id, input.request_id],
         );
         if (provider === "docker")
-          await db.query("insert into docker_host_jobs values($1,1,$2)", [input.id, input.request_id]);
-        else await db.query("insert into runtime_resumes values($1,$2)", [input.id, input.request_id]);
+          await database().query("insert into docker_host_jobs values($1,1,$2)", [input.id, input.request_id]);
+        else await database().query("insert into runtime_resumes values($1,$2)", [input.id, input.request_id]);
         throw Error("wake still pending");
       }
       return { promptId: "resumed_prompt", conversationId: "history", status: "running" };
     });
     expect(await queue.reconcileOne(new AbortController().signal)).toBe(true);
     await queue.drain();
-    expect((await db.query("select * from account_agent_reservations")).rows).toHaveLength(1);
+    expect((await database().query("select * from account_agent_reservations")).rows).toHaveLength(1);
     expect(await queue.reconcileOne(new AbortController().signal)).toBe(true);
     await queue.drain();
     expect(requestsSeen).toEqual([input, input]);
@@ -569,7 +857,7 @@ test("native invalid model settings are rejected before a durable prompt is queu
       model: "invalid model with spaces",
     }),
   ).rejects.toThrow();
-  expect((await db.query("select * from account_turn_queue")).rows).toEqual([]);
+  expect((await database().query("select * from account_turn_queue")).rows).toEqual([]);
 });
 
 test("a native request with its own durable mutating command stays uncertain rather than replaying", async () => {
@@ -578,25 +866,25 @@ test("a native request with its own durable mutating command stays uncertain rat
   let calls = 0;
   queue.setDispatch(async () => {
     calls++;
-    await db.query("insert into runtime_commands values($1,1,$2)", [input.id, `follow_${input.request_id}`]);
+    await database().query("insert into runtime_commands values($1,1,$2)", [input.id, `follow_${input.request_id}`]);
     throw Error("reply lost");
   });
   expect(await queue.reconcileOne(new AbortController().signal)).toBe(true);
   await queue.drain();
   expect(await queue.reconcileOne(new AbortController().signal)).toBe(false);
   expect(calls).toBe(1);
-  expect((await db.query("select * from account_agent_reservations")).rows).toHaveLength(1);
+  expect((await database().query("select * from account_agent_reservations")).rows).toHaveLength(1);
 });
 
 test("runtime dispatch leases survive a server restart without replaying while another dispatcher owns the lease", async () => {
   const input = { id: ids[1]!, request_id: requests[0]!, prompt: "recover a claimed instruction" };
-  await db.query("update sandboxes set provider='docker' where id=$1", [input.id]);
+  await database().query("update sandboxes set provider='docker' where id=$1", [input.id]);
   await queue.accept(caller, input);
-  await db.query(
-    "update account_turn_queue set state='dispatching',dispatch_generation=0,dispatch_until=now()+interval '1 hour' where sandbox_id=$1",
+  await database().query(
+    "update account_turn_queue set state='dispatching',dispatch_generation=1,dispatch_until=now()+interval '1 hour' where sandbox_id=$1",
     [input.id],
   );
-  await db.query("insert into account_agent_reservations values($1,$2)", [input.id, account]);
+  await database().query("insert into account_agent_reservations values($1,$2)", [input.id, account]);
   const restarted = createAccountTurnQueue(sql, btoa("x".repeat(32)));
   let calls = 0;
   restarted.setDispatch(async (_caller, request) => {
@@ -605,7 +893,7 @@ test("runtime dispatch leases survive a server restart without replaying while a
     return { promptId: "recovered_prompt", conversationId: "history", status: "running" };
   });
   expect(await restarted.reconcileOne(new AbortController().signal)).toBe(false);
-  await db.query("update account_turn_queue set dispatch_until=now()-interval '1 second' where sandbox_id=$1", [
+  await database().query("update account_turn_queue set dispatch_until=now()-interval '1 second' where sandbox_id=$1", [
     input.id,
   ]);
   expect(await restarted.reconcileOne(new AbortController().signal)).toBe(true);
@@ -626,18 +914,18 @@ test("explicit owner stop cancels waiting prompts before Docker no-op routing, b
   await callSharedTool(context, "stop", { id: input.id, only_if_idle: true });
   expect((await queue.status(caller, input.id, input.request_id))?.failed).toBe(false);
   // Stop also refuses a picked dispatch before it can resume compute.
-  await db.query(
+  await database().query(
     "insert into account_turn_queue(sandbox_id,request_id,account_id,owner_id,org_id,actor_epoch,credential_version,input_hash,input_enc,conversation_id,state) select sandbox_id,$2,account_id,owner_id,org_id,actor_epoch,credential_version,input_hash,input_enc,conversation_id,'dispatching' from account_turn_queue where sandbox_id=$1",
     [input.id, requests[1]],
   );
-  await db.query("insert into account_agent_reservations values($1,$2)", [input.id, account]);
+  await database().query("insert into account_agent_reservations values($1,$2)", [input.id, account]);
   await callSharedTool(context, "stop", { id: input.id });
   expect(await queue.status(caller, input.id, input.request_id)).toMatchObject({
     failed: true,
     message: "Queued prompt was cancelled.",
   });
-  expect((await db.query("select * from account_turn_queue where state='dispatching'")).rows).toHaveLength(0);
-  expect((await db.query("select * from account_agent_reservations")).rows).toHaveLength(1);
+  expect((await database().query("select * from account_turn_queue where state='dispatching'")).rows).toHaveLength(0);
+  expect((await database().query("select * from account_agent_reservations")).rows).toHaveLength(1);
   let dispatched = false;
   queue.setDispatch(async () => {
     dispatched = true;
@@ -647,7 +935,7 @@ test("explicit owner stop cancels waiting prompts before Docker no-op routing, b
 });
 
 test("unlimited accounts dispatch three turns without waiting for another dispatch receipt", async () => {
-  await db.exec("update credentials set max_agents=null");
+  await database().exec("update credentials set max_agents=null");
   const releases: (() => void)[] = [];
   const started: string[] = [];
   let entered: () => void = () => {};
@@ -673,7 +961,9 @@ test("unlimited accounts dispatch three turns without waiting for another dispat
 
 test("a stop after acceptance fails waiting work instead of resurrecting it", async () => {
   await queue.accept(caller, { id: ids[0]!, prompt: "next" });
-  await db.query("update sandboxes set status='stopped',stopped_at=now(),lifecycle_generation=1 where id=$1", [ids[0]]);
+  await database().query("update sandboxes set status='stopped',stopped_at=now(),lifecycle_generation=2 where id=$1", [
+    ids[0],
+  ]);
   queue.setDispatch(async () => {
     throw new Error("must not dispatch");
   });
@@ -686,11 +976,11 @@ test("a stop after acceptance fails waiting work instead of resurrecting it", as
 
 test("forward repair fails historical stopped rows and preserves live queued work for dispatch", async () => {
   for (const id of ids.slice(0, 2)) await queue.accept(caller, { id, prompt: "historical" });
-  await db.query("update sandboxes set status='stopped',stopped_at=now() where id=$1", [ids[0]]);
-  await db.exec(
+  await database().query("update sandboxes set status='stopped',stopped_at=now() where id=$1", [ids[0]]);
+  await database().exec(
     "drop trigger set_account_turn_queue_generation on account_turn_queue; drop function set_account_turn_queue_generation(); alter table account_turn_queue drop column queued_generation",
   );
-  await db.exec(
+  await database().exec(
     await Bun.file(
       new URL("../../../supabase/migrations/20261116060000_repair_account_turn_queue.sql", import.meta.url),
     ).text(),
@@ -704,28 +994,31 @@ test("forward repair fails historical stopped rows and preserves live queued wor
 
 test("stranded receipts settle without replay while safe unlimited and paused work dispatches", async () => {
   for (const id of ids) await queue.accept(caller, { id, request_id: requests[0]!, prompt: "historical" });
-  await db.query("update sandboxes set activity_lease_id=$2 where id=$1", [ids[0], requests[0]]);
-  await db.query("update sandboxes set status='stopped',status_reason='idle_paused',stopped_at=now() where id=$1", [
-    ids[1],
-  ]);
-  await db.query("update sandboxes set status='running',task_prompt_id='busy_turn' where id=$1", [ids[2]]);
+  await database().query("update sandboxes set activity_lease_id=$2 where id=$1", [ids[0], requests[0]]);
+  await database().query(
+    "update sandboxes set status='stopped',status_reason='idle_paused',stopped_at=now() where id=$1",
+    [ids[1]],
+  );
+  await database().query("update sandboxes set status='running',task_prompt_id='busy_turn' where id=$1", [ids[2]]);
   const count = async () =>
     Number(
       (
-        await db.query<{ n: string }>(
+        await database().query<{ n: string }>(
           `select ${accountWaitingCountSql("'" + account + "'::uuid", "(select max_agents from credentials limit 1)")} as n`,
         )
       ).rows[0]!.n,
     );
   expect(await count()).toBe(1); // Only paused work needs a new slot; busy targets already own one.
-  await db.exec("update credentials set max_agents=null");
+  await database().exec("update credentials set max_agents=null");
   expect(await count()).toBe(0);
-  await db.query("update sandboxes set status='ready',status_reason=null,task_prompt_id=null where id=$1", [ids[2]]);
-  const waiting = await db.query<{ n: string }>(
+  await database().query("update sandboxes set status='ready',status_reason=null,task_prompt_id=null where id=$1", [
+    ids[2],
+  ]);
+  const waiting = await database().query<{ n: string }>(
     `select ${accountWaitingCountSql("'" + account + "'::uuid", "null::int")} as n`,
   );
   expect(Number(waiting.rows[0]!.n)).toBe(0);
-  await db.exec(
+  await database().exec(
     await Bun.file(
       new URL("../../../supabase/migrations/20261116072000_settle_stranded_account_queue.sql", import.meta.url),
     ).text(),
@@ -744,13 +1037,13 @@ test("stranded receipts settle without replay while safe unlimited and paused wo
 
 test.each(["boat", "modal"])("native %s restart releases only proven pre-dispatch claims", async (provider) => {
   const input = { id: ids[1]!, request_id: requests[0]!, prompt: "recover abandoned claim" };
-  await db.query("update sandboxes set provider=$2 where id=$1", [input.id, provider]);
+  await database().query("update sandboxes set provider=$2 where id=$1", [input.id, provider]);
   await queue.accept(caller, input);
-  await db.query(
-    "update account_turn_queue set state='dispatching',dispatch_generation=0,dispatch_until=now()-interval '1 second' where sandbox_id=$1",
+  await database().query(
+    "update account_turn_queue set state='dispatching',dispatch_generation=1,dispatch_until=now()-interval '1 second' where sandbox_id=$1",
     [input.id],
   );
-  await db.query("insert into account_agent_reservations values($1,$2)", [input.id, account]);
+  await database().query("insert into account_agent_reservations values($1,$2)", [input.id, account]);
   const restarted = createAccountTurnQueue(sql, btoa("x".repeat(32)));
   let calls = 0;
   restarted.setDispatch(async () => {
@@ -758,7 +1051,7 @@ test.each(["boat", "modal"])("native %s restart releases only proven pre-dispatc
     return { promptId: "recovered_native" };
   });
   expect(await restarted.reconcileOne(new AbortController().signal)).toBe(false);
-  expect((await db.query("select * from account_agent_reservations")).rows).toHaveLength(0);
+  expect((await database().query("select * from account_agent_reservations")).rows).toHaveLength(0);
   expect((await restarted.status(caller, input.id, input.request_id))?.message).toBe(
     "Prompt accepted; waiting for sandbox dispatch, not an account slot.",
   );
@@ -798,9 +1091,9 @@ test.each([
     expected: "Prompt accepted; waiting for the current sandbox turn or dispatch to finish.",
   },
 ])("queue messages identify $name in acceptance and status", async ({ busy, limit, occupied, expected }) => {
-  await db.query("update credentials set max_agents=$1", [limit]);
+  await database().query("update credentials set max_agents=$1", [limit]);
   if (busy || occupied)
-    await db.query("update sandboxes set status='running',task_prompt_id='active_turn' where id=$1", [
+    await database().query("update sandboxes set status='running',task_prompt_id='active_turn' where id=$1", [
       busy ? ids[1] : ids[0],
     ]);
   const input = { id: ids[1]!, request_id: requests[0]!, prompt: "queued instruction" };
@@ -808,13 +1101,30 @@ test.each([
   expect(await queue.status(caller, input.id, input.request_id)).toMatchObject({ message: expected });
 });
 
+test("a ready runtime with an unsettled prompt holds the next queued turn", async () => {
+  const input = { id: ids[1]!, request_id: requests[0]!, prompt: "next turn" };
+  await database().query(
+    "update sandboxes set provider='boat',boat_runtime=true,task_prompt_id='active_turn' where id=$1",
+    [input.id],
+  );
+  const waiting = "Prompt accepted; waiting for the current sandbox turn or dispatch to finish.";
+  expect(await queue.accept(caller, input)).toMatchObject({ statusMessage: waiting });
+  queue.setDispatch(async () => ({ promptId: "next_prompt", status: "running" }));
+  expect(await queue.reconcileOne(new AbortController().signal)).toBe(false);
+  await database().query("insert into runtime_idle_turns values($1,'active_turn',true)", [input.id]);
+  expect(await queue.reconcileOne(new AbortController().signal)).toBe(true);
+  await queue.drain();
+  expect(await queue.status(caller, input.id, input.request_id)).toEqual({ nativePromptId: "next_prompt" });
+});
+
 test("a full model queues its override without blocking another model and reports the real limit", async () => {
-  await db.exec(
+  await database().exec(
     `update credentials set max_agents=4,model_limits='{"kimi":1,"deepseek":2}'; update sandboxes set model='deepseek';`,
   );
-  await db.query("update sandboxes set model='kimi',status='running',task_prompt_id='active_model' where id=$1", [
-    ids[0],
-  ]);
+  await database().query(
+    "update sandboxes set model='kimi',status='running',task_prompt_id='active_model' where id=$1",
+    [ids[0]],
+  );
   const blocked = await queue.accept(caller, {
     id: ids[1]!,
     request_id: requests[0]!,
@@ -823,10 +1133,10 @@ test("a full model queues its override without blocking another model and report
   });
   expect(blocked?.statusMessage).toContain("model kimi on account Shared account (1/1)");
   const otherAccount = "10000000-0000-4000-8000-000000000099";
-  await db.query("insert into credentials(id,name,max_agents,model_limits) values($1,'Other account',1,'{}')", [
+  await database().query("insert into credentials(id,name,max_agents,model_limits) values($1,'Other account',1,'{}')", [
     otherAccount,
   ]);
-  const counts = await db.query<{
+  const counts = await database().query<{
     id: string;
     model_counts: Record<string, { runningAgents: number; waitingAgents: number }>;
   }>(
@@ -837,7 +1147,7 @@ test("a full model queues its override without blocking another model and report
     waitingAgents: 1,
   });
   expect(counts.rows.find((row) => row.id === otherAccount)?.model_counts).toEqual({});
-  await db.query("delete from credentials where id=$1", [otherAccount]);
+  await database().query("delete from credentials where id=$1", [otherAccount]);
 
   await queue.accept(caller, { id: ids[2]!, request_id: requests[1]!, prompt: "other model", model: "deepseek" });
   const dispatched: string[] = [];
@@ -848,19 +1158,20 @@ test("a full model queues its override without blocking another model and report
   expect(await queue.reconcileOne(new AbortController().signal)).toBe(true);
   await queue.drain();
   expect(dispatched).toEqual(["deepseek"]);
-  await db.query("insert into runtime_idle_turns values($1,'active_model',true)", [ids[0]]);
+  await database().query("insert into runtime_idle_turns values($1,'active_model',true)", [ids[0]]);
   expect(await queue.reconcileOne(new AbortController().signal)).toBe(true);
   await queue.drain();
   expect(dispatched).toEqual(["deepseek", "kimi"]);
 });
 
 test("queued status retains its own model when a newer request targets another model on the same sandbox", async () => {
-  await db.exec(
+  await database().exec(
     `update credentials set max_agents=4,model_limits='{"kimi":1}'; update sandboxes set model='deepseek';`,
   );
-  await db.query("update sandboxes set model='kimi',status='running',task_prompt_id='active_model' where id=$1", [
-    ids[0],
-  ]);
+  await database().query(
+    "update sandboxes set model='kimi',status='running',task_prompt_id='active_model' where id=$1",
+    [ids[0]],
+  );
   const older = { id: ids[1]!, request_id: requests[0]!, prompt: "older kimi turn", model: "kimi" };
   await queue.accept(caller, older);
   await queue.accept(caller, {
@@ -881,14 +1192,14 @@ test("terminal admission creates neither queue entries nor reservations", async 
   for (const status of ["stopped", "failed", "expired"]) {
     for (const provider of ["docker", "boat", "modal"]) {
       if (status === "stopped" && provider !== "docker") continue;
-      await db.query("update sandboxes set status=$2,provider=$3 where id=$1", [ids[0], status, provider]);
+      await database().query("update sandboxes set status=$2,provider=$3 where id=$1", [ids[0], status, provider]);
       await expect(queue.accept(caller, { id: ids[0]!, prompt: "continue" })).rejects.toThrow(
         `Cannot control ${provider} sandbox: ${status}`,
       );
     }
   }
-  expect((await db.query("select * from account_turn_queue")).rows).toHaveLength(0);
-  expect((await db.query("select * from account_agent_reservations")).rows).toHaveLength(0);
+  expect((await database().query("select * from account_turn_queue")).rows).toHaveLength(0);
+  expect((await database().query("select * from account_agent_reservations")).rows).toHaveLength(0);
 });
 
 // Runtime evidence is not permission to wake a sandbox after its owner stopped it.
@@ -896,17 +1207,17 @@ test.each(["boat", "modal", "docker"])(
   "%s stopped runtime receipts are refused instead of resumed",
   async (provider) => {
     const input = { id: ids[1]!, request_id: requests[0]!, prompt: "old instruction" };
-    await db.query(
+    await database().query(
       "update sandboxes set provider=$2,boat_runtime=($2='boat'),runtime_transport=case when $2='modal' then 'dialout' else null end where id=$1",
       [input.id, provider],
     );
     await queue.accept(caller, input);
-    await db.query(
-      "update account_turn_queue set state='dispatching',dispatch_generation=0,dispatch_until=now()-interval '1 second' where sandbox_id=$1",
+    await database().query(
+      "update account_turn_queue set state='dispatching',dispatch_generation=1,dispatch_until=now()-interval '1 second' where sandbox_id=$1",
       [input.id],
     );
-    await db.query("insert into runtime_commands values($1,1,$2)", [input.id, `follow_${input.request_id}`]);
-    await db.query(
+    await database().query("insert into runtime_commands values($1,1,$2)", [input.id, `follow_${input.request_id}`]);
+    await database().query(
       "update sandboxes set status='stopped',lifecycle_generation=2,activity_lease_id='30000000-0000-4000-8000-000000000001' where id=$1",
       [input.id],
     );
@@ -922,24 +1233,24 @@ test.each(["boat", "modal", "docker"])(
   },
 );
 test.each(["boat", "modal"] as const)("stopped %s native send reaches account admission", async (provider) => {
-  await db.query("update sandboxes set provider=$2,status='stopped',status_reason=null where id=$1", [
+  await database().query("update sandboxes set provider=$2,status='stopped',status_reason=null where id=$1", [
     ids[1],
     provider,
   ]);
   expect(
     await queue.accept(caller, { id: ids[1]!, request_id: requests[0]!, prompt: "continue preserved work" }),
   ).toMatchObject({ status: "queued" });
-  expect((await db.query("select * from account_turn_queue")).rows).toHaveLength(1);
+  expect((await database().query("select * from account_turn_queue")).rows).toHaveLength(1);
 });
 
 test("expired native post-admission claims fail visibly without replay after restart", async () => {
   const input = { id: ids[1]!, request_id: requests[0]!, prompt: "uncertain after restart" };
   await queue.accept(caller, input);
-  await db.query(
-    "update account_turn_queue set state='dispatching',dispatch_generation=0,dispatch_until=now()-interval '1 second' where sandbox_id=$1",
+  await database().query(
+    "update account_turn_queue set state='dispatching',dispatch_generation=1,dispatch_until=now()-interval '1 second' where sandbox_id=$1",
     [input.id],
   );
-  await db.query("update sandboxes set lifecycle_generation=1 where id=$1", [input.id]);
+  await database().query("update sandboxes set lifecycle_generation=2 where id=$1", [input.id]);
   let calls = 0;
   queue.setDispatch(async () => {
     calls++;
@@ -949,16 +1260,19 @@ test("expired native post-admission claims fail visibly without replay after res
   expect((await queue.status(caller, input.id, input.request_id))?.failed).toBe(true);
 });
 
-test("an admitted merge stop fences new queued work until a retained native runtime stops", async () => {
+test.each([true, false])("retained stop intent fences new queued work (merged=%s)", async (merged) => {
   const id = ids[0]!;
   const input = { id, request_id: requests[0]!, prompt: "continue retained work" };
-  await db.query("update sandboxes set provider='boat',boat_runtime=true where id=$1", [id]);
-  await db.query("insert into runtime_enrolments values($1,1)", [id]);
-  await db.query("insert into runtime_checkpoints values($1,1,true)", [id]);
+  await database().query("update sandboxes set provider='boat',boat_runtime=true where id=$1", [id]);
+  await database().query("insert into runtime_enrolments values($1,1)", [id]);
+  await database().query("insert into runtime_checkpoints values($1,1,$2)", [id, merged]);
 
-  await expect(queue.accept(caller, input)).rejects.toThrow("stopping after its pull requests were merged");
-  await db.query("update sandboxes set status='stopped',status_reason='work_merged',stopped_at=now() where id=$1", [
-    id,
-  ]);
+  await expect(queue.accept(caller, input)).rejects.toThrow(
+    merged ? "stopping after its pull requests were merged" : "Wait for a confirmed retained stop",
+  );
+  await database().query(
+    "update sandboxes set status='stopped',status_reason=case when $2 then 'work_merged' else status_reason end,stopped_at=now() where id=$1",
+    [id, merged],
+  );
   expect(await queue.accept(caller, input)).toMatchObject({ status: "queued" });
 });

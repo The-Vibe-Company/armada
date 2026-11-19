@@ -10,7 +10,6 @@ import {
   readPromptEvents,
   reportedTurnUsage,
   type SandboxInfo,
-  type SandboxPatch,
   type SandboxPullRequest,
   type SandboxStatus,
   type SandboxUsage,
@@ -22,7 +21,8 @@ import {
 } from "@armada/core";
 import { nativeExhaustionEvidence } from "./account-exhaustion.ts";
 import { completedUsageTurns } from "./account-spend.ts";
-import { DataError, type SandboxView, type ServerSandboxStore } from "./data.ts";
+import { DataError, type SandboxView, type ServerSandboxPatch, type ServerSandboxStore } from "./data.ts";
+import { runtimeBridgeTarget } from "./provider-runtime-admission.ts";
 
 export const INTERRUPTED_LAUNCH_REASON =
   "Launch interrupted before completion; provider cleanup is retried until confirmed.";
@@ -105,7 +105,7 @@ const hasReportedCounters = (row: TurnTokenUsage) =>
 /**
  * Reads where a sandbox is and records it. The prompt's status comes from `getPrompt` (events are
  * rewritten in place); a turn boat calls `finished` after a usage limit or an expired login is `failed`.
- * A live machine is `running` while a turn runs, `ready` after one ends, and `failed` only when the machine failed.
+ * Runtime prompt activity is reported separately from the enrolled machine state.
  */
 export async function readStatus(
   provider: Provider | null,
@@ -280,6 +280,13 @@ export async function readStatus(
     if (refreshed?.usage) sandbox = { ...sandbox, usage: refreshed.usage };
   }
 
+  const runtime = runtimeBridgeTarget(sandbox);
+  const liveRuntime = runtime && (sandbox.status === "ready" || sandbox.status === "running");
+  if (runtime && !(liveRuntime && (info.state === "failed" || info.state === "stopped"))) {
+    const status = liveRuntime && info.state === "stopping" ? "stopping" : sandbox.status;
+    return report(sandbox, status, info, prompt, info.expiresAt ?? null);
+  }
+
   const next = nextStatus(sandbox.status, info, prompt);
   const reason =
     next === "failed"
@@ -292,7 +299,7 @@ export async function readStatus(
   // concurrent admission. The existing lifecycle worker refreshes physical state.
   if (options.stored) return report({ ...sandbox, statusReason: reason }, next, info, prompt, info.expiresAt ?? null);
   if (next !== sandbox.status || reason !== sandbox.statusReason) {
-    const patch: SandboxPatch = {
+    const patch: ServerSandboxPatch = {
       status: next,
       statusReason: reason,
       ...(sandbox.lifecycleGeneration === undefined ? {} : { expectedGeneration: sandbox.lifecycleGeneration }),
@@ -302,6 +309,12 @@ export async function readStatus(
     } else if (next === "stopped") {
       patch.stoppedAt = (info.stoppedAt ?? options.now).toISOString();
     } else if (sandbox.stoppedAt !== null && next !== "failed") patch.stoppedAt = null;
+    if (
+      (next === "failed" || next === "stopped") &&
+      (sandbox.status === "ready" || sandbox.status === "running") &&
+      runtime
+    )
+      patch.runtimeObservationFrom = sandbox.status;
     try {
       await store.update(sandbox.id, patch);
     } catch (error) {

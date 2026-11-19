@@ -8,7 +8,11 @@ import type {
   DockerHostPollResponse,
   DockerHostResultRequest,
 } from "../../core/src/docker-host-wire.ts";
-import type { DockerMachineCli } from "../../core/src/docker-machine.ts";
+import {
+  createDockerMachineExecutor,
+  type DockerMachineCli,
+  type DockerMachineRequest,
+} from "../../core/src/docker-machine.ts";
 import { DOCKER_OUTPUT_DIRECTORY_MISSING } from "../../core/src/docker-output-archive.ts";
 import { type DockerHostResources, dockerHostResources } from "../../core/src/docker-resources.ts";
 import { OUTPUT_ARCHIVE_LIMIT } from "../../core/src/sandbox-output-limits.ts";
@@ -179,6 +183,7 @@ export function httpApi(
     body: unknown,
     timeoutMs = 8_000,
     signal?: AbortSignal,
+    onResponse?: (response: Response) => void,
   ): Promise<unknown> {
     const response = await request(`${serverOrigin(server)}/api/docker-host/${endpoint}`, {
       method: "POST",
@@ -198,6 +203,7 @@ export function httpApi(
       await response.body?.cancel();
       throw new HostRequestDenied(response.status);
     }
+    onResponse?.(response);
     if (endpoint === "results" || endpoint === "container-inventory") {
       await response.body?.cancel();
       return undefined;
@@ -220,7 +226,7 @@ export function httpApi(
     }
     return JSON.parse(Buffer.concat(parts).toString("utf8"));
   }
-  function postResult(state: State, body: DockerHostResultRequest) {
+  function postResult(state: State, body: DockerHostResultRequest & { retained?: true }) {
     return post(state.server, "results", state.hostToken, body);
   }
 
@@ -288,7 +294,10 @@ export function httpApi(
     },
     async poll(state, options) {
       async function poll(body: DockerHostPollRequest, timeoutMs?: number) {
-        const result = (await post(state.server, "poll", state.hostToken, body, timeoutMs)) as DockerHostPollResponse;
+        let retainedStopProof = false;
+        const result = (await post(state.server, "poll", state.hostToken, body, timeoutMs, undefined, (response) => {
+          retainedStopProof = response.headers.get("x-armada-docker-retained-stop") === "1";
+        })) as DockerHostPollResponse;
         if (
           inventory &&
           !inventoryStop.signal.aborted &&
@@ -308,7 +317,7 @@ export function httpApi(
               inventoryReport = undefined;
             });
         }
-        return result;
+        return { ...result, retainedStopProof: retainedStopProof ? (true as const) : undefined };
       }
 
       const body = {
@@ -390,11 +399,12 @@ export function httpApi(
       const archive = await read();
       if (archive && (await send(archive)) !== 204) throw new Error("Retained output upload not acknowledged");
     },
-    async result(state, receipt, expired) {
+    async result(state, receipt, expired, retained) {
       if (!expired && !receipt.outcome) throw new Error("Missing host receipt outcome");
-      const body: DockerHostResultRequest = {
+      const body: DockerHostResultRequest & { retained?: true } = {
         installationId: state.installationId,
         requestId: receipt.requestId,
+        ...(!expired && retained && receipt.operation === "stop" && receipt.outcome === "failed" ? { retained } : {}),
         ...(expired ? { expired: true } : { outcome: receipt.outcome! }),
         ...(receipt.operation === "buildSnapshot" && receipt.imageId ? { imageId: receipt.imageId } : {}),
       };
@@ -411,6 +421,32 @@ export function httpApi(
       });
     },
   };
+}
+
+export async function observeRetainedStop(
+  options: Parameters<typeof createDockerMachineExecutor>[0],
+  request: DockerMachineRequest,
+) {
+  let exitedContainer = false;
+  const executor = createDockerMachineExecutor({
+    ...options,
+    cli: {
+      async run(args, stdin, runOptions) {
+        const result = await options.cli.run(args, stdin, runOptions);
+        if (args[0] === "container" && args[1] === "inspect" && result.exitCode === 0) {
+          const rows: unknown = JSON.parse(result.stdout);
+          const container = Array.isArray(rows) && rows.length === 1 ? rows[0] : undefined;
+          exitedContainer =
+            typeof container?.Id === "string" &&
+            /^[a-f0-9]{64}$/.test(container.Id) &&
+            container.State?.Status === "exited" &&
+            container.State.Running === false;
+        }
+        return result;
+      },
+    },
+  });
+  return (await executor.isStopped(request)) && exitedContainer;
 }
 
 /** Never a shell, never inherited output; inspect can contain secrets. */

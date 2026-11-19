@@ -1,5 +1,5 @@
 import { isRecord, VERSION } from "@armada/core";
-import { type ControlClient, ControlError, controlFallback } from "./control.ts";
+import { ControlError, controlFallback, type createControlClient } from "./control.ts";
 import { describeFailure } from "./failure.ts";
 import type { SendArgs } from "./model-choice.ts";
 
@@ -153,7 +153,7 @@ async function readMessage(response: Response, id?: number): Promise<Record<stri
  * Dashboard sandbox operations across MCP and REST. `send` opens a new turn or redirects
  * the running one with `steer`. `stop` with `turn` interrupts it. The server applies the harness's capabilities.
  */
-export function sandboxGateway(gateway: Gateway, control: ControlClient) {
+export function sandboxGateway(gateway: Gateway, control: ReturnType<typeof createControlClient>) {
   return {
     logs: (
       sandboxId: string,
@@ -164,7 +164,7 @@ export function sandboxGateway(gateway: Gateway, control: ControlClient) {
     stop: (sandboxId: string) => gateway.call("stop", { id: sandboxId }),
     /** Permanent; the server refuses it unless the sandbox is stopped or failed. */
     async delete(sandboxId: string) {
-      const receipt = await control.post("sandbox/delete", { id: sandboxId });
+      const receipt = await control.deleteSandbox(sandboxId);
       if (!isRecord(receipt) || receipt.id !== sandboxId.toLowerCase() || receipt.status !== "deleted") {
         throw new ControlError("The delete request could not be confirmed.", undefined, undefined, {
           outcomeUnknown: true,

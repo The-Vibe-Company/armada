@@ -8,7 +8,9 @@ import {
   type GoldenActor,
   launchSandbox,
   type Provider,
+  ProviderError,
   type SandboxInfo,
+  type Sql,
 } from "../src/index.ts";
 import { serviceGoldenOperations } from "./support/service-golden-operations.ts";
 
@@ -25,6 +27,101 @@ afterAll(async () => {
 });
 
 describe("launch database", () => {
+  test.each(["interrupted", "refused", "registered", "commit-unknown", "delete-pending", "deleted"] as const)(
+    "ordinary snapshot admission remains protected across a %s fork",
+    async (outcome) => {
+      const db = connection!;
+      const people = await fixture(db);
+      const { createSqlData } = await import("../../mcp-server/src/data.ts");
+      const commitLost = new Error("admission commit acknowledgement lost");
+      const sql: Sql =
+        outcome === "commit-unknown"
+          ? {
+              query: (query, params) => db.query(query, params),
+              async transaction(work) {
+                await db.transaction(work);
+                throw commitLost;
+              },
+            }
+          : db;
+      const stores = createSqlData(sql)({
+        userId: people.owner,
+        orgs: [{ orgId: people.org, role: "member" }],
+        via: "supabase",
+      });
+      const [golden] = await stores.goldens.findByName(people.org, "mine");
+      const id = crypto.randomUUID();
+      const { provider } = fakeBoat();
+      const fork = provider.fork.bind(provider);
+      const registrationFailure = new Error("child registration failed");
+      const registrationFails = outcome === "delete-pending" || outcome === "deleted";
+      let deleteAttempted = false;
+      if (registrationFails) {
+        provider.delete = async () => {
+          deleteAttempted = true;
+          return { status: outcome === "delete-pending" ? "pending" : "deleted" };
+        };
+      }
+      const fences = () => db.query("select id from golden_operation_fences where golden_id=$1", [golden!.id]);
+      const intents = () =>
+        db.query(
+          "select golden_id, provider::text, snapshot_id from ordinary_launch_snapshot_intents where sandbox_id=$1",
+          [id],
+        );
+      const expected = [{ golden_id: golden!.id, provider: "boat", snapshot_id: golden!.providerSnapshotId }];
+      let atDispatch: { fences: unknown[]; intents: unknown[] } | undefined;
+      provider.fork = async (request) => {
+        atDispatch = { fences: (await fences()).rows, intents: (await intents()).rows };
+        if (outcome === "interrupted") throw new Error("dispatch acknowledgement lost");
+        if (outcome === "refused")
+          throw new ProviderError({ provider: "boat", code: "invalid_request", message: "refused", retryable: false });
+        return fork(request);
+      };
+      const launch = launchSandbox(
+        provider,
+        {
+          ...stores,
+          ...(registrationFails
+            ? {
+                sandboxes: {
+                  ...stores.sandboxes,
+                  async insert() {
+                    throw registrationFailure;
+                  },
+                },
+              }
+            : {}),
+          credentials: {
+            resolve: async () => ({ env: { CLAUDE_CODE_OAUTH_TOKEN: TOKEN }, secrets: [TOKEN], codexAuthJson: false }),
+          },
+        },
+        actor(people, "owner"),
+        { golden: "mine", harness: "claude" },
+        { newId: () => id },
+      );
+      if (outcome === "registered") {
+        expect((await launch).sandbox.id).toBe(id);
+        expect(
+          (await db.query("select snapshot_id from sandbox_source_snapshots where sandbox_id=$1", [id])).rows,
+        ).toEqual([{ snapshot_id: golden!.providerSnapshotId }]);
+      } else if (registrationFails) {
+        await expect(launch).rejects.toBe(registrationFailure);
+        expect(deleteAttempted).toBe(true);
+      } else if (outcome === "commit-unknown") {
+        await expect(launch).rejects.toBe(commitLost);
+      } else {
+        await expect(launch).rejects.toMatchObject({
+          code: outcome === "interrupted" ? "outcome_unknown" : "invalid_request",
+        });
+      }
+      expect(atDispatch).toEqual(outcome === "commit-unknown" ? undefined : { fences: [], intents: expected });
+      expect((await intents()).rows).toEqual(
+        ["interrupted", "commit-unknown", "delete-pending"].includes(outcome) ? expected : [],
+      );
+      expect((await fences()).rows).toEqual([]);
+    },
+  );
+
   test("sandbox interior is current owner/admin independently of source and legacy visibility", async () => {
     const db = connection;
     if (!db) throw new Error("Launch database fixture is not open");
@@ -232,6 +329,7 @@ function actor(
 
 function fakeBoat() {
   const forks: ForkRequest[] = [];
+  const suffix = crypto.randomUUID();
   let count = 0;
   const info = (id: string): SandboxInfo => ({ id, name: id, state: "ready", providerState: "ready", labels: {} });
   const provider = {
@@ -241,7 +339,7 @@ function fakeBoat() {
     async fork(request: ForkRequest) {
       forks.push(request);
       count += 1;
-      return info(`bx_${count}`);
+      return info(`bx_${suffix}_${count}`);
     },
     async get(sandboxId: string) {
       return info(sandboxId);
@@ -269,7 +367,7 @@ async function fixture(db: PGlite) {
   for (const user of [people.owner, people.member, people.admin]) {
     await db.query("insert into auth.users (id) values ($1)", [user]);
   }
-  await db.query("insert into orgs (id, name) values ($1, 'Example')", [people.org]);
+  await db.query("insert into orgs (id, name) values ($1, $2)", [people.org, people.org]);
   await db.query(
     `insert into members (org_id, user_id, role) values
       ($1, $2, 'member'), ($1, $3, 'member'), ($1, $4, 'admin')`,
@@ -283,7 +381,14 @@ async function fixture(db: PGlite) {
     `insert into goldens (org_id, name, visibility, owner_id, boat_snapshot_id, config) values
       ($1, 'mine', 'private', $2, $4, $6::jsonb),
       ($1, 'shared', 'org', $3, $5, $6::jsonb)`,
-    [people.org, people.owner, people.admin, `a${"1".repeat(62)}`, `a${"2".repeat(62)}`, config],
+    [
+      people.org,
+      people.owner,
+      people.admin,
+      `a${people.owner.replaceAll("-", "").padEnd(62, "1")}`,
+      `a${people.admin.replaceAll("-", "").padEnd(62, "2")}`,
+      config,
+    ],
   );
   return people;
 }

@@ -1,14 +1,12 @@
 import { VaultError } from "@armada/core";
 import { parseArgs, single } from "./args.ts";
 
-/** CLI input only: the producer's versioned DTO is constructed by the API adapter. */
-export type InvitationInput =
+type InvitationInput =
   | { action: "create"; org?: string | undefined; email: string; role: "admin" | "member"; json: boolean }
   | { action: "list"; org?: string | undefined; json: boolean }
   | { action: "resend" | "revoke"; org?: string | undefined; id: string; json: boolean }
   | { action: "accept"; file?: string | undefined; json: boolean };
 
-/** Never interpolate rejected arguments: they may contain an invitation token. */
 export function parseInvitationInput(argv: readonly string[]): InvitationInput {
   try {
     const [action, ...rest] = argv;

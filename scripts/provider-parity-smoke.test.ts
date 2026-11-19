@@ -4,6 +4,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { postDeploySmoke } from "./post-deploy-smoke.ts";
+import { parityRequest, sandboxDeletePath } from "./provider-parity-delete.fixture.ts";
 import { readSmokeJournal, smokeReceipts } from "./smoke-sandbox-cleanup.ts";
 
 const boatNotice = "boat: not part of the release gate";
@@ -204,6 +205,7 @@ for (const mode of [
     let dockerLaunchKey: string | undefined;
     let dockerInventoryReads = 0;
     const modalLaunchScenario = mode.startsWith("modal_launch_");
+    const ordinaryDockerId = "30000000-0000-4000-8000-000000000005";
     const ordinaryModalId = "30000000-0000-4000-8000-000000000004";
     const recoveredSandbox = "30000000-0000-4000-8000-000000000005";
     const launchRequestId = "30000000-0000-4000-8000-000000000006";
@@ -451,7 +453,7 @@ for (const mode of [
             return Response.json(
               mode.startsWith("idle_") ? { idlePauseDelayMs: mode === "idle_budget" ? 35 * 60_000 : 1000 } : {},
             );
-          if (init.method === "DELETE") {
+          if (init.method === "DELETE" && !new URL(url).searchParams.has("requestId")) {
             const target = new URL(url);
             const provider = target.searchParams.get("org") as "modal" | "docker";
             const id = target.pathname.split("/").at(-1);
@@ -459,8 +461,7 @@ for (const mode of [
             expect(states.get(provider)).toBe("deleted");
             return Response.json({ id, status: "deleted" });
           }
-          const path = url.split("/api/v1/")[1]!;
-          const body = JSON.parse(String(init.body));
+          const { path, body } = parityRequest(url, init);
           const p = body.org;
           calls.push(`${p}:${path}`);
           let result: object;
@@ -727,7 +728,8 @@ for (const mode of [
                           ? sandboxId(p)
                           : recoveredSandbox,
                       provider: "docker",
-                      externalRef: dockerLaunchKey,
+                      externalRef:
+                        dockerInventoryReads > 1 && mode !== "docker_launch_unresolved" ? dockerLaunchKey : "unrelated",
                       status: "ready",
                     },
                   ],
@@ -746,13 +748,15 @@ for (const mode of [
               break;
             case "sandbox/launch":
               if (dockerLaunchScenario) {
-                ordinaryIds.set(p, String(body.requestId));
-                dockerLaunchKey = body.externalRef;
+                ordinaryIds.set(p, ordinaryDockerId);
+                dockerLaunchKey = body.idempotencyKey;
+                expect(body.externalRef).toBe(dockerLaunchKey);
+                expect(body).not.toHaveProperty("requestId");
                 await advance(500);
                 if (mode !== "docker_launch_unresolved") {
                   states.set(p, "ready");
                   if (mode === "docker_launch_recovers") throw new DOMException("Timed out", "TimeoutError");
-                  return Response.json({ sandbox: { id: body.requestId }, provider: "docker" });
+                  return Response.json({ sandbox: { id: ordinaryDockerId }, provider: "docker" });
                 }
                 return Response.json(
                   { error: { code: "outcome_unknown", message: "The launch may still be in flight." } },
@@ -825,7 +829,7 @@ for (const mode of [
               if (mode === "client_send_full_slow" || mode === "client_stop_full_slow") await advance(110_001);
               states.set(p, "ready");
               if (p === "modal") ordinaryIds.set(p, ordinaryModalId);
-              else if (p === "docker" && body.externalRef) ordinaryIds.set(p, String(body.requestId));
+              else if (p === "docker" && body.externalRef) ordinaryIds.set(p, ordinaryDockerId);
               if (mode === "snapshot_lost_receipt" && p === "docker") {
                 dockerLaunchKey = body.externalRef;
                 throw new DOMException("Timed out", "TimeoutError");
@@ -834,6 +838,7 @@ for (const mode of [
                 sandbox: {
                   id: sandboxId(p),
                   provider: p,
+                  externalRef: body.externalRef,
                   ...(p === "docker" && mode.startsWith("snapshot_")
                     ? {
                         snapshotId: mode === "snapshot_wrong_receipt" ? "other-snapshot" : snapshotId,
@@ -1314,7 +1319,7 @@ for (const mode of [
               if (mode === "resume_failure") throw new Error("lost_resume_response");
               result = { status: "ready" };
               break;
-            case "sandbox/delete":
+            case sandboxDeletePath:
               deletes.set(p, (deletes.get(p) ?? 0) + 1);
               if (mode === "delete_retry" && p === "modal" && deletes.get(p) === 1)
                 return Response.json(
@@ -1410,7 +1415,7 @@ for (const mode of [
       expect(calls.filter((call) => call.endsWith(":sandbox/launch"))).toHaveLength(
         mode === "accounts_missing_model" ? 2 : 4,
       );
-      expect(calls.filter((call) => call.endsWith(":sandbox/delete"))).toHaveLength(
+      expect(calls.filter((call) => call.endsWith(`:${sandboxDeletePath}`))).toHaveLength(
         mode === "accounts_missing_model" ? 2 : 4,
       );
       expect(calls.some((call) => call.startsWith("boat:"))).toBe(false);
@@ -1438,7 +1443,8 @@ for (const mode of [
     if (dockerLaunchScenario) {
       expect(calls.filter((call) => call === "docker:sandbox/launch")).toHaveLength(1);
       expect(sandboxId("docker")).toMatch(/^[0-9a-f-]{36}$/);
-      expect(dockerLaunchKey).toBe(`post-deploy-smoke:${sandboxId("docker")}`);
+      expect(dockerLaunchKey).toMatch(/^post-deploy-smoke:[0-9a-f-]{36}$/);
+      expect(dockerLaunchKey).not.toBe(`post-deploy-smoke:${sandboxId("docker")}`);
       if (mode !== "docker_launch_unresolved") {
         expect(passed).toBe(true);
         expect(report.features.cleanup.docker.status).toBe("pass");
@@ -1470,7 +1476,7 @@ for (const mode of [
         });
         expect(report.features.cleanup.docker.reason).toBe("allocation_unconfirmed");
         expect(journalClaims).toEqual([]);
-        expect(calls).not.toContain("docker:sandbox/delete");
+        expect(calls).not.toContain(`docker:${sandboxDeletePath}`);
       }
       return;
     }
@@ -1516,7 +1522,7 @@ for (const mode of [
         expect(modalInventoryReads).toBe(3);
         expect(report.features.cleanup.modal.reason).toBe("allocation_unconfirmed");
         expect(journalClaims).toEqual([]);
-        expect(calls).not.toContain("modal:sandbox/delete");
+        expect(calls).not.toContain(`modal:${sandboxDeletePath}`);
       }
       return;
     }
@@ -1566,7 +1572,7 @@ for (const mode of [
         expect(report.features.exec.boat).toEqual(boatNotRun);
         expect(calls.filter((call) => call.endsWith(":sandbox/launch"))).toEqual(["docker:sandbox/launch"]);
         expect(calls).not.toContain("docker:sandbox/send");
-        expect(calls).toContain("docker:sandbox/delete");
+        expect(calls).toContain(`docker:${sandboxDeletePath}`);
       }
       return;
     }
@@ -1580,8 +1586,8 @@ for (const mode of [
       expect(passed).toBe(false);
       for (const provider of providers) {
         expect(report.features.cleanup[provider].status).toBe("pass");
-        if (mode === "already_deleted") expect(calls).not.toContain(`${provider}:sandbox/delete`);
-        else expect(calls).toContain(`${provider}:sandbox/delete`);
+        if (mode === "already_deleted") expect(calls).not.toContain(`${provider}:${sandboxDeletePath}`);
+        else expect(calls).toContain(`${provider}:${sandboxDeletePath}`);
       }
       if (mode === "stop_response_lost") {
         // Unknown stop outcome is reconciled with status, not replayed.
@@ -1980,7 +1986,7 @@ for (const mode of [
           if (mode === "template_identity") {
             expect(journalClaims).toContain(provider);
             expect(journalClaims).toContain(`${provider}-other`);
-            expect(calls.filter((call) => call === `${provider}:sandbox/delete`)).toHaveLength(2);
+            expect(calls.filter((call) => call === `${provider}:${sandboxDeletePath}`)).toHaveLength(2);
           }
           if (mode === "template_forbidden" || mode === "template_first_quota") {
             expect(report.features.cleanup?.[provider]).toBeUndefined();
@@ -1994,7 +2000,7 @@ for (const mode of [
               status: "fail",
               reason: "allocation_unconfirmed",
             });
-            expect(calls).not.toContain(`${provider}:sandbox/delete`);
+            expect(calls).not.toContain(`${provider}:${sandboxDeletePath}`);
           } else
             expect(report.features[mode === "template_full" ? "templates-cleanup" : "cleanup"][provider].status).toBe(
               "pass",
@@ -2175,8 +2181,7 @@ function productionBoatFixture(
       expect(new URL(url).origin).toBe(productionBoatEnv.ARMADA_URL);
       expect(new Headers(init.headers).get("authorization")).toBe("Bearer fake");
       expect(init.redirect).toBe("error");
-      const path = new URL(url).pathname.slice("/api/v1/".length);
-      const body = JSON.parse(String(init.body));
+      const { path, body } = parityRequest(url, init);
       calls.push({ path, body });
       if (body.id !== undefined) expect(body.id).toBe("new-production-boat");
       switch (path) {
@@ -2279,7 +2284,7 @@ function productionBoatFixture(
         case "sandbox/stop":
           status = "stopped";
           return Response.json({ status });
-        case "sandbox/delete":
+        case sandboxDeletePath:
           deleteAttempts++;
           if (fault === "stop_settling" && deleteAttempts <= 2)
             return Response.json(
@@ -2374,7 +2379,7 @@ for (const fault of [undefined, "foreign_provider", "ambiguous_launch", "delete_
       expect(fake.lines.some((line) => line.includes('"step":"parity_cleanup"'))).toBe(false);
     } else {
       expect(fake.calls.filter((call) => call.path === "sandbox/stop")).toHaveLength(2);
-      expect(fake.calls.some((call) => call.path === "sandbox/delete")).toBe(true);
+      expect(fake.calls.some((call) => call.path === sandboxDeletePath)).toBe(true);
       const cleanup = JSON.parse(fake.lines.find((line) => line.startsWith('{"step":"parity_cleanup"')) ?? "{}");
       expect(cleanup).toMatchObject({ provider: "boat", id: "new-production-boat", deleted: fault === undefined });
       expect(report.features.cleanup.boat.status).toBe(fault ? "fail" : "pass");
@@ -2418,7 +2423,7 @@ test("production Boat preserves capability discovery and feature-filtered probes
   );
   expect(filtered.calls.map((call) => call.path)).not.toContain("sandbox/send");
   expect(filtered.calls.map((call) => call.path)).toContain("sandbox/exec");
-  expect(filtered.calls.map((call) => call.path)).toContain("sandbox/delete");
+  expect(filtered.calls.map((call) => call.path)).toContain(sandboxDeletePath);
   expect(filtered.journalWrites()).toBe(0);
 });
 
@@ -2451,11 +2456,11 @@ for (const fault of ["slow_turn", "turn_timeout", "stop_settling", "late_success
       expect(report.features.send.boat.diagnostic.polls).toBe(fault === "late_success" ? 1 : 0);
     } else {
       const paths = fake.calls.map((call) => call.path);
-      const firstDelete = paths.indexOf("sandbox/delete");
+      const firstDelete = paths.indexOf(sandboxDeletePath);
       expect(paths[firstDelete - 1]).toBe("sandbox/status");
-      expect(paths.filter((path) => path === "sandbox/delete")).toHaveLength(3);
+      expect(paths.filter((path) => path === sandboxDeletePath)).toHaveLength(3);
       expect(paths.filter((path) => path === "sandbox/stop")).toHaveLength(1);
-      const requests = fake.calls.filter((call) => call.path === "sandbox/delete").map((call) => call.body.request_id);
+      const requests = fake.calls.filter((call) => call.path === sandboxDeletePath).map((call) => call.body.request_id);
       expect(new Set(requests).size).toBe(1);
     }
   });

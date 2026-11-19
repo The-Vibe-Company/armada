@@ -130,7 +130,6 @@ test("a malformed profile session can be cleared or replaced through explicit-se
       calls.push(String(url));
       return Response.json({ methods: [] });
     };
-    // Stop at method discovery: it proves the old malformed session did not prevent a new login.
     expect(await run(["login", "--url", "https://stage.example", "--provider", "github"], io, { auth })).toBe(2);
     expect(calls).toEqual(["https://stage.example/api/v1/auth/methods"]);
     expect(await run(["logout"], io, { auth })).toBe(0);

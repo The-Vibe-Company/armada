@@ -84,7 +84,7 @@ test("golden capabilities and URL/JSON MCP creation use canonical authenticated 
       return { code, out: output, err: error };
     }
     expect((await execute(["org", "use", "Team"])).code).toBe(0);
-    auth.preferences = filePreferences(preferencesPath); // selection survives a new CLI preferences instance
+    auth.preferences = filePreferences(preferencesPath);
     const defaultCapabilities = await execute(["golden", "capabilities", "--json"]);
     expect(defaultCapabilities.code).toBe(0);
     expect(JSON.parse(defaultCapabilities.out)).toEqual({ provider: "boat", maxGoldens: 1 });

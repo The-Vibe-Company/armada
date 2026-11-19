@@ -1,21 +1,24 @@
-import { afterAll, beforeAll, describe, expect, spyOn, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import { createMemoryAuthStore } from "@armada/auth";
-import { createSqlVaultStore, type Provider } from "@armada/core/server";
+import { createSqlVaultStore, DelegatedAuthority, type Provider } from "@armada/core/server";
 import { fakeBoat, retainedSandbox, sandbox as sdkSandbox } from "../../provider-boat/test/support.ts";
+import { createAccountTurnQueue } from "../src/account-turn-queue.ts";
 import { boatRuntimeResume } from "../src/boat-runtime-resume.ts";
 import { dispatchControlCommand } from "../src/control.ts";
 import { createSqlData } from "../src/data.ts";
 import { modalRuntimeLaunch } from "../src/modal-runtime-launch.ts";
 import { modalRuntimeResume } from "../src/modal-runtime-resume.ts";
 import { createModelAuthOwnership } from "../src/model-auth.ts";
-import { createRuntimeCheckpoint } from "../src/runtime-checkpoint.ts";
+import { createRuntimeCheckpoint, createRuntimeStopCheckpoint } from "../src/runtime-checkpoint.ts";
 import { createRuntimeFollowup } from "../src/runtime-followup.ts";
 import { createRuntimeHistory } from "../src/runtime-history.ts";
 import { createRuntimeResume } from "../src/runtime-resume.ts";
+import { createRuntimeServing } from "../src/runtime-serving.ts";
+import { createSandboxArmadaAccess } from "../src/sandbox-armada-access.ts";
 import { createSandboxLifecycle } from "../src/sandbox-lifecycle.ts";
 import { rowOnlyDatabase } from "./row-only-database.ts";
-import { runtimeFixture } from "./runtime.fixture.ts";
-import { ENCRYPTION_KEY } from "./support.ts";
+import { runtimeFixture, scopedRuntimeFixture } from "./runtime.fixture.ts";
+import { ENCRYPTION_KEY, PUBLIC_URL } from "./support.ts";
 
 const sharedDatabase = rowOnlyDatabase();
 
@@ -43,6 +46,115 @@ const input = (id: string) => ({
   prompt: "continue the previous conversation",
 });
 
+describe("Modal user stop and wake-on-send", () => {
+  const fixture = scopedRuntimeFixture(async () => runtimeFixture(await sharedDatabase(), "modal"), {
+    perTest: true,
+  });
+
+  test.each([false, true])(
+    "wake restores the same native conversation after Modal stop (recover=%s)",
+    async (recover) => {
+      const f = await fixture();
+      let needsRetry = recover;
+      let state: "ready" | "stopped" = "ready";
+      let retained: { epoch: string; watermark: number } | undefined;
+      const host = {
+        id: "modal",
+        async get() {
+          return { id: f.row.providerSandboxId, state, providerState: state, physicalGeneration: "1" };
+        },
+        async captureRuntimeWork() {
+          return { status: "clean" };
+        },
+        async stop() {
+          state = "stopped";
+        },
+        async stopRuntime({ epoch, watermark }: { epoch: string; watermark: number }) {
+          if (needsRetry) {
+            needsRetry = false;
+            throw Error("Stop response was lost before physical stop was confirmed");
+          }
+          retained = { epoch, watermark };
+          state = "stopped";
+        },
+      } as unknown as Provider;
+      const serve = createRuntimeServing(f.sql, ENCRYPTION_KEY);
+      const resume = createRuntimeResume(f.sql, ENCRYPTION_KEY, f.bridge, async () => ({
+        async start(_signal, restore) {
+          expect(restore).toMatchObject({
+            epoch: retained?.epoch,
+            watermark: retained?.watermark,
+            conversationId: f.first.conversationId,
+          });
+          return f.reboot(restore);
+        },
+        async stop() {
+          throw Error("Unexpected cleanup of healthy resume");
+        },
+      }));
+      const controls = {
+        authStore: createMemoryAuthStore(),
+        supabase: { supabaseUrl: "https://unused.test", anonKey: "fixture" },
+        store: createSqlVaultStore(f.sql),
+        encryptionKey: ENCRYPTION_KEY,
+        data: createSqlData(f.sql),
+        providers: { resolve: (target: Parameters<typeof serve>[1]) => serve(host, target, f.caller) },
+        runtimeStopCheckpoint: createRuntimeStopCheckpoint(
+          f.sql,
+          createRuntimeCheckpoint(f.sql, ENCRYPTION_KEY, f.bridge),
+        ),
+        runtimeSend: createRuntimeFollowup(f.sql, ENCRYPTION_KEY, f.bridge, undefined, resume),
+      };
+      const stop = () => dispatchControlCommand("sandbox/stop", f.caller, { id: f.row.id }, controls);
+      if (recover) {
+        await expect(stop()).rejects.toThrow();
+        await f.db.query("update sandboxes set activity_until=now()-interval '1 second' where id=$1", [f.row.id]);
+        const target = (await controls.data(f.caller).sandboxes.get(f.row.id))!;
+        const provider = await serve(host, target, f.caller);
+        const stopCall = spyOn(provider, "stop");
+        const lifecycle = createSandboxLifecycle(f.sql, async () => provider);
+        expect(await lifecycle.reconcileOne()).toBe(true);
+        await lifecycle.drain();
+        expect(stopCall).toHaveBeenCalledWith({ sandboxId: f.row.providerSandboxId, requireRetention: true });
+        expect((await controls.data(f.caller).sandboxes.get(f.row.id))?.status).toBe("stopped");
+      } else {
+        expect(await stop()).toMatchObject({ status: "stopped" });
+      }
+      const accountTurns = createAccountTurnQueue(f.sql, ENCRYPTION_KEY);
+      accountTurns.setDispatch((caller, request) =>
+        dispatchControlCommand("sandbox/send", caller, { ...request }, controls),
+      );
+      const outcome = Promise.withResolvers<"finished" | "interrupted">();
+      f.hold(outcome.promise);
+      const request = f.input();
+      expect(
+        await dispatchControlCommand("sandbox/send", f.caller, request, { ...controls, accountTurns }),
+      ).toMatchObject({
+        status: "queued",
+      });
+      expect(await accountTurns.reconcileOne(new AbortController().signal)).toBe(true);
+      await accountTurns.drain();
+      expect(await accountTurns.status(f.caller, request.id, request.request_id)).toEqual({
+        nativePromptId: expect.any(String),
+      });
+      expect((await controls.data(f.caller).sandboxes.get(f.row.id))?.conversationIds).toEqual([
+        f.first.conversationId,
+      ]);
+      const status = () =>
+        dispatchControlCommand("sandbox/status", f.caller, { id: request.id, recorded: true }, controls);
+      expect(await status()).toMatchObject({ status: "running" });
+      outcome.resolve(recover ? "interrupted" : "finished");
+      await outcome.promise;
+      await f.runner.flushOutbox();
+      expect(await status()).toMatchObject({ status: "ready" });
+      const list = await dispatchControlCommand("sandbox/list", f.caller, { status: ["ready"] }, controls);
+      expect(list).toMatchObject({ sandboxes: [expect.objectContaining({ id: request.id, status: "ready" })] });
+      expect(retained).toMatchObject({ epoch: "1", watermark: expect.any(Number) });
+      expect(f.starts).toEqual([undefined, "native-thread"]);
+    },
+  );
+});
+
 describe.each([
   ["boat", "codex"],
   ["boat", "claude"],
@@ -50,18 +162,14 @@ describe.each([
   ["modal", "claude"],
   ["modal", "opencode"],
 ] as const)("retained runtime resume (%s/%s)", (provider, harness) => {
-  let f: Awaited<ReturnType<typeof stopped>>;
   // Cold WASM/migrations and building the stopped checkpoint are prerequisites,
   // not resume/replay work. Keep the behavior timeout and real assertions intact.
-  beforeAll(async () => {
-    f = await stopped(harness, provider);
-  }, 20_000);
-  afterAll(async () => {
-    await f?.close();
-  });
+  const fixture = scopedRuntimeFixture(() => stopped(harness, provider), { timeout: 20_000 });
 
   test("explicit resume wakes a checkpointed runtime in the same conversation; replay never activates or starts a turn twice", async () => {
+    const f = await fixture();
     const old = f.active;
+    f.deliverPromptEventsBeforeReply();
     let activations = 0;
     let preparations = 0;
     let githubPreparations = 0;
@@ -141,7 +249,7 @@ describe.each([
     if (provider === "modal") expect(preparations).toBe(1);
     expect(f.starts).toEqual([undefined, "native-thread"]);
     const row = (await createSqlData(f.sql)(f.caller).sandboxes.get(f.row.id))!;
-    expect(row.status).toBe("running");
+    expect(row.status).toBe("ready");
     expect(row.expiresAt).toBe(before?.expiresAt);
     expect(row.stoppedAt).toBeNull();
     expect(row.taskPromptId).toBe(result.promptId);
@@ -163,16 +271,24 @@ test("an already enrolled uncertain resume reconciles on a fresh server without 
     const resume = createRuntimeResume(f.sql, ENCRYPTION_KEY, f.bridge, async () => ({
       async start(_signal, restore) {
         activations++;
-        const ready = await f.reboot(restore);
-        f.lose();
-        return ready;
+        f.deliverPromptEventsBeforeReply();
+        return f.reboot(restore);
       },
       async stop() {
         throw Error("Live enrolled uncertainty must remain reconcilable");
       },
     }));
-    await expect(resume(f.caller, request)).rejects.toMatchObject({ code: "conflict" });
+    await f.db.exec(
+      "alter table sandbox_transitions add constraint test_reject_settlement check (code <> 'runtime_turn_settled') not valid",
+    );
+    try {
+      await expect(resume(f.caller, request)).rejects.toMatchObject({ code: "conflict" });
+      expect((await createSqlData(f.sql)(f.caller).sandboxes.get(f.row.id))?.status).toBe("starting");
+    } finally {
+      await f.db.exec("alter table sandbox_transitions drop constraint test_reject_settlement");
+    }
     const recovered = await createRuntimeResume(f.sql, ENCRYPTION_KEY, f.bridge)(f.caller, request);
+    expect((await createSqlData(f.sql)(f.caller).sandboxes.get(f.row.id))?.status).toBe("ready");
     expect(recovered.runtime.epoch).toBe("2");
     expect(activations).toBe(1);
     expect(f.starts).toHaveLength(2);
@@ -184,18 +300,13 @@ test("an already enrolled uncertain resume reconciles on a fresh server without 
 describe.each(["missing-proof", "prefix", "taint", "account", "owner", "expired"] as const)(
   "unsafe resume (%s)",
   (mode) => {
-    let f: Awaited<ReturnType<typeof stopped>>;
     // Building the stopped checkpoint is a prerequisite, not refusal work: under a
     // contended CI shard it alone exceeded the 5s test budget (#2592). The refusal
     // itself and every assertion stay inside the timed test.
-    beforeAll(async () => {
-      f = await stopped();
-    }, 20_000);
-    afterAll(async () => {
-      await f?.close();
-    });
+    const fixture = scopedRuntimeFixture(() => stopped(), { timeout: 20_000 });
 
     test(`resume refuses unsafe state before preparing or activating compute (${mode})`, async () => {
+      const f = await fixture();
       let calls = 0;
       if (mode === "missing-proof") await f.db.query("delete from runtime_checkpoints where sandbox_id=$1", [f.row.id]);
       if (mode === "prefix")
@@ -576,12 +687,12 @@ test.each(["request catch", "expired activity lease", "activation before ticket"
       const worker = createSandboxLifecycle(
         {
           ...f.sql,
-          async query(query, params) {
+          async transaction(work) {
             if (loseSettlement) {
               loseSettlement = false;
               throw settlementFailure;
             }
-            return f.sql.query(query, params);
+            return f.sql.transaction!(work);
           },
         },
         async () => host,
@@ -892,15 +1003,41 @@ describe.each([
   ["modal", "claude"],
   ["modal", "opencode"],
 ] as const)("empty retained runtime wake (%s/%s)", (provider, harness) => {
-  let f: Awaited<ReturnType<typeof stopped>>;
-  beforeAll(async () => {
-    f = await stopped(harness, provider, true);
-  });
-  afterAll(async () => {
-    await f?.close();
-  });
+  const fixture = scopedRuntimeFixture(() => stopped(harness, provider, true));
   test("one fresh-epoch first conversation survives replay without inventing native history", async () => {
+    const f = await fixture();
     expect(f.starts).toEqual([]);
+    const scoped = provider === "modal" && harness === "codex";
+    const authority = new DelegatedAuthority(f.sql, async () => {});
+    const access = createSandboxArmadaAccess({
+      sql: f.sql,
+      encryptionKey: ENCRYPTION_KEY,
+      publicUrl: PUBLIC_URL,
+      commands: f.bridge,
+    });
+    const admit = (turn: number) => {
+      const server = f.mcpSnapshots[turn]?.servers.armada_orchestrator;
+      const bearer = server?.type === "http" ? server.headers?.Authorization : undefined;
+      return authority.admit(
+        bearer?.slice("Bearer ".length) ?? "",
+        {
+          method: "launch",
+          goldenId: f.row.goldenId,
+          harness: "codex",
+          credentialId: f.account.id,
+          credentialVersion: f.account.version,
+        },
+        async (_tx, principal) => principal.ownerId,
+      );
+    };
+    if (scoped) {
+      await f.db.query("update sandboxes set visibility='private',access_owner_id=owner_id where id=$1", [f.row.id]);
+      await f.db.query(
+        `insert into armada_access_parents(id,kind,org_id,owner_id,sandbox_id,state,golden_ids,credential_ids)
+         values($1,'sandbox',$2,$3,$1,'ready',array[$4::uuid],array[$5::uuid])`,
+        [f.row.id, f.people.org, f.people.owner, f.row.goldenId, f.account.id],
+      );
+    }
     const old = f.active;
     let activations = 0,
       github = 0,
@@ -927,8 +1064,9 @@ describe.each([
         github++;
         return { status: "not_connected", message: "offline" };
       },
+      access.restoreEnrolled,
     );
-    const send = createRuntimeFollowup(f.sql, ENCRYPTION_KEY, f.bridge, undefined, resume);
+    const send = createRuntimeFollowup(f.sql, ENCRYPTION_KEY, f.bridge, undefined, resume, access.restoreEnrolled);
     const request = f.input("first instruction after empty stop");
     const accepted = await send(f.caller, request);
     expect(accepted).toMatchObject({
@@ -937,6 +1075,7 @@ describe.each([
       sourceCheckpoint: { epoch: "1", watermark: f.cp.checkpoint.watermark, empty: true },
     });
     expect(f.starts).toEqual([undefined]);
+    if (scoped) await expect(admit(0)).resolves.toBe(f.people.owner);
     expect(activations).toBe(1);
     expect(mcp).toBe(1);
     expect(github).toBe(1);
@@ -945,9 +1084,16 @@ describe.each([
     expect(activations).toBe(1);
     expect(f.starts).toHaveLength(1);
     await expect(send(f.caller, { ...request, prompt: "changed" })).rejects.toThrow();
+    if (scoped) await authority.revoke(f.row.id);
     const next = await send(f.caller, f.input("follow up"));
+    if (scoped) {
+      await expect(admit(0)).rejects.toThrow("denied");
+      await expect(admit(1)).resolves.toBe(f.people.owner);
+      await send(f.caller, f.input("reuse the current grant"));
+      await expect(admit(1)).resolves.toBe(f.people.owner);
+    }
     expect(next.conversationId).toBe(accepted.conversationId);
-    expect(f.starts).toEqual([undefined, "native-thread"]);
+    expect(f.starts).toEqual(scoped ? [undefined, "native-thread", "native-thread"] : [undefined, "native-thread"]);
     expect((await createSqlData(f.sql)(f.caller).sandboxes.get(f.row.id))?.conversationIds).toEqual([
       accepted.conversationId,
     ]);
@@ -955,14 +1101,9 @@ describe.each([
 });
 
 describe("uncertain empty Modal wake", () => {
-  let f: Awaited<ReturnType<typeof stopped>>;
-  beforeAll(async () => {
-    f = await stopped("codex", "modal", true);
-  });
-  afterAll(async () => {
-    await f?.close();
-  });
+  const fixture = scopedRuntimeFixture(() => stopped("codex", "modal", true));
   test("fresh server reconciles the first conversation without reactivation or another model turn", async () => {
+    const f = await fixture();
     let activations = 0;
     const resume = createRuntimeResume(f.sql, ENCRYPTION_KEY, f.bridge, async () => ({
       async start(_signal, restore) {

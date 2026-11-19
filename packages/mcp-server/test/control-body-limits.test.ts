@@ -1,9 +1,11 @@
 import { expect, test } from "bun:test";
 import { createMemoryAuthStore } from "@armada/auth";
 import type { VaultStore } from "@armada/core";
+import { isScopedMethod, ORCHESTRATOR_SCOPED_PATH } from "@armada/core/contract";
+import type { Sql } from "@armada/core/server";
 import { type ControlOptions, handleControlRequest } from "../src/control.ts";
-
-import { PUBLISHED_REST_ROUTES } from "../src/public-rest-routes.ts";
+import { createGitHubAccountApi } from "../src/github-account.ts";
+import { createSandboxAccessServices } from "../src/sandbox-access-services.ts";
 
 const userId = "11111111-1111-4111-8111-111111111111";
 const options: ControlOptions = {
@@ -92,19 +94,83 @@ test("control JSON policies preserve empty, whitespace, object and malformed UTF
 
 test("every published route refuses a body over its published limit with its published status", async () => {
   const published = (await import("../openapi.json")).default as unknown as {
-    paths: Record<string, { post: { requestBody: { "x-max-body-bytes": number; "x-oversized-body-status": number } } }>;
+    paths: Record<
+      string,
+      { post?: { requestBody?: { "x-max-body-bytes"?: number; "x-oversized-body-status"?: number } } }
+    >;
   };
-  for (const route of PUBLISHED_REST_ROUTES.filter((route) => route !== "logs/read")) {
-    const { requestBody } = published.paths[`/api/v1/${route}`]!.post;
+  let authorizationLookups = 0;
+  const sql: Sql = {
+    async query() {
+      authorizationLookups++;
+      return { rows: [] };
+    },
+    transaction: (work) => work(sql),
+  };
+  const configuredOptions = {
+    ...options,
+    githubAccount: createGitHubAccountApi({
+      sql,
+      app: { clientId: "test", clientSecret: "test" },
+      encryptionKey: Buffer.alloc(32).toString("base64"),
+    }),
+  };
+  const { scopedToolsRoute } = createSandboxAccessServices({
+    sql,
+    providers: {
+      resolve: async () => {
+        throw new Error("Unexpected provider lookup");
+      },
+    },
+    credentials: {
+      resolve: async () => {
+        throw new Error("Unexpected credential lookup");
+      },
+    },
+    connections: undefined,
+    encryptionKey: Buffer.alloc(32).toString("base64"),
+    scopedMcpUrl: "https://armada.test/api/v1/orchestrator-tools/mcp",
+  });
+  const scopedBodies = {
+    finish: {},
+    launch: {
+      selection: { goldenId: userId, harness: "codex", credentialId: userId, credentialVersion: 1, model: "test" },
+    },
+    read: { sandboxId: userId },
+    message: { sandboxId: userId, text: "test" },
+    stop: { sandboxId: userId },
+    extend: { sandboxId: userId, ttlSeconds: 60 },
+  };
+  for (const [path, { post }] of Object.entries(published.paths)) {
+    const requestBody = post?.requestBody;
+    if (
+      requestBody?.["x-max-body-bytes"] === undefined ||
+      requestBody["x-oversized-body-status"] === 503 ||
+      path === "/api/v1/logs/read"
+    )
+      continue;
+    const route = path.slice("/api/v1/".length);
     const limit = requestBody["x-max-body-bytes"];
-    const response = await handleControlRequest(
-      new Request(`https://armada.test/api/v1/${route}`, {
-        method: "POST",
-        headers: { authorization: "Bearer e30.e30.sig" },
-        body: JSON.stringify({ pad: "x".repeat(limit) }),
-      }),
-      options,
-    );
+    const scopedMethod = path.startsWith(`${ORCHESTRATOR_SCOPED_PATH}/`)
+      ? path.slice(ORCHESTRATOR_SCOPED_PATH.length + 1)
+      : "";
+    const scoped = isScopedMethod(scopedMethod);
+    const body = scoped
+      ? JSON.stringify(scopedBodies[scopedMethod]) + " ".repeat(limit)
+      : route === "github/oauth/callback"
+        ? JSON.stringify({ state: `armada_cli_${"0".repeat(72)}`, code: "test" }) + " ".repeat(limit)
+        : JSON.stringify({ pad: "x".repeat(limit) });
+    const request = new Request(`https://armada.test${path}`, {
+      method: "POST",
+      headers: {
+        authorization: scoped ? `Bearer armada_epoch_${"0".repeat(64)}` : "Bearer e30.e30.sig",
+        "content-type": "application/json",
+        ...(scoped && { "idempotency-key": "body-limit" }),
+      },
+      body,
+    });
+    const response = (await scopedToolsRoute(request)) ?? (await handleControlRequest(request, configuredOptions));
     expect({ route, status: response?.status }).toEqual({ route, status: requestBody["x-oversized-body-status"] });
   }
+  expect(authorizationLookups).toBe(0);
 });

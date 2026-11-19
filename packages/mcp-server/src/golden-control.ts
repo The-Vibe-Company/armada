@@ -1,4 +1,5 @@
 import { goldenForSettings, goldenResponse, parseMachineSizePolicy, providerRateLimitDetails } from "@armada/core";
+import { controlRouteKey, goldenOperations } from "@armada/core/contract";
 import {
   addGoldenRepositories,
   assertGoldenMutation,
@@ -24,8 +25,6 @@ import type { Caller } from "./caller.ts";
 import type { ControlOptions } from "./control.ts";
 import { scopedOrg, selectedCaller } from "./control-caller.ts";
 import { optional, required, UUID } from "./control-input.ts";
-
-import { GOLDEN_ADOPTION_REQUEST } from "./golden-rest-schemas.ts";
 import { launchActor } from "./launch-control.ts";
 import { measureRequestPhase } from "./request-timing.ts";
 import { type ControlRouteContext, defineRoutes } from "./routes.ts";
@@ -166,7 +165,7 @@ export async function updateGoldenRoute(
   );
 }
 
-export async function snapshotGoldenRoute(
+async function snapshotGoldenRoute(
   options: GoldenControlOptions,
   caller: Caller,
   body: Record<string, unknown>,
@@ -192,7 +191,7 @@ export async function snapshotGoldenRoute(
   return { name: saved.golden.name, snapshot: saved.snapshotName };
 }
 
-export async function connectGoldenRoute(options: GoldenControlOptions, caller: Caller, body: Record<string, unknown>) {
+async function connectGoldenRoute(options: GoldenControlOptions, caller: Caller, body: Record<string, unknown>) {
   const org = await resolveOrg(options.store, caller.userId, scopedOrg(caller, optional(body, "org")));
   if (!options.providerFor) throw new VaultError("unavailable", "Golden connection is not configured on this server.");
   const name = required(body, "name");
@@ -285,7 +284,7 @@ function goldenBuildRoute(handler: ReturnType<typeof scopedGolden>) {
 }
 
 export const goldenRoutes = defineRoutes("golden", {
-  "golden/capabilities": async ({ caller, body, options }) => {
+  [controlRouteKey(goldenOperations.readGoldenCapabilities.route)]: async ({ caller, body, options }) => {
     const selected = scopedOrg(caller, optional(body, "org"));
     const member =
       selected === undefined
@@ -300,11 +299,11 @@ export const goldenRoutes = defineRoutes("golden", {
       throw new VaultError("unavailable", "Read-only provider metadata is not configured.");
     return options.providerMetadata({ orgId: member.orgId, provider: backend }, caller);
   },
-  "golden/adopt": async ({ caller, body, options }) => {
+  [controlRouteKey(goldenOperations.adoptGolden.route)]: async ({ caller, body, options }) => {
     if (!options.data || !options.providers) throw new VaultError("unavailable", "Sandbox control is not configured.");
     const org = optional(body, "org");
     const scoped = await selectedCaller(options, caller, org);
-    const input = GOLDEN_ADOPTION_REQUEST.safeParse({ ...body, org });
+    const input = goldenOperations.adoptGolden.input.body.safeParse({ ...body, org });
     if (!input.success) {
       const details = input.error.issues.map((issue) => `${issue.message} at ${issue.path.join(".")}`).join("\n");
       throw new ToolApiError(
@@ -379,7 +378,7 @@ export const goldenRoutes = defineRoutes("golden", {
     await data.setGoldenVisibility(required(body, "id"), visibility);
     return { ok: true };
   }),
-  "golden/list": scopedGolden(async ({ caller, body, options }) => {
+  [controlRouteKey(goldenOperations.listGoldens.route)]: scopedGolden(async ({ caller, body, options }) => {
     return options.listGoldenRecords
       ? listGoldens(options, caller, optional(body, "org"))
       : listGoldens(options, await selectedCaller(options, caller, optional(body, "org")));

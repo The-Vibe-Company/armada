@@ -12,7 +12,7 @@ type GoldenAdmission = {
   actor: GoldenActor;
   id: string;
   forkEnv(): HarnessCredentials["env"];
-  beforeAllocation(): void;
+  beforeAllocation(): Promise<void>;
   allocationRisk(risk: boolean): void;
 };
 
@@ -80,7 +80,8 @@ async function admitGoldenLaunch(
     () => stores.credentials.admit?.(actor, credentials, id, choice.model),
     () => options.beforeFork?.(id),
   );
-  beforeAllocation();
+  const env = forkEnv();
+  await beforeAllocation();
   allocationRisk(true);
   return provider
     .fork({
@@ -88,7 +89,7 @@ async function admitGoldenLaunch(
       ...(golden.provider === "modal" ? { idempotencyKey: id } : {}),
       ...(machineSize.effective ? { size: machineSize.effective } : {}),
       noEnv: true,
-      env: forkEnv(),
+      env,
       ttlSeconds: allocationTtlSeconds,
       labels: {
         armada: "sandbox",

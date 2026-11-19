@@ -38,48 +38,49 @@ class McpReceiptTest(unittest.TestCase):
 class NormalLaunchReceiptTest(unittest.TestCase):
     def test_pending_launch_replays_the_same_request_until_its_original_receipt(self):
         from unittest.mock import patch
-        request = {"requestId": "sandbox", "prompt": "original prompt"}
-        pending = {"sandbox": {"id": "sandbox", "provider": "docker", "status": "starting"}, "runtime": None}
-        complete = {"sandbox": {"id": "sandbox", "provider": "docker", "status": "running"},
+        request = {"idempotencyKey": "original-launch-key", "externalRef": "original-launch-key", "prompt": "original prompt"}
+        pending = {"sandbox": {"id": "00000000-0000-4000-8000-000000000001", "provider": "docker", "externalRef": "original-launch-key", "status": "starting"}, "runtime": None}
+        complete = {"sandbox": {"id": "00000000-0000-4000-8000-000000000001", "provider": "docker", "externalRef": "original-launch-key", "status": "running"},
                     "runtime": {"kind": "armada", "epoch": "1"},
                     "promptId": "original-prompt", "conversationId": "original-conversation"}
-        calls, replies = [], iter([pending, complete])
+        calls, admissions, replies = [], [], iter([pending, complete])
         def api(path, body, normal=False):
             calls.append((path, body, normal))
             return next(replies)
         with patch.object(module.time, "monotonic", return_value=0), patch.object(module.time, "sleep") as sleep:
-            self.assertEqual(module.normal_launch_receipt(api, request, 10), complete)
+            self.assertEqual(module.normal_launch_receipt(api, request, 10, on_admission=admissions.append), complete)
         self.assertEqual(calls, [("sandbox/launch", request, True)] * 2)
         self.assertTrue(all(body is request for _, body, _ in calls))
+        self.assertEqual(admissions, ["00000000-0000-4000-8000-000000000001"])
         sleep.assert_called_once_with(2)
 
     def test_failed_preparation_reports_the_plain_reason_without_another_launch(self):
         from unittest.mock import Mock
-        api = Mock(return_value={"sandbox": {"id": "sandbox", "provider": "docker", "status": "failed",
+        api = Mock(return_value={"sandbox": {"id": "00000000-0000-4000-8000-000000000001", "provider": "docker", "externalRef": "original-launch-key", "status": "failed",
                                              "statusReason": "Repository checkout failed or timed out."}})
         with self.assertRaisesRegex(RuntimeError, "Repository checkout failed or timed out"):
-            module.normal_launch_receipt(api, {"requestId": "sandbox"}, 10)
+            module.normal_launch_receipt(api, {"idempotencyKey": "original-launch-key", "externalRef": "original-launch-key"}, 10)
         api.assert_called_once()
 
     def test_github_proof_reports_the_launch_connection_reason_before_misattributing_a_missing_tool(self):
         from unittest.mock import Mock
-        receipt = {"sandbox": {"id": "sandbox", "provider": "docker", "status": "running"},
+        receipt = {"sandbox": {"id": "00000000-0000-4000-8000-000000000001", "provider": "docker", "externalRef": "original-launch-key", "status": "running"},
                    "promptId": "prompt", "conversationId": "conversation",
                    "github": {"status": "not_connected", "message": "This caller has no GitHub connection."}}
         api = Mock(return_value=receipt)
         with self.assertRaisesRegex(RuntimeError, "GitHub proof blocked: This caller has no GitHub connection"):
-            module.normal_launch_receipt(api, {"requestId": "sandbox"}, 10, require_github=True)
+            module.normal_launch_receipt(api, {"idempotencyKey": "original-launch-key", "externalRef": "original-launch-key"}, 10, require_github=True)
         api.assert_called_once()
         receipt["github"] = {"status": "connected", "login": "owner"}
-        self.assertIs(module.normal_launch_receipt(api, {"requestId": "sandbox"}, 10, require_github=True), receipt)
+        self.assertIs(module.normal_launch_receipt(api, {"idempotencyKey": "original-launch-key", "externalRef": "original-launch-key"}, 10, require_github=True), receipt)
 
     def test_pending_preparation_has_a_bounded_deadline(self):
         from unittest.mock import Mock, patch
-        api = Mock(return_value={"sandbox": {"id": "sandbox", "provider": "docker", "status": "starting"},
+        api = Mock(return_value={"sandbox": {"id": "00000000-0000-4000-8000-000000000001", "provider": "docker", "externalRef": "original-launch-key", "status": "starting"},
                                 "runtime": None})
         with patch.object(module.time, "monotonic", side_effect=[0, 10]), patch.object(module.time, "sleep") as sleep:
-            with self.assertRaisesRegex(RuntimeError, "preparation timed out; retain sandbox/request ID"):
-                module.normal_launch_receipt(api, {"requestId": "sandbox"}, 10)
+            with self.assertRaisesRegex(RuntimeError, "preparation timed out; retain sandbox ID and launch key"):
+                module.normal_launch_receipt(api, {"idempotencyKey": "original-launch-key", "externalRef": "original-launch-key"}, 10)
         api.assert_called_once()
         sleep.assert_not_called()
 
@@ -116,7 +117,7 @@ class PlacementCleanupTest(unittest.TestCase):
         args = SimpleNamespace(timeout=1, image="worker@sha256:" + "a" * 64, credential="account",
                                credential_version=2, model=None, mcp=None, skills=[], routine=False)
         calls = []
-        def api(path, body, normal=False):
+        def api(path, body, normal=False, method="POST"):
             self.assertTrue(normal)
             calls.append((path, body))
             if path == "templates/create":
@@ -127,9 +128,13 @@ class PlacementCleanupTest(unittest.TestCase):
                 return {"provider": "docker", "hostId": "host", "prompt": {"promptId": "initial"}}
             if path == "logs/read":
                 return {"events": [{"kind": "prompt", "promptId": "initial", "status": "failed"}]}
-            if path in ("sandbox/stop", "sandbox/delete"):
+            if path == "sandbox/stop":
                 self.assertEqual(body["id"], "actual-child")
-                return {"status": "stopped" if path.endswith("stop") else "deleted"}
+                return {"status": "stopped"}
+            if path == "sandboxes/actual-child":
+                self.assertEqual(method, "DELETE")
+                self.assertIn("requestId", body)
+                return {"status": "deleted"}
             if path == "templates/delete":
                 self.assertEqual(body, {"id": "template", "expectedRevision": 1})
                 return {}
@@ -137,7 +142,7 @@ class PlacementCleanupTest(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "Placement native prompt failed"):
             module.placement_smoke(api, args, "host", "codex")
         self.assertEqual([path for path, _ in calls][-3:],
-                         ["sandbox/stop", "sandbox/delete", "templates/delete"])
+                         ["sandbox/stop", "sandboxes/actual-child", "templates/delete"])
         self.assertEqual(sum(path == "templates/launch" for path, _ in calls), 1)
 
 

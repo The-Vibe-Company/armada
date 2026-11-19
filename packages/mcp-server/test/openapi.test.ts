@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
-import { CONTROL_BODY_MAX_BYTES, TEMPLATE_LAUNCH_FIELDS, VAULT_CONTROL_BODY_MAX_BYTES } from "@armada/core/server";
+import { CONTROL_BODY_MAX_BYTES, VAULT_CONTROL_BODY_MAX_BYTES } from "@armada/core/server";
+import { z } from "zod";
 import releasePlease from "../../../release-please-config.json";
 import published from "../openapi.json";
 import { generateOpenApi } from "../src/openapi.ts";
@@ -51,12 +52,37 @@ test("published OpenAPI matches current server contracts and preserves REST fiel
   });
 });
 
+test("GitHub OAuth publishes both bearer-free callback transports and the relay's refusal", () => {
+  const { get, post } = published.paths["/api/v1/github/oauth/callback"];
+  expect(get.security).toEqual([]);
+  expect(post.security).toEqual([]);
+  expect(get.parameters.map(({ name, required }) => [name, required])).toEqual([
+    ["state", true],
+    ["code", true],
+  ]);
+  expect(post.requestBody).toMatchObject({
+    "x-max-body-bytes": 8192,
+    "x-oversized-body-status": 400,
+    content: { "application/json": { schema: { required: ["state", "code"], additionalProperties: false } } },
+  });
+  expect(post.responses["400"].content["application/json"].schema.anyOf).toContainEqual(
+    expect.objectContaining({
+      properties: { ok: { const: false, type: "boolean" }, status: { const: "failed", type: "string" } },
+    }),
+  );
+});
+
 test("every published operation states the body limit both public boundaries enforce", () => {
-  type Operation = { post?: { requestBody: { "x-max-body-bytes": number }; responses: Record<string, unknown> } };
+  type Operation = {
+    post?: {
+      requestBody: { "x-max-body-bytes": number; "x-oversized-body-status": number };
+      responses: Record<string, unknown>;
+    };
+  };
   const limits = Object.fromEntries(
     Object.entries(published.paths as unknown as Record<string, Operation>).flatMap(([path, { post }]) => {
-      if (!post) return [];
-      expect(post.responses["413"]).toBeDefined();
+      if (!post?.requestBody?.["x-max-body-bytes"]) return [];
+      expect(post.responses[post.requestBody["x-oversized-body-status"]]).toBeDefined();
       return [[path, post.requestBody["x-max-body-bytes"]]];
     }),
   );
@@ -107,6 +133,12 @@ test("published 503 schema accepts the real drain refusal and a structured unava
 
 test("published launch request keeps golden, pinned Modal template and Docker sources distinct", async () => {
   const { publishedRequest } = await import("./published-response.ts");
+  const { requestBody } = published.paths["/api/v1/sandbox/launch"].post;
+  const variants = requestBody.content["application/json"].schema.oneOf;
+  expect(variants.length).toBeGreaterThan(1);
+  for (const variant of variants) {
+    expect(variant.properties.prompt.maxLength).toBeLessThanOrEqual(requestBody["x-max-body-bytes"]);
+  }
   const launch = publishedRequest("sandbox/launch");
   const org = "11111111-1111-4111-8111-111111111111";
   const golden = { golden: "web", harness: "codex", org };
@@ -123,7 +155,7 @@ test("published launch request keeps golden, pinned Modal template and Docker so
     org,
     id: org,
     revision: 1,
-    requestKey: "probe",
+    idempotencyKey: "probe".padEnd(16, "_"),
     provider: "modal",
     harness: "codex",
     runtimeTransport: "dialout",
@@ -134,7 +166,7 @@ test("published launch request keeps golden, pinned Modal template and Docker so
   const { org: _org, ...templateWithoutOrg } = template;
   expect(launch.safeParse(templateWithoutOrg).success).toBe(true);
   expect(launch.safeParse({ ...template, golden: "web" }).success).toBe(false);
-  const docker = { org, provider: "docker", hostId: org, harness: "codex", requestId: org };
+  const docker = { org, provider: "docker", hostId: org, harness: "codex", idempotencyKey: org };
   expect(launch.safeParse(docker).success).toBe(true);
   // The Docker handler refuses fields it does not know, including a golden or an image.
   expect(launch.safeParse({ ...docker, golden: "web" }).success).toBe(false);
@@ -142,7 +174,7 @@ test("published launch request keeps golden, pinned Modal template and Docker so
   expect(launch.safeParse({ golden: "web", harness: "codex", provider: "docker" }).success).toBe(false);
 });
 
-test("published Docker launch requests require exactly one replay key and validate external references", async () => {
+test("published Docker launch requests require an idempotency key and validate external references", async () => {
   const { publishedRequest } = await import("./published-response.ts");
   const launch = publishedRequest("sandbox/launch");
   const id = "11111111-1111-4111-8111-111111111111";
@@ -162,23 +194,22 @@ test("published Docker launch request accepts the mixed-case UUIDs launch admiss
   const launch = publishedRequest("sandbox/launch");
   // JSON Schema drops regex flags, so the published pattern itself must allow both cases.
   const id = "ABCDEF12-0000-4000-8000-00000000000a";
-  const base = { org: id, provider: "docker", harness: "codex", requestId: id };
+  const base = { org: id, provider: "docker", harness: "codex", idempotencyKey: id };
   expect(launch.safeParse({ ...base, hostId: id }).success).toBe(true);
   expect(launch.safeParse({ ...base, snapshotId: id }).success).toBe(true);
   expect(launch.safeParse({ ...base, hostId: "ABCDEF12-0000-4000-8000-00000000000g" }).success).toBe(false);
 });
 
-test("published template launch request lists exactly the fields the template service accepts", async () => {
+test("the published template launch request accepts CLI model accounts and bounds text fields", async () => {
   const { publishedRequest } = await import("./published-response.ts");
-  type Operation = { post: { requestBody: { content: { "application/json": { schema: { properties: object } } } } } };
-  const operation = (published.paths as unknown as Record<string, Operation>)["/api/v1/templates/launch"]!.post;
-  expect(Object.keys(operation.requestBody.content["application/json"].schema.properties).sort()).toEqual(
-    [...TEMPLATE_LAUNCH_FIELDS].sort(),
-  );
   const id = "11111111-1111-4111-8111-111111111111";
   // The CLI's `templates launch --model-account` body.
   const cli = { org: id, id, requestKey: "k", modelAccount: { id, version: 1 }, externalRef: "tender:1" };
-  expect(publishedRequest("templates/launch").safeParse(cli).success).toBe(true);
+  const templateLaunch = publishedRequest("templates/launch");
+  expect(templateLaunch.safeParse(cli).success).toBe(true);
+  expect(templateLaunch.safeParse({ ...cli, requestKey: "invalid key" }).success).toBe(false);
+  expect(templateLaunch.safeParse({ ...cli, repo: "x".repeat(201) }).success).toBe(false);
+  expect(templateLaunch.safeParse({ ...cli, prompt: "hello\0world" }).success).toBe(false);
 });
 
 test("published extension request accepts either lifetime field and nullable org, and refuses both fields together", async () => {
@@ -188,4 +219,68 @@ test("published extension request accepts either lifetime field and nullable org
   expect(extend.safeParse({ ...sandbox, ttlSeconds: 60 }).success).toBe(true);
   expect(extend.safeParse({ ...sandbox, ttl_seconds: 60 }).success).toBe(true);
   expect(extend.safeParse({ ...sandbox, ttlSeconds: 60, ttl_seconds: 60 }).success).toBe(false);
+});
+
+test("the integration projection merges methods on one path and excludes admin operations", () => {
+  const entry = {
+    name: "example",
+    route: { method: "GET", path: "/api/v1/sandboxes/{id}" },
+    input: { body: z.undefined(), path: { id: z.string() } },
+    output: z.object({ value: z.string() }),
+    readOnly: true,
+    destructive: false,
+    description: "Example",
+    errors: [],
+    audience: "public",
+  } as const;
+  const { paths } = generateOpenApi([
+    entry,
+    { ...entry, name: "deleteExample", route: { ...entry.route, method: "DELETE" } },
+    { ...entry, name: "adminExample", route: { ...entry.route, method: "PUT" }, audience: "admin" },
+  ]);
+  expect(paths).toEqual({
+    "/api/v1/sandboxes/{id}": {
+      get: expect.objectContaining({
+        operationId: "example",
+        parameters: [expect.objectContaining({ name: "id", in: "path", required: true })],
+        responses: expect.objectContaining({
+          "200": expect.objectContaining({
+            content: { "application/json": { schema: expect.objectContaining({ required: ["value"] }) } },
+          }),
+        }),
+      }),
+      delete: expect.objectContaining({ operationId: "sandbox_delete" }),
+    },
+  });
+});
+
+test("scoped REST advertises the grants, idempotency headers and body refusal used on the server", () => {
+  const prefix = "/api/v1/orchestrator-tools";
+  for (const [method, needsKey] of [
+    ["finish", false],
+    ["launch", true],
+    ["read", false],
+    ["message", true],
+    ["stop", true],
+    ["extend", true],
+  ] as const) {
+    const operation = published.paths[`${prefix}/${method}`].post;
+    expect(operation.security).toEqual(
+      method === "finish" ? [{ epochGrant: [] }, { finishGrant: [] }] : [{ epochGrant: [] }],
+    );
+    expect(operation).toMatchObject({
+      "x-armada-direct-server": true,
+      requestBody: { "x-max-body-bytes": 128 * 1024, "x-oversized-body-status": 400 },
+      responses: { "400": expect.any(Object) },
+    });
+    expect(operation.responses).not.toHaveProperty("413");
+    if (needsKey) {
+      expect(operation).toHaveProperty("parameters", [
+        expect.objectContaining({ name: "Idempotency-Key", in: "header", required: true }),
+      ]);
+    } else {
+      expect(operation).not.toHaveProperty("parameters");
+    }
+  }
+  expect(published.paths).not.toHaveProperty(`${prefix}/mcp`);
 });

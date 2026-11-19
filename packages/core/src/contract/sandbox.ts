@@ -293,7 +293,11 @@ const id = sandboxIdInput;
 export const DEFAULT_WAIT_SECONDS = 60;
 export const MAX_WAIT_SECONDS = 600;
 
-function sandboxOperation<Input extends z.ZodRawShape, Output extends z.ZodRawShape>(
+function sandboxOperation<
+  Input extends z.ZodRawShape,
+  Output extends z.ZodRawShape,
+  const Branch extends [] | [{ flag: string; operation: string }],
+>(
   name: string,
   path: `/api/v1/sandbox/${string}`,
   toolName: string,
@@ -301,13 +305,16 @@ function sandboxOperation<Input extends z.ZodRawShape, Output extends z.ZodRawSh
   tool: {
     title: string;
     description: string;
+    mcpDescription?: string;
     input: Input;
     output: Output;
     readOnly?: boolean;
     destructive?: boolean;
     errors?: readonly string[];
   },
+  ...branch: Branch
 ) {
+  const mcpBranch: Branch[0] = branch[0];
   return {
     name,
     route: { method: "POST" as const, path },
@@ -315,10 +322,12 @@ function sandboxOperation<Input extends z.ZodRawShape, Output extends z.ZodRawSh
     output: z.object(tool.output),
     toolName,
     tool,
+    mcpBranch,
     readOnly: tool.readOnly ?? false,
     destructive: tool.destructive ?? false,
     audience,
     description: tool.description,
+    ...(tool.mcpDescription === undefined ? {} : { mcpDescription: tool.mcpDescription }),
     errors: [
       "unauthorized",
       "dependency_unavailable",
@@ -329,7 +338,7 @@ function sandboxOperation<Input extends z.ZodRawShape, Output extends z.ZodRawSh
       "internal",
       ...(tool.errors ?? []),
     ],
-  } satisfies Operation<z.ZodType, z.ZodType> & { toolName: string; tool: typeof tool };
+  } satisfies Operation<z.ZodType, z.ZodType> & { toolName: string; tool: typeof tool; mcpBranch: Branch[0] };
 }
 
 const sandboxControlErrors = [
@@ -343,6 +352,15 @@ const sandboxControlErrors = [
   "outcome_unknown",
 ] as const;
 
+const stopDescription =
+  "Stops the machine. Modal keeps its disk only if checkpoint succeeds; fallback termination returns " +
+  "checkpoint_failed_disk_not_retained and cannot resume. Other retained stops can resume on send. Use it when the " +
+  "agent is done, so the sandbox stops costing.";
+const statusDescription =
+  "Where a sandbox and its latest turn are. Modal uses authorized stored observations; physical state is refreshed by the lifecycle worker. Boat is read live. prompt.state is " +
+  "queued (accepted by a starting Docker sandbox, not yet admitted by its runtime), running, finished, interrupted or failed; failed includes a usage limit or an expired login, with " +
+  "the reason. settled is true when the agent is not working.";
+
 export const sandboxOperations = {
   reportSandbox: sandboxOperation("reportSandbox", "/api/v1/sandbox/report", "report", "agent", {
     title: "Report a task outcome",
@@ -351,38 +369,48 @@ export const sandboxOperations = {
     input: { id, prompt_id: z.string().min(1), outcome: taskOutcome },
     output: { id: z.string(), taskOutcome },
   }),
-  sendPrompt: sandboxOperation("sendPrompt", "/api/v1/sandbox/send", "send", "agent", {
-    title: "Send a prompt",
-    errors: sandboxControlErrors,
-    description:
-      "Gives the agent its next instruction as a new turn. The first send of an idle sandbox opens its " +
-      "conversation and later sends continue it. Launch another sandbox for a separate conversation. To redirect a turn that is " +
-      "still running, use steer. The turn runs with the model and effort chosen at launch; model and " +
-      "reasoning_effort override them for this turn only. Experimental runtime follow-up requires request_id, " +
-      "an empty ready sandbox, existing conversation, or verified empty checkpoint; retained idle pauses wake automatically before expiry. Preserved stopped Boat/Modal sandboxes resume on send; terminal sandboxes refuse controls with recovery guidance. Model/effort remain pinned to launch.",
-    input: {
-      id,
-      request_id: z
-        .string()
-        .uuid()
-        .optional()
-        .describe(
-          "Required for runtime follow-up; reuse with identical input after uncertain delivery. Native providers accept the field for compatibility only; they do not deduplicate.",
-        ),
-      prompt: z.string().min(1).describe("The instruction."),
-      model: modelInput,
-      reasoning_effort: effortInput,
+  sendPrompt: sandboxOperation(
+    "sendPrompt",
+    "/api/v1/sandbox/send",
+    "send",
+    "agent",
+    {
+      title: "Send a prompt",
+      mcpDescription:
+        "Start a new turn, or set steer to redirect a running turn. Model and effort overrides apply only to new turns. " +
+        "Runtime follow-up requires a request ID. Reuse that ID with identical input after uncertain delivery.",
+      errors: sandboxControlErrors,
+      description:
+        "Gives the agent its next instruction as a new turn. The first send of an idle sandbox opens its " +
+        "conversation and later sends continue it. Launch another sandbox for a separate conversation. To redirect a turn that is " +
+        "still running, use steer. The turn runs with the model and effort chosen at launch; model and " +
+        "reasoning_effort override them for this turn only. Experimental runtime follow-up requires request_id, " +
+        "an empty ready sandbox, existing conversation, or verified empty checkpoint; retained idle pauses wake automatically before expiry. Preserved stopped Boat/Modal sandboxes resume on send; terminal sandboxes refuse controls with recovery guidance. Model/effort remain pinned to launch.",
+      input: {
+        id,
+        request_id: z
+          .string()
+          .uuid()
+          .optional()
+          .describe(
+            "Required for runtime follow-up; reuse with identical input after uncertain delivery. Native providers accept the field for compatibility only; they do not deduplicate.",
+          ),
+        prompt: z.string().min(1).describe("The instruction."),
+        model: modelInput,
+        reasoning_effort: effortInput,
+      },
+      output: {
+        id: z.string(),
+        requestId: z.string().optional(),
+        runtime: z.object({ kind: z.literal("armada"), epoch: z.string() }).optional(),
+        promptId: z.string(),
+        conversationId: z.string(),
+        status: z.enum(["queued", "running", "finished", "failed", "interrupted"]),
+        statusMessage: z.string().optional(),
+      },
     },
-    output: {
-      id: z.string(),
-      requestId: z.string().optional(),
-      runtime: z.object({ kind: z.literal("armada"), epoch: z.string() }).optional(),
-      promptId: z.string(),
-      conversationId: z.string(),
-      status: z.enum(["queued", "running", "finished", "failed", "interrupted"]),
-      statusMessage: z.string().optional(),
-    },
-  }),
+    { flag: "steer", operation: "steerSandbox" },
+  ),
   steerSandbox: sandboxOperation("steerSandbox", "/api/v1/sandbox/steer", "steer", "public", {
     title: "Steer the running turn",
     destructive: true,
@@ -455,17 +483,24 @@ export const sandboxOperations = {
       truncated: z.boolean(),
     },
   }),
-  stopSandbox: sandboxOperation("stopSandbox", "/api/v1/sandbox/stop", "stop", "agent", {
-    title: "Stop a sandbox",
-    errors: ["conflict", "credential_binding_unsafe", "rate_limited", "outcome_unknown"],
-    description:
-      "Stops the machine. Modal keeps its disk only if checkpoint succeeds; fallback termination returns " +
-      "checkpoint_failed_disk_not_retained and cannot resume. Other retained stops can resume on send. Use it when the " +
-      "agent is done, so the sandbox stops costing.",
-    input: { id, request_id: z.string().uuid().optional(), only_if_idle: z.boolean().optional() },
-    output: { id: z.string(), status: z.enum(SANDBOX_STATUSES), preservationNote: z.string().optional() },
-    destructive: true,
-  }),
+  stopSandbox: sandboxOperation(
+    "stopSandbox",
+    "/api/v1/sandbox/stop",
+    "stop",
+    "agent",
+    {
+      title: "Stop a sandbox",
+      errors: ["conflict", "credential_binding_unsafe", "rate_limited", "outcome_unknown"],
+      description: stopDescription,
+      mcpDescription:
+        `${stopDescription} Set turn to interrupt the current turn and keep the machine up. ` +
+        "Set after to wait for settlement and stop only if still idle. On timeout this call does not request a stop.",
+      input: { id, request_id: z.string().uuid().optional(), only_if_idle: z.boolean().optional() },
+      output: { id: z.string(), status: z.enum(SANDBOX_STATUSES), preservationNote: z.string().optional() },
+      destructive: true,
+    },
+    { flag: "turn", operation: "interruptSandbox" },
+  ),
   listSandboxes: sandboxOperation("listSandboxes", "/api/v1/sandbox/list", "list", "agent", {
     title: "List sandboxes",
     description:
@@ -482,26 +517,31 @@ export const sandboxOperations = {
     },
     readOnly: true,
   }),
-  sandboxStatus: sandboxOperation("sandboxStatus", "/api/v1/sandbox/status", "status", "agent", {
-    title: "Sandbox status",
-    errors: ["conflict", "rate_limited"],
-    description:
-      "Where a sandbox and its latest turn are. Modal uses authorized stored observations; physical state is refreshed by the lifecycle worker. Boat is read live. prompt.state is " +
-      "queued (accepted by a starting Docker sandbox, not yet admitted by its runtime), running, finished, interrupted or failed; failed includes a usage limit or an expired login, with " +
-      "the reason. settled is true when the agent is not working.",
-    input: {
-      id,
-      prompt_id: z.string().min(1).optional().describe("A specific turn. Default: the latest."),
-      recorded: z
-        .boolean()
-        .optional()
-        .describe(
-          "True: database-only state. False: live provider probe. Omitted: provider-specific detail read. CLI defaults to true; --live sets false.",
-        ),
+  sandboxStatus: sandboxOperation(
+    "sandboxStatus",
+    "/api/v1/sandbox/status",
+    "status",
+    "agent",
+    {
+      title: "Sandbox status",
+      errors: ["conflict", "rate_limited"],
+      description: statusDescription,
+      mcpDescription: `${statusDescription} Set wait to block until settled or timed out.`,
+      input: {
+        id,
+        prompt_id: z.string().min(1).optional().describe("A specific turn. Default: the latest."),
+        recorded: z
+          .boolean()
+          .optional()
+          .describe(
+            "True: database-only state. False: live provider probe. Omitted: provider-specific detail read. CLI defaults to true; --live sets false.",
+          ),
+      },
+      output: statusOutput,
+      readOnly: true,
     },
-    output: statusOutput,
-    readOnly: true,
-  }),
+    { flag: "wait", operation: "waitSandbox" },
+  ),
   waitSandbox: sandboxOperation("waitSandbox", "/api/v1/sandbox/wait", "wait", "public", {
     title: "Wait for the agent",
     errors: ["conflict", "rate_limited"],

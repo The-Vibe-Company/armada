@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { runInNewContext } from "node:vm";
 import { parseApplicationSecretBindings } from "../packages/core/src/application-secret-bindings.ts";
+import { parityRequest, sandboxDeletePath } from "./provider-parity-delete.fixture.ts";
 import { providerParitySmoke } from "./provider-parity-smoke.ts";
 
 // Owns real parity request/reporting/cleanup and executes the generated guest program as a function,
@@ -62,8 +63,7 @@ for (const mode of [
           now += ms;
         },
         fetch: async (url, init) => {
-          const route = url.split("/api/v1/")[1]!;
-          const body = JSON.parse(String(init.body));
+          const { path: route, body } = parityRequest(url, init);
           const id = body.org;
           calls.push(`${id}:${route}`);
           expect(JSON.stringify(body)).not.toContain(value);
@@ -200,7 +200,7 @@ for (const mode of [
               states.set(id, "stopped");
               result = { id: body.id, status: "stopped" };
               break;
-            case "sandbox/delete":
+            case sandboxDeletePath:
               if (mode === "cleanup_lost")
                 return Response.json({ error: { code: "forbidden", message: "fixture refusal" } }, { status: 403 });
               states.set(id, "deleted");
@@ -231,7 +231,7 @@ for (const mode of [
       if (
         ["valid", "manifest", "wrong_environment", "wrong_answer", "echo", "later_page", "cleanup_lost"].includes(mode)
       ) {
-        expect(calls).toContain(`${provider}:sandbox/delete`);
+        expect(calls).toContain(`${provider}:${sandboxDeletePath}`);
         expect(report.features.cleanup[provider].status).toBe(mode === "cleanup_lost" ? "fail" : "pass");
       } else expect(calls).not.toContain(`${provider}:templates/launch`);
     }

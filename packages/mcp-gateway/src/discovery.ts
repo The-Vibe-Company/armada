@@ -10,7 +10,6 @@ import type { Implementation, ServerCapabilities } from "@modelcontextprotocol/s
 import { endpoint, GatewayError, publicFetch, restrictedFetch } from "./network.ts";
 import { discoverOAuthIssuer } from "./oauth.ts";
 
-/** Registry request/DTO contract: omitted authType means auto. Overrides remain write-only. */
 export type RemoteAuthType = "auto" | "none" | "oauth" | "bearer" | "headers";
 export type RemoteDiscoveryResult =
   | { authType: "none"; state: "reachable"; serverInfo: Implementation; capabilities: ServerCapabilities }
@@ -23,9 +22,6 @@ export type RemoteDiscoveryResult =
       resourceMetadataUrl?: string;
     };
 
-/** Auto-discovery never creates a grant or persists a connected state. Public success
- * requires a real MCP initialize exchange, not merely a 200/405 HTTP response.
- */
 export function createRemoteAuthResolver(options: { fetch?: FetchLike } = {}) {
   const resolve: (input: {
     url: string;

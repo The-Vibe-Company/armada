@@ -196,6 +196,7 @@ export interface LaunchOptions extends GoldenLimits {
   /** Trusted per-launch opt-in for common-runtime routes; private bootstrap, never a native-agent fallback. */
   runtime?: LaunchOptions["boatRuntime"];
   boatRuntime?: {
+    supportsScopedAccess?: true;
     start(input: {
       host: Provider;
       actor: GoldenActor;
@@ -213,6 +214,7 @@ export interface LaunchOptions extends GoldenLimits {
         progress: (stage: LaunchInitializationStage) => void,
         sleep?: (ms: number) => Promise<void>,
       ) => Promise<GitHubLaunchInfo>;
+      installScopedReference?: Provider["exec"];
       installSkills?: (
         references: string[],
         key: string | null,
@@ -223,12 +225,21 @@ export interface LaunchOptions extends GoldenLimits {
   extensionHeadroomSeconds?: number;
   /** Trusted server telemetry only; never request input or a raw-error sink. */
   onInitialization?: (stage: LaunchInitializationStage) => void;
-  /** Trusted pre-dispatch fence; failure is provably before provider allocation. */
+  /** Trusted pre-dispatch check; failure is provably before provider allocation. */
   beforeFork?: (sandboxId: string) => Promise<void>;
+  /** A durable template request supplies the snapshot reference for this launch. */
+  templateSnapshotAdmission?: {
+    admit: () => Promise<void>;
+    confirmAbsence: () => void;
+  };
   /** Confirmed registration handoff; errors use the recorded initialization cleanup. */
   onRegistered?: (sandbox: SandboxRecord) => Promise<void>;
   /** Trusted final-start admission/bootstrap, after all repository and init work. */
-  beforeStart?: (provider: Provider, sandbox: SandboxRecord) => Promise<void>;
+  beforeStart?: (
+    provider: Provider,
+    sandbox: SandboxRecord,
+    runtime?: { epoch: string; exec: Provider["exec"]; signal: AbortSignal },
+  ) => Promise<void>;
   /** Trusted server-only narrowing for private sandbox parents. Not a public launch field. */
   privateParent?: true;
   /** Trusted narrowing for ordinary sandboxes with owner-scoped access. Keeps normal TTL policy. */
@@ -338,7 +349,7 @@ async function resolveGoldenLaunch(
       "invalid_request",
       "The experimental runtime supports ordinary Boat or Modal Codex/Claude/OpenCode workers only.",
     );
-  if (runtime && options.privateVisibility && options.beforeStart)
+  if (runtime && !runtime.supportsScopedAccess && options.privateVisibility && options.beforeStart)
     throw new LaunchError("invalid_request", "Scoped access requires grant delivery over the enrolled runtime.");
   const prompt = checkPrompt(request.prompt);
   request = applyLaunchAccountDefaults(request, await stores.credentials.defaults?.(actor, harness));
@@ -558,19 +569,19 @@ export async function launchSandbox(
   } = plan;
   const strategy = plan.runtime ? runtimeLaunch(plan.runtime) : nativeLaunch;
   const id = (options.newId ?? (() => crypto.randomUUID()))();
-  const releaseOperation = await stores.goldens.beginOperation?.(golden.id, {
-    kind: "launch",
-    snapshotId: golden.providerSnapshotId,
-    sandboxId: golden.providerSandboxId,
-  });
-  let childRecorded = false;
+  const templateAdmission = options.templateSnapshotAdmission;
+  let releaseSnapshotIntent: (() => Promise<void>) | undefined;
   let noAllocation = true;
   try {
     const forked = await launch.admit({
       actor,
       id,
       forkEnv: () => strategy.forkEnv(plan),
-      beforeAllocation: () => timing.mark("preallocation_admission"),
+      beforeAllocation: async () => {
+        if (templateAdmission) await templateAdmission.admit();
+        else releaseSnapshotIntent = await stores.goldens.beginSnapshotLaunch?.(golden, actor, id);
+        timing.mark("preallocation_admission");
+      },
       allocationRisk: (risk) => {
         noAllocation = !risk;
       },
@@ -588,6 +599,7 @@ export async function launchSandbox(
         provider: golden.provider,
         providerSandboxId: forked.id,
         goldenId: golden.id,
+        ...(templateAdmission ? {} : { sourceSnapshotId: plan.snapshot }),
         orgId: golden.orgId,
         ownerId: actor.userId,
         harness,
@@ -623,7 +635,6 @@ export async function launchSandbox(
         ...(request.stopWhenWorkMerged === undefined ? {} : { stopWhenWorkMerged: request.stopWhenWorkMerged }),
         ...(request.externalRef === undefined ? {} : { externalRef: request.externalRef }),
       });
-      childRecorded = true;
     } catch (error) {
       await quietly(async () => {
         if (await deleteNeverStartedSandbox(provider, forked.id)) noAllocation = true;
@@ -837,12 +848,12 @@ export async function launchSandbox(
         );
       }
     }
-    // An unrecorded physical outcome remains owned by this durable fence.
-    if (childRecorded || noAllocation) {
+    if (noAllocation) {
+      templateAdmission?.confirmAbsence();
       try {
-        await releaseOperation?.();
+        await releaseSnapshotIntent?.();
       } catch {
-        await quietly(async () => console.warn("Launch operation cleanup failed; fence reconciliation is required."));
+        await quietly(async () => console.warn("Launch snapshot intent cleanup failed; reconciliation is required."));
       }
     }
   }
