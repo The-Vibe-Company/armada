@@ -77,7 +77,7 @@ test("short application values stay out of streamed message text while snapshots
       tools: [],
     };
     journal.append({ ...message, textMode: "delta", partial: true, text: "before registration" });
-    journal.registerApplicationSecrets(["delta", "message"]);
+    journal.registerApplicationSecrets(["delta", "message", "42"]);
     for (const text of ["prefix-de", "lta-suffix"])
       journal.append({ ...message, textMode: "delta", partial: true, text });
     journal.append({
@@ -88,14 +88,16 @@ test("short application values stay out of streamed message text while snapshots
       tools: [
         {
           id: "tool",
-          name: "read",
-          input: { "message-key": "prefix-delta" },
+          name: "read-message",
+          server: "delta-proxy",
+          input: { "message-key": "prefix-delta", count: 42 },
           result: { output: ["prefix-message"], isError: false },
         },
       ],
     });
     journal.sanitize();
     const events = journal.events().map(({ event }) => event);
+    expect(events[0]).toMatchObject({ text: "before registration", textMode: "delta" });
     expect(events.slice(1, 3)).toEqual(
       Array.from({ length: 2 }, () => ({ ...message, textMode: "delta", partial: true, text: "" })),
     );
@@ -107,8 +109,9 @@ test("short application values stay out of streamed message text while snapshots
       tools: [
         {
           id: "tool",
-          name: "read",
-          input: { "[REDACTED]-key": "prefix-[REDACTED]" },
+          name: "read-[REDACTED]",
+          server: "[REDACTED]-proxy",
+          input: { "[REDACTED]-key": "prefix-[REDACTED]", count: "[REDACTED]" },
           result: { output: ["prefix-[REDACTED]"], isError: false },
         },
       ],
