@@ -378,5 +378,6 @@ export function createSandboxAccessServices(input: {
       createRuntimeSelfFinish(sql, input.encryptionKey, input.outputs),
     ),
     childWorker: children,
+    authority,
   };
 }

@@ -12,10 +12,10 @@ import {
 import type { ModalProvider } from "@armada/provider-modal";
 import { releaseAccountCapacity } from "./account-capacity.ts";
 import { mergedWorkProof } from "./merged-work.ts";
-
 import { nativeIdleDue, nativeQuiescent } from "./native-idle.ts";
 import { SANDBOX_VISIBLE } from "./sandbox-visibility.ts";
 import { INTERRUPTED_LAUNCH_REASON } from "./turns.ts";
+import { deferTransactionWake, eventFeedWakeKey, runtimeWakes } from "./wake-bus.ts";
 import { preserveBeforeStop, recordStopDispatch } from "./work-preservation.ts";
 
 export const UNENROLLED_RESUME_STOP = "runtime_resume_unenrolled";
@@ -86,6 +86,8 @@ export async function transitionSandbox(tx: Sql, input: SandboxTransition) {
   if (!result) throw new Error("Sandbox transition did not return a result.");
   if (!result.applied) return { kind: "conflict" } satisfies SandboxTransitionResult;
   if (result.generation === null) throw new Error("Applied sandbox transition did not return a generation.");
+  const wakeKey = eventFeedWakeKey(input.sandboxId);
+  if (!deferTransactionWake(tx, wakeKey)) runtimeWakes.notify(wakeKey);
   return { kind: "applied", generation: Number(result.generation) } satisfies SandboxTransitionResult;
 }
 
