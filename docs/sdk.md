@@ -20,7 +20,7 @@ The client sends its service token on every request, so `url` must be an `https:
 
 `launch` accepts `DockerLaunchInput` with `provider: "docker"`, `harness`, and either `hostId` (with optional `repos`) or `snapshotId` (which selects its host and workspace). Supply one replay identifier: `idempotencyKey` or a caller-chosen `requestId` UUID. An optional `externalRef` lets you find the sandbox later. With a service token, omit `org` or set it to the token's organization UUID. Discover Docker availability with `launch/options`.
 
-The canonical launch response includes `promptId` and `conversationId` for Boat, Modal, and Docker. Each is `null` when its ID is unavailable, including an idle launch. Starting with SDK 2.57.0, the TypeScript type of each Docker receipt field widens from `string | undefined` to `string | null | undefined`. The fields remain optional in the SDK declarations for compatibility with older servers that omitted them. Docker receipts have `golden: null`.
+Ordinary `launch` calls return the shared `LaunchResult` envelope for Boat, Modal and Docker. Read the Armada ID from `sandbox.id` and the provider ID from `sandbox.providerSandboxId`. Check `golden` before reading `golden.name`, since Docker returns `golden: null`. The required `promptId` and `conversationId` fields are `null` when their IDs are unavailable, including an idle launch. Provider-specific sandbox metadata is available as additional fields with type `unknown`.
 
 `send` opens or continues the conversation of the sandbox identified by `id`. Launch another sandbox for a separate conversation.
 

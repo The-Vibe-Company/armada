@@ -117,7 +117,7 @@ snapshot with `--golden SNAPSHOT_UUID` (the retained flag spelling, not a cloud
 golden). Boat/Modal snapshots and machine-size policy do not apply.
 The server composes durable create, existing enrolment
 and artifact bootstrap, runtime health and first-prompt admission. It returns the
-existing `DockerLaunchResult`: `sandbox`, null `golden`/`helper`, unavailable
+shared launch envelope: `sandbox`, null `golden`/`helper`, unavailable
 `github`, `runtime:{kind:"armada",epoch}`, TTL/expiry and optional native
 `promptId`/`conversationId`. Admission is not completion: read the answer through
 normal `/api/v1/logs/read` and status through `/api/v1/sandbox/detail`.

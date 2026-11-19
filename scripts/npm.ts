@@ -150,7 +150,7 @@ export async function stageSdk(options: { out: string; version?: string }): Prom
   return { name: SDK_PACKAGE, dir };
 }
 
-/** Emits the SDK declarations, replacing each imported core type by the literal union it names. */
+/** Emits the SDK declarations, inlining the imported core type aliases. */
 export async function sdkDeclarations(entry: string): Promise<string> {
   const ts = (await import("typescript")).default;
   const program = ts.createProgram([entry], {
@@ -192,17 +192,19 @@ export async function sdkDeclarations(entry: string): Promise<string> {
       aliases.set(element.name.text, `type ${element.name.text} = ${text};\n`);
     }
   }
-  const result = declarations.replace(/^import\s*\{([^}]*)\}\s*from\s*["'][^"']+["'];\n/gm, (_line, names: string) =>
-    names
-      .split(",")
-      .map((name) => name.replace(/^\s*type\s+/, "").trim())
-      .filter(Boolean)
-      .map((name) => {
-        const alias = aliases.get(name);
-        if (!alias) throw new Error(`The SDK declarations import ${name}, which is not a type alias.`);
-        return alias;
-      })
-      .join(""),
+  const result = declarations.replace(
+    /^import\s+(?:type\s+)?\{([^}]*)\}\s*from\s*["'][^"']+["'];\n/gm,
+    (_line, names: string) =>
+      names
+        .split(",")
+        .map((name) => name.replace(/^\s*type\s+/, "").trim())
+        .filter(Boolean)
+        .map((name) => {
+          const alias = aliases.get(name);
+          if (!alias) throw new Error(`The SDK declarations import ${name}, which is not a type alias.`);
+          return alias;
+        })
+        .join(""),
   );
   if (/^\s*import\b|\bfrom\s*["']|\bimport\(/m.test(result)) {
     throw new Error("The SDK declarations must not import other modules.");

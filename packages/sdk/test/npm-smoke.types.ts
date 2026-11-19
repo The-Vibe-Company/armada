@@ -4,31 +4,22 @@ import {
   type DockerSendInput,
   type FailureCode,
   type GoldenLaunchInput,
+  type LaunchResult,
   type SendInput,
 } from "@the-vibe-company/armada-sdk";
 
 const code: FailureCode = "outcome_unknown";
 
-export async function golden(provider: "boat" | "modal") {
-  const receipt = await new Armada({ token: code }).launch({ provider, golden: "worker", harness: "codex" });
-  return { golden: receipt.golden.id, prompt: receipt.promptId, conversation: receipt.conversationId };
-}
-
-export async function docker() {
-  const receipt = await new Armada({ token: code }).launch({
+const client = new Armada({ token: code });
+const golden = (provider: "boat" | "modal") => client.launch({ provider, golden: "worker", harness: "codex" });
+const docker = () =>
+  client.launch({
     org: "o",
     provider: "docker",
     hostId: "h",
     harness: "codex",
     requestId: "r",
   });
-  return {
-    golden: receipt.golden,
-    host: receipt.sandbox.hostId,
-    prompt: receipt.promptId,
-    conversation: receipt.conversationId,
-  };
-}
 
 type Equal<A, B> = (<T>() => T extends A ? 1 : 2) extends <T>() => T extends B ? 1 : 2 ? true : false;
 type Assert<T extends true> = T;
@@ -41,14 +32,19 @@ export type SendInputContract = Assert<
   Equal<Extract<"conversationId" | "conversation_id", keyof SendInput | keyof DockerSendInput>, never>
 >;
 
-export type GoldenReceiptContract = Assert<
-  Equal<Awaited<ReturnType<typeof golden>>, { golden: string; prompt: string | null; conversation: string | null }>
->;
-export type DockerReceiptContract = Assert<
+export type GoldenReceiptContract = Assert<Equal<Awaited<ReturnType<typeof golden>>, LaunchResult>>;
+export type DockerReceiptContract = Assert<Equal<Awaited<ReturnType<typeof docker>>, LaunchResult>>;
+export type LaunchFields = Assert<
   Equal<
-    Awaited<ReturnType<typeof docker>>,
-    { golden: null; host: string; prompt: string | null | undefined; conversation: string | null | undefined }
+    Pick<LaunchResult, "promptId" | "conversationId" | "expiresAt" | "runtime">,
+    {
+      promptId: string | null;
+      conversationId: string | null;
+      expiresAt: string | null;
+      runtime: { kind: "armada"; epoch: string } | null;
+    }
   >
 >;
+export type LaunchSandboxIdentity = Assert<Equal<LaunchResult["sandbox"]["providerSandboxId"], string>>;
 
 export type GoldenProviderIsRequired = Assert<Equal<GoldenLaunchInput["provider"], "boat" | "modal">>;
