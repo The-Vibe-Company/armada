@@ -30,6 +30,10 @@ declare
   docker_expiry boolean;
   docker_cleanup boolean;
   self_finish boolean := (p_actor = 'finish' and p_code = 'agent_finished' and p_to_state = 'stopping') is true;
+  checkpointed_idle boolean :=
+    (p_actor = 'idle'
+      and p_code in ('runtime_checkpoint_idle_paused', 'runtime_checkpoint_work_merged')
+      and p_to_state = 'stopping') is true;
 begin
   select s.* into sandbox from public.sandboxes s where s.id = p_id for update;
   if not found or sandbox.lifecycle_generation is distinct from p_expected_generation
@@ -170,7 +174,23 @@ begin
       raise exception 'interrupted resume already has a retained-stop handoff' using errcode = '22023';
     end if;
   end if;
-  if p_to_state in ('starting', 'stopping') and not interrupted_resume and not self_finish and not coalesce(docker_resume, false) and not docker_stop
+  if checkpointed_idle then
+    if jsonb_array_length(p_effects) <> 0 then
+      raise exception 'checkpointed runtime idle stop already has a reconciler handoff' using errcode = '22023';
+    end if;
+    if ((sandbox.provider = 'boat' and sandbox.boat_runtime)
+        or (sandbox.provider = 'modal' and sandbox.runtime_transport = 'dialout')) is not true
+      or sandbox.status not in ('ready', 'running') or sandbox.stop_requested_at is not null
+      or sandbox.deleted_at is not null or sandbox.expires_at <= clock_timestamp()
+      or sandbox.application_secret_tainted or sandbox.activity_lease_id is not null
+      or sandbox.reconcile_lease_until >= clock_timestamp()
+      or not exists (select 1 from public.members m where m.org_id = sandbox.org_id and m.user_id = sandbox.owner_id) then
+      return query select false, null::bigint;
+      return;
+    end if;
+  end if;
+  if p_to_state in ('starting', 'stopping') and not interrupted_resume and not self_finish and not checkpointed_idle
+    and not coalesce(docker_resume, false) and not docker_stop
     and jsonb_array_length(p_effects) <> 1 then
     raise exception 'sandbox transition requires one lifecycle job' using errcode = '22023';
   end if;
@@ -187,9 +207,10 @@ begin
   update public.sandboxes s
   set status = p_to_state,
       lifecycle_generation = sandbox.lifecycle_generation,
-      stop_generation = case when interrupted_resume or (self_finish and s.provider <> 'docker') then s.stop_generation + 1 else s.stop_generation end,
+      stop_generation = case when interrupted_resume or checkpointed_idle or (self_finish and s.provider <> 'docker')
+        then s.stop_generation + 1 else s.stop_generation end,
       reconcile_after = case when interrupted_resume then 'infinity'::timestamptz
-        when self_finish then now() else s.reconcile_after end,
+        when self_finish or checkpointed_idle then now() else s.reconcile_after end,
       reconcile_lease = case when interrupted_resume then null else s.reconcile_lease end,
       reconcile_lease_until = case when interrupted_resume then null else s.reconcile_lease_until end,
       activity_lease_id = case when interrupted_resume then null else s.activity_lease_id end,
@@ -201,6 +222,8 @@ begin
         when docker_refusal or interrupted_resume then null
         when p_code = 'docker_idle_paused' then 'idle_paused'
         when p_code = 'docker_work_merged' then 'work_merged'
+        when checkpointed_idle then case when p_code = 'runtime_checkpoint_work_merged'
+          then 'work_merged' else 'idle_paused' end
         when p_actor in ('reconciler', 'runtime_observation') then p_status_reason else case p_to_state
         when 'starting' then null
         when 'stopping' then case
