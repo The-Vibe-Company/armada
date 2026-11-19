@@ -98,18 +98,15 @@ function fixture(enabled = true) {
         state.sends++;
         if (state.notReady && state.sends === 1) throw new Error("not_ready");
         expect(body.id).toBe(parent);
-        const goal = body.prompt as string;
-        const launch = JSON.parse(goal.match(/using exactly (.*?) \(no initial/)?.[1] ?? "null") as Obj;
-        const message = JSON.parse(
-          goal.match(/message that child's returned sandboxId with exactly (.*?), replacing CHILD_SANDBOX_ID/)?.[1] ??
-            "null",
-        ) as Obj;
-        // The instructions must supply the required target, not rely on the model
-        // repairing a payload the smoke calls exact. Substitute only the returned ID.
-        expect(message.sandboxId).toBe("CHILD_SANDBOX_ID");
-        const stopKey = goal.match(/Then stop that same child using idempotencyKey ([\w-]+)\./)?.[1];
-        const answer = goal.match(/SCOPED_CHILD_[\w-]+/)?.[0];
-        const marker = goal.match(/NO_ACCESS_[\w-]+/)?.[0];
+        const prefix = "ARMADA_SCOPED_SMOKE_V1 ";
+        const goal = String(body.prompt);
+        expect(goal.startsWith(prefix)).toBe(true);
+        const { lane, launch, messageKey, stopKey, answer, noAccess: marker } = JSON.parse(goal.slice(prefix.length));
+        expect(lane).toBe("parent");
+        const message = {
+          idempotencyKey: messageKey,
+          text: prefix + JSON.stringify({ lane: "child", answer }),
+        };
         // Independent schema assertions: no owner token/REST shortcut, no launch prompt/TTL.
         expect(Object.keys(launch).sort()).toEqual(["idempotencyKey", "selection"]);
         expect(launch.selection).toEqual({

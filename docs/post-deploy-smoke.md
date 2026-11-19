@@ -516,19 +516,17 @@ migrations or extra workers. Model/registry latency stays inside the shared
 
 ### Scoped Armada access
 
-`--scoped-access` requires `--work-preservation` and reuses its two workers:
-the clean Codex parent uses `sandbox/launch` with version1 and
-maxActiveChildren1; the dirty no-option control omits access entirely and opts
-out of skill defaults. Both staging entrypoints enable it. Current ordinary
-access supports Codex only: Claude emits explicit `codex_only` SKIP, not a false
-authorization-denial proof. Supported Codex pairs must be enabled on staging
-using the existing access configuration; unavailable/misconfigured access fails.
+`--scoped-access` requires `--work-preservation`. Each Modal Codex case runs
+two dedicated parents on the scripted account. The enabled parent requests
+`armadaAccessVersion: 1` and `maxActiveChildren: 1`. The no-option control
+omits the grant and opts out of skill defaults. Each probe emits a
+`scoped_access` journal entry with `model: scripted`. GitHub, lifecycle, and
+work-preservation turns still use the case's ordinary model and account.
+Claude cases emit a `codex_only` skip. Codex cases require staging scoped
+access to be configured.
 
-The native parent uses only configured scoped MCP launch/message/read/stop.
-No owner CLI token, copied bearer, direct owner HTTP fallback, config/grant read
-or new orchestration method. The reserved MCP server's legacy internal name is
-unchanged; no separate managed parent is created. The nonsecret armada-tools reference
-may be read with the supplied exact read-only cat command.
+The parent drives the configured scoped MCP launch, message, read, and stop
+tools. The runner uses the owner API to verify receipts and clean up compute.
 
 Named proofs: parent configuration, native turn, actual correlated child launch,
 message, nonpartial child assistant answer (not prompt/tool echo), stop and
@@ -554,8 +552,8 @@ If the parent's stop cannot be confirmed, cleanup still attempts safe known
 children but must report an unquiesced producer/future-child uncertainty. A
 snapshot taken while a parent remains active is never declared final/clean.
 
-Budget: one additional native parent task per worker and one idle child plus one
-tiny child message per supported pair; no extra parent allocations. Parent
+Budget: two dedicated parent allocations and one idle child with one short
+message per supported pair. Parent
 polling is capped at300 observations (~5minutes plus bounded request latency),
 native child reads at20, logs/inventory at20pages; shared35+5-minute deadline still
 wins. Normal cleanup stops all known compute. The shipped delegated launch has
@@ -1919,9 +1917,8 @@ snapshot provenance.
 The server's scripted Responses endpoint is for the Modal Codex scoped-child
 probe. Its script covers launch, message, observing the child's answer, and stop,
 plus the no-access control. The probe must still check actual gateway receipts
-and sandbox events. The server endpoint can ship independently. The smoke
-runner still needs the scripted account selection and marker wiring before the
-coordinator starts the 50-run measurement.
+and sandbox events. After provisioning, the coordinator counts non-defect
+`scoped_*_unproven` failures across 50 ordinary staging runs.
 
 The coordinator provisions the endpoint on the pinned Railway staging server
 only. Use a dedicated random base64url bearer with at least 32 bytes of entropy.
@@ -1935,8 +1932,12 @@ Provision a staging named OpenAI API-key account using
 `armada creds set openai --name scripted --base-url
 https://armada-mcp-staging.up.railway.app/internal/scripted-model/v1 --models scripted`. Pass the
 same bearer privately on stdin. Keep the bearer out of the smoke configuration,
-logs and command arguments. The smoke case needs only the account identifier and
-its model selector.
+logs and command arguments. Before the smoke wiring is deployed, set
+`scriptedModelAccountId` to the scripted account UUID in each Modal Codex
+entry in staging's `ARMADA_SMOKE_CASES`. Keep the ordinary `modelAccountId`
+and `model` on that entry for its baseline workers. The scoped probe always
+selects the `scripted` model, and validates that its account UUID differs from
+the baseline account.
 
 The marker is a user message beginning with `ARMADA_SCOPED_SMOKE_V1 ` followed
 by a JSON object. For the parent, send `lane: "parent"`, `launch` with the
@@ -1944,5 +1945,5 @@ original `idempotencyKey` and `selection`, `messageKey`, `stopKey`, `answer`,
 and `noAccess`. Use one fresh nonce per key or answer, retaining the existing
 `smoke-scoped-`, `SCOPED_CHILD_`, and `NO_ACCESS_` prefixes. The endpoint emits
 the child prompt with the same prefix and a `lane: "child"` marker containing
-`answer`. The smoke runner should compare that exact child prompt in the
-message receipt before checking the child's answer.
+`answer`. The smoke runner verifies that exact child prompt in the message evidence
+before checking the child's answer.

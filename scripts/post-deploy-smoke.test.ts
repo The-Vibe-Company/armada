@@ -696,9 +696,11 @@ describe("preservation checks", () => {
         const defaults = fault.startsWith("default_");
         const scopes = fault === "scoped_pair";
         const scopeFlag = fault.startsWith("scoped_");
+        const baselineScopeAccount = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
         const scopeAccount = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
         const childId = crypto.randomUUID();
         let positiveParent = "";
+        let scopedLaunches = 0;
         let childExists = false;
         let childStopped = false;
         const scopeEvents = new Map<string, object[]>();
@@ -739,7 +741,7 @@ describe("preservation checks", () => {
               sandboxes: [
                 ...(positiveParent ? [{ id: positiveParent }] : []),
                 ...(childExists ? [{ id: childId }] : []),
-                ...(launches === 2 ? [{ id: sandboxId }] : []),
+                ...(scopedLaunches === 2 ? [{ id: sandboxId }] : []),
               ],
               hasMore: false,
               nextPage: null,
@@ -749,19 +751,20 @@ describe("preservation checks", () => {
           if (
             scopes &&
             call.path === "sandbox/send" &&
-            String(call.body.prompt).startsWith("Use only the configured native MCP")
+            String(call.body.prompt).startsWith("ARMADA_SCOPED_SMOKE_V1 ")
           ) {
-            const goal = String(call.body.prompt);
-            if (launches === 1) {
-              const launch = JSON.parse(goal.match(/using exactly (.*?) \(no initial/)?.[1] ?? "null");
-              const message = JSON.parse(
-                goal.match(
-                  /message that child's returned sandboxId with exactly (.*?), replacing CHILD_SANDBOX_ID/,
-                )?.[1] ?? "null",
-              );
-              expect(message.sandboxId).toBe("CHILD_SANDBOX_ID");
-              const stopKey = goal.match(/Then stop that same child using idempotencyKey ([\w-]+)\./)?.[1];
-              const answer = goal.match(/SCOPED_CHILD_[\w-]+/)?.[0];
+            const prefix = "ARMADA_SCOPED_SMOKE_V1 ";
+            const { lane, launch, messageKey, stopKey, answer, noAccess } = JSON.parse(
+              String(call.body.prompt).slice(prefix.length),
+            );
+            expect(lane).toBe("parent");
+            expect(launch.selection).toMatchObject({
+              credentialId: scopeAccount,
+              model: "scripted",
+              credentialVersion: 7,
+            });
+            if (scopedLaunches === 1) {
+              const message = { idempotencyKey: messageKey, text: prefix + JSON.stringify({ lane: "child", answer }) };
               const op = () => ({ id: crypto.randomUUID(), state: "succeeded", sandboxId: childId });
               const tool = (name: string, input: object, result: object) => ({
                 id: `call-${name}`,
@@ -792,7 +795,7 @@ describe("preservation checks", () => {
                         goldenId: defaultGolden,
                         credentialId: scopeAccount,
                         credentialVersion: 7,
-                        model: selected.model,
+                        model: "scripted",
                         events: [
                           {
                             id: "child-answer",
@@ -816,7 +819,7 @@ describe("preservation checks", () => {
                   kind: "message",
                   partial: false,
                   promptId: "scope-turn",
-                  text: goal.match(/NO_ACCESS_[\w-]+/)?.[0],
+                  text: noAccess,
                   tools: [],
                 },
               ]);
@@ -837,12 +840,13 @@ describe("preservation checks", () => {
               providerState: childStopped ? "stopped" : "active",
             });
           if (call.path === "sandbox/launch") {
-            launches++;
             stopping = false;
             sandboxId = crypto.randomUUID();
-            recoveryReads = 0;
-            if (scopes) {
-              if (launches === 1) {
+            if (scopes && call.body.model === "scripted") {
+              scopedLaunches++;
+              expect(call.body.credentialId).toBe(scopeAccount);
+              const enabled = scopedLaunches === 1;
+              if (enabled) {
                 positiveParent = sandboxId;
                 expect(call.body.armadaAccessVersion).toBe(1);
                 expect(call.body.armadaAccess).toEqual({ maxActiveChildren: 1 });
@@ -851,6 +855,26 @@ describe("preservation checks", () => {
                 expect(call.body).not.toHaveProperty("armadaAccessVersion");
                 expect(call.body.skipSkillDefaults).toBe(true);
               }
+              return json({
+                sandbox: {
+                  id: sandboxId,
+                  provider,
+                  harness: "codex",
+                  model: "scripted",
+                  credentialId: scopeAccount,
+                  credentialVersion: 7,
+                  visibility: "private",
+                },
+                golden: { id: defaultGolden },
+                ...(enabled ? { armadaAccess: { enabled: true, maxActiveChildren: 1 } } : {}),
+              });
+            }
+            launches++;
+            recoveryReads = 0;
+            if (scopes) {
+              expect(call.body.model).toBe(selected.model);
+              expect(call.body.credentialId).toBe(baselineScopeAccount);
+              expect(call.body).not.toHaveProperty("armadaAccess");
             }
             if (defaults) {
               expect(call.body).not.toHaveProperty("skills");
@@ -861,15 +885,6 @@ describe("preservation checks", () => {
               sandbox: {
                 id: sandboxId,
                 provider,
-                ...(scopes
-                  ? {
-                      harness: "codex",
-                      model: selected.model,
-                      credentialId: scopeAccount,
-                      credentialVersion: 7,
-                      visibility: "private",
-                    }
-                  : {}),
                 ...(defaults
                   ? {
                       skills: receipts(
@@ -882,10 +897,7 @@ describe("preservation checks", () => {
                     }
                   : {}),
               },
-              ...(defaults || scopes
-                ? { golden: { id: fault === "default_wrong_golden" ? otherId : defaultGolden } }
-                : {}),
-              ...(scopes && launches === 1 ? { armadaAccess: { enabled: true, maxActiveChildren: 1 } } : {}),
+              ...(defaults ? { golden: { id: fault === "default_wrong_golden" ? otherId : defaultGolden } } : {}),
             });
           }
           if (call.path === "sandbox/stop") stopping = true;
@@ -950,7 +962,9 @@ describe("preservation checks", () => {
                 ...selected,
                 provider,
                 ...(defaults || scopes ? { org: defaultOrg.toUpperCase(), goldenId: defaultGolden.toUpperCase() } : {}),
-                ...(scopes ? { modelAccountId: scopeAccount.toUpperCase() } : {}),
+                ...(scopes
+                  ? { modelAccountId: baselineScopeAccount, scriptedModelAccountId: scopeAccount.toUpperCase() }
+                  : {}),
                 ...(fault === "scoped_unsupported" ? { harness: "claude" } : {}),
               },
             ]),
@@ -973,7 +987,7 @@ describe("preservation checks", () => {
         expect(stops).toBeGreaterThanOrEqual(2);
         expect(stops).toBeLessThanOrEqual(4);
         if (success) {
-          expect(stops).toBe(2);
+          expect(stops).toBe(scopes ? 4 : 2);
           expect(fake.calls.filter((call) => call.body.recovery_id === recoveryId)).toHaveLength(1);
           expect(fake.calls.filter((call) => call.body.recovery_id !== undefined)).toHaveLength(2);
           expect(fake.receipts()).toContainEqual({ case: 0, step: "preservation_unknown_handle_refused", pass: true });
@@ -1000,6 +1014,9 @@ describe("preservation checks", () => {
           );
         }
         if (scopes) {
+          expect(
+            fake.receipts().filter((line) => line.step === "scoped_access" && line.model === "scripted"),
+          ).toHaveLength(2);
           expect(fake.calls.filter((call) => call.path === "sandbox/stop" && call.body.id === childId)).toHaveLength(1);
           expect(fake.receipts().filter((line) => line.step === "scoped_cleanup_summary" && line.pass)).toHaveLength(2);
           expect(
@@ -1265,10 +1282,14 @@ test("scoped access validates its matched control pair and explicit account IDs 
     org: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
     goldenId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
     modelAccountId: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+    scriptedModelAccountId: "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
   };
   for (const config of [
     { args: ["--scoped-access"], cases: [valid] },
-    { args: ["--work-preservation", "--scoped-access"], cases: [valid, { ...valid, modelAccountId: "invalid" }] },
+    ...[undefined, "invalid", valid.modelAccountId.toUpperCase()].map((scriptedModelAccountId) => ({
+      args: ["--work-preservation", "--scoped-access"],
+      cases: [valid, { ...valid, scriptedModelAccountId }],
+    })),
   ]) {
     const fake = fixture();
     expect(
@@ -1791,6 +1812,7 @@ test("an unrelated launch in flight never holds scoped child cleanup or the next
       golden: `smoke-${scopedGolden}`,
       goldenId: scopedGolden,
       modelAccountId: "40000000-0000-4000-8000-000000000000",
+      scriptedModelAccountId: "60000000-0000-4000-8000-000000000000",
     },
     { ...selected, harness: "claude", org, golden: `smoke-${otherGolden}`, goldenId: otherGolden },
   ];
@@ -2123,6 +2145,7 @@ test("scoped probes sharing an org and golden never see each other's child; dist
         golden: `smoke-${golden}`,
         goldenId: golden,
         modelAccountId: `40000000-0000-4000-8000-00000000000${index}`,
+        scriptedModelAccountId: `60000000-0000-4000-8000-00000000000${index}`,
       })),
       // Not a scoped pair, so never queued: its owner launches land in the first inventory
       // while the scoped windows are open and must be recognised as siblings.
@@ -2285,6 +2308,7 @@ test("the advertised smoke workflow invocation admits ordinary staging checks", 
               org: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
               goldenId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
               modelAccountId: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+              scriptedModelAccountId: "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
             },
           ]),
         },
