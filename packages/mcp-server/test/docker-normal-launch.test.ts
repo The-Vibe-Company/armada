@@ -2018,7 +2018,7 @@ for (const scenario of ["success", "checkout-failed", "missing-github", "github-
       expect(completed.sandbox.credentialId).toBe(f.body.credentialId);
       expect(f.session()?.configuration).toMatchObject({ codexEnv: { OPENAI_API_KEY: f.secret } });
       expect(f.resolutions()).toBe(1);
-      expect(f.checkoutStatuses).toEqual(["starting"]);
+      expect(f.checkoutStatuses).toEqual(["ready"]);
       expect(completed.promptId).toBe(f.receipt.promptId);
       expect(completed.runtime?.epoch).toBe(f.session()?.epoch);
       const before = f.native.length;

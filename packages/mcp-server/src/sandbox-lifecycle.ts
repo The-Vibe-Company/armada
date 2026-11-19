@@ -92,19 +92,28 @@ export async function transitionSandbox(tx: Sql, input: SandboxTransition) {
   return { kind: "applied", generation: Number(result.generation) } satisfies SandboxTransitionResult;
 }
 
-export async function publishDockerRuntimeReady(tx: Sql, sandboxId: string, source: "health" | "prepared_launch") {
+export async function publishDockerRuntimeReadiness(
+  tx: Sql,
+  sandboxId: string,
+  evidence: "bootstrap_enrolment" | "resume_health",
+) {
   const {
     rows: [starting],
   } = await tx.query<{ generation: string }>(
     `select s.lifecycle_generation::text as generation from public.sandboxes s
      where s.id=$1 and s.provider='docker' and s.status='starting'
-     and ($2::boolean or not exists(
-       select 1 from public.docker_launch_requests d where d.sandbox_id=s.id and d.result_enc is null
+     and $2::boolean = exists(
+       select 1 from public.docker_resume_claims c where c.sandbox_id=s.id
+       and c.lifecycle_generation=s.lifecycle_generation-1 and c.accepted
+     )
+     and ($2::boolean or exists(
+       select 1 from public.docker_host_jobs j where j.bound_sandbox_id=s.id
+       and j.bound_operation='create' and j.outcome='completed'
      ))`,
-    [sandboxId, source === "prepared_launch"],
+    [sandboxId, evidence === "resume_health"],
   );
   if (!starting) return true;
-  const result = await transitionSandbox(tx, {
+  const transition = await transitionSandbox(tx, {
     sandboxId,
     expectedGeneration: starting.generation,
     fromStates: ["starting"],
@@ -113,7 +122,7 @@ export async function publishDockerRuntimeReady(tx: Sql, sandboxId: string, sour
     code: "runtime_enrolled",
     effects: [],
   });
-  return result.kind === "applied";
+  return transition.kind === "applied";
 }
 
 export async function finishEnrolledRuntimeReadiness(

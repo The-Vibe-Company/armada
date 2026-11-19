@@ -69,7 +69,6 @@ import { createRuntimeCommands } from "./runtime-commands.ts";
 import { createRuntimeEnrolments, scopedRuntimeSql } from "./runtime-enrolment.ts";
 import { type RuntimeGitHub, RuntimeGitHubConnectionError, RuntimeGitHubDeliveryError } from "./runtime-github.ts";
 import type { RuntimeMcp } from "./runtime-mcp.ts";
-import { publishDockerRuntimeReady } from "./sandbox-lifecycle.ts";
 
 type Request = {
   repos?: GoldenRepo[];
@@ -736,7 +735,7 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
         let receipt: Receipt;
         for (;;) {
           await live();
-          const ready = await runtime.ready(actor, request.requestId, manifest.healthId, false);
+          const ready = await runtime.ready(actor, request.requestId, manifest.healthId);
           if (ready.state === "ready") {
             receipt = { epoch: ready.epoch };
             break;
@@ -880,12 +879,10 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
         reason = "mcp_preparation";
         if (options.mcp) await options.mcp.prepare(caller, request.requestId);
         else if (selections?.connections.length) throw failure("unavailable");
-        reason = "readiness_publication";
+        reason = "runtime_epoch_validation";
         await live();
-        await createRuntimeEnrolments(sql, key).withOwner(request.requestId, actor.userId, async (tx, scope) => {
+        await createRuntimeEnrolments(sql, key).withOwner(request.requestId, actor.userId, async (_tx, scope) => {
           if (scope.epoch !== receipt.epoch) throw failure("sandbox_not_ready");
-          if (!(await publishDockerRuntimeReady(tx, request.requestId, "prepared_launch")))
-            throw failure("sandbox_not_ready");
         });
         reason = "first_prompt";
         phase = DOCKER_LAUNCH_FAILURE_MESSAGES.prompt;
@@ -902,11 +899,16 @@ export function createDockerNormalLaunch(sql: Sql, key: string, options: Options
           for (;;) {
             await live();
             await admission?.beforeStart();
-            const result = await runtime.prompt(actor, request.requestId, {
-              requestId: manifest.promptId,
-              text: manifest.request.prompt,
-              ...(conversationId === undefined ? {} : { conversationId }),
-            });
+            const result = await runtime.prompt(
+              actor,
+              request.requestId,
+              {
+                requestId: manifest.promptId,
+                text: manifest.request.prompt,
+                ...(conversationId === undefined ? {} : { conversationId }),
+              },
+              receipt.epoch,
+            );
             if (result.state === "admitted") {
               if (result.epoch !== receipt.epoch) throw failure("sandbox_not_ready");
               receipt = {
