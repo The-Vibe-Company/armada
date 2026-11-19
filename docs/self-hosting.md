@@ -133,7 +133,9 @@ armada org connect boat --org acme --file /private/boat-key
 armada org connect modal --org acme --file /private/modal.json
 ```
 
-Armada stores provider credentials encrypted per organization or per person.
+Save the Boat API key as plain text. For Modal, provide a JSON object with
+`token_id` and `token_secret` fields. Armada stores provider credentials
+encrypted per organization or per person.
 For model accounts, see [Morph](morph.md) and
 [per-account agent limits](named-model-credentials.md).
 
@@ -228,7 +230,7 @@ cp apps/dashboard/.env.example apps/dashboard/.env.local   # then fill it in
 bun run dashboard          # next dev
 bun run dashboard:build    # next build
 (cd apps/dashboard && bunx --no-install playwright install chromium)
-bun run e2e                # e2e journeys against the local Supabase and Armada mock
+bun run e2e                # tester-army journeys against the local Supabase and Armada mock
 ```
 
 ## CI and releases
