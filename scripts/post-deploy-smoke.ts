@@ -587,11 +587,21 @@ async function runPostDeploySmoke(
       fail("request_failed");
     }
   }
-  async function poll<T>(read: () => Promise<T>, done: (value: T) => boolean, limit = POLLS): Promise<T> {
+  async function poll<T>(
+    read: (timeoutMs?: number) => Promise<T>,
+    done: (value: T) => boolean,
+    limit = POLLS,
+    timeoutMs?: number,
+  ): Promise<T> {
+    const until = timeoutMs === undefined ? undefined : Math.min(deadline, io.now() + timeoutMs);
     for (let i = 0; i < limit; i++) {
-      const value = await read();
-      if (done(value)) return value;
-      if (i + 1 < limit) await io.sleep(1000);
+      const remaining = until === undefined ? undefined : until - io.now();
+      if (remaining !== undefined && remaining <= 0) break;
+      const value = await read(remaining);
+      const after = until === undefined ? Number.POSITIVE_INFINITY : until - io.now();
+      if (after >= 0 && done(value)) return value;
+      if (after <= 0) break;
+      if (i + 1 < limit) await io.sleep(Math.min(1000, after));
     }
     fail("poll_limit_exceeded");
   }
@@ -1099,20 +1109,18 @@ async function runPostDeploySmoke(
           if (!result?.promptId || typeof result.promptId !== "string") fail("invalid_response");
           return result;
         });
-        await step(phase ? `${phase}_wait` : "wait", () =>
+        const waitStep = phase ? `${phase}_wait` : "wait";
+        const waitTimeout = (deadlines as Record<string, number>)[waitStep];
+        await step(waitStep, () =>
           poll(
-            () =>
+            (timeoutMs) =>
               sandbox<{
                 prompt?: { promptId?: unknown; state?: unknown } | null;
                 status?: unknown;
                 providerState?: unknown;
                 settled?: unknown;
                 timedOut?: unknown;
-              } | null>("wait", {
-                id: sandboxId,
-                prompt_id: turn.promptId,
-                timeout_seconds: 0,
-              }),
+              } | null>("wait", { id: sandboxId, prompt_id: turn.promptId, timeout_seconds: 0 }, timeoutMs),
             (result) => {
               const prompt = result?.prompt;
               const state = prompt?.state;
@@ -1137,6 +1145,8 @@ async function runPostDeploySmoke(
                 timedOut: typeof result?.timedOut === "boolean" ? result.timedOut : jsonShape(result?.timedOut),
               });
             },
+            waitTimeout === undefined ? POLLS : Number.POSITIVE_INFINITY,
+            waitTimeout,
           ),
         );
         await step(phase ? `${phase}_usage` : second ? "usage_second" : "usage", () =>
