@@ -20,6 +20,7 @@ import {
   turnModelEvidence,
   usageUnavailableReason,
 } from "@armada/core";
+import { nativeExhaustionEvidence } from "./account-exhaustion.ts";
 import { completedUsageTurns } from "./account-spend.ts";
 import { DataError, type SandboxView, type ServerSandboxStore } from "./data.ts";
 
@@ -199,17 +200,27 @@ export async function readStatus(
           requestedModel: recorded?.requestedModel ?? null,
           complete,
         });
-        // Unknown observations can be retried; telemetry persistence cannot change the outcome.
-        if (!options.stored && recorded && complete && evidence.modelSelectionReason !== "model_selection_unverified") {
-          try {
+        // If the health write fails, leave the outcome uncached so the next observation can retry.
+        try {
+          if (outcome.state === "failed" && outcome.limit && store.recordNativeExhaustion) {
+            const exhaustion = nativeExhaustionEvidence(events, target.promptId, outcome.limit, options.now.getTime());
+            if (exhaustion)
+              await store.recordNativeExhaustion(sandbox.id, target.promptId, exhaustion.limit, exhaustion.at);
+          }
+          if (
+            !options.stored &&
+            recorded &&
+            complete &&
+            evidence.modelSelectionReason !== "model_selection_unverified"
+          ) {
             await store.recordTurnModelEvidence?.(sandbox.id, target.promptId, {
               ...evidence,
               terminalOutcome: outcome,
               rateLimit,
             });
-          } catch {
-            /* Next read can retry telemetry storage. */
           }
+        } catch {
+          /* Status stays available. The next observation can retry telemetry storage. */
         }
       }
     }

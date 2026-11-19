@@ -9,6 +9,7 @@ import {
   mapGoldenRow,
   mapSandboxRow,
   type OrgSummary,
+  type PlanLimit,
   recordLaunchStageSql,
   resolveOrg,
   type SandboxListMetadata,
@@ -33,6 +34,7 @@ import {
 import type { Provider } from "@armada/core/server";
 import { assertGoldenBackendBinding, assertSqlGoldenMutation } from "@armada/core/server";
 import { beginGoldenOperation, reconcileGoldenOperations } from "../../core/src/golden-store.ts";
+import { recordNativeAccountExhaustion } from "./account-exhaustion.ts";
 import { publishAccountSpend, unmeasuredUsage } from "./account-spend.ts";
 import type { Caller } from "./caller.ts";
 import { scopedOrg } from "./control-caller.ts";
@@ -76,6 +78,12 @@ export interface ServerSandboxStore extends SandboxStore {
     | "conversationIds"
   > | null>;
   recordAccountRateLimit?(id: string, promptId: string, retryAt: number | null): Promise<void>;
+  recordNativeExhaustion?(
+    id: string,
+    promptId: string,
+    limit: PlanLimit & { resetsAt: string },
+    at: number,
+  ): Promise<void>;
   /** #2560: latest activation's recorded launch stages, for a visible sandbox; null before any. */
   launchTiming?(id: string): Promise<LaunchTiming | null>;
   assertExtensionAllowed?(id: string): Promise<void>;
@@ -385,6 +393,10 @@ export function createSqlData(
           `update public.sandbox_turn_models set rate_limit_retry_at=$3::timestamptz where sandbox_id=$1::uuid and prompt_id=$2`,
           [id, promptId, retryAt === null ? null : new Date(retryAt).toISOString()],
         );
+      },
+      async recordNativeExhaustion(id, promptId, limit, at) {
+        if (!(await sandboxes.get(id))) throw new DataError("No such sandbox.");
+        await recordNativeAccountExhaustion(sql, id, promptId, limit, at);
       },
       async readTurnModel(id, promptId) {
         if (!(await sandboxes.get(id))) throw new DataError("No such sandbox.");

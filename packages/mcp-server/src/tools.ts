@@ -228,7 +228,7 @@ function createToolServer(
     if (found.credentialId)
       pricingContext = (await measure("send_credentials", () => turnCredentials(found))).usagePricing ?? null;
     if (data.sandboxes.captureUsagePricingContext)
-      pricingContext = await data.sandboxes.captureUsagePricingContext(found.id);
+      pricingContext = (await data.sandboxes.captureUsagePricingContext(found.id)) ?? pricingContext;
     const stored =
       found.model !== null && found.reasoningEffort !== null
         ? { model: found.model, reasoningEffort: found.reasoningEffort }

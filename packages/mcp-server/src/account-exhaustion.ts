@@ -1,4 +1,9 @@
-import { type AgentEvent, type PlanLimit, planLimitData, type Sql } from "@armada/core";
+import { type AgentEvent, type PlanLimit, planLimitData, planLimitFromMessage, type Sql } from "@armada/core";
+
+const ACCOUNT_EXHAUSTION_UPSERT = `on conflict(account_id) do update set account_version=excluded.account_version,
+  code=excluded.code,resets_at=excluded.resets_at,event_at=excluded.event_at
+  where (account_exhaustion.account_version,account_exhaustion.event_at)
+  <= (excluded.account_version,excluded.event_at)`;
 
 export async function recordAccountExhaustion(tx: Sql, sandboxId: string, events: readonly AgentEvent[]) {
   let latest: { at: number; limit: PlanLimit } | undefined;
@@ -17,10 +22,51 @@ export async function recordAccountExhaustion(tx: Sql, sandboxId: string, events
      select c.id,c.version,$2,$3,$4 from public.sandboxes s
      join public.credentials c on c.id=s.credential_id and c.version=s.credential_version
      where s.id=$1
-     on conflict(account_id) do update set account_version=excluded.account_version,
-       code=excluded.code,resets_at=excluded.resets_at,event_at=excluded.event_at
-     where (account_exhaustion.account_version,account_exhaustion.event_at)
-       <= (excluded.account_version,excluded.event_at)`,
+     ${ACCOUNT_EXHAUSTION_UPSERT}`,
     [sandboxId, latest.limit.code, databaseReset, latest.at],
   );
+}
+
+export async function recordNativeAccountExhaustion(
+  sql: Sql,
+  id: string,
+  promptId: string,
+  limit: PlanLimit & { resetsAt: string },
+  at: number,
+) {
+  await sql.query(
+    `insert into public.account_exhaustion(account_id,account_version,code,resets_at,event_at)
+     select c.id,c.version,$3,$4,$5 from public.sandboxes s
+     join public.sandbox_turn_models t on t.sandbox_id=s.id and t.prompt_id=$2
+     join public.credentials c on c.id=s.credential_id and c.version=s.credential_version
+       and t.pricing_context->>'credentialId'=c.id::text
+       and t.pricing_context->>'credentialVersion'=c.version::text
+     where s.id=$1::uuid
+       and ((s.provider='boat' and not s.boat_runtime) or (s.provider='modal' and s.runtime_transport is null))
+     ${ACCOUNT_EXHAUSTION_UPSERT}`,
+    [id, promptId, limit.code, limit.resetsAt, at],
+  );
+}
+
+export function nativeExhaustionEvidence(
+  events: readonly AgentEvent[],
+  promptId: string,
+  limit: PlanLimit,
+  now: number,
+) {
+  if (!limit.resetsAt || limit.resetsAt.startsWith("0000-")) return;
+  const reset = Date.parse(limit.resetsAt);
+  if (!(reset > now)) return;
+  let at = 0;
+  for (const event of events) {
+    if (event.promptId !== promptId || !Number.isSafeInteger(event.at) || event.at <= at || event.at >= reset) continue;
+    const reported =
+      event.kind === "other" && event.type === "usage_limit"
+        ? planLimitData(event.data)
+        : event.kind === "prompt" && event.status === "failed"
+          ? (planLimitData(event.limit) ?? planLimitFromMessage(event.reason))
+          : undefined;
+    if (reported?.code === limit.code && reported.resetsAt === limit.resetsAt) at = event.at;
+  }
+  if (at) return { at, limit: { ...limit, resetsAt: limit.resetsAt } };
 }

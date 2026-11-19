@@ -670,6 +670,15 @@ describe("tools", () => {
       },
     });
     expect(JSON.stringify(exhausted.data)).not.toContain("private-vendor-body");
+    const health = await db.query(
+      `select e.account_id, e.account_version, e.code, e.resets_at, e.event_at::text
+       from account_exhaustion e join sandboxes s on s.credential_id=e.account_id and s.credential_version=e.account_version
+       where s.id=$1`,
+      [launched.data.id],
+    );
+    expect(health.rows).toMatchObject([
+      { code: "usage_limit_exceeded", resets_at: new Date(resetsAt), event_at: "10" },
+    ]);
   });
 
   test("launch takes the org that has the golden for a session in several orgs", async () => {
