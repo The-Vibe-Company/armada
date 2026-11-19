@@ -327,7 +327,6 @@ test("Modal queued authority is rechecked and a lost worker fence cannot publish
     worker = f.tick();
     await started;
     await f.db.query("update golden_build_jobs set deadline='-infinity' where id=$1", [fenced.jobId]);
-    // Preserve the live shared lease until the original worker stops, then recover the receipt.
     expect(await f.tick()).toBe(false);
     release();
     await worker;
