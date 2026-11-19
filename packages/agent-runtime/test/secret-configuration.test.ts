@@ -270,8 +270,14 @@ test.each([
       origin: { kind: "peer", from: "fixture", body: "prefixvalue" },
       modelUsage: {
         prefixvalue: { inputTokens: 3, outputTokens: 42, provider: "prefixlongfixture" },
+        prefixlongfixture: { inputTokens: 5 },
       },
-      usage: { input_tokens: 3, inference_geo: "prefixvalue" },
+      usage: {
+        input_tokens: 3,
+        inference_geo: "prefixvalue",
+        iterations: [{ type: "message", input_tokens: 3, model: "prefixvalue" }],
+        output_tokens_details: { thinking_tokens: 6 },
+      },
       total_cost_usd: 0.15,
     },
     masked: {
@@ -291,8 +297,14 @@ test.each([
       origin: { kind: "peer", from: "fixture", body: "prefix[REDACTED]" },
       modelUsage: {
         "prefix[REDACTED]": { inputTokens: 3, outputTokens: "[REDACTED]", provider: "prefix[REDACTED]" },
+        "prefix[REDACTED][REDACTED]": { inputTokens: 5 },
       },
-      usage: { input_tokens: 3, inference_geo: "prefix[REDACTED]" },
+      usage: {
+        input_tokens: 3,
+        inference_geo: "prefix[REDACTED]",
+        iterations: [{ type: "message", input_tokens: 3, model: "prefix[REDACTED]" }],
+        output_tokens_details: { thinking_tokens: 6 },
+      },
       total_cost_usd: 0.15,
     },
   },
@@ -308,7 +320,7 @@ test.each([
       "bash",
       "longfixture",
       ...(type.startsWith("account/") ? ["rateLimits", "42"] : []),
-      ...(type === "result" ? ["Tokens", "42"] : []),
+      ...(type === "result" ? ["Tokens", "tokens", "42"] : []),
     ]);
     journal.append({ ...event, id: "new-proof" });
     const expected = { ...event, data: masked };
@@ -325,28 +337,31 @@ test.each([
   }
 });
 
-test("expanding Claude result output is dropped while usage survives", () => {
-  const journal = new Journal(":memory:", (text) => text);
-  try {
-    const event = {
-      id: "result-event",
-      at: 1,
-      kind: "other",
-      type: "result",
-      data: { result: "x".repeat(30_000), modelUsage: { "model-a": { inputTokens: 3 } } },
-    } satisfies AgentEvent;
-    journal.append(event);
-    journal.registerApplicationSecrets(["x"]);
-    journal.append(event);
-    const expected = { ...event, data: { modelUsage: { "model-a": { inputTokens: 3 } }, outputTruncated: true } };
-    expect(journal.redactEvent(journal.events()[0]!.event)).toEqual(expected);
-    expect(journal.events()[1]!.event).toEqual(expected);
-    journal.sanitize();
-    expect(journal.events().map(({ event }) => event)).toEqual([expected, expected]);
-  } finally {
-    journal.close();
-  }
-});
+test.each([{ result: "x".repeat(30_000) }, { usage: { inference_geo: "x".repeat(30_000) } }])(
+  "expanding Claude result details are dropped while per-model counters survive",
+  (details) => {
+    const journal = new Journal(":memory:", (text) => text);
+    try {
+      const event = {
+        id: "result-event",
+        at: 1,
+        kind: "other",
+        type: "result",
+        data: { modelUsage: { "model-a": { inputTokens: 3 } }, ...details },
+      } satisfies AgentEvent;
+      journal.append(event);
+      journal.registerApplicationSecrets(["x"]);
+      journal.append(event);
+      const expected = { ...event, data: { modelUsage: { "model-a": { inputTokens: 3 } }, outputTruncated: true } };
+      expect(journal.redactEvent(journal.events()[0]!.event)).toEqual(expected);
+      expect(journal.events()[1]!.event).toEqual(expected);
+      journal.sanitize();
+      expect(journal.events().map(({ event }) => event)).toEqual([expected, expected]);
+    } finally {
+      journal.close();
+    }
+  },
+);
 
 test("proof truncation persists only scrubbed correlation metadata", () => {
   const journal = new Journal(":memory:", (text) => text);
