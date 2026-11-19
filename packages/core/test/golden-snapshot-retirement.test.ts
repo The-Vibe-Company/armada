@@ -518,6 +518,28 @@ test.each(["success", "absent", "refusal", "busy", "unknown"])(
   },
 );
 
+test("a contended golden leaves its retirement job queued for another attempt", async () => {
+  const db = database();
+  const f = await fixture(db);
+  await f.publish();
+  const sql: Sql = {
+    query: db.query.bind(db),
+    transaction: (work) =>
+      db.transaction((tx) =>
+        work({
+          query: (statement, params) =>
+            statement.includes("for update of g") ? Promise.resolve({ rows: [] }) : tx.query(statement, params),
+        }),
+      ),
+  };
+  const retirement = new GoldenSnapshotRetirements({ sql, encryptionKey: KEY, provider: async () => f.provider });
+  expect(await runRetirementJob(db, retirement, f.now)).toBe(true);
+  expect(f.deleted).toEqual([]);
+  await f.due();
+  expect(await runRetirementJob(db, f.retirement, f.now)).toBe(true);
+  expect(f.deleted).toEqual([f.old]);
+});
+
 test("handoff backfills a legacy retirement only after its old claim expires", async () => {
   const db = database();
   const f = await fixture(db);

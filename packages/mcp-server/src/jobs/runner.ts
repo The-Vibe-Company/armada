@@ -70,9 +70,11 @@ export function createJobsRunner(
   let nextKind = 0;
 
   async function run(job: Job, handler: JobKind, cancelClaimExpiry: () => void, lease: AbortController) {
-    const signal = AbortSignal.any([lease.signal, shutdown.signal]);
+    const ownership = AbortSignal.any([lease.signal, shutdown.signal]);
+    const deadline = handler.timeoutMs === undefined ? undefined : new AbortController();
+    const signal = deadline ? AbortSignal.any([ownership, deadline.signal]) : ownership;
     const cancelDeadline =
-      handler.timeoutMs === undefined ? undefined : schedule(handler.timeoutMs, () => lease.abort());
+      handler.timeoutMs === undefined ? undefined : schedule(handler.timeoutMs, () => deadline?.abort());
     let cancelExpiry = cancelClaimExpiry;
     let renewal: Promise<void> | undefined;
     let cancelRenewal: (() => void) | undefined;
@@ -85,14 +87,14 @@ export function createJobsRunner(
           lease.abort();
           await store.retireStale(job, owner);
         }
-        if (signal.aborted) return;
+        if (ownership.aborted) return;
         cancelExpiry();
         cancelExpiry = cancelNextExpiry;
-        scheduleRenewal();
+        if (!signal.aborted) scheduleRenewal();
       } catch {
         lease.abort();
       } finally {
-        if (signal.aborted) cancelNextExpiry();
+        if (ownership.aborted) cancelNextExpiry();
       }
     }
     const scheduleRenewal = () => {
@@ -126,7 +128,7 @@ export function createJobsRunner(
           return generation;
         },
       });
-      if (!signal.aborted && !(await store.complete(job, owner, result))) await store.retireStale(job, owner);
+      if (!ownership.aborted && !(await store.complete(job, owner, result))) await store.retireStale(job, owner);
     } finally {
       lease.abort();
       cancelExpiry();

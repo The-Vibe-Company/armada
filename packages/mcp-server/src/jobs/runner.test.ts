@@ -168,7 +168,7 @@ test("a second runner respects the registered kind's capacity until the lease is
   expect(f.completed).toEqual(["one", "two"]);
 });
 
-test("a timed-out handler remains tracked locally while another runner takes over its expired lease", async () => {
+test.each([false, true])("dispatch timeout fences late completion only on ownership loss (%s)", async (takeover) => {
   const f = fixture();
   const entered = Promise.withResolvers<AbortSignal>();
   const finish = Promise.withResolvers<void>();
@@ -181,18 +181,22 @@ test("a timed-out handler remains tracked locally while another runner takes ove
     1,
     { timeoutMs: 15_000 },
   );
-  const second = f.runner(async () => ({ status: "done" }));
   expect(await first.reconcileOne(tick)).toBe(true);
   const signal = await entered.promise;
   f.advance(10_000);
   await Promise.resolve();
   f.advance(5_000);
   expect(signal.aborted).toBe(true);
-  f.advance(25_000);
-  expect(await first.reconcileOne(tick)).toBe(false);
-  expect(await second.reconcileOne(tick)).toBe(true);
+  if (takeover) {
+    const second = f.runner(async () => ({ status: "done" }));
+    f.advance(25_000);
+    expect(await first.reconcileOne(tick)).toBe(false);
+    expect(await second.reconcileOne(tick)).toBe(true);
+    await second.drain();
+    expect(f.completed).toEqual(["one"]);
+  }
   finish.resolve();
-  await Promise.all([first.drain(), second.drain()]);
+  await first.drain();
   expect(f.completed).toEqual(["one"]);
 });
 

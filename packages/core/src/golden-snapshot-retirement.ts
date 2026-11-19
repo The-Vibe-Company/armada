@@ -549,11 +549,16 @@ export class GoldenSnapshotRetirements {
       const candidate = (
         await tx.query<Pick<Candidate, "provider" | "old_snapshot">>(
           `select r.provider,r.old_snapshot from public.golden_snapshot_retirements r
-           join public.goldens g on g.id=r.golden_id where r.id=$1 and r.state<>'retired' for update of g`,
+           join public.goldens g on g.id=r.golden_id where r.id=$1 and r.state<>'retired' for update of g skip locked`,
           [id],
         )
       ).rows[0];
-      if (!candidate) return null;
+      if (!candidate) {
+        const pending =
+          (await tx.query("select id from public.golden_snapshot_retirements where id=$1 and state<>'retired'", [id]))
+            .rows.length > 0;
+        return pending ? "handoff_pending" : null;
+      }
       await tx.query("select public.lock_golden_snapshot($1,$2)", [candidate.provider, candidate.old_snapshot]);
       if (!(await canDispatch(tx))) return "handoff_pending";
       const adopted = (
@@ -645,7 +650,8 @@ export class GoldenSnapshotRetirements {
         );
         return rows.length > 0;
       });
-      if (!begun || signal.aborted) return finish("deferred", "authority_or_reference_changed");
+      if (!begun) return finish("deferred", "authority_or_reference_changed");
+      if (signal.aborted) return finish("deferred", "provider_unavailable", true);
       deleting = true;
       collects = Boolean(checked.provider.collectRetiredSnapshot);
       await checked.provider.deleteSnapshot(row.old_snapshot);

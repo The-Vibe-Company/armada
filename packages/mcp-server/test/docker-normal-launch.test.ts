@@ -2873,11 +2873,31 @@ test.each([
   "removed_before_launch",
 ] as const)("Docker snapshot templates validate source scope/binding: %s", async (scenario) => {
   const db = database();
-  const f = await snapshotFixture();
-  const snapshotId = await readyTemplateSnapshot(f);
+  const f = await fixture({ daemonVersion: "2.55.0" });
+  const snapshotId = randomUUID();
+  await db.query(
+    `insert into public.docker_snapshots(
+       id,org_id,owner_id,host_id,installation_id,name,visibility,config,request_hash,actor_epoch,issuer_epoch,
+       generation,base_image,status,image_id,build_expires_at,built_on_version,baseline_version
+     ) values($1,$2,$3,$4,$5,'template-source','private',$6,$7,1,1,$8,$9,'ready',$10,now()+interval '1 hour',$11,1)`,
+    [
+      snapshotId,
+      f.actor.orgId,
+      f.actor.userId,
+      f.hostId,
+      f.installationId,
+      JSON.stringify({ repos: [], init: [] }),
+      "b".repeat(64),
+      randomUUID(),
+      officialSandboxImage(),
+      `sha256:${"d".repeat(64)}`,
+      VERSION,
+    ],
+  );
   const templates = createTemplateService(sql, key);
   const definition = { provider: "docker", hostId: f.hostId, snapshotId, harness: "codex" };
   const request = { org: f.actor.orgId, scope: "personal", name: "snapshot-template", definition };
+  const adminCaller: Caller = { ...f.caller, userId: f.admin.userId, orgs: [{ orgId: f.actor.orgId, role: "admin" }] };
   if (scenario === "private_other")
     await db.query("update docker_snapshots set owner_id=$2 where id=$1", [snapshotId, f.otherId]);
   if (scenario === "org_private") {
@@ -2890,7 +2910,7 @@ test.each([
       snapshotId,
       f.admin.userId,
     ]);
-    const created = await templates.command(f.adminCaller, "create", request);
+    const created = await templates.command(adminCaller, "create", request);
     expect(created.revision).toMatchObject({ definition: { snapshotId, hostId: f.hostId } });
     return;
   }
@@ -2907,7 +2927,7 @@ test.each([
     await db.query("update docker_snapshots set installation_id=$2 where id=$1", [snapshotId, randomUUID()]);
   if (scenario !== "removed_before_launch") {
     await expect(
-      templates.command(scenario === "org_private" ? f.adminCaller : f.caller, "create", request),
+      templates.command(scenario === "org_private" ? adminCaller : f.caller, "create", request),
     ).rejects.toThrow("environment_");
     return;
   }
