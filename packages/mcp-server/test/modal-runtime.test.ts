@@ -148,13 +148,15 @@ test("enrolled Modal scoped parent cleanup requires a lifecycle fence and reache
   ).rows[0]!.generation;
   const authority = new DelegatedAuthority(sql, async () => {});
   let token = "";
+  let issuedEpoch = "";
   await authority.installEpoch(
     row.id,
     {
       physicalGeneration: "1",
       lifecycleGeneration: generation,
-      async deliver(value) {
+      async deliver(value, binding) {
         token = value;
+        issuedEpoch = binding.epoch;
         return { acknowledged: true };
       },
       async scrub() {},
@@ -182,6 +184,11 @@ test("enrolled Modal scoped parent cleanup requires a lifecycle fence and reache
   expect(await admit()).toBe(true);
 
   await sql.query("update sandboxes set status='stopping',stop_requested_at=now() where id=$1", [row.id]);
+  const parent = await sql.query<{ epoch: string }>(
+    "select authority_epoch::text as epoch from armada_access_parents where id=$1",
+    [row.id],
+  );
+  expect(BigInt(parent.rows[0]!.epoch)).toBeGreaterThan(BigInt(issuedEpoch));
   await expect(admit()).rejects.toThrow("denied");
   await expect(provider.delete(request)).rejects.toThrow("requires a lifecycle stop or terminal state");
   await expect(provider.stop({ ...request, requireRetention: true })).rejects.toThrow("verified runtime checkpoint");
