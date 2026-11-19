@@ -59,7 +59,7 @@ function fixture() {
     runner(run: Parameters<typeof createJobsRunner>[1][string]["run"], concurrency = 1, timeoutMs?: number) {
       return createJobsRunner(
         store,
-        { stop: { run, concurrency, timeoutMs } },
+        { stop: { run, concurrency, ...(timeoutMs === undefined ? {} : { timeoutMs }) } },
         () => {},
         (ms, callback) => {
           timers.set(callback, now + ms);
