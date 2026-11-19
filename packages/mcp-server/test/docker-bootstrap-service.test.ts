@@ -1,5 +1,5 @@
-import { afterAll, beforeAll, expect, test } from "bun:test";
-import { randomUUID } from "node:crypto";
+import { afterAll, beforeAll, expect, mock, test } from "bun:test";
+import { createHash, randomUUID } from "node:crypto";
 import {
   DOCKER_HOST_PROTOCOL,
   DOCKER_LAUNCH_FAILURE_MESSAGES,
@@ -8,6 +8,7 @@ import {
   type Sql,
 } from "@armada/core";
 import { createSqlVaultStore, decryptSecret, encryptSecret } from "@armada/core/server";
+import { canonicalDockerHostJob } from "../../core/src/docker-host-job.ts";
 import { type Api, type Executor, type State, type Store, tick } from "../../docker-host/src/daemon.ts";
 import { createDockerBootstrapService, DockerBootstrapDenied } from "../src/docker-bootstrap-service.ts";
 import { DockerHostDraining } from "../src/docker-capacity.ts";
@@ -846,6 +847,7 @@ const refusalOrders = [
   "previous server ACK",
   "previous server failed ACK",
   "ACK transaction rollback",
+  "missing ACK after daemon restart",
 ];
 
 test.each(refusalOrders)(
@@ -925,7 +927,63 @@ test.each(refusalOrders)(
     const response = await refuse();
     expect(response?.status).toBe(409);
     expect(await response?.json()).toEqual({ error: "runtime_protocol_unsupported" });
-    if (order !== "ACK first" && !failedAckFirst) {
+    const missingAck = order === "missing ACK after daemon restart";
+    if (missingAck) {
+      await database().query(
+        `update public.docker_hosts set machine_cpus=4,machine_memory_bytes=8589934592,sandbox_cpus=2
+         where id=$1`,
+        [f.hostId],
+      );
+      const poll = (running: string[] = []) =>
+        hosts.poll(f.hostToken, f.installationId, "3.0.0", false, undefined, undefined, undefined, undefined, running);
+      expect(await poll([job.requestId])).toBeNull();
+      expect((await reservations.get(f.actor, id)).status).toBe("starting");
+      expect((await service.resume(f.actor, id, resume.requestId)).state).toBe("failed");
+      let durable: State = {
+        server: job.bootstrap.serverUrl,
+        installationId: f.installationId,
+        hostId: f.hostId,
+        hostToken: f.hostToken,
+        receipts: [
+          {
+            requestId: job.requestId,
+            operation: "resume",
+            request: job.request,
+            inputHash: createHash("sha256")
+              .update(JSON.stringify({ requestId: job.requestId, input: canonicalDockerHostJob(job) }))
+              .digest("hex"),
+          },
+        ],
+      };
+      const store: Store = {
+        load: async () => structuredClone(durable),
+        save: async (next) => {
+          durable = structuredClone(next);
+        },
+      };
+      const unexpected = async () => {
+        throw Error("unexpected daemon operation");
+      };
+      const resumeCompute = mock(async () => {});
+      await tick(
+        store,
+        {
+          register: unexpected,
+          poll: async () => ({ job: await poll() }),
+          result: async (_state, result) => ack(result.requestId, result.outcome),
+        },
+        {
+          create: unexpected,
+          stop: unexpected,
+          delete: unexpected,
+          stopIfExpired: async () => false,
+          resume: resumeCompute,
+          startRuntime: unexpected,
+        },
+        false,
+      );
+      expect(resumeCompute).not.toHaveBeenCalled();
+    } else if (order !== "ACK first" && !failedAckFirst) {
       expect((await reservations.get(f.actor, id)).status).toBe("starting");
       expect((await hosts.poll(f.hostToken, f.installationId))?.requestId).toBe(job.requestId);
       if (order === "previous server ACK" || order === "previous server failed ACK") {
@@ -981,11 +1039,16 @@ test.each(refusalOrders)(
     expect(stop.request).toEqual(job.request);
     await ack(stop.requestId);
     expect((await reservations.get(f.actor, id)).status).toBe("stopped");
+    if (missingAck) {
+      await hosts.poll(f.hostToken, f.installationId, "3.0.0", false, undefined, 1);
+    }
     const next = await admittedResume(f, randomUUID());
     expect(next.state).toBe("pending");
-    const nextJob = await hosts.poll(f.hostToken, f.installationId);
+    const nextJob = missingAck
+      ? await hosts.poll(f.hostToken, f.installationId, "3.0.0", false, undefined, 1)
+      : await hosts.poll(f.hostToken, f.installationId);
     if (nextJob?.operation !== "resume") throw Error("missing replacement resume");
-    if (order === "previous server failed ACK" || failedAckFirst) {
+    if (order === "previous server failed ACK" || failedAckFirst || missingAck) {
       await ack(job.requestId, "failed");
       await ack(stop.requestId);
       expect((await reservations.get(f.actor, id)).status).toBe("starting");

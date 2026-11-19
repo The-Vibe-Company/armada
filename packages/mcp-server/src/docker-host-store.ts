@@ -1419,7 +1419,16 @@ export function createDockerHostStore(sql: Sql, key: string) {
           )
         ).rows[0];
         if (!row || row.request_id !== hint?.request_id) return null;
-        if (!["stop", "delete"].includes(row.bound_operation ?? "")) {
+        // The refused ticket proves this exact resume reached the daemon. Its
+        // durable ledger replays or settles the receipt without starting compute.
+        const refusedResume =
+          row.bound_operation === "resume" && row.refused_resume_generation != null && row.bound_sandbox_id
+            ? await sandbox(tx, row.bound_sandbox_id, host, installationId)
+            : undefined;
+        const recoveringReceipt =
+          refusedResume?.status === "starting" &&
+          String(refusedResume.lifecycle_generation) === String(row.refused_resume_generation);
+        if (!recoveringReceipt && !["stop", "delete"].includes(row.bound_operation ?? "")) {
           const policyRow = (
             await tx.query<DockerPolicyRow>(
               "select machine_cpus,machine_memory_bytes,sandbox_cpus,sandbox_memory_bytes,max_sandboxes,available_cpus,available_memory_bytes from public.docker_hosts where id=$1",
