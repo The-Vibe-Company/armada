@@ -100,11 +100,14 @@ If persistence fails, launch fails before inference and uses existing cleanup.
 
 Apply `20261112162000_sandbox_usage_pricing.sql` through the normal migration
 process before deploying the server. The worker never applies remote migrations.
-Launch on an existing Modal golden:
+Launch on an existing Modal snapshot:
+
+Replace `MODAL_SNAPSHOT` with the snapshot name, and `SANDBOX_UUID`
+with the sandbox ID from the launch receipt.
 
 ```sh
-armada launch <modal-golden> --provider modal --agent claude "Reply OK"
-armada wait <id>
+armada launch MODAL_SNAPSHOT --provider modal --agent claude "Reply OK"
+armada wait SANDBOX_UUID
 ```
 
 Using an authorized service/operator database connection (never a user JWT), run:
