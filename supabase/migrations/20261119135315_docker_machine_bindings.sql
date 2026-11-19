@@ -10,5 +10,5 @@ create table public.docker_machine_bindings (
 );
 
 alter table public.docker_machine_bindings enable row level security;
-revoke all on public.docker_machine_bindings from public, anon, authenticated;
+revoke all on public.docker_machine_bindings from public, anon, authenticated, service_role;
 grant select, insert on public.docker_machine_bindings to service_role;

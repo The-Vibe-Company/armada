@@ -1859,3 +1859,17 @@ test("Docker Machine inventory projects only exact scoped report bindings", asyn
     ),
   ).toEqual([]);
 });
+
+test("only the service role can read and insert Docker Machine bindings, and cannot rewrite them", async () => {
+  const { rows } = await database().query(
+    `select role, has_table_privilege(role,'public.docker_machine_bindings','SELECT') as readable,
+            has_table_privilege(role,'public.docker_machine_bindings','INSERT') as insertable,
+            has_table_privilege(role,'public.docker_machine_bindings','UPDATE,DELETE,TRUNCATE') as rewritable
+     from unnest(array['anon','authenticated','service_role']) as roles(role) order by role`,
+  );
+  expect(rows).toEqual([
+    { role: "anon", readable: false, insertable: false, rewritable: false },
+    { role: "authenticated", readable: false, insertable: false, rewritable: false },
+    { role: "service_role", readable: true, insertable: true, rewritable: false },
+  ]);
+});
