@@ -89,7 +89,7 @@ Usage:
                                            Build a new snapshot from saved repos/setup on its original host; keep the old one.
   armada launch <snapshot> --agent claude|codex|opencode ["prompt"] [--model <id>] [--reasoning-effort <level>]
                                            [--armada-access [--credential-id <id>] [--max-active-children <1..100>]]
-                [--provider boat|modal] [--repo <configured-dir|owner/repo>] [--ttl 4h] [--json]
+                --provider boat|modal [--repo <configured-dir|owner/repo>] [--ttl 4h] [--json]
                 [--skill org/slug@version|slug@version ...] [--connections <id,...> | --no-connections] [--org <org>]
                 Omit connections to request server defaults; --no-connections opts out.
                                            Fork a snapshot into a sandbox. With a prompt the agent starts at once;
@@ -222,7 +222,7 @@ Example: armada api org/list
 `;
 
 exports[`armada launch help preserves its output 1`] = `
-"Usage: armada launch <snapshot> --agent claude|codex|opencode ["prompt"] [options]
+"Usage: armada launch <snapshot> --provider boat|modal --agent claude|codex|opencode ["prompt"] [options]
 Fork a visible snapshot; a prompt starts the agent, otherwise wait for the first send.
 Sign in with armada login or set ARMADA_TOKEN for scripts.
 Find snapshots with armada snapshot list; select an organization with --org or armada org use.

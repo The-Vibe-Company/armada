@@ -119,7 +119,10 @@ test("published launch request keeps golden, pinned Modal template and Docker so
   const launch = publishedRequest("sandbox/launch");
   const org = "11111111-1111-4111-8111-111111111111";
   const golden = { golden: "web", harness: "codex", org };
-  expect(launch.safeParse(golden).success).toBe(true);
+  expect(launch.safeParse(golden).success).toBe(false);
+  for (const provider of ["boat", "modal"]) {
+    expect(launch.safeParse({ ...golden, provider, org: "team" }).success).toBe(true);
+  }
   expect(launch.safeParse({ ...golden, provider: "boat", boatRuntime: true, runtimeVersion: 1 }).success).toBe(true);
   expect(
     launch.safeParse({ ...golden, provider: "modal", runtimeTransport: "dialout", runtimeVersion: 1 }).success,

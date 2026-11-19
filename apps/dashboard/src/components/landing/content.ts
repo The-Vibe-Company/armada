@@ -21,7 +21,8 @@ export const INSTALL = "npm install -g @the-vibe-company/armada";
 /** The CLI line under each chapter of the story: every command and flag is one `armada --help` documents. */
 export const STORY = {
   golden: "armada snapshot create widgets --repo https://github.com/acme/widgets --provider modal",
-  launch: 'armada launch widgets --agent claude --model claude-opus-5-5 --reasoning-effort high "Add a dark theme"',
+  launch:
+    'armada launch widgets --provider boat --agent claude --model claude-opus-5-5 --reasoning-effort high "Add a dark theme"',
   tools: "armada mcp add docs https://mcp.example.com/mcp --scope org",
   resume: 'armada send 6f1c2a9e-4b7d-4e2a-9c51-3d8e0f7a2b14 "Now cover the empty cart"',
   keys: "armada creds set codex-auth --file ~/.codex/auth.json",
@@ -37,7 +38,10 @@ export const SETUP: { command: string; note: string }[] = [
     command: "armada snapshot create widgets --repo https://github.com/acme/widgets",
     note: "GitHub connected; --provider boat or modal picks where it is built",
   },
-  { command: 'armada launch widgets --agent codex "Fix the flaky checkout test"', note: "Your first agent" },
+  {
+    command: 'armada launch widgets --provider boat --agent codex "Fix the flaky checkout test"',
+    note: "Your first agent",
+  },
 ];
 
 /** How long the GitHub token a sandbox gets lasts (the GitHub App's user token), and the vault's cipher. */

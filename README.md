@@ -124,7 +124,7 @@ A long build keeps running on the server: `armada snapshot build-status <job-id>
 **6. Launch an agent.** With a prompt the agent starts at once; without one the sandbox waits, ready, for your first prompt. In a snapshot with several repositories, `--repo owner/repo` starts the agent in that one ([details](docs/dave-onboarding.md#6-launch-from-the-cli)).
 
 ```sh
-armada launch web --agent claude --model claude-opus-5-5 --reasoning-effort high --ttl 4h \
+armada launch web --provider boat --agent claude --model claude-opus-5-5 --reasoning-effort high --ttl 4h \
   "Find why the checkout test is flaky and fix it"
 ```
 
@@ -154,7 +154,7 @@ Register an MCP server once, connect it (the browser opens when it asks for OAut
 ```sh
 armada mcp add Docs https://mcp.example.com/mcp      # personal; --scope org shares it with your org
 armada mcp connect <connection-id>
-armada launch private-web --agent codex --connections <connection-id> "Update the API reference"
+armada launch private-web --provider boat --agent codex --connections <connection-id> "Update the API reference"
 armada mcp sandbox-connections <sandbox-id>
 ```
 

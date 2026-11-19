@@ -1,5 +1,6 @@
 import type { Harness, VaultStore } from "@armada/core";
 import { goldenCompatibilityIds, launchGitHubResponse, sandboxIdentity } from "@armada/core";
+import type { LaunchInput } from "@armada/core/contract";
 import {
   type GoldenActor,
   type GoldenRecord,
@@ -25,7 +26,7 @@ import type { ScopedData } from "./data.ts";
 import { providerForGolden } from "./golden-control.ts";
 import { prepareGoldenLaunchAccount } from "./launch-account-admission.ts";
 import { launchCredentials } from "./launch-credentials.ts";
-import type { GoldenLaunchRequest } from "./launch-request-schema.ts";
+
 import { type GoldenLaunchTiming, observeGoldenLaunch } from "./request-timing.ts";
 
 type LaunchControlOptions = Pick<
@@ -49,6 +50,8 @@ type LaunchControlOptions = Pick<
   | "dockerLaunch"
   | "ordinaryLaunchReceipts"
 >;
+
+type GoldenLaunchRequest = Extract<LaunchInput, { golden: string }>;
 
 export function launchRoute(
   options: LaunchControlOptions,
@@ -81,8 +84,8 @@ async function launchGolden(
   if (armadaAccess && !options.sandboxArmadaAccess)
     throw new VaultError("unavailable", "Sandbox Armada access is not enabled on this server.");
   const data = options.data(caller);
-  const actor = await launchActor(data, caller, name, body.org ?? undefined, options.store);
-  const golden = await goldenForLaunch(data.goldens, actor, name, body.provider ?? undefined);
+  const actor = await launchActor(data, caller, name, body.org, options.store);
+  const golden = await goldenForLaunch(data.goldens, actor, name, body.provider);
   resolveRepositoryDir(golden, repo);
   if (armadaAccess && harness !== "codex")
     throw new VaultError("unavailable", "Sandbox Armada access is unavailable for this provider/harness.");

@@ -9,7 +9,7 @@ user authorization are distinct: ensure the App can access the requested repo.
 repair; it is not a model-account refresh or a way around repository permissions.
 
 Inspect `armada creds list`. Model credentials resolve personal over org defaults;
-select an account explicitly with `armada launch GOLDEN --agent codex --credential-id ACCOUNT`.
+select an account explicitly with `armada launch GOLDEN --provider boat --agent codex --credential-id ACCOUNT`.
 For native subscription login use `armada creds login codex --name ACCOUNT_NAME`;
 Claude/native imports use `armada creds import claude --name ACCOUNT_NAME --file TOKEN_FILE`.
 API credentials use `armada creds set openai --file KEY_FILE`.

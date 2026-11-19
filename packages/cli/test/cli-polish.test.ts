@@ -76,7 +76,7 @@ test("usage and authentication failures give relevant recovery", async () => {
   expect(usage.err).not.toContain("inspect armada list");
   for (const args of [
     ["creds", "set", "bogus"],
-    ["launch", "starter", "--agent", "codex", "--ttl", "bad"],
+    ["launch", "starter", "--provider", "boat", "--agent", "codex", "--ttl", "bad"],
     ["frobnicate"],
   ]) {
     const invalid = await invoke(args);
@@ -104,7 +104,7 @@ test("invalid agents list the catalog for list and Docker launch", async () => {
 
 test("explicit launches require an agent on both Docker and golden paths", async () => {
   for (const argv of [
-    ["launch", "starter"],
+    ["launch", "starter", "--provider", "boat"],
     ["launch", "--provider", "docker", "--host", "office"],
   ]) {
     const result = await invoke(argv);
@@ -139,7 +139,7 @@ test("token, deployment and uncertain launch errors retain appropriate recovery"
   );
   expect(deployment.err).toContain("Ask an administrator");
   expect(deployment.err).not.toContain("armada doctor");
-  const launch = await invoke(["launch", "web", "--agent", "codex"], true);
+  const launch = await invoke(["launch", "web", "--provider", "boat", "--agent", "codex"], true);
   expect(launch.err).toContain("Run armada list to check before retrying");
   expect(launch.err).not.toContain("armada doctor");
 });

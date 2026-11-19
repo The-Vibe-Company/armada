@@ -109,7 +109,7 @@ for (const failure of [
         new Request("https://armada.test/api/v1/sandbox/launch", {
           method: "POST",
           headers: { authorization: `Bearer ${bearer}` },
-          body: JSON.stringify({ golden: "web", harness: "claude" }),
+          body: JSON.stringify({ provider: "boat", golden: "web", harness: "claude" }),
         }),
         {
           ...options,
@@ -1109,7 +1109,7 @@ describe("control API", () => {
             new Request("https://armada.test/api/v1/sandbox/launch", {
               method: "POST",
               headers: { authorization: `Bearer ${service}` },
-              body: JSON.stringify({ golden: "web", harness: "claude", ...body }),
+              body: JSON.stringify({ provider: "boat", golden: "web", harness: "claude", ...body }),
             }),
             { ...options, providerFor: () => boat.provider },
           );
@@ -1190,7 +1190,13 @@ describe("control API", () => {
           headers: {
             authorization: `Bearer eyJhbGciOiJIUzI1NiJ9.${btoa(JSON.stringify({ sub: STAN })).replace(/=+$/, "")}.sig`,
           },
-          body: JSON.stringify({ org, golden: "web", harness: "codex", idempotencyKey: "unbound-account-launch" }),
+          body: JSON.stringify({
+            org,
+            provider: "boat",
+            golden: "web",
+            harness: "codex",
+            idempotencyKey: "unbound-account-launch",
+          }),
         }),
         {
           ...options,
@@ -1259,6 +1265,7 @@ describe("control API", () => {
           keyed,
         );
       const request = {
+        provider: "boat",
         golden: "web",
         org: "keyed",
         harness: "claude",
@@ -1306,7 +1313,7 @@ describe("control API", () => {
       options.authStore.addMembership(STAN, { orgId: org, name: "Ref", role: "admin" });
       const boat = fakeBoat();
       const caller = { userId: STAN, orgs: [{ orgId: org, role: "admin" as const }], via: "supabase" as const };
-      const input = { provider: "boat", org, golden: "web", harness: "claude", externalRef: "bad\nref" };
+      const input = { org, golden: "web", harness: "claude" };
       const response = await handleControlRequest(
         new Request("https://armada.test/api/v1/sandbox/launch", {
           method: "POST",
@@ -1366,7 +1373,7 @@ describe("control API", () => {
         new Request("https://armada.test/api/v1/sandbox/launch", {
           method: "POST",
           headers: { authorization: `Bearer ${service}` },
-          body: JSON.stringify({ golden: "web", org: orgB, harness: "claude" }),
+          body: JSON.stringify({ provider: "boat", golden: "web", org: orgB, harness: "claude" }),
         }),
         options,
       );
@@ -2152,7 +2159,7 @@ test("HTTP launch keeps build-5 refusal code and adds the busy account reason", 
       new Request("https://armada.test/api/v1/sandbox/launch", {
         method: "POST",
         headers: { authorization: `Bearer ${bearer}`, "content-type": "application/json" },
-        body: JSON.stringify({ org: org.id, golden: "busy", harness: "codex" }),
+        body: JSON.stringify({ org: org.id, provider: "boat", golden: "busy", harness: "codex" }),
       }),
       options,
     ))!;
@@ -2212,6 +2219,7 @@ for (const scenario of ["missing", "revoked-personal", "unreadable-personal"] as
           method: "POST",
           headers: { authorization: `Bearer ${bearer}`, "content-type": "application/json" },
           body: JSON.stringify({
+            provider: "boat",
             golden: "private-launch",
             harness: "codex",
             skills: ["notes@1.0.0"],
@@ -3057,6 +3065,7 @@ test("versioned runtime launch is explicit/default-off and never selects native 
     };
     const defaulted = await request("sandbox/launch", {
       golden: body.golden,
+      provider: body.provider,
       org: body.org,
       harness: "codex",
       credentialId: account.id,

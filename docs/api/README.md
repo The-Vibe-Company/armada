@@ -24,8 +24,8 @@ permissions. Keep this bearer out of browsers, URLs and logs. Send
 
 `POST /api/v1/sandbox/launch` serves Boat, Modal and Docker, but Docker takes a
 different body (see [Docker launches](#docker-launches)). For Boat and Modal,
-the body takes a snapshot name in `golden` and an agent identifier in
-`harness`. This example assumes a Modal snapshot called `review` and a
+the body requires `provider`, a snapshot name in `golden`, and an agent
+identifier in `harness`. This example assumes a Modal snapshot called `review` and a
 configured Codex account:
 
 ```json

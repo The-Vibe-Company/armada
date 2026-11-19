@@ -1,5 +1,11 @@
 // PR typechecking resolves the workspace source. The npm smoke resolves the installed declarations.
-import { Armada, type DockerSendInput, type FailureCode, type SendInput } from "@the-vibe-company/armada-sdk";
+import {
+  Armada,
+  type DockerSendInput,
+  type FailureCode,
+  type GoldenLaunchInput,
+  type SendInput,
+} from "@the-vibe-company/armada-sdk";
 
 const code: FailureCode = "outcome_unknown";
 
@@ -44,3 +50,5 @@ export type DockerReceiptContract = Assert<
     { golden: null; host: string; prompt: string | null | undefined; conversation: string | null | undefined }
   >
 >;
+
+export type GoldenProviderIsRequired = Assert<Equal<GoldenLaunchInput["provider"], "boat" | "modal">>;

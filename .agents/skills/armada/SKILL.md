@@ -52,7 +52,7 @@ any receipt UUID returned.
 - Choose Boat or Modal explicitly when ambiguous. A golden built on one provider
   is not automatically available on the other. Check
   `armada snapshot capabilities --provider boat --json` (or substitute modal).
-- Docker, pinned Modal template, and explicit runtime golden launches through
+- All launches through
   `POST /api/v1/sandbox/launch` require an explicit provider and harness. Personal sessions can select the organization by
   slug or UUID. For a scoped token, omit `org` or send its org UUID.
   A malformed request returns HTTP 400 with error code `invalid`.

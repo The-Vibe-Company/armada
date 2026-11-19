@@ -40,7 +40,7 @@ test("service-token methods use the REST routes and preserve wire field names", 
       return Response.json({ id: "sandbox_placeholder" });
     }) as import("../src/index.ts").Fetch,
   });
-  await client.launch({ golden: "worker", harness: "codex", ttlSeconds: 60 });
+  await client.launch({ provider: "boat", golden: "worker", harness: "codex", ttlSeconds: 60 });
   await client.launchFromTemplate({
     org: "org_placeholder",
     id: "template_placeholder",
@@ -62,7 +62,7 @@ test("service-token methods use the REST routes and preserve wire field names", 
       "sandbox/stop",
     ].map((path) => `/api/v1/${path}`),
   );
-  expect(requests[0]?.body).toEqual({ golden: "worker", harness: "codex", ttlSeconds: 60 });
+  expect(requests[0]?.body).toEqual({ provider: "boat", golden: "worker", harness: "codex", ttlSeconds: 60 });
   expect(requests[2]?.body).toEqual({ id: "sandbox_placeholder", prompt: "Work", request_id: "request_placeholder" });
   expect(requests[5]?.body).toEqual({ id: "sandbox_placeholder", cursor: "cursor_placeholder" });
 });
@@ -217,7 +217,7 @@ test("retry policy replays only eligible reads and retains typed safe failures",
       token: "service_placeholder",
       fetch: async () => Response.json({ error: { code } }, { status: 400 }),
     });
-    await expect(typed.launch({ golden: "worker", harness: "codex" })).rejects.toMatchObject({
+    await expect(typed.launch({ provider: "boat", golden: "worker", harness: "codex" })).rejects.toMatchObject({
       code,
       serverCode: code,
     });
@@ -310,7 +310,9 @@ test("server retry delays longer than one day reach the caller unchanged", async
   ];
   for (const respond of responses) {
     const client = new Armada({ token: "service_placeholder", fetch: async () => respond() });
-    const error = await client.launch({ golden: "worker", harness: "codex" }).catch((error: unknown) => error);
+    const error = await client
+      .launch({ provider: "boat", golden: "worker", harness: "codex" })
+      .catch((error: unknown) => error);
     expect(error).toBeInstanceOf(ArmadaError);
     // HTTP dates round to whole seconds.
     expect((error as ArmadaError).retryAfterSeconds).toBeWithin(delay - 1, delay + 1);

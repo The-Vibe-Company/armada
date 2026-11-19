@@ -76,7 +76,17 @@ const API: Record<string, unknown> = {
 
 const SESSION = [
   ["snapshot", "list"],
-  ["launch", "widgets", "--agent", "codex", "Fix the flaky checkout test in widgets", "--ttl", "4h"],
+  [
+    "launch",
+    "widgets",
+    "--provider",
+    "boat",
+    "--agent",
+    "codex",
+    "Fix the flaky checkout test in widgets",
+    "--ttl",
+    "4h",
+  ],
   ["logs", SANDBOX],
 ];
 
