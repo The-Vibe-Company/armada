@@ -256,15 +256,14 @@ export function createSandboxAccessServices(input: {
         scoped,
         saved,
         { status: "stopping", stopRequested: true, statusReason },
-        async (signal) => {
+        async (signal, token) => {
           if (
-            (await preserveBeforeStop(
-              input.sql,
-              provider,
-              saved.id,
-              saved.providerSandboxId,
-              "managed_child_stop",
-            ).catch(() => {})) === "pending"
+            (await preserveBeforeStop(input.sql, provider, saved.id, saved.providerSandboxId, "managed_child_stop", {
+              kind: "activity",
+              token,
+              generation: saved.lifecycleGeneration === undefined ? undefined : saved.lifecycleGeneration + 1,
+              signal,
+            }).catch(() => {})) === "pending"
           )
             return { result: undefined, patch: { status: "stopping", stopRequested: true, statusReason } };
           signal.throwIfAborted();

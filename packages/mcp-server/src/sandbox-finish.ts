@@ -43,7 +43,7 @@ export async function requestSandboxFinish(sql: Sql, key: string, sandboxId: str
   if (!row) throw new DelegatedAuthorityDenied();
   let preservationNote: string | undefined;
   if (row.provider === "docker") {
-    preservationNote = `${await runtimePreservationNote(sql, row.id, null)} Unpushed Git work is not preserved; agent-declared completion permanently removes the Docker home volume.`;
+    preservationNote = `${await runtimePreservationNote(sql, row.id)} Unpushed Git work is not preserved; agent-declared completion permanently removes the Docker home volume.`;
     await sql.query("update public.sandboxes set preservation_note=$2 where id=$1", [row.id, preservationNote]);
     await createDockerHostStore(scopedRuntimeSql(sql), key).enqueueSandbox(
       { userId: ownerId, orgId: row.org_id },
