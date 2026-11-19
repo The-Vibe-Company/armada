@@ -92,8 +92,9 @@ export async function transitionSandbox(tx: Sql, input: SandboxTransition) {
 export async function settleRuntimeTurn(tx: Sql, sandboxId: string, generation: number | string, key?: string) {
   const {
     rows: [eligible],
-  } = await tx.query<{ provider: string; epoch: string }>(
-    `select s.provider::text,r.epoch::text from public.sandboxes s join public.runtime_enrolments r
+  } = await tx.query<{ needs_command_evidence: boolean; epoch: string }>(
+    `select s.provider='docker' as needs_command_evidence,r.epoch::text
+     from public.sandboxes s join public.runtime_enrolments r
        on r.sandbox_id=s.id and r.lifecycle_generation=s.lifecycle_generation
      where s.id=$1 and s.lifecycle_generation=$2 and s.status='running'
        and s.stop_requested_at is null and s.stopped_at is null and s.deleted_at is null
@@ -115,7 +116,7 @@ export async function settleRuntimeTurn(tx: Sql, sandboxId: string, generation: 
     [sandboxId, generation, key !== undefined],
   );
   if (!eligible) return;
-  if (eligible.provider === "docker" && key !== undefined) {
+  if (eligible.needs_command_evidence && key !== undefined) {
     const ambiguousReplies = await tx.query<{ result_enc: Uint8Array<ArrayBuffer> }>(
       `select c.result_enc from public.runtime_commands c
        where c.sandbox_id=$1 and c.epoch=$2 and starts_with(c.request_id,'docker_prompt_')
