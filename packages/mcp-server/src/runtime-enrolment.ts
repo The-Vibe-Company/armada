@@ -98,7 +98,7 @@ export function createRuntimeEnrolments(sql: Sql, encryptionKey: string, options
     return Object.freeze({ ...candidate, docker_issuer_fence, [SOURCE_TRANSACTION]: tx });
   }
   type Source = Awaited<ReturnType<typeof lockSourceMembers>>;
-  async function lockSandbox(tx: Sql, id: string, ownerId?: string, source?: Source) {
+  async function lockSandbox(tx: Sql, id: string, ownerId?: string, source?: Source, allowFailedRefusal = false) {
     const candidate = source ?? (await lockSourceMembers(tx, id, ownerId));
     if (
       candidate[SOURCE_TRANSACTION] !== tx ||
@@ -115,9 +115,10 @@ export function createRuntimeEnrolments(sql: Sql, encryptionKey: string, options
       if (!host.rows.length) throw new RuntimeEnrolmentDenied();
     }
     const row = (
-      await tx.query<{ id: string; lifecycle_generation: string; runtime_transport: string | null }>(
-        `select s.id,s.lifecycle_generation::text,s.runtime_transport from public.sandboxes s
-       where s.id=$1 and (s.provider in ('boat','docker') or (s.provider='modal' and s.runtime_transport='dialout')) and s.status in ('starting','ready','running')
+      await tx.query<{ id: string; lifecycle_generation: string; runtime_transport: string | null; failed: boolean }>(
+        `select s.id,s.lifecycle_generation::text,s.runtime_transport,s.status='failed' as failed from public.sandboxes s
+       where s.id=$1 and (s.provider in ('boat','docker') or (s.provider='modal' and s.runtime_transport='dialout'))
+       and (s.status in ('starting','ready','running') or ($7 and s.status='failed'))
        and s.stop_requested_at is null and s.deleted_at is null and s.expires_at>now()
        and s.org_id=$2 and s.owner_id=$3 and s.provider=$4
        and s.docker_host_id is not distinct from $5::uuid and s.docker_installation_id is not distinct from $6::uuid
@@ -129,6 +130,7 @@ export function createRuntimeEnrolments(sql: Sql, encryptionKey: string, options
           candidate.provider,
           candidate.docker_host_id,
           candidate.docker_installation_id,
+          allowFailedRefusal && candidate.provider === "docker",
         ],
       )
     ).rows[0];
@@ -217,22 +219,24 @@ export function createRuntimeEnrolments(sql: Sql, encryptionKey: string, options
         )
       ).rows[0];
       if (!candidate) throw new RuntimeEnrolmentDenied();
-      const sandbox = await lockSandbox(tx, candidate.sandbox_id);
+      const sandbox = await lockSandbox(tx, candidate.sandbox_id, undefined, undefined, !supported);
       const row = (
-        await tx.query<{ configuration_enc: Uint8Array<ArrayBuffer> | null }>(
-          `select case when $5::boolean then configuration_enc end as configuration_enc
+        await tx.query<{ configuration_enc: Uint8Array<ArrayBuffer> | null; lifecycle_generation: string }>(
+          `select case when $5::boolean then configuration_enc end as configuration_enc,lifecycle_generation::text
          from public.runtime_enrolments where sandbox_id=$1 and enrolment_hash=$2
-         and lifecycle_generation=$3 and enrolment_expires_at>now()
+         and lifecycle_generation=$3::bigint-case when $6 then 1 else 0 end and enrolment_expires_at>now()
+         and ($6 = (configuration_enc is null))
          and docker_issuer_fence is not distinct from $4::text for update`,
-          [sandbox.id, hash, sandbox.lifecycle_generation, sandbox.docker_issuer_fence, supported],
+          [sandbox.id, hash, sandbox.lifecycle_generation, sandbox.docker_issuer_fence, supported, sandbox.failed],
         )
       ).rows[0];
       if (!row) throw new RuntimeEnrolmentDenied();
       if (!supported) {
-        if (
+        const refused =
           sandbox.provider === "docker" &&
-          (await createDockerHostStore(tx, encryptionKey).refuseResume(tx, sandbox.id, sandbox.lifecycle_generation))
-        ) {
+          (await createDockerHostStore(tx, encryptionKey).refuseResume(tx, sandbox.id, row.lifecycle_generation));
+        if (sandbox.failed && !refused) throw new RuntimeEnrolmentDenied();
+        if (refused) {
           await tx.query(
             `update public.runtime_enrolments set enrolment_hash=null,enrolment_expires_at=null,configuration_enc=null
              where sandbox_id=$1`,
@@ -273,7 +277,7 @@ export function createRuntimeEnrolments(sql: Sql, encryptionKey: string, options
       const row = (
         await tx.query<{ epoch: string }>(
           `select epoch::text from public.runtime_enrolments where sandbox_id=$1 and enrolment_hash=$2
-         and lifecycle_generation=$3 and enrolment_expires_at>now()
+         and lifecycle_generation=$3 and enrolment_expires_at>now() and configuration_enc is not null
          and docker_issuer_fence is not distinct from $4::text for update`,
           [sandbox.id, hash, sandbox.lifecycle_generation, sandbox.docker_issuer_fence],
         )

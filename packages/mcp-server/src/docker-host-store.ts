@@ -477,6 +477,28 @@ export function createDockerHostStore(sql: Sql, key: string) {
       [row.id, message],
     );
   }
+  async function failResumeAck(tx: Sql, row: Sandbox, job: StoredJob, reason?: DockerJobFailureReason) {
+    const request = await readJob(job);
+    if (request.operation !== "resume") deny();
+    const ticketHash = createHash("sha256").update(request.bootstrap.enrolmentToken).digest("hex");
+    const pending =
+      row.status === "starting"
+        ? (
+            await tx.query<{ expires_at: string }>(
+              `select enrolment_expires_at::text as expires_at from public.runtime_enrolments
+               where sandbox_id=$1 and lifecycle_generation=$2 and enrolment_hash=$3
+                 and configuration_enc is not null and enrolment_expires_at>now()`,
+              [row.id, row.lifecycle_generation, ticketHash],
+            )
+          ).rows[0]
+        : undefined;
+    if ((await startupFailed(tx, row, job, reason)) && pending) {
+      await tx.query(
+        `update public.runtime_enrolments set enrolment_hash=$2,enrolment_expires_at=$3 where sandbox_id=$1`,
+        [row.id, ticketHash, pending.expires_at],
+      );
+    }
+  }
   /** Retire queued work the server can no longer dispatch. This is cancellation,
    * never physical evidence: a bound startup becomes failed without stopped_at,
    * and stop/delete jobs stay dispatchable through reconcileHost. The caller
@@ -513,7 +535,8 @@ export function createDockerHostStore(sql: Sql, key: string) {
         await tx.query<StoredJob>(
           `update public.docker_host_jobs j set refused_resume_generation=$2
            from public.sandboxes s join public.docker_resume_claims c on c.sandbox_id=s.id
-           where s.id=$1 and s.status='starting' and s.lifecycle_generation=$2::bigint
+           where s.id=$1 and ((s.status='starting' and s.lifecycle_generation=$2::bigint)
+             or (s.status='failed' and s.lifecycle_generation=$2::bigint+1 and j.outcome='failed'))
              and j.request_id=c.request_id and j.bound_sandbox_id=s.id and j.bound_operation='resume'
              and j.host_id=s.docker_host_id and c.host_id=j.host_id and c.installation_id=s.docker_installation_id
              and c.generation=s.docker_generation and c.accepted and c.lifecycle_generation+1=$2::bigint
@@ -528,7 +551,8 @@ export function createDockerHostStore(sql: Sql, key: string) {
       if (refused.outcome !== null) {
         const row =
           (await tx.query<Sandbox>("select * from public.sandboxes where id=$1", [sandboxId])).rows[0] ?? deny();
-        await settleRefusedResume(tx, row, refused);
+        const settled = await settleRefusedResume(tx, row, refused);
+        return row.status !== "failed" || settled;
       }
       return true;
     },
@@ -1768,7 +1792,12 @@ export function createDockerHostStore(sql: Sql, key: string) {
           }
         } else if (result.imageId !== undefined) deny();
         if (logical && !(await settleRefusedResume(tx, logical, job)) && result.outcome === "failed") {
-          await startupFailed(tx, logical, job, result.reason);
+          if (job.bound_operation === "resume") {
+            if (job.outcome === null) await failResumeAck(tx, logical, job, result.reason);
+            else if (job.cancelled_at) await startupFailed(tx, logical, job, result.reason);
+          } else {
+            await startupFailed(tx, logical, job, result.reason);
+          }
         }
         // Persist terminal receipts below, but never replay old stop/delete
         // effects onto a lifecycle admitted after that job.
