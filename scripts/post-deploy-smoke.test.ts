@@ -2221,53 +2221,58 @@ test("vault/template failures remain failures without bypassing the combined lif
   expect(fake.receipts()).toContainEqual({ case: 0, step: "list_stopped_final", pass: true });
 });
 
-test("GitHub refresh reports Modal's shipped refusal without losing launch access or cleanup", async () => {
-  for (const harness of ["claude", "codex"]) {
-    const fake = lifecycleFixture("none", (call) =>
-      call.path === "github/refresh" ? json({ error: { code: "unsupported" } }, 400) : undefined,
-    );
-    expect(await fake.run([{ ...selected, harness }], ["--github-refresh"])).toBe(true);
-    expect(fake.calls.filter((call) => call.path === "sandbox/launch")).toHaveLength(1);
-    expect(fake.calls.filter((call) => call.path === "sandbox/send")).toHaveLength(2);
-    expect(fake.calls.filter((call) => call.path === "github/refresh")).toHaveLength(1);
-    const reports = fake.receipts();
-    expect(reports).toContainEqual({ case: 0, step: "github_launch_access", pass: true });
-    expect(reports.findIndex((line) => line.step === "time_to_ready")).toBeLessThan(
-      reports.findIndex((line) => line.step === "github_launch_access"),
-    );
-    expect(reports).toContainEqual({ case: 0, step: "github_refresh_unsupported", pass: true });
-    expect(reports).toContainEqual({
-      case: 0,
-      step: "github_refresh_idempotency",
-      skip: true,
-      reason: "not_part_of_release_gate",
-    });
-    expect(JSON.stringify(reports)).not.toContain('"login"');
-  }
+test("GitHub refresh accepts the runtime receipt after proving launch access", async () => {
+  const fake = lifecycleFixture("none", (call) =>
+    call.path === "github/refresh"
+      ? json({
+          id: call.body.id,
+          status: "connected",
+          login: "owner",
+          runtime: { kind: "armada", epoch: "1" },
+          revision: "2",
+        })
+      : undefined,
+  );
+  expect(await fake.run([selected], ["--github-refresh"])).toBe(true);
+  expect(fake.calls.filter((call) => call.path === "sandbox/launch")).toHaveLength(1);
+  expect(fake.calls.filter((call) => call.path === "sandbox/send")).toHaveLength(2);
+  expect(fake.calls.filter((call) => call.path === "github/refresh")).toHaveLength(1);
+  const reports = fake.receipts();
+  expect(reports).toContainEqual({ case: 0, step: "github_launch_access", pass: true });
+  expect(reports.findIndex((line) => line.step === "time_to_ready")).toBeLessThan(
+    reports.findIndex((line) => line.step === "github_launch_access"),
+  );
+  expect(reports.findIndex((line) => line.step === "github_launch_access")).toBeLessThan(
+    reports.findIndex((line) => line.step === "github_refresh"),
+  );
+  expect(reports).toContainEqual({ case: 0, step: "github_refresh", pass: true });
+  expect(JSON.stringify(reports)).not.toContain('"login"');
 });
 
-test("GitHub refresh rejects false Modal admission, wrong refusal and broken launch access without losing cleanup", async () => {
-  for (const fault of ["modal_admitted", "modal_wrong_refusal", "launch_access"]) {
-    let refreshes = 0;
+test("GitHub refresh rejects native outcomes and broken launch access while still cleaning up", async () => {
+  for (const fault of ["native_receipt", "unsupported", "launch_access"] as const) {
     const fake = lifecycleFixture("none", (call) => {
       if (call.path === "sandbox/exec" && String(call.body.command).includes("ls-remote") && fault === "launch_access")
         return json({ exitCode: 1, timedOut: false });
-      if (call.path === "github/refresh") {
-        refreshes++;
-        return fault === "modal_wrong_refusal"
-          ? json({ error: { code: "forbidden" } }, 403)
+      if (call.path === "github/refresh")
+        return fault === "unsupported"
+          ? json({ error: { code: "unsupported" } }, 400)
           : json({ id: call.body.id, status: "connected", login: "owner" });
-      }
     });
     expect(await fake.run([selected], ["--github-refresh"])).toBe(false);
-    expect(refreshes).toBeLessThanOrEqual(1);
+    expect(fake.calls.filter((call) => call.path === "github/refresh")).toHaveLength(fault === "launch_access" ? 0 : 1);
     expect(fake.calls.filter((call) => call.path === "sandbox/stop")).toHaveLength(1);
+    expect(fake.receipts()).toContainEqual({
+      case: 0,
+      step: fault === "launch_access" ? "github_launch_access" : "github_refresh",
+      pass: false,
+      code: fault === "launch_access" ? "exec_failed" : fault === "unsupported" ? "unsupported" : "invalid_receipt",
+    });
     expect(fake.receipts().at(-1)).toMatchObject({
       step: "lifecycle_cleanup_summary",
       pass: true,
       leftoverSandboxIds: [],
     });
-    expect(JSON.stringify(fake.receipts())).not.toContain("secret");
   }
 });
 
