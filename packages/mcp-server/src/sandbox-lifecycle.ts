@@ -320,8 +320,6 @@ export function createSandboxLifecycle(
         };
         let info = await observe();
         initialObservation = false;
-        // Boat also normalizes unknown phases to starting. Preserve the resume
-        // until observation supports retained recovery or confirms physical exit.
         if (
           canDeferInterruptedResume &&
           info.id === row.provider_sandbox_id &&
