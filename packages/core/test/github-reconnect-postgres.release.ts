@@ -87,7 +87,12 @@ describe("GitHub reconnect (PostgreSQL)", () => {
         },
         userId,
       );
-      await fetchingProfile;
+      await Promise.race([
+        fetchingProfile,
+        first.then(() => {
+          throw new Error("GitHub access resolution completed before requesting the profile");
+        }),
+      ]);
       reconnect = two.begin(async (tx) => {
         await tx.unsafe("select set_config('request.jwt.claim.sub', $1, true)", [userId]);
         await tx.unsafe("set local role authenticated");
@@ -100,7 +105,6 @@ describe("GitHub reconnect (PostgreSQL)", () => {
       release();
       // The stale profile write is fenced by the refresh token that the request observed.
       expect(await first).toMatchObject({ status: "unavailable" });
-      await reconnect;
       expect(
         Array.from(await observer.unsafe<{ login: string }[]>("select login from profile_changes")).map(
           (row) => row.login,
@@ -121,7 +125,7 @@ describe("GitHub reconnect (PostgreSQL)", () => {
       await admin.unsafe(`drop database ${name} with (force)`);
       await admin.end();
     }
-  }, 60000);
+  });
 });
 
 // Token resolution in these fixtures must not leak audit records to stdout.
