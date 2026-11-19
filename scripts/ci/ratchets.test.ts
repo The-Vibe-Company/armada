@@ -75,3 +75,41 @@ test("reports the added occurrence when the same branch token also moves", () =>
   ]);
   expect(compare(base, head)[0]?.added).toEqual([{ path: finish, line: 1, text: '=== "modal"' }]);
 });
+
+const control = server + "control.ts";
+const route = '"sandbox/info"';
+const registration = 'defineRoutes("sandbox", { "sandbox/info": handler });';
+
+test.each([
+  ["a control case", control, "", `switch (route) { case ${route}: break; }`, route],
+  ["a control route key", control, "", registration, route],
+  ["a server mount", server + "serve.ts", "", "mounts.push(mount);", "mount"],
+  ["a server worker", server + "serve.ts", "", 'workers.managed.set("idle", factory);', '"idle"'],
+  [
+    "a core barrel export",
+    "packages/core/src/index.ts",
+    'export { first } from "./core";',
+    'export { first, second } from "./core";',
+    "second",
+  ],
+  [
+    "a CLI command",
+    "packages/cli/src/commands/index.ts",
+    "export const commands = [launch];",
+    "export const commands = [launch, stop];",
+    "stop",
+  ],
+])("reports %s added at a central append point", (_, path, before, after, text) => {
+  const result = compare(new Map([[path, before]]), new Map([[path, after]])).find(
+    ({ name }) => name === "append-point",
+  );
+  expect(result).toMatchObject({ added: [{ path, line: 1, text }] });
+  expect(result!.after).toBe(result!.before! + 1);
+});
+
+test("allows a route defined in its owning module", () => {
+  const result = compare(new Map(), new Map([[server + "sandbox-control.ts", registration]])).find(
+    ({ name }) => name === "append-point",
+  );
+  expect(result).toMatchObject({ before: 0, after: 0, added: [] });
+});

@@ -36,6 +36,7 @@ Rules only. Procedures live in the documents listed under "Where truth lives".
 9. **Boat is never part of CI or staging acceptance.** Boat checks are on demand, by the coordinator only.
 10. **One version** across package manifests under `packages`. **English** in code, output, docs and comments.
 11. **Landmines rules are mandatory.** Give the reason for any inline disable in the PR and only shrink baselines.
+12. **Self-register.** Register routes, MCP tools, workers and mounts in their owning modules through `packages/mcp-server/src/modules.ts`. Define CLI commands in their own modules and register them in `packages/cli/src/commands/index.ts`. Import from `@armada/core/<area>` subpaths.
 
 ## Pull requests
 - **One module, at most 600 changed lines.** Generated files, pure deletions and `git mv` do not count. If the work is bigger, stop and tell the coordinator so the ticket is split.
