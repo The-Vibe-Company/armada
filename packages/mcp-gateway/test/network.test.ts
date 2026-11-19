@@ -1,5 +1,8 @@
 import { expect, test } from "bun:test";
-import { publicFetch, restrictedFetch } from "../src/index.ts";
+import { IncomingMessage } from "node:http";
+import { Socket } from "node:net";
+import { GatewayError, publicFetch, restrictedFetch } from "../src/index.ts";
+import { receivePublicResponse } from "../src/network-response.ts";
 
 test("outbound boundary rejects unsafe URLs, origin escape and redirects before forwarding secrets", async () => {
   let calls = 0;
@@ -84,44 +87,17 @@ test("issuer discovery rejects query-bearing issuer identifiers while resource q
   expect(requests).toBe(0);
 });
 
-test("malformed peer status rejects safely instead of escaping the HTTPS response callback", async () => {
-  const { mkdtemp, writeFile, rm } = await import("node:fs/promises");
-  const { tmpdir } = await import("node:os");
-  const { join } = await import("node:path");
-  const directory = await mkdtemp(join(tmpdir(), "mcp-peer-"));
-  const built = await Bun.build({
-    entrypoints: [new URL("../src/network.ts", import.meta.url).pathname],
-    target: "node",
+test("malformed peer status rejects the request and closes the response", async () => {
+  const incoming = new IncomingMessage(new Socket());
+  incoming.statusCode = 600;
+  const response = new Promise<Response>((resolve, reject) => {
+    queueMicrotask(() => receivePublicResponse(incoming, resolve, reject));
   });
-  if (!built.success || !built.outputs[0]) throw Error("Network fixture compilation failed");
-  const module = join(directory, "network.mjs");
-  await writeFile(module, await built.outputs[0].text());
-  const script = `
-    import { createServer, connect } from 'node:net';
-    import { globalAgent } from 'node:https';
-    import { publicFetch, GatewayError } from ${JSON.stringify(module)};
-    let replies = 0;
-    const peer = createServer(socket => socket.once('data', () => { replies++; socket.end('HTTP/1.1 600 Invalid\\r\\nContent-Length: 0\\r\\nConnection: close\\r\\n\\r\\n'); }));
-    await new Promise(resolve => peer.listen(0, '127.0.0.1', resolve));
-    const address = peer.address();
-    globalAgent.createConnection = () => connect(address.port, '127.0.0.1');
-    try {
-      try { await publicFetch('https://93.184.216.34/'); throw Error('invalid status accepted'); }
-      catch (error) { if (!(error instanceof GatewayError) || error.code !== 'upstream') throw error; }
-      if (replies !== 1) throw Error('Malformed peer response was not exercised');
-      console.log('malformed peer safely rejected');
-    } finally { globalAgent.destroy(); await new Promise(resolve => peer.close(resolve)); }
-  `;
-  try {
-    const child = Bun.spawn(["node", "--input-type=module", "-e", script], { stdout: "pipe", stderr: "pipe" });
-    const [exit, stdout, stderr] = await Promise.all([
-      child.exited,
-      new Response(child.stdout).text(),
-      new Response(child.stderr).text(),
-    ]);
-    expect({ exit, stderr }).toEqual({ exit: 0, stderr: "" });
-    expect(stdout.trim()).toBe("malformed peer safely rejected");
-  } finally {
-    await rm(directory, { recursive: true, force: true });
-  }
+
+  await expect(response).rejects.toBeInstanceOf(GatewayError);
+  await expect(response).rejects.toMatchObject({
+    code: "upstream",
+    action: "Upstream returned an invalid HTTP status.",
+  });
+  expect(incoming.destroyed).toBe(true);
 });
