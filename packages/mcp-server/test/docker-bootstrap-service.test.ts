@@ -838,7 +838,16 @@ test("a failed Docker resume ACK only fails the activation admitted for that req
   ).toEqual({ stopped_at: null });
 });
 
-test.each(["refusal first", "failed ACK", "ACK first", "previous server ACK", "ACK transaction rollback"] as const)(
+const refusalOrders = [
+  "refusal first",
+  "failed ACK",
+  "ACK first",
+  "previous server ACK",
+  "previous server failed ACK",
+  "ACK transaction rollback",
+];
+
+test.each(refusalOrders)(
   "a refused Docker resume returns to a retained stop after claim settlement (%s)",
   async (order) => {
     const f = await fixture();
@@ -884,11 +893,12 @@ test.each(["refusal first", "failed ACK", "ACK first", "previous server ACK", "A
     if (order !== "ACK first") {
       expect((await reservations.get(f.actor, id)).status).toBe("starting");
       expect((await hosts.poll(f.hostToken, f.installationId))?.requestId).toBe(job.requestId);
-      if (order === "previous server ACK") {
-        await database().query(
-          "update public.docker_host_jobs set outcome='completed',completed_at=now() where request_id=$1",
-          [job.requestId],
-        );
+      if (order === "previous server ACK" || order === "previous server failed ACK") {
+        await database().query("update public.docker_host_jobs set outcome=$2,completed_at=now() where request_id=$1", [
+          job.requestId,
+          order === "previous server ACK" ? "completed" : "failed",
+        ]);
+        expect(await hosts.mayHaveWork(f.hostToken, f.installationId, false, [], true)).toBe(true);
         await hosts.poll(f.hostToken, f.installationId);
       } else {
         if (order === "ACK transaction rollback") {
@@ -940,6 +950,12 @@ test.each(["refusal first", "failed ACK", "ACK first", "previous server ACK", "A
     expect(next.state).toBe("pending");
     const nextJob = await hosts.poll(f.hostToken, f.installationId);
     if (nextJob?.operation !== "resume") throw Error("missing replacement resume");
+    if (order === "previous server failed ACK") {
+      await ack(job.requestId, "failed");
+      await ack(stop.requestId);
+      expect((await reservations.get(f.actor, id)).status).toBe("starting");
+      expect((await service.resume(f.actor, id, resume.requestId)).state).toBe("failed");
+    }
     expect(await authority.enrol(nextJob.bootstrap.enrolmentToken)).toMatchObject({
       epoch: String(Number(source.epoch) + 1),
       configuration: { restoreCheckpoint: { epoch: source.epoch, conversationId, watermark: 0 } },
