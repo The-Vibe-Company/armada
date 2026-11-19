@@ -9,6 +9,7 @@ import { dockerRuntimeConfiguration } from "./docker-runtime-configuration.ts";
 import { createDockerSandboxService } from "./docker-sandbox-service.ts";
 import type { RuntimeConfigurationInput } from "./runtime-configuration.ts";
 import { createRuntimeEnrolments, scopedRuntimeSql } from "./runtime-enrolment.ts";
+import { transitionSandbox } from "./sandbox-lifecycle.ts";
 
 type Actor = { userId: string; orgId: string };
 type Stored = {
@@ -195,6 +196,7 @@ export function createDockerBootstrapService(sql: Sql, key: string, options: Opt
         if (host.rows[0]!.draining_at) throw new DockerHostDraining();
         // A stopped generation is only admitted after the host has durably
         // excluded cleanup. Until then this is a request, not a lifecycle change.
+        let acceptedGeneration: string | undefined;
         if (resume && !known) {
           const cancelled = await tx.query(
             "select 1 from public.account_turn_queue where sandbox_id=$1 and request_id=$2 and state='failed'",
@@ -202,7 +204,7 @@ export function createDockerBootstrapService(sql: Sql, key: string, options: Opt
           );
           if (cancelled.rows.length) deny();
           await admitDockerCapacity(tx, snapshot.hostId);
-          const claim = await tx.query<{ accepted: boolean | null }>(
+          const claim = await tx.query<{ accepted: boolean | null; lifecycle_generation: string }>(
             `insert into public.docker_resume_claims(request_id,sandbox_id,host_id,installation_id,generation,actor_id,lifecycle_generation)
              select $1,id,docker_host_id,docker_installation_id,docker_generation,$3,lifecycle_generation from public.sandboxes
              where id=$2 and owner_id=$3 and status='stopped' and deleted_at is null and expires_at>now()
@@ -210,13 +212,14 @@ export function createDockerBootstrapService(sql: Sql, key: string, options: Opt
              where docker_resume_claims.sandbox_id=excluded.sandbox_id and docker_resume_claims.actor_id=excluded.actor_id and docker_resume_claims.host_id=excluded.host_id
              and docker_resume_claims.installation_id=excluded.installation_id and docker_resume_claims.generation=excluded.generation
              and docker_resume_claims.lifecycle_generation=excluded.lifecycle_generation
-             returning accepted`,
+             returning accepted,lifecycle_generation::text`,
             [requestId, sandboxId, actor.userId],
           );
           if (!claim.rows.length) deny();
           if (claim.rows[0]!.accepted === false) throw new DockerRetentionEnded();
           if (claim.rows[0]!.accepted !== true)
             return { requestId, operation: "resume" as const, state: "claiming" as const };
+          acceptedGeneration = claim.rows[0]!.lifecycle_generation;
         }
         await tx.query(`select id from public.sandboxes where id=$1 for update`, [sandboxId]);
         const scoped = scopedRuntimeSql(tx);
@@ -262,13 +265,17 @@ export function createDockerBootstrapService(sql: Sql, key: string, options: Opt
             await admitDockerCapacity(tx, current.hostId);
             if (JSON.stringify(await restoreCheckpoint(tx, sandboxId)) !== JSON.stringify(restore)) deny();
             // The host has already persisted the claim and cancelled cleanup.
-            const restarted = await tx.query(
-              `update public.sandboxes set status='starting',status_reason=null,stop_requested_at=null,stopped_at=null,
-                 docker_retention_deadline=null,lifecycle_generation=lifecycle_generation+1
-                 where id=$1 and status='stopped' and deleted_at is null and expires_at>now() returning id`,
-              [sandboxId],
-            );
-            if (!restarted.rows.length) deny();
+            if (acceptedGeneration === undefined) deny();
+            const restarted = await transitionSandbox(tx, {
+              sandboxId,
+              expectedGeneration: acceptedGeneration,
+              fromStates: ["stopped"],
+              toState: "starting",
+              actor: "resume_admission",
+              code: "docker_resume_admitted",
+              effects: [],
+            });
+            if (restarted.kind === "conflict") deny();
             await tx.query(
               `with claim as (
                  select c.created_at,c.claimed_at from public.docker_resume_claims c
