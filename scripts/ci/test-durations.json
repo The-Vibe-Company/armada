@@ -149,7 +149,6 @@
     "packages/core/test/docker-machine.test.ts": 0.047,
     "packages/core/test/docker-sandbox-schema.test.ts": 1.794,
     "packages/core/test/docker-snapshot-build.test.ts": 0.024,
-    "packages/core/test/docker-snapshot-init.test.ts": 0.137,
     "packages/core/test/event-history.test.ts": 0.02,
     "packages/core/test/github-installation.test.ts": 0.085,
     "packages/core/test/github-reconnect-postgres.test.ts": 0.014,

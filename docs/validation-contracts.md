@@ -45,6 +45,10 @@ harness and finishes in about 0.1 s.
 These Linux guest-process checks run only when explicitly invoked with
 `bun test ./path/to/file.conformance.ts`. They use temporary local fixtures.
 
+- `packages/core/test/docker-snapshot-init.conformance.ts` checks that the
+  snapshot supervisor reaps a writer that starts a new session and runs init as
+  UID 1000 with no new privileges. It requires Linux pidfd support, Python 3,
+  and root or passwordless sudo.
 - `packages/mcp-server/test/boat-delegated-access-provider.conformance.ts`
   checks SSH authorization cleanup on guest-script success and conflict.
 - `packages/provider-boat/test/native-install-race.conformance.ts` checks
@@ -62,8 +66,8 @@ These Linux guest-process checks run only when explicitly invoked with
 Repository-wide search includes `skipIf`, `test.skip`, conditional test aliases,
 `describe.skip` and `todo`. No todo declarations were found. Dispositions:
 
-- Linux platform skips remain in core `docker-snapshot-init`, `golden-helper`,
-  `golden-scan`, `golden-script-shell`; provider-modal `distribution`;
+- Linux platform skips remain in core `golden-helper`, `golden-scan`,
+  `golden-script-shell`; provider-modal `distribution`;
   provider-boat `native-cwd`;
   mcp-server `templates`, `managed-inspection`, `runtime-native-auth`;
   agent-runtime `skills`, `runtime`, `readable-variables`, `exec-env`,
