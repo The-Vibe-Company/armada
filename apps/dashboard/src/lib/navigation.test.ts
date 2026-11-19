@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { isActiveLink, NAV_GROUPS, organizationSwitchDestination, showsOrganizations } from "../src/lib/navigation.ts";
+import { isActiveLink, NAV_GROUPS, organizationSwitchDestination, showsOrganizations } from "./navigation.ts";
 
 describe("sidebar navigation", () => {
   test("lists the owner's groups and destinations in order", () => {

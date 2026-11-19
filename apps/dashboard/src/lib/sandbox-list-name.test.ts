@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { sandboxListName } from "../src/lib/sandbox-list-name.ts";
+import { sandboxListName } from "./sandbox-list-name.ts";
 
 const row = {
   providerSandboxId: null,

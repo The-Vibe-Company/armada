@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
-import { catalogPriceLabel, visibleCatalogModels } from "../src/lib/connection-presets";
+import { catalogPriceLabel, visibleCatalogModels } from "./connection-presets";
 import {
   customAccountValue,
   morphAccountValue,
@@ -9,7 +9,7 @@ import {
   replacementClaudeAccountValue,
   replacementCodexAccountValue,
   replacementOpenCodeAccountValue,
-} from "../src/lib/model-connection-input";
+} from "./model-connection-input";
 
 function data(baseUrl: string, key: string, apiVersion = "") {
   const form = new FormData();

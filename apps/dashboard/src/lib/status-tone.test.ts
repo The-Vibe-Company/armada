@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { statusLook } from "../src/lib/status-tone.ts";
+import { statusLook } from "./status-tone.ts";
 
 test("each sandbox status has one meaning: in flight, live, in transition, failed or at rest", () => {
   const looks = ["starting", "ready", "running", "stopping", "stopped", "failed", "deleted"].map((status) => [

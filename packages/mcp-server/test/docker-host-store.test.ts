@@ -11,6 +11,7 @@ import { decryptSecret, encryptSecret } from "@armada/core/server";
 import { admitDockerDisk, DockerHostDraining } from "../src/docker-capacity.ts";
 import { createDockerHostRoutes } from "../src/docker-host-routes.ts";
 import { createDockerHostStore, DockerHostDenied } from "../src/docker-host-store.ts";
+import { createDockerMachineBindings } from "../src/docker-machine-bindings.ts";
 import { SNAPSHOT_COLUMNS } from "../src/docker-snapshot-data.ts";
 import { createSandboxAccessServices } from "../src/sandbox-access-services.ts";
 import { createFinishedDockerCleanup, selfFinishToken } from "../src/sandbox-finish.ts";
@@ -1788,5 +1789,87 @@ test("docker launch stages come from host pickup and create ACK, not from ticket
     "1:accepted",
     "1:machine_started",
     "1:provider_claimed",
+  ]);
+});
+
+test("Docker Machine bindings survive a lost allocation reply and fence replacements by installation", async () => {
+  const scope = { hostId: randomUUID(), installationId: randomUUID(), deploymentId: "test" };
+  const predecessor = { sandboxId: randomUUID(), generation: 41 };
+  const replacement = { ...predecessor, generation: 42 };
+  const rollback = { ...predecessor, generation: 40 };
+  await expect(
+    database().transaction(async (tx) => {
+      await createDockerMachineBindings(tx, scope).bind(rollback);
+      throw new Error("Interrupted before commit");
+    }),
+  ).rejects.toThrow("Interrupted before commit");
+  const bindings = createDockerMachineBindings(sql, scope);
+  expect(await bindings.lookup(rollback)).toBeUndefined();
+
+  const first = await database().transaction((tx) => createDockerMachineBindings(tx, scope).bind(predecessor));
+  expect(await bindings.bind(predecessor)).toBe(first);
+  const next = await bindings.bind(replacement);
+  expect(next).not.toBe(first);
+  expect(await bindings.lookup(predecessor)).toBe(first);
+  expect(await bindings.lookup(replacement)).toBe(next);
+
+  const other = createDockerMachineBindings(sql, { ...scope, installationId: randomUUID() });
+  await expect(other.bind(replacement)).rejects.toThrow("bound to another host installation");
+  expect(await other.lookup(replacement)).toBeUndefined();
+});
+
+test("Docker Machine inventory projects only exact scoped report bindings", async () => {
+  const scope = { hostId: randomUUID(), installationId: randomUUID(), deploymentId: "test" };
+  const incarnation = { sandboxId: randomUUID(), generation: 23 };
+  const bindings = createDockerMachineBindings(sql, scope);
+  const generation = await bindings.bind(incarnation);
+  const reported = {
+    sandboxId: incarnation.sandboxId,
+    generation,
+    machineId: "a".repeat(64),
+    createdAt: new Date(0),
+    deploymentId: scope.deploymentId,
+    containerName: `armada-${scope.installationId}-${scope.hostId}-${incarnation.sandboxId}-${generation}`,
+  };
+  const foreignInstallation = randomUUID();
+  const foreignHost = createDockerMachineBindings(sql, { ...scope, installationId: foreignInstallation });
+  const legacyGeneration = randomUUID();
+  const report = [
+    { ...reported, deploymentId: "foreign" },
+    { ...reported, containerName: "renamed" },
+    {
+      ...reported,
+      generation: legacyGeneration,
+      containerName: reported.containerName.replace(generation, legacyGeneration),
+    },
+    reported,
+  ];
+
+  expect(await Array.fromAsync(bindings.listInventory(report))).toEqual([
+    { ...incarnation, machineId: reported.machineId, deploymentId: scope.deploymentId, createdAt: reported.createdAt },
+  ]);
+  expect(
+    await Array.fromAsync(
+      foreignHost.listInventory([
+        {
+          ...reported,
+          containerName: reported.containerName.replace(scope.installationId, foreignInstallation),
+        },
+      ]),
+    ),
+  ).toEqual([]);
+});
+
+test("only the service role can read and insert Docker Machine bindings, and cannot rewrite them", async () => {
+  const { rows } = await database().query(
+    `select role, has_table_privilege(role,'public.docker_machine_bindings','SELECT') as readable,
+            has_table_privilege(role,'public.docker_machine_bindings','INSERT') as insertable,
+            has_table_privilege(role,'public.docker_machine_bindings','UPDATE,DELETE,TRUNCATE') as rewritable
+     from unnest(array['anon','authenticated','service_role']) as roles(role) order by role`,
+  );
+  expect(rows).toEqual([
+    { role: "anon", readable: false, insertable: false, rewritable: false },
+    { role: "authenticated", readable: false, insertable: false, rewritable: false },
+    { role: "service_role", readable: true, insertable: true, rewritable: false },
   ]);
 });

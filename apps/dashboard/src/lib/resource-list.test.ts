@@ -1,8 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import { boatFull, capacityParts, environmentBlockers, environmentState } from "../src/lib/environments.ts";
-import { goldenLaunchReadiness } from "../src/lib/golden-form.ts";
-import { matchesQuery, sortResources } from "../src/lib/resource-list.ts";
-import { serviceOffer, toolBlockers, toolFact, toolState } from "../src/lib/tools.ts";
+import { boatFull, capacityParts, environmentBlockers, environmentState } from "./environments.ts";
+import { goldenLaunchReadiness } from "./golden-form.ts";
+import { matchesQuery, sortResources } from "./resource-list.ts";
+import { serviceOffer, toolBlockers, toolFact, toolState } from "./tools.ts";
 
 describe("the Build lists", () => {
   test("sort what needs action first, then what is ready, then the rest, by name inside each", () => {
