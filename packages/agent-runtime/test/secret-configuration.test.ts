@@ -258,7 +258,7 @@ test.each([
       user_message_uuid: "prefix[REDACTED]",
       user_message_uuids: ["prefix[REDACTED]"],
       stop_reason: "prefix[REDACTED]",
-      deferred_tool_use: { id: "tool", name: "fixture", input: { valueText: "prefix[REDACTED]" } },
+      deferred_tool_use: { id: "tool", name: "fixture", input: { "[REDACTED]Text": "prefix[REDACTED]" } },
       local_command: "prefix[REDACTED]",
       resume_reason: "prefix[REDACTED]",
       origin: { kind: "peer", from: "fixture", body: "prefix[REDACTED]" },
