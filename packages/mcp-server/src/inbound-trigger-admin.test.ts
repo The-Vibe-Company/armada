@@ -3,6 +3,7 @@ import { decryptSecret, type Sql } from "@armada/core/server";
 import { PGlite } from "@electric-sql/pglite";
 import { AuthUnavailable, type CallerResult } from "./caller.ts";
 import { inboundTriggerAdminRoute } from "./inbound-trigger-admin.ts";
+import { createInboundTriggerStore } from "./inbound-trigger-store.ts";
 import { observeRequest } from "./request-observability.ts";
 
 const org = "750c538d-f473-4d84-b631-ea5fc12f0aaf";
@@ -61,6 +62,7 @@ const templateOwner = "949426bc-9c76-49eb-beba-e8e271d012da";
 const template = "124fb448-6103-47ee-8f51-80e080217237";
 const foreignTemplate = "e2debec7-563a-43f7-8f2c-04b8761b1ee5";
 const trigger = "bb995c90-964c-4140-83f7-f4dc3a5093d7";
+const rollbackTrigger = "a1365cf6-b29d-478f-9f40-255a9462f682";
 const rotationTrigger = "221401da-7f7e-42a6-87bc-f6a55047983d";
 const disableTrigger = "3dfcb001-e5bb-4a9d-8c8a-dfa8427c6346";
 const foreignTrigger = "21c61603-5156-4d2f-ad35-15bf65840f7d";
@@ -70,7 +72,8 @@ beforeAll(async () => {
     create table public.triggers (id uuid, org_id uuid, template_id uuid, pool_harness text,
       enabled bool, rate_per_minute int, concurrency int, rate_refusals int, secret_enc bytea, key_revision int);
     create table public.members (org_id uuid, user_id uuid, role text);
-    create table public.trigger_admin_audit (org_id uuid, trigger_id uuid, actor_id uuid, action text);
+    create table public.trigger_admin_audit (org_id uuid, trigger_id uuid, actor_id uuid, action text,
+      check (trigger_id <> '${rollbackTrigger}'));
     insert into public.members values ('${org}', '${id}', 'admin');
     create table public.jobs (id uuid, org_id uuid, kind text, state text, payload_enc bytea);
     create table public.trigger_deliveries (trigger_id uuid, delivery_id text, received_at timestamptz, job_id uuid);
@@ -133,6 +136,28 @@ test("returns 404 for a trigger in a different organization", async () => {
 const encryptionKey = Buffer.alloc(32, 42).toString("base64");
 const manage = inboundTriggerAdminRoute(db, async () => ({ ok: true, caller: admin }), encryptionKey);
 
+const now = Date.UTC(2026, 10, 19);
+const ingress = createInboundTriggerStore(
+  db,
+  {
+    async enqueue() {
+      throw new Error("An invalidated delivery reached enqueue");
+    },
+  },
+  encryptionKey,
+  () => now,
+);
+
+async function staleAdmission(triggerId: string) {
+  return ingress.admit({
+    triggerId,
+    revision: 7,
+    timestamp: now / 1000,
+    deliveryId: "stale",
+    body: "",
+  });
+}
+
 function post(triggerId: string, action: string) {
   return new Request(request(`/${triggerId}/${action}`), { method: "POST" });
 }
@@ -151,6 +176,7 @@ test("rotation advances ingress key revision and returns the new key only in its
   expect(response?.status).toBe(200);
   expect(response?.headers.get("cache-control")).toBe("no-store");
   const payload = (await response?.json()) as { signingSecret: string };
+  expect(Object.keys(payload)).toEqual(["signingSecret"]);
   const { signingSecret } = payload;
   expect(Buffer.from(signingSecret, "base64")).toHaveLength(32);
   const { rows } = await db.query<{ key_revision: number; ciphertext: string }>(
@@ -158,6 +184,7 @@ test("rotation advances ingress key revision and returns the new key only in its
     [rotationTrigger],
   );
   expect(rows[0]?.key_revision).toBe(8);
+  expect(await staleAdmission(rotationTrigger)).toEqual({ status: "unauthorized" });
   const sealed = Uint8Array.from(Buffer.from(rows[0]!.ciphertext, "hex"));
   expect((await decryptSecret(sealed, encryptionKey)) === signingSecret).toBe(true);
   const inspection = (await (await manage(request()))?.json()) as { triggers: { id: string }[] };
@@ -184,6 +211,7 @@ test("disable stops admission and writes one audit event across repeated calls",
   await addManagedTrigger(disableTrigger);
   expect((await manage(post(disableTrigger, "disable")))?.status).toBe(204);
   expect((await manage(post(disableTrigger, "disable")))?.status).toBe(204);
+  expect(await staleAdmission(disableTrigger)).toEqual({ status: "unauthorized" });
   expect((await manage(post(disableTrigger, "rotate")))?.status).toBe(404);
   expect(
     (await db.query("select enabled, key_revision from public.triggers where id = $1", [disableTrigger])).rows,
@@ -204,6 +232,14 @@ test("a stale admin claim cannot mutate a trigger after membership revocation", 
   }));
   expect((await stale(post(trigger, "disable")))?.status).toBe(404);
   expect((await db.query("select enabled from public.triggers where id = $1", [trigger])).rows).toEqual([
+    { enabled: true },
+  ]);
+});
+
+test("an audit write failure rolls back the trigger change", async () => {
+  await addManagedTrigger(rollbackTrigger);
+  await expect(manage(post(rollbackTrigger, "disable"))).rejects.toMatchObject({ code: "23514" });
+  expect((await db.query("select enabled from public.triggers where id = $1", [rollbackTrigger])).rows).toEqual([
     { enabled: true },
   ]);
 });
