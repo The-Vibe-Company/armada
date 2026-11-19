@@ -174,7 +174,7 @@ test("enrolled Modal scoped parent cleanup requires a lifecycle fence and reache
   });
   const provider = await createRuntimeServing(sql, ENCRYPTION_KEY)(
     host,
-    { ...row, modal: { workspace: "workspace", environment: "main", appId: "app" } },
+    { ...row, visibility: "private", modal: { workspace: "workspace", environment: "main", appId: "app" } },
     { userId: people.owner },
   );
   const request = { sandboxId: machine.id };
