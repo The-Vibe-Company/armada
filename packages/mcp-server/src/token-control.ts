@@ -6,12 +6,13 @@ import {
   listServiceTokens,
   revokeServiceToken,
 } from "@armada/auth";
+import { controlRouteKey, tokenOperations } from "@armada/core/contract";
 import { VaultError } from "@armada/core/server";
+import type { z } from "zod";
 import { AuthUnavailable } from "./caller.ts";
 import type { ControlOptions } from "./control.ts";
 import { readBody } from "./control-body.ts";
 import { authenticatedCaller, Unauthorized } from "./control-caller.ts";
-import { optional, required, UUID } from "./control-input.ts";
 import { fail, INTERNAL_FAILURE_MESSAGE, VAULT_STATUS as STATUS } from "./control-response.ts";
 import { recordOperatorFailure } from "./request-observability.ts";
 import { defineRoutes } from "./routes.ts";
@@ -49,13 +50,19 @@ function tokenRouteFailure(error: unknown, revoking = false): Response {
   return fail(500, "internal", INTERNAL_FAILURE_MESSAGE);
 }
 
+const { listServiceTokens: list, createServiceToken: create, revokeServiceToken: revoke } = tokenOperations;
+
+function parseTokenInput<T>(schema: z.ZodType<T>, input: unknown) {
+  const parsed = schema.safeParse(input);
+  if (!parsed.success) throw new VaultError("invalid", parsed.error.issues[0]!.message);
+  return parsed.data;
+}
+
 async function tokenRevokeRoute(request: Request, options: TokenControlOptions): Promise<Response> {
   try {
     const caller = await authenticatedCaller(request, options);
     const store = tokenRouteStore(options.authStore);
-    const body = await readBody(request);
-    const id = required(body, "id");
-    if (!UUID.test(id)) throw new VaultError("invalid", "id must be a token UUID.");
+    const { id } = parseTokenInput(revoke.input.body, await readBody(request));
     if (caller.via !== "supabase") {
       const visible = await listServiceTokens(store, caller.userId);
       const target = visible.find((token) => token.id === id);
@@ -81,7 +88,8 @@ async function tokenCreateRoute(request: Request, options: TokenControlOptions):
     const caller = await authenticatedCaller(request, options);
     const store = tokenRouteStore(options.authStore);
     const body = await readBody(request);
-    const ref = optional(body, "org") ?? optional(body, "orgName");
+    const fields = create.input.body.shape;
+    const ref = parseTokenInput(fields.org, body.org) ?? parseTokenInput(fields.orgName, body.orgName) ?? undefined;
     if (body.org !== undefined && body.orgName !== undefined && body.org !== body.orgName)
       return fail(400, "invalid", "Conflicting org selectors.");
     const memberships = await store.memberships(caller.userId);
@@ -97,10 +105,11 @@ async function tokenCreateRoute(request: Request, options: TokenControlOptions):
     if (caller.via !== "supabase" && !selected)
       return fail(403, "forbidden", "A scoped token cannot create an unscoped token.");
     const org = selected?.name;
+    const label = parseTokenInput(fields.label, body.label);
     const created = await createServiceToken(store, {
       userId: caller.userId,
       ...(org ? { orgName: org } : {}),
-      ...(optional(body, "label") ? { label: optional(body, "label")! } : {}),
+      ...(label ? { label } : {}),
       now: (options.now ?? (() => new Date()))(),
     });
     return Response.json(
@@ -137,7 +146,7 @@ async function tokenListRoute(request: Request, options: TokenControlOptions): P
 }
 
 export const tokenRoutes = defineRoutes("token", {
-  "token/list": { methods: ["POST"], respond: tokenListRoute },
-  "token/create": { methods: ["POST"], respond: tokenCreateRoute },
-  "token/revoke": { methods: ["POST"], respond: tokenRevokeRoute },
+  [controlRouteKey(list.route)]: { methods: [list.route.method], respond: tokenListRoute },
+  [controlRouteKey(create.route)]: { methods: [create.route.method], respond: tokenCreateRoute },
+  [controlRouteKey(revoke.route)]: { methods: [revoke.route.method], respond: tokenRevokeRoute },
 });
