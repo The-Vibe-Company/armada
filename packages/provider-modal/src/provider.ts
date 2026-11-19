@@ -48,11 +48,11 @@ import type {
   ModalStore,
   RunnerDistribution,
   RunnerTransport,
-  SavedImage,
   Scope,
   SshPreparation,
 } from "./ports.ts";
 import { quiesceSandboxProcesses } from "./process-scope.ts";
+import { createSnapshotTombstones } from "./snapshot-tombstones.ts";
 import { createSshPreparation, SSH_PORT } from "./ssh.ts";
 import { scopeKey } from "./store.ts";
 
@@ -182,12 +182,7 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
   }
   const ssh = options.ssh ?? createSshPreparation();
   const client = modalConnection(options);
-  const { collectAfterRetirement, collectImages, collectRetiredSnapshot } = createImageCollection(
-    client,
-    source.store,
-    managementAuthority,
-    detachCollection,
-  );
+  const imageCollection = createImageCollection(client, source.store, managementAuthority, detachCollection);
   const deploymentId = options.deploymentId?.trim();
   const bound = () => measure("modal_app_lookup", () => boundModalApp(client, options.appName, options.scope.binding));
   async function snapshotBackend() {
@@ -200,6 +195,14 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
       throw failure;
     }
   }
+  const snapshotTombstones = createSnapshotTombstones(
+    store,
+    scopeKey(source.scope) === scopeKey(options.scope),
+    snapshotBackend,
+    assertAuthority,
+    imageCollection,
+  );
+  const { collectImages } = imageCollection;
   function assertMachineSource(row: Machine) {
     assertAuthority(row);
     const origin = row.sourceImage?.scopeKey ?? scopeKey(options.scope);
@@ -1803,54 +1806,7 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
           : {}),
       };
     },
-    async deleteSnapshot(name) {
-      if (scopeKey(source.scope) !== scopeKey(options.scope))
-        throw refusal(
-          "forbidden",
-          "Snapshot mutation requires the golden-source provider scope, not a private-fork adapter.",
-        );
-      await snapshotBackend();
-      let image: SavedImage;
-      try {
-        image = await store.image(name);
-        assertAuthority(image);
-      } catch (error) {
-        if (modalError(error).code !== "not_found") throw error;
-        await collectAfterRetirement(name);
-        return;
-      }
-      let admitted = false;
-      try {
-        await store.lease(image.sourceId, async () => {
-          admitted = true;
-          const current = await store.image(name);
-          await store.removeImage(current.info.name);
-        });
-      } catch (error) {
-        // Only acquisition refusal proves the tombstone was never written, so the caller may
-        // retry the retirement as non-mutating instead of treating the outcome as unknown.
-        if (!admitted && modalError(error).providerCode === "lifecycle_lease_busy")
-          throw new ProviderError({
-            provider: "modal",
-            code: "conflict",
-            providerCode: "snapshot_source_busy",
-            message:
-              "The Modal snapshot source is busy. The snapshot was not deleted; retry after the current operation.",
-            retryable: true,
-          });
-        throw error;
-      }
-      await collectAfterRetirement(name, image.sourceId);
-    },
-    async collectRetiredSnapshot(name) {
-      if (scopeKey(source.scope) !== scopeKey(options.scope))
-        throw refusal(
-          "forbidden",
-          "Snapshot collection requires the golden-source provider scope, not a private-fork adapter.",
-        );
-      await snapshotBackend();
-      return collectRetiredSnapshot(name);
-    },
+    ...snapshotTombstones,
     quiesce: (r) => call(r.sandboxId, "interrupt", r),
     async extendLifetime({ sandboxId, ttlSeconds }) {
       await bound();
