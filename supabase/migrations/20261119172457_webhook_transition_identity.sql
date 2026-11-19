@@ -1,6 +1,13 @@
--- Carry the journal identity from the BEFORE writer to the existing AFTER
--- publisher. Deliveries survive sandbox removal, so neither ID needs a FK.
-alter table public.sandboxes add column last_status_transition_id bigint;
+-- The BEFORE writer and AFTER publisher share this transaction-local handoff.
+-- Keep the journal ID out of sandbox rows, which have broader JWT read grants.
+create table public.outbound_webhook_transition_handoff (
+  sandbox_id uuid primary key,
+  transition_id bigint not null
+);
+alter table public.outbound_webhook_transition_handoff enable row level security;
+revoke all on public.outbound_webhook_transition_handoff from public, anon, authenticated, service_role;
+
+-- Deliveries survive journal and sandbox removal.
 alter table public.outbound_webhook_deliveries add column sandbox_transition_id bigint;
 create unique index outbound_webhook_status_identity
   on public.outbound_webhook_deliveries (endpoint_id, sandbox_transition_id)
@@ -10,15 +17,18 @@ create function public.enqueue_sandbox_webhook_event(
   saved public.sandboxes, event_type text, public_reason text, transition_id bigint
 ) returns void
 language sql set search_path = '' as $$
+  with events as materialized (
+    select id as endpoint_id, gen_random_uuid() as delivery_id
+    from public.outbound_webhook_endpoints
+    where org_id = saved.org_id and enabled
+  )
   insert into public.outbound_webhook_deliveries (id, endpoint_id, payload, sandbox_transition_id)
-  select event.id, endpoint.id, jsonb_build_object(
-    'id', event.id, 'type', event_type, 'occurredAt', clock_timestamp(),
+  select delivery_id, endpoint_id, jsonb_build_object(
+    'id', delivery_id, 'type', event_type, 'occurredAt', clock_timestamp(),
     'orgId', saved.org_id, 'sandboxId', saved.id, 'promptId', saved.task_prompt_id,
     'state', saved.status, 'externalRef', to_jsonb(saved)->'external_ref', 'reason', public_reason
   ), transition_id
-  from public.outbound_webhook_endpoints endpoint
-  cross join lateral (select gen_random_uuid() as id where endpoint.id is not null) event
-  where endpoint.org_id = saved.org_id and endpoint.enabled
+  from events
   on conflict (endpoint_id, sandbox_transition_id) where sandbox_transition_id is not null do nothing;
 $$;
 revoke all on function public.enqueue_sandbox_webhook_event(public.sandboxes, text, text, bigint)
@@ -49,6 +59,8 @@ revoke all on function public.enqueue_sandbox_status_webhooks(public.sandboxes, 
 
 create or replace function public.transition_sandbox() returns trigger
 language plpgsql security definer set search_path = '' as $$
+declare
+  journal_id bigint;
 begin
   if new.status is distinct from old.status then
     insert into public.sandbox_transitions (sandbox_id, from_status, to_status, actor, code, generation)
@@ -56,9 +68,13 @@ begin
       new.id, old.status, new.status,
       new.transition_context->>'actor', new.transition_context->>'code', new.lifecycle_generation
     )
-    returning id into new.last_status_transition_id;
+    returning id into journal_id;
 
-    perform public.enqueue_sandbox_status_webhooks(new, new.last_status_transition_id);
+    if new.status in ('stopped', 'deleted') then
+      insert into public.outbound_webhook_transition_handoff (sandbox_id, transition_id)
+      values (new.id, journal_id);
+      perform public.enqueue_sandbox_status_webhooks(new, journal_id);
+    end if;
   end if;
   new.transition_context := null;
   return new;
@@ -67,12 +83,13 @@ $$;
 
 create or replace function public.enqueue_sandbox_webhooks() returns trigger
 language plpgsql security definer set search_path = '' as $$
+declare
+  journal_id bigint;
 begin
-  if new.status is distinct from old.status then
-    perform public.enqueue_sandbox_status_webhooks(
-      new, case when new.last_status_transition_id is distinct from old.last_status_transition_id
-        then new.last_status_transition_id end
-    );
+  if new.status is distinct from old.status and new.status in ('stopped', 'deleted') then
+    delete from public.outbound_webhook_transition_handoff where sandbox_id = new.id
+    returning transition_id into journal_id;
+    perform public.enqueue_sandbox_status_webhooks(new, journal_id);
   end if;
   if new.task_outcome is not null and (new.task_outcome is distinct from old.task_outcome
     or new.task_prompt_id is distinct from old.task_prompt_id) then

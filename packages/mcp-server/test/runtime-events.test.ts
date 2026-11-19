@@ -986,7 +986,7 @@ test("a lost webhook settlement replays the same signed delivery ID under a new 
   }
 });
 
-test("journaled lifecycle webhooks enqueue once per endpoint and transition", async () => {
+test("journaled lifecycle webhooks enqueue once per endpoint and transition during overlap", async () => {
   const f = await fixture();
   try {
     await f.db.query(
@@ -994,35 +994,39 @@ test("journaled lifecycle webhooks enqueue once per endpoint and transition", as
        values ($1,'https://first.example/events',$2), ($1,'https://second.example/events',$2)`,
       [f.people.org, new Uint8Array([1])],
     );
-    for (let repeat = 0; repeat < 2; repeat++) {
-      await f.db.query("update sandboxes set status='stopping' where id=$1", [f.id]);
-      const transition = await f.db.query(
-        `select result.applied from sandboxes s
-         cross join lateral sandbox_transition(
-           s.id,s.lifecycle_generation,array['stopping']::sandbox_status[],'stopped','lifecycle_runner','stopped','[]'
-         ) result where s.id=$1`,
+    await f.db.transaction(async (tx) => {
+      for (const legacyPublisherEnabled of [true, false]) {
+        if (!legacyPublisherEnabled) {
+          await tx.exec("alter table sandboxes disable trigger sandbox_outbound_webhooks");
+        }
+        await tx.query("update sandboxes set status='stopping' where id=$1", [f.id]);
+        const transition = await tx.query(
+          `select result.applied from sandboxes s
+           cross join lateral sandbox_transition(
+             s.id,s.lifecycle_generation,array['stopping']::sandbox_status[],'stopped','lifecycle_runner','stopped','[]'
+           ) result where s.id=$1`,
+          [f.id],
+        );
+        expect(transition.rows).toEqual([{ applied: true }]);
+      }
+      const { rows } = await tx.query(
+        `select count(distinct d.endpoint_id)::int as endpoints, count(*)::int as deliveries,
+                count(j.id)::int as jobs, bool_and(d.payload->>'id' = d.id::text) as signed_identity
+         from sandbox_transitions t
+         left join outbound_webhook_deliveries d on d.sandbox_transition_id=t.id
+         left join jobs j on j.id=d.id and j.kind='webhook'
+         where t.sandbox_id=$1 and t.to_status='stopped'
+         group by t.id order by t.id`,
         [f.id],
       );
-      expect(transition.rows).toEqual([{ applied: true }]);
-    }
-    const { rows } = await f.db.query(
-      `
-      select count(distinct d.endpoint_id)::int as endpoints, count(*)::int as deliveries,
-             count(j.id)::int as jobs
-      from sandbox_transitions t
-      left join outbound_webhook_deliveries d on d.sandbox_transition_id=t.id
-      left join jobs j on j.id=d.id and j.kind='webhook'
-      where t.sandbox_id=$1 and t.to_status='stopped'
-      group by t.id order by t.id
-    `,
-      [f.id],
-    );
-    expect(rows).toEqual([
-      { endpoints: 2, deliveries: 2, jobs: 2 },
-      { endpoints: 2, deliveries: 2, jobs: 2 },
-    ]);
-    const allJobs = await f.db.query("select count(*)::int as count from jobs where kind='webhook'");
-    expect(allJobs.rows).toEqual([{ count: 4 }]);
+      expect(rows).toEqual([
+        { endpoints: 2, deliveries: 2, jobs: 2, signed_identity: true },
+        { endpoints: 2, deliveries: 2, jobs: 2, signed_identity: true },
+      ]);
+      const allJobs = await tx.query("select count(*)::int as count from jobs where kind='webhook'");
+      expect(allJobs.rows).toEqual([{ count: 4 }]);
+      await tx.exec("alter table sandboxes enable trigger sandbox_outbound_webhooks");
+    });
   } finally {
     await f.close();
   }

@@ -3890,6 +3890,21 @@ export type Database = {
           },
         ];
       };
+      outbound_webhook_transition_handoff: {
+        Row: {
+          sandbox_id: string;
+          transition_id: number;
+        };
+        Insert: {
+          sandbox_id: string;
+          transition_id: number;
+        };
+        Update: {
+          sandbox_id?: string;
+          transition_id?: number;
+        };
+        Relationships: [];
+      };
       personal_skill_defaults: {
         Row: {
           user_id: string;
@@ -5040,7 +5055,6 @@ export type Database = {
           transition_context: Json | null;
           outputs_retained_generation: number | null;
           outputs_attempt_count: number;
-          last_status_transition_id: number | null;
         };
         Insert: {
           id?: string;
@@ -5118,7 +5132,6 @@ export type Database = {
           transition_context?: Json | null;
           outputs_retained_generation?: number | null;
           outputs_attempt_count?: number;
-          last_status_transition_id?: number | null;
         };
         Update: {
           id?: string;
@@ -5196,7 +5209,6 @@ export type Database = {
           transition_context?: Json | null;
           outputs_retained_generation?: number | null;
           outputs_attempt_count?: number;
-          last_status_transition_id?: number | null;
         };
         Relationships: [
           {
