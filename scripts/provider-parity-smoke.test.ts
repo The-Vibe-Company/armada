@@ -1,7 +1,10 @@
 import { expect, test } from "bun:test";
 import { createHash } from "node:crypto";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { postDeploySmoke } from "./post-deploy-smoke.ts";
-import { smokeReceipts } from "./smoke-sandbox-cleanup.ts";
+import { readSmokeJournal, smokeReceipts } from "./smoke-sandbox-cleanup.ts";
 
 const boatNotice = "boat: not part of the release gate";
 const boatNotRun = { status: "not-run", reason: "not_part_of_release_gate" };
@@ -259,11 +262,15 @@ for (const mode of [
     const snapshotId = "10000000-0000-4000-8000-000000000009";
     const snapshotOwner = "10000000-0000-4000-8000-000000000008";
     const snapshotImage = `sha256:${"a".repeat(64)}`;
+    const journalDir =
+      mode === "modal_launch_missing_provider" ? await mkdtemp(join(tmpdir(), "parity-journal-")) : undefined;
+    const journalPath = journalDir ? join(journalDir, "sandboxes.json") : undefined;
     const passed = await postDeploySmoke(
       {
         ARMADA_URL: "https://armada-mcp-staging.up.railway.app",
         ARMADA_TOKEN: "fake",
         ARMADA_SMOKE: "create_real_compute",
+        ...(journalPath ? { ARMADA_SMOKE_JOURNAL: journalPath } : {}),
         ARMADA_SMOKE_CASES: JSON.stringify([
           { provider: "boat", org: null },
           ...(mode.startsWith("accounts") ? ["modal", "docker"] : providers).flatMap((provider) =>
@@ -1214,6 +1221,8 @@ for (const mode of [
               };
               break;
             case "sandbox/stop":
+              if (journalPath && states.get(p) === "deleted")
+                return Response.json({ error: { code: "not_found" } }, { status: 404 });
               if (clientStopFull && !body.request_id) {
                 expect(body).toEqual({ org: p, id: sandboxId(p) });
                 result = acceptStop(p, body);
@@ -1255,6 +1264,7 @@ for (const mode of [
                       : sandboxId(p),
                 status: mode === "delete_failure" && p === "docker" ? "pending" : "deleted",
               };
+              if (journalPath) states.set(p, "deleted");
               break;
             default:
               throw new Error(`Unexpected route ${path}`);
@@ -1262,7 +1272,14 @@ for (const mode of [
           return Response.json(result);
         },
       },
-    );
+    ).finally(async () => {
+      if (!journalDir || !journalPath) return;
+      try {
+        expect(await readSmokeJournal(journalPath)).toEqual([]);
+      } finally {
+        await rm(journalDir, { recursive: true, force: true });
+      }
+    });
     expect(lines.filter((line) => line === boatNotice)).toHaveLength(1);
     expect(calls.some((call) => call.startsWith("boat:"))).toBe(false);
     if (mode.startsWith("accounts")) {
@@ -1356,9 +1373,18 @@ for (const mode of [
         expect(passed).toBe(true);
         expect(report.features["prerequisite:launch"].modal.status).toBe("pass");
         expect(report.features.cleanup.modal.status).toBe("pass");
-        expect(journalClaims).toEqual([recoveredSandbox]);
-        expect(modalJournalKeys).toHaveLength(1);
-        expect(modalJournalKeys[0]).toBe(modalLaunchKey);
+        if (journalPath) {
+          const receipts = lines.filter((line) => line.startsWith("{")).map((line) => JSON.parse(line));
+          expect(receipts.find((receipt) => receipt.step === "smoke_cleanup_summary")).toMatchObject({
+            pass: true,
+            deferredRows: 0,
+            launchOutcomeUnknown: false,
+          });
+        } else {
+          expect(journalClaims).toEqual([recoveredSandbox]);
+          expect(modalJournalKeys).toHaveLength(1);
+          expect(modalJournalKeys[0]).toBe(modalLaunchKey);
+        }
         expect(lines.map((line) => (line.startsWith("{") ? JSON.parse(line) : null))).toContainEqual({
           step: "parity_modal_launch",
           provider: "modal",
