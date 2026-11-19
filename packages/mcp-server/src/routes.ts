@@ -3,6 +3,7 @@ import type { ControlOptions } from "./control.ts";
 
 export interface ControlRouteContext {
   route: string;
+  request?: Request | undefined;
   caller: Caller;
   body: Record<string, unknown>;
   options: ControlOptions;

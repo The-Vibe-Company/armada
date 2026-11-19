@@ -1,11 +1,5 @@
 import type { AuthStore } from "@armada/auth";
-import {
-  goldenForSettings,
-  parseMachineSizePolicy,
-  providerRateLimitDetails,
-  VERSION,
-  vaultControlRoute,
-} from "@armada/core";
+import { goldenForSettings, parseMachineSizePolicy, providerRateLimitDetails, vaultControlRoute } from "@armada/core";
 import {
   type ApplicationVault,
   assertGoldenMutation,
@@ -54,7 +48,7 @@ import {
 } from "./golden-control.ts";
 import { GOLDEN_ADOPTION_REQUEST } from "./golden-rest-schemas.ts";
 import type { Invitations } from "./invitations.ts";
-import { launchActor, templateRuntime } from "./launch-control.ts";
+import { launchActor } from "./launch-control.ts";
 import { dispatchMcp, type McpControlOptions } from "./mcp-control.ts";
 import type { ModelAuthOwnership } from "./model-auth.ts";
 import type { ModelUsageApi } from "./model-usage.ts";
@@ -218,37 +212,11 @@ async function timedControlRequest(
       options.dockerLaunch
     )
       options.configureDockerLaunchRequest?.(request);
-    if (route === "account/logout") {
-      if (caller.via !== "supabase")
-        throw new VaultError("forbidden", "Use a personal login session to sign out remotely.");
-      const response = await (options.supabase.fetch ?? fetch)(
-        new URL("/auth/v1/logout?scope=local", options.supabase.supabaseUrl),
-        {
-          method: "POST",
-          headers: { apikey: options.supabase.anonKey, authorization: request.headers.get("authorization") ?? "" },
-          redirect: "error",
-          signal: AbortSignal.timeout(10_000),
-        },
-      );
-      if (!response.ok) throw new VaultError("unavailable", "The account session could not be signed out.");
-      return Response.json({ ok: true }, { headers: { "cache-control": "no-store" } });
-    }
-    const invitationAction = route.startsWith("org/invitations/") ? route.slice("org/invitations/".length) : null;
-    let result: unknown;
-    if (invitationAction) {
-      if (!options.invitations) throw new VaultError("unavailable", "Invitations unavailable.");
-      result =
-        invitationAction === "preview"
-          ? await options.invitations.preview(caller, body.token)
-          : invitationAction === "accept"
-            ? await options.invitations.accept(caller, body.token)
-            : await options.invitations.manage(invitationAction, caller, required(body, "org"), body);
-    } else
-      result = await timing.measure("dispatch", () =>
-        withRequestTiming(timing, () =>
-          dispatchControlCommand(deletion ? "sandbox/delete" : route, caller, body, options),
-        ),
-      );
+    const result = await timing.measure("dispatch", () =>
+      withRequestTiming(timing, () =>
+        dispatchControlCommand(deletion ? "sandbox/delete" : route, caller, body, options, request),
+      ),
+    );
     if (result === undefined) return fail(404, "unknown_route", "Unknown route.");
     return Response.json(result, {
       status:
@@ -275,23 +243,10 @@ export async function dispatchControlCommand(
   caller: Caller,
   body: Record<string, unknown>,
   options: ControlOptions,
+  request?: Request,
 ): Promise<unknown> {
   const registered = controlRoutes.get(route);
-  if (registered && "handler" in registered) return registered.handler({ route, caller, body, options });
-  if (route.startsWith("skills/defaults/")) {
-    if (!options.skillDefaults) throw new VaultError("unavailable", "Skill defaults unavailable.");
-    return options.skillDefaults.command(caller, route.slice("skills/defaults/".length), body);
-  }
-  if (route.startsWith("routines/")) {
-    if (!options.routines) throw new VaultError("unavailable", "Routines unavailable.");
-    return options.routines.command(caller, route.slice(9), body);
-  }
-  if (route.startsWith("templates/")) {
-    if (!options.templates) throw new VaultError("unavailable", "Templates unavailable.");
-    const runtime = templateRuntime(options, caller);
-    return options.templates.command(caller, route.slice(10), body, runtime);
-  }
-
+  if (registered && "handler" in registered) return registered.handler({ route, caller, body, options, request });
   if (route.startsWith("variables/") || route.startsWith("secrets/")) {
     if (!options.applicationVault) throw new VaultError("unavailable", "Application vault unavailable.");
     if (!/^(variables|secrets)\/[a-z]+$/.test(route))
@@ -304,8 +259,6 @@ export async function dispatchControlCommand(
       body,
     );
   }
-  if (route === "account/status")
-    return { userId: caller.userId, orgs: caller.orgs, authentication: caller.via, version: VERSION };
   if (route.startsWith("github/") && route !== "github/refresh" && route !== "github/runtime-status") {
     if (!options.githubAccount) throw new VaultError("unavailable", "GitHub account authorization is not configured.");
     return options.githubAccount.command(route.slice("github/".length), caller, body);
