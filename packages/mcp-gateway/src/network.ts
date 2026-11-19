@@ -12,7 +12,7 @@ export class GatewayError extends Error {
     super(code);
   }
 }
-export function endpoint(value: string | URL): URL {
+export function endpoint(value: string | URL) {
   const url = new URL(value);
   if (
     url.protocol !== "https:" ||
@@ -26,7 +26,7 @@ export function endpoint(value: string | URL): URL {
     throw new GatewayError("unsafe_endpoint", "Use a public HTTPS endpoint without credentials or fragments.");
   return url;
 }
-function publicAddress(address: string): boolean {
+function publicAddress(address: string) {
   if (isIP(address) === 4) {
     const [a = 0, b = 0] = address.split(".").map(Number);
     return !(
@@ -110,8 +110,8 @@ export const publicFetch: FetchLike = async (input, init) => {
   });
 };
 /** All injected fetch implementations must preserve DNS pinning in production. */
-export function restrictedFetch(fetcher: FetchLike, allowed: (url: URL) => boolean): FetchLike {
-  return async (input, init) => {
+export function restrictedFetch(fetcher: FetchLike, allowed: (url: URL) => boolean) {
+  const fetchRestricted: FetchLike = async (input, init) => {
     const req = new Request(input instanceof URL ? input.href : input, init);
     const url = endpoint(req.url);
     if (!allowed(url))
@@ -127,4 +127,5 @@ export function restrictedFetch(fetcher: FetchLike, allowed: (url: URL) => boole
       throw new GatewayError("unsafe_endpoint", "Redirects are not permitted.");
     return response;
   };
+  return fetchRestricted;
 }

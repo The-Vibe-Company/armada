@@ -27,11 +27,11 @@ export type RemoteDiscoveryResult =
  * requires a real MCP initialize exchange, not merely a 200/405 HTTP response.
  */
 export function createRemoteAuthResolver(options: { fetch?: FetchLike } = {}) {
-  return async (input: {
+  const resolve: (input: {
     url: string;
     transport: "http" | "sse";
     signal?: AbortSignal;
-  }): Promise<RemoteDiscoveryResult> => {
+  }) => Promise<RemoteDiscoveryResult> = async (input) => {
     const url = endpoint(input.url);
     const fetcher = options.fetch ?? publicFetch;
     const resourceFetch = restrictedFetch(
@@ -105,4 +105,5 @@ export function createRemoteAuthResolver(options: { fetch?: FetchLike } = {}) {
       );
     }
   };
+  return resolve;
 }
