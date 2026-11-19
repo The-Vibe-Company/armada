@@ -121,11 +121,11 @@ export const UNKNOWN_DOCKER_LAUNCH =
 
 const DOCKER_LAUNCH_KEY_PREFIX = "docker:";
 
-export function createDockerLaunchKey(): string {
+export function createDockerLaunchKey() {
   return DOCKER_LAUNCH_KEY_PREFIX + crypto.randomUUID();
 }
 
-export function isDockerLaunchKey(key: string): boolean {
+export function isDockerLaunchKey(key: string) {
   return key.startsWith(DOCKER_LAUNCH_KEY_PREFIX) && isUuid(key.slice(DOCKER_LAUNCH_KEY_PREFIX.length));
 }
 
