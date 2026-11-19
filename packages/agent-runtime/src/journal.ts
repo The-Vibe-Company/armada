@@ -93,8 +93,8 @@ export class Journal {
     if (event.kind === "message") {
       const scrubbed = JSON.parse(body) as typeof event;
       scrubbed.kind = event.kind;
-      scrubbed.textMode = event.textMode;
-      scrubbed.responseKind = event.responseKind;
+      if (event.textMode !== undefined) scrubbed.textMode = event.textMode;
+      if (event.responseKind !== undefined) scrubbed.responseKind = event.responseKind;
       if (!mask) return JSON.stringify(scrubbed);
       return JSON.stringify({
         ...scrubbed,
