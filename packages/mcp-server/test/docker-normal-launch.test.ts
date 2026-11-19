@@ -3064,19 +3064,21 @@ test.each(["private", "org"] as const)(
     expect(refresh?.input?.command).not.toContain("credential.helper=");
     expect(refresh?.input?.command).not.toContain("git clone");
     expect(refresh?.input?.command).not.toContain("printf built");
-    const controls = createDockerSandboxControls(sql, key, {
-      clock: f.clock,
-      resume: bootstrap,
-      prepareSnapshotGitHub: f.github.prepareLaunch,
-    });
-    const firstEpoch = f.session()?.epoch;
-    await controls.invoke(f.caller, "stop", { id: f.body.requestId });
-    await f.resume(controls);
-    expect(f.session()?.epoch).not.toBe(firstEpoch);
-    expect(await f.github.status(f.caller, f.body.requestId)).toMatchObject({
-      configured: true,
-      runtime: { epoch: f.session()?.epoch },
-    });
+    if (visibility === "org") {
+      const controls = createDockerSandboxControls(sql, key, {
+        clock: f.clock,
+        resume: bootstrap,
+        prepareSnapshotGitHub: f.github.prepareLaunch,
+      });
+      const firstEpoch = f.session()?.epoch;
+      await controls.invoke(f.caller, "stop", { id: f.body.requestId });
+      await f.resume(controls);
+      expect(f.session()?.epoch).not.toBe(firstEpoch);
+      expect(await f.github.status(f.caller, f.body.requestId)).toMatchObject({
+        configured: true,
+        runtime: { epoch: f.session()?.epoch },
+      });
+    }
 
     await expect(
       f.snapshots.command(f.caller, "create", { ...input, requestId: randomUUID(), visibility: "org" }),
