@@ -42,6 +42,7 @@ const jobsLane: LaneFactory = ({
   config,
   lifecycleProvider,
   runtimeCommands,
+  webhooks,
   options,
 }) => {
   const prScan = githubApp
@@ -76,7 +77,14 @@ const jobsLane: LaneFactory = ({
         },
       )
     : undefined;
-  return createJobsRunner(jobs, prScan ? { pr_scan: prScan } : {}, options.logError);
+  return createJobsRunner(
+    jobs,
+    {
+      webhook: { concurrency: 1, run: webhooks.run },
+      ...(prScan ? { pr_scan: prScan } : {}),
+    },
+    options.logError,
+  );
 };
 
 const idleLane: LaneFactory = ({ sql, config, runtimeCheckpoint, idleDelayMs, dockerBootstrap }) =>
@@ -127,7 +135,6 @@ export const jobsModule: ServerModule = ({ workers }) => {
 export const outputModule: ServerModule = ({ mounts, workers }) => {
   mounts.push(outputMounts);
   workers.managed.set("outputs", ({ outputs }) => outputs);
-  workers.managed.set("webhooks", ({ webhooks }) => webhooks);
 };
 export const nativeModule: ServerModule = ({ workers }) => {
   workers.managed.set("native-prompts", ({ nativePrompts }) => nativePrompts);

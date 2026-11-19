@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { assembleServer } from "../src/modules.ts";
 import type { ServerServices } from "../src/server-services.ts";
+import { jobsModule, type LaneFactory } from "../src/server-worker-modules.ts";
 
 test("server assembly preserves worker lane order and isolation", () => {
   const neverCall = async () => {
@@ -28,7 +29,7 @@ test("server assembly preserves worker lane order and isolation", () => {
     control: { invitations: {} },
     githubApp: {},
     outputs: passiveLane,
-    webhooks: passiveLane,
+    webhooks: { run: neverCall },
     delegatedAccess: { childWorker: passiveLane },
     accountTurns: passiveLane,
     langfuse: passiveLane,
@@ -42,6 +43,10 @@ test("server assembly preserves worker lane order and isolation", () => {
         "routines",
       ],
       "isolated": [
+        {
+          "name": "golden-builds",
+          "sweep": true,
+        },
         {
           "name": "langfuse",
           "sweep": false,
@@ -63,7 +68,6 @@ test("server assembly preserves worker lane order and isolation", () => {
         "sandbox-lifecycle",
         "jobs",
         "outputs",
-        "webhooks",
         "native-prompts",
         "delegated-access",
         "docker-cleanup",
@@ -82,4 +86,27 @@ test("server assembly preserves worker lane order and isolation", () => {
   expect(minimal.background).toEqual(["routines"]);
   expect(minimal.managed).toContain("jobs");
   expect(minimal.isolated.map(({ name }) => name)).not.toContain("docker-inventory:host-1");
+});
+
+test("the shared jobs lane claims webhook jobs with or without GitHub scans", async () => {
+  const managed = new Map<string, LaneFactory>();
+  jobsModule({ workers: { managed } } as Parameters<typeof jobsModule>[0]);
+  const createLane = managed.get("jobs")!;
+  for (const githubApp of [null, {}]) {
+    const claimed = new Set<string>();
+    const lane = createLane({
+      githubApp,
+      options: {},
+      config: { encryptionKey: "test" },
+      sql: { query: async () => ({ rows: [] }) },
+      jobs: {
+        async claim(kind: string) {
+          claimed.add(kind);
+        },
+      },
+      webhooks: { run: async () => ({ status: "done" }) },
+    } as unknown as Parameters<LaneFactory>[0]);
+    await lane?.reconcileOne(new AbortController().signal);
+    expect(claimed).toEqual(new Set(githubApp ? ["webhook", "pr_scan"] : ["webhook"]));
+  }
 });

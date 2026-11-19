@@ -14,7 +14,11 @@ type LaunchDetails = {
   action?: LaunchError["action"];
   stage?: LaunchError["stage"];
 };
-type ToolErrorDetails = LaunchDetails | ProviderRateLimitDetails | { phase: GitHubHydrationPhase };
+type ToolErrorDetails =
+  | LaunchDetails
+  | ProviderRateLimitDetails
+  | { phase: GitHubHydrationPhase }
+  | { sandboxId: string };
 
 const launchDetails = z.object({
   reason: z
