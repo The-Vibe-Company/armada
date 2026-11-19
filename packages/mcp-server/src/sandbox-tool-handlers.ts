@@ -16,6 +16,7 @@ import { CREDENTIAL_BINDING_GUIDANCE } from "./credential-binding.ts";
 import type { SandboxView, ServerSandboxPatch } from "./data.ts";
 import { mcpLaunchContract, runMcpLaunch } from "./mcp-launch-tool.ts";
 import { DEFAULT_WAIT_SECONDS, registerListTool, registerLogsTool, registerStatusTools } from "./mcp-read-tools.ts";
+import { runtimeBridgeTarget } from "./provider-runtime-admission.ts";
 import { recordOperatorFailure } from "./request-observability.ts";
 import { RuntimeCheckpointRejected } from "./runtime-checkpoint.ts";
 import { appendConversation, sandboxActivity } from "./sandbox-activity.ts";
@@ -467,7 +468,7 @@ export function configureTools(
       const { provider } = await live(args.id, true, found);
       const needsCheckpoint =
         found.ownerId === caller.userId &&
-        (found.boatRuntime || (found.provider === "modal" && found.runtimeTransport === "dialout")) &&
+        runtimeBridgeTarget(found) &&
         ["ready", "running"].includes(found.status) &&
         Date.parse(found.expiresAt ?? "") > context.now().getTime();
       if (needsCheckpoint && !context.runtimeStopCheckpoint)
