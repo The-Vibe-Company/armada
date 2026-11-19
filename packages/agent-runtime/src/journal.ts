@@ -9,8 +9,10 @@ import { createRedactor, createShortSecretTextRedactor } from "./state.ts";
 const MAX_EVENT_BYTES = 262144;
 const CLAUDE_RESULT_OUTPUT_FIELDS = ["result", "errors", "structured_output"] as const;
 
-function isToolProof(type: string) {
-  return type === "armada/opencodeShell" || type === "armada/opencodeMcp";
+function isStructuredDiagnostic(type: string) {
+  return (
+    type === "armada/opencodeShell" || type === "armada/opencodeMcp" || type === "result" || type === "model/rerouted"
+  );
 }
 
 function truncatedEvent(
@@ -196,7 +198,7 @@ export class Journal {
         ? redacted
         : JSON.stringify({ ...diagnostic, data: { truncated: true } });
     }
-    if (isToolProof(event.type) || event.type === "result") {
+    if (isStructuredDiagnostic(event.type)) {
       scrubbed.type = event.type;
       const maskField = (text: string) => {
         const literal = this.redactLiteralText(text);
@@ -212,6 +214,8 @@ export class Journal {
           for (const key of CLAUDE_RESULT_OUTPUT_FIELDS) delete scrubbed.data[key];
           scrubbed.data.outputTruncated = true;
         }
+      } else if (event.type === "model/rerouted") {
+        maskPayloadField({ data: event.data }, scrubbed, "data", maskField);
       } else {
         scrubbed.data = maskProofData(event.data, scrubbed.data, mask, maskField);
       }
@@ -230,8 +234,7 @@ export class Journal {
       return this.redact(body);
     }
     return event?.kind === "message" ||
-      (event?.kind === "other" &&
-        (isToolProof(event.type) || event.type === "harness_stderr" || event.type === "result"))
+      (event?.kind === "other" && (event.type === "harness_stderr" || isStructuredDiagnostic(event.type)))
       ? this.eventBody(event, false)
       : this.redact(body);
   }

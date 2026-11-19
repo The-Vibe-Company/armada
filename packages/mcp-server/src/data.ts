@@ -12,6 +12,7 @@ import {
   recordLaunchStageSql,
   resolveOrg,
   type SandboxListMetadata,
+  type SandboxPatch,
   type SandboxRecord,
   type SandboxRow,
   type SandboxStatus,
@@ -49,7 +50,12 @@ export interface SandboxView extends SandboxRecord {
   modal: ModalBinding | null;
 }
 
+export interface ServerSandboxPatch extends SandboxPatch {
+  onlyIfIdle?: boolean;
+}
+
 export interface ServerSandboxStore extends SandboxStore {
+  update(id: string, patch: ServerSandboxPatch): Promise<void>;
   /** Persist an accepted native receipt even if stop fences later task publication. */
   recordNativePrompt?(id: string, providerSandboxId: string, promptId: string, requestId?: string): Promise<void>;
   /** Persist an accepted native steer whose run is not yet provable, so native
@@ -823,7 +829,12 @@ export function createSqlData(
           patch.taskPromptId !== undefined ||
           (patch.stoppedAt !== undefined && patch.stoppedAt !== null) ||
           patch.status === "deleted";
-        const cancelTurns = patch.stopRequested === true;
+        const idleAdmission = patch.onlyIfIdle === true && patch.stopRequested === true && patch.advanceGeneration;
+        if (idleAdmission)
+          fence += ` and s.status='ready' and s.stop_requested_at is null
+            and not exists(select 1 from public.account_turn_queue q
+              where q.sandbox_id=s.id and q.state in ('queued','dispatching'))`;
+        const cancelTurns = patch.stopRequested === true && !idleAdmission;
         const wrapped = releaseReservation || cancelTurns;
         const admission = !!patch.advanceGeneration && !!patch.activityToken;
         // A refused delete admission names its predicates from the CAS statement's own snapshot,
@@ -834,9 +845,10 @@ export function createSqlData(
         const update = `update public.sandboxes s set ${sets.join(", ")} from public.goldens g
            where s.id = $3 and g.id = s.golden_id and ${SANDBOX_VISIBLE}
              and (${ownsActivity && patch.expectedGeneration !== undefined ? "true" : `${observationFence} and (s.activity_until is null or s.activity_until < now())`}) ${fence} returning s.id`;
-        const result = await sql.query<{ id: string | null; observed?: Record<string, unknown> | null }>(
-          observeRefusal
-            ? `with observed as (select s.status::text as status,
+        const applyUpdate = (connection: Sql) =>
+          connection.query<{ id: string | null; observed?: Record<string, unknown> | null }>(
+            observeRefusal
+              ? `with observed as (select s.status::text as status,
                   s.activity_lease_id as "activityLeaseId",
                   coalesce(s.activity_until>=now(),false) as "activityLeaseHeld",
                   coalesce(s.reconcile_lease_until>=now(),false) as "reconcileLeaseHeld",
@@ -846,9 +858,23 @@ export function createSqlData(
                 from public.sandboxes s where s.id=$3::uuid and ${SANDBOX_VISIBLE}),
               updated as (${update})
               select (select id from updated) as id, (select row_to_json(o) from observed o) as observed`
-            : `${wrapped ? "with updated as (" : ""}${update}${wrapped ? `)${patch.status === "deleted" ? ", purged as (delete from public.sandbox_work_recovery r using updated u where r.sandbox_id=u.id)" : ""}${cancelTurns ? ", refused as (update public.account_turn_queue q set state='failed',failure_reason='Dispatch refused by owner stop.' from updated u where q.sandbox_id=u.id and q.state in ('queued','dispatching'))" : ""}${releaseReservation ? ", released as (delete from public.account_agent_reservations r using updated u where r.sandbox_id=u.id)" : ""} select id from updated` : ""}`,
-          params,
-        );
+              : `${wrapped ? "with updated as (" : ""}${update}${wrapped ? `)${patch.status === "deleted" ? ", purged as (delete from public.sandbox_work_recovery r using updated u where r.sandbox_id=u.id)" : ""}${cancelTurns ? ", refused as (update public.account_turn_queue q set state='failed',failure_reason='Dispatch refused by owner stop.' from updated u where q.sandbox_id=u.id and q.state in ('queued','dispatching'))" : ""}${releaseReservation ? ", released as (delete from public.account_agent_reservations r using updated u where r.sandbox_id=u.id)" : ""} select id from updated` : ""}`,
+            params,
+          );
+        let result: Awaited<ReturnType<typeof applyUpdate>>;
+        if (idleAdmission) {
+          if (!sql.transaction) throw new Error("Idle-only stop requires transactional sandbox admission.");
+          result = await sql.transaction(async (tx) => {
+            // WARNING: The queue check needs a fresh statement snapshot after acquiring the sandbox lock.
+            const locked = await tx.query<{ id: string }>(
+              `select s.id from public.sandboxes s where s.id=$3::uuid and ${SANDBOX_VISIBLE} for update`,
+              [...scope, id],
+            );
+            return locked.rows.length ? applyUpdate(tx) : { rows: [] };
+          });
+        } else {
+          result = await applyUpdate(sql);
+        }
         if (!result.rows[0]?.id) {
           // Record only admission predicates. The provider has not received this delete.
           if (observeRefusal)
