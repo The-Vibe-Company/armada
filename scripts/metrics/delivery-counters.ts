@@ -27,37 +27,32 @@ export function weeklyFixShare(log: string, end: Date) {
 }
 
 export const deliveryQueries = {
-  hasRuntimeTimestamps: `
-    select count(*) = 2 as available
+  hasRuntimePromptAttribution: `
+    select count(*) = 8 as available
     from information_schema.columns
-    where table_schema = 'public' and column_name = 'created_at'
-      and table_name in ('runtime_commands', 'runtime_events')
+    where table_schema = 'public' and (table_name, column_name) in (
+      ('runtime_commands', 'sandbox_id'),
+      ('runtime_commands', 'epoch'),
+      ('runtime_commands', 'created_at'),
+      ('runtime_commands', 'accepted_prompt_id'),
+      ('runtime_events', 'sandbox_id'),
+      ('runtime_events', 'epoch'),
+      ('runtime_events', 'created_at'),
+      ('runtime_events', 'visible_text_prompt_id')
+    )
   `,
-  runtimeCommandToFirstEvent: `
-    with commands as (
-      select sandbox_id, epoch, created_at, lead(created_at) over (
-        partition by sandbox_id, epoch order by sequence
-      ) as next_at
-      from public.runtime_commands
-      where created_at is not null
-    ), timeline as (
-      select sandbox_id, epoch, created_at, next_at, true as is_command
-      from commands
-      union all
-      select sandbox_id, epoch, created_at, null, false
+  runtimeCommandToFirstVisibleText: `
+    with first_text as (
+      select sandbox_id, epoch, visible_text_prompt_id, min(created_at) as first_at
       from public.runtime_events
-      where created_at is not null
-    ), next_events as (
-      select *, min(created_at) filter (where not is_command) over (
-        partition by sandbox_id, epoch order by created_at desc
-        range between unbounded preceding and current row
-      ) as event_at
-      from timeline
+      where visible_text_prompt_id is not null and created_at is not null
+      group by sandbox_id, epoch, visible_text_prompt_id
     ), samples as (
-      select extract(epoch from (event_at - created_at)) * 1000 as ms
-      from next_events
-      where is_command and event_at is not null
-        and (next_at is null or event_at < next_at)
+      select extract(epoch from (text.first_at - command.created_at)) * 1000 as ms
+      from public.runtime_commands command
+      join first_text text on text.sandbox_id = command.sandbox_id
+        and text.epoch = command.epoch and text.visible_text_prompt_id = command.accepted_prompt_id
+      where text.first_at >= command.created_at
     )
     select count(*)::integer as samples,
       percentile_cont(0.50) within group (order by ms) as "p50Ms",
@@ -82,17 +77,17 @@ async function databaseCounters(url: string) {
   const client = new SQL(url, { max: 1, connectionTimeout: 10 });
   try {
     return await client.begin("READ ONLY", async (tx) => {
-      const [schema] = await tx.unsafe<{ available: boolean }[]>(deliveryQueries.hasRuntimeTimestamps);
+      const [schema] = await tx.unsafe<{ available: boolean }[]>(deliveryQueries.hasRuntimePromptAttribution);
       const [latency] = schema?.available
         ? await tx.unsafe<{ samples: number; p50Ms: number | null; p95Ms: number | null }[]>(
-            deliveryQueries.runtimeCommandToFirstEvent,
+            deliveryQueries.runtimeCommandToFirstVisibleText,
           )
         : [null];
       return {
-        runtimeCommandToFirstEvent: latency,
+        runtimeCommandToFirstVisibleText: latency,
         runtimeLatencyUnavailableReason: schema?.available
           ? null
-          : "Runtime command or event created_at is unavailable.",
+          : "Required runtime journal columns are unavailable to the read-only role.",
         launchStageTotals: await tx.unsafe<{ provider: string; stage: string; samples: number; totalMs: number }[]>(
           deliveryQueries.launchStageTotals,
         ),
@@ -129,7 +124,7 @@ async function main(args: string[]) {
     ...(readOnly
       ? await databaseCounters(url!)
       : {
-          runtimeCommandToFirstEvent: null,
+          runtimeCommandToFirstVisibleText: null,
           runtimeLatencyUnavailableReason: "Offline mode.",
           launchStageTotals: null,
         }),

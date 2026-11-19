@@ -26,7 +26,7 @@ git worktree remove /tmp/armada-metrics-baseline
 | `bespokeLeaseClaimImplementations` | 13 | Distinct SQL table names with assignments to lease-expiry columns in updates and upserts, including worker, claim and dispatch expiry, excluding null clears. `leaseClaimTables` lists the names. This includes archived migration source and counts multiple claims on a single table once. |
 | `netSourceLines` | 167,729 | Current tree total on the same basis as `nonTestSourceLines`. Subtract the baseline or base-tree total to get the net change. |
 | `weeklyFixShare.share` | 34.89% | 419 fixes among 1,201 merges in the seven UTC days ending 2026-11-18. The epic's 38% came from a manual log tally. |
-| `runtimeCommandToFirstEvent` | unavailable | The baseline schema has no `created_at` on either runtime table. The epic's ~2 s is an estimate of polling overhead. |
+| `runtimeCommandToFirstVisibleText` | unavailable | The baseline schema has no `created_at` on either runtime table. The epic's ~2 s is an estimate of polling overhead. |
 | `launchStageTotals` | unmeasured | Requires staging data. |
 
 Token and path definitions live in `scripts/metrics/architecture-rules.ts` for use by the ratchets. These textual counts measure trends. Indirection, code generation and historical SQL can affect them.
@@ -43,7 +43,11 @@ Both modes include the static counters and a trailing seven-day fix share. The G
 
 Use a read-only PostgreSQL role with access to the metric columns on staging. The script accepts the URL through the environment and opens an explicit read-only transaction. It prints aggregates and suppresses driver diagnostics that could contain connection details. The launch query reports sample counts and total cumulative milliseconds since acceptance by provider and stage for initial launches with a recorded acceptance. Missing stages contribute no samples.
 
-The runtime journal tables record database insertion time for new commands and events. Rows written before the timestamp migration remain undated and contribute no samples. On a schema with both timestamp columns, the latency query measures to the first recorded event in the same sandbox and epoch before the next command. This time-window estimate can include unrelated events. New runtime archive writes record `visible_text_prompt_id` for nonblank model text linked to a prompt UUID. Earlier rows and rows inserted by an older server during deployment have no such metadata. New prompt completions record the UUID of the first successful reply in `runtime_commands.accepted_prompt_id`. Older completions have no attribution. A visible-text report can join these columns by sandbox, epoch and prompt UUID. Isolating polling overhead also requires observing when the client receives the text.
+The runtime report measures elapsed milliseconds from command insertion to the first archived nonblank model text for the accepted prompt, matched by sandbox, epoch and prompt UUID. It reports sample count, p50 and p95. Commands without a successful prompt receipt, without matching archived text, or without a usable timestamp pair contribute no sample. Historical rows and rows written during deployment overlap may lack the required metadata.
+
+Grant the read-only role access to `sandbox_id`, `epoch` and `created_at` on both runtime journal tables, plus `runtime_commands.accepted_prompt_id` and `runtime_events.visible_text_prompt_id`. The encrypted payloads are unnecessary. The metric is unavailable if the role cannot see the required journal columns. Before attributed samples are recorded, the metric reports zero samples and null percentiles.
+
+This measures database archive latency. Observing when the client receives the text is still required to measure polling overhead.
 
 ## Modal launch timing (#2767)
 
