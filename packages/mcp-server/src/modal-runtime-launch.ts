@@ -42,7 +42,13 @@ export function modalRuntimeLaunch(
         bootstrap: () => {
           const start = (host as Partial<ModalProvider>).startRuntime;
           if (!start) throw Error("modal_runtime_host_required");
-          return (request) => start.call(host, request);
+          return (request) =>
+            start.call(host, {
+              ...request,
+              ...(input.restoreCheckpoint && sandbox.lifecycleGeneration !== undefined
+                ? { resumeGeneration: sandbox.lifecycleGeneration }
+                : {}),
+            });
         },
       });
     },

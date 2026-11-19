@@ -109,6 +109,7 @@ export interface ModalProvider extends Provider {
     sandboxId: string;
     serverUrl: string;
     enrolmentToken: string;
+    resumeGeneration?: number;
     cacheDir: string;
     artifact: { sha256: string; bytes: number };
   }): Promise<void>;
@@ -1061,7 +1062,13 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
         throw refusal("invalid_request", "Invalid enrolled Modal bootstrap.");
       await store.lease(input.sandboxId, async (row, save) => {
         assertMachineSource(row);
-        if (!row.commonRuntime || row.golden || row.phase !== "active" || row.runtimeStartAttempted)
+        if (
+          !row.commonRuntime ||
+          row.golden ||
+          row.phase !== "active" ||
+          row.runtimeStartAttempted ||
+          row.runtimeResumeGeneration !== input.resumeGeneration
+        )
           throw refusal("conflict", "Enrolled runtime bootstrap requires a fresh host-only incarnation.");
         const sb = await physical(row);
         if ((await sb.poll()) !== null) throw refusal("sandbox_not_ready", "Physical machine has exited.");

@@ -1188,7 +1188,7 @@ test("retained enrolled Modal stop snapshots only after quiescence and resumes i
   expect((await f.provider.resumeRuntime(request)).physicalGeneration).toBe("2");
   expect(f.creates).toBe(2);
   expect(f.log.slice(afterLaunch)).toEqual(["scrub", "snapshot", "terminate"]);
-  await f.provider.startRuntime(bootstrap);
+  await f.provider.startRuntime({ ...bootstrap, resumeGeneration: request.generation });
   f.onTerminate(async () => {
     const stopping = await f.store.get(worker.id);
     expect(stopping.runtimeCheckpoint).toBeUndefined();
@@ -1222,6 +1222,17 @@ test("retained Modal rollback retries termination and fences a newer replacement
   await expect(f.provider.resumeRuntime(request)).rejects.toMatchObject({ code: "conflict" });
   await f.provider.resumeRuntime({ ...request, generation: 4 });
   await expect(f.provider.rollbackRuntimeResume(request)).rejects.toMatchObject({ code: "conflict" });
+  const bootstrap = {
+    sandboxId: worker.id,
+    serverUrl: "https://armada.example",
+    enrolmentToken: `armada_enrol_${"a".repeat(64)}`,
+    cacheDir: "/tmp/armada-runtime",
+    artifact: { sha256: "b".repeat(64), bytes: 1 },
+  };
+  await expect(f.provider.startRuntime({ ...bootstrap, resumeGeneration: request.generation })).rejects.toMatchObject({
+    code: "conflict",
+  });
+  await f.provider.startRuntime({ ...bootstrap, resumeGeneration: 4 });
   expect(await f.provider.get(worker.id)).toMatchObject({ state: "ready", physicalGeneration: "3" });
   expect((await f.store.get(worker.id)).imageId).toBe(recoveryImageId);
 });

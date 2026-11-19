@@ -61,6 +61,9 @@ export function createRuntimeLaunch(options: RuntimeLaunchOptions, provider: "bo
       providerSandboxId: sandbox.providerSandboxId,
       serverUrl: server.origin,
       ...plan,
+      ...(provider === "modal" && restoreCheckpoint && sandbox.lifecycleGeneration !== undefined
+        ? { expectedGeneration: sandbox.lifecycleGeneration }
+        : {}),
       ...(commandGrantExpiresAt !== undefined ? { commandGrantExpiresAt } : {}),
       signal,
     });

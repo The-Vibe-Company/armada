@@ -503,6 +503,7 @@ test.each(["request catch", "expired activity lease", "activation before ticket"
         generation: number,
         refused: string | undefined;
       let enrolled: Awaited<ReturnType<typeof f.authority.enrol>> | undefined;
+      let refusedGeneration: number | undefined;
       const physicalDeadline = new Date(Date.now() + 86_400_000);
       const host = {
         id: "modal",
@@ -517,6 +518,7 @@ test.each(["request catch", "expired activity lease", "activation before ticket"
         async resumeRuntime(request: { generation: number }) {
           generation = request.generation;
           activations++;
+          if (activations === 1) refusedGeneration = generation;
           activated = true;
         },
         async rollbackRuntimeResume(request: { sandboxId: string; generation: number }) {
@@ -525,8 +527,9 @@ test.each(["request catch", "expired activity lease", "activation before ticket"
           rollbacks++;
           if (handoff === "request catch" && rollbacks === 1) loseSettlement = true;
         },
-        async startRuntime(request: { artifact: typeof artifact; enrolmentToken: string }) {
+        async startRuntime(request: { artifact: typeof artifact; enrolmentToken: string; resumeGeneration: number }) {
           expect(activated).toBe(true);
+          expect(request.resumeGeneration).toBe(generation);
           artifact = request.artifact;
           if (activations === 1) {
             refused = request.enrolmentToken;
@@ -534,6 +537,14 @@ test.each(["request catch", "expired activity lease", "activation before ticket"
             if (handoff === "expired activity lease") await expireActivity();
             throw Error("Replacement did not enrol");
           }
+          await expect(
+            f.authority.issue({
+              sandboxId: f.row.id,
+              ownerId: f.caller.userId,
+              configuration: {},
+              expectedGeneration: refusedGeneration!,
+            }),
+          ).rejects.toThrow("runtime_enrolment_denied");
           enrolled = await f.authority.enrol(request.enrolmentToken);
           throw Error("Fixture ends after enrolment, before health");
         },
