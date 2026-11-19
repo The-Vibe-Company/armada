@@ -92,19 +92,14 @@ test("every published route refuses a body over its published limit with its pub
   const published = (await import("../openapi.json")).default as unknown as {
     paths: Record<
       string,
-      {
-        post?: {
-          "x-armada-direct-server"?: boolean;
-          requestBody?: { "x-max-body-bytes"?: number; "x-oversized-body-status"?: number };
-        };
-      }
+      { post?: { requestBody?: { "x-max-body-bytes"?: number; "x-oversized-body-status"?: number } } }
     >;
   };
   for (const [path, { post }] of Object.entries(published.paths)) {
     const requestBody = post?.requestBody;
     if (
       requestBody?.["x-max-body-bytes"] === undefined ||
-      post?.["x-armada-direct-server"] ||
+      requestBody["x-oversized-body-status"] === 503 ||
       path === "/api/v1/logs/read"
     )
       continue;
