@@ -243,7 +243,7 @@ test("a failing retired image never withholds the receipt of a completed delete"
       .map((x) => x.imageId),
   ).toEqual(["retired-elsewhere"]);
   f.retireImage("retired-elsewhere", { denied: false });
-  await f.provider.collectGarbage();
+  await expect(f.provider.collectRetiredSnapshot("retired-retired-elsewhere")).resolves.toBe("collected");
   expect(f.deletedImages).toContain("retired-elsewhere");
 });
 

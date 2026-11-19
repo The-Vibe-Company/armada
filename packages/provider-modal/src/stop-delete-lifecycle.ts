@@ -210,7 +210,7 @@ export function createStopDeleteLifecycle(deps: {
         await save(row);
       });
       detachCollection(() =>
-        collectImages(true).catch((error) => {
+        collectImages().catch((error) => {
           const safe = modalError(error);
           console.warn(
             JSON.stringify({
