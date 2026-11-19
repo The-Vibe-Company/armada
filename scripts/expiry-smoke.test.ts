@@ -10,6 +10,8 @@ const origin = "https://armada-mcp-staging.up.railway.app";
 type Fault =
   | "none"
   | "never"
+  | "late_ready"
+  | "late_stop_metadata"
   | "reason"
   | "early"
   | "failed"
@@ -106,6 +108,7 @@ function fixture(provider: "modal", fault: Fault = "none") {
         expect(body.harness).toBe("codex");
         if (body.page === 1) return Response.json({ sandboxes: [], page: 1, hasMore: true, nextPage: 2 });
         const stopped = manualStop || clock >= expiry || (fault === "early" && statusCalls > 2);
+        if (fault === "late_stop_metadata" && stopped && !manualStop) clock += deadlines.expiry_as_stop;
         return Response.json({
           sandboxes:
             fault === "list_missing"
@@ -140,6 +143,7 @@ function fixture(provider: "modal", fault: Fault = "none") {
       }
       if (path === "sandbox/status") {
         statusCalls++;
+        if (fault === "late_ready" && statusCalls === 2) clock += deadlines.expiry_ready;
         const due = clock >= expiry;
         const naturallyStopped = due && !["never", "cleanup_lost", "cleanup_failed"].includes(fault);
         const early = fault === "early" && statusCalls > 2;
@@ -206,6 +210,22 @@ test("Modal expires through the ordinary stop lane without a manual stop or mode
   });
 });
 
+test.each([
+  ["late_ready", "expiry_ready"],
+  ["late_stop_metadata", "expiry_as_stop"],
+] as const)("expiry rejects evidence outside the measured budget: %s", async (fault, step) => {
+  const fake = fixture("modal", fault);
+  expect(await postDeploySmoke(fake.env, ["--expiry"], fake.io)).toBe(false);
+  expect(fake.reports.find((line) => line.step === step)).toMatchObject({
+    pass: false,
+    code: "poll_limit_exceeded",
+  });
+  expect(fake.reports.find((line) => line.step === "expiry_cleanup_summary")).toMatchObject({
+    pass: true,
+    leftoverSandboxIds: [],
+  });
+});
+
 test("expiry false receipts and timeouts fail closed; cleanup cannot turn a manual stop into proof", async () => {
   for (const fault of [
     "never",
@@ -227,6 +247,12 @@ test("expiry false receipts and timeouts fail closed; cleanup cannot turn a manu
     expect(fake.calls.filter((call) => call.path === "sandbox/stop")).toHaveLength(1);
     expect(fake.calls.length).toBeLessThan(500);
     expect(fake.reports.some((line) => line.pass === false)).toBe(true);
+    if (fault === "never") {
+      expect(fake.reports.find((line) => line.step === "expiry_as_stop")).toMatchObject({
+        pass: false,
+        elapsedMs: deadlines.expiry_as_stop,
+      });
+    }
     const cleanup = fake.reports.find((line) => line.step === "expiry_cleanup_summary");
     expect(cleanup?.pass).toBe(!["physical", "cleanup_failed", "failed_unconfirmed"].includes(fault));
     expect(cleanup?.leftoverSandboxIds).toEqual(

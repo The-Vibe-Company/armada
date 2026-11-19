@@ -1477,8 +1477,9 @@ function lifecycleFixture(fault: LifecycleFault = "none", handler?: (call: Call)
       {
         ...fake.io,
         sleep: async (ms) => {
+          const wakeAt = fake.io.now() + ms;
           await new Promise<void>((resolve) => setImmediate(resolve));
-          await fake.io.sleep(ms);
+          fake.advance(Math.max(0, wakeAt - fake.io.now()));
         },
         fetch: (url, init) =>
           fake.io.fetch(url.replace("https://armada-mcp-staging.up.railway.app", env.ARMADA_URL), init),

@@ -618,10 +618,12 @@ requires operator reconciliation.
 Expected added duration: about 3–5 minutes per pair, overlapping the other lanes; no model
 turns, one extra short-lived worker per pair plus normal retained-disk cost.
 Each request remains bounded by the existing shared 35-minute work deadline
-and five-minute cleanup reserve. Ready polling allows 120 observations,
-natural expiry 360, cleanup 120, each separated by one second; slow matrices
-can exhaust the shared deadline and fail closed. Staging operators must budget
-this extra compute time. No production, new capabilities or migrations.
+and five-minute cleanup reserve. Readiness and natural stop proof use the
+measured `expiry_ready` and `expiry_as_stop` budgets. Natural stop proof
+includes the final inventory read. Without a measured entry, readiness allows
+120 observations and natural expiry allows 360. Cleanup still allows 120
+observations. Staging operators must budget this extra compute time.
+No production, new capabilities or migrations.
 The coordinator executes the eligible Modal pairs after merge; fake transport tests
 prove verdicts and cleanup, not real-provider expiry success.
 

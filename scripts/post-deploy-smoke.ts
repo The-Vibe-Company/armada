@@ -768,7 +768,11 @@ async function runPostDeploySmoke(
     return accountSlot(item.modelAccountId, (release) =>
       runExpiryCase(item, {
         launch: (body, keepHandle) => launchWithObservation(item, body, timeoutMs, request, keepHandle),
-        request,
+        request: (path, body, remaining = 120_000) => request(path, body, undefined, Math.min(120_000, remaining)),
+        deadlineFor: (name) => {
+          const budget = (deadlines as Record<string, number>)[name];
+          return budget === undefined ? undefined : Math.min(deadline, io.now() + budget);
+        },
         now: io.now,
         sleep: io.sleep,
         out,
