@@ -3,7 +3,6 @@ import { flag, parseArgs, providerFlag, single } from "./args.ts";
 import { createArmadaApiClient } from "./armada-api.ts";
 import type { AuthIo } from "./auth-commands.ts";
 
-/** Full replacement avoids silently dropping defaults through a client-side patch. */
 export async function sizePolicyCommand(
   argv: readonly string[],
   auth: AuthIo,
@@ -34,7 +33,6 @@ export async function sizePolicyCommand(
     ...(single(args, "--org") === undefined ? {} : { org: single(args, "--org") }),
     ...(file === undefined ? {} : { policy }),
   });
-  // Preserve the actual server response, including version and configured repository selectors.
   auth.out(`${JSON.stringify(result, null, 2)}\n`);
   if (file !== undefined && !flag(args, "--json"))
     auth.err("Size defaults updated for future launches only; existing machines are unchanged.\n");
