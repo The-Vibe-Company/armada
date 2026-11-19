@@ -27,6 +27,18 @@ export interface ChildOperation {
   action: "launch" | "message" | "stop" | "extend";
   sandboxId: string;
 }
+type ChildDispatch = {
+  id: string;
+  orchestrator_id: string;
+  owner_id: string;
+  org_id: string;
+  parent_generation: string;
+  parent_epoch: string;
+  target_id: string;
+  action: ChildOperation["action"];
+};
+export type StopRecoveryAdmission = (work: (tx: Sql) => Promise<void>) => Promise<void>;
+
 /** Runtime caller must use this exact reserved sandbox ID and provider idempotency key.
  * Unknown allocation has no retry path: reconcile the original correlation only.
  * Model-account resolution remains #612/#661's responsibility, never guest credentials. */
@@ -34,6 +46,7 @@ export interface SandboxChildExecutor {
   launch(operation: ChildOperation, selection: ChildLaunchSelection): Promise<{ providerSandboxId: string }>;
   message(operation: ChildOperation, text: string): Promise<void>;
   stop(operation: ChildOperation): Promise<void>;
+  recoverStop?(operation: ChildOperation, admit: StopRecoveryAdmission): Promise<void>;
   extend?(operation: ChildOperation, ttlSeconds: number): Promise<void>;
   /** Exact original receipt discovery only; absence/timeout must return unknown. */
   reconcile(
@@ -128,9 +141,14 @@ export function createSandboxChildren(sql: Sql, authority: ChildAuthority, execu
         : { method: input.action, childId: input.sandboxId };
     const receipt = await authority.admit(token, request, async (tx, principal) => {
       const prior = (
-        await tx.query<{ id: string; state: string; request_digest: string; target_id: string }>(
-          `select id,state,request_digest,target_id from public.orchestrator_child_operations
-           where orchestrator_id=$1 and action=$2 and idempotency_key=$3 and scope_target=$4`,
+        await tx.query<ChildDispatch & { state: string; request_digest: string; recoverable: boolean }>(
+          `select c.id,c.state,c.request_digest,c.target_id,c.orchestrator_id,c.owner_id,c.org_id,c.parent_generation,
+                   c.parent_epoch,c.action,
+                   (c.dispatched_at is not null and o.authority_epoch=c.parent_epoch
+                    and (case when o.kind='sandbox' then o.generation else s.lifecycle_generation end)=c.parent_generation) as recoverable
+           from public.orchestrator_child_operations c join public.armada_access_parents o on o.id=c.orchestrator_id
+           join public.sandboxes s on s.id=o.sandbox_id
+           where c.orchestrator_id=$1 and c.action=$2 and c.idempotency_key=$3 and c.scope_target=$4`,
           [
             principal.orchestratorId,
             input.action,
@@ -141,7 +159,11 @@ export function createSandboxChildren(sql: Sql, authority: ChildAuthority, execu
       ).rows[0];
       if (prior) {
         if (prior.request_digest !== digest) throw new Error("Idempotency conflict.");
-        return { id: prior.id, state: prior.state, sandboxId: prior.target_id, fresh: false };
+        const recovery =
+          input.action === "stop" && ["pending", "uncertain"].includes(prior.state) && prior.recoverable
+            ? prior
+            : undefined;
+        return { id: prior.id, state: prior.state, sandboxId: prior.target_id, fresh: false, recovery };
       }
       const parent = (
         await tx.query<{ lifecycle_generation: string; parent_epoch: string; max_active_children: number | null }>(
@@ -195,51 +217,35 @@ export function createSandboxChildren(sql: Sql, authority: ChildAuthority, execu
       );
       return { id, state: "pending", sandboxId: target, fresh: true };
     });
-    if (!receipt.fresh) return { id: receipt.id, state: receipt.state, sandboxId: receipt.sandboxId };
-    // Claim dispatch once durably. A crash after this point is uncertain, never a fresh launch.
-    let row:
-      | {
-          id: string;
-          orchestrator_id: string;
-          owner_id: string;
-          org_id: string;
-          parent_generation: string;
-          parent_epoch: string;
-          target_id: string;
-          action: ChildOperation["action"];
-        }
-      | undefined;
-    try {
-      row = await authority.admit(
-        token,
-        request,
-        async (tx) =>
-          (
-            await tx.query<{
-              id: string;
-              orchestrator_id: string;
-              owner_id: string;
-              org_id: string;
-              parent_generation: string;
-              parent_epoch: string;
-              target_id: string;
-              action: ChildOperation["action"];
-            }>(
-              `update public.orchestrator_child_operations set dispatched_at=now()
-         where id=$1 and dispatched_at is null and state='pending'
-         returning id,orchestrator_id,owner_id,org_id,parent_generation,parent_epoch,target_id,action`,
-              [receipt.id],
-            )
-          ).rows[0],
-      );
-    } catch {
-      // No executor was invoked: failed fresh admission is confirmed non-allocation,
-      // not an unknown provider outcome. Current epoch/scope/account is checked again.
-      await sql.query(
-        `update public.orchestrator_child_operations set state='failed',error_code='child_dispatch_not_admitted' where id=$1 and state='pending'`,
-        [receipt.id],
-      );
-      return { id: receipt.id, state: "failed", sandboxId: receipt.sandboxId };
+    const recoverStop = executor.recoverStop;
+    const recovery = recoverStop ? receipt.recovery : undefined;
+    if (!receipt.fresh && !recovery) return { id: receipt.id, state: receipt.state, sandboxId: receipt.sandboxId };
+    // Claim fresh dispatch once. Recovery may continue only at the checkpoint boundary.
+    let row: ChildDispatch | undefined = recovery;
+    if (!row) {
+      try {
+        row = await authority.admit(
+          token,
+          request,
+          async (tx) =>
+            (
+              await tx.query<ChildDispatch>(
+                `update public.orchestrator_child_operations set dispatched_at=now()
+                 where id=$1 and dispatched_at is null and state='pending'
+                 returning id,orchestrator_id,owner_id,org_id,parent_generation,parent_epoch,target_id,action`,
+                [receipt.id],
+              )
+            ).rows[0],
+        );
+      } catch {
+        // No executor was invoked. Failed fresh admission is confirmed non-allocation,
+        // distinct from an unknown provider outcome after dispatch.
+        await sql.query(
+          `update public.orchestrator_child_operations set state='failed',error_code='child_dispatch_not_admitted' where id=$1 and state='pending'`,
+          [receipt.id],
+        );
+        return { id: receipt.id, state: "failed", sandboxId: receipt.sandboxId };
+      }
     }
     if (!row) return { id: receipt.id, state: "uncertain", sandboxId: receipt.sandboxId };
     const operation: ChildOperation = {
@@ -288,12 +294,37 @@ export function createSandboxChildren(sql: Sql, authority: ChildAuthority, execu
       else if (input.action === "extend") {
         if (!executor.extend) throw new Error("Child extension unavailable.");
         await executor.extend(operation, input.ttlSeconds);
+      } else if (recovery && recoverStop) {
+        await recoverStop(operation, (work) =>
+          authority.admit(token, request, async (tx, principal) => {
+            if (
+              principal.orchestratorId !== operation.orchestratorId ||
+              principal.ownerId !== operation.ownerId ||
+              principal.orgId !== operation.orgId ||
+              !(
+                await tx.query(
+                  `update public.orchestrator_child_operations c
+                 set state='uncertain',error_code='child_outcome_unconfirmed'
+                 from public.armada_access_parents o join public.sandboxes s on s.id=o.sandbox_id
+                 where c.id=$1 and o.id=c.orchestrator_id and c.state in ('pending','uncertain')
+                 and o.authority_epoch=c.parent_epoch
+                 and (case when o.kind='sandbox' then o.generation else s.lifecycle_generation end)=c.parent_generation
+                 returning c.id`,
+                  [operation.id],
+                )
+              ).rows.length
+            )
+              throw Error("Scoped stop recovery is no longer authorized.");
+            await work(tx);
+          }),
+        );
       } else await executor.stop(operation);
       const completed = await sql.query(
         `update public.orchestrator_child_operations c set state='succeeded',error_code=null
         from public.armada_access_parents o,public.sandboxes s where c.id=$1 and o.id=c.orchestrator_id
-        and s.id=o.sandbox_id and (case when o.kind='sandbox' then o.generation else s.lifecycle_generation end)=c.parent_generation and o.state='ready' and c.state in ('pending','uncertain') returning c.id`,
-        [row.id],
+        and s.id=o.sandbox_id and (case when o.kind='sandbox' then o.generation else s.lifecycle_generation end)=c.parent_generation and o.state='ready' and c.state in ('pending','uncertain')
+        and (not $2::boolean or o.authority_epoch=c.parent_epoch) returning c.id`,
+        [row.id, !!recovery],
       );
       if (!completed.rows.length) {
         const existing = (
@@ -309,10 +340,11 @@ export function createSandboxChildren(sql: Sql, authority: ChildAuthority, execu
     } catch (error) {
       const noAllocation = input.action === "launch" && error instanceof ChildLaunchNotAllocated;
       const state = noAllocation ? "failed" : "uncertain";
-      await sql.query(
-        `update public.orchestrator_child_operations set state=$2,error_code=$3 where id=$1 and state in ('pending','uncertain')`,
-        [row.id, state, noAllocation ? `child_${error.reason}` : "child_outcome_unconfirmed"],
-      );
+      if (!recovery)
+        await sql.query(
+          `update public.orchestrator_child_operations set state=$2,error_code=$3 where id=$1 and state in ('pending','uncertain')`,
+          [row.id, state, noAllocation ? `child_${error.reason}` : "child_outcome_unconfirmed"],
+        );
       const current = (
         await sql.query<{ state: string }>(`select state from public.orchestrator_child_operations where id=$1`, [
           row.id,

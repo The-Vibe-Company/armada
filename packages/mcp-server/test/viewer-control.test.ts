@@ -1,10 +1,11 @@
 import { expect, test } from "bun:test";
 import { createMemoryAuthStore, generateToken, sha256Hex } from "@armada/auth";
+import { sandboxViewerOperations } from "@armada/core/contract";
 import { type ControlOptions, handleControlRequest } from "../src/control.ts";
 import { controlRoutes } from "../src/modules.ts";
 import { rejectUnroutedViewerRequest } from "../src/viewer-control.ts";
 
-async function fixture() {
+async function fixture(status: "ready" | "deleted" = "ready") {
   let time = new Date("2026-11-17T12:00:00Z");
   const authStore = createMemoryAuthStore();
   const userId = crypto.randomUUID(),
@@ -15,20 +16,49 @@ async function fixture() {
   const hash = await sha256Hex(token);
   await authStore.insertToken("service", { userId, orgId, hash, label: "viewer", createdAt: time.toISOString() });
   const options = {
+    providers: {},
+    data: () => ({
+      sandboxes: {
+        get: async (sandboxId: string) =>
+          sandboxId === id
+            ? {
+                id,
+                status,
+                golden: null,
+                visibility: "private",
+                harness: "codex",
+                model: null,
+                reasoningEffort: null,
+                conversationIds: [],
+              }
+            : null,
+      },
+    }),
+    dockerControls: {
+      invoke: async (_caller: unknown, tool: string) => {
+        if (tool === "logs") return { handled: true, result: { events: [], cursor: "opaque_cursor", hasMore: true } };
+        if (tool === "send")
+          return {
+            handled: true,
+            result: { id, promptId: "prompt", conversationId: "conversation", status: "running" },
+          };
+        return { handled: false };
+      },
+    },
     authStore,
     supabase: { supabaseUrl: "https://example.test", anonKey: "placeholder" },
     encryptionKey: Buffer.alloc(32, 7).toString("base64"),
     now: () => time,
     store: {} as ControlOptions["store"],
-  };
+  } as unknown as ControlOptions;
   const calls: { path: string; body: Record<string, unknown> }[] = [];
   let visible = true;
   const dispatch = async (request: Request) => {
-    const body = (await request.json()) as Record<string, unknown>;
-    calls.push({ path: new URL(request.url).pathname, body });
-    return visible
-      ? Response.json({ events: [{ type: "message", text: "hello" }], cursor: "opaque_cursor", hasMore: true })
-      : new Response(null, { status: 403 });
+    const body = (await request.clone().json()) as Record<string, unknown>;
+    const path = new URL(request.url).pathname;
+    calls.push({ path, body });
+    if (!visible) return new Response(null, { status: 403 });
+    return handleControlRequest(request, options);
   };
   const api = (path: string, bearer: string, body?: object) => {
     const request = new Request(`https://example.test/api/v1/${path}`, {
@@ -42,7 +72,7 @@ async function fixture() {
       : rejectUnroutedViewerRequest(request, options, dispatch);
   };
   const minted = await api("sandbox/viewer-token", token, { id });
-  const grant = (await minted!.json()) as { token: string };
+  const grant = sandboxViewerOperations.mint.output.parse(await minted!.json());
   calls.length = 0;
   return {
     api,
@@ -64,20 +94,31 @@ async function fixture() {
 test("viewer confines dispatch to one sandbox and read/send fields", async () => {
   const f = await fixture();
   expect(f.grant.token).not.toContain(f.token);
-  expect(
-    (await f.api("viewer/send", f.grant.token, {
-      message: "hello",
-      id: "other",
-      org: "other",
-      model: "other",
-      requestId: "request_id",
-    }))!.status,
-  ).toBe(200);
+  const replayId = crypto.randomUUID();
+  const sent = await f.api("viewer/send", f.grant.token, {
+    message: "hello",
+    id: "other",
+    org: "other",
+    model: "other",
+    requestId: replayId,
+  });
+  expect(sent?.status).toBe(200);
+  expect(sandboxViewerOperations.send.output.parse(await sent!.json()).id).toBe(f.id);
   expect(f.calls).toEqual([
-    { path: "/api/v1/sandbox/send", body: { id: f.id, prompt: "hello", request_id: "request_id" } },
+    { path: "/api/v1/sandbox/send", body: { id: f.id, prompt: "hello", request_id: replayId } },
   ]);
   for (const path of ["viewer/exec", "sandbox/viewer-token", "sandbox/stop", "runtime/channel"])
     expect((await f.api(path, f.grant.token, { id: f.id }))!.status).toBe(403);
+});
+
+test("viewer status reads the grant's sandbox through the status handler", async () => {
+  const f = await fixture("deleted");
+  const response = await f.api("viewer/status", f.grant.token, { id: crypto.randomUUID() });
+  expect(response?.status).toBe(200);
+  expect(sandboxViewerOperations.status.output.parse(await response!.json())).toMatchObject({
+    id: f.id,
+    status: "deleted",
+  });
 });
 
 test("viewer rejects expiry, tampering and revoked issuing tokens", async () => {
@@ -97,7 +138,13 @@ test("stream resumes bounded pages on demand and rechecks access between pages",
   expect(f.calls).toHaveLength(1);
   const reader = stream!.body!.getReader();
   const first = await reader.read();
-  expect(new TextDecoder().decode(first.value)).toContain('"cursor":"opaque_cursor"');
+  const [event, data] = new TextDecoder().decode(first.value).trimEnd().split("\n");
+  expect(
+    sandboxViewerOperations.events.output.parse({
+      event: event?.slice("event: ".length),
+      data: JSON.parse(data!.slice("data: ".length)),
+    }),
+  ).toMatchObject({ event: "page", data: { cursor: "opaque_cursor" } });
   expect(f.calls).toHaveLength(1);
   f.hide();
   expect(new TextDecoder().decode((await reader.read()).value)).toContain("access-ended");
@@ -145,5 +192,33 @@ test("viewer polling preserves large provider continuation cursors through contr
     options,
   );
   expect(response!.status).toBe(200);
+  expect(sandboxViewerOperations.logs.output.parse(await response!.json()).cursor).toBe(cursor);
   expect(received).toBe(cursor);
+});
+
+test("viewer routes preserve access-denied responses for invalid operation inputs", async () => {
+  const f = await fixture();
+  for (const [action, path, bearer, body] of [
+    ["mint", "sandbox/viewer-token", f.token, { id: "invalid" }],
+    ["logs", "viewer/logs", f.grant.token, { cursor: 42 }],
+    ["status", "viewer/status", f.grant.token, { cursor: "bad\n" }],
+    ["send", "viewer/send", f.grant.token, { message: " \t " }],
+    ["events", "viewer/events?cursor=bad%0D", f.grant.token, undefined],
+  ] as const) {
+    const response = await f.api(path, bearer, body);
+    expect(response?.status).toBe(400);
+    expect(sandboxViewerOperations[action].errorOutput.parse(await response?.json())).toEqual({
+      error: "viewer_access_denied",
+    });
+  }
+  expect(f.calls).toHaveLength(0);
+});
+
+test("viewer send forwards a structured sandbox refusal", async () => {
+  const f = await fixture("deleted");
+  const response = await f.api("viewer/send", f.grant.token, { message: "hello" });
+  expect(response?.status).toBe(409);
+  expect(sandboxViewerOperations.send.errorOutput.parse(await response!.json())).toMatchObject({
+    error: { code: "sandbox_terminal" },
+  });
 });

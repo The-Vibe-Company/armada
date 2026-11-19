@@ -141,10 +141,7 @@ describe("boat errors become typed errors", () => {
 test.each([true, false])(
   "allocation refusals include a reset hint (reset supplied: %s) and safe diagnostics",
   async (hasReset) => {
-    const logs: string[] = [];
-    const log = spyOn(console, "error").mockImplementation((line) => {
-      logs.push(String(line));
-    });
+    const log = spyOn(console, "error");
     const secret = "private-model-canary";
     try {
       const boat = fakeBoat(
@@ -160,8 +157,8 @@ test.each([true, false])(
           ? "The Boat plan start limit per day has been reached. Boat says the next start is available at 2026-11-12T08:08:00.000Z. Check the selected provider account's plan and limits before another start."
           : "The Boat plan start limit per day has been reached. Try again after the daily start allowance resets. Check the selected provider account's plan and limits before another start.",
       });
-      expect(logs).toHaveLength(1);
-      expect(JSON.parse(logs[0] ?? "{}")).toMatchObject({
+      expect(log).toHaveBeenCalledTimes(1);
+      expect(JSON.parse(String(log.mock.calls[0]?.[0]))).toMatchObject({
         event: "boat_allocation_failed",
         status: 429,
         code: "rate_limited",
@@ -173,18 +170,23 @@ test.each([true, false])(
       });
       const echoed = fakeBoat(errorBody(429, secret, `private ${KEY}`, undefined, { requestId: KEY }));
       await echoed.provider.fork({ from: "snapshot", env: { MODEL_SECRET: secret } }).catch(() => {});
-      expect(logs).toHaveLength(2);
+      expect(log).toHaveBeenCalledTimes(2);
       const network = fakeBoat(new TypeError(`Transport failed ${KEY} ${secret}`));
       const failure = await network.provider
         .fork({ from: "snapshot", env: { MODEL_SECRET: secret } })
         .catch((error: unknown) => error);
       expect(failure).toMatchObject({ code: "unavailable" });
-      expect(logs).toHaveLength(3);
-      expect(JSON.parse(logs[2] ?? "{}")).toMatchObject({ code: "unavailable", status: null, outcome: "unknown" });
+      expect(log).toHaveBeenCalledTimes(3);
+      expect(JSON.parse(String(log.mock.calls[2]?.[0]))).toMatchObject({
+        code: "unavailable",
+        status: null,
+        outcome: "unknown",
+      });
       expect(JSON.stringify(failure)).not.toContain(KEY);
       expect(JSON.stringify(failure)).not.toContain(secret);
-      expect(logs.join(" ")).not.toContain(KEY);
-      expect(logs.join(" ")).not.toContain(secret);
+      const diagnostics = JSON.stringify(log.mock.calls);
+      expect(diagnostics).not.toContain(KEY);
+      expect(diagnostics).not.toContain(secret);
     } finally {
       log.mockRestore();
     }
