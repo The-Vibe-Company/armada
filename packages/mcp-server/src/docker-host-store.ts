@@ -42,6 +42,7 @@ import { recordLaunchStageForActivation } from "./launch-stage-record.ts";
 import { collectOutputTransfers, DOCKER_RETAINED_OUTPUT_STOP } from "./output-transfers.ts";
 import { noteAdmission } from "./request-observability.ts";
 import { createRuntimeEnrolments, scopedRuntimeSql } from "./runtime-enrolment.ts";
+import { requestRefusedDockerResumeStop } from "./sandbox-lifecycle.ts";
 import { deferTransactionWake } from "./wake-bus.ts";
 
 type Actor = { userId: string; orgId: string };
@@ -391,11 +392,13 @@ export function createDockerHostStore(sql: Sql, key: string) {
     if (input(delivered) !== input({ ...delivered, request: frozen })) deny();
     return logical;
   }
-  async function startupFailed(tx: Sql, row: Sandbox, operation: string | null, reason?: DockerJobFailureReason) {
+  async function startupFailed(tx: Sql, row: Sandbox, job: StoredJob, reason?: DockerJobFailureReason) {
+    const operation = job.bound_operation;
     if (operation !== "create" && operation !== "bootstrap" && operation !== "resume") return;
     await tx.query(
       `update public.sandboxes set status='failed',status_reason=$2,
-       lifecycle_generation=lifecycle_generation+1 where id=$1 and status in ('starting','ready','running') and stop_requested_at is null`,
+       lifecycle_generation=lifecycle_generation+1 where id=$1 and status in ('starting','ready','running') and stop_requested_at is null
+       and not exists(select 1 from public.docker_resume_claims where request_id=$3 and protocol_refused)`,
       [
         row.id,
         reason === "disk_full"
@@ -403,6 +406,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
           : reason === "image_unavailable" && operation === "create"
             ? DOCKER_IMAGE_UNAVAILABLE_MESSAGE
             : DOCKER_LAUNCH_FAILURE_MESSAGES.startup,
+        job.request_id,
       ],
     );
   }
@@ -956,6 +960,36 @@ export function createDockerHostStore(sql: Sql, key: string) {
         });
       });
     },
+    async stopRefusedResume(tx: Sql, sandboxId: string, generation: string) {
+      const claim = (
+        await tx.query<{ request_id: string; actor_id: string; org_id: string }>(
+          `select c.request_id,c.actor_id,s.org_id
+           from public.docker_resume_claims c
+           join public.sandboxes s on s.id=c.sandbox_id
+           join public.docker_host_jobs j on j.request_id=c.request_id
+           where s.id=$1 and s.lifecycle_generation=$2 and c.lifecycle_generation=s.lifecycle_generation-1
+             and c.host_id=s.docker_host_id and c.installation_id=s.docker_installation_id
+             and c.generation=s.docker_generation and c.actor_id=s.owner_id and c.accepted
+             and j.bound_sandbox_id=s.id and j.host_id=c.host_id and j.bound_actor_id=c.actor_id
+             and j.bound_operation='resume' and j.outcome is distinct from 'failed'`,
+          [sandboxId, generation],
+        )
+      ).rows[0];
+      if (!claim || !(await requestRefusedDockerResumeStop(tx, sandboxId, generation))) return;
+      await tx.query("update public.docker_resume_claims set protocol_refused=true where request_id=$1", [
+        claim.request_id,
+      ]);
+      await tx.query(
+        `update public.docker_host_jobs set outcome='failed',completed_at=now(),cancelled_at=now()
+         where request_id=$1 and outcome is null`,
+        [claim.request_id],
+      );
+      await createDockerHostStore(scopedRuntimeSql(tx), key).enqueueSandbox(
+        { userId: claim.actor_id, orgId: claim.org_id },
+        sandboxId,
+        { operation: "stop", requestId: randomUUID() },
+      );
+    },
     enqueueSandbox(actor: Actor, sandboxId: string, selection: Selection) {
       return transaction(async (tx) => {
         exact(actor, ["userId", "orgId"]);
@@ -1246,7 +1280,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
             // valid facts or ordinary pending work.
           }
           if (verified) {
-            await startupFailed(tx, verified, historical.bound_operation);
+            await startupFailed(tx, verified, historical);
             break;
           }
         }
@@ -1319,7 +1353,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
               await recordLaunchStageForActivation(tx, logical.id, 1, "provider_claimed");
           } catch (error) {
             if (!(error instanceof DockerHostDenied)) throw error;
-            if (verified) await startupFailed(tx, verified, row.bound_operation);
+            if (verified) await startupFailed(tx, verified, row);
             await tx.query(
               `update public.docker_host_jobs set outcome='failed',completed_at=now() where request_id=$1 and outcome is null`,
               [row.request_id],
@@ -1602,8 +1636,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
         } else if (result.imageId !== undefined) deny();
         // A repeated same-outcome machine fact also repairs a logical transition
         // missed by an earlier server; conflicting facts still fail above.
-        if (result.outcome === "failed" && logical)
-          await startupFailed(tx, logical, job.bound_operation, result.reason);
+        if (result.outcome === "failed" && logical) await startupFailed(tx, logical, job, result.reason);
         // Persist terminal receipts below, but never replay old stop/delete
         // effects onto a lifecycle admitted after that job.
         const staleCleanup =

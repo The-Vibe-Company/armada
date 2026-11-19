@@ -676,11 +676,19 @@ export function createDockerSandboxControls(
       if (requested.state === "claiming") requested = await options.resume.resume(actor, row.id, requestId);
       // Host ACK is not runtime readiness.
       const state = (
-        await sql.query<{ outcome: string | null; status_reason: string | null }>(
-          `select j.outcome,s.status_reason from public.docker_host_jobs j join public.sandboxes s on s.id=j.bound_sandbox_id where j.request_id=$1 and j.bound_sandbox_id=$2 and j.bound_operation='resume'`,
+        await sql.query<{ outcome: string | null; status_reason: string | null; protocol_refused: boolean | null }>(
+          `select j.outcome,s.status_reason,c.protocol_refused from public.docker_host_jobs j
+           join public.sandboxes s on s.id=j.bound_sandbox_id
+           left join public.docker_resume_claims c on c.request_id=j.request_id
+           where j.request_id=$1 and j.bound_sandbox_id=$2 and j.bound_operation='resume'`,
           [requestId, row.id],
         )
       ).rows[0];
+      if (state?.protocol_refused)
+        throw failure(
+          "conflict",
+          "Docker runtime protocol was refused. Wait for the sandbox to stop, then use a new request_id.",
+        );
       if (state?.outcome === "failed")
         throw failure(
           "conflict",

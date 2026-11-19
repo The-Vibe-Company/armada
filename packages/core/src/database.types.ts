@@ -778,6 +778,7 @@ export type Database = {
           accepted: boolean | null;
           created_at: string | null;
           claimed_at: string | null;
+          protocol_refused: boolean;
         };
         Insert: {
           request_id: string;
@@ -790,6 +791,7 @@ export type Database = {
           accepted?: boolean | null;
           created_at?: string | null;
           claimed_at?: string | null;
+          protocol_refused?: boolean;
         };
         Update: {
           request_id?: string;
@@ -802,6 +804,7 @@ export type Database = {
           accepted?: boolean | null;
           created_at?: string | null;
           claimed_at?: string | null;
+          protocol_refused?: boolean;
         };
         Relationships: [
           {

@@ -800,3 +800,69 @@ test.each(["cleanup", "claim"] as const)(
     }
   },
 );
+
+test("a refused Docker resume settles only on the stop ACK and permits a fresh request", async () => {
+  const f = await fixture();
+  const authority = createRuntimeEnrolments(sql, key, { stopRefusedDockerResume: hosts.stopRefusedResume });
+  await service.bootstrap(f.actor, f.sandbox.id, f.requestId);
+  const bootstrap = await hosts.poll(f.hostToken, f.installationId);
+  if (bootstrap?.operation !== "bootstrap") throw Error("missing bootstrap");
+  const source = await authority.enrol(bootstrap.bootstrap.enrolmentToken);
+  await hosts.complete(f.hostToken, f.installationId, { requestId: bootstrap.requestId, outcome: "completed" });
+  const originalStop = await hosts.enqueueSandbox(f.actor, f.sandbox.id, {
+    operation: "stop",
+    requestId: randomUUID(),
+  });
+  await hosts.complete(f.hostToken, f.installationId, { requestId: originalStop.requestId, outcome: "completed" });
+
+  const resumeId = randomUUID();
+  await admittedResume(f, resumeId);
+  const resume = await hosts.poll(f.hostToken, f.installationId);
+  if (resume?.operation !== "resume") throw Error("missing resume");
+  const request = () =>
+    new Request("https://armada.example/api/runtime/enrol", {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${resume.bootstrap.enrolmentToken}`,
+        "x-armada-runtime-protocol": "0",
+      },
+    });
+  const unavailable = createRuntimeEnrolments(sql, key, {
+    stopRefusedDockerResume: (tx, id, generation) =>
+      hosts.stopRefusedResume(
+        {
+          query: (q, params) => {
+            if (q.startsWith("insert into public.docker_host_jobs")) throw Error("mailbox unavailable");
+            return tx.query(q, params);
+          },
+        },
+        id,
+        generation,
+      ),
+  });
+  expect((await unavailable.route(request()))?.status).toBe(503);
+  expect((await reservations.get(f.actor, f.sandbox.id)).status).toBe("starting");
+  expect((await service.resume(f.actor, f.sandbox.id, resumeId)).state).toBe("pending");
+
+  const refusal = await authority.route(request());
+  expect(refusal?.status).toBe(409);
+  expect(await refusal?.json()).toEqual({ error: "runtime_protocol_unsupported" });
+  expect((await reservations.get(f.actor, f.sandbox.id)).status).toBe("stopping");
+  expect((await service.resume(f.actor, f.sandbox.id, resumeId)).state).toBe("failed");
+  expect(await pending(f.sandbox.id)).toMatchObject({ epoch: source.epoch, runtime_hash: null });
+
+  const stop = await hosts.poll(f.hostToken, f.installationId);
+  if (stop?.operation !== "stop") throw Error("missing retained stop");
+  expect(stop.request).toEqual(resume.request);
+  await hosts.complete(f.hostToken, f.installationId, { requestId: stop.requestId, outcome: "completed" });
+  expect((await reservations.get(f.actor, f.sandbox.id)).status).toBe("stopped");
+
+  const retryId = randomUUID();
+  expect((await admittedResume(f, retryId)).state).toBe("pending");
+  await hosts.complete(f.hostToken, f.installationId, { requestId: resumeId, outcome: "failed" });
+  const retry = await hosts.poll(f.hostToken, f.installationId);
+  if (retry?.operation !== "resume") throw Error("missing fresh resume");
+  expect(retry.requestId).toBe(retryId);
+  expect((await authority.enrol(retry.bootstrap.enrolmentToken)).epoch).toBe(String(BigInt(source.epoch) + 1n));
+  expect((await service.resume(f.actor, f.sandbox.id, resumeId)).state).toBe("failed");
+});

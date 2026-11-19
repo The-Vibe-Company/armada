@@ -41,6 +41,19 @@ export async function requestFailedRuntimeResumeStop(
   return changed.rows[0]?.status;
 }
 
+export async function requestRefusedDockerResumeStop(tx: Sql, sandboxId: string, generation: string) {
+  const changed = await tx.query(
+    `update public.sandboxes set status='stopping',status_reason=null,
+      stop_requested_at=clock_timestamp(),stop_generation=stop_generation+1,
+      lifecycle_generation=lifecycle_generation+1
+     where id=$1 and provider='docker' and lifecycle_generation=$2 and status='starting'
+       and stop_requested_at is null and deleted_at is null and expires_at>clock_timestamp()
+       and not application_secret_tainted returning id`,
+    [sandboxId, generation],
+  );
+  return changed.rows.length > 0;
+}
+
 async function recoverInterruptedBoatResume(tx: Sql, sandboxId: string, lease: string, generation: number) {
   const result = await tx.query(
     `with handoff as (
