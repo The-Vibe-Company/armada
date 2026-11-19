@@ -5,9 +5,6 @@ if (!process.env.ARMADA_TEST_POSTGRES_URL) throw new Error("ARMADA_TEST_POSTGRES
 
 // Release-only PostgreSQL contracts; retained unit cases stay in the sibling test file.
 import { expect, test } from "bun:test";
-import { readdir } from "node:fs/promises";
-import { join } from "node:path";
-import { migrationsDir } from "../../../scripts/db/apply.ts";
 import { sqlOver } from "../../mcp-server/src/sql.ts";
 import helperManifest from "../helper/manifest.json";
 import {
@@ -21,6 +18,7 @@ import {
   type SandboxInfo,
   type Sql,
 } from "../src/server.ts";
+import { applyPostgresFixtureMigrations } from "./support/postgres-migrations.ts";
 import { runRetirementJob } from "./support/snapshot-retirement-jobs.ts";
 
 const KEY = Buffer.alloc(32, 7).toString("base64");
@@ -162,13 +160,11 @@ test("invisible in-flight COMMIT cannot authorize deleting a ready golden artifa
   let pendingCommit: Promise<unknown> | undefined;
   let attempt: Promise<void> | undefined;
   try {
-    const prereq = (await Bun.file(join(migrationsDir, "../../scripts/db/supabase-prereq.sql")).text()).replace(
+    const prereq = (await Bun.file(new URL("../../../scripts/db/supabase-prereq.sql", import.meta.url)).text()).replace(
       /^create role [^;]+;/gm,
       (command) => `do $$ begin ${command} exception when duplicate_object then null; end $$;`,
     );
-    await client.unsafe(prereq);
-    for (const file of (await readdir(migrationsDir)).filter((file) => file.endsWith(".sql")).sort())
-      await client.unsafe(await Bun.file(join(migrationsDir, file)).text());
+    await applyPostgresFixtureMigrations(client, prereq);
     const { actor, userId } = await fixture(sql);
     await connectGitHub(sql, userId);
     const artifacts = new Set<string>();
