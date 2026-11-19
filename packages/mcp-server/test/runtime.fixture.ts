@@ -10,7 +10,27 @@ import { createRuntimeEnrolments } from "../src/runtime-enrolment.ts";
 import { createRuntimeEvents } from "../src/runtime-events.ts";
 import { createRuntimeFollowup } from "../src/runtime-followup.ts";
 import type { ToolContext } from "../src/tools.ts";
-import { database, ENCRYPTION_KEY } from "./support.ts";
+import { database, ENCRYPTION_KEY, type People } from "./support.ts";
+
+export async function runtimeFixtureGolden(
+  db: Awaited<ReturnType<typeof database>>["db"],
+  people: People,
+  provider: "boat" | "modal",
+): Promise<string> {
+  if (provider === "boat") {
+    const { rows } = await db.query<{ id: string }>(
+      "select id from goldens where org_id=$1 and visibility='org' and provider='boat'",
+      [people.org],
+    );
+    return rows[0]!.id;
+  }
+  const { rows } = await db.query<{ id: string }>(
+    `insert into goldens(org_id,owner_id,name,visibility,provider,provider_sandbox_id,provider_snapshot_id,modal_workspace,modal_environment,modal_app_id,config)
+    values($1,$2,'modal-checkpoint','org','modal','master','image','workspace','main','app','{"repos":[],"init":[]}') returning id`,
+    [people.org, people.owner],
+  );
+  return rows[0]!.id;
+}
 
 export async function runtimeFixture(
   fixture?: Awaited<ReturnType<typeof database>>,
@@ -18,6 +38,7 @@ export async function runtimeFixture(
   harness: "codex" | "claude" | "opencode" = "codex",
   idle = false,
   commandGrantExpiresAt?: number,
+  placement?: { goldenId: string; providerSandboxId: string },
 ) {
   const { db, people } = fixture ?? (await database());
   const root = await mkdtemp(join(tmpdir(), "runtime-followup-"));
@@ -46,22 +67,13 @@ export async function runtimeFixture(
       [people.org, harness === "claude" ? "claude_oauth" : harness === "opencode" ? "opencode" : "openai"],
     )
   ).rows[0]!;
-  let golden = (
-    await db.query<{ id: string }>("select id from goldens where org_id=$1 and visibility='org'", [people.org])
-  ).rows[0]!;
-  if (provider === "modal")
-    golden = (
-      await db.query<{ id: string }>(
-        `insert into goldens(org_id,owner_id,name,visibility,provider,provider_sandbox_id,provider_snapshot_id,modal_workspace,modal_environment,modal_app_id,config)
-    values($1,$2,'modal-checkpoint','org','modal','master','image','workspace','main','app','{"repos":[],"init":[]}') returning id`,
-        [people.org, people.owner],
-      )
-    ).rows[0]!;
+  const goldenId = placement?.goldenId ?? (await runtimeFixtureGolden(db, people, provider));
+  const providerSandboxId = placement?.providerSandboxId ?? "physical";
   const row = await createSqlSandboxStore(sql).insert({
     id: crypto.randomUUID(),
     provider,
-    providerSandboxId: "physical",
-    goldenId: golden.id,
+    providerSandboxId,
+    goldenId,
     orgId: people.org,
     ownerId: people.owner,
     harness,
@@ -212,11 +224,11 @@ export async function runtimeFixture(
     harness,
     ownerId: people.owner,
     sandboxId: row.id,
-    providerSandboxId: "physical",
+    providerSandboxId,
     cwd: root,
     defaults,
   });
-  const first = idle ? undefined : await agent.prompt({ sandboxId: "physical", harness, text: "initial" });
+  const first = idle ? undefined : await agent.prompt({ sandboxId: providerSandboxId, harness, text: "initial" });
   if (first)
     await createSqlData(sql)(caller).sandboxes.update(row.id, {
       status: "running",

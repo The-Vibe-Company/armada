@@ -1,7 +1,8 @@
-import { expect, test } from "bun:test";
+import { afterAll, beforeAll, expect, test } from "bun:test";
 import { createMemoryAuthStore } from "@armada/auth";
 import type { Sql } from "@armada/core/server";
 import { createSqlVaultStore, DelegatedAuthority } from "@armada/core/server";
+import { openMigratedDatabase } from "../../../scripts/test-support/migrated-database.ts";
 import { handleControlRequest } from "../src/control.ts";
 import { createSqlData } from "../src/data.ts";
 import { observeRequest } from "../src/request-observability.ts";
@@ -11,16 +12,41 @@ import { createRuntimeHistory } from "../src/runtime-history.ts";
 import { createRuntimeProvider, type RuntimeWorkProvider } from "../src/runtime-provider.ts";
 import { createSandboxArmadaAccess } from "../src/sandbox-armada-access.ts";
 import { callSharedTool } from "../src/tool-api.ts";
-import { rowOnlyDatabase } from "./row-only-database.ts";
-import { runtimeFixture } from "./runtime.fixture.ts";
-import { ENCRYPTION_KEY, fakeBoat, PUBLIC_URL } from "./support.ts";
+import { runtimeFixture, runtimeFixtureGolden } from "./runtime.fixture.ts";
+import { ENCRYPTION_KEY, fakeBoat, PUBLIC_URL, seedDatabase } from "./support.ts";
 
-const database = rowOnlyDatabase();
+let shared: (Awaited<ReturnType<typeof seedDatabase>> & { modalGoldenId: string }) | undefined;
+
+beforeAll(async () => {
+  const db = await openMigratedDatabase();
+  try {
+    const seeded = await seedDatabase(db);
+    shared = { ...seeded, modalGoldenId: await runtimeFixtureGolden(db, seeded.people, "modal") };
+  } catch (error) {
+    await db.close();
+    throw error;
+  }
+});
+afterAll(async () => {
+  const db = shared?.db;
+  shared = undefined;
+  await db?.close();
+});
+
+function checkpointFixture(provider: "boat" | "modal" = "boat", idle = false) {
+  if (!shared) throw Error("Checkpoint database is not open");
+  // These cases only mutate their own sandbox, enrolment, and runtime rows.
+  // The shared account, people, and goldens are read-only for the suite.
+  return runtimeFixture(shared, provider, "codex", idle, undefined, {
+    goldenId: provider === "modal" ? shared.modalGoldenId : shared.sharedGoldenId,
+    providerSandboxId: crypto.randomUUID(),
+  });
+}
 
 test.each(["acknowledged", "refused", "reply lost", "epoch replaced"])(
   "enrolled scoped grant admission after delivery: %s",
   async (outcome) => {
-    const f = await runtimeFixture(await database(), "modal", "codex", true);
+    const f = await checkpointFixture("modal", true);
     try {
       await f.db.query("update sandboxes set visibility='private', access_owner_id=owner_id where id=$1", [f.row.id]);
       const authority = new DelegatedAuthority(f.sql, async () => {});
@@ -100,12 +126,13 @@ test.each(["acknowledged", "refused", "reply lost", "epoch replaced"])(
 function stopPort(f: Awaited<ReturnType<typeof runtimeFixture>>) {
   let stopped = false,
     calls = 0;
+  const physicalId = f.row.providerSandboxId!;
   const host = {
     id: f.row.provider,
     async get() {
       return stopped
-        ? { id: "physical", state: "stopped", stoppedAt: new Date(), retainedSnapshot: "usable" }
-        : { id: "physical", state: "running", physicalGeneration: "2" };
+        ? { id: physicalId, state: "stopped", stoppedAt: new Date(), retainedSnapshot: "usable" }
+        : { id: physicalId, state: "running", physicalGeneration: "2" };
     },
     async captureRuntimeWork() {
       return { status: "clean" };
@@ -119,7 +146,7 @@ function stopPort(f: Awaited<ReturnType<typeof runtimeFixture>>) {
     context: {
       ...f.context,
       provider: async () =>
-        createRuntimeProvider(host, "physical", {
+        createRuntimeProvider(host, physicalId, {
           events: ({ sandboxId: _, ...page }) => createRuntimeHistory(f.sql, ENCRYPTION_KEY)(f.caller, f.row.id, page),
           async getPrompt() {
             throw Error("No native/live prompt reads during compute stop");
@@ -132,7 +159,7 @@ function stopPort(f: Awaited<ReturnType<typeof runtimeFixture>>) {
 const args = (id: string) => ({ id, request_id: crypto.randomUUID(), runtimeVersion: 1 as const });
 
 test.each(["boat", "modal"] as const)("%s checkpoint retry after stop", async (provider) => {
-  const f = await runtimeFixture(await database(), provider);
+  const f = await checkpointFixture(provider);
   try {
     const input = args(f.row.id);
     const unavailable = {
@@ -228,7 +255,7 @@ test.each(["boat", "modal"] as const)("%s checkpoint retry after stop", async (p
 });
 
 test("an enrolled scoped parent loses its grant before checkpoint dispatch and scrubs on recovery", async () => {
-  const f = await runtimeFixture(await database(), "modal", "codex", true);
+  const f = await checkpointFixture("modal", true);
   const done = Promise.withResolvers<"finished">();
   try {
     const id = f.row.id;
@@ -349,7 +376,7 @@ test("an enrolled scoped parent loses its grant before checkpoint dispatch and s
 test.each(["generation", "prefix", "ack"] as const)(
   "authenticated but invalid durable checkpoint proof fails closed (%s)",
   async (mode) => {
-    const f = await runtimeFixture(await database());
+    const f = await checkpointFixture();
     try {
       f.tamper(mode);
       const lines: string[] = [];
@@ -387,7 +414,7 @@ test.each(["generation", "prefix", "ack"] as const)(
 );
 
 test("a late journal tail or application-secret exposure invalidates checkpoint reuse", async () => {
-  const f = await runtimeFixture(await database());
+  const f = await checkpointFixture();
   try {
     const input = args(f.row.id),
       checkpoint = createRuntimeCheckpoint(f.sql, ENCRYPTION_KEY, f.bridge);
