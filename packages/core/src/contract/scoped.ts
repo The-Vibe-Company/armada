@@ -3,7 +3,8 @@ import type { DelegatedScope } from "../delegated-access.ts";
 import { HARNESSES } from "../harnesses.ts";
 import { MACHINE_SIZES } from "../machine-size.ts";
 import { SANDBOX_PROVIDERS } from "../sandbox-provider.ts";
-import { LOGS_OUTPUT, SANDBOX_STATUSES } from "./sandbox.ts";
+import { INVALID_SKILL_PINS_MESSAGE } from "../skill-pins.ts";
+import { LOGS_OUTPUT, modelOutput, SANDBOX_STATUSES, skillReceipts, statusOutput } from "./sandbox.ts";
 import { sandboxExtensionLifetime } from "./sandbox-rest.ts";
 
 const key = z.string().regex(/^[ -~]{1,128}$/);
@@ -14,10 +15,14 @@ const selection = z
     harness: z.enum(HARNESSES),
     credentialId: z.uuid(),
     credentialVersion: z.number().int().positive().safe(),
-    model: z.string().min(1).max(200),
-    skills: z.array(z.string()).max(20).optional(),
-    reasoningEffort: z.string().min(1).optional(),
-    repo: z.string().min(1).optional(),
+    model: z.string().min(1).max(200).describe("Child launch admission requires a non-blank model."),
+    skills: z.array(z.string()).max(20).optional().describe(INVALID_SKILL_PINS_MESSAGE),
+    reasoningEffort: z
+      .string()
+      .min(1)
+      .optional()
+      .describe("If supplied, child launch admission requires non-blank reasoning effort."),
+    repo: z.string().min(1).optional().describe("If supplied, child launch admission requires a non-blank repository."),
     prompt: text.optional(),
     size: z.enum(MACHINE_SIZES).optional(),
   })
@@ -80,6 +85,22 @@ const receipt = z.object({
   state: z.enum(["pending", "succeeded", "failed", "uncertain"]),
   sandboxId: z.uuid(),
 });
+const machineSize = z.enum(MACHINE_SIZES).nullable();
+const sandboxUsage = statusOutput.usage.unwrap().unwrap();
+const scopedUsage = sandboxUsage.extend({
+  turns: z.array(
+    sandboxUsage.shape.turns.element.extend({
+      cacheWriteTokensByTtl: z
+        .object({
+          fiveMinute: z.number().nullable(),
+          oneHour: z.number().nullable(),
+          conflicted: z.literal(true).optional(),
+        })
+        .optional(),
+    }),
+  ),
+});
+
 const readResult = z.looseObject({
   id: z.uuid(),
   provider: z.enum(SANDBOX_PROVIDERS),
@@ -95,8 +116,49 @@ const readResult = z.looseObject({
   deletedAt: z.string().nullable(),
   statusReason: z.string().nullable(),
   repositoryDir: z.string().nullable(),
-  model: z.string().nullable(),
-  reasoningEffort: z.string().nullable(),
+  model: modelOutput.model,
+  reasoningEffort: modelOutput.reasoningEffort,
+  credentialId: modelOutput.credentialId.unwrap(),
+  credentialVersion: modelOutput.credentialVersion.unwrap(),
+  boatRuntime: z.literal(true).optional(),
+  runtimeTransport: z.literal("dialout").optional(),
+  visibility: statusOutput.visibility.optional(),
+  expiresAt: z.string().optional(),
+  effectiveTtlSeconds: z.number().optional(),
+  requestedTtlSeconds: z.number().nullable().optional(),
+  lastObservedAt: z.string().nullable().optional(),
+  lifecycleError: z.string().nullable().optional(),
+  lifecycleGeneration: z.number().int().positive().optional(),
+  stopRequestedAt: z.string().nullable(),
+  preservationNote: statusOutput.preservationNote.unwrap(),
+  usage: scopedUsage.nullable(),
+  taskOutcome: statusOutput.taskOutcome.unwrap(),
+  pullRequests: statusOutput.pullRequests,
+  externalRef: statusOutput.externalRef,
+  taskPromptId: z.string().nullable(),
+  skills: z.array(skillReceipts.unwrap().element.extend({ workspaceId: z.string().optional() })),
+  resourceProject: z.object({ version: z.literal(1), url: z.string(), branch: z.string(), dir: z.string() }).nullable(),
+  machineSize: z
+    .object({
+      version: z.literal(1),
+      requested: machineSize,
+      effective: machineSize,
+      source: z.enum(["override", "repository", "golden", "legacy"]),
+      repositoryDir: z.string().nullable(),
+      capacity: z
+        .object({
+          provider: z.enum(SANDBOX_PROVIDERS),
+          provenance: z.literal("requested-provider-resources"),
+          vcpus: z.number(),
+          memoryMiB: z.number(),
+          cpuPhysicalCores: z.number().nullable(),
+          cpuLimitPhysicalCores: z.number().nullable(),
+          memoryLimitMiB: z.number().nullable(),
+          boatType: z.enum(["small", "default", "large", "xlarge"]).nullable(),
+        })
+        .nullable(),
+    })
+    .nullable(),
   events: LOGS_OUTPUT.events,
   cursor: LOGS_OUTPUT.cursor,
   hasMore: LOGS_OUTPUT.hasMore,
@@ -106,7 +168,7 @@ function scopedRest<Method extends ScopedMethod, Body extends z.ZodObject, Resul
   method: Method,
   body: Body,
   result: Result,
-  options: { idempotent?: true; readOnly?: true; destructive?: true } = {},
+  options: { idempotent?: true; readOnly?: true; destructive?: true; description?: string } = {},
 ) {
   return {
     name: `scoped_${method}` as const,
@@ -124,7 +186,7 @@ function scopedRest<Method extends ScopedMethod, Body extends z.ZodObject, Resul
     audience: "public",
     readOnly: options.readOnly ?? false,
     destructive: options.destructive ?? false,
-    description: scopedOperations[method].description,
+    description: options.description ?? scopedOperations[method].description,
     errors: scopedErrorCode.options,
   } as const;
 }
@@ -134,7 +196,11 @@ export const scopedRestOperations = {
     "finish",
     scopedOperations.finish.input,
     z.object({ id: z.uuid(), status: z.literal("stopping"), preservationNote: z.string().optional() }),
-    { destructive: true },
+    {
+      destructive: true,
+      description:
+        "Declare the calling sandbox finished and request its stop. Docker completion also schedules permanent removal of the container and home volume. Push work before finishing because runtime Git archives are unavailable. The response confirms the stop request, with status stopping.",
+    },
   ),
   launch: scopedRest("launch", scopedOperations.launch.input.omit({ idempotencyKey: true }), receipt, {
     idempotent: true,

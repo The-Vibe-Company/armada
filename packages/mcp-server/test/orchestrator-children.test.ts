@@ -768,6 +768,9 @@ test("production scoped MCP/API gateway uses epoch child authority and never own
         if (!child) throw Error("missing owned child");
         await boat.provider.stop({ sandboxId: child.provider_sandbox_id });
       },
+      async extend(_op, ttlSeconds) {
+        expect(ttlSeconds).toBe(60);
+      },
       async reconcile(op) {
         return { operationId: op.id, sandboxId: op.sandboxId, state: "unknown" };
       },
@@ -871,7 +874,17 @@ test("production scoped MCP/API gateway uses epoch child authority and never own
     expect(readResponse.status).toBe(200);
     expect(publishedResponse("orchestrator-tools/read").safeParse(await readResponse.json()).success).toBe(true);
     expect(boat.forks).toHaveLength(1);
-    expect((await api("stop", { sandboxId: receipt.sandboxId }, token, "api-child-stop")).status).toBe(200);
+    for (const [method, body, key] of [
+      ["message", { text: "continue the same ticket" }, "mcp-child-message"],
+      ["extend", { ttlSeconds: 60 }, "api-child-extend"],
+      ["stop", {}, "api-child-stop"],
+    ] as const) {
+      const response = await api(method, { ...body, sandboxId: receipt.sandboxId }, token, key);
+      expect(response.status).toBe(200);
+      const parsed = publishedResponse(`orchestrator-tools/${method}`).safeParse(await response.json());
+      expect(parsed).toMatchObject({ success: true, data: { result: { state: "succeeded" } } });
+    }
+    expect(boat.prompts).toHaveLength(1);
     expect((await api("stop", { sandboxId: receipt.sandboxId }, token, "api-child-stop")).status).toBe(200);
     expect(boat.stops).toHaveLength(1);
     for (const method of ["exec", "credentials", "admin", "owner", "token_create"])
@@ -885,8 +898,9 @@ test("production scoped MCP/API gateway uses epoch child authority and never own
         await route(
           new Request(`https://armada.example.com${ORCHESTRATOR_SCOPED_PATH}/launch`, {
             method: "POST",
-            headers: { authorization: `Bearer ${token}` },
-            body: "x".repeat(129 * 1024),
+            headers: { authorization: `Bearer ${token}`, "idempotency-key": "oversized-launch" },
+            // Escaping doubles the prompt's serialized length while the decoded prompt stays within its field limit.
+            body: JSON.stringify({ selection: { ...selection, prompt: "\\".repeat(70_000) } }),
           }),
         )
       )?.status,

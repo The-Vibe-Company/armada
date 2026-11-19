@@ -11853,7 +11853,7 @@
     "/api/v1/orchestrator-tools/finish": {
       "post": {
         "operationId": "orchestrator_tools_finish",
-        "description": "Declare this sandbox finished. Stops Boat/Modal; permanently removes the Docker container and home volume immediately after work-preservation policy runs. Runtime Git archives are unavailable: push all work first. No target id; affects only this sandbox.",
+        "description": "Declare the calling sandbox finished and request its stop. Docker completion also schedules permanent removal of the container and home volume. Push work before finishing because runtime Git archives are unavailable. The response confirms the stop request, with status stopping.",
         "x-armada-direct-server": true,
         "security": [
           {
@@ -12203,9 +12203,11 @@
                       "model": {
                         "type": "string",
                         "minLength": 1,
-                        "maxLength": 200
+                        "maxLength": 200,
+                        "description": "Child launch admission requires a non-blank model."
                       },
                       "skills": {
+                        "description": "Skills require distinct org/slug@exact-version or slug@exact-version pins (maximum 20).",
                         "maxItems": 20,
                         "type": "array",
                         "items": {
@@ -12213,10 +12215,12 @@
                         }
                       },
                       "reasoningEffort": {
+                        "description": "If supplied, child launch admission requires non-blank reasoning effort.",
                         "type": "string",
                         "minLength": 1
                       },
                       "repo": {
+                        "description": "If supplied, child launch admission requires a non-blank repository.",
                         "type": "string",
                         "minLength": 1
                       },
@@ -12655,6 +12659,7 @@
                           ]
                         },
                         "model": {
+                          "description": "The requested next-send default, not proof of the observed model.",
                           "type": [
                             "string",
                             "null"
@@ -12664,6 +12669,683 @@
                           "type": [
                             "string",
                             "null"
+                          ]
+                        },
+                        "credentialId": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "credentialVersion": {
+                          "anyOf": [
+                            {
+                              "type": "integer",
+                              "minimum": -9007199254740991,
+                              "maximum": 9007199254740991
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "boatRuntime": {
+                          "type": "boolean",
+                          "const": true
+                        },
+                        "runtimeTransport": {
+                          "type": "string",
+                          "const": "dialout"
+                        },
+                        "visibility": {
+                          "type": "string",
+                          "enum": [
+                            "org",
+                            "private"
+                          ]
+                        },
+                        "expiresAt": {
+                          "type": "string"
+                        },
+                        "effectiveTtlSeconds": {
+                          "type": "number"
+                        },
+                        "requestedTtlSeconds": {
+                          "type": [
+                            "number",
+                            "null"
+                          ]
+                        },
+                        "lastObservedAt": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "lifecycleError": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "lifecycleGeneration": {
+                          "type": "integer",
+                          "exclusiveMinimum": 0,
+                          "maximum": 9007199254740991
+                        },
+                        "stopRequestedAt": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "preservationNote": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "usage": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "properties": {
+                                "computeSeconds": {
+                                  "type": [
+                                    "number",
+                                    "null"
+                                  ]
+                                },
+                                "turnCount": {
+                                  "type": [
+                                    "number",
+                                    "null"
+                                  ]
+                                },
+                                "cost": {
+                                  "type": "object",
+                                  "properties": {
+                                    "classification": {
+                                      "type": "string",
+                                      "enum": [
+                                        "priced",
+                                        "included_in_subscription",
+                                        "unknown"
+                                      ]
+                                    },
+                                    "currency": {
+                                      "type": "string",
+                                      "const": "USD"
+                                    },
+                                    "usd": {
+                                      "type": [
+                                        "string",
+                                        "null"
+                                      ]
+                                    },
+                                    "basis": {
+                                      "anyOf": [
+                                        {
+                                          "type": "string",
+                                          "enum": [
+                                            "estimated",
+                                            "api_equivalent"
+                                          ]
+                                        },
+                                        {
+                                          "type": "null"
+                                        }
+                                      ]
+                                    },
+                                    "unknown": {
+                                      "anyOf": [
+                                        {
+                                          "type": "string",
+                                          "enum": [
+                                            "admission",
+                                            "coverage",
+                                            "price",
+                                            "tokens",
+                                            "pricing_dimensions"
+                                          ]
+                                        },
+                                        {
+                                          "type": "null"
+                                        }
+                                      ]
+                                    },
+                                    "unpricedTurns": {
+                                      "anyOf": [
+                                        {
+                                          "type": "integer",
+                                          "minimum": 0,
+                                          "maximum": 9007199254740991
+                                        },
+                                        {
+                                          "type": "null"
+                                        }
+                                      ]
+                                    }
+                                  },
+                                  "required": [
+                                    "classification",
+                                    "currency",
+                                    "usd",
+                                    "basis",
+                                    "unknown",
+                                    "unpricedTurns"
+                                  ],
+                                  "additionalProperties": false
+                                },
+                                "tokenTotals": {
+                                  "type": "object",
+                                  "properties": {
+                                    "incomplete": {
+                                      "type": "boolean"
+                                    },
+                                    "inputTokens": {
+                                      "type": [
+                                        "number",
+                                        "null"
+                                      ]
+                                    },
+                                    "outputTokens": {
+                                      "type": [
+                                        "number",
+                                        "null"
+                                      ]
+                                    },
+                                    "cachedTokens": {
+                                      "type": [
+                                        "number",
+                                        "null"
+                                      ]
+                                    },
+                                    "cacheWriteTokens": {
+                                      "type": [
+                                        "number",
+                                        "null"
+                                      ]
+                                    },
+                                    "reasoningTokens": {
+                                      "type": [
+                                        "number",
+                                        "null"
+                                      ]
+                                    }
+                                  },
+                                  "required": [
+                                    "inputTokens",
+                                    "outputTokens",
+                                    "cachedTokens",
+                                    "cacheWriteTokens",
+                                    "reasoningTokens"
+                                  ],
+                                  "additionalProperties": false
+                                },
+                                "turns": {
+                                  "type": "array",
+                                  "items": {
+                                    "type": "object",
+                                    "properties": {
+                                      "promptId": {
+                                        "type": "string"
+                                      },
+                                      "model": {
+                                        "type": [
+                                          "string",
+                                          "null"
+                                        ]
+                                      },
+                                      "inputTokens": {
+                                        "type": [
+                                          "number",
+                                          "null"
+                                        ]
+                                      },
+                                      "outputTokens": {
+                                        "type": [
+                                          "number",
+                                          "null"
+                                        ]
+                                      },
+                                      "cachedTokens": {
+                                        "type": [
+                                          "number",
+                                          "null"
+                                        ]
+                                      },
+                                      "cacheWriteTokens": {
+                                        "type": [
+                                          "number",
+                                          "null"
+                                        ]
+                                      },
+                                      "reasoningTokens": {
+                                        "type": [
+                                          "number",
+                                          "null"
+                                        ]
+                                      },
+                                      "pricing": {
+                                        "description": "Versioned server USD quote from a frozen snapshot; null means unpriced, never zero.",
+                                        "anyOf": [
+                                          {},
+                                          {
+                                            "type": "null"
+                                          }
+                                        ]
+                                      },
+                                      "unavailableReason": {
+                                        "type": "object",
+                                        "properties": {
+                                          "code": {
+                                            "type": "string",
+                                            "enum": [
+                                              "admission_missing",
+                                              "admission_expired",
+                                              "admission_superseded",
+                                              "legacy_disabled",
+                                              "native_start_unobserved",
+                                              "native_input_unmatched",
+                                              "native_turn_unobserved",
+                                              "native_terminal_unobserved",
+                                              "native_history_unavailable",
+                                              "native_boundary_unverified",
+                                              "unsafe_reader_state",
+                                              "reader_unavailable",
+                                              "compute_inactive",
+                                              "unsupported_harness"
+                                            ]
+                                          },
+                                          "message": {
+                                            "type": "string",
+                                            "maxLength": 600
+                                          }
+                                        },
+                                        "required": [
+                                          "code",
+                                          "message"
+                                        ],
+                                        "additionalProperties": false
+                                      },
+                                      "cacheWriteTokensByTtl": {
+                                        "type": "object",
+                                        "properties": {
+                                          "fiveMinute": {
+                                            "type": [
+                                              "number",
+                                              "null"
+                                            ]
+                                          },
+                                          "oneHour": {
+                                            "type": [
+                                              "number",
+                                              "null"
+                                            ]
+                                          },
+                                          "conflicted": {
+                                            "type": "boolean",
+                                            "const": true
+                                          }
+                                        },
+                                        "required": [
+                                          "fiveMinute",
+                                          "oneHour"
+                                        ],
+                                        "additionalProperties": false
+                                      }
+                                    },
+                                    "required": [
+                                      "promptId",
+                                      "model",
+                                      "inputTokens",
+                                      "outputTokens",
+                                      "cachedTokens"
+                                    ],
+                                    "additionalProperties": false
+                                  }
+                                }
+                              },
+                              "required": [
+                                "computeSeconds",
+                                "turnCount",
+                                "turns"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "taskOutcome": {
+                          "anyOf": [
+                            {
+                              "oneOf": [
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "state": {
+                                      "type": "string",
+                                      "const": "ready"
+                                    },
+                                    "prNumber": {
+                                      "type": "integer",
+                                      "exclusiveMinimum": 0,
+                                      "maximum": 9007199254740991
+                                    },
+                                    "prUrl": {
+                                      "type": "string",
+                                      "maxLength": 2048,
+                                      "format": "uri"
+                                    },
+                                    "headSha": {
+                                      "type": "string",
+                                      "pattern": "^[A-Fa-f0-9]{40}$"
+                                    }
+                                  },
+                                  "required": [
+                                    "state"
+                                  ],
+                                  "additionalProperties": false
+                                },
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "state": {
+                                      "type": "string",
+                                      "const": "blocked"
+                                    },
+                                    "reason": {
+                                      "type": "string",
+                                      "minLength": 1,
+                                      "maxLength": 1000
+                                    }
+                                  },
+                                  "required": [
+                                    "state",
+                                    "reason"
+                                  ],
+                                  "additionalProperties": false
+                                }
+                              ]
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "pullRequests": {
+                          "anyOf": [
+                            {
+                              "type": "array",
+                              "items": {
+                                "type": "object",
+                                "properties": {
+                                  "repository": {
+                                    "type": "string"
+                                  },
+                                  "number": {
+                                    "type": "integer",
+                                    "exclusiveMinimum": 0,
+                                    "maximum": 9007199254740991
+                                  },
+                                  "url": {
+                                    "type": "string",
+                                    "format": "uri"
+                                  },
+                                  "headBranch": {
+                                    "type": "string"
+                                  },
+                                  "state": {
+                                    "type": "string",
+                                    "enum": [
+                                      "open",
+                                      "merged",
+                                      "closed"
+                                    ]
+                                  },
+                                  "checkedAt": {
+                                    "type": "string"
+                                  }
+                                },
+                                "required": [
+                                  "repository",
+                                  "number",
+                                  "url",
+                                  "headBranch",
+                                  "state",
+                                  "checkedAt"
+                                ],
+                                "additionalProperties": false
+                              }
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "externalRef": {
+                          "description": "Opaque reference given at launch; absent when none.",
+                          "type": "string"
+                        },
+                        "taskPromptId": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "skills": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "reference": {
+                                "type": "string"
+                              },
+                              "version": {
+                                "type": "string"
+                              },
+                              "skillId": {
+                                "type": "string"
+                              },
+                              "checksum": {
+                                "type": "string"
+                              },
+                              "origin": {
+                                "type": "string"
+                              },
+                              "workspaceId": {
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "reference",
+                              "version",
+                              "skillId",
+                              "checksum",
+                              "origin"
+                            ],
+                            "additionalProperties": false
+                          }
+                        },
+                        "resourceProject": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "properties": {
+                                "version": {
+                                  "type": "number",
+                                  "const": 1
+                                },
+                                "url": {
+                                  "type": "string"
+                                },
+                                "branch": {
+                                  "type": "string"
+                                },
+                                "dir": {
+                                  "type": "string"
+                                }
+                              },
+                              "required": [
+                                "version",
+                                "url",
+                                "branch",
+                                "dir"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "machineSize": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "properties": {
+                                "version": {
+                                  "type": "number",
+                                  "const": 1
+                                },
+                                "requested": {
+                                  "anyOf": [
+                                    {
+                                      "type": "string",
+                                      "enum": [
+                                        "small",
+                                        "medium",
+                                        "large",
+                                        "xlarge"
+                                      ]
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ]
+                                },
+                                "effective": {
+                                  "anyOf": [
+                                    {
+                                      "type": "string",
+                                      "enum": [
+                                        "small",
+                                        "medium",
+                                        "large",
+                                        "xlarge"
+                                      ]
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ]
+                                },
+                                "source": {
+                                  "type": "string",
+                                  "enum": [
+                                    "override",
+                                    "repository",
+                                    "golden",
+                                    "legacy"
+                                  ]
+                                },
+                                "repositoryDir": {
+                                  "type": [
+                                    "string",
+                                    "null"
+                                  ]
+                                },
+                                "capacity": {
+                                  "anyOf": [
+                                    {
+                                      "type": "object",
+                                      "properties": {
+                                        "provider": {
+                                          "type": "string",
+                                          "enum": [
+                                            "boat",
+                                            "modal"
+                                          ]
+                                        },
+                                        "provenance": {
+                                          "type": "string",
+                                          "const": "requested-provider-resources"
+                                        },
+                                        "vcpus": {
+                                          "type": "number"
+                                        },
+                                        "memoryMiB": {
+                                          "type": "number"
+                                        },
+                                        "cpuPhysicalCores": {
+                                          "type": [
+                                            "number",
+                                            "null"
+                                          ]
+                                        },
+                                        "cpuLimitPhysicalCores": {
+                                          "type": [
+                                            "number",
+                                            "null"
+                                          ]
+                                        },
+                                        "memoryLimitMiB": {
+                                          "type": [
+                                            "number",
+                                            "null"
+                                          ]
+                                        },
+                                        "boatType": {
+                                          "anyOf": [
+                                            {
+                                              "type": "string",
+                                              "enum": [
+                                                "small",
+                                                "default",
+                                                "large",
+                                                "xlarge"
+                                              ]
+                                            },
+                                            {
+                                              "type": "null"
+                                            }
+                                          ]
+                                        }
+                                      },
+                                      "required": [
+                                        "provider",
+                                        "provenance",
+                                        "vcpus",
+                                        "memoryMiB",
+                                        "cpuPhysicalCores",
+                                        "cpuLimitPhysicalCores",
+                                        "memoryLimitMiB",
+                                        "boatType"
+                                      ],
+                                      "additionalProperties": false
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "version",
+                                "requested",
+                                "effective",
+                                "source",
+                                "repositoryDir",
+                                "capacity"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "null"
+                            }
                           ]
                         },
                         "events": {
@@ -12728,6 +13410,16 @@
                         "repositoryDir",
                         "model",
                         "reasoningEffort",
+                        "credentialId",
+                        "credentialVersion",
+                        "stopRequestedAt",
+                        "preservationNote",
+                        "usage",
+                        "taskOutcome",
+                        "taskPromptId",
+                        "skills",
+                        "resourceProject",
+                        "machineSize",
                         "events",
                         "cursor",
                         "hasMore"
