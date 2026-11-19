@@ -1,7 +1,6 @@
 import { timingSafeEqual } from "node:crypto";
 import type { ExecRequest, ExecResult, Harness } from "@armada/core";
 import { HARNESSES, validOutputChunk } from "@armada/core";
-import { PRIVATE_SKILL_FAILURES } from "../../core/src/private-skill-error.ts";
 import { ChildOwner } from "./children.ts";
 import { captureCommandOutput, commandOutputLimit } from "./command-output.ts";
 import { validateHarnessCwd } from "./cwd.ts";
@@ -33,7 +32,7 @@ import { ReadableConfigurations } from "./readable-configurations.ts";
 import { readRuntimeJson } from "./request-framing.ts";
 import { type EventSelection, executeWithReceipt } from "./request-receipts.ts";
 import { sampleVmResources } from "./resource-sampler.ts";
-import { installRuntimeSkills } from "./skills.ts";
+import { installRuntimeSkills, skillInstallResult } from "./skills.ts";
 import { executeWorkspace, validateWorkspaceExec } from "./workspace-exec.ts";
 export class Runner {
   private execChildren = new ChildOwner();
@@ -605,19 +604,7 @@ export class Runner {
       const work = installRuntimeSkills({ ...r.input, cwd }, this.journal, this.execEnvironment, signal);
       this.commands.add(work);
       try {
-        return { receipts: await work };
-      } catch (error) {
-        const reason =
-          error instanceof Error &&
-          [
-            ...PRIVATE_SKILL_FAILURES,
-            "skillpack_credential_missing",
-            "skillpack_credential_refused",
-            "skillpack_skill_unavailable",
-          ].includes(error.message as never)
-            ? error.message
-            : "skillpack_install_state_invalid";
-        return { failure: { reason } };
+        return await skillInstallResult(work);
       } finally {
         this.commands.delete(work);
         this.installingSkills = false;

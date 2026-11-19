@@ -498,7 +498,6 @@
     "packages/agent-runtime/test/request-receipts.test.ts": 7,
     "packages/agent-runtime/test/resource-sampler.test.ts": 1,
     "packages/agent-runtime/test/runtime.test.ts": 7,
-    "packages/agent-runtime/test/skills.test.ts": 1,
     "packages/agent-runtime/test/state.test.ts": 5,
     "packages/agent-runtime/test/tool-cache.test.ts": 1,
     "packages/agent-runtime/test/unknown-owner.test.ts": 1,
