@@ -289,7 +289,6 @@ export function createRuntimeEnrolments(sql: Sql, encryptionKey: string, options
       ).rows[0];
       if (!updated) throw new RuntimeEnrolmentDenied();
       if (
-        sandbox.provider === "docker" &&
         sandbox.status === "starting" &&
         !(await publishDockerRuntimeReadiness(tx, sandbox.id, "bootstrap_enrolment"))
       )
