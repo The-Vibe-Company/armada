@@ -49,6 +49,7 @@ import {
   failDockerStartup,
   recordDockerCleanupReceipt,
   requestRefusedDockerResumeStop,
+  transitionSandbox,
 } from "./sandbox-lifecycle.ts";
 import { deferTransactionWake } from "./wake-bus.ts";
 
@@ -1223,15 +1224,19 @@ export function createDockerHostStore(sql: Sql, key: string) {
             },
           );
         }
-        if (selection.operation === "stop")
-          await tx.query(
-            `update public.sandboxes set status='stopping',status_reason=coalesce($2::text,status_reason),stop_requested_at=coalesce(stop_requested_at,now()),
-           lifecycle_generation=lifecycle_generation+1 where id=$1 and status in ('starting','ready','running')`,
-            [
-              sandboxId,
-              selection.idleCheckpointRequest === undefined ? null : workMerged ? "work_merged" : "idle_paused",
-            ],
-          );
+        if (selection.operation === "stop" && ["starting", "ready", "running"].includes(row.status)) {
+          const idle = selection.idleCheckpointRequest !== undefined;
+          const result = await transitionSandbox(tx, {
+            sandboxId,
+            expectedGeneration: row.lifecycle_generation,
+            fromStates: ["starting", "ready", "running"],
+            toState: "stopping",
+            actor: idle ? "idle" : "owner",
+            code: idle ? (workMerged ? "docker_work_merged" : "docker_idle_paused") : "docker_stop_admitted",
+            effects: [],
+          });
+          if (result.kind === "conflict") deny();
+        }
         return enqueue();
       });
     },
@@ -1542,12 +1547,16 @@ export function createDockerHostStore(sql: Sql, key: string) {
         // lifecycle owns this fact even after a later resume has stopped again.
         if (await supersededLifecycle(tx, job)) return;
         // Physical cleanup is an authenticated machine fact, not owner delete intent.
-        await tx.query(
-          `update public.sandboxes set status='deleted',status_reason=case when status='deleted' and status_reason in ('retention_elapsed','disk_pressure') then status_reason else $2 end,deleted_at=coalesce(deleted_at,now()),
-           stopped_at=coalesce(stopped_at,now()),lifecycle_generation=lifecycle_generation+case when status='deleted' then 0 else 1 end
-           where id=$1`,
-          [logical.id, result.cleanupReason ?? "retention_elapsed"],
-        );
+        const transition = await transitionSandbox(tx, {
+          sandboxId: logical.id,
+          expectedGeneration: logical.lifecycle_generation,
+          fromStates: ["starting", "ready", "running", "stopping", "stopped", "failed", "deleted"],
+          toState: "deleted",
+          actor: "docker_host",
+          code: result.cleanupReason ?? "retention_elapsed",
+          effects: [],
+        });
+        if (transition.kind === "conflict") deny();
       });
     },
     async retainedOutputs(
@@ -1626,15 +1635,17 @@ export function createDockerHostStore(sql: Sql, key: string) {
         const logical = await boundMachine(tx, job, host, installationId);
         // Only the authenticated host's observed physical stop is evidence. SQL's
         // clock may differ from the frozen host deadline and cannot prove exit.
-        await tx.query(
-          `update public.sandboxes set
-           status=case when status='failed' then status else 'stopped' end,
-           status_reason=case when status='failed' or status_reason in ('agent_finished','work_merged') then status_reason else 'expired' end,
-           stopped_at=coalesce(stopped_at,now()),stop_requested_at=coalesce(stop_requested_at,now()),
-           lifecycle_generation=lifecycle_generation+case when status in ('starting','ready','running','stopping') then 1 else 0 end
-           where id=$1 and status in ('starting','ready','running','stopping','stopped','failed')`,
-          [logical.id],
-        );
+        if (logical.status === "deleted") return;
+        const transition = await transitionSandbox(tx, {
+          sandboxId: logical.id,
+          expectedGeneration: logical.lifecycle_generation,
+          fromStates: ["starting", "ready", "running", "stopping", "stopped", "failed"],
+          toState: "stopped",
+          actor: "docker_host",
+          code: "docker_expiry_observed",
+          effects: [],
+        });
+        if (transition.kind === "conflict") deny();
       });
     },
     complete(

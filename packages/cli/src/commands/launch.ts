@@ -128,7 +128,7 @@ export default {
                                            without one the sandbox waits, ready, for the first prompt. The model
                                            and effort apply to every later turn too. --credential-id UUID selects a model account;
                                            otherwise use your personal or organization default.
-                                           --repo selects the native agent's initial working directory, including when idle.
+                                           --repo selects the agent's initial working directory, including when idle.
                                            Defaults:
                                            ${modelDefaults()}`,
   },
@@ -189,7 +189,7 @@ function launchText(result: LaunchWireResult, now: Date) {
         ]
       : []),
     ...(sandbox.repositoryDir
-      ? [`Repository context: ${sandbox.repositoryDir} (native agent cwd; not an isolation boundary).`]
+      ? [`Repository context: ${sandbox.repositoryDir} (initial agent working directory, not an isolation boundary).`]
       : []),
     ...(sandbox.skills?.map((skill) => `Skill: ${skill.reference} (${skill.checksum})`) ?? []),
     `Model: ${sandbox.model ?? "provider default"} (reasoning effort ${sandbox.reasoningEffort ?? "default"})`,
