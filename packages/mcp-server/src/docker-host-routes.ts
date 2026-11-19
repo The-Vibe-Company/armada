@@ -14,6 +14,7 @@ import { fail } from "./control-response.ts";
 import { DockerHostDraining, DockerLimitsRefused } from "./docker-capacity.ts";
 import { type createDockerHostStore, DockerHostDenied } from "./docker-host-store.ts";
 import { dockerHostVersions } from "./docker-host-version.ts";
+import { dockerMachineInventory } from "./docker-machine-inventory.ts";
 import { DockerSnapshotHostUpgradeRequired, type DockerSnapshots } from "./docker-snapshots.ts";
 import type { Route } from "./http.ts";
 import { createProviderReaper } from "./provider-reaper.ts";
@@ -234,32 +235,12 @@ export function createDockerHostRoutes(
         const installationId = string(body.installationId);
         if (!uuid.test(installationId)) throw new InvalidInput();
         const machines = containersOf(body.containers);
-        const names = new Map(machines.map((machine) => [machine.machineId, machine.containerName]));
-        if (names.size !== machines.length) throw new InvalidInput();
+        if (new Set(machines.map(({ machineId }) => machineId)).size !== machines.length) throw new InvalidInput();
         const { hostId, rows } = await store.inventoryOwnership(token, installationId, [
           ...new Set(machines.map(({ sandboxId }) => sandboxId)),
         ]);
-        const ownership = new Map(rows.map((row) => [row.id, row]));
-
         const reaper = createProviderReaper(
-          {
-            provider: "docker",
-            sourceId: hostId,
-            deploymentId: inventoryDeploymentId(hostId, installationId),
-            inventory: {
-              async *listInventory() {
-                yield* machines;
-              },
-            },
-            async lookupOwnership(machine) {
-              const row = machine.sandboxId ? ownership.get(machine.sandboxId) : undefined;
-              return row &&
-                row.generation === machine.generation &&
-                row.provider_sandbox_id === names.get(machine.machineId)
-                ? { kind: "owned", status: row.status, generation: row.generation }
-                : { kind: "absent" };
-            },
-          },
+          dockerMachineInventory(hostId, inventoryDeploymentId(hostId, installationId), machines, rows),
           options.log,
           () => clock.now(),
         );
