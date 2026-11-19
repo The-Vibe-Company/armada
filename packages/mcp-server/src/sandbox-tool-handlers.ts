@@ -18,6 +18,7 @@ import { mcpLaunchContract, runMcpLaunch } from "./mcp-launch-tool.ts";
 import { DEFAULT_WAIT_SECONDS, registerListTool, registerLogsTool, registerStatusTools } from "./mcp-read-tools.ts";
 import { runtimeBridgeTarget } from "./provider-runtime-admission.ts";
 import { recordOperatorFailure } from "./request-observability.ts";
+import { RuntimeCheckpointRejected } from "./runtime-checkpoint.ts";
 import { appendConversation, sandboxActivity } from "./sandbox-activity.ts";
 import { refuseConversationSelector } from "./sandbox-conversation.ts";
 
@@ -465,13 +466,30 @@ export function configureTools(
 
       if (found.stopRequestedAt || ["stopping", "stopped"].includes(found.status))
         return { id: found.id, status: found.status };
-      const { provider } = await live(args.id, true);
+      const { provider } = await live(args.id, true, found);
+      const needsCheckpoint =
+        found.ownerId === caller.userId &&
+        runtimeBridgeTarget(found) &&
+        ["ready", "running"].includes(found.status) &&
+        Date.parse(found.expiresAt ?? "") > context.now().getTime();
+      if (needsCheckpoint && !context.runtimeStopCheckpoint)
+        throw new VaultError("unavailable", "Runtime stop checkpoint is unavailable.");
+      const checkpoint = needsCheckpoint
+        ? await context.runtimeStopCheckpoint!(caller, found, args.only_if_idle === true).catch((error) => {
+            if (error instanceof RuntimeCheckpointRejected) return null;
+            throw error;
+          })
+        : undefined;
       const idleGuard: Pick<ServerSandboxPatch, "onlyIfIdle"> = { onlyIfIdle: args.only_if_idle === true };
+      const retainedGuard: Pick<ServerSandboxPatch, "retainedRuntimeStop"> = checkpoint
+        ? { retainedRuntimeStop: checkpoint.requestId }
+        : {};
       return sandboxActivity(
         data.sandboxes,
         found,
         {
           ...idleGuard,
+          ...retainedGuard,
           status: found.status === "failed" ? "failed" : "stopping",
           stoppedAt: null,
           stopRequested: true,
@@ -502,18 +520,26 @@ export function configureTools(
             };
           let terminal = false;
           let stoppedAt: Date | undefined;
-          let preservationNote: string | undefined;
+          let preservationNote =
+            checkpoint === null ? "Runtime checkpoint was refused. No resumable checkpoint was recorded." : undefined;
           try {
             if (provider.collectTurnUsage) await collectSandboxUsage(provider, data.sandboxes, found);
             signal.throwIfAborted();
-            const observed = await stopAndObserve(provider, found.id, found.providerSandboxId, "user_stop", signal);
+            const observed = await stopAndObserve(
+              provider,
+              found.id,
+              found.providerSandboxId,
+              "user_stop",
+              signal,
+              Boolean(checkpoint),
+            );
             terminal =
               observed.state === "stopped" &&
               (provider.id !== "boat" || observed.retainedSnapshot === "usable" || found.status === "failed");
             stoppedAt = observed.stoppedAt;
-            preservationNote = observed.stopNote;
+            preservationNote = observed.stopNote ?? preservationNote;
           } catch (error) {
-            if (!(error instanceof ProviderError && error.code === "not_found")) throw error;
+            if (checkpoint || !(error instanceof ProviderError && error.code === "not_found")) throw error;
             terminal = provider.id !== "boat";
           }
           signal.throwIfAborted();
