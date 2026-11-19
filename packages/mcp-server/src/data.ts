@@ -32,7 +32,7 @@ import {
   withUsageTotals,
 } from "@armada/core";
 import type { Provider } from "@armada/core/server";
-import { assertGoldenBackendBinding, assertSqlGoldenMutation } from "@armada/core/server";
+import { assertGoldenBackendBinding, assertSqlGoldenMutation, beginSnapshotLaunch } from "@armada/core/server";
 import { beginGoldenOperation, reconcileGoldenOperations } from "../../core/src/golden-store.ts";
 import { recordNativeAccountExhaustion } from "./account-exhaustion.ts";
 import { publishAccountSpend, unmeasuredUsage } from "./account-spend.ts";
@@ -265,6 +265,12 @@ export function createSqlData(
       },
       reconcileOperations: (golden, actor) => reconcileGoldenOperations(sql, golden, actor),
       beginOperation: (id, expected) => beginGoldenOperation(sql, id, expected),
+      beginSnapshotLaunch(golden, actor, sandboxId) {
+        ownOrg(golden.orgId);
+        if (actor.userId !== caller.userId || actor.orgId !== golden.orgId)
+          throw new GoldenError("forbidden", "Caller mismatch.");
+        return beginSnapshotLaunch(sql, golden, actor, sandboxId);
+      },
       assertBackendBinding: (golden, provider) => assertGoldenBackendBinding(sql, golden, provider),
       async assertMutation(golden, actor) {
         if (actor.userId !== caller.userId || !orgIds.includes(golden.orgId))
@@ -446,6 +452,10 @@ export function createSqlData(
            ), snapshot_reference as (
              insert into public.sandbox_source_snapshots (sandbox_id,snapshot_id)
              select id,$27::text from inserted where $27::text is not null
+             returning sandbox_id
+           ), consumed_intent as (
+             delete from public.ordinary_launch_snapshot_intents i using snapshot_reference r
+             where i.sandbox_id=r.sandbox_id
            )
            select * from inserted`,
           [
