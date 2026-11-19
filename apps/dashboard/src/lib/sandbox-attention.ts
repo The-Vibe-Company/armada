@@ -20,7 +20,6 @@ export const CONTINUE_PROMPT =
 
 /** What the events say about the agent's work. */
 export type TurnSummary = {
-  /** The latest turn's status, or `running` while this conversation has a turn in flight. Null before the first. */
   status: PromptStatus | null;
   /** Why the latest turn failed, as the server reported it. */
   reason: string | null;

@@ -165,8 +165,7 @@ export async function deleteSandbox(_previous: ActionResult | null, data: FormDa
   redirect("/sandboxes");
 }
 
-/** A new turn in the sandbox’s conversation. The model and effort override applies to this turn only. */
-export async function sendToSandbox(_previous: ActionResult | null, data: FormData): Promise<ActionResult> {
+export async function sendToSandbox(_previous: ActionResult | null, data: FormData) {
   const id = formString(data, "sandbox");
   const prompt = formString(data, "prompt").trim();
   if (!isUuid(id)) return fail("That request is not valid.");
@@ -201,8 +200,7 @@ export async function sendToSandbox(_previous: ActionResult | null, data: FormDa
   return done("Sent.");
 }
 
-/** A message into the turn running in the sandbox. It never changes the model: that is a new turn. */
-export async function steerSandbox(_previous: ActionResult | null, data: FormData): Promise<ActionResult> {
+export async function steerSandbox(_previous: ActionResult | null, data: FormData) {
   const id = formString(data, "sandbox");
   const text = formString(data, "prompt").trim();
   if (!isUuid(id)) return fail("That request is not valid.");
@@ -223,8 +221,7 @@ export async function steerSandbox(_previous: ActionResult | null, data: FormDat
   return done(restarted ? "Steered. The turn restarted with your message." : "Steered.");
 }
 
-/** Stops the turn running in the sandbox. The sandbox stays up for the next message. */
-export async function interruptSandbox(_previous: ActionResult | null, data: FormData): Promise<ActionResult> {
+export async function interruptSandbox(_previous: ActionResult | null, data: FormData) {
   const id = formString(data, "sandbox");
   if (!isUuid(id)) return fail("That request is not valid.");
   const target = await gatewayFor(id);

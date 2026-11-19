@@ -94,7 +94,6 @@ type Props = {
   harness: Harness;
   catalog: ModelCatalog;
   launchedModel: string | null;
-  /** The recorded current conversation scopes turn state when status metadata is unavailable. */
   currentConversation?: string | undefined;
   /** The Armada server is configured: messages can be sent. */
   configured: boolean;
