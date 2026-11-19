@@ -1146,7 +1146,7 @@
     "packages/provider-modal/src/ingest.ts": 3,
     "packages/provider-modal/src/ports.ts": 36,
     "packages/provider-modal/src/process-scope.ts": 4,
-    "packages/provider-modal/src/provider.ts": 100,
+    "packages/provider-modal/src/provider.ts": 95,
     "packages/provider-modal/src/receipts.ts": 1,
     "packages/provider-modal/src/runtime-overlay.ts": 3,
     "packages/provider-modal/src/snapshot.ts": 2,
