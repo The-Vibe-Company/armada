@@ -282,6 +282,7 @@ export function createSandboxLifecycle(
       let error: string | null = null;
       let resolved = false;
       let observing = false;
+      let initialObservation = true;
       let handingOffObservedResume = false;
       let waitingForRetention = false;
       let stoppedAt: Date | undefined;
@@ -296,6 +297,18 @@ export function createSandboxLifecycle(
         !expired &&
         !row.stop_requested_at &&
         ["ready", "running"].includes(row.status);
+      const canDeferInterruptedResume =
+        row.interrupted_resume && !expired && !row.stop_requested_at && !row.application_secret_tainted;
+      const deferInterruptedResume = () =>
+        sql.query(
+          `update public.sandboxes set reconcile_after=now()+interval '1 minute',
+             reconcile_lease=null,reconcile_lease_until=null
+           where id=$1 and reconcile_lease=$2 and lifecycle_generation=$3 and status='starting'
+             and reconcile_lease_until>clock_timestamp() and activity_lease_id=$4
+             and activity_until<=clock_timestamp() and expires_at>clock_timestamp()
+             and stop_requested_at is null and deleted_at is null and not application_secret_tainted`,
+          [row.id, token, row.lifecycle_generation, row.activity_lease_id],
+        );
       try {
         // Uses persisted owner membership, source credential visibility and pinned Modal App.
         const provider = await operation(signal, () => providerFor(row.id));
@@ -307,26 +320,16 @@ export function createSandboxLifecycle(
           return info;
         };
         let info = await observe();
+        initialObservation = false;
         if (
-          row.interrupted_resume &&
-          !expired &&
-          !row.stop_requested_at &&
-          !row.application_secret_tainted &&
+          canDeferInterruptedResume &&
           info.id === row.provider_sandbox_id &&
           info.state === "starting" &&
           BOAT_ACTIVATION_PHASES.has(info.providerState) &&
           !info.physicalExitConfirmed
         ) {
           handingOffObservedResume = true;
-          await sql.query(
-            `update public.sandboxes set reconcile_after=now()+interval '1 minute',
-               reconcile_lease=null,reconcile_lease_until=null
-             where id=$1 and reconcile_lease=$2 and lifecycle_generation=$3 and status='starting'
-               and reconcile_lease_until>clock_timestamp() and activity_lease_id=$4
-               and activity_until<=clock_timestamp() and expires_at>clock_timestamp()
-               and stop_requested_at is null and deleted_at is null and not application_secret_tainted`,
-            [row.id, token, row.lifecycle_generation, row.activity_lease_id],
-          );
+          await deferInterruptedResume();
           return true;
         }
         if (
@@ -541,6 +544,13 @@ export function createSandboxLifecycle(
         if (authorityLost && operatorStop && !signal?.aborted) {
           await deferToOperator("original provider authority unavailable.");
           return true;
+        }
+        if (canDeferInterruptedResume && initialObservation && observing) {
+          signal?.throwIfAborted();
+          if (caught instanceof ProviderError && caught.retryable && caught.code !== "not_found" && !authorityLost) {
+            await deferInterruptedResume();
+            return true;
+          }
         }
         // A definitive absence for the exact registered identity is terminal.
         // Never infer absence from transport errors or discover resources by name.

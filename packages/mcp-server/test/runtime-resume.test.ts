@@ -328,7 +328,17 @@ test("an unenrolled Boat resume returns to a confirmed retained stop before anot
   }
 });
 
-test.each(["activation receipt", "pending ticket", "observed archive", "observed running", "unrecognized state"])(
+const interruptedResumeProofs = [
+  "activation receipt",
+  "pending ticket",
+  "observed archive",
+  "observed running",
+  "transient observation failure",
+  "cancelled observation",
+  "unrecognized state",
+];
+
+test.each(interruptedResumeProofs)(
   "the worker reconciles an interrupted Boat resume with %s evidence",
   async (proof) => {
     const f = await stopped();
@@ -356,8 +366,11 @@ test.each(["activation receipt", "pending ticket", "observed archive", "observed
       const store = createSqlData(f.sql)(f.caller).sandboxes;
       expect((await store.get(f.row.id))?.status).toBe("starting");
       const running = { body: { sandbox: sdkSandbox({ id: f.row.providerSandboxId, state: "running" }) } };
+      const cancelled = proof === "cancelled observation" ? new AbortController() : undefined;
+      const interruption = Error("Lifecycle lane cancelled");
       const { provider, requests } = fakeBoat(
-        ...(proof === "observed archive"
+        ...(proof === "transient observation failure" ? [{ status: 503 }] : []),
+        ...(proof === "observed archive" || proof === "transient observation failure" || cancelled
           ? [{ body: { sandbox: retainedSandbox({ id: f.row.providerSandboxId, snapshotAvailable: false }) } }]
           : []),
         ...(proof === "observed running" ? [running, running, {}] : []),
@@ -366,8 +379,30 @@ test.each(["activation receipt", "pending ticket", "observed archive", "observed
           : []),
         { body: { sandbox: retainedSandbox({ id: f.row.providerSandboxId }) } },
       );
-      const worker = createSandboxLifecycle(f.sql, async () => provider);
+      const worker = createSandboxLifecycle(f.sql, async () => ({
+        ...provider,
+        async get(id) {
+          if (cancelled && !cancelled.signal.aborted) {
+            cancelled.abort(interruption);
+            throw interruption;
+          }
+          return provider.get(id);
+        },
+      }));
+      if (cancelled) {
+        const outcome = await worker.reconcileOne(cancelled.signal).catch((error) => error);
+        expect((await store.get(f.row.id))?.status).toBe("starting");
+        expect(outcome).toBe(interruption);
+        expect(await worker.reconcileOne()).toBe(false);
+        await f.db.query("update sandboxes set reconcile_lease_until=now() where id=$1", [f.row.id]);
+      }
       expect(await worker.reconcileOne()).toBe(true);
+      if (proof === "transient observation failure") {
+        expect((await store.get(f.row.id))?.status).toBe("starting");
+        expect(await worker.reconcileOne()).toBe(false);
+        await f.db.query("update sandboxes set reconcile_after=now() where id=$1", [f.row.id]);
+        expect(await worker.reconcileOne()).toBe(true);
+      }
       if (proof === "unrecognized state") {
         expect((await store.get(f.row.id))?.status).toBe("failed");
         return;
