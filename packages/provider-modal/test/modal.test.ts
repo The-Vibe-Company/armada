@@ -1079,7 +1079,6 @@ function admissionBarrier() {
     retry: retry.promise,
     wait: async () => {
       retry.resolve();
-      // A claim can be released between the busy response and the retry hook.
       if (holder) await Promise.allSettled([holder]);
     },
     track(store: ReturnType<typeof createSqlModalStore>, sandboxId: string) {
