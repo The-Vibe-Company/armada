@@ -7,6 +7,7 @@ import {
   type Sql,
   VaultError,
 } from "@armada/core/server";
+import type { ModalProvider } from "@armada/provider-modal";
 import { mergedWorkProof } from "./merged-work.ts";
 
 import { nativeIdleDue, nativeQuiescent } from "./native-idle.ts";
@@ -93,7 +94,7 @@ export async function requestRefusedDockerResumeStop(tx: Sql, sandboxId: string,
   return stopped.rows.length > 0;
 }
 
-async function recoverInterruptedBoatResume(
+async function recoverInterruptedRuntimeResume(
   tx: Sql,
   sandboxId: string,
   lease: string,
@@ -112,14 +113,18 @@ async function recoverInterruptedBoatResume(
       join public.runtime_checkpoints c on c.sandbox_id=r.sandbox_id and c.epoch=r.source_epoch
       where s.id=$1 and s.reconcile_lease=$2 and s.lifecycle_generation=$3
         and s.reconcile_lease_until>clock_timestamp() and s.activity_until<=clock_timestamp()
-        and s.provider='boat' and s.boat_runtime and s.status='starting'
+        and s.status='starting'
         and s.stop_requested_at is null and s.deleted_at is null and s.expires_at>clock_timestamp()
         and not s.application_secret_tainted
         and exists(select 1 from public.members m where m.org_id=s.org_id and m.user_id=s.owner_id)
         and r.sandbox_id=s.id and r.request_id=s.activity_lease_id and r.phase='dispatched' and r.receipt is null
         and e.runtime_hash is null
-        and (s.provider_sandbox_id=$5::text or r.activated_at is not null
-          or (e.enrolment_hash is not null and e.lifecycle_generation=$3))
+        and (
+          (s.provider='boat' and s.boat_runtime and (s.provider_sandbox_id=$5::text or r.activated_at is not null
+            or (e.enrolment_hash is not null and e.lifecycle_generation=$3)))
+          or (s.provider='modal' and s.runtime_transport='dialout'
+            and e.enrolment_hash is not null and e.lifecycle_generation=$3)
+        )
         and c.watermark=r.watermark
         and c.watermark=(select coalesce(max(sequence),0) from public.runtime_events where sandbox_id=s.id)
       returning s.id,r.request_id
@@ -194,7 +199,7 @@ export function createSandboxLifecycle(
           reconcile_lease_until=now()+interval '2 minutes'
         from (
           select candidate.id,recovery.retained_resume from public.sandboxes candidate
-          cross join lateral (select candidate.provider='boat' and candidate.status='stopping' and exists(
+          cross join lateral (select candidate.status='stopping' and exists(
             select 1 from public.sandbox_transitions t where t.sandbox_id=candidate.id and t.generation=candidate.lifecycle_generation
             and t.actor='runtime_resume' and t.code=$3 and t.to_status='stopping'
           ) as retained_resume) recovery
@@ -215,7 +220,11 @@ export function createSandboxLifecycle(
         where s.id=due.id
         returning s.id,s.provider_sandbox_id,s.runtime_transport,s.boat_runtime,s.lifecycle_generation,s.expires_at,s.status::text as status,s.status_reason,s.task_prompt_id,s.activity_lease_id,s.application_secret_tainted,s.credential_id,s.credential_version,s.stop_requested_at,s.preservation_note,
           ${mergedWorkProof("s")} as work_merged,due.retained_resume,
-          (s.provider='boat' and s.boat_runtime and s.status='starting' and exists(
+          (s.status='starting' and (s.provider='boat' and s.boat_runtime or
+            s.provider='modal' and s.runtime_transport='dialout' and exists(
+              select 1 from public.runtime_enrolments e where e.sandbox_id=s.id and e.runtime_hash is null
+                and e.enrolment_hash is not null and e.lifecycle_generation=s.lifecycle_generation
+            )) and exists(
             select 1 from public.runtime_resumes r where r.sandbox_id=s.id and r.request_id=s.activity_lease_id
               and r.phase='dispatched' and r.receipt is null
           )) as interrupted_resume,
@@ -226,7 +235,7 @@ export function createSandboxLifecycle(
       if (!row) return false;
       const recoverInterruptedResume = async (observedProviderId: string | null) => {
         if (!row.interrupted_resume) return false;
-        if (!sql.transaction) throw Error("Boat resume recovery requires a SQL transaction.");
+        if (!sql.transaction) throw Error("Runtime resume recovery requires a SQL transaction.");
         return sql.transaction(async (tx) => {
           const owned = await tx.query(
             `select id from public.sandboxes where id=$1 and reconcile_lease=$2 and lifecycle_generation=$3
@@ -235,7 +244,7 @@ export function createSandboxLifecycle(
           );
           return (
             owned.rows.length > 0 &&
-            (await recoverInterruptedBoatResume(tx, row.id, token, row.lifecycle_generation, observedProviderId))
+            (await recoverInterruptedRuntimeResume(tx, row.id, token, row.lifecycle_generation, observedProviderId))
           );
         });
       };
@@ -287,6 +296,7 @@ export function createSandboxLifecycle(
       let stoppedAt: Date | undefined;
       const expired = new Date(row.expires_at).getTime() <= now();
       const retainedResume = row.retained_resume;
+      const modalRollback = retainedResume && providerId === "modal";
       const native = !row.boat_runtime && row.runtime_transport !== "dialout";
       // Lease expiry is not evidence a native exec completed. Retain its identity
       // until an owner outcome or explicit/TTL cleanup, rather than inventing idle.
@@ -297,7 +307,11 @@ export function createSandboxLifecycle(
         !row.stop_requested_at &&
         ["ready", "running"].includes(row.status);
       const canDeferInterruptedResume =
-        row.interrupted_resume && !expired && !row.stop_requested_at && !row.application_secret_tainted;
+        providerId === "boat" &&
+        row.interrupted_resume &&
+        !expired &&
+        !row.stop_requested_at &&
+        !row.application_secret_tainted;
       const deferInterruptedResume = () =>
         sql.query(
           `update public.sandboxes set reconcile_after=now()+interval '1 minute',
@@ -308,10 +322,63 @@ export function createSandboxLifecycle(
              and stop_requested_at is null and deleted_at is null and not application_secret_tainted`,
           [row.id, token, row.lifecycle_generation, row.activity_lease_id],
         );
+      const settle = async () => {
+        await sql.query(
+          `update public.sandboxes set
+        -- A failed launch keeps its diagnostic even after its machine is confirmed stopped.
+        status=case when $7 or status='starting' then 'failed'::public.sandbox_status when $4 and status <> 'failed' then 'stopped'::public.sandbox_status when $13 then 'stopping'::public.sandbox_status else status end,
+        transition_context=jsonb_build_object('actor','reconciler','code',
+          case when status='starting' then 'launch_interrupted'
+            when $7 then 'provider_exit_without_checkpoint'
+            when $13 then 'stop_requested'
+            when $10 and status_reason is distinct from 'work_merged' then 'expired'
+            else 'provider_stopped' end),
+        status_reason=case when status='starting' then coalesce(status_reason,$8::text) when $7 then coalesce(case when status_reason not in ('idle_paused','work_merged') then status_reason end,'Provider confirmed physical exit without a new verified recovery checkpoint.') when $4 and $10 and status<>'failed' and status_reason is distinct from 'work_merged' then 'expired' else status_reason end,
+        stop_requested_at=case when $4 then null when $13 or status='starting' then coalesce(stop_requested_at,now()) else stop_requested_at end,
+        stop_generation=case when $13 and stop_requested_at is null then stop_generation+1 else stop_generation end,
+        stopped_at=case when $4 then coalesce(stopped_at,$9::timestamptz,now()) else stopped_at end,
+        last_observed_at=case when $5::text is null then now() else last_observed_at end,
+        activity_lease_id=case when $11 and not $4 then activity_lease_id else null end,
+        activity_until=case when $11 and not $4 then activity_until else null end,
+        lifecycle_error=$5::text,
+        reconcile_after=case when $12 and not $4 then 'infinity'::timestamptz else now()+interval '1 minute' end,
+        reconcile_lease=case when $6 then reconcile_lease else null end,
+        reconcile_lease_until=case when $6 then reconcile_lease_until
+          when $12 and not $4 then now()+interval '1 minute' else null end
+        where id=$1::uuid and reconcile_lease=$2::uuid and lifecycle_generation=$3
+          and reconcile_lease_until>clock_timestamp()
+          and (activity_until is null or activity_until<now())`,
+          [
+            row.id,
+            token,
+            row.lifecycle_generation,
+            terminal,
+            error,
+            signal?.aborted ?? false,
+            physicalExit,
+            INTERRUPTED_LAUNCH_REASON,
+            stoppedAt?.toISOString() ?? null,
+            expired,
+            retainUnknownActivity,
+            retainedResume,
+            waitingForRetention,
+          ],
+        );
+        return true;
+      };
       try {
         // Uses persisted owner membership, source credential visibility and pinned Modal App.
         const provider = await operation(signal, () => providerFor(row.id));
         resolved = true;
+        if (modalRollback) {
+          const rollback = (provider as Partial<ModalProvider>).rollbackRuntimeResume;
+          if (provider.id !== "modal" || !rollback) throw Error("Modal rollback authority is unavailable.");
+          await operation(signal, () =>
+            rollback.call(provider, { sandboxId: row.provider_sandbox_id, generation: row.lifecycle_generation - 1 }),
+          );
+          terminal = true;
+          return settle();
+        }
         const observe = async () => {
           observing = true;
           const info = await operation(signal, () => provider.get(row.provider_sandbox_id));
@@ -331,6 +398,7 @@ export function createSandboxLifecycle(
           return true;
         }
         if (
+          providerId === "boat" &&
           row.interrupted_resume &&
           (info.state === "stopped" ||
             ((info.state === "ready" || info.state === "running") && !info.physicalExitConfirmed))
@@ -553,6 +621,7 @@ export function createSandboxLifecycle(
         // Never infer absence from transport errors or discover resources by name.
         if (
           resolved &&
+          !modalRollback &&
           (providerId !== "boat" || observing) &&
           caught instanceof ProviderError &&
           caught.code === "not_found"
@@ -563,48 +632,7 @@ export function createSandboxLifecycle(
         // No provider exception text: SDK errors may contain credential-bearing requests.
         else error = "Provider lifecycle observation unavailable. Retrying without deleting retained data.";
       }
-      await sql.query(
-        `update public.sandboxes set
-        -- A failed launch keeps its diagnostic even after its machine is confirmed stopped.
-        status=case when $7 or status='starting' then 'failed'::public.sandbox_status when $4 and status <> 'failed' then 'stopped'::public.sandbox_status when $13 then 'stopping'::public.sandbox_status else status end,
-        transition_context=jsonb_build_object('actor','reconciler','code',
-          case when status='starting' then 'launch_interrupted'
-            when $7 then 'provider_exit_without_checkpoint'
-            when $13 then 'stop_requested'
-            when $10 and status_reason is distinct from 'work_merged' then 'expired'
-            else 'provider_stopped' end),
-        status_reason=case when status='starting' then coalesce(status_reason,$8::text) when $7 then coalesce(case when status_reason not in ('idle_paused','work_merged') then status_reason end,'Provider confirmed physical exit without a new verified recovery checkpoint.') when $4 and $10 and status<>'failed' and status_reason is distinct from 'work_merged' then 'expired' else status_reason end,
-        stop_requested_at=case when $4 then null when $13 or status='starting' then coalesce(stop_requested_at,now()) else stop_requested_at end,
-        stop_generation=case when $13 and stop_requested_at is null then stop_generation+1 else stop_generation end,
-        stopped_at=case when $4 then coalesce(stopped_at,$9::timestamptz,now()) else stopped_at end,
-        last_observed_at=case when $5::text is null then now() else last_observed_at end,
-        activity_lease_id=case when $11 and not $4 then activity_lease_id else null end,
-        activity_until=case when $11 and not $4 then activity_until else null end,
-        lifecycle_error=$5::text,
-        reconcile_after=case when $12 and not $4 then 'infinity'::timestamptz else now()+interval '1 minute' end,
-        reconcile_lease=case when $6 then reconcile_lease else null end,
-        reconcile_lease_until=case when $6 then reconcile_lease_until
-          when $12 and not $4 then now()+interval '1 minute' else null end
-        where id=$1::uuid and reconcile_lease=$2::uuid and lifecycle_generation=$3
-          and reconcile_lease_until>clock_timestamp()
-          and (activity_until is null or activity_until<now())`,
-        [
-          row.id,
-          token,
-          row.lifecycle_generation,
-          terminal,
-          error,
-          signal?.aborted ?? false,
-          physicalExit,
-          INTERRUPTED_LAUNCH_REASON,
-          stoppedAt?.toISOString() ?? null,
-          expired,
-          retainUnknownActivity,
-          retainedResume,
-          waitingForRetention,
-        ],
-      );
-      return true;
+      return settle();
     } finally {
       if (raw.size === 0) admitted[providerId]--;
       else

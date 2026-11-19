@@ -1161,10 +1161,15 @@ test("retained enrolled Modal stop snapshots only after quiescence and resumes i
   await f.provider.stopRuntime({ sandboxId: worker.id, physicalGeneration: "1", epoch: "7", watermark: 2 });
   expect(f.log.slice(afterLaunch)).toEqual(["scrub", "snapshot", "terminate"]);
   await expect(
-    f.provider.resumeRuntime({ sandboxId: worker.id, ttlSeconds: 900, checkpoint: { epoch: "7", watermark: 3 } }),
+    f.provider.resumeRuntime({
+      sandboxId: worker.id,
+      generation: 2,
+      ttlSeconds: 900,
+      checkpoint: { epoch: "7", watermark: 3 },
+    }),
   ).rejects.toMatchObject({ code: "conflict" });
   expect(f.creates).toBe(1);
-  const request = { sandboxId: worker.id, ttlSeconds: 900, checkpoint: { epoch: "7", watermark: 2 } };
+  const request = { sandboxId: worker.id, generation: 2, ttlSeconds: 900, checkpoint: { epoch: "7", watermark: 2 } };
   f.failCreate(true);
   await expect(f.provider.resumeRuntime(request)).rejects.toThrow();
   expect(f.creates).toBe(2);
@@ -1188,13 +1193,48 @@ test("retained enrolled Modal stop snapshots only after quiescence and resumes i
   await expect(f.provider.resumeRuntime(request)).rejects.toMatchObject({ code: "conflict" });
 });
 
+test("retained Modal rollback retries termination and fences a newer replacement", async () => {
+  const f = fixture(scope, fixtureSql, undefined, undefined, true);
+  const worker = await runningFork(f);
+  const checkpoint = { epoch: "1", watermark: 2 };
+  await f.provider.stopRuntime({ sandboxId: worker.id, physicalGeneration: "1", ...checkpoint });
+  const { recoveryImageId } = await f.store.get(worker.id);
+  const request = { sandboxId: worker.id, generation: 2, ttlSeconds: 900, checkpoint };
+  await f.provider.resumeRuntime(request);
+  const replacement = await f.store.get(worker.id);
+  f.onTerminate(async () => {
+    throw Error("Termination confirmation unavailable");
+  });
+  await expect(f.provider.rollbackRuntimeResume(request)).rejects.toThrow();
+  expect(await f.store.get(worker.id)).toMatchObject({ phase: "terminate", recoveryImageId });
+  f.onTerminate(async () => {});
+  const before = f.log.length;
+  await f.provider.rollbackRuntimeResume(request);
+  await f.provider.rollbackRuntimeResume(request);
+  expect(f.log.slice(before)).toEqual(["terminate"]);
+  expect(await f.store.get(worker.id)).toMatchObject({
+    phase: "stopped",
+    recoveryImageId,
+    runtimeCheckpoint: { ...checkpoint, physicalId: replacement.physicalId, generation: 2 },
+  });
+  await f.provider.resumeRuntime({ ...request, generation: 4 });
+  await expect(f.provider.rollbackRuntimeResume(request)).rejects.toMatchObject({ code: "conflict" });
+  expect(await f.provider.get(worker.id)).toMatchObject({ state: "ready", physicalGeneration: "3" });
+  expect((await f.store.get(worker.id)).imageId).toBe(recoveryImageId);
+});
+
 test("cleanup reconciles an unknown enrolled Modal resume create without activating or allocating again", async () => {
   const f = fixture(scope, fixtureSql, undefined, undefined, true);
   const worker = await runningFork(f);
   await f.provider.stopRuntime({ sandboxId: worker.id, physicalGeneration: "1", epoch: "1", watermark: 2 });
   f.failCreate(true);
   await expect(
-    f.provider.resumeRuntime({ sandboxId: worker.id, ttlSeconds: 900, checkpoint: { epoch: "1", watermark: 2 } }),
+    f.provider.resumeRuntime({
+      sandboxId: worker.id,
+      generation: 2,
+      ttlSeconds: 900,
+      checkpoint: { epoch: "1", watermark: 2 },
+    }),
   ).rejects.toThrow();
   expect(await f.store.get(worker.id)).toMatchObject({ phase: "creating", generation: 2 });
   expect((await f.store.get(worker.id)).physicalId).toBeUndefined();
@@ -1222,7 +1262,12 @@ test("uncertain enrolled Modal snapshot refuses retry or resume and compute fall
   await expect(f.provider.stopRuntime(proof)).rejects.toMatchObject({ code: "conflict" });
   expect(f.log.slice(afterLaunch)).toEqual(["scrub", "snapshot"]);
   await expect(
-    f.provider.resumeRuntime({ sandboxId: worker.id, ttlSeconds: 900, checkpoint: { epoch: "1", watermark: 2 } }),
+    f.provider.resumeRuntime({
+      sandboxId: worker.id,
+      generation: 2,
+      ttlSeconds: 900,
+      checkpoint: { epoch: "1", watermark: 2 },
+    }),
   ).rejects.toMatchObject({ code: "conflict" });
   await f.provider.stop({ sandboxId: worker.id });
   expect((await f.store.get(worker.id)).runtimeCheckpoint).toBeUndefined();

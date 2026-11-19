@@ -377,12 +377,13 @@ export function createRuntimeResume(
           if (!member.rows.length) return;
           await tx.query("select id from public.sandboxes where id=$1 for update", [found.id]);
           const runtime = (
-            await tx.query<{ epoch: string; live: boolean; activation_confirmed: boolean }>(
+            await tx.query<{ epoch: string; live: boolean; ticket_issued: boolean; activation_confirmed: boolean }>(
               `select epoch::text,(runtime_hash is not null) as live,
-                  ((enrolment_hash is not null and lifecycle_generation=$2) or exists(
+                  (enrolment_hash is not null and lifecycle_generation=$2) as ticket_issued,
+                  exists(
                     select 1 from public.runtime_resumes where sandbox_id=$1 and request_id=$3
                       and phase='dispatched' and activated_at is not null
-                  )) as activation_confirmed
+                  ) as activation_confirmed
                from public.runtime_enrolments where sandbox_id=$1 for update`,
               [found.id, admitted.current.lifecycleGeneration, requestId],
             )
@@ -390,7 +391,13 @@ export function createRuntimeResume(
           if (runtime?.live && runtime.epoch === admitted.op.target_epoch) return;
           const boatSourceEpoch =
             found.provider === "boat" && runtime && !runtime.live && runtime.epoch === admitted.op.source_epoch;
-          const retained = Boolean(boatSourceEpoch && (runtime.activation_confirmed || preActivationArchive));
+          const retained = Boolean(
+            (boatSourceEpoch && (runtime.ticket_issued || runtime.activation_confirmed || preActivationArchive)) ||
+              (found.provider === "modal" &&
+                runtime?.ticket_issued &&
+                !runtime.live &&
+                runtime.epoch === admitted.op.source_epoch),
+          );
           if (boatSourceEpoch && !retained && error instanceof BoatResumeActivationUncertain) {
             await deferAmbiguousBoatResume(tx, found.id, requestId, admitted.current.lifecycleGeneration);
             return;

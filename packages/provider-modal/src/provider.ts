@@ -127,10 +127,17 @@ export interface ModalProvider extends Provider {
     watermark: number;
   }): Promise<void>;
   resumeRuntime(
-    input: { sandboxId: string; checkpoint: { epoch: string; watermark: number }; ttlSeconds: number },
+    input: {
+      sandboxId: string;
+      generation: number;
+      checkpoint: { epoch: string; watermark: number };
+      ttlSeconds: number;
+    },
     signal?: AbortSignal,
     onResumeStage?: ResumeStageObserver,
   ): Promise<SandboxInfo>;
+  /** Roll back an unenrolled replacement bound to this logical resume generation. */
+  rollbackRuntimeResume(input: { sandboxId: string; generation: number }): Promise<void>;
   configureGitHub: NonNullable<Provider["configureGitHub"]>;
   findGoldenBuilder: NonNullable<Provider["findGoldenBuilder"]>;
   disposeGoldenBuilder: NonNullable<Provider["disposeGoldenBuilder"]>;
@@ -1155,6 +1162,7 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
           const sb = await physical(row);
           if (row.phase !== "terminate") {
             if ((await sb.poll()) !== null) throw refusal("sandbox_not_ready", "Checkpoint source has exited.");
+            delete row.runtimeResumeGeneration;
             row.runtimeCheckpoint = expected;
             row.phase = "checkpoint";
             row.info.state = "stopping";
@@ -1223,6 +1231,7 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
             if (checkpoint.generation !== row.generation || checkpoint.physicalId !== row.physicalId)
               throw refusal("conflict", "Retained source incarnation does not match.");
             row.generation++;
+            row.runtimeResumeGeneration = input.generation;
             row.ttlSeconds = input.ttlSeconds;
             row.imageId = row.recoveryImageId;
             row.phase = "reserved";
@@ -1238,6 +1247,7 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
             await save(row); // Persist the new physical generation before remote activation.
           }
           if (
+            row.runtimeResumeGeneration !== input.generation ||
             row.generation !== checkpoint.generation + 1 ||
             row.imageId !== row.recoveryImageId ||
             row.ttlSeconds !== input.ttlSeconds
@@ -1253,6 +1263,46 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
         if (observed) throw new ModalOperationError(error, await resourceReceipt(observed));
         throw error;
       }
+    },
+    async rollbackRuntimeResume({ sandboxId, generation }) {
+      await bound();
+      await store.lease(sandboxId, async (row, save) => {
+        assertMachineSource(row);
+        const checkpoint = row.runtimeCheckpoint;
+        if (
+          !row.commonRuntime ||
+          row.runtimeResumeGeneration !== generation ||
+          !row.recoveryImageId ||
+          row.imageId !== row.recoveryImageId ||
+          !checkpoint ||
+          !row.physicalId
+        )
+          throw refusal("conflict", "Rollback requires the exact retained resume.");
+        if (
+          row.phase === "stopped" &&
+          checkpoint.generation === row.generation &&
+          checkpoint.physicalId === row.physicalId
+        )
+          return;
+        if (row.generation !== checkpoint.generation + 1 || !["active", "terminate"].includes(row.phase))
+          throw refusal("conflict", "Rollback requires the exact replacement incarnation.");
+        if (row.phase !== "terminate") {
+          row.phase = "terminate";
+          row.info.state = "stopping";
+          await save(row);
+        }
+        const replacement = await physical(row);
+        if ((await replacement.poll()) === null) {
+          await replacement.terminate({ wait: true });
+          if ((await replacement.poll()) === null) throw refusal("unavailable", "Replacement exit is unconfirmed.");
+        }
+        row.runtimeCheckpoint = { ...checkpoint, physicalId: row.physicalId, generation: row.generation };
+        row.phase = "stopped";
+        row.info.state = "stopped";
+        row.info.providerState = "stopped";
+        row.info.stoppedAt = new Date();
+        await save(row);
+      });
     },
     outputReadBytes: OUTPUT_MAX_READ_BYTES,
     listOutputEntries(request) {
