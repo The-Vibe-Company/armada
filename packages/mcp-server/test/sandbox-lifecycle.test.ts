@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { type Provider, ProviderError, type Sql, VaultError } from "@armada/core";
 import { createBoatProvider } from "@armada/provider-boat";
 import { retainedSandbox, sandbox } from "../../provider-boat/test/support.ts";
-import { createSqlData } from "../src/data.ts";
+import { createSqlData, type ServerSandboxPatch } from "../src/data.ts";
 import { createDockerHostStore } from "../src/docker-host-store.ts";
 import { createDockerSandboxService } from "../src/docker-sandbox-service.ts";
 import { createRuntimeEnrolments } from "../src/runtime-enrolment.ts";
@@ -669,20 +669,26 @@ for (const observation of ["stopped", "expired", "unavailable"] as const) {
       // The production send-admission owner rearms the persisted policy, then the
       // real SDK resumes the stopped machine and admits its next native prompt.
       const beforeRearm = await databaseNowMs(sql);
-      await sandboxActivity(
-        store,
-        confirmed,
-        { renewLifecycle: true, status: "starting", stoppedAt: null },
-        async (signal) => {
-          const receipt = await provider.prompt({
-            sandboxId: confirmed.providerSandboxId,
-            harness: "claude",
-            text: "continue",
-            signal,
-          });
-          return { result: receipt, patch: { status: "running", stoppedAt: null } };
-        },
-      );
+      const admission = {
+        renewLifecycle: true,
+        stopRequested: false,
+        nativeResumeAdmission: confirmed.providerSandboxId,
+      } satisfies ServerSandboxPatch;
+      await sandboxActivity(store, confirmed, admission, async (signal) => {
+        const receipt = await provider.prompt({
+          sandboxId: confirmed.providerSandboxId,
+          harness: "claude",
+          text: "continue",
+          signal,
+        });
+        const patch = {
+          nativeSendReceipt: { fromState: "starting", placement: confirmed.providerSandboxId },
+          taskPromptId: receipt.promptId,
+          conversationIds: [receipt.conversationId],
+          stoppedAt: null,
+        } satisfies ServerSandboxPatch;
+        return { result: receipt, patch };
+      });
       const afterRearm = await databaseNowMs(sql);
       const resumed = await store.get(id);
       expect(resumed?.stoppedAt).toBeNull();
@@ -706,7 +712,7 @@ for (const observation of ["stopped", "expired", "unavailable"] as const) {
       const beforeObservation = methods.length;
       expect(await lifecycle.reconcileOne()).toBe(true);
       expect(resolutions).toBe(2);
-      expect(methods.slice(beforeObservation)).toEqual(["GET"]);
+      expect(methods.slice(beforeObservation)).toEqual(["GET", "GET"]);
       expect((await store.get(id))?.status).toBe("running");
     }
   });
