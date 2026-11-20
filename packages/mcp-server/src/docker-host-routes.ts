@@ -16,7 +16,7 @@ import { fail } from "./control-response.ts";
 import { DockerHostDraining, DockerLimitsRefused } from "./docker-capacity.ts";
 import { type createDockerHostStore, DockerHostDenied } from "./docker-host-store.ts";
 import { DockerHostUpgradeRequired, supportsDockerHostProtocol } from "./docker-host-version.ts";
-import { dockerMachineInventory } from "./docker-machine-inventory.ts";
+import { dockerInventoryDeploymentId, dockerMachineInventory } from "./docker-machine-inventory.ts";
 import type { DockerSnapshots } from "./docker-snapshots.ts";
 import type { Route } from "./http.ts";
 import { createProviderReaper } from "./provider-reaper.ts";
@@ -225,7 +225,7 @@ export function createDockerHostRoutes(
         }
       }
       const inventoryDeploymentId = (hostId: string, installationId: string) =>
-        `${new URL(options.publicUrl ?? request.url).origin}/${hostId}/${installationId}`;
+        dockerInventoryDeploymentId(options.publicUrl ?? request.url, hostId, installationId);
       if (path === inventoryPath) {
         const body: unknown = JSON.parse(await readBoundedText(request, inventoryMaxBytes));
         if (!object(body)) throw new InvalidInput();

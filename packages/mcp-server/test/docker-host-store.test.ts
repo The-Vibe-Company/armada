@@ -13,7 +13,7 @@ import { type Api, type Executor, type State, type Store, tick } from "../../doc
 import { admitDockerDisk, DockerHostDraining } from "../src/docker-capacity.ts";
 import { createDockerHostRoutes } from "../src/docker-host-routes.ts";
 import { createDockerHostStore, DockerHostDenied } from "../src/docker-host-store.ts";
-import { createDockerMachineBindings } from "../src/docker-machine-bindings.ts";
+import { createDockerMachineGenerationBindings } from "../src/docker-machine-bindings.ts";
 import { SNAPSHOT_COLUMNS } from "../src/docker-snapshot-data.ts";
 import type { Job } from "../src/jobs/runner.ts";
 import { createJobsStore } from "../src/jobs/store.ts";
@@ -389,7 +389,7 @@ async function machineCreateFixture(
 ) {
   const host = registered ?? (await fixture());
   const sandboxId = randomUUID();
-  const bindings = createDockerMachineBindings(sql, { ...host, deploymentId: randomUUID() });
+  const bindings = createDockerMachineGenerationBindings(sql, host);
   const generation = await bindings.bind({ sandboxId, generation: 1 });
   const a = await boundFixture(host, {
     sandboxId,
@@ -509,7 +509,7 @@ test("retiring a host cancels its stale Machine create without failing a newer s
 async function prepareRestore(registered?: Awaited<ReturnType<typeof fixture>>, useSnapshot = false) {
   const host = registered ?? (await fixture());
   const db = database();
-  const bindings = createDockerMachineBindings(sql, { ...host, deploymentId: randomUUID() });
+  const bindings = createDockerMachineGenerationBindings(sql, host);
   const sandboxId = randomUUID();
   const predecessor = await bindings.bind({ sandboxId, generation: 1 });
   const generation = await bindings.bind({ sandboxId, generation: 2 });
@@ -619,7 +619,7 @@ test("runner restore admission commits the transition, binding and mailbox inten
   const db = database();
   const expiresAt = Date.UTC(2099, 0, 1);
   const host = await fixture();
-  const bindings = createDockerMachineBindings(sql, { ...host, deploymentId: randomUUID() });
+  const bindings = createDockerMachineGenerationBindings(sql, host);
   const sandboxId = randomUUID();
   const generation = await bindings.bind({ sandboxId, generation: 1 });
   const a = await boundFixture(host, { sandboxId, generation, expiresAt });
@@ -1344,7 +1344,7 @@ test("an older restore cannot fence a predecessor receipt for a generation with 
   await database().query("update sandboxes set lifecycle_generation=3 where id=$1", [a.sandboxId]);
   expect(await a.poll([a.cleanupId])).toBeNull();
 
-  const bindings = createDockerMachineBindings(sql, { ...a, deploymentId: randomUUID() });
+  const bindings = createDockerMachineGenerationBindings(sql, a);
   await bindings.bind({ sandboxId: a.sandboxId, generation: 3 });
   await store.cleaned(a.hostToken, a.installationId, { requestId: a.cleanupId });
 
@@ -3204,65 +3204,84 @@ test("Docker Machine bindings survive a lost allocation reply and fence replacem
   const rollback = { ...predecessor, generation: 40 };
   await expect(
     database().transaction(async (tx) => {
-      await createDockerMachineBindings(tx, scope).bind(rollback);
+      await createDockerMachineGenerationBindings(tx, scope).bind(rollback);
       throw new Error("Interrupted before commit");
     }),
   ).rejects.toThrow("Interrupted before commit");
-  const bindings = createDockerMachineBindings(sql, scope);
+  const bindings = createDockerMachineGenerationBindings(sql, scope);
   expect(await bindings.lookup(rollback)).toBeUndefined();
 
-  const first = await database().transaction((tx) => createDockerMachineBindings(tx, scope).bind(predecessor));
+  const first = await database().transaction((tx) =>
+    createDockerMachineGenerationBindings(tx, scope).bind(predecessor),
+  );
   expect(await bindings.bind(predecessor)).toBe(first);
   const next = await bindings.bind(replacement);
   expect(next).not.toBe(first);
   expect(await bindings.lookup(predecessor)).toBe(first);
   expect(await bindings.lookup(replacement)).toBe(next);
 
-  const other = createDockerMachineBindings(sql, { ...scope, installationId: randomUUID() });
+  const other = createDockerMachineGenerationBindings(sql, { ...scope, installationId: randomUUID() });
   await expect(other.bind(replacement)).rejects.toThrow("bound to another host installation");
   expect(await other.lookup(replacement)).toBeUndefined();
 });
 
 test("Docker Machine inventory projects only exact scoped report bindings", async () => {
-  const scope = { hostId: randomUUID(), installationId: randomUUID(), deploymentId: "test" };
+  const { hostId, installationId, hostToken } = await fixture();
+  const serverUrl = "https://inventory.example.test/path";
+  const deploymentId = `https://inventory.example.test/${hostId}/${installationId}`;
   const incarnation = { sandboxId: randomUUID(), generation: 23 };
-  const bindings = createDockerMachineBindings(sql, scope);
-  const generation = await bindings.bind(incarnation);
+  const generation = await createDockerMachineGenerationBindings(sql, { hostId, installationId }).bind(incarnation);
   const reported = {
     sandboxId: incarnation.sandboxId,
     generation,
     machineId: "a".repeat(64),
     createdAt: new Date(0),
-    deploymentId: scope.deploymentId,
-    containerName: `armada-${scope.installationId}-${scope.hostId}-${incarnation.sandboxId}-${generation}`,
+    deploymentId,
+    containerName: `armada-${installationId}-${hostId}-${incarnation.sandboxId}-${generation}`,
   };
-  const foreignInstallation = randomUUID();
-  const foreignHost = createDockerMachineBindings(sql, { ...scope, installationId: foreignInstallation });
-  const legacyGeneration = randomUUID();
+  const unboundGeneration = randomUUID();
   const report = [
     { ...reported, deploymentId: "foreign" },
     { ...reported, containerName: "renamed" },
     {
       ...reported,
-      generation: legacyGeneration,
-      containerName: reported.containerName.replace(generation, legacyGeneration),
+      generation: unboundGeneration,
+      containerName: reported.containerName.replace(generation, unboundGeneration),
     },
     reported,
   ];
 
-  expect(await Array.fromAsync(bindings.listInventory(report))).toEqual([
-    { ...incarnation, machineId: reported.machineId, deploymentId: scope.deploymentId, createdAt: reported.createdAt },
+  const inventory = store.machineInventory(hostToken, installationId, serverUrl, report);
+  expect(await Array.fromAsync(inventory.listInventory())).toEqual([
+    { ...incarnation, machineId: reported.machineId, deploymentId, createdAt: reported.createdAt },
   ]);
-  expect(
-    await Array.fromAsync(
-      foreignHost.listInventory([
-        {
-          ...reported,
-          containerName: reported.containerName.replace(scope.installationId, foreignInstallation),
-        },
-      ]),
-    ),
-  ).toEqual([]);
+});
+
+test("Docker Machine inventory refuses a foreign binding even under rewritten report labels", async () => {
+  const source = await fixture();
+  const reporting = await fixture();
+  const serverUrl = "https://inventory.example.test";
+  const { hostId, installationId, hostToken } = reporting;
+  const incarnation = { sandboxId: randomUUID(), generation: 23 };
+  const generation = await createDockerMachineGenerationBindings(sql, source).bind(incarnation);
+  const inventory = store.machineInventory(hostToken, installationId, serverUrl, [
+    {
+      sandboxId: incarnation.sandboxId,
+      generation,
+      machineId: "a".repeat(64),
+      createdAt: new Date(0),
+      deploymentId: `${serverUrl}/${hostId}/${installationId}`,
+      containerName: `armada-${installationId}-${hostId}-${incarnation.sandboxId}-${generation}`,
+    },
+  ]);
+  expect(await Array.fromAsync(inventory.listInventory())).toEqual([]);
+});
+
+test("Docker Machine inventory refuses credentials from a different installation", async () => {
+  const { hostToken } = await fixture();
+  const { installationId } = await fixture();
+  const inventory = store.machineInventory(hostToken, installationId, "https://inventory.example.test", []);
+  await denied(Array.fromAsync(inventory.listInventory()));
 });
 
 test("only the service role can read and insert Docker Machine bindings, and cannot rewrite them", async () => {
