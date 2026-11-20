@@ -1,5 +1,44 @@
 # Changelog
 
+## [5.0.0](https://github.com/The-Vibe-Company/armada/compare/v4.0.0...v5.0.0) (2026-11-20)
+
+
+### ⚠ BREAKING CHANGES
+
+* **sdk:** SDK types inferred from the contract ([#3581](https://github.com/The-Vibe-Company/armada/issues/3581))
+
+### Features
+
+* **accounts:** make a model account private or share it with the organization ([#3573](https://github.com/The-Vibe-Company/armada/issues/3573)) ([0a4dd54](https://github.com/The-Vibe-Company/armada/commit/0a4dd543e1e84efcbd01b3bc72667868f02221fd))
+* **accounts:** make a model account private or share it with the organization ([#3576](https://github.com/The-Vibe-Company/armada/issues/3576)) ([874a26f](https://github.com/The-Vibe-Company/armada/commit/874a26f5c00635a4d078fbc6df98c9ae2f3ed120))
+* **accounts:** make a model account private or share it with the organization ([#3584](https://github.com/The-Vibe-Company/armada/issues/3584)) ([658fbc9](https://github.com/The-Vibe-Company/armada/commit/658fbc942f2d0fadbbe0f8e6b11af003b078d871))
+* **accounts:** make a model account private or share it with the organization ([#3587](https://github.com/The-Vibe-Company/armada/issues/3587)) ([7391679](https://github.com/The-Vibe-Company/armada/commit/7391679d6c397a7bf24e7abdeedb0c59fce16ba9))
+* **auth:** API keys for agents: create, list and revoke from the dashboard and the CLI ([#3562](https://github.com/The-Vibe-Company/armada/issues/3562)) ([3c87af0](https://github.com/The-Vibe-Company/armada/commit/3c87af024c6a755f52e62e91977a422276a8ee2a))
+* **cli:** armada login opens one browser link; the browser authenticates the CLI (device flow) ([#3558](https://github.com/The-Vibe-Company/armada/issues/3558)) ([e3ddd2b](https://github.com/The-Vibe-Company/armada/commit/e3ddd2b2f7e117b5e453c99dcc68072c16b9dcba))
+* **cli:** armada login opens one browser link; the browser authenticates the CLI (device flow) ([#3590](https://github.com/The-Vibe-Company/armada/issues/3590)) ([aa188d1](https://github.com/The-Vibe-Company/armada/commit/aa188d11b76c774c489b6f999325bfa1396c8a6d))
+* **sdk:** list, interrupt, steer, exec, outputs and viewer token ([#3613](https://github.com/The-Vibe-Company/armada/issues/3613)) ([e2b1b5c](https://github.com/The-Vibe-Company/armada/commit/e2b1b5c02f8491ac81513c6e8658c67bb4d6090b))
+* **sdk:** SDK types inferred from the contract ([#3581](https://github.com/The-Vibe-Company/armada/issues/3581)) ([b0d20b9](https://github.com/The-Vibe-Company/armada/commit/b0d20b937907299f2b085260ace85eff00bc80fd))
+
+
+### Bug Fixes
+
+* **api:** publish a machine-validatable SSE cursor maximum ([#3604](https://github.com/The-Vibe-Company/armada/issues/3604)) ([9099158](https://github.com/The-Vibe-Company/armada/commit/90991588c161f721138cec78d464862f74f0e649))
+* **auth:** device login needs ARMADA_CLI_CONSENT_KEY on both server and dashboard, undocumented and unchecked ([#3608](https://github.com/The-Vibe-Company/armada/issues/3608)) ([e89d3b5](https://github.com/The-Vibe-Company/armada/commit/e89d3b594e2cda7c2b862c83af1f70d51f4ead48))
+* **db:** keep SQL-standard routine bodies within their migration statement ([#3606](https://github.com/The-Vibe-Company/armada/issues/3606)) ([92834e6](https://github.com/The-Vibe-Company/armada/commit/92834e65cef9d3a068a9a2413da5c796bd69729e))
+* **db:** staging refuses function-level custom settings in the account scope migrations ([#3595](https://github.com/The-Vibe-Company/armada/issues/3595)) ([dc41665](https://github.com/The-Vibe-Company/armada/commit/dc41665690d0bc914b4ada1a12fadc2ab7d4b14d))
+* **docker-host:** reclaim dead Docker restore helpers ([#3607](https://github.com/The-Vibe-Company/armada/issues/3607)) ([a3d8cc9](https://github.com/The-Vibe-Company/armada/commit/a3d8cc91cdd9168fa7f5eacab290f9fbc3e42402))
+* **docker:** settle the preceding turn after a native auth writer busy refusal ([#3611](https://github.com/The-Vibe-Company/armada/issues/3611)) ([a761576](https://github.com/The-Vibe-Company/armada/commit/a76157612551263169a2324a5c24b7fb3a8f411c))
+* **release:** production deploy crash-looped on missing Modal runtime variables the release config check never verified ([#3555](https://github.com/The-Vibe-Company/armada/issues/3555)) ([547ec27](https://github.com/The-Vibe-Company/armada/commit/547ec27986a2a97288a2aa0e47e7c1a699f10860))
+* **release:** reconcile step gets 403 labelling the version PR after the release is created ([#3535](https://github.com/The-Vibe-Company/armada/issues/3535)) ([6a29be3](https://github.com/The-Vibe-Company/armada/commit/6a29be35a3f8da1de8c1ec66aaf3de7fc180fc9a))
+* **release:** recovery that reuses receipts reaches production approval ([#3540](https://github.com/The-Vibe-Company/armada/issues/3540)) ([480b52e](https://github.com/The-Vibe-Company/armada/commit/480b52e9b39cdb88a4a25df7d7cea5299ffd26dd))
+* **runtime:** GitHub git/gh wrappers require /usr/bin/python3, so runtime launches fail on goldens without python3 ([#3552](https://github.com/The-Vibe-Company/armada/issues/3552)) ([0f79b9c](https://github.com/The-Vibe-Company/armada/commit/0f79b9cbcad871337d31c2266783f9738f1cbfbb))
+* **runtime:** GitHub git/gh wrappers require /usr/bin/python3, so runtime launches fail on goldens without python3 ([#3560](https://github.com/The-Vibe-Company/armada/issues/3560)) ([a18aef6](https://github.com/The-Vibe-Company/armada/commit/a18aef64df1c816800f802d475203c72a3ef2a94))
+* **runtime:** GitHub git/gh wrappers require /usr/bin/python3, so runtime launches fail on goldens without python3 ([#3567](https://github.com/The-Vibe-Company/armada/issues/3567)) ([c567cdf](https://github.com/The-Vibe-Company/armada/commit/c567cdf006a51f730d0e87f96df312da5ca05861))
+* **runtime:** GitHub git/gh wrappers require /usr/bin/python3, so runtime launches fail on goldens without python3 ([#3574](https://github.com/The-Vibe-Company/armada/issues/3574)) ([e62c525](https://github.com/The-Vibe-Company/armada/commit/e62c5255a8db80143b8008ab3e0e4cef3121e905))
+* **server:** startup blocks /healthz on failing Modal artifact warming, so every staging deploy times out ([#3624](https://github.com/The-Vibe-Company/armada/issues/3624)) ([c61639b](https://github.com/The-Vibe-Company/armada/commit/c61639bed5c6993ebde794a42d4341dbb2231bb5))
+* **smoke:** reaper evidence check fails whenever the previous staging deployment lived shorter than a reaper pass ([#3629](https://github.com/The-Vibe-Company/armada/issues/3629)) ([b9e8b5f](https://github.com/The-Vibe-Company/armada/commit/b9e8b5f7881d94913e65facb3d8a71fc3be63e25))
+* **smoke:** release smoke red on scoped_child_stop (scoped_stop_unproven) and lifecycle resume_usage ([#3634](https://github.com/The-Vibe-Company/armada/issues/3634)) ([7546dda](https://github.com/The-Vibe-Company/armada/commit/7546ddae63c1b69860e12da2ae378946e02a8a6b))
+
 ## [4.0.0](https://github.com/The-Vibe-Company/armada/compare/v3.0.0...v4.0.0) (2026-11-19)
 
 
