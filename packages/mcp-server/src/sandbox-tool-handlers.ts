@@ -480,7 +480,10 @@ export function configureTools(
             throw error;
           })
         : undefined;
-      const idleGuard: Pick<ServerSandboxPatch, "onlyIfIdle"> = { onlyIfIdle: args.only_if_idle === true };
+      const stopAdmission: Pick<ServerSandboxPatch, "ownerStop" | "onlyIfIdle"> = {
+        ownerStop: true,
+        onlyIfIdle: args.only_if_idle === true,
+      };
       const retainedGuard: Pick<ServerSandboxPatch, "retainedRuntimeStop"> = checkpoint
         ? { retainedRuntimeStop: checkpoint.requestId }
         : {};
@@ -488,7 +491,7 @@ export function configureTools(
         data.sandboxes,
         found,
         {
-          ...idleGuard,
+          ...stopAdmission,
           ...retainedGuard,
           status: found.status === "failed" ? "failed" : "stopping",
           stoppedAt: null,
@@ -514,6 +517,7 @@ export function configureTools(
                 status: found.status === "failed" ? ("failed" as const) : ("stopping" as const),
               },
               patch: {
+                ownerStop: true as const,
                 status: found.status === "failed" ? ("failed" as const) : ("stopping" as const),
                 stopRequested: true,
               },
@@ -552,6 +556,7 @@ export function configureTools(
           return {
             result: { id: found.id, status, ...(preservationNote ? { preservationNote } : {}) },
             patch: {
+              ownerStop: true as const,
               status,
               stopRequested: !terminal,
               ...(status === "failed" || found.statusReason === "expired" ? { statusReason: found.statusReason } : {}),

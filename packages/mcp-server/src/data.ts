@@ -44,6 +44,7 @@ import {
   completeSandboxDeletion,
   expireAfterExtension,
   finishEnrolledRuntimeLaunch,
+  publishOwnerStop,
   recordObservedRuntimeState,
   settleRuntimeTurn,
 } from "./sandbox-lifecycle.ts";
@@ -64,6 +65,7 @@ export interface SandboxView extends SandboxRecord {
 export interface ServerSandboxPatch extends SandboxPatch {
   deleteCompleted?: true;
   expireAfterExtension?: true;
+  ownerStop?: true;
   onlyIfIdle?: boolean;
   retainedRuntimeStop?: string;
   modalRuntimeExtensionTarget?: string;
@@ -786,6 +788,18 @@ export function createSqlData(
           return;
         }
         if (patch.status === "deleted") throw new DataError("Sandbox deletion requires a confirmed receipt.");
+        const stopStatus =
+          patch.ownerStop && (patch.status === "stopping" || patch.status === "stopped" || patch.status === "failed")
+            ? patch.status
+            : undefined;
+        if (
+          patch.ownerStop &&
+          (!stopStatus ||
+            patch.expectedGeneration === undefined ||
+            !patch.activityToken ||
+            Boolean(patch.advanceGeneration) === Boolean(patch.finishActivity))
+        )
+          throw new DataError("Owner stop requires its activity generation, token and phase.");
         const reason = statusReasonOf(patch);
         if (patch.runtimeObservationFrom !== undefined) {
           if (
@@ -871,14 +885,10 @@ export function createSqlData(
         }
         if (patch.clearTaskOutcome) sets.push("task_outcome = null", "task_prompt_id = null");
         if (patch.taskPromptId !== undefined) set("task_prompt_id", patch.taskPromptId, "::text");
-        if (patch.status !== undefined) {
+        if (patch.status !== undefined && !patch.ownerStop) {
           set("status", patch.status, "::public.sandbox_status");
-          const code =
-            patch.retainedRuntimeStop === undefined
-              ? `'sandbox_' || ($${params.length}::public.sandbox_status)::text`
-              : "'runtime_retained_stop'";
           sets.push(`transition_context = case when s.provider in ('boat','modal')
-            then jsonb_build_object('actor','api','code',${code}) end`);
+            then jsonb_build_object('actor','api','code','sandbox_' || ($${params.length}::public.sandbox_status)::text) end`);
         }
         if (patch.conversationIds !== undefined) set("conversation_ids", patch.conversationIds, "::text[]");
         if (patch.stoppedAt !== undefined) set("stopped_at", patch.stoppedAt, "::timestamptz");
@@ -966,6 +976,16 @@ export function createSqlData(
             and not exists(select 1 from public.account_turn_queue q
               where q.sandbox_id=s.id and q.state in ('queued','dispatching'))
             and not exists(${unsettledRuntimeCommands("s.id", "s.lifecycle_generation")})`;
+        if (stopStatus !== undefined) {
+          fence += " and s.provider in ('boat','modal') and s.deleted_at is null";
+          fence += patch.finishActivity
+            ? stopStatus === "failed"
+              ? " and s.status in ('stopping','failed')"
+              : " and s.status='stopping'"
+            : stopStatus === "failed"
+              ? " and s.status='failed' and s.stop_requested_at is null"
+              : " and s.status in ('starting','ready','running') and s.stop_requested_at is null";
+        }
         const cancelTurns = patch.stopRequested === true && !idleAdmission;
         const wrapped = releaseReservation || cancelTurns;
         const admission = !!patch.advanceGeneration && !!patch.activityToken;
@@ -974,11 +994,17 @@ export function createSqlData(
         // changed while this statement waited on its lock is rechecked at its newest version,
         // so then the CAS may refuse a holder that this snapshot predates.
         const observeRefusal = !!patch.deleteRequested && admission && !wrapped;
+        const returning = stopStatus === undefined ? "id" : "id, status, generation";
         const update = `update public.sandboxes s set ${sets.join(", ")} from public.goldens g
            where s.id = $3 and g.id = s.golden_id and ${SANDBOX_VISIBLE}
-             and (${ownsActivity && patch.expectedGeneration !== undefined ? "true" : `${observationFence} and (s.activity_until is null or s.activity_until < now())`}) ${fence} returning s.id`;
+             and (${ownsActivity && patch.expectedGeneration !== undefined ? "true" : `${observationFence} and (s.activity_until is null or s.activity_until < now())`}) ${fence} returning ${stopStatus === undefined ? "s.id" : "s.id, s.status, s.lifecycle_generation::text as generation"}`;
         const applyUpdate = (connection: Sql) =>
-          connection.query<{ id: string | null; observed?: Record<string, unknown> | null }>(
+          connection.query<{
+            id: string | null;
+            status?: SandboxStatus;
+            generation?: string;
+            observed?: Record<string, unknown> | null;
+          }>(
             observeRefusal
               ? `with observed as (select s.status::text as status,
                   s.activity_lease_id as "activityLeaseId",
@@ -990,15 +1016,11 @@ export function createSqlData(
                 from public.sandboxes s where s.id=$3::uuid and ${SANDBOX_VISIBLE}),
               updated as (${update})
               select (select id from updated) as id, (select row_to_json(o) from observed o) as observed`
-              : `${wrapped ? "with updated as (" : ""}${update}${wrapped ? `)${cancelTurns ? ", refused as (update public.account_turn_queue q set state='failed',failure_reason='Dispatch refused by owner stop.' from updated u where q.sandbox_id=u.id and q.state in ('queued','dispatching'))" : ""}${releaseReservation ? ", released as (delete from public.account_agent_reservations r using updated u where r.sandbox_id=u.id)" : ""} select id from updated` : ""}`,
+              : `${wrapped ? "with updated as (" : ""}${update}${wrapped ? `)${cancelTurns ? ", refused as (update public.account_turn_queue q set state='failed',failure_reason='Dispatch refused by owner stop.' from updated u where q.sandbox_id=u.id and q.state in ('queued','dispatching'))" : ""}${releaseReservation ? ", released as (delete from public.account_agent_reservations r using updated u where r.sandbox_id=u.id)" : ""} select ${returning} from updated` : ""}`,
             params,
           );
         let result: Awaited<ReturnType<typeof applyUpdate>>;
-        if (
-          idleAdmission ||
-          patch.retainedRuntimeStop !== undefined ||
-          patch.modalRuntimeExtensionTarget !== undefined
-        ) {
+        if (stopStatus !== undefined || patch.modalRuntimeExtensionTarget !== undefined) {
           if (!sql.transaction) throw new Error("Fenced sandbox admission requires a transaction.");
           result = await sql.transaction(async (tx) => {
             // WARNING: The queue check needs a fresh statement snapshot after acquiring the sandbox lock.
@@ -1006,7 +1028,24 @@ export function createSqlData(
               `select s.id from public.sandboxes s where s.id=$3::uuid and ${SANDBOX_VISIBLE} for update`,
               [...scope, id],
             );
-            return locked.rows.length ? applyUpdate(tx) : { rows: [] };
+            if (!locked.rows.length) return { rows: [] };
+            const updated = await applyUpdate(tx);
+            const row = updated.rows[0];
+            if (stopStatus !== undefined && row?.id) {
+              if (!row.status || !row.generation) throw new Error("Owner stop update did not return its fence.");
+              await publishOwnerStop(tx, {
+                sandboxId: id,
+                generation: row.generation,
+                fromState: row.status,
+                toState: stopStatus,
+                code: patch.finishActivity
+                  ? "owner_stop_settled"
+                  : patch.retainedRuntimeStop
+                    ? "runtime_retained_stop"
+                    : "owner_stop_admitted",
+              });
+            }
+            return updated;
           });
         } else if (
           patch.taskPromptId &&

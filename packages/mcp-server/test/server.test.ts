@@ -1327,7 +1327,7 @@ describe("tools", () => {
   });
 
   test("a stop without a retained recovery disk remains terminal on later sends", async () => {
-    const { token, client, people, boat } = await start();
+    const { token, client, people, boat, db } = await start();
     const mcp = await client(await token(people.member));
     const launched = await call(mcp, "launch", { provider: "boat", golden: "shared", harness: "codex" });
     const get = boat.provider.get.bind(boat.provider);
@@ -1337,6 +1337,11 @@ describe("tools", () => {
     };
     const stopped = await call(mcp, "stop", { id: launchSandboxId(launched.data) });
     expect(stopped.data).toMatchObject({ status: "failed" });
+    const journal = await db.query(
+      "select actor, code from sandbox_transitions where sandbox_id=$1 and from_status='stopping' and to_status='failed'",
+      [launchSandboxId(launched.data)],
+    );
+    expect(journal.rows).toEqual([{ actor: "lifecycle_runner", code: "owner_stop_settled" }]);
     const sent = await call(mcp, "send", {
       id: launchSandboxId(launched.data),
       prompt: "must not resume",
