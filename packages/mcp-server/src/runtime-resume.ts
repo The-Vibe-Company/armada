@@ -372,7 +372,7 @@ export function createRuntimeResume(
                 claim ? assertClaim : undefined,
               );
             await prepareGitHub?.(caller, found.id);
-            await prepareMcp?.(caller, found.id, signal);
+            await prepareMcp?.(caller, found.id, signal, claim ? assertClaim : undefined);
             if (found.runtimeTransport === "dialout")
               await restoreScopedAccess?.(
                 caller.userId,
