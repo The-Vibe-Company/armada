@@ -12,8 +12,25 @@ import {
 import type { ChildAuthority } from "./child-authority.ts";
 import { DataError } from "./data.ts";
 import { recordOperatorDiagnostic } from "./request-observability.ts";
+import { RuntimeFollowupConflict } from "./runtime-followup.ts";
 import { ChildLaunchNotAllocated } from "./sandbox-access-child-launch.ts";
 import { trackedOperations } from "./tracked-operations.ts";
+
+function recordUncertainMessageReceipt(
+  receipt: { id: string; sandboxId: string },
+  causeCode: "prior_uncertain_receipt" | "dispatch_claim_missing",
+): void {
+  recordOperatorDiagnostic(
+    "scoped.child_message.receipt",
+    { errorClass: "ChildReceiptUncertain", message: "Child message outcome unconfirmed", stack: [] },
+    {
+      operationId: receipt.id,
+      sandboxId: receipt.sandboxId.toLowerCase(),
+      code: "child_outcome_unconfirmed",
+      causeCode,
+    },
+  );
+}
 
 export interface ChildLaunchSelection {
   goldenId: string;
@@ -231,7 +248,11 @@ export function createSandboxChildren(sql: Sql, authority: ChildAuthority, execu
     });
     const recoverStop = executor.recoverStop;
     const recovery = recoverStop ? receipt.recovery : undefined;
-    if (!receipt.fresh && !recovery) return { id: receipt.id, state: receipt.state, sandboxId: receipt.sandboxId };
+    if (!receipt.fresh && !recovery) {
+      if (input.action === "message" && receipt.state === "uncertain")
+        recordUncertainMessageReceipt(receipt, "prior_uncertain_receipt");
+      return { id: receipt.id, state: receipt.state, sandboxId: receipt.sandboxId };
+    }
     // Claim fresh dispatch once. Recovery may continue only at the checkpoint boundary.
     let row: ChildDispatch | undefined = recovery;
     if (!row) {
@@ -272,7 +293,10 @@ export function createSandboxChildren(sql: Sql, authority: ChildAuthority, execu
         return { id: receipt.id, state: "failed", sandboxId: receipt.sandboxId };
       }
     }
-    if (!row) return { id: receipt.id, state: "uncertain", sandboxId: receipt.sandboxId };
+    if (!row) {
+      if (input.action === "message") recordUncertainMessageReceipt(receipt, "dispatch_claim_missing");
+      return { id: receipt.id, state: "uncertain", sandboxId: receipt.sandboxId };
+    }
     const operation: ChildOperation = {
       id: row.id,
       orchestratorId: row.orchestrator_id,
@@ -381,11 +405,20 @@ export function createSandboxChildren(sql: Sql, authority: ChildAuthority, execu
             ? "sandbox_not_ready"
             : "native_admission_error"
           : undefined;
+        const causeCode =
+          state === "uncertain"
+            ? error instanceof RuntimeFollowupConflict
+              ? error.reason
+              : phase === "completion"
+                ? "completion_unconfirmed"
+                : "execution_unconfirmed"
+            : undefined;
         recordOperatorDiagnostic(`scoped.child_${input.action}.${phase}`, failureDiagnostic(error), {
           sandboxId: operation.sandboxId,
           operationId: operation.id,
           code,
           refusalCode,
+          causeCode,
         });
       }
       if (!recovery)
@@ -515,7 +548,7 @@ export function createSandboxChildren(sql: Sql, authority: ChildAuthority, execu
     stop: (token: string, key: string, sandboxId: string) => mutate(token, key, { action: "stop", sandboxId }),
     extend: (token: string, key: string, sandboxId: string, ttlSeconds: number) =>
       mutate(token, key, { action: "extend", sandboxId, ttlSeconds }),
-    async read(token: string, sandboxId: string): Promise<unknown> {
+    async read(token: string, sandboxId: string) {
       const identity = await authority.admit(token, { method: "read", childId: sandboxId }, async (_tx, p) => p);
       return executor.read(sandboxId, identity.ownerId, identity.orgId);
     },
