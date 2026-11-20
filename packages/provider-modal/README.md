@@ -77,7 +77,11 @@ managementAuthority provenance. It also accepts explicit
 public client injection. `ModalStore.imageReferenced` is a server-only boolean
 reference check: it counts private target references across visibility scopes
 without returning private resource IDs, owners, events or rows to a source caller.
-GC and fork reservation serialize on the source lease.
+GC and fork reservation serialize on the source lease. Store entry points recheck
+live organization membership, including for private owners. Lifecycle phase
+commits renew the 15-minute lease, and expired holders cannot commit late results.
+Image collection claims expire after five minutes. Tombstone deletion matches the
+name, source and image ID so a late collector cannot purge a replacement artifact.
 
 ## Runner / grants / credentials
 
@@ -88,6 +92,11 @@ Modal proxy token uses Authorization; the runner application token uses
 in registry JSON. Ingest validates live membership, scope, generation and producer
 sequence, dedupes identical replays, rejects conflicting replay and ACKs only after
 contiguous durable commit. No database/user/provider token reaches the runner.
+The handler bounds the request body before parsing JSON and checks the batch size.
+Grant verification must resolve scope on the server. Event projection runs in the
+same authenticated archive transaction before ACK and must tolerate replays.
+The archive stops at a missing producer sequence so downstream consumers see
+contiguous events.
 
 `resolveHarnessEnvironment(machine,launchEnv)` runs for each active generation,
 never for golden builders. It returns allowlisted `claudeEnv`, `codexEnv`, optional
@@ -458,7 +467,11 @@ with `receipt` and `details.resourceReceipt`; `modalFailureReceipt(error)` retur
 The whitelist contains logical/physical IDs, deterministic name, durable/observed phase,
 registryConfirmed, generation, Image/source/recovery references, binding and nonsensitive
 management provenance. No request/env/MCP config, auth, labels, prompt text or raw SDK
-cause is included. Known SDK Image IDs survive in a failure receipt even when their
+cause is included. SDK error classification uses recognized error names and
+validated numeric gRPC statuses from SDK ClientError instances. Public builder
+image failures keep only recognized build diagnostics, and lifecycle failure logs
+use allowlisted labels. Check the durable lifecycle phase before retrying any
+mutation, including when a transport error is marked retryable. Known SDK Image IDs survive in a failure receipt even when their
 SQL commit failed; new named snapshot IDs are also retained in Machine.snapshotImages.
 The SDK response-loss case where no Image ID was ever received remains unrecoverable.
 

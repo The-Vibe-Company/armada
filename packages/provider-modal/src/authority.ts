@@ -1,8 +1,6 @@
 import { refusal } from "./errors.ts";
 import type { ModalManagementProvenance, Scope } from "./ports.ts";
 
-/** Source access remains private even when its management credential came from the org fallback.
- * Only trusted server-selected provenance is accepted; never derive ownership from a profile label. */
 export function chooseManagementAuthority(
   source: Scope,
   requested?: ModalManagementProvenance,
@@ -23,8 +21,6 @@ export function matchesManagementAuthority(
   recorded: ModalManagementProvenance | undefined,
   chosen: ModalManagementProvenance,
 ): boolean {
-  // Legacy records predate this metadata. Root supplies their trusted persisted connection context;
-  // new resources and snapshots always retain explicit provenance for subsequent matching.
   return (
     !recorded ||
     (recorded.credentialScope === chosen.credentialScope && recorded.credentialOwnerId === chosen.credentialOwnerId)
