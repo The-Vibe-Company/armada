@@ -16,6 +16,7 @@ armada ls --harness claude --owner USER_UUID --org ORG_UUID --json
 | Option | Behavior |
 |---|---|
 | `--status STATUS` | One known sandbox status. Omitted status excludes deleted; use `--status deleted` explicitly. |
+| `--ref REF` | Match the exact external reference supplied at launch. Only matches sandboxes you own or administer. |
 | `--agent` / `--harness` | Aliases for one harness filter. Supplying both is rejected. |
 | `--golden UUID` | The flag retains its spelling; it takes a snapshot ID, not its name. Discover it with `snapshot ls --json`. |
 | `--owner UUID` / `--owner me` | Filter by user; the authenticated server resolves `me`. |
