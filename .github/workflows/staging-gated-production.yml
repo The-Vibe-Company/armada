@@ -159,6 +159,16 @@ jobs:
       - name: Install pinned deployment clients
         if: (steps.evidence.outputs.reused != 'true')
         run: npm install --global @railway/cli@5.71.0 vercel@65.14.0
+      - name: Check CLI device login configuration
+        if: (steps.evidence.outputs.reused != 'true')
+        run: |
+          set -o pipefail
+          if ! timeout 30s railway variable list --json --project "$RAILWAY_PROJECT_ID" \
+              --environment "$RAILWAY_ENVIRONMENT_ID" --service "$RAILWAY_SERVICE_ID" 2>/dev/null \
+              | bun .release-tools/scripts/release/device-login-configuration.ts; then
+            echo "::error::CLI device login configuration check failed; deployment was not started."
+            exit 1
+          fi
       - name: Check previous staging reaper evidence
         id: reaper
         continue-on-error: true

@@ -243,3 +243,17 @@ test("candidate configuration failure blocks production migrations", () => {
   expect(deploy).toBeGreaterThan(validate);
   expect(steps[validate]?.["continue-on-error"]).not.toBe(true);
 });
+
+test("device login configuration is checked before staging and production deployment", () => {
+  const stagingWorkflow = Bun.YAML.parse(
+    readFileSync(resolve(import.meta.dir, "../../.github/workflows/staging-gated-production.yml"), "utf8"),
+  ) as { jobs: Record<string, Job> };
+
+  for (const steps of [workflow.jobs.production?.steps ?? [], stagingWorkflow.jobs.staging?.steps ?? []]) {
+    const check = steps.findIndex((step) => step.run?.includes("/device-login-configuration.ts"));
+    const deploy = steps.findIndex((step) => step.run?.includes("/deploy-production.sh"));
+    expect(check).toBeGreaterThanOrEqual(0);
+    expect(deploy).toBeGreaterThan(check);
+    expect(steps[check]?.["continue-on-error"]).not.toBe(true);
+  }
+});

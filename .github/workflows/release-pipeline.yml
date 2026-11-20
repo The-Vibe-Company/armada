@@ -660,6 +660,15 @@ jobs:
             exit 1
           fi
       - uses: ./.github/actions/setup-bun
+      - name: Check CLI device login configuration
+        run: |
+          set -o pipefail
+          if ! timeout 30s railway variable list --json --project "$RAILWAY_PROJECT_ID" \
+              --environment "$RAILWAY_ENVIRONMENT_ID" --service "$RAILWAY_SERVICE_ID" 2>/dev/null \
+              | bun .release-tools/scripts/release/device-login-configuration.ts; then
+            echo "::error::CLI device login configuration check failed; deployment was not started."
+            exit 1
+          fi
       - name: Migrate, deploy server, wait healthy, then deploy prebuilt dashboard
         env:
           RELEASE_ENVIRONMENT: production
