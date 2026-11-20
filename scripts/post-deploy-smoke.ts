@@ -1273,7 +1273,7 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
               return result;
             },
             (result) => {
-              if (!result) fail("invalid_response");
+              if (result === null) fail("invalid_response");
               const { status } = result;
               if (status === "failed" || status === "stopped") fail("sandbox_not_ready");
               return status === "ready";
