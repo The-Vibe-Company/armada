@@ -8,6 +8,8 @@ import {
   type Sql,
 } from "@armada/core";
 import { decryptSecret, encryptSecret, OutputCollectionError } from "@armada/core/server";
+import { DockerMachineError } from "../../core/src/docker-machine.ts";
+import { type Api, type Executor, type State, type Store, tick } from "../../docker-host/src/daemon.ts";
 import { admitDockerDisk, DockerHostDraining } from "../src/docker-capacity.ts";
 import { createDockerHostRoutes } from "../src/docker-host-routes.ts";
 import { createDockerHostStore, DockerHostDenied } from "../src/docker-host-store.ts";
@@ -377,8 +379,8 @@ async function boundFixture(
   return { ...host, sandboxId, generation, owner, create };
 }
 
-async function restoreFixture() {
-  const host = await fixture();
+async function restoreFixture(registered?: Awaited<ReturnType<typeof fixture>>) {
+  const host = registered ?? (await fixture());
   const db = database();
   const bindings = createDockerMachineBindings(sql, { ...host, deploymentId: randomUUID() });
   const sandboxId = randomUUID();
@@ -472,6 +474,86 @@ test("restore work is gated and stays eligible behind an excluded predecessor cl
     })),
   });
   expect(await a.poll([a.restore.requestId])).toBeNull();
+});
+
+test("the daemon recovers pending restores and drains unrelated work with a full poll exclusion budget", async () => {
+  const host = await fixture();
+  const pairs: Awaited<ReturnType<typeof restoreFixture>>[] = [];
+  for (let index = 0; index < 13; index++) pairs.push(await restoreFixture(host));
+
+  let state: State = {
+    server: "https://armada.example",
+    installationId: host.installationId,
+    hostId: host.hostId,
+    hostToken: host.hostToken,
+    receipts: [],
+  };
+  const ledger: Store = {
+    async load() {
+      return structuredClone(state);
+    },
+    async save(next) {
+      state = structuredClone(next);
+    },
+  };
+  const completed: string[] = [];
+  let lastExclusions: string[] | undefined;
+  const api: Api = {
+    async register() {
+      throw new Error("Unexpected registration");
+    },
+    async poll(_state, options) {
+      lastExclusions = options?.running;
+      return { job: await pairs[0]!.poll(lastExclusions), held: true };
+    },
+    async result(_state, receipt) {
+      if (!receipt.outcome) throw new Error("Missing terminal outcome");
+      await store.complete(host.hostToken, host.installationId, {
+        requestId: receipt.requestId,
+        outcome: receipt.outcome,
+      });
+      if (receipt.outcome === "completed") completed.push(receipt.requestId);
+    },
+  };
+  const attempted = new Set<string>();
+  const executor: Executor = {
+    async create() {},
+    async stop() {},
+    async delete() {},
+    async stopIfExpired() {},
+    async restore({ generation }) {
+      if (!attempted.has(generation)) {
+        attempted.add(generation);
+        throw new DockerMachineError("docker_failed");
+      }
+    },
+  };
+  const now = () => Date.UTC(2026, 0, 1);
+  const deferRestores = new Set<string>();
+  for (const { restore } of pairs) {
+    await expect(tick(ledger, api, executor, false, now, { waitSeconds: 20, deferRestores })).rejects.toThrow(
+      DockerMachineError,
+    );
+    deferRestores.add(restore.requestId);
+  }
+  expect(new Set(state.receipts.map(({ requestId }) => requestId))).toEqual(deferRestores);
+  expect(state.receipts.every(({ outcome }) => !outcome)).toBe(true);
+
+  const live = [job(), job(), job()];
+  for (const active of live) await store.enqueue(host.actor, host.hostId, active);
+  const running = new Set(live.map(({ requestId }) => requestId));
+  const restoreConflicts = new Map(pairs.map(({ cleanupId, restore }) => [cleanupId, restore.requestId]));
+  const unrelated = job();
+  await store.enqueue(host.actor, host.hostId, unrelated);
+  const drain = () => tick(ledger, api, executor, false, now, { waitSeconds: 20, running, restoreConflicts });
+
+  expect(await drain()).toBe("worked");
+  expect(lastExclusions).toEqual([...running, ...restoreConflicts.keys()]);
+  expect(lastExclusions).toHaveLength(16);
+  expect(completed).toEqual([unrelated.requestId]);
+  for (let index = 0; index < pairs.length * 2; index++) expect(await drain()).toBe("worked");
+  const expected = [unrelated.requestId, ...pairs.flatMap(({ restore, cleanupId }) => [restore.requestId, cleanupId])];
+  expect(completed).toEqual(expected);
 });
 
 test("unbound enqueue cannot bypass restore admission", async () => {
