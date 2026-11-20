@@ -607,6 +607,64 @@ test("runner restore admission commits the transition, binding and mailbox inten
   });
 });
 
+test("the current runner attaches only a completed Docker restore and can recover an interrupted handoff", async () => {
+  const a = await restoreFixture();
+  const db = database();
+  const {
+    rows: [claim],
+  } = await db.query<Job>(
+    `update jobs set state='leased',lease_owner=$2,lease_epoch=2,lease_until='infinity',attempts=2
+     where id=$1 returning id,sandbox_id,generation::text,lease_epoch::text`,
+    [a.selection.runnerJobId, randomUUID()],
+  );
+  if (!claim) throw new Error("Missing fixture runner claim.");
+  const requestId = a.restore.requestId;
+  const placement = `armada-${a.installationId}-${a.hostId}-${a.sandboxId}-${requestId}`;
+  const current = async () =>
+    (
+      await db.query(
+        "select status, lifecycle_generation::text, docker_generation, provider_sandbox_id from sandboxes where id=$1",
+        [a.sandboxId],
+      )
+    ).rows[0];
+  const predecessor = await current();
+  await expect(store.attachMachineRestore(a.owner, claim, requestId)).rejects.toBeInstanceOf(DockerHostDenied);
+  await store.complete(a.hostToken, a.installationId, { requestId, outcome: "completed" });
+  await expect(store.attachMachineRestore(a.owner, { ...claim, lease_epoch: "1" }, requestId)).rejects.toBeInstanceOf(
+    DockerHostDenied,
+  );
+  await expect(store.attachMachineRestore(a.owner, { ...claim, generation: "1" }, requestId)).rejects.toBeInstanceOf(
+    DockerHostDenied,
+  );
+
+  await store.complete(a.hostToken, a.installationId, { requestId: a.cleanupId, outcome: "completed" });
+  const { faultingStore, failure } = interruptDockerCommit(async (tx) => {
+    const result = await tx.query("select 1 from sandboxes where id=$1 and docker_generation=$2", [
+      a.sandboxId,
+      requestId,
+    ]);
+    return result.rows.length > 0;
+  });
+  await expect(faultingStore.attachMachineRestore(a.owner, claim, requestId)).rejects.toMatchObject({ cause: failure });
+  expect(await current()).toEqual(predecessor);
+  expect(await store.attachMachineRestore(a.owner, claim, requestId)).toBe(placement);
+  await expect(store.attachMachineRestore(a.owner, claim, requestId)).resolves.toBe(placement);
+  expect(await current()).toEqual({
+    status: "starting",
+    lifecycle_generation: claim.generation,
+    docker_generation: requestId,
+    provider_sandbox_id: placement,
+  });
+
+  const stopId = randomUUID();
+  await store.enqueueSandbox(a.owner, a.sandboxId, { operation: "stop", requestId: stopId });
+  await expect(a.poll()).resolves.toEqual({
+    operation: "stop",
+    requestId: stopId,
+    request: a.restore.request,
+  });
+});
+
 test("restore enqueue rolls back on interruption and freezes one intent per target generation", async () => {
   const a = await prepareRestore();
   const { selection } = a;
@@ -718,6 +776,51 @@ test("authenticated restore expiry settles the exact starting generation before 
     { from_status: "starting", to_status: "stopped", generation: "3" },
   ]);
 });
+
+test.each([false, true])(
+  "authenticated restore expiry settles the attached replacement once (stop already admitted: %s)",
+  async (stopAdmitted) => {
+    const a = await restoreFixture();
+    const {
+      rows: [claim],
+    } = await database().query<Job>(
+      `update jobs set state='leased',lease_owner=$2,lease_epoch=1,lease_until='infinity',attempts=1
+     where id=$1 returning id,sandbox_id,generation::text,lease_epoch::text`,
+      [a.selection.runnerJobId, randomUUID()],
+    );
+    if (!claim) throw new Error("Missing fixture runner claim.");
+    const expiry = { requestId: a.restore.requestId };
+    expect(await a.poll()).toEqual(a.restore);
+    await store.complete(a.hostToken, a.installationId, { ...expiry, outcome: "completed" });
+    await store.attachMachineRestore(a.owner, claim, expiry.requestId);
+
+    if (stopAdmitted) {
+      await store.enqueueSandbox(a.owner, a.sandboxId, { operation: "stop", requestId: randomUUID() });
+    }
+    const before = stopAdmitted
+      ? { status: "stopping", lifecycle_generation: "3" }
+      : { status: "starting", lifecycle_generation: "2" };
+    const stoppedGeneration = stopAdmitted ? "4" : "3";
+    expect(await lifecycle(a.sandboxId)).toMatchObject(before);
+
+    const interrupted = failDockerObservationCommit(a.sandboxId, "docker_expiry_observed");
+    await expect(interrupted.faultingStore.expired(a.hostToken, a.installationId, expiry)).rejects.toMatchObject({
+      cause: interrupted.failure,
+    });
+    expect(await lifecycle(a.sandboxId)).toMatchObject(before);
+
+    await store.expired(a.hostToken, a.installationId, expiry);
+    await store.expired(a.hostToken, a.installationId, expiry);
+    expect(await lifecycle(a.sandboxId)).toMatchObject({
+      status: "stopped",
+      status_reason: "expired",
+      lifecycle_generation: stoppedGeneration,
+    });
+    expect(await dockerJournal(a.sandboxId, "docker_expiry_observed")).toEqual([
+      { from_status: before.status, to_status: "stopped", generation: stoppedGeneration },
+    ]);
+  },
+);
 
 test("an expired pre-handoff restore settles the output probe without reading an archive", async () => {
   const a = await restoreFixture();
@@ -1614,6 +1717,33 @@ test("a complete stopped Docker archive replaces the live sample, while a trunca
   if (!chunk) throw Error("missing encrypted output");
   expect(Buffer.from(await decryptSecret(chunk.content_enc, key), "base64").toString()).toBe("after the live sample");
   expect((await upload())?.status).toBe(204);
+});
+
+test("an attached Docker restore can publish the replacement's retained outputs", async () => {
+  const a = await restoreFixture();
+  const {
+    rows: [claim],
+  } = await database().query<Job>(
+    `update jobs set state='leased',lease_owner=$2,lease_epoch=1,lease_until='infinity',attempts=1
+     where id=$1 returning id,sandbox_id,generation::text,lease_epoch::text`,
+    [a.selection.runnerJobId, randomUUID()],
+  );
+  if (!claim) throw new Error("Missing fixture runner claim.");
+  const { requestId } = a.restore;
+  expect(await a.poll()).toEqual(a.restore);
+  await store.complete(a.hostToken, a.installationId, { requestId, outcome: "completed" });
+  await store.attachMachineRestore(a.owner, claim, requestId);
+  await store.expired(a.hostToken, a.installationId, { requestId });
+  const signal = new AbortController().signal;
+  const outputs = (body: ReadableStream<Uint8Array> | null) =>
+    store.retainedOutputs(a.hostToken, a.installationId, requestId, body, signal);
+
+  expect(await outputs(null)).toBe(202);
+  expect(await outputs(new Response(await stoppedOutputArchive()).body)).toBe(204);
+  expect((await database().query("select name from sandbox_outputs where sandbox_id=$1", [a.sandboxId])).rows).toEqual([
+    { name: "late.txt" },
+  ]);
+  expect(await outputs(null)).toBe(204);
 });
 
 test("a mixed-release replica sees and can supersede a Docker upload before publication", async () => {

@@ -4,7 +4,8 @@ import { BoatRetentionUnconfirmed } from "@armada/provider-boat";
 import type { Caller } from "./caller.ts";
 import { createSqlData, type SandboxView } from "./data.ts";
 import { createGoldenRuntimeEnvironment } from "./golden-runtime-environment.ts";
-import { recordLaunchStageQuietly } from "./launch-stage-record.ts";
+import type { GenerationHandoff } from "./jobs/runner.ts";
+import { recordLaunchStageQuietly, recordResumeAcceptedAt } from "./launch-stage-record.ts";
 import { runtimeBridgeTarget } from "./provider-runtime-admission.ts";
 import { lockRuntimeAccount } from "./runtime-account-admission.ts";
 import { runtimeAgentFor } from "./runtime-agent.ts";
@@ -29,6 +30,9 @@ export interface RuntimeResumeInput {
   runtimeVersion: 1;
   prompt: string;
 }
+/** Internal authority for the first wake of an exact queued send. */
+export type RuntimeWakeHandoff = (handoff: GenerationHandoff) => Promise<string>;
+
 export interface RuntimeResumeReceipt {
   id: string;
   requestId: string;
@@ -92,7 +96,11 @@ export function createRuntimeResume(
         [id, request],
       )
     ).rows[0];
-  return async (caller: Caller, input: RuntimeResumeInput): Promise<RuntimeResumeReceipt> => {
+  return async (
+    caller: Caller,
+    input: RuntimeResumeInput,
+    handoffWake?: RuntimeWakeHandoff,
+  ): Promise<RuntimeResumeReceipt> => {
     refuseConversationSelector(input);
     const requestId = input.request_id.toLowerCase();
     if (input.runtimeVersion !== 1 || !uuid.test(input.id) || !uuid.test(requestId) || !input.prompt.trim())
@@ -121,8 +129,10 @@ export function createRuntimeResume(
       await environment.validate(found.provider, actor, found.id);
     if (!sql.transaction) throw new VaultError("unavailable", "Runtime resume requires transactional admission.");
     const pricingContext = await store.captureUsagePricingContext?.(found.id);
-    const admitted = await sql.transaction(async (tx) => {
-      await lockRuntimeAccount(tx, caller, found, "Pinned runtime account is no longer authorized.");
+    const lockAccount = (tx: Sql) =>
+      lockRuntimeAccount(tx, caller, found, "Pinned runtime account is no longer authorized.");
+    const firstWakeHandoff = prior ? undefined : handoffWake;
+    const admit = async (tx: Sql) => {
       const fence = (
         await tx.query<{ tainted: boolean; lease: string | null; busy: boolean; unexpired: boolean }>(
           "select expires_at>now() as unexpired,application_secret_tainted as tainted,activity_lease_id::text as lease,(reconcile_lease_until>now()) as busy from public.sandboxes where id=$1 and owner_id=$2 for update",
@@ -157,6 +167,8 @@ export function createRuntimeResume(
       ).rows[0];
       const existing = await read(tx, found.id, requestId);
       if (existing) {
+        if (firstWakeHandoff)
+          throw new VaultError("conflict", "Runtime resume intent changed during queued admission.");
         if (existing.request_hash !== hash) throw new VaultError("conflict", "Resume request input changed.");
         if (existing.receipt) return { current, op: existing, first: false };
         if (
@@ -180,6 +192,7 @@ export function createRuntimeResume(
         });
         return { current, op: existing, first: false };
       }
+      if (handoffWake && !firstWakeHandoff) throw new VaultError("conflict", "Runtime resume intent disappeared.");
       if (!prepare)
         throw new VaultError("unavailable", "Trusted runtime resume policy is unavailable; no compute was activated.");
       if (
@@ -249,18 +262,36 @@ export function createRuntimeResume(
       });
       if (transition.kind === "conflict")
         throw new VaultError("conflict", "Runtime resume admission lost its retained stop or dispatch authority.");
-      await tx.query(
-        `update public.sandbox_launch_stages l set at=least(l.at,r.created_at)
-           from public.runtime_resumes r
-          where l.sandbox_id=$1 and l.stage='accepted'
-            and l.activation=(select max(a.activation) from public.sandbox_launch_stages a where a.sandbox_id=$1)
-            and r.sandbox_id=l.sandbox_id and r.request_id=$2`,
-        [found.id, requestId],
-      );
+      await recordResumeAcceptedAt(tx, found.id, requestId);
       const active = await createSqlData(tx)(caller).sandboxes.get(found.id);
       if (!active) throw new VaultError("not_found", "Runtime resume admission disappeared.");
       return { current: active, op, first: true };
-    });
+    };
+    let admission: Awaited<ReturnType<typeof admit>> | undefined;
+    if (firstWakeHandoff) {
+      await firstWakeHandoff({
+        lockPrerequisites: lockAccount,
+        async advance(tx, job) {
+          const { payload } = job;
+          if (
+            job.sandbox_id !== found.id ||
+            !payload ||
+            typeof payload !== "object" ||
+            !("requestId" in payload) ||
+            payload.requestId !== requestId
+          )
+            throw new VaultError("conflict", "Queued wake does not match the claimed turn job.");
+          admission = await admit(tx);
+        },
+      });
+    } else {
+      admission = await sql.transaction(async (tx) => {
+        await lockAccount(tx);
+        return admit(tx);
+      });
+    }
+    const admitted = admission;
+    if (!admitted) throw new Error("Runtime wake handoff did not admit a resume.");
     if (admitted.op.receipt) return admitted.op.receipt;
     const restore = {
       epoch: admitted.op.source_epoch,
@@ -390,7 +421,6 @@ export function createRuntimeResume(
       const preActivationArchive = error instanceof BoatRetentionUnconfirmed;
       const completed = await read(sql, found.id, requestId).catch(() => undefined);
       if (completed?.receipt && (await store.get(found.id))) return completed.receipt;
-      // Preserve recoverable live-epoch uncertainty. Never re-activate or reissue a ticket.
       const cleanup = await sql
         .transaction(async (tx) => {
           const member = await tx.query(

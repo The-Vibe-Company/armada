@@ -21,7 +21,7 @@ import { createScopedSandboxData, createSqlData } from "./data.ts";
 import { deviceLoginFromConfig } from "./device-login-control.ts";
 import { createSqlGoldenList } from "./golden-list.ts";
 import { providerRegistry } from "./http.ts";
-import { invitationsFromEnv } from "./invitations.ts";
+import { Invitations, invitationMailFromEnv } from "./invitations.ts";
 import { launchCredentials } from "./launch-credentials.ts";
 import { catalogAuthenticationFromEnv } from "./mcp-catalog-client.ts";
 import { createMcpLifecycle } from "./mcp-lifecycle.ts";
@@ -138,7 +138,7 @@ export function controlOptionsFromEnv(env: Record<string, string | undefined>): 
       launchCredentials(store, encryptionKey, undefined, modelAuth),
       createCredentialBindingRecovery(sql, encryptionKey),
     ),
-    invitations: invitationsFromEnv(sql, env),
+    invitations: new Invitations(sql, env.ARMADA_ENCRYPTION_KEY, invitationMailFromEnv(env)),
     templates,
     skillDefaults: createSkillDefaultsService(sql),
     routines: createRoutineService(sql),

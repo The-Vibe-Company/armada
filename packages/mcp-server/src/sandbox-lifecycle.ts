@@ -1,9 +1,10 @@
-import type { SandboxStatus } from "@armada/core";
+import type { SandboxPlacementProviderId, SandboxStatus } from "@armada/core";
 import {
   decryptSecret,
   HOST_CAPABILITIES,
   isFinalPromptStatus,
   isSandboxProvider,
+  type OutputFailureReason,
   type Provider,
   ProviderError,
   type Sql,
@@ -11,8 +12,11 @@ import {
 } from "@armada/core/server";
 import type { ModalProvider } from "@armada/provider-modal";
 import { releaseAccountCapacity } from "./account-capacity.ts";
+import type { Job } from "./jobs/runner.ts";
 import { mergedWorkProof } from "./merged-work.ts";
 import { nativeIdleDue, nativeQuiescent } from "./native-idle.ts";
+import { LIVE_OUTPUT_CANDIDATE } from "./output-transfers.ts";
+import { recordNativeIdleTurn } from "./runtime-idle-evidence.ts";
 import { SANDBOX_VISIBLE } from "./sandbox-visibility.ts";
 import { INTERRUPTED_LAUNCH_REASON } from "./turns.ts";
 import { deferTransactionWake, eventFeedWakeKey, runtimeWakes } from "./wake-bus.ts";
@@ -93,8 +97,73 @@ export function recordStoppedCheckpointNote(tx: Sql, id: string, epoch: string, 
   );
 }
 
+export async function claimOutputFailure(sql: Sql, id: string, reason: OutputFailureReason, generation: string | null) {
+  const claim = await sql.query<{ provider: SandboxPlacementProviderId; status: string }>(
+    `update public.sandboxes
+     set outputs_failure_reasons=array_append(outputs_failure_reasons,$2)
+     where id=$1 and status<>'deleted' and not application_secret_tainted
+     and ($3::bigint is null or lifecycle_generation=$3::bigint)
+     and not ($2 = any(outputs_failure_reasons))
+     returning provider, status`,
+    [id, reason, generation],
+  );
+  return claim.rows[0];
+}
+
+export async function markOutputCollectorSupported(sql: Sql, id: string, generation: string, providerId: string) {
+  const verified = await sql.query(
+    `update public.sandboxes set outputs_collector_supported=true
+     where id=$1 and lifecycle_generation=$2::bigint and provider_sandbox_id=$3 and ${LIVE_OUTPUT_CANDIDATE} returning id`,
+    [id, generation, providerId],
+  );
+  return verified.rows.length > 0;
+}
+
 export const UNENROLLED_RESUME_STOP = "runtime_resume_unenrolled";
 const OPERATOR_CLEANUP_PREFIX = "Operator cleanup required:";
+
+export async function attachDockerRestorePlacement(
+  tx: Sql,
+  claim: Pick<Job, "id" | "sandbox_id" | "generation" | "lease_epoch">,
+  placement: { hostId: string; installationId: string; predecessor: string; replacement: string },
+) {
+  const { hostId, installationId, predecessor, replacement } = placement;
+  const providerSandboxId = `armada-${installationId}-${hostId}-${claim.sandbox_id}-${replacement}`;
+  const { rows } = await tx.query<{ provider_sandbox_id: string }>(
+    `with locked_runner as materialized (
+       select j.lease_until,j.deadline_at from public.jobs j join public.sandboxes s on s.id=j.sandbox_id
+       where j.id=$1 and j.sandbox_id=$2 and j.generation=$3 and j.lease_epoch=$4
+         and j.org_id=s.org_id and j.kind='turn_dispatch' and j.state='leased' and j.attempts <= j.max_attempts
+       for update of j
+     ), eligible as materialized (
+       select s.id,s.docker_generation,s.provider_sandbox_id from public.sandboxes s cross join locked_runner j
+       where s.id=$2 and s.lifecycle_generation=$3 and s.provider='docker'
+         and s.docker_host_id=$5 and s.docker_installation_id=$6 and s.docker_generation in ($7,$8)
+         and s.status='starting' and s.stop_requested_at is null and s.deleted_at is null
+         and s.expires_at > clock_timestamp()
+         and j.lease_until > clock_timestamp() and j.deadline_at > clock_timestamp()
+     ), attached as (
+       update public.sandboxes s set docker_generation=$8,provider_sandbox_id=$9
+       from eligible e where s.id=e.id and e.docker_generation=$7
+       returning s.provider_sandbox_id
+     )
+     select provider_sandbox_id from attached
+     union all
+     select provider_sandbox_id from eligible where docker_generation=$8`,
+    [
+      claim.id,
+      claim.sandbox_id,
+      claim.generation,
+      claim.lease_epoch,
+      hostId,
+      installationId,
+      predecessor,
+      replacement,
+      providerSandboxId,
+    ],
+  );
+  return rows[0]?.provider_sandbox_id;
+}
 
 interface SandboxTransitionEffect {
   kind: "resume" | "turn_dispatch" | "stop" | "output_publication" | "webhook" | "metadata_retirement";
@@ -457,6 +526,7 @@ export async function publishOwnerStop(
     generation: string;
     fromState: SandboxStatus;
     toState: "stopping" | "stopped" | "failed";
+    statusReason?: string | null;
     code: "owner_stop_admitted" | "runtime_retained_stop" | "owner_stop_settled";
   },
 ) {
@@ -470,6 +540,9 @@ export async function publishOwnerStop(
       stop.code === "owner_stop_settled" ? "lifecycle_runner" : stop.code === "runtime_retained_stop" ? "api" : "owner",
     code: stop.code,
     effects: [],
+    ...(stop.statusReason !== undefined
+      ? { settlement: { lease: null, statusReason: stop.statusReason, stopRequestedAt: null, stoppedAt: null } }
+      : {}),
   });
   if (result.kind === "conflict") throw new Error("Locked owner stop could not transition.");
 }
@@ -536,7 +609,7 @@ export async function recordRuntimeStartupFailure(
   return result;
 }
 
-export async function recordObservedRuntimeState(
+export async function recordObservedProviderState(
   sql: Sql,
   scope: [string[], string],
   observation: {
@@ -546,20 +619,24 @@ export async function recordObservedRuntimeState(
     toState: "failed" | "stopped";
     reason: string | null;
     stoppedAt: string | null;
+    providerRunPlacement?: string;
   },
 ) {
-  if (!sql.transaction) throw new Error("Runtime observation publication requires a transaction.");
-  const { sandboxId, generation, fromState, toState, reason, stoppedAt } = observation;
+  if (!sql.transaction) throw new Error("Provider observation publication requires a transaction.");
+  const { sandboxId, generation, fromState, toState, reason, stoppedAt, providerRunPlacement } = observation;
   return sql.transaction(async (tx) => {
     const eligible = await tx.query(
       `select s.id from public.sandboxes s
        where s.id=$3::uuid and ${SANDBOX_VISIBLE}
-         and ((s.provider='boat' and s.boat_runtime) or (s.provider='modal' and s.runtime_transport='dialout'))
+         and s.provider in ('boat','modal')
+         and case when $4::text is null then
+           ((s.provider='boat' and s.boat_runtime) or (s.provider='modal' and s.runtime_transport='dialout'))
+         else s.provider_sandbox_id=$4 and not s.boat_runtime and s.runtime_transport is distinct from 'dialout' end
          and s.stop_requested_at is null and s.deleted_at is null
          and (s.activity_until is null or s.activity_until<now())
          and (s.reconcile_lease_until is null or s.reconcile_lease_until<now())
        for update of s`,
-      [...scope, sandboxId],
+      [...scope, sandboxId, providerRunPlacement ?? null],
     );
     if (!eligible.rows.length) return { kind: "conflict" } satisfies SandboxTransitionResult;
     const result = await transitionSandbox(tx, {
@@ -568,7 +645,12 @@ export async function recordObservedRuntimeState(
       fromStates: [fromState],
       toState,
       actor: toState === "stopped" ? "runtime_observation" : "lifecycle_runner",
-      code: toState === "stopped" ? "runtime_provider_stopped" : "runtime_provider_failure",
+      code:
+        toState === "failed"
+          ? "runtime_provider_failure"
+          : providerRunPlacement === undefined
+            ? "runtime_provider_stopped"
+            : "native_provider_stopped",
       effects: [],
       ...(toState === "stopped"
         ? { settlement: { lease: null, statusReason: reason, stopRequestedAt: null, stoppedAt } }
@@ -1282,16 +1364,7 @@ export function createSandboxLifecycle(
                  and exists(select 1 from public.members m where m.org_id=sandboxes.org_id and m.user_id=sandboxes.owner_id)`,
               [row.id, token, row.lifecycle_generation, row.task_prompt_id, turn.status],
             );
-            await sql.query(
-              `insert into public.runtime_idle_turns(sandbox_id,prompt_id,settled)
-               select id,task_prompt_id,true from public.sandboxes
-               where id=$1 and reconcile_lease=$2::uuid and lifecycle_generation=$3
-                 and reconcile_lease_until>now() and activity_lease_id is null
-                 and task_prompt_id=$4 and stop_requested_at is null
-                 and exists(select 1 from public.members m where m.org_id=sandboxes.org_id and m.user_id=sandboxes.owner_id)
-               on conflict(sandbox_id,prompt_id) do update set settled=true`,
-              [row.id, token, row.lifecycle_generation, row.task_prompt_id],
-            );
+            await recordNativeIdleTurn(sql, row.id, token, row.lifecycle_generation, row.task_prompt_id);
           }
         }
         const workMerged = row.work_merged === true && !row.stop_requested_at;

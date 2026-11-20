@@ -171,6 +171,9 @@ export function configureTools(
         status: "stopped",
         stoppedAt: (machine.stoppedAt ?? context.now()).toISOString(),
         ...(found.lifecycleGeneration === undefined ? {} : { expectedGeneration: found.lifecycleGeneration }),
+        ...(found.status === "ready" || found.status === "running"
+          ? { providerObservation: { fromState: found.status, providerRunPlacement: found.providerSandboxId } }
+          : {}),
       });
     }
     await measure("send_turn_auth", async () =>

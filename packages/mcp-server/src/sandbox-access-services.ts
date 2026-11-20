@@ -12,12 +12,13 @@ import {
   type Sql,
   sandboxActivity,
 } from "@armada/core/server";
-import { createSqlData } from "./data.ts";
+import { createSqlData, type ServerSandboxPatch } from "./data.ts";
 import { captureDockerStopOutputs } from "./docker-outputs.ts";
 import { isPrivateModelEvent } from "./model-usage.ts";
 import type { NamedLaunchCredentials } from "./named-credentials.ts";
 import { recordOperatorFailure } from "./request-observability.ts";
 import type { RuntimeCheckpoint } from "./runtime-checkpoint.ts";
+import { runtimeTransaction } from "./runtime-enrolment.ts";
 import type { RuntimeFollowup } from "./runtime-followup.ts";
 import { ChildLaunchNotAllocated, launchSandboxChild } from "./sandbox-access-child-launch.ts";
 import {
@@ -102,7 +103,7 @@ export function createSandboxAccessServices(input: {
     const retained = saved.runtimeTransport === "dialout";
     if (admitRecovery && (!retained || !["ready", "running"].includes(saved.status) || saved.stopRequestedAt))
       throw new DelegatedAccessError("conflict");
-    if (retained && saved.status === "stopped") return;
+    if (saved.status === "stopped" || (saved.status === "failed" && saved.stoppedAt)) return;
     const provider = await resolveProvider();
     const caller = {
       via: "service" as const,
@@ -129,7 +130,8 @@ export function createSandboxAccessServices(input: {
         throw new DelegatedAccessError("conflict");
     }
     const scoped = createSqlData(sql)(caller).sandboxes;
-    const statusReason = retained ? "idle_paused" : null;
+    const stoppingStatus = saved.status === "failed" ? "failed" : "stopping";
+    const statusReason = stoppingStatus === "failed" ? (saved.statusReason ?? null) : retained ? "idle_paused" : null;
     const epoch = checkpoint?.runtime.epoch;
     const stopStore = admitRecovery
       ? {
@@ -149,15 +151,19 @@ export function createSandboxAccessServices(input: {
                 [id, operation.id, epoch],
               );
               if (!proof.rows.length) throw new DelegatedAccessError("conflict");
-              await createSqlData(tx)(caller).sandboxes.update(id, patch);
+              await createSqlData(runtimeTransaction(tx))(caller).sandboxes.update(id, patch);
             });
           },
         }
       : scoped;
+    const stopAdmission: Pick<ServerSandboxPatch, "ownerStop" | "retainedRuntimeStop"> = {
+      ownerStop: true,
+      ...(checkpoint && stoppingStatus === "stopping" ? { retainedRuntimeStop: checkpoint.requestId } : {}),
+    };
     await sandboxActivity(
       stopStore,
       saved,
-      { status: "stopping", stopRequested: true, statusReason },
+      { ...stopAdmission, status: stoppingStatus, stopRequested: true, statusReason },
       async (signal, token) => {
         if (
           (await preserveBeforeStop(input.sql, provider, saved.id, saved.providerSandboxId, "managed_child_stop", {
@@ -167,7 +173,10 @@ export function createSandboxAccessServices(input: {
             signal,
           }).catch(() => "pending" as const)) === "pending"
         )
-          return { result: undefined, patch: { status: "stopping", stopRequested: true, statusReason } };
+          return {
+            result: undefined,
+            patch: { ownerStop: true, status: stoppingStatus, stopRequested: true, statusReason },
+          };
         signal.throwIfAborted();
         const observed = await stopAndObserve(
           provider,
@@ -178,11 +187,13 @@ export function createSandboxAccessServices(input: {
           retained,
         );
         const terminal =
-          observed.state === "stopped" && (provider.id !== "boat" || observed.retainedSnapshot === "usable");
+          observed.state === "stopped" &&
+          (provider.id !== "boat" || observed.retainedSnapshot === "usable" || stoppingStatus === "failed");
         return {
           result: undefined,
           patch: {
-            status: terminal ? "stopped" : "stopping",
+            ownerStop: true,
+            status: stoppingStatus === "failed" ? "failed" : terminal ? "stopped" : "stopping",
             statusReason,
             stopRequested: !terminal,
             stoppedAt: terminal ? (observed.stoppedAt ?? new Date()).toISOString() : null,

@@ -244,3 +244,10 @@ SHA/PR), remaining paid sandboxes/expiry, blockers and next action. Distinguish
 CLI-help validation from live server validation. Never claim a staging run,
 credential refresh or successful recovery that you did not observe. Do not
 merge, deploy, delete resources or alter org-wide settings without authorization.
+
+### Give an agent API access
+
+From a personal login, use `armada token create --name <name> [--org <org>] [--expires 30d|90d|1y|never]`.
+Capture the key from stdout once and supply it through the agent's secret store as `ARMADA_TOKEN`
+with `ARMADA_URL` set to the API origin. Verify with `armada whoami --json`. From a personal login,
+use `armada token ls --json` to find the key ID, then `armada token revoke <id>`.

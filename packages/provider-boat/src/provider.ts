@@ -420,7 +420,7 @@ export function createBoatProvider(options: BoatProviderOptions): BoatProvider &
             }),
           );
           if ("processId" in response || !("exitCode" in response)) throw unexpectedAnswer("command result");
-          if (response.exitCode !== 0) {
+          if (response.timedOut || response.exitCode !== 0) {
             throw new ProviderError({
               provider: PROVIDER_ID,
               code: "unknown",
@@ -738,6 +738,8 @@ export function createBoatProvider(options: BoatProviderOptions): BoatProvider &
         },
         sandboxId,
         harness,
+        undefined,
+        { readableVariables: true },
       );
       await sshReadableVariables(provider, sandboxId, harness, variables);
     },
@@ -795,7 +797,7 @@ export function createBoatProvider(options: BoatProviderOptions): BoatProvider &
         await installNativeCwdWrapper(
           async (r) => {
             const result = await provider.exec(r);
-            if (result.detached || result.exitCode !== 0)
+            if (result.detached || result.timedOut || result.exitCode !== 0)
               throw invalidRequest("Native MCP bridge installation failed.");
           },
           request.sandboxId,

@@ -6,6 +6,7 @@ import { createAccountTurnQueue } from "../src/account-turn-queue.ts";
 import { boatRuntimeResume } from "../src/boat-runtime-resume.ts";
 import { dispatchControlCommand } from "../src/control.ts";
 import { createSqlData } from "../src/data.ts";
+import { createJobsStore } from "../src/jobs/store.ts";
 import { modalRuntimeLaunch } from "../src/modal-runtime-launch.ts";
 import { modalRuntimeResume } from "../src/modal-runtime-resume.ts";
 import { createModelAuthOwnership } from "../src/model-auth.ts";
@@ -352,6 +353,100 @@ describe("runtime resume admission rollback", () => {
       }
       expect(prepared).toBe(false);
       expect(await read()).toEqual(before);
+    },
+  );
+});
+
+describe("queued runtime wake admission", () => {
+  const fixture = scopedRuntimeFixture(() => stopped(), { perTest: true });
+
+  test.each(["current lease", "stale lease", "failed job retarget", "different job request"] as const)(
+    "commits the resume intent and job generation together (%s)",
+    async (scenario) => {
+      const f = await fixture();
+      const request = input(f.row.id);
+      const before = (await createSqlData(f.sql)(f.caller).sandboxes.get(f.row.id))!.lifecycleGeneration!;
+      const store = createJobsStore(f.sql, ENCRYPTION_KEY);
+      const id = await store.enqueue(
+        "turn_dispatch",
+        f.row.id,
+        before,
+        request.request_id,
+        { requestId: request.request_id },
+        { orgId: f.row.orgId, maxAttempts: 2 },
+      );
+      await f.db.query(
+        `insert into account_turn_queue
+           (sandbox_id,request_id,account_id,owner_id,org_id,actor_epoch,credential_version,input_hash,input_enc,
+            conversation_id,queued_generation,state,dispatch_generation,dispatch_until)
+         select id,$2,credential_id,owner_id,org_id,1,credential_version,'fixture',''::bytea,$3,
+                lifecycle_generation,'dispatching',lifecycle_generation,'infinity'
+         from sandboxes where id=$1`,
+        [f.row.id, request.request_id, f.first.conversationId],
+      );
+      const owner = crypto.randomUUID();
+      const job = (await store.claim("turn_dispatch", owner, 30, 1))!;
+      expect(job.id).toBe(id);
+      if (scenario === "stale lease") await f.db.query("update jobs set lease_until='-infinity' where id=$1", [id]);
+      const read = async () =>
+        (
+          await f.db.query(
+            `select s.status,s.lifecycle_generation::text,j.generation::text,
+                exists(select 1 from runtime_resumes r where r.sandbox_id=s.id and r.request_id=$2) as intent
+             from jobs j join sandboxes s on s.id=j.sandbox_id where j.id=$1`,
+            [id, request.request_id],
+          )
+        ).rows[0];
+      let preparations = 0;
+      const resume = createRuntimeResume(f.sql, ENCRYPTION_KEY, f.bridge, async () => {
+        preparations++;
+        expect(await read()).toEqual({
+          status: "starting",
+          lifecycle_generation: String(before + 1),
+          generation: String(before + 1),
+          intent: true,
+        });
+        return {
+          async start(_signal, restore) {
+            f.deliverPromptEventsBeforeReply();
+            return f.reboot(restore);
+          },
+          async stop() {
+            throw Error("Unexpected stop during queued wake");
+          },
+        };
+      });
+      const send = createRuntimeFollowup(f.sql, ENCRYPTION_KEY, f.bridge, undefined, resume);
+      const sentRequest = scenario === "different job request" ? input(f.row.id) : request;
+      const attempt = () => send(f.caller, sentRequest, (handoff) => store.handoffGeneration(job, owner, handoff));
+      if (scenario === "current lease") {
+        await expect(attempt()).resolves.toMatchObject({ resumed: true, requestId: request.request_id });
+        expect(preparations).toBe(1);
+      } else {
+        if (scenario === "failed job retarget") {
+          await f.db.exec(
+            `alter table jobs add constraint test_refuse_turn_retarget check (generation = ${before}) not valid`,
+          );
+          try {
+            await expect(attempt()).rejects.toThrow("test_refuse_turn_retarget");
+          } finally {
+            await f.db.exec("alter table jobs drop constraint test_refuse_turn_retarget");
+          }
+        } else {
+          await expect(attempt()).rejects.toThrow(
+            scenario === "stale lease"
+              ? "Turn job lease is no longer current"
+              : "Queued wake does not match the claimed turn job.",
+          );
+        }
+        expect(preparations).toBe(0);
+        expect(await read()).toEqual({
+          status: "stopped",
+          lifecycle_generation: String(before),
+          generation: String(before),
+          intent: false,
+        });
+      }
     },
   );
 });
@@ -862,7 +957,12 @@ test.each(["request catch", "expired activity lease", "activation before ticket"
           }
           return { state: "ready", providerState: "active", expiresAt: physicalDeadline };
         },
-        async resumeRuntime(request: { generation: number }) {
+        async resumeRuntime(request: Parameters<import("@armada/provider-modal").ModalProvider["resumeRuntime"]>[0]) {
+          expect(request.sandboxId).toBe(f.row.providerSandboxId);
+          expect(request.checkpoint).toEqual({
+            epoch: f.cp.runtime.epoch,
+            watermark: f.cp.checkpoint.watermark,
+          });
           generation = request.generation;
           activations++;
           if (activations === 1) refusedGeneration = generation;
@@ -1248,58 +1348,6 @@ test.each(boatResumeRecoveryCases)(
       }
     } finally {
       network.mockRestore();
-      await f.close();
-    }
-  },
-);
-
-// The Modal preparation adapter must resolve fresh credentials before activation
-// and recheck the admitted SQL fence, not merely trust a retained host receipt.
-test.each([false, true])(
-  "Modal activation uses the source checkpoint only while disk remains untainted (%s)",
-  async (taint) => {
-    const f = await stopped("codex", "modal");
-    const { modalRuntimeResume } = await import("../src/modal-runtime-resume.ts");
-    try {
-      const activations: unknown[] = [];
-      const host = {
-        id: "modal",
-        get: async () => ({ id: "physical", state: "stopped" }),
-        resumeRuntime: async (input: unknown) => {
-          activations.push(input);
-        },
-        stop: async () => {},
-      } as unknown as import("@armada/provider-modal").ModalProvider;
-      const prepare = modalRuntimeResume({
-        sql: f.sql,
-        vault: createSqlVaultStore(f.sql),
-        key: ENCRYPTION_KEY,
-        hostFor: async () => host,
-        policy: {
-          async start(value) {
-            if (taint) await f.db.query("update sandboxes set application_secret_tainted=true where id=$1", [f.row.id]);
-            await value.activate?.(value.signal);
-            throw Error("Fixture ends after Modal activation boundary");
-          },
-        },
-      });
-      await expect(
-        createRuntimeResume(f.sql, ENCRYPTION_KEY, f.bridge, prepare)(f.caller, input(f.row.id)),
-      ).rejects.toThrow();
-      expect(activations).toEqual(
-        taint
-          ? []
-          : [
-              {
-                sandboxId: "physical",
-                generation: expect.any(Number),
-                ttlSeconds: expect.any(Number),
-                checkpoint: { epoch: "1", watermark: f.cp.checkpoint.watermark },
-              },
-            ],
-      );
-      expect(f.starts).toHaveLength(1);
-    } finally {
       await f.close();
     }
   },

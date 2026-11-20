@@ -48,6 +48,7 @@ import { noteAdmission } from "./request-observability.ts";
 import { createRuntimeEnrolments, preserveResumeRefusalTicket, scopedRuntimeSql } from "./runtime-enrolment.ts";
 import { unsettledRuntimeCommands } from "./runtime-idle-evidence.ts";
 import {
+  attachDockerRestorePlacement,
   confirmRefusedDockerResumeRetention,
   failDockerResumeActivation,
   failDockerStartup,
@@ -480,8 +481,11 @@ export function createDockerHostStore(sql: Sql, key: string) {
   async function machine(tx: Sql, row: Sandbox, operation: string) {
     const original = (
       await tx.query<StoredJob>(
-        `select * from public.docker_host_jobs where bound_sandbox_id=$1 and bound_operation='create'`,
-        [row.id],
+        `select * from public.docker_host_jobs where bound_sandbox_id=$1
+         and (bound_operation='create' or (bound_operation='restore' and request_id=$2 and outcome='completed'
+           and cancelled_at is null))
+         order by (bound_operation='restore') desc limit 1`,
+        [row.id, row.docker_generation],
       )
     ).rows[0];
     if (!original) {
@@ -511,7 +515,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
     const saved = await readJob(original);
     if (
       original.host_id !== row.docker_host_id ||
-      saved.operation !== "create" ||
+      (saved.operation !== "create" && saved.operation !== "restore") ||
       saved.request.sandboxId !== row.id ||
       saved.request.generation !== row.docker_generation ||
       saved.request.image !== row.docker_image ||
@@ -588,7 +592,12 @@ export function createDockerHostStore(sql: Sql, key: string) {
     await requireRestoreBindings(tx, logical, job);
   }
 
-  async function requireRestoreBindings(tx: Sql, logical: Sandbox, job: RestoreJob) {
+  async function requireRestoreBindings(
+    tx: Sql,
+    logical: Sandbox,
+    job: RestoreJob,
+    targetGeneration = logical.lifecycle_generation,
+  ) {
     const bindings = await tx.query(
       `select 1 from public.docker_machine_bindings target join public.docker_machine_bindings source
          on source.sandbox_id=target.sandbox_id and source.host_id=target.host_id
@@ -599,7 +608,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
         logical.id,
         logical.docker_host_id,
         logical.docker_installation_id,
-        logical.lifecycle_generation,
+        targetGeneration,
         job.request.generation,
         job.predecessor.request.generation,
       ],
@@ -1433,6 +1442,44 @@ export function createDockerHostStore(sql: Sql, key: string) {
       });
       return { generation: Number(target), requestId: requestId ?? deny() };
     },
+    attachMachineRestore(
+      actor: Actor,
+      claim: Pick<RunnerJob, "id" | "sandbox_id" | "generation" | "lease_epoch">,
+      requestId: string,
+    ) {
+      return transaction(async (tx) => {
+        const { host, row } = await lockSandboxAdmission(tx, actor, claim.sandbox_id ?? deny(), "restore");
+        id(requestId);
+        if (String(row.lifecycle_generation) !== claim.generation) deny();
+        const receipt = (
+          await tx.query<StoredJob>(
+            `select * from public.docker_host_jobs
+             where request_id=$1 and host_id=$2 and bound_sandbox_id=$3 and bound_operation='restore'`,
+            [requestId, host.id, row.id],
+          )
+        ).rows[0];
+        if (!receipt || receipt.outcome !== "completed" || receipt.cancelled_at !== null) deny();
+        const { job, runnerJobId } = await readStoredJob(receipt, row.lifecycle_generation);
+        if (
+          job.operation !== "restore" ||
+          job.request.generation !== requestId ||
+          runnerJobId !== claim.id ||
+          receipt.bound_actor_id !== actor.userId ||
+          receipt.bound_actor_epoch == null
+        )
+          deny();
+        await permission(tx, actor, row, "restore", receipt.bound_actor_epoch);
+        await refuseDraining(tx, host.id);
+        await requireRestoreBindings(tx, row, job);
+        const placement = await attachDockerRestorePlacement(tx, claim, {
+          hostId: host.id,
+          installationId: row.docker_installation_id,
+          predecessor: job.predecessor.request.generation,
+          replacement: requestId,
+        });
+        return placement ?? deny();
+      });
+    },
     enqueueSandbox(actor: Actor, sandboxId: string, selection: Selection) {
       return transaction(async (tx) => {
         exact(selection, [
@@ -1926,19 +1973,29 @@ export function createDockerHostStore(sql: Sql, key: string) {
           if (restoreReceipt) {
             const restore = await readJob(restoreReceipt);
             if (restore.operation !== "restore" || restore.request.generation !== requestId) deny();
-            if (restoreReceipt.placed_generation === restore.request.generation) deny();
-            return;
+            if (restoreReceipt.placed_generation !== restore.request.generation) return;
           }
           const host = await authenticate(tx, hostToken, installationId);
           const job =
             (
               await tx.query<StoredJob>(
                 `select * from public.docker_host_jobs where host_id=$1 and request_id=$2
-               and bound_operation in ('create','bootstrap','resume') and bound_sandbox_id is not null`,
+               and bound_operation in ('create','bootstrap','resume','restore') and bound_sandbox_id is not null`,
                 [host.id, requestId],
               )
             ).rows[0] ?? deny();
-          const logical = await boundMachine(tx, job, host, installationId);
+          let logical: Sandbox;
+          if (job.bound_operation === "restore") {
+            logical = await sandbox(tx, job.bound_sandbox_id ?? deny(), host, installationId);
+            const { job: restore, lifecycleGeneration } = await readStoredJob(job);
+            if (restore.operation !== "restore" || restore.request.generation !== requestId || !lifecycleGeneration)
+              deny();
+            if (logical.docker_generation !== requestId) return;
+            if (job.outcome !== "completed" || job.cancelled_at) deny();
+            await requireRestoreBindings(tx, logical, restore, lifecycleGeneration);
+          } else {
+            logical = await boundMachine(tx, job, host, installationId);
+          }
           if (await supersededLifecycle(tx, job, true)) return;
           const predicate = `id=$1 and not application_secret_tainted and ${DOCKER_RETAINED_OUTPUT_STOP}`;
           const row = (
@@ -1995,11 +2052,23 @@ export function createDockerHostStore(sql: Sql, key: string) {
         if (job.bound_operation === "restore") {
           logical = await sandbox(tx, job.bound_sandbox_id ?? deny(), host, installationId);
           const { job: restore, lifecycleGeneration } = await readStoredJob(job);
-          if (restore.operation !== "restore" || restore.request.generation !== job.request_id) deny();
-          if (lifecycleGeneration !== String(logical.lifecycle_generation)) return;
-          if (logical.docker_generation !== restore.predecessor.request.generation) deny();
-          await requireRestoreBindings(tx, logical, restore);
-          if (logical.status !== "starting" && logical.status !== "stopping") return;
+          if (restore.operation !== "restore" || restore.request.generation !== job.request_id || !lifecycleGeneration)
+            deny();
+          if (logical.status === "deleted") return;
+          const attached = logical.docker_generation === restore.request.generation;
+          const sameGeneration = lifecycleGeneration === String(logical.lifecycle_generation);
+          const attachedAtNextStopGeneration =
+            attached &&
+            logical.status === "stopping" &&
+            BigInt(logical.lifecycle_generation) === BigInt(lifecycleGeneration) + 1n;
+          if (!sameGeneration && !attachedAtNextStopGeneration) return;
+          await requireRestoreBindings(tx, logical, restore, lifecycleGeneration);
+          if (attached) {
+            if (job.outcome !== "completed" || job.cancelled_at) deny();
+          } else {
+            if (logical.docker_generation !== restore.predecessor.request.generation) deny();
+            if (logical.status !== "starting" && logical.status !== "stopping") return;
+          }
         } else {
           if (
             job.bound_operation !== "create" &&

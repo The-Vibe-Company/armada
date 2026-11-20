@@ -1,4 +1,4 @@
-import { AuthError } from "@armada/auth";
+import { AuthError, bearerKind } from "@armada/auth";
 import {
   API_FAILURE_HELP,
   APPLICATION_VAULT_CONFLICT_MESSAGES,
@@ -327,7 +327,13 @@ export async function createArmadaApiClient(
                 : "unavailable",
         );
       }
-      if (response.status === 401) throw new AuthError("Run armada login or update ARMADA_TOKEN.", "unauthorized");
+      if (response.status === 401)
+        throw new AuthError(
+          environmentToken && bearerKind(environmentToken) === "service"
+            ? "API key is invalid, expired, or revoked. Update ARMADA_TOKEN."
+            : "Run armada login or update ARMADA_TOKEN.",
+          "unauthorized",
+        );
       if (options.preserveServerErrors) {
         throw new ArmadaApiError(
           result.failure?.serverCode && result.failure.serverCode.length <= 80 && failureCode

@@ -21,15 +21,17 @@ async function fixture() {
   return { db, people, openaiCredentialId, sql, store: createJobsStore(sql, btoa("\0".repeat(32))) };
 }
 
-async function sandbox({ db, people }: Awaited<ReturnType<typeof fixture>>, boatRuntime = false) {
+async function sandbox({ db, people }: Awaited<ReturnType<typeof fixture>>, boatRuntime = false, stopped = false) {
   const {
     rows: [golden],
   } = await db.query<{ id: string }>("select id from goldens where owner_id = $1", [people.owner]);
   const id = crypto.randomUUID();
   await db.query(
-    `insert into sandboxes (id, boat_id, golden_id, org_id, owner_id, harness, status, lifecycle_generation, expires_at, boat_runtime)
-     values ($1, 'fixture', $2, $3, $4, 'codex', 'ready', 2, 'infinity', $5)`,
-    [id, golden!.id, people.org, people.owner, boatRuntime],
+    `insert into sandboxes (id, boat_id, golden_id, org_id, owner_id, harness, status, lifecycle_generation, expires_at, boat_runtime, stopped_at)
+     values ($1, 'fixture', $2, $3, $4, 'codex',
+       case when $6 then 'stopped'::sandbox_status else 'ready'::sandbox_status end, 2, 'infinity', $5,
+       case when $6 then now() end)`,
+    [id, golden!.id, people.org, people.owner, boatRuntime, stopped],
   );
   return id;
 }
@@ -182,6 +184,7 @@ test.each([
   ["unrelated runtime resume", 3, "resume", "-infinity", true, false],
   ["runtime legacy window still open", 2, null, "infinity", true, false],
   ["runtime dispatch has no evidence", 2, null, "-infinity", true, false],
+  ["stopped runtime dispatch has no evidence", 2, null, "-infinity", true, false],
   ["older job for abandoned runtime dispatch", 3, null, "-infinity", true, false],
   ["native receipt has a prompt ID", 2, "prompt", "-infinity", false, true],
   ["native dispatch has no evidence", 2, null, "-infinity", false, false],
@@ -191,7 +194,7 @@ test.each([
 ] as const)("shared claim reconciles %s", async (scenario, generation, activity, until, runtime, uncertain) => {
   const f = await fixture();
   const { db, people, store } = f;
-  const sandboxId = await sandbox(f, runtime);
+  const sandboxId = await sandbox(f, runtime, scenario === "stopped runtime dispatch has no evidence");
   const requestId = crypto.randomUUID();
   await seedTurn(f, sandboxId, requestId);
   const id = await store.enqueue(
@@ -326,7 +329,7 @@ test.each([
   }
 });
 
-async function interruptedDockerTurn(status: "starting" | "running") {
+async function interruptedDockerTurn(status: "starting" | "running" | "stopped") {
   const f = await fixture();
   const { db, people, store } = f;
   const sandboxId = crypto.randomUUID();
@@ -341,9 +344,9 @@ async function interruptedDockerTurn(status: "starting" | "running") {
   );
   await db.query(
     `insert into sandboxes (id,org_id,owner_id,harness,status,provider,lifecycle_generation,expires_at,
-         visibility,access_owner_id,docker_host_id,docker_installation_id,docker_generation,docker_image,provider_sandbox_id)
-       values ($1,$2,$3,'codex',$8,'docker',3,'infinity',
-         'private',$3,$4,$5,$6,'sha256:' || repeat('b',64),$7)`,
+         visibility,access_owner_id,docker_host_id,docker_installation_id,docker_generation,docker_image,provider_sandbox_id,stopped_at)
+       values ($1,$2,$3,'codex',$8::public.sandbox_status,'docker',$9,'infinity',
+         'private',$3,$4,$5,$6,'sha256:' || repeat('b',64),$7,case when $8::public.sandbox_status='stopped' then now() end)`,
     [
       sandboxId,
       people.org,
@@ -353,6 +356,7 @@ async function interruptedDockerTurn(status: "starting" | "running") {
       dockerGeneration,
       `armada-${installationId}-${hostId}-${sandboxId}-${dockerGeneration}`,
       status,
+      status === "stopped" ? 2 : 3,
     ],
   );
   await seedTurn(f, sandboxId, requestId);
@@ -375,6 +379,45 @@ async function interruptedDockerTurn(status: "starting" | "running") {
   ]);
   return { f, sandboxId, requestId, hostId, installationId, dockerGeneration, id };
 }
+
+test.each(["missing", "pending", "accepted", "refused", "unrelated"] as const)(
+  "stopped Docker dispatch resets only without its own bootstrap intent (%s)",
+  async (intent) => {
+    const { f, sandboxId, requestId, hostId, installationId, dockerGeneration, id } =
+      await interruptedDockerTurn("stopped");
+    const { db, people, store } = f;
+    if (intent !== "missing")
+      await db.query(
+        `insert into docker_resume_claims
+         (request_id,sandbox_id,host_id,installation_id,generation,actor_id,lifecycle_generation,accepted)
+         values ($1,$2,$3,$4,$5,$6,2,$7)`,
+        [
+          intent === "unrelated" ? crypto.randomUUID() : requestId,
+          sandboxId,
+          hostId,
+          installationId,
+          dockerGeneration,
+          people.owner,
+          intent === "pending" ? null : intent === "accepted",
+        ],
+      );
+    const owner = crypto.randomUUID();
+    const claim = await store.claim("turn_dispatch", owner, 30, 1);
+    expect(claim).toMatchObject({ id, generation: "2", payload: { requestId } });
+    expect(await store.inspect(claim!, owner)).toBe("dispatch");
+    const reset = intent === "missing" || intent === "unrelated";
+    expect(
+      (
+        await db.query(
+          `select q.state, (q.dispatch_generation is not null or q.dispatch_until is not null) as dispatch_recorded,
+             exists(select 1 from account_agent_reservations r where r.sandbox_id=q.sandbox_id) as reserved
+             from account_turn_queue q where q.sandbox_id=$1 and q.request_id=$2`,
+          [sandboxId, requestId],
+        )
+      ).rows,
+    ).toEqual([{ state: reset ? "queued" : "dispatching", dispatch_recorded: !reset, reserved: !reset }]);
+  },
+);
 
 test.each(["current", "pending", "other request", "other epoch", "old issuer", "revoked host"] as const)(
   "a Docker prompt command can retarget a stale turn only with current replay evidence (%s)",

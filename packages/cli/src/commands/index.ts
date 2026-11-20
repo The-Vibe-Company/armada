@@ -29,7 +29,7 @@ import status from "./status.ts";
 import steer from "./steer.ts";
 import stop from "./stop.ts";
 import template from "./template.ts";
-import token from "./token.ts";
+import { tokenCommands } from "./token.ts";
 import wait from "./wait.ts";
 
 export const commands: readonly Command[] = [
@@ -53,7 +53,7 @@ export const commands: readonly Command[] = [
   completion,
   login,
   logout,
-  token,
+  ...tokenCommands,
   account,
   api,
   org,

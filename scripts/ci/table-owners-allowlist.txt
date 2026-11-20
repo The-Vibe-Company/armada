@@ -54,14 +54,10 @@ packages/mcp-server/src/runtime-events.ts	sandbox_turn_models	update
 packages/mcp-server/src/runtime-github.ts	github_runtime_issued	insert
 packages/mcp-server/src/runtime-mcp.ts	mcp_bootstraps	insert
 packages/mcp-server/src/runtime-mcp.ts	mcp_bootstraps	update
-packages/mcp-server/src/runtime-resume.ts	sandbox_launch_stages	update
 packages/mcp-server/src/sandbox-account-change.ts	modal_machines	update
 packages/mcp-server/src/sandbox-account-change.ts	modal_server_harnesses	update
 packages/mcp-server/src/sandbox-account-change.ts	sandbox_account_usage_pricing	insert
 packages/mcp-server/src/sandbox-account-change.ts	sandboxes	update
-packages/mcp-server/src/sandbox-lifecycle.ts	runtime_idle_turns	insert
-packages/mcp-server/src/sandbox-outputs.ts	sandboxes	update
-packages/mcp-server/src/sandbox-outputs.ts	sandboxes	update
 packages/mcp-server/src/sandbox-pull-requests.ts	sandboxes	update
 packages/mcp-server/src/sandbox-pull-requests.ts	sandboxes	update
 packages/mcp-server/src/sandbox-pull-requests.ts	sandboxes	update

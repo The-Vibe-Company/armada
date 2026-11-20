@@ -2,7 +2,7 @@ import { hostname } from "node:os";
 import { createInterface } from "node:readline";
 import { AuthError, type AuthFetch } from "@armada/auth";
 import { publicAuthOperations } from "@armada/core/contract";
-import { armadaApiUrl, createArmadaApiClient } from "./armada-api.ts";
+import { armadaApiUrl } from "./armada-api.ts";
 import type { Preferences } from "./preferences.ts";
 import { profileStores } from "./profiles.ts";
 import type { SessionStore } from "./session.ts";
@@ -149,51 +149,6 @@ export async function loginCommand(io: AuthIo, how: { url?: string | undefined; 
 export async function logoutCommand(io: AuthIo, json = false): Promise<void> {
   await io.session.clear();
   io.out(json ? '{"authenticated":false}\n' : "Logged out.\n");
-}
-
-export async function tokenCreate(
-  io: AuthIo,
-  orgName: string | undefined,
-  label: string | undefined,
-  json = false,
-): Promise<void> {
-  const client = await createArmadaApiClient(io);
-  const created = await client.token<{ id: string; label: string; orgName: string; token: string }>("create", {
-    ...(orgName !== undefined ? { orgName } : {}),
-    ...(label !== undefined ? { label } : {}),
-  });
-  if (json) {
-    io.out(`${JSON.stringify(created)}\n`);
-    return;
-  }
-  io.out(
-    `Created a service token. Copy it now; Armada stores only its hash.\n\nid: ${created.id}\nlabel: ${created.label}\norg: ${created.orgName}\ntoken: ${created.token}\n`,
-  );
-}
-
-export async function tokenList(io: AuthIo, json = false): Promise<void> {
-  const client = await createArmadaApiClient(io);
-  const { tokens } = await client.token<{
-    tokens: { id: string; label: string; orgName: string; createdAt: string; revokedAt: string | null }[];
-  }>("list");
-  if (json) {
-    io.out(`${JSON.stringify({ tokens })}\n`);
-    return;
-  }
-  if (tokens.length === 0) {
-    io.out("No service tokens.\n");
-    return;
-  }
-  for (const token of tokens) {
-    const state = token.revokedAt ? "revoked" : "active";
-    io.out(`${token.id}  ${token.label}  ${token.orgName}  ${state}  ${token.createdAt}\n`);
-  }
-}
-
-export async function tokenRevoke(io: AuthIo, id: string, json = false): Promise<void> {
-  const client = await createArmadaApiClient(io);
-  await client.token("revoke", { id });
-  io.out(json ? `${JSON.stringify({ ok: true })}\n` : `Revoked ${id}.\n`);
 }
 
 function openBrowser(url: string): void {

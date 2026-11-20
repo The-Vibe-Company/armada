@@ -45,7 +45,7 @@ import {
   expireAfterExtension,
   finishEnrolledRuntimeLaunch,
   publishOwnerStop,
-  recordObservedRuntimeState,
+  recordObservedProviderState,
   settleRuntimeTurn,
 } from "./sandbox-lifecycle.ts";
 import { SANDBOX_MEMBER, SANDBOX_VISIBLE } from "./sandbox-visibility.ts";
@@ -69,7 +69,7 @@ export interface ServerSandboxPatch extends SandboxPatch {
   onlyIfIdle?: boolean;
   retainedRuntimeStop?: string;
   modalRuntimeExtensionTarget?: string;
-  runtimeObservationFrom?: "ready" | "running";
+  providerObservation?: { fromState: "ready" | "running"; providerRunPlacement?: string };
   turnActivity?: "claim" | "finish";
 }
 
@@ -801,24 +801,25 @@ export function createSqlData(
         )
           throw new DataError("Owner stop requires its activity generation, token and phase.");
         const reason = statusReasonOf(patch);
-        if (patch.runtimeObservationFrom !== undefined) {
+        if (patch.providerObservation !== undefined) {
           if (
             patch.expectedGeneration === undefined ||
             reason === undefined ||
             (patch.status !== "failed" && patch.status !== "stopped") ||
-            (patch.status === "stopped" && !patch.stoppedAt)
+            (patch.status === "stopped" && !patch.stoppedAt) ||
+            (patch.providerObservation.providerRunPlacement !== undefined && patch.status !== "stopped")
           )
-            throw new DataError("Runtime observation publication requires generation and state evidence.");
-          const result = await recordObservedRuntimeState(sql, scope, {
+            throw new DataError("Provider observation publication requires generation and state evidence.");
+          const result = await recordObservedProviderState(sql, scope, {
             sandboxId: id,
             generation: patch.expectedGeneration,
-            fromState: patch.runtimeObservationFrom,
+            ...patch.providerObservation,
             toState: patch.status,
             reason,
             stoppedAt: patch.stoppedAt ?? null,
           });
           if (result.kind === "conflict")
-            throw new DataError("Runtime state observation is stale.", "sandbox_not_ready");
+            throw new DataError("Provider state observation is stale.", "sandbox_not_ready");
           return;
         }
         const initialPrompt =
@@ -896,7 +897,8 @@ export function createSqlData(
         const extensionDeadlineParam = patch.expiresAt === undefined ? undefined : params.length;
         if (patch.effectiveTtlSeconds !== undefined)
           set("effective_ttl_seconds", patch.effectiveTtlSeconds, "::integer");
-        if (reason !== undefined) set("status_reason", reason, "::text");
+        const stopAdmissionReason = stopStatus === "stopping" && !patch.finishActivity ? reason : undefined;
+        if (reason !== undefined && stopAdmissionReason === undefined) set("status_reason", reason, "::text");
         if (sets.length === 0) return;
         let fence = "";
         if (patch.turnActivity !== undefined)
@@ -1038,6 +1040,7 @@ export function createSqlData(
                 generation: row.generation,
                 fromState: row.status,
                 toState: stopStatus,
+                ...(stopAdmissionReason !== undefined ? { statusReason: stopAdmissionReason } : {}),
                 code: patch.finishActivity
                   ? "owner_stop_settled"
                   : patch.retainedRuntimeStop

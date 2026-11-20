@@ -504,6 +504,7 @@ export type Database = {
           version: number;
           max_agents: number | null;
           model_limits: Json;
+          created_by: string | null;
         };
         Insert: {
           id?: string;
@@ -520,6 +521,7 @@ export type Database = {
           version?: number;
           max_agents?: number | null;
           model_limits?: Json;
+          created_by?: string | null;
         };
         Update: {
           id?: string;
@@ -536,8 +538,17 @@ export type Database = {
           version?: number;
           max_agents?: number | null;
           model_limits?: Json;
+          created_by?: string | null;
         };
-        Relationships: [];
+        Relationships: [
+          {
+            foreignKeyName: "credentials_created_by_fkey";
+            columns: ["created_by"];
+            isOneToOne: false;
+            referencedRelation: "users";
+            referencedColumns: ["id"];
+          },
+        ];
       };
       docker_host_jobs: {
         Row: {
@@ -5383,6 +5394,8 @@ export type Database = {
           label: string;
           revoked_at: string | null;
           created_at: string;
+          expires_at: string | null;
+          last_used_at: string | null;
         };
         Insert: {
           id?: string;
@@ -5392,6 +5405,8 @@ export type Database = {
           label: string;
           revoked_at?: string | null;
           created_at?: string;
+          expires_at?: string | null;
+          last_used_at?: string | null;
         };
         Update: {
           id?: string;
@@ -5401,6 +5416,8 @@ export type Database = {
           label?: string;
           revoked_at?: string | null;
           created_at?: string;
+          expires_at?: string | null;
+          last_used_at?: string | null;
         };
         Relationships: [
           {
