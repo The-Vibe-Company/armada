@@ -11,6 +11,10 @@ import { decryptSecret, encryptSecret, OutputCollectionError, type Provider, typ
 type ChunkedOutputReader = Required<Pick<Provider, "listOutputEntries" | "readOutputChunk">> &
   Pick<Provider, "outputReadBytes" | "outputReadConcurrency">;
 
+export const OUTPUT_COLLECTOR_ELIGIBLE = `provider in ('boat','modal','docker') and not application_secret_tainted
+  and not ('collector_unsupported' = any(outputs_failure_reasons))`;
+export const LIVE_OUTPUT_CANDIDATE = `(${OUTPUT_COLLECTOR_ELIGIBLE}) and status in ('running','ready') and stopped_at is null`;
+
 export const CAN_WRITE_LIVE = `status in ('ready','running','stopping')
           or (status='failed' and stop_requested_at is not null and stopped_at is null)`;
 
