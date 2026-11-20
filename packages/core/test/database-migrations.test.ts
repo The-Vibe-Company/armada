@@ -106,6 +106,36 @@ test.each(["fixture_model_account", "antigravity"])(
   },
 );
 
+test("Antigravity can be stored as an agent default", async () => {
+  const db = credentialDatabase.get();
+  const owner = crypto.randomUUID();
+  await db.query("insert into auth.users(id) values ($1)", [owner]);
+  const result = await db.query(
+    "insert into public.agent_defaults(user_id,harness,model) values ($1,'antigravity','default') returning harness",
+    [owner],
+  );
+  expect(result.rows).toEqual([{ harness: "antigravity" }]);
+});
+
+test("an inbound trigger can bind an Antigravity pool", async () => {
+  const db = credentialDatabase.get();
+  const owner = crypto.randomUUID();
+  const org = crypto.randomUUID();
+  const template = crypto.randomUUID();
+  await db.query("insert into auth.users(id) values ($1)", [owner]);
+  await db.query("insert into public.orgs(id,name) values ($1,'Trigger fixture')", [org]);
+  await db.query(
+    "insert into public.launch_templates(id,org_id,owner_id,scope,name) values ($1,$2,$3,'org','Trigger template')",
+    [template, org, owner],
+  );
+  const result = await db.query(
+    `insert into public.triggers(org_id,template_id,launch_owner_id,pool_harness,secret_enc,rate_per_minute,concurrency)
+     values ($1,$2,$3,'antigravity',$4,1,1) returning pool_harness`,
+    [org, template, owner, new Uint8Array([1])],
+  );
+  expect(result.rows).toEqual([{ pool_harness: "antigravity" }]);
+});
+
 async function labels(db: PGlite, name: string): Promise<string[]> {
   const result = await db.query<{ label: string }>(
     `select e.enumlabel as label
