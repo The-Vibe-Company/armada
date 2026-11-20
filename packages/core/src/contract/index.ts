@@ -3,6 +3,7 @@ import { accountOperations } from "./accounts.ts";
 import { createdInboundTrigger, createInboundTriggerBody, createInboundTriggerQuery } from "./inbound-trigger.ts";
 import { launchInput } from "./launch.ts";
 import { launchEnvelope } from "./launch-response.ts";
+import { memberOperations } from "./members.ts";
 import { githubCallbackOperations, publicAuthOperations } from "./public-auth.ts";
 import { githubOperations, goldenOperations, launchTemplateOperation } from "./resources.ts";
 import { sandboxOperations } from "./sandbox.ts";
@@ -26,6 +27,7 @@ export {
   type PinnedModalLaunchInput,
 } from "./launch.ts";
 export { type LaunchEnvelope, launchEnvelope, templateLaunchResponse } from "./launch-response.ts";
+export { memberOperations } from "./members.ts";
 export { githubCallbackOperations, PUBLIC_CONTROL_ROUTES, publicAuthOperations, signInMethod } from "./public-auth.ts";
 export { githubOperations, goldenOperations, launchTemplateOperation } from "./resources.ts";
 export {
@@ -138,6 +140,7 @@ export const operations = {
   ...githubOperations,
   ...tokenOperations,
   ...accountOperations,
+  ...memberOperations,
   ...skillDefaultOperations,
   ...skillpackOperations,
   launchTemplate: launchTemplateOperation,

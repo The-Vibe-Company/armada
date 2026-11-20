@@ -2,6 +2,7 @@ import { type AgentDefault, type CredentialReader, parseCredentialValue } from "
 import { encryptSecret } from "./crypto.ts";
 import type { CredentialKind, CredentialScope, MemberRole } from "./database.types.ts";
 import type { GitHubConnectionStore } from "./github.ts";
+import { memberEmailPattern } from "./member-email.ts";
 import { VaultError } from "./vault-error.ts";
 
 export interface OrgSummary {
@@ -93,7 +94,6 @@ export interface VaultStore extends CredentialReader, GitHubConnectionStore {
 }
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 export function parseOrgName(raw: string): string {
   const name = raw.trim();
@@ -277,7 +277,7 @@ export async function listCredentials(
 
 async function findMember(store: VaultStore, email: string): Promise<{ id: string; email: string }> {
   const trimmed = email.trim();
-  if (!EMAIL.test(trimmed)) throw new VaultError("invalid", "Give the person's email address.");
+  if (!memberEmailPattern.test(email)) throw new VaultError("invalid", "Give the person's email address.");
   const user = await store.findUserByEmail(trimmed);
   if (!user) {
     throw new VaultError(

@@ -5,7 +5,6 @@
  */
 export const UNPUBLISHED_REST_ROUTES: Readonly<Record<string, string>> = {
   "org/": "Organization administration.",
-  "members/": "Organization membership administration.",
   "creds/": "Model credential administration.",
   "mcp/": "MCP connection administration.",
   "docker/": "Docker host and snapshot administration.",
