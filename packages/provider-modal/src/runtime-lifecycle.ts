@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import type { ResumeStageObserver, SandboxInfo } from "@armada/core";
 import type { Sandbox } from "modal";
 import { ModalOperationError, refusal } from "./errors.ts";
-import { observeModalCompute, terminateModalCompute } from "./machine.ts";
+import { observeModalCompute, snapshotModalRecoveryImage, terminateModalCompute } from "./machine.ts";
 import type { Machine, ModalResourceReceipt, ModalStore, RunnerDistribution } from "./ports.ts";
 import type { ModalProvider } from "./provider.ts";
 import { bootstrapModalRuntime, validateRuntimeTicket } from "./runtime-bootstrap.ts";
@@ -116,10 +116,10 @@ export function createRuntimeLifecycle({
             }
             row.phase = "snapshot";
             await save(row);
-            const image = await sb.snapshotFilesystem({ ttlMs: null });
+            const recoveryImageId = await snapshotModalRecoveryImage(sb);
             if (row.recoveryImageId)
               row.retainedRecoveryIds = [...(row.retainedRecoveryIds ?? []), row.recoveryImageId];
-            row.recoveryImageId = image.imageId;
+            row.recoveryImageId = recoveryImageId;
             row.phase = "terminate";
             await save(row);
           } else if (!row.recoveryImageId || !prior || !row.quiesced) {

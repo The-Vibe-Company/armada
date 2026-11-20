@@ -560,40 +560,6 @@ test("a backfill sweep wraps to retry a failed insert while newer rows are arriv
   expect((await database().query("select id from public.jobs where sandbox_id=$1", [waiting.id])).rows).toHaveLength(1);
 });
 
-test("full-account prompts persist, dispatch FIFO after a turn settles, and queued IDs resolve to actual receipts", async () => {
-  await database().query("update sandboxes set status='running',task_prompt_id='active_turn' where id=$1", [ids[0]]);
-  const first = { id: ids[1]!, request_id: requests[0]!, prompt: "first instruction" };
-  const second = { id: ids[2]!, request_id: requests[1]!, prompt: "second instruction" };
-  expect((await queue.accept(caller, first))?.status).toBe("queued");
-  expect((await queue.accept(caller, second))?.status).toBe("queued");
-  await expect(queue.accept(caller, { ...first, prompt: "changed" })).rejects.toThrow("identical input");
-  const dispatched: string[] = [];
-  queue.setDispatch(async (_caller, input) => {
-    dispatched.push(input.prompt);
-    await database().query("update sandboxes set task_prompt_id=$2,status='running' where id=$1", [
-      input.id,
-      input.request_id,
-    ]);
-    await database().query("delete from account_agent_reservations where sandbox_id=$1", [input.id]);
-    return { id: input.id, promptId: `actual_${input.request_id}`, conversationId: "history", status: "running" };
-  });
-  expect(await queue.reconcileOne(new AbortController().signal)).toBe(false);
-  await database().query("insert into runtime_idle_turns values($1,'active_turn',true)", [ids[0]]);
-  expect(await queue.reconcileOne(new AbortController().signal)).toBe(true);
-  await queue.drain();
-  expect(dispatched).toEqual(["first instruction"]);
-  expect(await queue.status(caller, ids[1]!)).toEqual({
-    nativePromptId: `actual_${requests[0]}`,
-    publicPromptId: requests[0]!,
-  });
-  expect(await queue.status(caller, ids[1]!, requests[0])).toEqual({ nativePromptId: `actual_${requests[0]}` });
-  expect(await queue.reconcileOne(new AbortController().signal)).toBe(false);
-  await database().query("insert into runtime_idle_turns values($1,$2,true)", [ids[1], requests[0]]);
-  expect(await queue.reconcileOne(new AbortController().signal)).toBe(true);
-  await queue.drain();
-  expect(dispatched).toEqual(["first instruction", "second instruction"]);
-});
-
 test.each(["modal", "boat", "docker"])("a pre-activation %s wake refusal fails the queued prompt", async (provider) => {
   const input = { id: ids[1]!, request_id: requests[0]!, prompt: "wake rejected" };
   await database().query(
@@ -689,20 +655,6 @@ test("a rejected first Modal turn logs bounded evidence and releases its reserva
   } finally {
     log.mockRestore();
   }
-});
-
-test("queued sends recheck actor revocation without dispatching or reserving a slot", async () => {
-  const input = { id: ids[1]!, request_id: requests[0]!, prompt: "authorized initially" };
-  await queue.accept(caller, input);
-  await database().exec("update mcp_actor_epochs set epoch=2");
-  let dispatched = false;
-  queue.setDispatch(async () => {
-    dispatched = true;
-  });
-  expect(await queue.reconcileOne(new AbortController().signal)).toBe(false);
-  expect(dispatched).toBe(false);
-  expect((await queue.status(caller, ids[1]!, requests[0]))?.failed).toBe(true);
-  expect((await database().query("select * from account_agent_reservations")).rows).toEqual([]);
 });
 
 test("send replay keeps the original receipt while new sends target the current conversation", async () => {
@@ -1396,22 +1348,6 @@ test.each([
   const input = { id: ids[1]!, request_id: requests[0]!, prompt: "queued instruction" };
   expect(await queue.accept(caller, input)).toMatchObject({ statusMessage: expected });
   expect(await queue.status(caller, input.id, input.request_id)).toMatchObject({ message: expected });
-});
-
-test("a ready runtime with an unsettled prompt holds the next queued turn", async () => {
-  const input = { id: ids[1]!, request_id: requests[0]!, prompt: "next turn" };
-  await database().query(
-    "update sandboxes set provider='boat',boat_runtime=true,task_prompt_id='active_turn' where id=$1",
-    [input.id],
-  );
-  const waiting = "Prompt accepted; waiting for the current sandbox turn or dispatch to finish.";
-  expect(await queue.accept(caller, input)).toMatchObject({ statusMessage: waiting });
-  queue.setDispatch(async () => ({ promptId: "next_prompt", status: "running" }));
-  expect(await queue.reconcileOne(new AbortController().signal)).toBe(false);
-  await database().query("insert into runtime_idle_turns values($1,'active_turn',true)", [input.id]);
-  expect(await queue.reconcileOne(new AbortController().signal)).toBe(true);
-  await queue.drain();
-  expect(await queue.status(caller, input.id, input.request_id)).toEqual({ nativePromptId: "next_prompt" });
 });
 
 test("a full model queues its override without blocking another model and reports the real limit", async () => {

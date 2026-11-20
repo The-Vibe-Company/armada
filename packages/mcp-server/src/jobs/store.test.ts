@@ -1,5 +1,8 @@
 import { expect, test } from "bun:test";
+import type { Sql } from "@armada/core/server";
 import { rowOnlyDatabase } from "../../test/row-only-database.ts";
+import { createTurnDispatchJob, type DispatchTurn } from "../account-turn-dispatch.ts";
+import { createAccountTurnQueue } from "../account-turn-queue.ts";
 import { retentionMaintenanceJob, seedRetentionMaintenance } from "../retention-maintenance.ts";
 import { scopedRuntimeSql } from "../runtime-enrolment.ts";
 import type { LaneFactory } from "../server-worker-modules.ts";
@@ -28,7 +31,7 @@ async function sandbox({ db, people }: Awaited<ReturnType<typeof fixture>>, boat
   const id = crypto.randomUUID();
   await db.query(
     `insert into sandboxes (id, boat_id, golden_id, org_id, owner_id, harness, status, lifecycle_generation, expires_at, boat_runtime, stopped_at)
-     values ($1, 'fixture', $2, $3, $4, 'codex',
+     values ($1, $1::uuid::text, $2, $3, $4, 'codex',
        case when $6 then 'stopped'::sandbox_status else 'ready'::sandbox_status end, 2, 'infinity', $5,
        case when $6 then now() end)`,
     [id, golden!.id, people.org, people.owner, boatRuntime, stopped],
@@ -45,6 +48,237 @@ async function seedTurn(f: Awaited<ReturnType<typeof fixture>>, sandboxId: strin
     [sandboxId, requestId, f.openaiCredentialId, f.people.owner, f.people.org],
   );
 }
+
+async function turnFixture() {
+  const f = await fixture();
+  const key = btoa("\0".repeat(32));
+  const queue = createAccountTurnQueue(f.sql, key);
+  const caller = { userId: f.people.owner, via: "service", orgs: [{ orgId: f.people.org, role: "member" }] } as const;
+  const accept = async (id: string) => {
+    await f.db.query("update sandboxes set credential_id=$2,credential_version=1 where id=$1", [
+      id,
+      f.openaiCredentialId,
+    ]);
+    const request = crypto.randomUUID();
+    expect(
+      await queue.accept({ ...caller, orgs: [...caller.orgs] }, { id, request_id: request, prompt: "queued" }),
+    ).toMatchObject({ status: "queued" });
+    return request;
+  };
+  const retryAt = new Date("2100-01-01T00:00:01Z");
+  const runnerFor = (send: DispatchTurn, store = f.store) =>
+    createJobsRunner(
+      store,
+      { turn_dispatch: createTurnDispatchJob(f.sql, key, send, () => retryAt.getTime() - 1_000) },
+      () => {},
+      () => () => {},
+    );
+  return {
+    ...f,
+    queue,
+    caller: { ...caller, orgs: [...caller.orgs] },
+    accept,
+    retryAt,
+    runnerFor,
+    async makeDue(sandboxId: string) {
+      await f.db.query("update jobs set run_after='-infinity' where sandbox_id=$1", [sandboxId]);
+    },
+  };
+}
+
+test("the turn handler waits for FIFO and capacity without spending its dispatch budget", async () => {
+  const f = await turnFixture();
+  const occupied = await sandbox(f);
+  const first = await sandbox(f);
+  const later = await sandbox(f);
+  await f.db.query("update credentials set max_agents=1 where id=$1", [f.openaiCredentialId]);
+  const firstRequest = await f.accept(first);
+  const laterRequest = await f.accept(later);
+  await expect(f.queue.accept(f.caller, { id: first, request_id: firstRequest, prompt: "changed" })).rejects.toThrow(
+    "identical input",
+  );
+  await f.makeDue(later);
+  const sent: string[] = [];
+  const runner = f.runnerFor(async (_caller, input) => {
+    sent.push(input.id);
+    const promptId = `actual_${input.request_id}`;
+    await f.db.query("update sandboxes set status='running',task_prompt_id=$2 where id=$1", [input.id, promptId]);
+    return { promptId, status: "running" };
+  });
+  const tick = async () => {
+    expect(await runner.reconcileOne(signal)).toBe(true);
+    await runner.drain();
+  };
+  await tick();
+  expect(sent).toEqual([]);
+  await f.db.query("update sandboxes set status='running',task_prompt_id='active_turn',credential_id=$2 where id=$1", [
+    occupied,
+    f.openaiCredentialId,
+  ]);
+  for (let wait = 0; wait < 4; wait++) {
+    await f.makeDue(first);
+    await tick();
+  }
+  expect(sent).toEqual([]);
+  expect((await f.db.query("select attempts, state, run_after from jobs")).rows).toEqual([
+    { attempts: 0, state: "queued", run_after: f.retryAt },
+    { attempts: 0, state: "queued", run_after: f.retryAt },
+  ]);
+  await f.db.query("insert into runtime_idle_turns(sandbox_id,prompt_id,settled) values($1,'active_turn',true)", [
+    occupied,
+  ]);
+  await f.makeDue(first);
+  await tick();
+  await f.makeDue(later);
+  await tick();
+  expect(sent).toEqual([first]);
+  expect(await f.queue.status(f.caller, first)).toEqual({
+    nativePromptId: `actual_${firstRequest}`,
+    publicPromptId: firstRequest,
+  });
+  expect(await f.queue.status(f.caller, first, firstRequest)).toEqual({ nativePromptId: `actual_${firstRequest}` });
+  await f.db.query("insert into runtime_idle_turns(sandbox_id,prompt_id,settled) values($1,$2,true)", [
+    first,
+    `actual_${firstRequest}`,
+  ]);
+  await f.makeDue(later);
+  await tick();
+  expect(sent).toEqual([first, later]);
+  expect(await f.queue.status(f.caller, later, laterRequest)).toEqual({ nativePromptId: `actual_${laterRequest}` });
+});
+
+test.each(["unsettled prompt", "revoked actor"] as const)("the turn handler respects %s", async (condition) => {
+  const f = await turnFixture();
+  const id = await sandbox(f, true);
+  const request = await f.accept(id);
+  if (condition === "unsettled prompt")
+    await f.db.query("update sandboxes set task_prompt_id='active_turn' where id=$1", [id]);
+  else
+    await f.db.query("update mcp_actor_epochs set epoch=epoch+1 where org_id=$1 and user_id=$2", [
+      f.people.org,
+      f.people.owner,
+    ]);
+  const sent: string[] = [];
+  const runner = f.runnerFor(async (_caller, input) => {
+    sent.push(input.id);
+    return { promptId: input.request_id, status: "running" };
+  });
+  expect(await runner.reconcileOne(signal)).toBe(true);
+  await runner.drain();
+  expect(sent).toEqual([]);
+  expect((await f.db.query("select sandbox_id from account_agent_reservations")).rows).toEqual([]);
+  if (condition === "revoked actor") {
+    expect(await f.queue.status(f.caller, id, request)).toMatchObject({ failed: true });
+  } else {
+    await f.db.query("insert into runtime_idle_turns(sandbox_id,prompt_id,settled) values($1,'active_turn',true)", [
+      id,
+    ]);
+    await f.makeDue(id);
+    expect(await runner.reconcileOne(signal)).toBe(true);
+    await runner.drain();
+    expect(sent).toEqual([id]);
+    expect(await f.queue.status(f.caller, id, request)).toEqual({ nativePromptId: request });
+  }
+});
+
+test("interrupted turn deferral leaves the claim available to a successor after expiry", async () => {
+  const f = await turnFixture();
+  const id = await sandbox(f, true);
+  const request = await f.accept(id);
+  await f.db.query("update sandboxes set task_prompt_id='active_turn' where id=$1", [id]);
+  const interrupted = createJobsStore(
+    {
+      ...f.sql,
+      transaction: (work) =>
+        f.sql.transaction!(async (tx: Sql) => {
+          await work(tx);
+          throw new Error("Connection lost before deferral commit.");
+        }),
+    },
+    btoa("\0".repeat(32)),
+  );
+  const sent: string[] = [];
+  const send: DispatchTurn = async (_caller, input) => {
+    sent.push(input.id);
+    return { promptId: input.request_id, status: "running" };
+  };
+  const first = f.runnerFor(send, { ...f.store, complete: interrupted.complete });
+  expect(await first.reconcileOne(signal)).toBe(true);
+  await first.drain();
+  expect((await f.db.query("select state, attempts from jobs")).rows).toEqual([{ state: "leased", attempts: 1 }]);
+  await f.db.query("update jobs set lease_until='-infinity' where sandbox_id=$1", [id]);
+  await f.db.query("insert into runtime_idle_turns(sandbox_id,prompt_id,settled) values($1,'active_turn',true)", [id]);
+  const successor = f.runnerFor(send);
+  expect(await successor.reconcileOne(signal)).toBe(true);
+  await successor.drain();
+  expect(sent).toEqual([id]);
+  expect(await f.queue.status(f.caller, id, request)).toEqual({ nativePromptId: request });
+});
+
+test("the turn handler defers an open dispatch window and recovers after it expires", async () => {
+  const f = await turnFixture();
+  const id = await sandbox(f, true);
+  const request = await f.accept(id);
+  await f.db.query(
+    `update account_turn_queue set state='dispatching',dispatch_generation=queued_generation,
+       dispatch_until='infinity' where sandbox_id=$1`,
+    [id],
+  );
+  await f.db.query("insert into account_agent_reservations(sandbox_id,account_id) values($1,$2)", [
+    id,
+    f.openaiCredentialId,
+  ]);
+  const sent: string[] = [];
+  const runner = f.runnerFor(async (_caller, input) => {
+    sent.push(input.id);
+    return { promptId: input.request_id, status: "running" };
+  });
+  expect(await runner.reconcileOne(signal)).toBe(true);
+  await runner.drain();
+  expect(sent).toEqual([]);
+  expect((await f.db.query("select attempts, state from jobs")).rows).toEqual([{ attempts: 0, state: "queued" }]);
+  await f.db.query("update account_turn_queue set dispatch_until='-infinity' where sandbox_id=$1", [id]);
+  await f.makeDue(id);
+  expect(await runner.reconcileOne(signal)).toBe(true);
+  await runner.drain();
+  expect(sent).toEqual([id]);
+  expect(await f.queue.status(f.caller, id, request)).toEqual({ nativePromptId: request });
+});
+
+test("a generation change before turn admission retargets the job without charging an attempt", async () => {
+  const f = await turnFixture();
+  const id = await sandbox(f);
+  const request = await f.accept(id);
+  let advanced = false;
+  const sent: string[] = [];
+  const runner = f.runnerFor(
+    async (_caller, input) => {
+      sent.push(input.id);
+      return { promptId: input.request_id, status: "running" };
+    },
+    {
+      ...f.store,
+      async inspect(job, owner, tx) {
+        const state = await f.store.inspect(job, owner, tx);
+        if (state === "dispatch" && !advanced) {
+          advanced = true;
+          await f.db.query("update sandboxes set lifecycle_generation=3 where id=$1", [id]);
+        }
+        return state;
+      },
+    },
+  );
+  expect(await runner.reconcileOne(signal)).toBe(true);
+  await runner.drain();
+  expect(sent).toEqual([]);
+  expect((await f.db.query("select attempts, generation::text, state from jobs")).rows).toEqual([
+    { attempts: 0, generation: "3", state: "queued" },
+  ]);
+  expect(await runner.reconcileOne(signal)).toBe(true);
+  await runner.drain();
+  expect(sent).toEqual([id]);
+  expect(await f.queue.status(f.caller, id, request)).toEqual({ nativePromptId: request });
+});
 
 test.each([
   "queued",
@@ -305,7 +539,7 @@ test.each([
   if (scenario === "runtime request advanced after claim") {
     await db.query("update sandboxes set lifecycle_generation=$2 where id=$1", [sandboxId, generation]);
     expect(await store.inspect(claim!, owner)).toBe("stale");
-    await store.retireStale(claim!, owner, "before_handler");
+    await store.retireStale(claim!, owner, "no_dispatch");
     claim = await store.claim("turn_dispatch", owner, 30, 1);
     expect(claim?.attempts).toBe(1);
   }
@@ -587,7 +821,7 @@ test.each([
     if (afterClaim) {
       await changeSandbox();
       expect(await store.inspect(job, owner)).toBe("stale");
-      await store.retireStale(job, owner, "before_handler");
+      await store.retireStale(job, owner, "no_dispatch");
     }
     expect(await store.inspect(job, owner)).toBe("lost");
     expect((await db.query("select state from jobs where id=$1", [jobId])).rows).toEqual([{ state: "failed" }]);

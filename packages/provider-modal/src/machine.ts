@@ -84,6 +84,13 @@ export async function lookupModalCompute(
   return sandbox;
 }
 
+export async function snapshotModalRecoveryImage(sandbox: Sandbox, signal?: AbortSignal) {
+  signal?.throwIfAborted();
+  const image = await sandbox.snapshotFilesystem({ ttlMs: null });
+  if (!image.imageId) throw refusal("unavailable", "Modal checkpoint returned no image.");
+  return image.imageId;
+}
+
 export async function terminateModalCompute(
   sandbox: Sandbox,
   { wait = true, signal }: { wait?: boolean; signal?: AbortSignal | undefined } = {},
@@ -237,10 +244,8 @@ export function createModalMachine(options: ModalMachineOptions) {
           await prepareCheckpoint(request, sb);
           request.signal?.throwIfAborted();
           entry = await save(request, entry, { ...entry, snapshotDispatched: true });
-          request.signal?.throwIfAborted();
-          const image = await sb.snapshotFilesystem({ ttlMs: null });
-          if (!image.imageId) throw refusal("unavailable", "Modal checkpoint returned no image.");
-          entry = await save(request, entry, { ...entry, recoveryImageId: image.imageId });
+          const recoveryImageId = await snapshotModalRecoveryImage(sb, request.signal);
+          entry = await save(request, entry, { ...entry, recoveryImageId });
         }
         await terminateModalCompute(sb, { wait: false, signal: request.signal });
         await save(request, entry, { ...entry, phase: "stopped" });

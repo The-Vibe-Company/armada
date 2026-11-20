@@ -86,7 +86,7 @@ interface EnqueueOptions {
 }
 
 export function createJobsStore(sql: Sql, encryptionKey?: string) {
-  async function reconcileTurnClaim(job: Job, owner: string, phase: "claim" | "before_handler" | "after_handler") {
+  async function reconcileTurnClaim(job: Job, owner: string, phase: "claim" | "no_dispatch" | "after_handler") {
     const sandboxId = job.sandbox_id;
     if (
       !sandboxId ||
@@ -189,7 +189,7 @@ export function createJobsStore(sql: Sql, encryptionKey?: string) {
                              and e.lifecycle_generation = s.lifecycle_generation
                          )))))))))
              returning j.generation::text`,
-            [...claim, requestId, retiring, phase === "before_handler"],
+            [...claim, requestId, retiring, phase === "no_dispatch"],
           );
           if (updated) return { ...job, generation: updated.generation };
           if (reset) throw new Error("Abandoned turn reset lost its generation fence.");
@@ -398,6 +398,7 @@ export function createJobsStore(sql: Sql, encryptionKey?: string) {
     async complete(job, owner, result) {
       const state = result.status === "retry" ? "queued" : result.status === "fail" ? "failed" : "done";
       const outcome = result.outcome === undefined ? null : JSON.stringify(result.outcome);
+      const refundAttempt = result.status === "retry" && result.unattempted;
       const complete = async (db: Sql, generation: string | null) => {
         const { rows } = await db.query<{ completed: boolean }>(
           `select public.complete_job($1,$2,$3,$4,$5,
@@ -413,11 +414,14 @@ export function createJobsStore(sql: Sql, encryptionKey?: string) {
             result.status === "fail" ? result.reason : null,
           ],
         );
-        if (rows[0]?.completed) await result.commit?.(db);
+        if (rows[0]?.completed) {
+          if (refundAttempt) await db.query("update public.jobs set attempts = attempts - 1 where id = $1", [job.id]);
+          await result.commit?.(db);
+        }
         return rows[0]?.completed === true;
       };
       if (job.kind === "turn_dispatch") return (await withLockedTurnGeneration(job, owner, complete)) ?? false;
-      if (result.commit) {
+      if (result.commit || refundAttempt) {
         if (!sql.transaction) throw new Error("Job completion requires a transaction.");
         return sql.transaction((tx) => complete(tx, job.generation));
       }
