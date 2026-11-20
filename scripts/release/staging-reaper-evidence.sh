@@ -14,8 +14,11 @@ scope=(--project "$RAILWAY_PROJECT_ID" --environment "$RAILWAY_ENVIRONMENT_ID" -
 deployments=$(timeout 15s railway deployment list --json --limit 20 "${scope[@]}") \
   || fail_evidence deployment_list "$?"
 candidate_id=${1:-}
-ids=$(jq -r --arg candidate "$candidate_id" '
-  sort_by(.createdAt) | reverse
+ids=$(jq -sr --arg candidate "$candidate_id" '
+  if length != 1 or (.[0] | type) != "array" then
+    error("expected one deployment list")
+  else .[0] end
+  | sort_by(.createdAt) | reverse
   | (map(.status) | index("SUCCESS")) as $current
   | if $candidate != "" and ($current == null or .[$current].id != $candidate) then
       error("candidate is not the live deployment")
