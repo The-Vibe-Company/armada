@@ -21,15 +21,19 @@ export const claudePythonModules = "json,os,signal,stat,subprocess,threading,uui
 export function nativePython(modules: string) {
   return `"$(
     for python in /usr/bin/python3 /usr/local/bin/python3; do
-      if [ "$python" = /usr/local/bin/python3 ] && [ "$(/usr/bin/id -u)" -eq 0 ]; then
-        python=$(/usr/bin/readlink -f -- "$python") || continue
-        path="$python"
-        while [ -n "$path" ]; do
-          mode=$(/usr/bin/stat -c %a -- "$path") && owner=$(/usr/bin/stat -c %u -- "$path") || break
-          [ "$owner" -eq 0 ] && [ "$((0$mode & 022))" -eq 0 ] || break
-          path=${"$"}{path%/*}
-        done
-        [ -z "$path" ] || continue
+      if [ "$python" = /usr/local/bin/python3 ]; then
+        uid=$(/usr/bin/id -u) || continue
+        case "$uid" in ''|*[!0-9]*) continue ;; esac
+        if [ "$uid" -eq 0 ]; then
+          python=$(/usr/bin/readlink -f -- "$python") || continue
+          path="$python"
+          while [ -n "$path" ]; do
+            mode=$(/usr/bin/stat -c %a -- "$path") && owner=$(/usr/bin/stat -c %u -- "$path") || break
+            [ "$owner" -eq 0 ] && [ "$((0$mode & 022))" -eq 0 ] || break
+            path=${"$"}{path%/*}
+          done
+          [ -z "$path" ] || continue
+        fi
       fi
       if "$python" -I -c 'import ${modules}' >/dev/null 2>&1; then
         printf '%s' "$python"
