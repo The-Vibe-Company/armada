@@ -4,6 +4,7 @@ import { chmod, copyFile, mkdir, mkdtemp, rm } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { ANTIGRAVITY_ARTIFACT } from "../src/antigravity-artifact.ts";
 import { prepareEnrolledHarness } from "../src/enrolled-harness.ts";
 
 // Owning boundary is bootstrap wiring: installer integrity already belongs to
@@ -63,6 +64,59 @@ test.each(["codex", "claude"] as const)(
         await expect(prepareEnrolledHarness("https://armada.example", input)).rejects.toThrow(
           "invalid_enrolled_harness",
         );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  },
+);
+
+test("Antigravity enrollment requires a private model credential before artifact access", async () => {
+  const root = await mkdtemp(join(tmpdir(), "enrolled-antigravity-"));
+  try {
+    await expect(
+      prepareEnrolledHarness(
+        "https://armada.example",
+        { root, selectedHarness: "antigravity", claudeEnv: {}, codexEnv: {} },
+        async () => {
+          throw Error("unexpected artifact fetch");
+        },
+      ),
+    ).rejects.toThrow("Invalid Antigravity credential.");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test.skipIf(process.platform !== "linux" || !["arm64", "x64"].includes(process.arch))(
+  "Antigravity enrollment requests the pinned native artifact without transmitting the model key",
+  async () => {
+    const root = await mkdtemp(join(tmpdir(), "enrolled-antigravity-"));
+    const serverUrl = "https://armada.example";
+    const pin = ANTIGRAVITY_ARTIFACT[process.arch === "arm64" ? "arm64" : "x64"];
+    try {
+      const requests: Request[] = [];
+      await expect(
+        prepareEnrolledHarness(
+          serverUrl,
+          {
+            root,
+            selectedHarness: "antigravity",
+            claudeEnv: {},
+            codexEnv: {},
+            antigravityCredential: { method: "gemini-api-key", apiKey: "fixture-model-material" },
+          },
+          async (url, options) => {
+            requests.push(new Request(url, options));
+            return new Response(null, { status: 404 });
+          },
+          join(root, "shared"),
+        ),
+      ).rejects.toThrow("runtime_artifact_unavailable");
+      expect(requests).toHaveLength(1);
+      expect(requests[0]!.url).toBe(`${serverUrl}/api/runtime/artifacts/${pin.archive.sha256}`);
+      expect(requests[0]!.method).toBe("GET");
+      expect(requests[0]!.body).toBeNull();
+      expect(JSON.stringify([...requests[0]!.headers])).not.toContain("fixture-model-material");
     } finally {
       await rm(root, { recursive: true, force: true });
     }
