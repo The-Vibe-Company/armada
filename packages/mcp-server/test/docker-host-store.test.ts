@@ -416,7 +416,7 @@ async function prepareRestore(registered?: Awaited<ReturnType<typeof fixture>>, 
     generation: predecessor,
     expiresAt,
     image,
-    snapshotId: snapshot?.id,
+    ...(snapshot && { snapshotId: snapshot.id }),
   });
   await store.enqueueSandbox(a.owner, a.sandboxId, a.create);
   await store.complete(a.hostToken, a.installationId, { requestId: a.create.requestId, outcome: "completed" });
