@@ -1856,7 +1856,10 @@ describe("tools", () => {
         );
         const {
           rows: [settled],
-        } = await db.query("select status, task_prompt_id, activity_lease_id from sandboxes where id=$1", [id]);
+        } = await db.query<{ status: string; task_prompt_id: string | null; activity_lease_id: string | null }>(
+          "select status, task_prompt_id, activity_lease_id from sandboxes where id=$1",
+          [id],
+        );
         if (receiptRefused) {
           expect(sent.text).toContain("error code: outcome_unknown");
           expect(settled.status).toBe("starting");

@@ -254,10 +254,10 @@ begin
     end if;
     if sandbox.provider not in ('boat', 'modal') or sandbox.boat_runtime or sandbox.runtime_transport is not null
       or sandbox.status not in ('starting', 'ready', 'stopping', 'stopped', 'failed')
-      or (p_code = 'native_send_accepted' and sandbox.reconcile_lease_until > clock_timestamp())
       or sandbox.deleted_at is not null or sandbox.stop_requested_at is not null
       or sandbox.activity_lease_id is distinct from p_activity_lease
-      or (sandbox.activity_until > clock_timestamp()) is not true then
+      -- A late send receipt may fence a pre-publication observation by advancing the generation.
+      or (p_code <> 'native_send_accepted' and (sandbox.activity_until > clock_timestamp()) is not true) then
       return query select false, null::bigint;
       return;
     end if;

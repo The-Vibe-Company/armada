@@ -939,7 +939,7 @@ export function createSqlData(
         if (reason !== undefined && stopAdmissionReason === undefined) set("status_reason", reason, "::text");
         if (sets.length === 0) return;
         let fence = "";
-        if (nativeReceipt) fence += " and s.activity_until>clock_timestamp()";
+        if (patch.nativeSteerReceipt) fence += " and s.activity_until>clock_timestamp()";
         if (patch.turnActivity !== undefined)
           fence += " and s.status in ('ready','running') and s.stop_requested_at is null and s.deleted_at is null";
         if (patch.turnActivity === "claim") fence += " and s.activity_lease_id is null";
@@ -1124,18 +1124,8 @@ export function createSqlData(
                 and s.status=$6::public.sandbox_status and s.provider_sandbox_id=$7
                 and s.provider in ('boat','modal') and not s.boat_runtime and s.runtime_transport is null
                 and s.deleted_at is null and s.status<>'deleted' and s.stop_requested_at is null
-                and s.activity_until>clock_timestamp()
-                and (not $8::boolean or s.reconcile_lease_until is null or s.reconcile_lease_until<=clock_timestamp())
                 for update`,
-              [
-                ...scope,
-                id,
-                receiptGeneration,
-                receiptToken,
-                nativeReceipt.fromState,
-                nativeReceipt.placement,
-                !!patch.nativeSendReceipt,
-              ],
+              [...scope, id, receiptGeneration, receiptToken, nativeReceipt.fromState, nativeReceipt.placement],
             );
             if (!locked.rows.length) return { rows: [] };
             if (nativeReceipt.fromState !== "running")
