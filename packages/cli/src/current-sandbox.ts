@@ -12,7 +12,7 @@ export interface CurrentSandboxFile {
   write(id: string): Promise<void>;
 }
 
-export function currentSandboxFile(cwd: string): CurrentSandboxFile {
+export function currentSandboxFile(cwd: string) {
   const dir = join(cwd, ".armada");
   const path = join(dir, "sandbox");
   return {
@@ -24,7 +24,7 @@ export function currentSandboxFile(cwd: string): CurrentSandboxFile {
         throw new AuthError("Could not read .armada/sandbox. Check its permissions or pass a sandbox ID.", "usage");
       }
     },
-    async write(id) {
+    async write(id: string) {
       await mkdir(dir, { recursive: true });
       const temporaryDir = await mkdtemp(join(dir, "sandbox-"));
       try {
@@ -35,7 +35,7 @@ export function currentSandboxFile(cwd: string): CurrentSandboxFile {
         await rm(temporaryDir, { recursive: true, force: true });
       }
     },
-  };
+  } satisfies CurrentSandboxFile;
 }
 
 export async function rememberSandbox(id: string, file: CurrentSandboxFile | undefined, io: Pick<AuthIo, "err">) {
@@ -53,7 +53,7 @@ export async function resolveSandboxId(
   file: CurrentSandboxFile | undefined,
   org: string | undefined,
   list: (input: ListInput & { org?: string }) => Promise<ListResult>,
-): Promise<string> {
+) {
   const id = explicit ?? (env.ARMADA_SANDBOX?.trim() || (await file?.read())?.trim());
   if (!id) throw new AuthError("Pass a sandbox ID or set ARMADA_SANDBOX.", "usage");
   if (fullId.test(id)) return id.toLowerCase();
@@ -66,7 +66,7 @@ export async function resolveSandboxId(
   const matches = new Set<string>();
   let page = 1;
   for (;;) {
-    const result = await list({ org, page, limit: 200 });
+    const result = await list({ ...(org === undefined ? {} : { org }), page, limit: 200 });
     if (
       !Array.isArray(result.sandboxes) ||
       !result.sandboxes.every((sandbox) => typeof sandbox?.id === "string" && fullId.test(sandbox.id))

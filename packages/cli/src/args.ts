@@ -114,12 +114,12 @@ export function oneName(positionals: string[]) {
   return name;
 }
 
-export function jsonRequested(argv: readonly string[]): boolean {
+export function jsonRequested(argv: readonly string[]) {
   const end = argv.indexOf("--");
   return (end < 0 ? argv : argv.slice(0, end)).includes("--json");
 }
 
-export function withJsonFlag(argv: readonly string[]): readonly string[] {
+export function withJsonFlag(argv: readonly string[]) {
   if (jsonRequested(argv)) return argv;
   const end = argv.indexOf("--");
   return end < 0 ? [...argv, "--json"] : [...argv.slice(0, end), "--json", ...argv.slice(end)];
