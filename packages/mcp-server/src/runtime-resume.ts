@@ -11,7 +11,7 @@ import { runtimeBridgeTarget } from "./provider-runtime-admission.ts";
 import { lockRuntimeAccount } from "./runtime-account-admission.ts";
 import { runtimeAgentFor } from "./runtime-agent.ts";
 import type { createRuntimeCommands } from "./runtime-commands.ts";
-import { createRuntimeEnrolments } from "./runtime-enrolment.ts";
+import { createRuntimeEnrolments, type RuntimeTicketGuard } from "./runtime-enrolment.ts";
 import type { RuntimeGitHub } from "./runtime-github.ts";
 import type { RuntimeMcp } from "./runtime-mcp.ts";
 import type { RestoreScopedRuntimeAccess } from "./sandbox-armada-access.ts";
@@ -69,7 +69,7 @@ export interface RuntimeResumePlacement {
     restore: { epoch: string; watermark: number; conversationId: string | null },
     confirmActivation?: () => Promise<void>,
     assertDispatch?: (tx?: Sql) => Promise<void>,
-    assertBeforeTicket?: (tx: Sql) => Promise<void>,
+    ticketGuard?: RuntimeTicketGuard,
   ): Promise<{ epoch: string }>;
   /** Exact previously authorized compute identity; no activation/reissue on failure. */
   stop(): Promise<void>;
@@ -375,9 +375,12 @@ export function createRuntimeResume(
               confirmActivation,
               claim ? assertClaim : undefined,
               admitted.bootstrap
-                ? async (tx) => {
-                    if (!(await canBootstrap(tx)))
-                      throw new VaultError("conflict", "Confirmed resume bootstrap authority changed.");
+                ? {
+                    lockPrerequisites: lockAccount,
+                    async check(tx) {
+                      if (!(await canBootstrap(tx)))
+                        throw new VaultError("conflict", "Confirmed resume bootstrap authority changed.");
+                    },
                   }
                 : undefined,
             );

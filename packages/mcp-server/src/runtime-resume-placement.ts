@@ -53,7 +53,7 @@ export function runtimeResumePlacement<H extends Provider>(
     );
     const host = await placement.host(caller, sandbox);
     return {
-      start: (signal, restoreCheckpoint, confirmActivation, assertDispatch, assertBeforeTicket) =>
+      start: (signal, restoreCheckpoint, confirmActivation, assertDispatch, ticketGuard) =>
         options.policy.start({
           host,
           actor,
@@ -62,8 +62,8 @@ export function runtimeResumePlacement<H extends Provider>(
           signal,
           restoreCheckpoint,
           ...(assertDispatch ? { assertDispatch } : {}),
-          ...(assertBeforeTicket
-            ? { assertBeforeTicket }
+          ...(ticketGuard
+            ? { ticketGuard }
             : {
                 activate: async (admission: AbortSignal) => {
                   placement.retained(await host.get(sandbox.providerSandboxId, { signal: admission }));

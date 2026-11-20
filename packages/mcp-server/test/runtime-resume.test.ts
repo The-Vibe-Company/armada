@@ -462,6 +462,7 @@ describe.each(["boat", "modal"] as const)("queued runtime wake admission (%s)", 
     let restores = 0;
     let bootstraps = 0;
     let lostBeforeTicket = false;
+    let bootstrappedEpoch: string | undefined;
     const hasTicket = async () =>
       Boolean(
         (
@@ -493,8 +494,9 @@ describe.each(["boat", "modal"] as const)("queued runtime wake admission (%s)", 
           async resumeRuntime() {
             restores++;
           },
-          async startRuntime() {
+          async startRuntime({ enrolmentToken }: { enrolmentToken: string }) {
             bootstraps++;
+            if (scenario === "before ticket loss") bootstrappedEpoch = (await f.authority.enrol(enrolmentToken)).epoch;
             throw Error("Fixture ends at bootstrap invocation");
           },
         }) as unknown as Awaited<ReturnType<Parameters<typeof modalRuntimeResume>[0]["hostFor"]>>,
@@ -686,8 +688,11 @@ describe.each(["boat", "modal"] as const)("queued runtime wake admission (%s)", 
       expect(await hasTicket()).toBe(false);
       expect(restores).toBe(1);
       expect(bootstraps).toBe(0);
+      // A dormant job from the pre-cutover dispatcher retains its original generation.
+      await f.db.query("update jobs set generation=$2 where id=$1", [id, before]);
       const successor = crypto.randomUUID();
       const retry = (await store.claim("turn_dispatch", successor, 30, 1))!;
+      expect(retry.generation).toBe(String(before + 1));
       const successorClaim = {
         job: retry,
         canDispatch: async (tx?: Sql) => (await store.inspect(retry, successor, tx)) === "dispatch",
@@ -697,6 +702,7 @@ describe.each(["boat", "modal"] as const)("queued runtime wake admission (%s)", 
       await expect(send(f.caller, request, successorClaim)).rejects.toMatchObject({ code: "conflict" });
       expect(restores).toBe(1);
       expect(bootstraps).toBe(1);
+      expect(bootstrappedEpoch).toBe("2");
     } else if (scenario === "ticket commit loss") {
       await expect(attempt()).rejects.toMatchObject({ code: "conflict" });
       expect(restores).toBe(1);
