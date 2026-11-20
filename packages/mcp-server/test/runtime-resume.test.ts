@@ -1,4 +1,4 @@
-import { describe, expect, spyOn, test } from "bun:test";
+import { describe, expect, setSystemTime, spyOn, test } from "bun:test";
 import { createMemoryAuthStore } from "@armada/auth";
 import { createSqlVaultStore, DelegatedAuthority, type Provider } from "@armada/core/server";
 import { fakeBoat, retainedSandbox, sandbox as sdkSandbox } from "../../provider-boat/test/support.ts";
@@ -321,12 +321,11 @@ describe("runtime resume admission rollback", () => {
                         returning ceil(extract(epoch from expires_at)*1000)::float8 as expires_ms`,
                       [f.row.id],
                     );
-                    // PGlite reads Date.now() for clock_timestamp(), while now() stays at transaction start.
-                    const clock = spyOn(Date, "now").mockReturnValue(expiry.rows[0]!.expires_ms + 1);
+                    setSystemTime(new Date(expiry.rows[0]!.expires_ms + 1));
                     try {
                       return await tx.query(statement, params);
                     } finally {
-                      clock.mockRestore();
+                      setSystemTime();
                     }
                   }
                 }
