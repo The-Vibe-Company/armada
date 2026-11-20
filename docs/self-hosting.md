@@ -109,12 +109,22 @@ Required environment (the server refuses to start without it):
 | --- | --- |
 | `ARMADA_DATABASE_URL` | Privileged Postgres connection (the Supabase `postgres` role). The server's own queries carry the visibility rules. |
 | `SUPABASE_URL`, `SUPABASE_ANON_KEY` | The Supabase project used for sign-in. |
-| `ARMADA_CLI_OAUTH_CLIENT_ID` | Dedicated confidential client registered with the Supabase OAuth 2.1 server. Set the OAuth server Authorization Path to `/cli-login`, leave dynamic registration disabled, register the exact dashboard URL ending in `/cli-login` as the client redirect URI, and set its token endpoint authentication method to `client_secret_post`. |
-| `ARMADA_CLI_OAUTH_CLIENT_SECRET` | Secret for the dedicated CLI OAuth client. Set it on Armada server only. |
-| `ARMADA_CLI_CONSENT_KEY` | 32 random bytes encoded as 64 lowercase hex characters, shared with the dashboard server. Required to sign and verify CLI login consent. |
 | `ARMADA_AUTH_SECRET` | At least 16 characters; seals the OAuth server's sign-in cookie. |
 | `ARMADA_PUBLIC_URL` | The origin clients reach. |
 | `ARMADA_ENCRYPTION_KEY` | 32 random bytes in base64 (`openssl rand -base64 32`). Seals every stored credential with AES-256-GCM. |
+
+Required for CLI device login:
+
+| Variable | Role |
+| --- | --- |
+| `ARMADA_CLI_OAUTH_CLIENT_ID` | ID of the dedicated confidential Supabase OAuth client. |
+| `ARMADA_CLI_OAUTH_CLIENT_SECRET` | Secret for the dedicated CLI OAuth client. Set it on Armada server only. |
+| `ARMADA_CLI_CONSENT_KEY` | 32 random bytes encoded as 64 lowercase hex characters. Generate a separate key per environment and set the same value on its Armada server and dashboard server. |
+
+Enable Supabase OAuth 2.1, set the Authorization Path to `/cli-login`, disable
+dynamic client registration, and set the Auth Site URL to your dashboard origin.
+Register the exact dashboard URL ending in `/cli-login` as the confidential
+client's redirect URI and use `client_secret_post` for token endpoint authentication.
 
 Optional:
 

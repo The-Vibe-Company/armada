@@ -322,16 +322,23 @@ waive deployed proof; local checks do not prove provider settings or credentials
 ### Release configuration names
 
 Before releasing CLI device login, provision a separate `ARMADA_CLI_CONSENT_KEY`
-in each environment, with the same value on its Railway server and Vercel
-dashboard. Enable the Supabase OAuth 2.1 server in the project's Auth settings
+in each environment. Generate 32 random bytes encoded as 64 lowercase hex
+characters and set the same value on its Railway server and Vercel dashboard
+project (Production target on each environment's project). Enable the Supabase OAuth 2.1 server in the project's Auth settings
 and set its Authorization Path to `/cli-login`. Armada reads the authorization
-ID server-side without following that redirect. Leave dynamic client registration
-disabled.
+ID server-side without following that redirect. Disable dynamic client
+registration and set the Supabase Auth Site URL to that environment's dashboard
+origin.
 Register a dedicated confidential OAuth client with `client_secret_post` and the
 exact environment dashboard redirect URI (ending in `/cli-login`). Configure
 `ARMADA_CLI_OAUTH_CLIENT_ID` and `ARMADA_CLI_OAUTH_CLIENT_SECRET` on the Railway
 server only. Apply `20261120120730_cli_device_oauth_code.sql` before rolling out
 the server. If a CLI login was in progress during the rollout, start it again.
+
+Before deployment, the staging and production checks verify required variable
+names in the target Railway service and Vercel project. The Vercel token needs
+permission to list project environment variables. Verify the key matches across
+both hosts and confirm the Supabase settings when configuring each environment.
 
 Names only; resolve each from its matching environment or authorized inherited
 scope. Never paste values into logs, argv, issues, dispatch inputs or repo files.
