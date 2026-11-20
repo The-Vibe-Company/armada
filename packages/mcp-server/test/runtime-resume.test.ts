@@ -360,7 +360,7 @@ describe("runtime resume admission rollback", () => {
 describe("queued runtime wake admission", () => {
   const fixture = scopedRuntimeFixture(() => stopped(), { perTest: true });
 
-  test.each(["current lease", "stale lease", "failed job retarget"] as const)(
+  test.each(["current lease", "stale lease", "failed job retarget", "different job request"] as const)(
     "commits the resume intent and job generation together (%s)",
     async (scenario) => {
       const f = await fixture();
@@ -417,12 +417,8 @@ describe("queued runtime wake admission", () => {
         };
       });
       const send = createRuntimeFollowup(f.sql, ENCRYPTION_KEY, f.bridge, undefined, resume);
-      const attempt = () =>
-        send(f.caller, request, {
-          sandboxId: f.row.id,
-          requestId: request.request_id,
-          handoffGeneration: (handoff) => store.handoffGeneration(job, owner, handoff),
-        });
+      const sentRequest = scenario === "different job request" ? input(f.row.id) : request;
+      const attempt = () => send(f.caller, sentRequest, (handoff) => store.handoffGeneration(job, owner, handoff));
       if (scenario === "current lease") {
         await expect(attempt()).resolves.toMatchObject({ resumed: true, requestId: request.request_id });
         expect(preparations).toBe(1);
@@ -437,7 +433,11 @@ describe("queued runtime wake admission", () => {
             await f.db.exec("alter table jobs drop constraint test_refuse_turn_retarget");
           }
         } else {
-          await expect(attempt()).rejects.toThrow("Turn job lease is no longer current");
+          await expect(attempt()).rejects.toThrow(
+            scenario === "stale lease"
+              ? "Turn job lease is no longer current"
+              : "Queued wake does not match the claimed turn job.",
+          );
         }
         expect(preparations).toBe(0);
         expect(await read()).toEqual({

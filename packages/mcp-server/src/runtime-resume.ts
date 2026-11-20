@@ -31,11 +31,7 @@ export interface RuntimeResumeInput {
   prompt: string;
 }
 /** Internal authority for the first wake of an exact queued send. */
-export interface RuntimeWakeJob {
-  sandboxId: string;
-  requestId: string;
-  handoffGeneration(handoff: GenerationHandoff): Promise<string>;
-}
+export type RuntimeWakeHandoff = (handoff: GenerationHandoff) => Promise<string>;
 
 export interface RuntimeResumeReceipt {
   id: string;
@@ -100,7 +96,11 @@ export function createRuntimeResume(
         [id, request],
       )
     ).rows[0];
-  return async (caller: Caller, input: RuntimeResumeInput, wakeJob?: RuntimeWakeJob): Promise<RuntimeResumeReceipt> => {
+  return async (
+    caller: Caller,
+    input: RuntimeResumeInput,
+    handoffWake?: RuntimeWakeHandoff,
+  ): Promise<RuntimeResumeReceipt> => {
     refuseConversationSelector(input);
     const requestId = input.request_id.toLowerCase();
     if (input.runtimeVersion !== 1 || !uuid.test(input.id) || !uuid.test(requestId) || !input.prompt.trim())
@@ -109,8 +109,6 @@ export function createRuntimeResume(
     const found = await store.get(input.id);
     if (!found || found.ownerId !== caller.userId || !runtimeBridgeTarget(found) || found.deletedAt)
       throw new VaultError("not_found", "No owned runtime resume target.");
-    if (wakeJob && (wakeJob.sandboxId !== found.id || wakeJob.requestId !== requestId))
-      throw new VaultError("conflict", "Queued wake does not match the runtime resume request.");
     const prior = await read(sql, found.id, requestId);
     const empty = prior?.empty_checkpoint ?? (found.conversationIds.length === 0 && !found.taskPromptId);
     const conversation =
@@ -133,7 +131,7 @@ export function createRuntimeResume(
     const pricingContext = await store.captureUsagePricingContext?.(found.id);
     const lockAccount = (tx: Sql) =>
       lockRuntimeAccount(tx, caller, found, "Pinned runtime account is no longer authorized.");
-    const firstWakeJob = prior ? undefined : wakeJob;
+    const firstWakeHandoff = prior ? undefined : handoffWake;
     const admit = async (tx: Sql) => {
       const fence = (
         await tx.query<{ tainted: boolean; lease: string | null; busy: boolean; unexpired: boolean }>(
@@ -169,7 +167,8 @@ export function createRuntimeResume(
       ).rows[0];
       const existing = await read(tx, found.id, requestId);
       if (existing) {
-        if (firstWakeJob) throw new VaultError("conflict", "Runtime resume intent changed during queued admission.");
+        if (firstWakeHandoff)
+          throw new VaultError("conflict", "Runtime resume intent changed during queued admission.");
         if (existing.request_hash !== hash) throw new VaultError("conflict", "Resume request input changed.");
         if (existing.receipt) return { current, op: existing, first: false };
         if (
@@ -193,7 +192,7 @@ export function createRuntimeResume(
         });
         return { current, op: existing, first: false };
       }
-      if (wakeJob && !firstWakeJob) throw new VaultError("conflict", "Runtime resume intent disappeared.");
+      if (handoffWake && !firstWakeHandoff) throw new VaultError("conflict", "Runtime resume intent disappeared.");
       if (!prepare)
         throw new VaultError("unavailable", "Trusted runtime resume policy is unavailable; no compute was activated.");
       if (
@@ -276,10 +275,19 @@ export function createRuntimeResume(
       return { current: active, op, first: true };
     };
     let admission: Awaited<ReturnType<typeof admit>> | undefined;
-    if (firstWakeJob) {
-      await firstWakeJob.handoffGeneration({
+    if (firstWakeHandoff) {
+      await firstWakeHandoff({
         lockPrerequisites: lockAccount,
-        async advance(tx) {
+        async advance(tx, job) {
+          const { payload } = job;
+          if (
+            job.sandbox_id !== found.id ||
+            !payload ||
+            typeof payload !== "object" ||
+            !("requestId" in payload) ||
+            payload.requestId !== requestId
+          )
+            throw new VaultError("conflict", "Queued wake does not match the claimed turn job.");
           admission = await admit(tx);
         },
       });

@@ -8,7 +8,7 @@ import { runtimeAgentFor } from "./runtime-agent.ts";
 import type { createRuntimeCommands } from "./runtime-commands.ts";
 import { createRuntimeEnrolments, runtimeTransaction } from "./runtime-enrolment.ts";
 import type { RuntimeMcp } from "./runtime-mcp.ts";
-import type { RuntimeResume, RuntimeWakeJob } from "./runtime-resume.ts";
+import type { RuntimeResume, RuntimeWakeHandoff } from "./runtime-resume.ts";
 import { appendConversation } from "./sandbox-activity.ts";
 import type { RestoreScopedRuntimeAccess } from "./sandbox-armada-access.ts";
 import { refuseConversationSelector } from "./sandbox-conversation.ts";
@@ -37,7 +37,7 @@ export function createRuntimeFollowup(
 ) {
   const authority = createRuntimeEnrolments(sql, key);
   const environment = createGoldenRuntimeEnvironment(sql, key);
-  return async (caller: Caller, input: RuntimeFollowupInput, wakeJob?: RuntimeWakeJob) => {
+  return async (caller: Caller, input: RuntimeFollowupInput, handoffWake?: RuntimeWakeHandoff) => {
     refuseConversationSelector(input);
     const requestId = input.request_id?.toLowerCase();
     if (!requestId || !/^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/.test(requestId) || !input.prompt.trim())
@@ -72,7 +72,11 @@ export function createRuntimeFollowup(
       if (previous)
         throw new VaultError("conflict", "This request_id belongs to an earlier follow-up; use a new ID for new work.");
       if (!resume) throw new VaultError("unavailable", "Runtime wake-on-send is unavailable.");
-      return resume(caller, { id: found.id, request_id: requestId, runtimeVersion: 1, prompt: input.prompt }, wakeJob);
+      return resume(
+        caller,
+        { id: found.id, request_id: requestId, runtimeVersion: 1, prompt: input.prompt },
+        handoffWake,
+      );
     }
     if (
       !found.model ||
