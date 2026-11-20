@@ -28,6 +28,8 @@ import {
 import type { DockerHostResources } from "../../core/src/docker-resources.ts";
 import { type DockerResourceOverrides, dockerResourcePolicy } from "../../core/src/docker-resources.ts";
 import {
+  admitDockerCapacity,
+  admitDockerDisk,
   DOCKER_CAPACITY_USAGE_SQL,
   DockerHostDraining,
   DockerHostFull,
@@ -37,7 +39,9 @@ import {
 } from "./docker-capacity.ts";
 import { hostDrainingSql } from "./docker-host-drain.ts";
 import { supportsDockerHostProtocol } from "./docker-host-version.ts";
+import { createDockerMachineGenerationBindings } from "./docker-machine-bindings.ts";
 import { authorizeSnapshotBuild, resolveDockerSnapshot } from "./docker-snapshot-data.ts";
+import type { GenerationHandoff, Job as RunnerJob } from "./jobs/runner.ts";
 import { recordLaunchStageForActivation } from "./launch-stage-record.ts";
 import { collectOutputTransfers, DOCKER_RETAINED_OUTPUT_STOP, recordDockerOutputUpload } from "./output-transfers.ts";
 import { noteAdmission } from "./request-observability.ts";
@@ -381,6 +385,38 @@ export function createDockerHostStore(sql: Sql, key: string) {
       deny();
     return row;
   }
+  async function lockSandboxAdmission(tx: Sql, actor: Actor, sandboxId: string, operation: Selection["operation"]) {
+    exact(actor, ["userId", "orgId"]);
+    id(actor.userId);
+    id(actor.orgId);
+    id(sandboxId);
+    const hint =
+      (
+        await tx.query<Sandbox & { issuer_id: string }>(
+          `select s.*,h.owner_id as issuer_id from public.sandboxes s join public.docker_hosts h on h.id=s.docker_host_id
+       where s.id=$1 and s.org_id=$2`,
+          [sandboxId, actor.orgId],
+        )
+      ).rows[0] ?? deny();
+    const members = await tx.query<{ user_id: string }>(
+      `select user_id from public.members where org_id=$1 and user_id in ($2,$3,$4) order by user_id for update`,
+      [actor.orgId, actor.userId, hint.issuer_id, hint.owner_id],
+    );
+    const locked = new Set(members.rows.map((m) => m.user_id));
+    const cleanup = operation === "stop" || operation === "delete";
+    if (!locked.has(actor.userId) || (!cleanup && !locked.has(hint.issuer_id))) deny();
+    const host =
+      (
+        await tx.query<Host>(
+          `select id,org_id,owner_id from public.docker_hosts where id=$1 and org_id=$2 and owner_id=$3
+       and installation_id=$4 and hash is not null and registration_hash is null and ($5::boolean or revoked_at is null) for update`,
+          [hint.docker_host_id, actor.orgId, hint.issuer_id, hint.docker_installation_id, cleanup],
+        )
+      ).rows[0] ?? deny();
+    const row = await sandbox(tx, sandboxId, host, hint.docker_installation_id);
+    if (row.owner_id !== hint.owner_id) deny();
+    return { host, row };
+  }
   async function permission(tx: Sql, actor: Actor, row: Sandbox, operation: string, epoch?: string | null) {
     const member = (
       await tx.query<{ role: string; epoch: string }>(
@@ -541,6 +577,25 @@ export function createDockerHostStore(sql: Sql, key: string) {
       ],
     );
     if (!bindings.rows.length) deny();
+  }
+
+  async function enqueueRestore(tx: Sql, row: Sandbox, job: RestoreJob, bound: Bound, known: boolean) {
+    input(job);
+    if (job.requestId !== job.request.generation) deny();
+    if (!known) {
+      if (job.request.ttlSeconds !== row.effective_ttl_seconds) deny();
+      await validateRestoreTarget(tx, row, job);
+      await verifyRestoreSource(tx, row, job);
+    }
+    return insert(tx, row.docker_host_id, job, bound, String(row.lifecycle_generation));
+  }
+
+  async function refuseDraining(tx: Sql, hostId: string) {
+    const draining = await tx.query(
+      `select 1 from public.docker_hosts where id=$1 and ${hostDrainingSql("docker_hosts")}`,
+      [hostId],
+    );
+    if (draining.rows.length) throw new DockerHostDraining();
   }
 
   async function admitRestore(tx: Sql, row: StoredJob, host: Host, installationId: string) {
@@ -1247,12 +1302,77 @@ export function createDockerHostStore(sql: Sql, key: string) {
         });
       });
     },
+    async admitMachineRestore(
+      actor: Actor,
+      job: Pick<RunnerJob, "sandbox_id" | "generation">,
+      predecessor: RestoreJob["predecessor"],
+      handoffGeneration: (handoff: GenerationHandoff) => Promise<string>,
+    ) {
+      const { sandbox_id: sandboxId, generation } = job;
+      const expected = Number(generation);
+      if (!sandboxId || predecessor.request.sandboxId !== sandboxId || !Number.isSafeInteger(expected) || expected < 1)
+        deny();
+
+      let admission: Awaited<ReturnType<typeof lockSandboxAdmission>> | undefined;
+      let requestId: string | undefined;
+      const target = await handoffGeneration({
+        async lockPrerequisites(tx) {
+          admission = await lockSandboxAdmission(tx, actor, sandboxId, "restore");
+        },
+        async advance(tx) {
+          const { host, row } = admission ?? deny();
+          if (String(row.lifecycle_generation) !== generation || row.status !== "stopped") deny();
+          const bindings = createDockerMachineGenerationBindings(tx, {
+            hostId: host.id,
+            installationId: row.docker_installation_id,
+          });
+          if ((await bindings.lookup({ sandboxId, generation: expected })) !== predecessor.request.generation) deny();
+          const epoch = await permission(tx, actor, row, "restore");
+          await refuseDraining(tx, host.id);
+          await admitDockerCapacity(tx, host.id);
+          await admitDockerDisk(tx, host.id);
+          const transition = await transitionSandbox(tx, {
+            sandboxId,
+            expectedGeneration: expected,
+            fromStates: ["stopped"],
+            toState: "starting",
+            actor: "resume_admission",
+            code: "docker_resume_admitted",
+            effects: [],
+          });
+          if (transition.kind === "conflict") deny();
+          const daemonGeneration = await bindings.bind({ sandboxId, generation: transition.generation });
+          const restore: RestoreJob = {
+            requestId: daemonGeneration,
+            operation: "restore",
+            request: {
+              ...predecessor.request,
+              generation: daemonGeneration,
+              expiresAt: new Date(row.expires_at).getTime(),
+              ttlSeconds: row.effective_ttl_seconds,
+            },
+            predecessor,
+          };
+          const starting = await sandbox(tx, sandboxId, host, row.docker_installation_id);
+          const result = await enqueueRestore(
+            tx,
+            starting,
+            restore,
+            {
+              bound_sandbox_id: sandboxId,
+              bound_actor_id: actor.userId,
+              bound_actor_epoch: epoch,
+              bound_operation: "restore",
+            },
+            false,
+          );
+          requestId = result.requestId;
+        },
+      });
+      return { generation: Number(target), requestId: requestId ?? deny() };
+    },
     enqueueSandbox(actor: Actor, sandboxId: string, selection: Selection) {
       return transaction(async (tx) => {
-        exact(actor, ["userId", "orgId"]);
-        id(actor.userId);
-        id(actor.orgId);
-        id(sandboxId);
         exact(selection, [
           "requestId",
           "operation",
@@ -1271,31 +1391,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
           )
         )
           deny();
-        const hint =
-          (
-            await tx.query<Sandbox & { issuer_id: string }>(
-              `select s.*,h.owner_id as issuer_id from public.sandboxes s join public.docker_hosts h on h.id=s.docker_host_id
-           where s.id=$1 and s.org_id=$2`,
-              [sandboxId, actor.orgId],
-            )
-          ).rows[0] ?? deny();
-        const members = await tx.query<{ user_id: string }>(
-          `select user_id from public.members where org_id=$1 and user_id in ($2,$3,$4) order by user_id for update`,
-          [actor.orgId, actor.userId, hint.issuer_id, hint.owner_id],
-        );
-        const locked = new Set(members.rows.map((m) => m.user_id));
-        const cleanup = selection.operation === "stop" || selection.operation === "delete";
-        if (!locked.has(actor.userId) || (!cleanup && !locked.has(hint.issuer_id))) deny();
-        const host =
-          (
-            await tx.query<Host>(
-              `select id,org_id,owner_id from public.docker_hosts where id=$1 and org_id=$2 and owner_id=$3
-           and installation_id=$4 and hash is not null and registration_hash is null and ($5::boolean or revoked_at is null) for update`,
-              [hint.docker_host_id, actor.orgId, hint.issuer_id, hint.docker_installation_id, cleanup],
-            )
-          ).rows[0] ?? deny();
-        const row = await sandbox(tx, sandboxId, host, hint.docker_installation_id);
-        if (row.owner_id !== hint.owner_id) deny();
+        const { host, row } = await lockSandboxAdmission(tx, actor, sandboxId, selection.operation);
         if (
           (selection.operation === "deletePhysical" || selection.operation === "restore") &&
           (!Number.isSafeInteger(selection.lifecycleGeneration) ||
@@ -1333,11 +1429,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
             selection.operation === "resume" ||
             generationFenced(selection.operation))
         ) {
-          const draining = await tx.query(
-            `select 1 from public.docker_hosts where id=$1 and ${hostDrainingSql("docker_hosts")}`,
-            [host.id],
-          );
-          if (draining.rows.length) throw new DockerHostDraining();
+          await refuseDraining(tx, host.id);
         }
         const bound = {
           bound_sandbox_id: sandboxId,
@@ -1346,15 +1438,8 @@ export function createDockerHostStore(sql: Sql, key: string) {
           bound_operation: selection.operation,
         };
         if (selection.operation === "restore") {
-          const { lifecycleGeneration, ...job } = selection;
-          input(job);
-          if (job.requestId !== job.request.generation) deny();
-          if (!known) {
-            if (job.request.ttlSeconds !== row.effective_ttl_seconds) deny();
-            await validateRestoreTarget(tx, row, job);
-            await verifyRestoreSource(tx, row, job);
-          }
-          return insert(tx, host.id, job, bound, String(lifecycleGeneration));
+          const { lifecycleGeneration: _, ...job } = selection;
+          return enqueueRestore(tx, row, job, bound, known);
         }
         if (!known) await state(tx, row, selection.operation);
         let workMerged = false;
