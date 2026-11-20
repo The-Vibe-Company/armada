@@ -1,4 +1,4 @@
--- Settle native Boat retention refusal under the prompt activity fence.
+-- Journal delegated native send admission under the prompt activity fence.
 begin;
 create or replace function public.sandbox_transition(
   p_id uuid,

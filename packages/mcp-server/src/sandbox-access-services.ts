@@ -22,6 +22,7 @@ import { runtimeTransaction } from "./runtime-enrolment.ts";
 import type { RuntimeFollowup } from "./runtime-followup.ts";
 import { ChildLaunchNotAllocated, launchSandboxChild } from "./sandbox-access-child-launch.ts";
 import {
+  ChildMessageNotDispatched,
   type ChildOperation,
   createSandboxChildren,
   type SandboxChildExecutor,
@@ -289,13 +290,16 @@ export function createSandboxAccessServices(input: {
       await sandboxActivity(
         {
           ...scoped,
-          update(id, patch) {
-            return scoped.update(
-              id,
-              patch.advanceGeneration
-                ? { ...patch, nativeChildSend: { fromState: saved.status, placement: saved.providerSandboxId } }
-                : patch,
-            );
+          async update(id, patch) {
+            if (!patch.advanceGeneration) return scoped.update(id, patch);
+            try {
+              await scoped.update(id, {
+                ...patch,
+                nativeChildSend: { fromState: saved.status, placement: saved.providerSandboxId },
+              });
+            } catch (cause) {
+              throw new ChildMessageNotDispatched("Native child send admission failed.", { cause });
+            }
           },
         },
         saved,

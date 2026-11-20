@@ -46,6 +46,8 @@ type ChildDispatch = {
   target_id: string;
   action: ChildOperation["action"];
 };
+export class ChildMessageNotDispatched extends Error {}
+
 export type StopRecoveryAdmission = (work: (tx: Sql) => Promise<void>) => Promise<void>;
 
 /** Runtime caller must use this exact reserved sandbox ID and provider idempotency key.
@@ -361,11 +363,20 @@ export function createSandboxChildren(sql: Sql, authority: ChildAuthority, execu
     } catch (error) {
       const noAllocation = input.action === "launch" && error instanceof ChildLaunchNotAllocated;
       if (noAllocation) error.record(operation);
-      const state = noAllocation ? "failed" : "uncertain";
+      const notDispatched = input.action === "message" && error instanceof ChildMessageNotDispatched;
+      const state = noAllocation || notDispatched ? "failed" : "uncertain";
       if (!recovery)
         await sql.query(
           `update public.orchestrator_child_operations set state=$2,error_code=$3 where id=$1 and state in ('pending','uncertain')`,
-          [row.id, state, noAllocation ? `child_${error.reason}` : "child_outcome_unconfirmed"],
+          [
+            row.id,
+            state,
+            noAllocation
+              ? `child_${error.reason}`
+              : notDispatched
+                ? "child_dispatch_not_admitted"
+                : "child_outcome_unconfirmed",
+          ],
         );
       const current = (
         await sql.query<{ state: string }>(`select state from public.orchestrator_child_operations where id=$1`, [

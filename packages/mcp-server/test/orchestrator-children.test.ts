@@ -1586,7 +1586,7 @@ test.each(["accepted", "stale", "abort"] as const)("native child send (%s)", asy
     );
     const receipt = await services.childWorker.message(token, "idle-child", child.id, "follow up");
     if (scenario !== "accepted") {
-      expect(receipt.state).not.toBe("succeeded");
+      expect(receipt.state).toBe("failed");
       expect(fake.prompts).toHaveLength(0);
       expect(
         (
