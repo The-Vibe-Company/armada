@@ -22,7 +22,7 @@ armada org invitations revoke "$INVITATION_UUID" --org "$ORG_NAME"
 ```
 
 `--role` defaults to `member`; `admin` is also supported. `--org` accepts a name
-or UUID and overrides the selection saved with `armada org use`. Without either,
+or UUID and overrides the selection saved with `armada login --org NAME|UUID`. Without either,
 select an organization explicitly. Management requires an organization admin.
 All five commands support `--json`; public invitation records never include tokens.
 

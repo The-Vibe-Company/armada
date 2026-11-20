@@ -1,11 +1,13 @@
 import { hostname } from "node:os";
 import { createInterface } from "node:readline";
 import { AuthError, type AuthFetch } from "@armada/auth";
+import { organizationOperations } from "@armada/core/contract";
 import { publicAuthOperations } from "@armada/core/contract/public-auth";
+import { authClient } from "@armada/sdk/auth";
 import { armadaApiUrl } from "./armada-api.ts";
 import type { Preferences } from "./preferences.ts";
 import { profileStores } from "./profiles.ts";
-import type { SessionStore } from "./session.ts";
+import type { Session, SessionStore } from "./session.ts";
 
 export interface AuthIo {
   out(text: string): void;
@@ -59,35 +61,39 @@ function promptLine(question: string): Promise<string> {
   });
 }
 
-export async function loginCommand(io: AuthIo, how: { url?: string | undefined; json?: boolean } = {}): Promise<void> {
-  const origin = armadaApiUrl(how.url ?? io.env.ARMADA_URL);
+type AuthResponse = Awaited<ReturnType<ReturnType<typeof authClient>["startDevice"]>>;
+
+function loginPayload(result: AuthResponse): unknown {
+  if (result.kind === "response") {
+    if (result.response.status === 429)
+      throw new AuthError("Too many CLI login requests. Try again in a minute.", "rate_limited");
+    if (result.response.ok && !result.bodyReadFailed) return result.payload;
+  }
+  throw new AuthError("Armada sign-in could not complete. Start a new login.", "unavailable");
+}
+
+export async function loginCommand(
+  io: AuthIo,
+  how: { url?: string | undefined; json?: boolean; org?: string | undefined } = {},
+): Promise<void> {
+  const preferences = io.preferences;
+  if (how.org !== undefined && !preferences)
+    throw new AuthError("Organization preferences are not available.", "usage");
+  if (how.org !== undefined && !how.org.trim())
+    throw new AuthError("Give --org an organization name, UUID or none.", "usage");
+
+  const explicitOrigin = how.url ?? io.env.ARMADA_URL;
+  const savedOrigin =
+    how.org !== undefined && explicitOrigin === undefined ? (await io.session.read())?.armadaUrl : undefined;
+  const origin = armadaApiUrl(explicitOrigin ?? savedOrigin);
+  const client = authClient(origin, io.fetch);
+  const timeout = io.timeoutMs ?? 35_000;
   const { authDeviceStart, authDevicePoll } = publicAuthOperations;
-  const post = async (path: string, body: unknown) => {
-    try {
-      const response = await io.fetch(new URL(path, origin), {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify(body),
-        redirect: "error",
-        signal: AbortSignal.timeout(io.timeoutMs ?? 35_000),
-      });
-      if (response.status === 429)
-        throw new AuthError("Too many CLI login requests. Try again in a minute.", "rate_limited");
-      if (!response.ok) throw new Error();
-      return await response.json();
-    } catch (error) {
-      if (error instanceof AuthError) throw error;
-      throw new AuthError("Armada sign-in could not complete. Start a new login.", "unavailable");
-    }
-  };
-  const start = authDeviceStart.output.safeParse(
-    await post(authDeviceStart.route.path, {
-      hostname:
-        hostname()
-          .replace(/[^a-zA-Z0-9_.-]/g, "_")
-          .slice(0, 253) || "unknown",
-    }),
-  );
+  const machine =
+    hostname()
+      .replace(/[^a-zA-Z0-9_.-]/g, "_")
+      .slice(0, 253) || "unknown";
+  const start = authDeviceStart.output.safeParse(loginPayload(await client.startDevice(machine, timeout)));
   if (!start.success) throw new AuthError("Armada returned an invalid login request.", "unavailable");
   const { device_code, user_code, verification_uri_complete, expires_in } = start.data;
   const verification = new URL(verification_uri_complete);
@@ -116,7 +122,7 @@ export async function loginCommand(io: AuthIo, how: { url?: string | undefined; 
   while (io.now().getTime() < deadline) {
     await sleep(Math.min(interval * 1000, deadline - io.now().getTime()));
     if (io.now().getTime() >= deadline) break;
-    const poll = authDevicePoll.output.safeParse(await post(authDevicePoll.route.path, { device_code }));
+    const poll = authDevicePoll.output.safeParse(loginPayload(await client.pollDevice(device_code, timeout)));
     if (!poll.success) throw new AuthError("Armada returned an invalid login response.", "unavailable");
     const result = poll.data;
     switch (result.status) {
@@ -130,13 +136,32 @@ export async function loginCommand(io: AuthIo, how: { url?: string | undefined; 
         throw new AuthError("This CLI login expired or was already used. Run armada login again.", "unauthorized");
       case "authorized": {
         const { accessToken, refreshToken, expiresAt, email } = result;
-        await io.session.write({
+        let org: string | undefined;
+        if (how.org !== undefined && how.org !== "none") {
+          const ref = how.org;
+          const result = organizationOperations.listOrganizations.output.safeParse(
+            loginPayload(await client.listOrganizations(accessToken, timeout)),
+          );
+          if (!result.success) throw new AuthError("Armada returned an invalid organization list.", "unavailable");
+          const matches = result.data.orgs.filter(
+            (entry) => entry.id === ref || entry.name.toLowerCase() === ref.toLowerCase(),
+          );
+          if (matches.length !== 1 || !matches[0])
+            throw new AuthError("Choose one of your organizations by UUID or exact name.", "usage");
+          org = matches[0].id;
+        }
+        const session = {
           loginId: crypto.randomUUID(),
           armadaUrl: origin,
           accessToken,
           refreshToken,
           expiresAt,
-        });
+        } satisfies Session;
+        if (how.org !== undefined && preferences) {
+          await saveLoginSelection(io.session, session, preferences, org);
+        } else {
+          await io.session.write(session);
+        }
         const account = email.replace(/[\p{Cc}\p{Cf}]/gu, "");
         io.out(how.json ? '{"authenticated":true}\n' : `Signed in as ${account}.\n`);
         return;
@@ -146,12 +171,39 @@ export async function loginCommand(io: AuthIo, how: { url?: string | undefined; 
   throw new AuthError("This CLI login expired. Run armada login again.", "unauthorized");
 }
 
+async function saveLoginSelection(
+  store: SessionStore,
+  session: Session & { armadaUrl: string },
+  preferences: Preferences,
+  org: string | undefined,
+) {
+  const origin = session.armadaUrl;
+  async function save(unlocked: SessionStore) {
+    const previous = await preferences.read(origin);
+    await preferences.write(origin, org);
+    try {
+      await unlocked.write(session);
+    } catch (error) {
+      try {
+        await preferences.write(origin, previous);
+      } catch {
+        throw new AuthError(
+          "Sign-in could not be saved, and the organization selection could not be restored.",
+          "unavailable",
+        );
+      }
+      throw error;
+    }
+  }
+  await (store.withLock ? store.withLock(save) : save(store));
+}
+
 export async function logoutCommand(io: AuthIo, json = false): Promise<void> {
   await io.session.clear();
   io.out(json ? '{"authenticated":false}\n' : "Logged out.\n");
 }
 
-function openBrowser(url: string): void {
+function openBrowser(url: string) {
   const command = process.platform === "darwin" ? "open" : process.platform === "win32" ? "rundll32.exe" : "xdg-open";
   const args = process.platform === "win32" ? ["url.dll,FileProtocolHandler", url] : [url];
   Bun.spawn([command, ...args], { stdin: "ignore", stdout: "ignore", stderr: "ignore" });

@@ -5,7 +5,7 @@ These are the sandbox list and JSON output contracts. See the [CLI/dashboard fea
 ## Filter and page sandboxes
 
 ```sh
-armada org use my-org
+armada login --org my-org
 armada list --json
 armada list --status deleted --json
 armada list --agent codex --golden SNAPSHOT_UUID --owner me --page 2 --limit 25 --json --page-info

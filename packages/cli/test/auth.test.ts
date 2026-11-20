@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtemp, rm, stat } from "node:fs/promises";
+import { mkdtemp, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AuthIo } from "../src/auth-commands.ts";
@@ -97,6 +97,28 @@ describe("auth commands", () => {
       accessToken: "new-access",
       refreshToken: REFRESH,
     });
+  });
+
+  test("plain login replaces an invalid saved session", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "armada-invalid-session-"));
+    try {
+      const path = join(directory, "session.json");
+      await writeFile(path, "invalid session", { mode: 0o600 });
+      const auth = io();
+      auth.session = fileSessionStore(path);
+      auth.sleep = async () => {};
+      auth.fetch = async (input) => {
+        const path = new URL(String(input)).pathname;
+        if (path.endsWith("/auth/device/start")) return loginStarted();
+        if (path.endsWith("/auth/device/poll")) return loginAuthorized();
+        throw new Error("Unexpected login request");
+      };
+
+      expect((await capture(["login"], auth)).code).toBe(0);
+      expect((await auth.session.read())?.accessToken).toBe("new-access");
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
   });
 
   for (const args of [

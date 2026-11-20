@@ -22,7 +22,7 @@ See command --help for supported JSON output; keep captured values/tokens out of
 Quick start / common examples:
   armada login
   armada org list
-  armada org use my-team
+  armada login --org my-team
   armada status --setup
   armada host add --name my-workstation
   armada new
@@ -102,7 +102,7 @@ Usage:
   armada mcp add NAME URL [--scope personal|org] [--org UUID]
                                            Public/OAuth URL shortcut; auto discovery, no secret argv
   armada mcp list|add|update|connect|status|reconnect|enable|disable|revoke|delete [id] [--org UUID] [--file JSON]
-  armada login [--url <url>]        Sign in and authorize the CLI in your browser
+  armada login [--url <url>] [--org NAME|UUID|none]        Sign in and authorize the CLI in your browser
   armada logout
   armada token create --name <name> [--org <org>] [--expires 30d|90d|1y|never] [--json]
   armada token ls [--json]
@@ -113,8 +113,6 @@ Usage:
   armada org setup [--org <name>]          Show organization provider setup status
   armada org connect boat|modal [--org <name>] [--file <path>]
                                            Connect an org provider using hidden input, stdin or a file
-  armada org use <name|UUID|none>           Persist selection for this Armada server
-  armada org current                        Show selected organization
   armada account status|logout              Account identity / revoke current login session
   armada github status|connect|reconnect|disconnect|install|manage [installation-id]
   armada github refresh <sandbox>
@@ -122,7 +120,7 @@ Usage:
   armada org invitations create <email> [--role admin|member] [--org <name|UUID>] [--json]
   armada org invitations list [--org <name|UUID>] [--json]
   armada org invitations resend|revoke <id> [--org <name|UUID>] [--json]
-                                           Admin invitation management; --org overrides org use selection.
+                                           Admin invitation management; --org overrides the saved selection.
                                            Email sent means provider accepted, not confirmed inbox delivery.
   armada org invitations accept [--file <path>] [--json]
                                            Token from stdin/file only; log in personally with the matching
@@ -199,7 +197,7 @@ exports[`armada new help preserves its output 1`] = `
 "Usage: armada new <snapshot> --provider boat|modal --agent claude|codex|opencode ["prompt"] [options]
 Fork a visible snapshot; a prompt starts the agent, otherwise wait for the first send.
 Sign in with armada login or set ARMADA_TOKEN for scripts.
-Find snapshots with armada snapshot ls; select an organization with --org or armada org use.
+Find snapshots with armada snapshot ls; select an organization with --org or armada login --org NAME|UUID.
 
 Boat/Modal options:
   --provider boat|modal                  Select the snapshot provider.
@@ -426,7 +424,7 @@ Manage scheduled template launches that run as the routine owner.
   runs    Read the latest 100 decisions and original-prompt outcomes.
 
 Actions require Armada login or ARMADA_TOKEN. Select an organization with --org
-NAME|UUID or armada org use. Organization-scoped writes require administrator permission.
+NAME|UUID or armada login --org NAME|UUID. Organization-scoped writes require administrator permission.
 Use IDs from routine list when exact names collide; keep IDs for history after deletion.
 Updates and state changes require --expected-version from routine show/list;
 conflicts are not retried automatically. Prompts are readable configuration, not secrets.
@@ -450,7 +448,7 @@ Manage reusable launch definitions and their immutable template versions.
   launch   Launch a template version using a saved --request-key for safe retries.
 
 Actions require Armada login or ARMADA_TOKEN. Select an organization with --org
-NAME|UUID or armada org use. Templates may be personal or organization-scoped;
+NAME|UUID or armada login --org NAME|UUID. Templates may be personal or organization-scoped;
 organization-scoped writes require administrator permission.
 Use IDs from template list when exact names collide across scopes.
 Definitions store variable/secret references; do not put raw secret values in them.

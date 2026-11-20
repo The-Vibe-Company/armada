@@ -137,7 +137,7 @@ export async function mcpCommand(
     if (single(args, "--org")) body.org = single(args, "--org");
   }
   if (typeof body.org !== "string" || !body.org)
-    throw new GoldenError("invalid_config", "Select an org with armada org use or --org UUID.");
+    throw new GoldenError("invalid_config", "Select an org with armada login --org NAME|UUID or --org UUID.");
   if (route === "mcp/connect") {
     const timeoutSeconds = body.timeout_seconds === undefined ? 300 : Number(body.timeout_seconds);
     if (timeoutSeconds < 0 || timeoutSeconds > 600)

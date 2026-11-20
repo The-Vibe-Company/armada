@@ -13,7 +13,7 @@ function routineStateHelp(action: "enable" | "pause" | "delete") {
   }[action];
   return `Usage: armada routine ${action} NAME|ID --expected-version N [--org NAME|UUID] [--json]
 ${effect}
-Requires Armada login or ARMADA_TOKEN; select an organization with --org or armada org use.
+Requires Armada login or ARMADA_TOKEN; select an organization with --org or armada login --org NAME|UUID.
 Organization-scoped changes require administrator permission.
 Names must match exactly and identify one non-deleted routine; use an ID from routine list
 if names collide. --expected-version is required, a positive integer up to 2147483647.
@@ -29,7 +29,7 @@ function routineDefinitionHelp(action: "create" | "update") {
   const creating = action === "create";
   return `Usage: armada routine ${action} ${creating ? "NAME" : "NAME|ID --expected-version N"} [configuration] [--org NAME|UUID] [--json]
 ${creating ? "Create a paused scheduled template launch; enable it separately to schedule its first occurrence." : "Update an existing routine, guarded by its current version. This is not a manual launch."}
-Requires Armada login or ARMADA_TOKEN; select an organization with --org or armada org use.
+Requires Armada login or ARMADA_TOKEN; select an organization with --org or armada login --org NAME|UUID.
 Organization-scoped writes require administrator permission.
 ${creating ? "--scope personal|org selects visibility; required with explicit --org. Otherwise scope defaults\nto personal in the selected organization. NAME supplies the name, not the JSON file." : "Names must match exactly and identify one non-deleted routine; use an ID from routine list\nif names collide. --expected-version is a required positive integer up to 2147483647.\nCopy it from routine show/list. A conflict is not retried; inspect before deciding to update.\nThe target keeps its owner and scope."}
 
@@ -64,7 +64,7 @@ Manage scheduled template launches that run as the routine owner.
   runs    Read the latest 100 decisions and original-prompt outcomes.
 
 Actions require Armada login or ARMADA_TOKEN. Select an organization with --org
-NAME|UUID or armada org use. Organization-scoped writes require administrator permission.
+NAME|UUID or armada login --org NAME|UUID. Organization-scoped writes require administrator permission.
 Use IDs from routine list when exact names collide; keep IDs for history after deletion.
 Updates and state changes require --expected-version from routine show/list;
 conflicts are not retried automatically. Prompts are readable configuration, not secrets.
@@ -77,7 +77,7 @@ Example: armada routine runs ROUTINE_UUID --org ORG_UUID --json
   subcommandHelp: {
     "routine list": `Usage: armada routine list [--org NAME|UUID] [--json]
 List visible scheduled template launches: IDs, names, scopes, status and versions.
-Requires Armada login or ARMADA_TOKEN; select an organization with --org or armada org use.
+Requires Armada login or ARMADA_TOKEN; select an organization with --org or armada login --org NAME|UUID.
 Human output includes the schedule and next due time; paused routines have no next run.
 --json emits the API response with an items array. Use IDs when exact names are ambiguous.
 Use routine show for configuration and routine runs for admission/task outcomes.
@@ -85,7 +85,7 @@ Example: armada routine list --org ORG_UUID --json
 `,
     "routine show": `Usage: armada routine show NAME|ID [--org NAME|UUID] [--json]
 Inspect a scheduled template launch, including its version, schedule and prompt.
-Requires Armada login or ARMADA_TOKEN; select an organization with --org or armada org use.
+Requires Armada login or ARMADA_TOKEN; select an organization with --org or armada login --org NAME|UUID.
 Names must match exactly and identify one non-deleted routine; use an ID from routine list
 if names collide. Copy the current version before guarded updates or status changes.
 Human output includes template version, TTL, daily cap, failures, pause reason and prompt.
@@ -95,7 +95,7 @@ Example: armada routine show ROUTINE_UUID --org ORG_UUID --json
 `,
     "routine runs": `Usage: armada routine runs NAME|ID [--org NAME|UUID] [--json]
 Read the latest 100 routine decisions and original-prompt outcomes.
-Requires Armada login or ARMADA_TOKEN; select an organization with --org or armada org use.
+Requires Armada login or ARMADA_TOKEN; select an organization with --org or armada login --org NAME|UUID.
 Names must match exactly and identify one non-deleted routine. Use a routine ID from
 routine list if names collide; use the ID to inspect history after deletion.
 Human output includes scheduled time, admission state, task outcome, readable skip/failure

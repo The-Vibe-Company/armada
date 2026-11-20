@@ -121,7 +121,7 @@ export async function routineCommand(argv: readonly string[], io: VaultIo): Prom
     Object.assign(body, config);
   }
   const selected = org ?? (await io.auth.preferences?.read(await resolveArmadaOrigin(io.auth)));
-  if (!selected) throw invalid("Select an organization with --org NAME|UUID or armada org use.");
+  if (!selected) throw invalid("Select an organization with --org NAME|UUID or armada login --org NAME|UUID.");
   if (UUID.test(selected)) body.org = selected;
   else {
     const { orgs } = await control<{ orgs: OrgSummary[] }>(io.auth, "org/list", {});

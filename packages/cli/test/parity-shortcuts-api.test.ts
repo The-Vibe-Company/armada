@@ -69,7 +69,7 @@ test("URL/JSON MCP creation use canonical authenticated HTTP bodies and persiste
       );
       return { code, out: output, err: error };
     }
-    expect((await execute(["org", "use", "Team"])).code).toBe(0);
+    await filePreferences(preferencesPath).write("https://armada.test", selectedOrg);
     auth.preferences = filePreferences(preferencesPath);
     const shortcut = await execute(["mcp", "add", "Public service", "https://mcp.example.com/mcp", "--json"]);
     expect(shortcut.code).toBe(0);
