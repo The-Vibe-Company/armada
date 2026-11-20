@@ -1788,6 +1788,56 @@ describe("tools", () => {
     },
   );
 
+  test.each(["stopped", "callback", "stale callback", "rollback"] as const)(
+    "native resume admission journals the current activity only (%s)",
+    async (scenario) => {
+      const server = await start();
+      const { boat, client, db, people, token } = server;
+      const { id, machine } = await seedRunningSandbox(server);
+      const stopped = scenario === "stopped" || scenario === "rollback";
+      if (stopped) await boat.provider.stop({ sandboxId: machine.id });
+      if (scenario === "rollback")
+        await db.exec("alter table sandboxes add constraint reject_native_start check (status <> 'starting')");
+      const mcp = await client(await token(people.member));
+      const prompt = boat.provider.prompt;
+      let dispatched = false;
+      boat.provider.prompt = async (request) => {
+        if (scenario === "stale callback")
+          await db.query("update sandboxes set lifecycle_generation=lifecycle_generation+1 where id=$1", [id]);
+        if (!stopped) await request.onResumeStage?.("accepted");
+        dispatched = true;
+        return prompt(request);
+      };
+      const sent = await call(mcp, "send", { id, prompt: "continue" }).finally(async () => {
+        if (scenario === "rollback") await db.exec("alter table sandboxes drop constraint reject_native_start");
+      });
+
+      const refused = scenario === "stale callback" || scenario === "rollback";
+      expect(Boolean(sent.isError)).toBe(refused);
+      expect(dispatched).toBe(!refused);
+      if (scenario === "rollback") {
+        const { rows } = await db.query(
+          "select status, lifecycle_generation::int, activity_lease_id from sandboxes where id=$1",
+          [id],
+        );
+        expect(rows).toEqual([{ status: "stopped", lifecycle_generation: 1, activity_lease_id: null }]);
+      }
+      const { rows } = await db.query(
+        `select from_status,actor,code,generation::int from sandbox_transitions
+         where sandbox_id=$1 and to_status='starting'`,
+        [id],
+      );
+      const admission = {
+        from_status: stopped ? "stopped" : "running",
+        actor: "native_turn",
+        code: "native_resume_admitted",
+        generation: 2,
+      };
+      expect(rows).toEqual(refused ? [] : [admission]);
+      if (scenario === "stale callback") expect(sent.text).toContain("error code: sandbox_not_ready");
+    },
+  );
+
   test.each(["handoff", "stale", "queue_failure"] as const)(
     "native send retention refusal settles atomically (%s)",
     async (scenario) => {

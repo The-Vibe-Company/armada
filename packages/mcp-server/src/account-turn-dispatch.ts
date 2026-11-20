@@ -16,6 +16,12 @@ export const RUNTIME_REQUEST_EVIDENCE = `(s.activity_lease_id=q.request_id
   or exists(select 1 from public.runtime_commands c where c.sandbox_id=s.id and c.request_id in ('follow_'||q.request_id::text,'docker_prompt_'||q.request_id::text,'resume_'||q.request_id::text))
   or exists(select 1 from public.runtime_resumes r where r.sandbox_id=s.id and r.request_id=q.request_id)
   or exists(select 1 from public.docker_host_jobs j where j.bound_sandbox_id=s.id and j.request_id=q.request_id))`;
+const STOPPED_DOCKER_WAKE_IN_PROGRESS = `(s.provider='docker' and s.status='stopped' and exists(
+  select 1 from public.docker_resume_claims c where c.sandbox_id=s.id and c.request_id=q.request_id
+    and c.actor_id=q.owner_id and c.host_id=s.docker_host_id and c.installation_id=s.docker_installation_id
+    and c.generation=s.docker_generation and c.lifecycle_generation=s.lifecycle_generation
+    and c.lifecycle_generation=q.dispatch_generation and c.accepted is distinct from false))`;
+
 export const QUEUED_DISPATCH_EVIDENCE = `(q.native_prompt_id is not null
   or (s.task_prompt_id=q.request_id::text) is true or (${RUNTIME_REQUEST_EVIDENCE}) is true)`;
 export const RUNTIME_LANE = `(s.provider='docker' or s.boat_runtime or s.runtime_transport='dialout')`;
@@ -349,7 +355,7 @@ export async function dispatchAccountTurn(
         and ((s.activity_lease_id is null and (s.status in ('ready','running')
           or ($3 and (s.provider='modal' or s.boat_runtime) and s.status='stopped')))
           or ($4 and s.status='stopped' and coalesce(${RUNTIME_LANE},false)))
-        and not coalesce(${RUNTIME_REQUEST_EVIDENCE},false)
+        and not coalesce(${RUNTIME_REQUEST_EVIDENCE} or ${STOPPED_DOCKER_WAKE_IN_PROGRESS},false)
         for update of s,q`,
         [entry.sandbox_id, entry.request_id, secretRefused, refusalCode !== undefined],
       );
@@ -378,7 +384,8 @@ export async function dispatchAccountTurn(
         await tx.query(
           `update public.account_turn_queue q set failure_reason='${UNCERTAIN_DISPATCH_MESSAGE}',
            state=case when coalesce(${RUNTIME_LANE},false) then q.state else 'failed' end,
-           dispatch_until=case when not coalesce(${RUNTIME_LANE},false) then null when ${RUNTIME_REQUEST_EVIDENCE} then now() else q.dispatch_until end
+           dispatch_until=case when not coalesce(${RUNTIME_LANE},false) then null
+             when ${RUNTIME_REQUEST_EVIDENCE} or ${STOPPED_DOCKER_WAKE_IN_PROGRESS} then now() else q.dispatch_until end
            from public.sandboxes s where s.id=q.sandbox_id and q.sandbox_id=$1 and q.request_id=$2 and q.state='dispatching'`,
           [entry.sandbox_id, entry.request_id],
         );
