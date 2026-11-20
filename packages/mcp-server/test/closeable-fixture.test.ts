@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { closeableFixture } from "./closeable-fixture.ts";
+import { closeableFixture } from "./closeable.fixture.ts";
 
 test("fixture closes a resource that becomes ready after teardown starts", async () => {
   let closed = 0;

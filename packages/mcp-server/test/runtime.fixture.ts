@@ -11,7 +11,7 @@ import { createRuntimeEnrolments } from "../src/runtime-enrolment.ts";
 import { createRuntimeEvents } from "../src/runtime-events.ts";
 import { createRuntimeFollowup } from "../src/runtime-followup.ts";
 import type { ToolContext } from "../src/tools.ts";
-import { closeableFixture } from "./closeable-fixture.ts";
+import { closeableFixture } from "./closeable.fixture.ts";
 import { database, ENCRYPTION_KEY, type People } from "./support.ts";
 
 export function scopedRuntimeFixture<T extends { close(): Promise<void> }>(
