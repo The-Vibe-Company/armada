@@ -40,7 +40,12 @@ import type { Caller } from "./caller.ts";
 import { scopedOrg } from "./control-caller.ts";
 import { createResourceStore, type ResourceStore } from "./resource-store.ts";
 import { unsettledRuntimeCommands } from "./runtime-idle-evidence.ts";
-import { finishEnrolledRuntimeLaunch, recordObservedRuntimeState, settleRuntimeTurn } from "./sandbox-lifecycle.ts";
+import {
+  completeSandboxDeletion,
+  finishEnrolledRuntimeLaunch,
+  recordObservedRuntimeState,
+  settleRuntimeTurn,
+} from "./sandbox-lifecycle.ts";
 import { SANDBOX_MEMBER, SANDBOX_VISIBLE } from "./sandbox-visibility.ts";
 import { admittedTurnContexts, stampTurnPricing, withServerCost } from "./turn-pricing.ts";
 import { preserveBeforeStop, readWorkRecovery, type StopAuthority } from "./work-preservation.ts";
@@ -56,6 +61,7 @@ export interface SandboxView extends SandboxRecord {
 }
 
 export interface ServerSandboxPatch extends SandboxPatch {
+  deleteCompleted?: true;
   onlyIfIdle?: boolean;
   retainedRuntimeStop?: string;
   modalRuntimeExtensionTarget?: string;
@@ -757,6 +763,17 @@ export function createSqlData(
         );
       },
       async update(id, patch) {
+        if (patch.deleteCompleted) {
+          const { expectedGeneration, activityToken } = patch;
+          if (!sql.transaction || expectedGeneration === undefined || !activityToken || !patch.finishActivity)
+            throw new DataError("Sandbox deletion completion requires its activity generation and token.");
+          const applied = await sql.transaction((tx) =>
+            completeSandboxDeletion(tx, scope, id, expectedGeneration, activityToken),
+          );
+          if (!applied) throw new DataError("Sandbox deletion receipt is stale.", "sandbox_not_ready");
+          return;
+        }
+        if (patch.status === "deleted") throw new DataError("Sandbox deletion requires a confirmed receipt.");
         const reason = statusReasonOf(patch);
         if (patch.runtimeObservationFrom !== undefined) {
           if (
@@ -840,7 +857,6 @@ export function createSqlData(
             "lifecycle_error = null",
           );
         }
-        if (patch.usageRuntimeUnknown) sets.push("usage_runtime_seconds = null", "usage_running_since = null");
         if (patch.clearTaskOutcome) sets.push("task_outcome = null", "task_prompt_id = null");
         if (patch.taskPromptId !== undefined) set("task_prompt_id", patch.taskPromptId, "::text");
         if (patch.status !== undefined) {
@@ -854,8 +870,6 @@ export function createSqlData(
         }
         if (patch.conversationIds !== undefined) set("conversation_ids", patch.conversationIds, "::text[]");
         if (patch.stoppedAt !== undefined) set("stopped_at", patch.stoppedAt, "::timestamptz");
-        if (patch.deletedAt !== undefined) set("deleted_at", patch.deletedAt, "::timestamptz");
-        if (patch.status === "deleted") sets.push("preservation_note = null");
         if (patch.expiresAt !== undefined) set("expires_at", patch.expiresAt, "::timestamptz");
         const extensionDeadlineParam = patch.expiresAt === undefined ? undefined : params.length;
         if (patch.effectiveTtlSeconds !== undefined)
@@ -931,9 +945,7 @@ export function createSqlData(
         // than the pre-dispatch reservation. Transfer ownership in the same SQL
         // statement so there is never an uncounted admission window.
         const releaseReservation =
-          patch.taskPromptId !== undefined ||
-          (patch.stoppedAt !== undefined && patch.stoppedAt !== null) ||
-          patch.status === "deleted";
+          patch.taskPromptId !== undefined || (patch.stoppedAt !== undefined && patch.stoppedAt !== null);
         const idleAdmission = patch.onlyIfIdle === true && patch.stopRequested === true && patch.advanceGeneration;
         if (idleAdmission)
           fence += ` and (s.status='ready' or (s.status='running' and
@@ -966,7 +978,7 @@ export function createSqlData(
                 from public.sandboxes s where s.id=$3::uuid and ${SANDBOX_VISIBLE}),
               updated as (${update})
               select (select id from updated) as id, (select row_to_json(o) from observed o) as observed`
-              : `${wrapped ? "with updated as (" : ""}${update}${wrapped ? `)${patch.status === "deleted" ? ", purged as (delete from public.sandbox_work_recovery r using updated u where r.sandbox_id=u.id)" : ""}${cancelTurns ? ", refused as (update public.account_turn_queue q set state='failed',failure_reason='Dispatch refused by owner stop.' from updated u where q.sandbox_id=u.id and q.state in ('queued','dispatching'))" : ""}${releaseReservation ? ", released as (delete from public.account_agent_reservations r using updated u where r.sandbox_id=u.id)" : ""} select id from updated` : ""}`,
+              : `${wrapped ? "with updated as (" : ""}${update}${wrapped ? `)${cancelTurns ? ", refused as (update public.account_turn_queue q set state='failed',failure_reason='Dispatch refused by owner stop.' from updated u where q.sandbox_id=u.id and q.state in ('queued','dispatching'))" : ""}${releaseReservation ? ", released as (delete from public.account_agent_reservations r using updated u where r.sandbox_id=u.id)" : ""} select id from updated` : ""}`,
             params,
           );
         let result: Awaited<ReturnType<typeof applyUpdate>>;

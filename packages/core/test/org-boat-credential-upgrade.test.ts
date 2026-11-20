@@ -1,29 +1,30 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { readdirSync } from "node:fs";
 import { migrationsDir, openDatabase } from "../../../scripts/db/apply.ts";
+import { closeableFixture } from "../../mcp-server/test/closeable.fixture.ts";
 
 describe("org Boat credential upgrade", () => {
   const reconcile = "20261110110200_org_boat_credential_canonical.sql";
   const files = readdirSync(migrationsDir)
     .filter((name) => name.endsWith(".sql"))
     .sort();
-  let connection: Awaited<ReturnType<typeof openDatabase>> | undefined;
-  beforeAll(async () => {
+  const fixture = closeableFixture(async () => {
     const db = await openDatabase();
-    connection = db;
-    await db.exec(await Bun.file(new URL("../../../scripts/db/supabase-prereq.sql", import.meta.url)).text());
-    for (const file of files.filter((name) => name < reconcile))
-      await db.exec(await Bun.file(`${migrationsDir}/${file}`).text());
+    try {
+      await db.exec(await Bun.file(new URL("../../../scripts/db/supabase-prereq.sql", import.meta.url)).text());
+      for (const file of files.filter((name) => name < reconcile))
+        await db.exec(await Bun.file(`${migrationsDir}/${file}`).text());
+      return db;
+    } catch (error) {
+      await db.close();
+      throw error;
+    }
   });
-  afterAll(async () => {
-    const db = connection;
-    connection = undefined;
-    await db?.close();
-  });
+  beforeAll(fixture.setup);
+  afterAll(fixture.close);
 
   test("an org Boat key lives only in its org's column, and duplicate rows reconcile without losing the active key", async () => {
-    const db = connection;
-    if (!db) throw new Error("Missing org Boat credential schema fixture");
+    const db = fixture.get();
     const [both, rowOnly, user] = [crypto.randomUUID(), crypto.randomUUID(), crypto.randomUUID()];
     await db.query("insert into auth.users (id) values ($1)", [user]);
     await db.query("insert into orgs (id, name, boat_api_key_enc) values ($1, 'Both', '\\x0a'), ($2, 'Row', null)", [
