@@ -26,10 +26,10 @@ async function handle(
   request: Request,
   options: ControlOptions,
 ) {
-  const device = options.deviceLogin;
-  if (!device) return fail(503, "unavailable", "CLI sign-in is unavailable.");
   try {
     const body = await readBody(request);
+    const device = options.deviceLogin;
+    if (!device) return fail(503, "unavailable", "CLI sign-in is unavailable.");
     const now = options.now?.() ?? new Date();
     const respond = (value: unknown) => Response.json(value, { headers: { "cache-control": "no-store" } });
 

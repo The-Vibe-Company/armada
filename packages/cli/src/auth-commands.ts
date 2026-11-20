@@ -1,7 +1,7 @@
 import { hostname } from "node:os";
 import { createInterface } from "node:readline";
 import { AuthError, type AuthFetch } from "@armada/auth";
-import { publicAuthOperations } from "@armada/core/contract";
+import { publicAuthOperations } from "@armada/core/contract/public-auth";
 import { armadaApiUrl } from "./armada-api.ts";
 import type { Preferences } from "./preferences.ts";
 import { profileStores } from "./profiles.ts";
