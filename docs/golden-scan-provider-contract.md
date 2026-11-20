@@ -20,12 +20,13 @@ that deadline.
 
 The investigation tested disabling Bun's independent fetch idle timer with
 `timeout: false` while preserving the explicit AbortSignal. The result did not
-establish the cause of the production disconnect.
+establish the cause of the production disconnect. The investigation ran no
+production rebuild.
 
 ## Recovering a build receipt today
 
-`armada snapshot create` and `armada snapshot update` now submit a durable build
-job and use short status requests. If the CLI disconnects or its local wait
+For Boat and Modal, `armada snapshot create` and `armada snapshot update` now
+submit a durable build job and use short status requests. If the CLI disconnects or its local wait
 ends, inspect the existing job before retrying. With the printed build ID:
 
 ```sh
