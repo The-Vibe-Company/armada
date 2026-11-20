@@ -16,7 +16,7 @@ interface Ports {
   /** Bounded host transport; contains only the ticket and public install metadata. */
   bootstrap(input: BootstrapInput): Promise<void>;
   /** Agent bridge bound to this same persisted owner/logical sandbox. */
-  health(signal: AbortSignal): Promise<{ runtime: "armada"; epoch: string }>;
+  health(signal: AbortSignal, epoch: string): Promise<{ runtime: "armada"; epoch: string }>;
 }
 interface StartupClock {
   now(): number;
@@ -139,7 +139,7 @@ export function createRuntimeStartup(
         diagnosticPhase = phase = "readiness";
         const enrolledAt = time.now();
         entering("readiness", enrolledAt);
-        const ready = await ports.health(admission);
+        const ready = await ports.health(admission, ticket.epoch);
         admission.throwIfAborted();
         if (time.now() >= deadline || ready.runtime !== "armada" || ready.epoch !== ticket.epoch)
           throw Error("runtime_startup_wrong_health");
@@ -148,8 +148,9 @@ export function createRuntimeStartup(
         await authority.withOwner(
           sandboxId,
           ownerId,
-          async (_tx, scope) => {
+          async (tx, scope) => {
             if (scope.epoch !== ticket.epoch) throw Error("runtime_startup_replaced");
+            await input.assertClaim?.(tx);
           },
           ticket.lifecycleGeneration,
         );
