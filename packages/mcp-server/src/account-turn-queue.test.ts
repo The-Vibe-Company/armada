@@ -144,6 +144,8 @@ async function claimTurn(requestId: string) {
   return {
     job: { ...job, payload: { requestId } },
     canDispatch: async (tx?: Sql) => (await store.inspect(job, worker, tx)) === "dispatch",
+    handoffGeneration: (handoff: Parameters<typeof store.handoffGeneration>[2]) =>
+      store.handoffGeneration(job, worker, handoff),
   };
 }
 
@@ -191,10 +193,13 @@ test("the shared claim publishes an uppercase sandbox UUID receipt after a gener
     btoa("x".repeat(32)),
     admitted.entry,
     admitted.caller,
-    async () => {
-      await sql.transaction!(async (tx) => {
-        await tx.query("update public.sandboxes set lifecycle_generation=2 where id=$1", [input.id]);
-        await tx.query("update public.jobs set generation=2 where id=$1", [claim.job.id]);
+    async (_caller, _input, authority) => {
+      if (!authority) throw new Error("Shared dispatch lost the job authority.");
+      await authority.handoffGeneration({
+        async lockPrerequisites() {},
+        async advance(tx) {
+          await tx.query("update public.sandboxes set lifecycle_generation=2 where id=$1", [input.id]);
+        },
       });
       return result;
     },

@@ -541,6 +541,31 @@ test.each(["modal", "boat"] as const)(
       expect((await f.api(request)).status).toBe(200);
       expect(f.deliveries).toHaveLength(1);
 
+      await f.db.query("delete from runtime_commands where sandbox_id=$1 and request_id=$2", [id, command.requestId]);
+      const hasConfiguration = async (tx: typeof f.sql) =>
+        (
+          await tx.query("select 1 from runtime_commands where sandbox_id=$1 and request_id=$2", [
+            id,
+            command.requestId,
+          ])
+        ).rows.length > 0;
+      await expect(
+        f.options.runtimeSend!(
+          f.caller,
+          { id, request_id: crypto.randomUUID(), prompt: "do work" },
+          {
+            async canDispatch(tx) {
+              return !(await hasConfiguration(tx ?? f.sql));
+            },
+            async handoffGeneration() {
+              throw new Error("Running send does not advance generation.");
+            },
+          },
+        ),
+      ).rejects.toThrow("Queued runtime turn lease is no longer current.");
+      expect(await hasConfiguration(f.sql)).toBe(false);
+      expect(f.deliveries).toHaveLength(1);
+
       await f.db.query("update application_secrets set status='revoked',value_enc=null where id=$1", [secret.id]);
       const send = f.options.runtimeSend!;
       await expect(send(f.caller, { id, request_id: crypto.randomUUID(), prompt: "do work" })).rejects.toMatchObject({
