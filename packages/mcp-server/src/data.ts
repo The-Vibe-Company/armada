@@ -44,6 +44,7 @@ import {
   completeSandboxDeletion,
   expireAfterExtension,
   finishEnrolledRuntimeLaunch,
+  publishNativeResumeAdmission,
   publishNativeTurn,
   publishOwnerStop,
   recordNativeRetentionRefusal,
@@ -68,6 +69,7 @@ export interface ServerSandboxPatch extends SandboxPatch {
   deleteCompleted?: true;
   expireAfterExtension?: true;
   nativeRetentionRefusal?: string;
+  nativeResumeAdmission?: string;
   nativeChildSend?: { fromState: SandboxStatus; placement: string };
   nativeSteerReceipt?: { fromState: SandboxStatus; placement: string };
   ownerStop?: true;
@@ -859,6 +861,14 @@ export function createSqlData(
           if (outcome === "conflict")
             throw new DataError("Runtime readiness publication is stale.", "sandbox_not_ready");
         }
+        const nativeResume = patch.nativeResumeAdmission;
+        if (
+          nativeResume !== undefined &&
+          (!patch.activityToken ||
+            patch.expectedGeneration === undefined ||
+            Boolean(patch.advanceGeneration) === Boolean(patch.renewActivity))
+        )
+          throw new DataError("Native resume requires its activity generation, token and phase.");
         const steerReceipt = patch.nativeSteerReceipt;
         const steerGeneration = patch.expectedGeneration;
         const steerToken = patch.activityToken;
@@ -937,6 +947,13 @@ export function createSqlData(
           fence += ` and s.status=$${params.length - 1}::public.sandbox_status and s.provider_sandbox_id=$${params.length}
             and s.provider in ('boat','modal') and not s.boat_runtime
             and s.runtime_transport is null and s.deleted_at is null and s.status<>'deleted'`;
+        }
+        if (nativeResume !== undefined) {
+          params.push(nativeResume);
+          fence += ` and s.provider_sandbox_id=$${params.length} and s.provider in ('boat','modal')
+            and not s.boat_runtime and s.runtime_transport is null
+            and s.deleted_at is null and s.status<>'deleted'`;
+          if (patch.renewActivity) fence += " and s.activity_until>clock_timestamp() and s.stop_requested_at is null";
         }
         if (patch.modalRuntimeExtensionTarget !== undefined) {
           if (extensionDeadlineParam === undefined || patch.expectedGeneration === undefined)
@@ -1030,7 +1047,7 @@ export function createSqlData(
         // changed while this statement waited on its lock is rechecked at its newest version,
         // so then the CAS may refuse a holder that this snapshot predates.
         const observeRefusal = !!patch.deleteRequested && admission && !wrapped;
-        const publishTransition = stopStatus !== undefined || childSend !== undefined;
+        const publishTransition = stopStatus !== undefined || childSend !== undefined || nativeResume !== undefined;
         const returning = publishTransition ? "id, status, generation" : "id";
         const update = `update public.sandboxes s set ${sets.join(", ")} from public.goldens g
            where s.id = $3 and g.id = s.golden_id and ${SANDBOX_VISIBLE}
@@ -1082,6 +1099,18 @@ export function createSqlData(
                     ? "runtime_retained_stop"
                     : "owner_stop_admitted",
               });
+            }
+            return updated;
+          });
+        } else if (nativeResume !== undefined && patch.activityToken) {
+          const activityToken = patch.activityToken;
+          if (!sql.transaction) throw new Error("Native resume admission requires a transaction.");
+          result = await sql.transaction(async (tx) => {
+            const updated = await applyUpdate(tx);
+            const row = updated.rows[0];
+            if (row?.id) {
+              if (!row.status || !row.generation) throw new Error("Native resume update did not return its fence.");
+              await publishNativeResumeAdmission(tx, id, row.status, row.generation, activityToken);
             }
             return updated;
           });
