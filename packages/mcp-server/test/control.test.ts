@@ -1873,9 +1873,11 @@ test("CLI named-account operations preserve safe IDs and CAS through the authent
   });
 });
 
-test.each(["claude", "codex"] as const)(
-  "owner explicitly recovers a stopped legacy Modal %s binding once, retaining its workspace and conversations",
-  async (harness) => {
+test.each(["claude", "codex", "privatized"] as const)(
+  "owner recovery of a stopped legacy Modal workspace preserves existing data or refuses a stale binding (%s)",
+  async (scenario) => {
+    const privatize = scenario === "privatized";
+    const harness = privatize ? "claude" : scenario;
     await withServer(async ({ db, options, cli }) => {
       const admin = cli(STAN),
         owner = cli(ADA);
@@ -1936,6 +1938,46 @@ test.each(["claude", "codex"] as const)(
         machineId,
         harness,
       ]);
+      if (privatize) {
+        const credentialId = crypto.randomUUID();
+        await db.query(
+          `insert into public.credentials(id,scope,owner_id,created_by,kind,value_enc)
+             values($1,'org',$2,$3,'claude_oauth',$4)`,
+          [credentialId, org.id, STAN, await encryptSecret("fixture-value", KEY)],
+        );
+        let moved = false;
+        const recovery = createCredentialBindingRecovery(
+          {
+            query: (query, params) => db.query(query, params),
+            transaction: (work) =>
+              db.transaction((tx) =>
+                work({
+                  async query<T>(query: string, params?: unknown[]) {
+                    const result = await tx.query<T>(query, params);
+                    if (params?.[0] === "org" && params[1] === org.id && result.rows.length) {
+                      await tx.query("select public.make_model_account_private($1,$2,$3)", [
+                        STAN,
+                        credentialId,
+                        org.id,
+                      ]);
+                      moved = true;
+                    }
+                    return result;
+                  },
+                }),
+              ),
+          },
+          KEY,
+        );
+        await expect(
+          recovery({ userId: ADA, via: "supabase", orgs: [{ orgId: org.id, role: "member" }] }, { id, credentialId }),
+        ).rejects.toMatchObject({ code: "conflict", message: expect.stringContaining("changed during recovery") });
+        expect(moved).toBe(true);
+        expect((await db.query("select credential_id from sandboxes where id=$1", [id])).rows).toEqual([
+          { credential_id: null },
+        ]);
+        return;
+      }
       const nativeToken = (name: string) =>
         JSON.stringify({
           tokens: { access_token: name + "-access", refresh_token: name + "-refresh", account_id: "synthetic-account" },

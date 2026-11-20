@@ -43,6 +43,7 @@ import { createRuntimeEnrolments, scopedRuntimeSql } from "./runtime-enrolment.t
 import type { RuntimeGitHub } from "./runtime-github.ts";
 import { createRuntimeHistory } from "./runtime-history.ts";
 import type { RuntimeMcp } from "./runtime-mcp.ts";
+import type { RuntimeTurnClaim } from "./runtime-resume.ts";
 import { ToolError } from "./tool-error.ts";
 import { withServerCost } from "./turn-pricing.ts";
 
@@ -821,6 +822,7 @@ export function createDockerSandboxControls(
       caller: Caller,
       name: string,
       args: Record<string, unknown>,
+      claim?: Pick<RuntimeTurnClaim, "canDispatch">,
     ): Promise<{ handled: false } | { handled: true; result: object }> {
       if (
         ![
@@ -875,10 +877,17 @@ export function createDockerSandboxControls(
             if (!options.send) throw failure("unavailable", "Docker send is unavailable.");
             return {
               handled: true as const,
-              result: await options.send.send(caller, args, row, async () => {
-                await resume(caller, row, args.request_id as string | undefined);
-                return visible(caller, row.id);
-              }),
+              result: await options.send.send(
+                caller,
+                args,
+                row,
+                async () => {
+                  await resume(caller, row, args.request_id as string | undefined);
+                  return visible(caller, row.id);
+                },
+                undefined,
+                claim,
+              ),
             };
           }
           if (name === "resume")

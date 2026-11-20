@@ -121,8 +121,11 @@ export function createCredentialBindingRecovery(
       const binding = resolved.binding;
       if (!binding) throw new VaultError("unavailable", "The selected account has no stable revision.");
       const credential = await tx.query(
-        "select id from public.credentials where id=$1 and version=$2 and status='active' and (expires_at is null or expires_at>now()) for update",
-        [binding.credentialId, binding.credentialVersion],
+        `select id from public.credentials where id=$1 and version=$2 and status='active'
+         and (expires_at is null or expires_at>now())
+         and ((scope='user' and owner_id=$3) or (scope='org' and owner_id=$4))
+         for update`,
+        [binding.credentialId, binding.credentialVersion, caller.userId, sandbox.org_id],
       );
       if (!credential.rows.length)
         throw new VaultError("conflict", "The selected account changed during recovery. Choose it again.");
