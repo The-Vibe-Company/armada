@@ -25,7 +25,6 @@ export type StopFence = [
   kind: string | null,
 ];
 
-// Modal runtime capture uses the existing stop owner, including on lease takeover.
 export const RUNTIME_STOP_OWNER = `stop_requested_at is not null and deleted_at is null
   and provider='modal' and runtime_transport='dialout' and provider_sandbox_id=$2::text
   and lifecycle_generation=$4::bigint
@@ -34,7 +33,6 @@ export const RUNTIME_STOP_OWNER = `stop_requested_at is not null and deleted_at 
       and (activity_until is null or activity_until<=clock_timestamp())))
   and exists(select 1 from public.members m where m.org_id=sandboxes.org_id and m.user_id=sandboxes.owner_id)`;
 
-// A completed receipt wins over late failure or timeout in the same stop.
 export const STOP_EPOCH = `id=$1::uuid
   and (case when stop_requested_at is null then null else stop_generation end) is not distinct from $6::bigint
   and ($2::text is null or (${RUNTIME_STOP_OWNER}))`;
