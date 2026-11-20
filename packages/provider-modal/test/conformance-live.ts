@@ -71,7 +71,7 @@ async function main() {
     ]);
     const bytes = await loadRunnerArtifact(input.artifact.dist);
 
-    const { provider, ingest, close } = await createComposedModalProvider({
+    const { provider, readResourceReceipts, ingest, close } = await createComposedModalProvider({
       scope: input.scope,
       ...(input.managementAuthority ? { managementAuthority: input.managementAuthority } : {}),
       appName: owned.name,
@@ -101,6 +101,7 @@ async function main() {
     let completed = false;
     try {
       const result = await runModalConformance(provider, {
+        readResourceReceipts,
         models: input.models,
         ...(input.goldenRecipe ? { goldenRecipe: input.goldenRecipe } : {}),
         onReceipt: remember,
@@ -109,20 +110,20 @@ async function main() {
       console.log(
         JSON.stringify({
           ...result,
-          resources: mergeModalResourceReceipts([...receipts, ...(await provider.resourceReceipts())]),
+          resources: mergeModalResourceReceipts([...receipts, ...(await readResourceReceipts())]),
         }),
       );
     } catch {
       console.log(
         JSON.stringify({
           status: "conformance_failed",
-          resources: mergeModalResourceReceipts([...receipts, ...(await provider.resourceReceipts().catch(() => []))]),
+          resources: mergeModalResourceReceipts([...receipts, ...(await readResourceReceipts().catch(() => []))]),
         }),
       );
       process.exitCode = 1;
     } finally {
       try {
-        const resources = await provider.resourceReceipts();
+        const resources = await readResourceReceipts();
         const images = await db.query("select name,record from public.modal_images");
         const proof = { complete: completed, resources, imageCount: images.rows.length };
         await save({

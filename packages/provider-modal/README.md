@@ -531,7 +531,7 @@ IDs survive in a failure receipt even when their SQL commit failed. New named
 snapshot IDs are also retained in Machine.snapshotImages.
 The SDK response-loss case where no Image ID was ever received remains unrecoverable.
 
-`provider.resourceReceipts()` inventories authorized target/context records (including
+The scoped Modal connection’s `readResourceReceipts()` inventories authorized target/context records (including
 deleted history) without requiring a healthy Modal service. Call it **before** closing
 a disposable fixture DB. `mergeModalResourceReceipts` preserves all observed Image IDs
 when later durable reads lack an interrupted commit's metadata. Do not blindly delete
@@ -581,7 +581,7 @@ private bootstrap/protected RPC/exec/checkpoint/journal reopen, and execute pinn
 native binary versions. No workspace node_modules can mask a missing remote import.
 This is not proof of real model/cloud parity or the runtime's full security gates.
 
-`runModalConformance(provider,{models:true,launchEnv?})` is explicitly opt-in and
+`runModalConformance(provider, { readResourceReceipts, models: true })` is explicitly opt-in and
 billable: toolchain/protected exec, actual ephemeral SSH authentication with strict
 host-key pinning, golden SSH scrub, fork, concurrent real Claude/Codex turns,
 checkpoint/stop/same-ID restore, both conversation resumes, snapshot deletion,

@@ -1,7 +1,7 @@
 import type { Provider, VmResourceReading } from "@armada/core";
 import type { ModalClient } from "modal";
 import { matchesManagementAuthority } from "./authority.ts";
-import { refusal } from "./errors.ts";
+import { modalError, refusal } from "./errors.ts";
 import type {
   Machine,
   ModalManagementProvenance,
@@ -132,16 +132,18 @@ export function createSandboxInspection({
       });
     },
     get,
-    async resourceReceipts() {
+  } satisfies Pick<Provider, "observeResources" | "get">;
+  async function readResourceReceipts() {
+    try {
       const rows = (await store.list()).filter(
         (row) =>
           matchesManagementAuthority(row.managementAuthority, managementAuthority) &&
           (row.sourceImage?.scopeKey ?? scopeKey(scope)) === scopeKey(sourceScope),
       );
-      return Promise.all(rows.map(resourceReceipt));
-    },
-  } satisfies Pick<Provider, "observeResources" | "get"> & {
-    resourceReceipts(): Promise<ModalResourceReceipt[]>;
-  };
-  return { sandboxInfo, resourceReceipt, inspection };
+      return await Promise.all(rows.map(resourceReceipt));
+    } catch (error) {
+      throw modalError(error);
+    }
+  }
+  return { sandboxInfo, resourceReceipt, inspection, readResourceReceipts };
 }

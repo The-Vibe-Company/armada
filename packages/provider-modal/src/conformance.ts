@@ -7,6 +7,7 @@ import { type GoldenSshRecipe, probeModalSsh } from "./ssh-probe.ts";
 export async function runModalConformance(
   provider: ModalProvider,
   options: {
+    readResourceReceipts(): Promise<ModalResourceReceipt[]>;
     goldenRecipe?: GoldenSshRecipe & { scanCommand: string };
     models: boolean;
     launchEnv?: Record<string, string>;
@@ -201,7 +202,7 @@ export async function runModalConformance(
   } finally {
     try {
       if (fork && !preservedSandboxIds.includes(fork)) {
-        const receipt = (await provider.resourceReceipts()).find((x) => x.sandboxId === fork);
+        const receipt = (await options.readResourceReceipts()).find((x) => x.sandboxId === fork);
         if (receipt) await options.onReceipt?.(receipt);
         if (receipt && ["checkpoint", "snapshot", "terminate"].includes(receipt.phase)) preservedSandboxIds.push(fork);
         else if (stopped || receipt) await provider.delete({ sandboxId: fork });
@@ -215,7 +216,7 @@ export async function runModalConformance(
         if (seedSnapshot !== snapshot) await provider.deleteSnapshot(seedSnapshot).catch(() => {});
       }
     } finally {
-      for (const receipt of await provider.resourceReceipts().catch(() => [])) await options.onReceipt?.(receipt);
+      for (const receipt of await options.readResourceReceipts().catch(() => [])) await options.onReceipt?.(receipt);
     }
   }
 }
