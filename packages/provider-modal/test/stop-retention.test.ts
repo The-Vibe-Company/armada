@@ -78,6 +78,7 @@ function fixture(stage: "scrub" | "snapshot", { productionDetach = false } = {})
     watermark: async () => 1,
   } as unknown as ModalStore;
   const sandbox = {
+    sandboxId: "physical",
     snapshotFilesystem: async () => {
       snapshots++;
       if (failing && stage === "snapshot") throw Error("snapshot outcome unknown");
