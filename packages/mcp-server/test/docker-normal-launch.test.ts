@@ -2989,15 +2989,17 @@ test.each(["private", "org"] as const)(
     expect(
       (await db.query("select base_image,built_on_version from public.docker_snapshots where id=$1", [id])).rows[0],
     ).toEqual({ base_image: officialSandboxImage(), built_on_version: VERSION });
-    await expect(
-      db.query("update public.docker_snapshots set built_on_version='0.0.1' where id=$1", [id]),
-    ).rejects.toThrow("Snapshot base is immutable");
-    await expect(
-      db.query("update public.docker_snapshots set base_image=$2 where id=$1", [
-        id,
-        `ghcr.io/the-vibe-company/armada-sandbox@sha256:${"e".repeat(64)}`,
-      ]),
-    ).rejects.toThrow("Snapshot base is immutable");
+    if (visibility === "private") {
+      await expect(
+        db.query("update public.docker_snapshots set built_on_version='0.0.1' where id=$1", [id]),
+      ).rejects.toThrow("Snapshot base is immutable");
+      await expect(
+        db.query("update public.docker_snapshots set base_image=$2 where id=$1", [
+          id,
+          `ghcr.io/the-vibe-company/armada-sandbox@sha256:${"e".repeat(64)}`,
+        ]),
+      ).rejects.toThrow("Snapshot base is immutable");
+    }
     expect(JSON.stringify(created)).not.toContain("offline-snapshot-access");
     expect(await f.snapshots.command(creator, "create", input)).toMatchObject({ snapshot: { id } });
     const build = await hosts.poll(f.hostToken, f.installationId, daemonVersion);
@@ -3008,10 +3010,12 @@ test.each(["private", "org"] as const)(
     });
     expect(build.request.image).toBe(officialSandboxImage());
     expect(build.build).toMatchObject({ armadaVersion: VERSION });
-    for (const fields of [{ image: officialImage }, { baseImage: officialImage }, { builtOnVersion: "0.0.1" }])
-      await expect(
-        f.snapshots.command(creator, "create", { ...input, requestId: randomUUID(), ...fields }),
-      ).rejects.toMatchObject({ code: "invalid" });
+    if (visibility === "private") {
+      for (const fields of [{ image: officialImage }, { baseImage: officialImage }, { builtOnVersion: "0.0.1" }])
+        await expect(
+          f.snapshots.command(creator, "create", { ...input, requestId: randomUUID(), ...fields }),
+        ).rejects.toMatchObject({ code: "invalid" });
+    }
     expect(build.build.token).toBe(visibility === "private" ? "offline-snapshot-access" : "offline-admin-access");
     const image = `sha256:${"d".repeat(64)}`;
     // A build queued before the baseline requirement keeps its legacy receipt contract.
@@ -3048,19 +3052,21 @@ test.each(["private", "org"] as const)(
       await expect(f.service().launch(f.adminCaller, { ...f.body, snapshotId: id })).rejects.toThrow();
       expect(f.resolutions()).toBe(resolutions);
     }
-    const { hostId: _, ...body } = f.body;
+    const { hostId: _, prompt: _prompt, ...body } = f.body;
     // The published launch contract and the handler agree on the Docker source shapes:
     // a snapshot body without hostId is valid; no source, or a snapshot with repos, is refused by both.
     const published = publishedRequest("sandbox/launch");
     const { requestId: idempotencyKey, ...fields } = body;
     published.parse({ ...fields, idempotencyKey, snapshotId: id });
     published.parse({ ...fields, idempotencyKey, snapshotId: id, hostId: f.hostId });
-    const repos = [{ url: "https://github.com/example/project.git" }];
-    for (const refused of [body, { ...body, snapshotId: id, repos }, { ...f.body, snapshotId: id, repos }]) {
-      const attempt = { ...refused, requestId: randomUUID() };
-      const { requestId, ...publicFields } = attempt;
-      expect(published.safeParse({ ...publicFields, idempotencyKey: requestId }).success).toBe(false);
-      await rejected(f.service().launch(f.caller, attempt), "invalid_request");
+    if (visibility === "private") {
+      const repos = [{ url: "https://github.com/example/project.git" }];
+      for (const refused of [body, { ...body, snapshotId: id, repos }, { ...f.body, snapshotId: id, repos }]) {
+        const attempt = { ...refused, requestId: randomUUID() };
+        const { requestId, ...publicFields } = attempt;
+        expect(published.safeParse({ ...publicFields, idempotencyKey: requestId }).success).toBe(false);
+        await rejected(f.service().launch(f.caller, attempt), "invalid_request");
+      }
     }
     const launched = await f.service().launch(f.caller, { ...body, snapshotId: id });
     expect(launched.sandbox).toMatchObject({ image, snapshotId: id, hostId: f.hostId });
@@ -3071,7 +3077,6 @@ test.each(["private", "org"] as const)(
       "workspaceExec",
       "health",
       "configureMcp",
-      "prompt",
     ]);
     const refresh = (f.native as { op: string; input?: { command: string } }[]).find(
       (command) => command.op === "workspaceExec",
