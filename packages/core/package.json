@@ -11,6 +11,7 @@
     "./contract/failures": "./src/contract/failures.ts",
     "./contract/public-auth": "./src/contract/public-auth.ts",
     "./contract/sandbox": "./src/contract/sandbox.ts",
+    "./contract/sandbox-events": "./src/contract/sandbox-events.ts",
     "./contract/sandbox-outputs": "./src/contract/sandbox-outputs.ts",
     "./contract/sandbox-viewer": "./src/contract/sandbox-viewer.ts",
     "./contract/tokens": "./src/contract/tokens.ts",
