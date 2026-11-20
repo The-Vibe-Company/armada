@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { readLogsErrors } from "./failures.ts";
 import type { Operation } from "./index.ts";
 import { LOGS_OUTPUT } from "./sandbox.ts";
 
@@ -103,18 +104,5 @@ export const readLogsOperation = {
   audience: "agent",
   description:
     "Read the agent's events, oldest first. The default is one bounded page. Pass the returned cursor as cursor to read only what is new.",
-  errors: [
-    "invalid",
-    "invalid_request",
-    "unauthorized",
-    "forbidden",
-    "not_found",
-    "unavailable",
-    "dependency_unavailable",
-    "provider_mismatch",
-    "provider_unavailable",
-    "provider_routing_unavailable",
-    "rate_limited",
-    "internal",
-  ],
+  errors: readLogsErrors,
 } as const satisfies Operation<z.ZodType, z.ZodType>;

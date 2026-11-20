@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { accountOperations } from "./accounts.ts";
+import type { ServerFailureCode } from "./failures.ts";
 import { createdInboundTrigger, createInboundTriggerBody, createInboundTriggerQuery } from "./inbound-trigger.ts";
 import { launchInput } from "./launch.ts";
 import { launchEnvelope } from "./launch-response.ts";
@@ -22,8 +23,10 @@ import { tokenOperations } from "./tokens.ts";
 export { accountOperations } from "./accounts.ts";
 export type { CreatedInboundTrigger } from "./inbound-trigger.ts";
 export {
+  type DockerLaunchInput,
   dockerHostLaunchFields,
   dockerSnapshotLaunchFields,
+  type GoldenLaunchInput,
   type LaunchInput,
   type PinnedModalLaunchInput,
 } from "./launch.ts";
@@ -166,3 +169,30 @@ export const operations = {
   scopedStop: scopedRestOperations.stop,
   scopedExtend: scopedRestOperations.extend,
 } as const;
+
+export type TemplateLaunchInput = z.input<typeof operations.launchTemplate.input.body>;
+export type TemplateLaunchResult = z.infer<typeof operations.launchTemplate.output>;
+export type SendInput = z.input<typeof operations.sendPrompt.input.body>;
+export type SendResult = z.infer<typeof operations.sendPrompt.output>;
+export type StatusInput = z.input<typeof operations.sandboxStatus.input.body>;
+export type SandboxStatus = z.infer<typeof operations.sandboxStatus.output>;
+export type WaitInput = z.input<typeof operations.waitSandbox.input.body>;
+export type WaitResult = z.infer<typeof operations.waitSandbox.output>;
+export type StopInput = z.input<typeof operations.stopSandbox.input.body>;
+export type StopResult = z.infer<typeof operations.stopSandbox.output>;
+export type LogsInput = z.infer<typeof operations.readLogs.input.body>;
+export type LogsResult = z.infer<typeof operations.readLogs.output>;
+export type ExecResult = z.infer<typeof operations.execSandbox.output>;
+
+type SdkOperationName =
+  | "launch"
+  | "launchTemplate"
+  | "sendPrompt"
+  | "sandboxStatus"
+  | "waitSandbox"
+  | "stopSandbox"
+  | "readLogs"
+  | "execSandbox";
+type UnmappedSdkError = Exclude<(typeof operations)[SdkOperationName]["errors"][number], ServerFailureCode>;
+const sdkErrorsCovered: UnmappedSdkError extends never ? true : never = true;
+void sdkErrorsCovered;

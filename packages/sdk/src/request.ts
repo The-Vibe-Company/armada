@@ -1,63 +1,6 @@
-import {
-  API_FAILURE_HELP,
-  type ApiFailureCode,
-  type GoldenErrorCode,
-  type LaunchErrorCode,
-  type ProviderErrorCode,
-  type VaultErrorCode,
-} from "@armada/core";
+import { isServerFailureCode } from "@armada/core/contract/failures";
 import type { FailureCode, Fetch } from "./index.ts";
 
-const commonCodes = {
-  build_failed: true,
-  busy: true,
-  conflict: true,
-  credential_binding_required: true,
-  credential_binding_unsafe: true,
-  credential_binding_unsupported: true,
-  credential_busy: true,
-  credential_refused: true,
-  denied: true,
-  forbidden: true,
-  host_draining: true,
-  host_full: true,
-  init_failed: true,
-  internal: true,
-  invalid: true,
-  invalid_config: true,
-  invalid_request: true,
-  missing_credential: true,
-  no_credentials: true,
-  no_running_turn: true,
-  not_found: true,
-  payment_required: true,
-  prompt_failed: true,
-  provider_not_configured: true,
-  provider_routing_unavailable: true,
-  rate_limited: true,
-  sandbox_not_ready: true,
-  sandbox_retention_ended: true,
-  sandbox_terminal: true,
-  setup_failed: true,
-  snapshot_failed: true,
-  start_failed: true,
-  unauthorized: true,
-  unavailable: true,
-  unknown: true,
-  unknown_route: true,
-  unsupported: true,
-  upstream: true,
-} satisfies Record<
-  | Exclude<LaunchErrorCode | ProviderErrorCode | VaultErrorCode | GoldenErrorCode, ApiFailureCode>
-  | "internal"
-  | "unknown_route"
-  | "sandbox_terminal"
-  | "busy"
-  | "denied"
-  | "upstream",
-  boolean
-> &
-  Partial<Record<ApiFailureCode, boolean>>;
 export const TEMPLATE_LAUNCH_ROUTE = "templates/launch";
 
 const retryStatuses = new Set([429, 502, 503, 504]);
@@ -182,10 +125,7 @@ export const requestApi: (
       continue;
     const rawCode =
       error && typeof error === "object" && "code" in error && typeof error.code === "string" ? error.code : undefined;
-    const code: FailureCode =
-      rawCode && (Object.hasOwn(API_FAILURE_HELP, rawCode) || Object.hasOwn(commonCodes, rawCode))
-        ? (rawCode as FailureCode)
-        : "unknown_response";
+    const code: FailureCode = rawCode && isServerFailureCode(rawCode) ? rawCode : "unknown_response";
     return {
       kind: "response",
       response,

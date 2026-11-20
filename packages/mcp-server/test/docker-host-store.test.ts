@@ -822,6 +822,43 @@ test.each([false, true])(
   },
 );
 
+test("retention cleanup settles an attached restore after expiry with atomic rollback and idempotent replay", async () => {
+  const a = await restoreFixture();
+  const {
+    rows: [claim],
+  } = await database().query<Job>(
+    `update jobs set state='leased',lease_owner=$2,lease_epoch=1,lease_until='infinity',attempts=1
+     where id=$1 returning id,sandbox_id,generation::text,lease_epoch::text`,
+    [a.selection.runnerJobId, randomUUID()],
+  );
+  if (!claim) throw new Error("Missing fixture runner claim.");
+  const { requestId } = a.restore;
+  const cleanup = { requestId, cleanupReason: "disk_pressure" as const };
+  expect(await a.poll()).toEqual(a.restore);
+  await store.complete(a.hostToken, a.installationId, { requestId, outcome: "completed" });
+  await denied(store.cleaned(a.hostToken, a.installationId, cleanup));
+  await store.attachMachineRestore(a.owner, claim, requestId);
+  await store.expired(a.hostToken, a.installationId, { requestId });
+
+  const { faultingStore, failure } = failDockerObservationCommit(a.sandboxId, cleanup.cleanupReason);
+  await expect(faultingStore.cleaned(a.hostToken, a.installationId, cleanup)).rejects.toMatchObject({
+    cause: failure,
+  });
+  expect(await lifecycle(a.sandboxId)).toMatchObject({ status: "stopped", lifecycle_generation: "3" });
+  expect(await dockerJournal(a.sandboxId, cleanup.cleanupReason)).toEqual([]);
+
+  await store.cleaned(a.hostToken, a.installationId, cleanup);
+  await store.cleaned(a.hostToken, a.installationId, cleanup);
+  expect(await lifecycle(a.sandboxId)).toMatchObject({
+    status: "deleted",
+    status_reason: "disk_pressure",
+    lifecycle_generation: "4",
+  });
+  expect(await dockerJournal(a.sandboxId, cleanup.cleanupReason)).toEqual([
+    { from_status: "stopped", to_status: "deleted", generation: "4" },
+  ]);
+});
+
 test("an expired pre-handoff restore settles the output probe without reading an archive", async () => {
   const a = await restoreFixture();
   await a.poll();
