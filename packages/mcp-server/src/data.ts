@@ -896,7 +896,8 @@ export function createSqlData(
         const extensionDeadlineParam = patch.expiresAt === undefined ? undefined : params.length;
         if (patch.effectiveTtlSeconds !== undefined)
           set("effective_ttl_seconds", patch.effectiveTtlSeconds, "::integer");
-        if (reason !== undefined) set("status_reason", reason, "::text");
+        const stopAdmissionReason = stopStatus === "stopping" && !patch.finishActivity ? reason : undefined;
+        if (reason !== undefined && stopAdmissionReason === undefined) set("status_reason", reason, "::text");
         if (sets.length === 0) return;
         let fence = "";
         if (patch.turnActivity !== undefined)
@@ -1038,6 +1039,7 @@ export function createSqlData(
                 generation: row.generation,
                 fromState: row.status,
                 toState: stopStatus,
+                ...(stopAdmissionReason !== undefined ? { statusReason: stopAdmissionReason } : {}),
                 code: patch.finishActivity
                   ? "owner_stop_settled"
                   : patch.retainedRuntimeStop
