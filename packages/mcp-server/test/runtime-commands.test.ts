@@ -944,6 +944,66 @@ test("startup refuses a mismatched physical sandbox before replacing the live ru
   );
 });
 
+test.each(["before issuance", "during issuance"] as const)(
+  "queued startup stops when the claim expires %s",
+  async (expiry) => {
+    const { createRuntimeStartup } = await import("../src/runtime-startup.ts");
+    const f = await fixture();
+    const session = await f.enrol();
+    let current = expiry !== "before issuance";
+    const authority = createRuntimeEnrolments(
+      {
+        ...f.sql,
+        transaction: (work) =>
+          f.sql.transaction!((tx) =>
+            work({
+              ...tx,
+              async query<T>(statement: string, values?: unknown[]) {
+                const result = await tx.query<T>(statement, values);
+                if (expiry === "during issuance" && statement.includes("insert into public.runtime_enrolments"))
+                  current = false;
+                return result;
+              },
+            }),
+          ),
+      },
+      ENCRYPTION_KEY,
+    );
+    const bootstrap = mock(async () => {
+      throw Error("unexpected bootstrap");
+    });
+    const start = createRuntimeStartup(authority, {
+      bootstrap,
+      health: async () => {
+        throw Error("unexpected health");
+      },
+    });
+
+    const startup = {
+      ownerId: f.people.owner,
+      sandboxId: f.id,
+      providerSandboxId: "command-native",
+      serverUrl: "https://armada.invalid",
+      cacheDir: "/cache",
+      artifact: { sha256: "a".repeat(64), bytes: 10 },
+      configuration: { selectedHarness: "codex" },
+      async assertClaim() {
+        if (!current) throw Error("queued claim expired");
+      },
+    };
+    await expect(start(startup)).rejects.toMatchObject({ code: "sandbox_not_ready" });
+    expect(bootstrap).not.toHaveBeenCalled();
+    const ticket = await f.db.query<{ pending: boolean }>(
+      "select enrolment_hash is not null as pending from runtime_enrolments where sandbox_id=$1",
+      [f.id],
+    );
+    expect(ticket.rows).toEqual([{ pending: false }]);
+    expect(await f.authority.withSession(session.runtimeToken, session.epoch, async (_tx, scope) => scope.epoch)).toBe(
+      session.epoch,
+    );
+  },
+);
+
 test.each(["selection", "pre-abort", "timeout", "bootstrap", "replacement", "lifecycle", "stop"] as const)(
   "startup never publishes readiness after %s and never repeats host bootstrap",
   async (scenario) => {

@@ -1,5 +1,6 @@
 import { setTimeout as delay } from "node:timers/promises";
 import { isHarness, ProviderError } from "@armada/core";
+import type { Sql } from "@armada/core/server";
 import { currentRequestId, recordOperatorFailure } from "./request-observability.ts";
 import { type createRuntimeEnrolments, RuntimeEnrolmentDenied } from "./runtime-enrolment.ts";
 import { logRuntimeStage } from "./runtime-progress.ts";
@@ -44,6 +45,7 @@ export function createRuntimeStartup(
     configuration: Record<string, unknown>;
     commandGrantExpiresAt?: number;
     expectedGeneration?: number;
+    assertClaim?: (tx?: Sql) => Promise<void>;
     signal?: AbortSignal;
     /** Readiness budget AFTER the bounded host bootstrap returns. */
     readinessTimeoutMs?: number;
@@ -90,6 +92,7 @@ export function createRuntimeStartup(
         sandboxId,
         expectedProviderSandboxId: providerSandboxId,
         configuration: input.configuration,
+        ...(input.assertClaim ? { assertClaim: input.assertClaim } : {}),
         ...(input.expectedGeneration === undefined ? {} : { expectedGeneration: input.expectedGeneration }),
         ...(input.commandGrantExpiresAt !== undefined ? { commandGrantExpiresAt: input.commandGrantExpiresAt } : {}),
       });
@@ -98,6 +101,8 @@ export function createRuntimeStartup(
       diagnosticPhase = "bootstrap";
       const bootstrapAt = time.now();
       entering("bootstrap", bootstrapAt);
+      await input.assertClaim?.();
+      signal?.throwIfAborted();
       await ports.bootstrap({
         sandboxId: providerSandboxId,
         serverUrl,
