@@ -6,6 +6,7 @@ import { createAccountTurnQueue } from "../src/account-turn-queue.ts";
 import { boatRuntimeResume } from "../src/boat-runtime-resume.ts";
 import { createQueuedSandboxDispatch, dispatchControlCommand } from "../src/control.ts";
 import { createSqlData } from "../src/data.ts";
+import { providerRegistry } from "../src/http.ts";
 import { createJobsStore } from "../src/jobs/store.ts";
 import { modalRuntimeLaunch } from "../src/modal-runtime-launch.ts";
 import { modalRuntimeResume } from "../src/modal-runtime-resume.ts";
@@ -66,9 +67,6 @@ describe("Modal user stop and wake-on-send", () => {
         async get() {
           return { id: f.row.providerSandboxId, state, providerState: state, physicalGeneration: "1" };
         },
-        async captureRuntimeWork() {
-          return { status: "clean" as const };
-        },
         async stop() {
           state = "stopped";
         },
@@ -95,16 +93,27 @@ describe("Modal user stop and wake-on-send", () => {
           throw Error("Unexpected cleanup of healthy resume");
         },
       }));
+      const store = createSqlVaultStore(f.sql);
+      const providers = providerRegistry({
+        vault: store,
+        encryptionKey: ENCRYPTION_KEY,
+        providerFor: () => {
+          throw Error("Unexpected Boat fallback");
+        },
+        modalTokensFor: async () => ({ tokenId: "id", tokenSecret: "secret", scope: "org" }),
+        modalProviderFor: () => ({
+          provider: host as unknown as Provider,
+          captureRuntimeWork: async () => ({ status: "clean" }),
+        }),
+        runtimeProviderFor: serve,
+      });
       const controls = {
         authStore: createMemoryAuthStore(),
         supabase: { supabaseUrl: "https://unused.test", anonKey: "fixture" },
-        store: createSqlVaultStore(f.sql),
+        store,
         encryptionKey: ENCRYPTION_KEY,
         data: createSqlData(f.sql),
-        providers: {
-          resolve: (target: Parameters<typeof serve>[1]) =>
-            serve(host as unknown as Provider, target, f.caller, host.captureRuntimeWork),
-        },
+        providers,
         runtimeStopCheckpoint: createRuntimeStopCheckpoint(
           f.sql,
           createRuntimeCheckpoint(f.sql, ENCRYPTION_KEY, f.bridge),
@@ -116,7 +125,7 @@ describe("Modal user stop and wake-on-send", () => {
         await expect(stop()).rejects.toThrow();
         await f.db.query("update sandboxes set activity_until=now()-interval '1 second' where id=$1", [f.row.id]);
         const target = (await controls.data(f.caller).sandboxes.get(f.row.id))!;
-        const provider = await serve(host as unknown as Provider, target, f.caller, host.captureRuntimeWork);
+        const provider = await providers.resolve(target, f.caller);
         const stopCall = spyOn(provider, "stop");
         const lifecycle = createSandboxLifecycle(f.sql, async () => provider);
         expect(await lifecycle.reconcileOne()).toBe(true);
