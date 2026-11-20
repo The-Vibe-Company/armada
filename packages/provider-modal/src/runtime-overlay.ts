@@ -1,8 +1,6 @@
 import type { Sandbox } from "modal";
 import { refusal } from "./errors.ts";
 
-// Public runtime bytes only, before credentials/private bootstrap. Saved golden
-// images contain the runtime from their build date, not this server's artifact.
 const install = `
 const fs=require('node:fs'),crypto=require('node:crypto'),cp=require('node:child_process');
 const input=JSON.parse(fs.readFileSync(0,'utf8'));
@@ -19,8 +17,6 @@ atomic('/opt/armada/main.js',bytes,0o644);
 console.log('ARMADA_RUNTIME_INSTALLED '+input.sha256);
 `;
 
-/** Refresh only a new logical incarnation. Never edit a restored checkpoint's
- * native state/journal or silently replace its code during no-text resume. */
 export async function prepareRuntimeArtifact(
   sandbox: Sandbox,
   artifact: { bundle: Uint8Array; sha256: string },

@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { PUBLIC_CONTROL_ROUTES } from "@armada/core/contract";
-import { forwardControl } from "./control-proxy.ts";
+import { forwardControl, forwardDashboardEventStream } from "./control-proxy.ts";
 import { POST } from "./route.ts";
 
 const env = process.env.ARMADA_MCP_URL;
@@ -631,4 +631,41 @@ test("GET proxy forwards the authenticated sandbox outputs list and download wit
   );
   expect(post.status).toBe(404);
   expect(seen).toHaveLength(3);
+});
+
+test("streams sandbox events as they arrive and forwards the reconnect cursor", async () => {
+  process.env.ARMADA_MCP_URL = "https://armada.test/mcp";
+  const id = "11111111-1111-4111-8111-111111111111";
+  const abort = new AbortController();
+  const request = new Request(`https://dashboard.test/api/v1/events?sandbox=${id}&cursor=5`, {
+    headers: { authorization: "Bearer untrusted", "last-event-id": "8", cookie: "session=masked" },
+    signal: abort.signal,
+  });
+  const { readable, writable } = new TransformStream<Uint8Array>();
+  let upstreamSignal: AbortSignal | undefined;
+  const response = await forwardDashboardEventStream(request, "fixture-viewer", async (input, init) => {
+    const upstream = new Request(input, init);
+    expect(upstream.url).toBe(`https://armada.test/api/v1/events?sandbox=${id}&cursor=5`);
+    expect(upstream.headers.get("authorization")).toBe("Bearer fixture-viewer");
+    expect(upstream.headers.get("cookie")).toBeNull();
+    expect(upstream.headers.get("accept")).toBe("text/event-stream");
+    expect(upstream.headers.get("last-event-id")).toBe("8");
+    upstreamSignal = upstream.signal;
+    return new Response(readable, {
+      headers: { "content-type": "text/event-stream", "x-accel-buffering": "no" },
+    });
+  });
+
+  expect(response.status).toBe(200);
+  expect(response.headers.get("content-type")).toBe("text/event-stream");
+  expect(response.headers.get("cache-control")).toBe("private, no-store");
+  expect(response.headers.get("x-accel-buffering")).toBe("no");
+  const frame = 'id: 9\ndata: {"id":"9"}\n\n';
+  const reader = response.body!.getReader();
+  const writer = writable.getWriter();
+  const [chunk] = await Promise.all([reader.read(), writer.write(new TextEncoder().encode(frame))]);
+  expect(new TextDecoder().decode(chunk.value)).toBe(frame);
+  abort.abort();
+  expect(upstreamSignal?.aborted).toBe(true);
+  await reader.cancel();
 });
