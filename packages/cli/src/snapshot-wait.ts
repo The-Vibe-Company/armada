@@ -6,7 +6,7 @@ export async function waitForSnapshot<T>(
   sleep: ((ms: number) => Promise<void>) | undefined,
   pending: (receipt: T) => boolean,
   read: (signal: AbortSignal) => Promise<T>,
-): Promise<T> {
+) {
   if (!seconds || !pending(receipt)) return receipt;
   const deadline = AbortSignal.timeout(seconds * 1000);
   const interval = Math.min(2000, seconds * 500);
