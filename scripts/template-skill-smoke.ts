@@ -16,7 +16,7 @@ export interface TemplateSkillCase {
   publicSkill?: string | undefined;
   privateSkill?: string | undefined;
 }
-export type TemplateSkillCode =
+type TemplateSkillCode =
   | "invalid_response"
   | "template_launch_failed"
   | "template_answer_mismatch"
