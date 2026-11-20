@@ -113,6 +113,62 @@ test("private Docker reservations remain untouched while the generic lifecycle r
   expect(await readHistory(people.admin)).toEqual([]);
 });
 
+test.each(["accepted", "superseded", "journal failure"] as const)(
+  "promptless native launch settlement (%s)",
+  async (scenario) => {
+    const { db, people } = await sharedDatabase();
+    const store = createSqlData(bunLikeSql(db))({
+      via: "service",
+      userId: people.owner,
+      orgs: [{ orgId: people.org, role: "member" }],
+    }).sandboxes;
+    const activityToken = crypto.randomUUID();
+    const {
+      rows: [launch],
+    } = await db.query<{ id: string }>(
+      `insert into sandboxes (provider, provider_sandbox_id, golden_id, org_id, owner_id, harness, status,
+       lifecycle_generation, activity_lease_id, activity_until)
+     select 'boat', 'fixture', id, org_id, $1, 'claude', $3::sandbox_status, 1, $2, now()+interval '1 minute'
+     from goldens where name='shared' returning id`,
+      [people.owner, activityToken, scenario === "superseded" ? "stopping" : "starting"],
+    );
+    if (!launch) throw Error("missing launch");
+    const accepted = scenario === "accepted";
+    const statusBefore = scenario === "superseded" ? "stopping" : "starting";
+    if (scenario === "journal failure") {
+      await db.exec(`alter table sandbox_transitions add constraint reject_native_ready
+        check (code <> 'native_launch_ready')`);
+    }
+    try {
+      const patch = { status: "ready", finishActivity: true, expectedGeneration: 1, activityToken } as const;
+      const finish = store.update(launch.id, patch);
+      if (accepted) await finish;
+      else
+        await expect(finish).rejects.toThrow(
+          scenario === "superseded" ? "publication is stale" : "reject_native_ready",
+        );
+      const row = await db.query(
+        "select status, lifecycle_generation::int as generation, activity_lease_id from sandboxes",
+      );
+      expect(row.rows).toEqual([
+        {
+          status: accepted ? "ready" : statusBefore,
+          generation: accepted ? 2 : 1,
+          activity_lease_id: accepted ? null : activityToken,
+        },
+      ]);
+      const journal = await db.query<{ edge: unknown[] }>(`select jsonb_build_array(
+        from_status, to_status, actor, code, generation) as edge from sandbox_transitions`);
+      expect(journal.rows.map(({ edge }) => edge)).toEqual(
+        accepted ? [["starting", "ready", "lifecycle_runner", "native_launch_ready", 2]] : [],
+      );
+    } finally {
+      if (scenario === "journal failure")
+        await db.exec("alter table sandbox_transitions drop constraint reject_native_ready");
+    }
+  },
+);
+
 test("an expired observation lease cannot publish a delayed terminal result", async () => {
   const { db, people } = await sharedDatabase();
   const publishing = Promise.withResolvers<void>();
