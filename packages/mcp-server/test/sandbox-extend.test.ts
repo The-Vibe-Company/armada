@@ -113,7 +113,7 @@ test.each(["settled", "lease expired", "queue fault", "commit fault"] as const)(
     const sandbox = (await store.get(id))!;
     let renewed = false;
     const provider = {
-      id: "boat",
+      id: "boat" as const,
       async extendLifetime() {
         if (outcome === "lease expired")
           await db.query("update sandboxes set activity_until=clock_timestamp() where id=$1", [id]);
@@ -138,7 +138,7 @@ test.each(["settled", "lease expired", "queue fault", "commit fault"] as const)(
     const settled = outcome === "settled";
     const {
       rows: [state],
-    } = await db.query(
+    } = await db.query<{ expires_at: Date }>(
       `select status,status_reason,lifecycle_generation::int,stop_generation::int,expires_at,
          stop_requested_at is not null as stop_requested,activity_lease_id is not null as leased,
          activity_until is not null as lease_deadline,reconcile_after<=now() as scheduled,
@@ -159,7 +159,7 @@ test.each(["settled", "lease expired", "queue fault", "commit fault"] as const)(
       ...(settled ? {} : { expires_at: initial }),
     });
     if (settled) expect(state!.expires_at).toBeInstanceOf(Date);
-    if (settled) expect((state!.expires_at as Date).getTime()).toBeLessThan(initial.getTime());
+    if (settled) expect(state!.expires_at.getTime()).toBeLessThan(initial.getTime());
     expect(
       (
         await db.query(
