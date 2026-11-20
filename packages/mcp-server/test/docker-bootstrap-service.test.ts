@@ -1238,7 +1238,6 @@ test.each(refusalOrders)(
                 work({
                   query: async (statement, values) => {
                     if (statement.includes("insert into public.docker_host_jobs")) {
-                      // Inspect the distinct resume actor's lock inside the retained-stop transaction.
                       const membership = await tx.query<{ locked: boolean }>(
                         `select xmax = pg_current_xact_id()::text::xid as locked
                          from public.members where org_id=$1 and user_id=$2`,
