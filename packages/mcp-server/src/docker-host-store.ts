@@ -1973,19 +1973,29 @@ export function createDockerHostStore(sql: Sql, key: string) {
           if (restoreReceipt) {
             const restore = await readJob(restoreReceipt);
             if (restore.operation !== "restore" || restore.request.generation !== requestId) deny();
-            if (restoreReceipt.placed_generation === restore.request.generation) deny();
-            return;
+            if (restoreReceipt.placed_generation !== restore.request.generation) return;
           }
           const host = await authenticate(tx, hostToken, installationId);
           const job =
             (
               await tx.query<StoredJob>(
                 `select * from public.docker_host_jobs where host_id=$1 and request_id=$2
-               and bound_operation in ('create','bootstrap','resume') and bound_sandbox_id is not null`,
+               and bound_operation in ('create','bootstrap','resume','restore') and bound_sandbox_id is not null`,
                 [host.id, requestId],
               )
             ).rows[0] ?? deny();
-          const logical = await boundMachine(tx, job, host, installationId);
+          let logical: Sandbox;
+          if (job.bound_operation === "restore") {
+            logical = await sandbox(tx, job.bound_sandbox_id ?? deny(), host, installationId);
+            const { job: restore, lifecycleGeneration } = await readStoredJob(job);
+            if (restore.operation !== "restore" || restore.request.generation !== requestId || !lifecycleGeneration)
+              deny();
+            if (logical.docker_generation !== requestId) return;
+            if (job.outcome !== "completed" || job.cancelled_at) deny();
+            await requireRestoreBindings(tx, logical, restore, lifecycleGeneration);
+          } else {
+            logical = await boundMachine(tx, job, host, installationId);
+          }
           if (await supersededLifecycle(tx, job, true)) return;
           const predicate = `id=$1 and not application_secret_tainted and ${DOCKER_RETAINED_OUTPUT_STOP}`;
           const row = (
