@@ -193,7 +193,6 @@ export function forwardControl(request: Request, path: readonly string[], fetchI
   return forwardRequest(request, path, fetchImpl);
 }
 
-/** The dashboard has already verified the viewer's session before calling this. */
 export function forwardDashboardEventStream(request: Request, viewerToken: string, fetchImpl: UpstreamFetch = fetch) {
   return forwardRequest(request, [controlRouteKey(streamSandboxEvents.route)], fetchImpl, viewerToken);
 }
