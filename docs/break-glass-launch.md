@@ -65,8 +65,11 @@ staging_armada list --org "$staging_org" --golden "$snapshot_id" --owner me --js
 ```bash
 read -r -p 'Returned sandbox ID: ' sandbox_id
 staging_armada status "$sandbox_id" --org "$staging_org"
-staging_armada logs "$sandbox_id" --org "$staging_org" --follow
+staging_armada events "$sandbox_id" --org "$staging_org" -f
 ```
+
+For a pinned client released before the `events` command, use that client's
+`staging_armada logs "$sandbox_id" --org "$staging_org" --follow`.
 
 ### Coordinator rehearsal record
 

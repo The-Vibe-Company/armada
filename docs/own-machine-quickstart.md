@@ -127,7 +127,7 @@ armada launch "Summarize this repository; do not change files" \
   --provider docker --host office --org ORG_UUID --agent codex \
   --repo your-org/your-repo@main
 armada status SANDBOX_ID
-armada logs SANDBOX_ID --follow
+armada events SANDBOX_ID -f
 armada stop SANDBOX_ID
 ```
 

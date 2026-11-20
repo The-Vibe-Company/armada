@@ -163,7 +163,7 @@ or orchestration are provided.
 ```sh
 armada send SANDBOX "Continue with the next agreed task"
 armada wait SANDBOX --timeout 120 --json
-armada logs SANDBOX --tail 50 --json
+armada events SANDBOX --tail 50 --json
 armada status SANDBOX --json
 ```
 
@@ -187,11 +187,12 @@ accepts 0–600 and defaults to 60; the example waits at most 120 seconds. A
 still-running result can be waited on again, not relaunched. A wait response is
 an observation, not proof tests passed or work was pushed; inspect outcome and
 logs. If a send times out ambiguously, inspect detail, status and logs before
-considering another send; do not replay a possibly accepted instruction. Logs
-read the history for the entire sandbox. For longer event inspection use
-`armada logs SANDBOX --follow --json`; `armada logs SANDBOX --all --json`
-drains available pages. Keep output bounded with tail for routine diagnostics.
-Preserve returned cursors/identifiers in reports; do not fabricate a cursor flag.
+considering another send; do not replay a possibly accepted instruction. Use
+`armada events SANDBOX -f` to follow until settled, or `armada events SANDBOX --tail N`
+for bounded diagnostics. Piped output is JSON
+Lines, with one event per line. Use `armada exec SANDBOX -- "git status --short"`
+to run a shell command inside the sandbox. Use `armada outputs --id SANDBOX` to
+list stored outputs and `armada outputs NAME --id SANDBOX -o DIR` to download one.
 
 For a viewer grant, subscribe to `GET /api/v1/events?sandbox=<UUID>` with
 the viewer bearer. Resume with the last processed SSE ID in `Last-Event-ID`.

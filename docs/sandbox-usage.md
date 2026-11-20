@@ -91,7 +91,7 @@ with the sandbox ID from the launch receipt.
 armada launch MODAL_SNAPSHOT --provider modal --agent codex "Reply OK"
 armada wait SANDBOX_UUID
 armada status SANDBOX_UUID --json
-armada logs SANDBOX_UUID
+armada events SANDBOX_UUID
 ```
 
 Compare the normalized `armada/turnUsage` event in logs with `usage.turns` in
@@ -117,7 +117,7 @@ armada wait SANDBOX_UUID
 armada status SANDBOX_UUID --json
 armada send SANDBOX_UUID "Reply OK again"
 armada wait SANDBOX_UUID
-armada logs SANDBOX_UUID
+armada events SANDBOX_UUID
 armada status SANDBOX_UUID --json
 ```
 
@@ -148,7 +148,7 @@ After normal server deployment, launch a Claude session on a Modal snapshot:
 ```sh
 armada launch MODAL_SNAPSHOT --provider modal --agent claude "Reply OK"
 armada wait SANDBOX_UUID
-armada logs SANDBOX_UUID
+armada events SANDBOX_UUID
 armada status SANDBOX_UUID --json
 ```
 

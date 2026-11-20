@@ -87,7 +87,7 @@ const SESSION = [
     "--ttl",
     "4h",
   ],
-  ["logs", SANDBOX],
+  ["events", SANDBOX],
 ];
 
 const quote = (word: string) => (/\s/.test(word) ? `"${word}"` : word);

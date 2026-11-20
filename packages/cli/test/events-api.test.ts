@@ -17,31 +17,39 @@ function auth(fetch: (input: string | URL | Request, init?: RequestInit) => Prom
   };
 }
 
-describe("logs through the Armada API", () => {
-  test("uses a token-only clean HOME and preserves --all", async () => {
+describe("events through the Armada API", () => {
+  test("writes one JSON line per event on a pipe and reads one default page", async () => {
     const calls: Request[] = [];
+    const events = [
+      { id: "a", at: 1, kind: "message", text: "hello\nworld" },
+      { id: "b", at: 2, kind: "message", text: "done" },
+    ];
     let out = "";
     const code = await run(
-      ["logs", id, "--all"],
+      ["events"],
       { out: (text) => (out += text), err: () => undefined },
       {
-        auth: auth(async (input, init) => {
-          const request = input instanceof Request ? input : new Request(String(input), init);
-          calls.push(request);
-          return Response.json({
-            events: [{ id: "event", at: 1, kind: "message", text: "hello" }],
-            cursor: null,
-            hasMore: false,
-            settled: true,
-          });
-        }),
+        stdoutIsTTY: false,
+        auth: {
+          ...auth(async (input, init) => {
+            calls.push(new Request(String(input), init));
+            return Response.json({ events, cursor: "next", hasMore: true, settled: false });
+          }),
+          env: { ARMADA_TOKEN: token, ARMADA_SANDBOX: id },
+        },
       },
     );
     expect(code).toBe(0);
-    expect(out).toBe("hello\n");
+    expect(
+      out
+        .trimEnd()
+        .split("\n")
+        .map((line) => JSON.parse(line)),
+    ).toEqual(events);
+    expect(calls).toHaveLength(1);
     expect(calls[0]?.url).toBe("https://armada.thevibecompany.co/api/v1/logs/read");
     expect(calls[0]?.headers.get("authorization")).toBe(`Bearer ${token}`);
-    expect(await calls[0]?.json()).toEqual({ id, all: true, follow: false });
+    expect(await calls[0]?.json()).toEqual({ id, follow: false });
   });
 
   test.each([false, true])("carries the API cursor across follow batches (tail=%s)", async (tail) => {
@@ -64,7 +72,7 @@ describe("logs through the Armada API", () => {
       { events: [], cursor: "two", hasMore: false, settled: true },
     ];
     const code = await run(
-      ["logs", id, "--follow", ...(tail ? ["--tail", "2"] : [])],
+      ["events", id, "-f", ...(tail ? ["--tail", "2"] : [])],
       { out: (text) => (out += text), err: () => undefined },
       {
         auth: auth(async (input, init) => {
@@ -83,71 +91,10 @@ describe("logs through the Armada API", () => {
     expect(out).toBe("first\nsecond\n");
     expect(sleeps).toBe(2);
     expect(bodies).toEqual([
-      { id, all: false, follow: true, ...(tail ? { direction: "backward", limit: 2 } : {}) },
-      { id, all: false, follow: true, cursor: "one" },
-      { id, all: false, follow: true, cursor: "two" },
+      { id, follow: true, ...(tail ? { direction: "backward", limit: 2 } : {}) },
+      { id, follow: true, cursor: "one" },
+      { id, follow: true, cursor: "two" },
     ]);
-  });
-
-  test.each(["--all", "--follow"])("drains available %s batches without polling delays", async (mode) => {
-    const bodies: unknown[] = [];
-    let out = "";
-    const delays: number[] = [];
-    const batches = [
-      {
-        events: [{ id: "first", at: 1, kind: "message", text: "first" }],
-        cursor: "one",
-        hasMore: true,
-        settled: true,
-      },
-      {
-        events: [{ id: "second", at: 2, kind: "message", text: "second" }],
-        cursor: "two",
-        hasMore: false,
-        settled: true,
-      },
-    ];
-    const code = await run(
-      ["logs", id, mode],
-      { out: (text) => (out += text), err: () => undefined },
-      {
-        sleep: async (ms) => {
-          delays.push(ms);
-        },
-        auth: auth(async (input, init) => {
-          const request = input instanceof Request ? input : new Request(String(input), init);
-          bodies.push(await request.json());
-          const batch = batches.shift();
-          if (!batch) throw new Error("unexpected request");
-          return Response.json(batch);
-        }),
-      },
-    );
-    expect(code).toBe(0);
-    expect(delays).toEqual([]);
-    expect(out).toBe("first\nsecond\n");
-    expect(bodies).toEqual([
-      { id, all: mode === "--all", follow: mode === "--follow" },
-      { id, all: mode === "--all", follow: mode === "--follow", cursor: "one" },
-    ]);
-  });
-
-  test("makes one default request even when the server has more events", async () => {
-    const calls: Request[] = [];
-    const code = await run(
-      ["logs", id],
-      { out: () => undefined, err: () => undefined },
-      {
-        auth: auth(async (input, init) => {
-          const request = input instanceof Request ? input : new Request(String(input), init);
-          calls.push(request);
-          return Response.json({ events: [], cursor: "one", hasMore: true, settled: true });
-        }),
-      },
-    );
-    expect(code).toBe(0);
-    expect(calls).toHaveLength(1);
-    expect(await calls[0]?.json()).toEqual({ id, all: false, follow: false });
   });
 
   test("drains follow backlog before accepting a terminal settled response", async () => {
@@ -163,7 +110,7 @@ describe("logs through the Armada API", () => {
       },
     ];
     const code = await run(
-      ["logs", id, "--follow"],
+      ["events", id, "-f"],
       { out: (text) => (out += text), err: () => undefined },
       {
         auth: auth(async (input, init) => {
@@ -179,15 +126,15 @@ describe("logs through the Armada API", () => {
     expect(code).toBe(0);
     expect(out).toBe("first\nsecond\n");
     expect(bodies).toEqual([
-      { id, all: false, follow: true },
-      { id, all: false, follow: true, cursor: "one" },
+      { id, follow: true },
+      { id, follow: true, cursor: "one" },
     ]);
   });
 
   test("rejects a draining response that has more events without a new cursor", async () => {
     let err = "";
     const code = await run(
-      ["logs", id, "--all"],
+      ["events", id, "-f"],
       { out: () => undefined, err: (text) => (err += text) },
       {
         auth: auth(async () => Response.json({ events: [], cursor: null, hasMore: true, settled: true })),
@@ -210,7 +157,7 @@ describe("logs through the Armada API", () => {
       { events: [], cursor: "two", hasMore: false, settled: true },
     ];
     const code = await run(
-      ["logs", id, "--follow"],
+      ["events", id, "-f"],
       { out: () => undefined, err: () => undefined },
       {
         auth: auth(async (input, init) => {
@@ -225,14 +172,14 @@ describe("logs through the Armada API", () => {
     );
     expect(code).toBe(0);
     expect(bodies).toEqual([
-      { id, all: false, follow: true },
-      { id, all: false, follow: true, cursor: "one" },
-      { id, all: false, follow: true, cursor: "one" },
+      { id, follow: true },
+      { id, follow: true, cursor: "one" },
+      { id, follow: true, cursor: "one" },
     ]);
   });
 });
 
-test.each(["explicit", "saved"])("logs forwards the %s organization selection", async (selection) => {
+test.each(["explicit", "saved"])("events forwards the %s organization selection", async (selection) => {
   const saved = "22222222-2222-4222-8222-222222222222";
   const explicit = "33333333-3333-4333-8333-333333333333";
   let body: unknown;
@@ -241,10 +188,17 @@ test.each(["explicit", "saved"])("logs forwards the %s organization selection", 
     return Response.json({ events: [], cursor: null, hasMore: false, settled: true });
   });
   const code = await run(
-    ["logs", id, ...(selection === "explicit" ? ["--org", explicit] : []), "--json"],
+    ["events", id, ...(selection === "explicit" ? ["--org", explicit] : []), "--json"],
     { out: () => {}, err: () => {} },
     { auth: { ...api, preferences: { read: async () => saved, write: async () => {} } } },
   );
   expect(code).toBe(0);
-  expect(body).toEqual({ id, all: false, follow: false, org: selection === "explicit" ? explicit : saved });
+  expect(body).toEqual({ id, follow: false, org: selection === "explicit" ? explicit : saved });
+});
+
+test("logs is an unknown command", async () => {
+  let stderr = "";
+  const code = await run(["logs"], { out: () => {}, err: (text) => (stderr += text) }, { env: {} });
+  expect(code).toBe(2);
+  expect(stderr).toContain("unknown command 'logs'");
 });
