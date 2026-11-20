@@ -43,6 +43,7 @@ test("reports prior-run physical IDs even after a clean Modal sweep", () => {
     ids("boat", ["unrelated"]),
   );
   expect(result.pass).toBe(false);
+  expect(result.retryable).toBe(false);
   expect(result.overdueMachineIds).toEqual({ modal: ["sb-orphan"], docker: ["armada-orphan"] });
 });
 
@@ -80,8 +81,13 @@ test("fails when Railway returns the maximum number of records", () => {
   expect(result.problems).toContain("log_limit_reached");
 });
 
-test("only the live deployment can prove fresh inventory coverage", () => {
-  const result = evidence(modal, { ...docker, previousDeployment: true });
+test("waits for the candidate sweep when the previous deployment ended without evidence", () => {
+  expect(evidence().retryable).toBe(true);
+  expect(evidence(modal, docker).pass).toBe(true);
+});
+
+test("fails on genuine silence even if an earlier deployment reported a healthy sweep", () => {
+  const result = evidence({ ...modal, previousDeployment: true }, { ...docker, previousDeployment: true });
   expect(result.pass).toBe(false);
-  expect(result.problems).toContain("missing_reaper_evidence:docker");
+  expect(result.problems).toEqual(["missing_reaper_evidence:docker", "missing_reaper_evidence:modal"]);
 });
