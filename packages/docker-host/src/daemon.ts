@@ -1103,7 +1103,7 @@ async function admitLocked(
   };
 }
 
-function allocationMachineId(result: unknown): string | undefined {
+function allocationMachineId(result: unknown) {
   if (result === null || typeof result !== "object" || !("machineId" in result)) return undefined;
   const { machineId } = result;
   return typeof machineId === "string" && /^[a-f0-9]{64}$/.test(machineId) ? machineId : undefined;
