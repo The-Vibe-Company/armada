@@ -238,6 +238,7 @@ export default async function SandboxPage({ params }: Props) {
             initialStatus={sandbox.status}
             provider={sandbox.provider}
             preservationNote={sandbox.preservation_note}
+            runtimeEvents={sandbox.boat_runtime || sandbox.runtime_transport === "dialout"}
             pinnedModel={sandbox.boat_runtime || sandbox.runtime_transport === "dialout"}
             initialIdlePaused={sandbox.status_reason === "idle_paused"}
             statusReason={sandbox.status_reason}
@@ -539,6 +540,7 @@ function DockerSandbox({
               configured={configured}
               composerUnavailable={reasons.followupPrompts}
               pinnedModel
+              runtimeEvents
             />
           )}
           <footer className="flex flex-wrap gap-x-4 gap-y-1 px-4 font-mono text-[11px] text-muted-foreground">
