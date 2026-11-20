@@ -25,6 +25,7 @@ def lstat(value):
  s=original_lstat(path(value))
  return SimpleNamespace(st_mode=s.st_mode,st_uid=0)
 def install(command,input,**options):
+ assert command[:3]==["/usr/bin/python3","-I","-c"]
  # This is the real fixed installer passed by the production SSH bootstrap.
  with patch("sys.stdin",io.StringIO(input.decode())),patch("os.mkdir",lambda value,mode=0o777:original_mkdir(path(value),mode)),patch("os.lstat",lstat),patch("tempfile.mkstemp",lambda **kw:original_mkstemp(dir=path(kw["dir"]))),patch("os.replace",lambda a,b:original_replace(path(a),path(b))):
   exec(compile(command[-1],"production-readable-installer","exec"),{"__name__":"__main__"})
@@ -44,8 +45,10 @@ test("Boat fixed bootstrap successfully restores the same readable file after /r
   let delivered = 0;
   const ssh = spyOn(transport, "sshStdinCheckout").mockImplementation(async (_provider, input) => {
     expect(input.script).not.toContain("not-shell");
-    const executed = spawnSync("/usr/bin/python3", ["-I", "-c", HARNESS], {
+    const [python] = input.script.split("\n")[1]!.split(" ");
+    const executed = spawnSync(python!, ["-I", "-c", HARNESS], {
       input: JSON.stringify({ root, script: input.script, token: input.token }),
+      env: { PATH: root },
       encoding: "utf8",
       timeout: 10000,
     });

@@ -202,6 +202,27 @@ cleanup_github_token() {
   unset ARMADA_SSH_PUBLIC_KEY
 }
 trap cleanup_github_token EXIT
+github_python_ready() {
+  /usr/bin/env -i /usr/bin/python3 -I -c 'import fcntl,json,os,stat,subprocess,tempfile,time' </dev/null >/dev/null 2>&1
+}
+install_github_python() (
+  unset ARMADA_GIT_TOKEN
+  if [ "$(/usr/bin/id -u)" = 0 ]; then
+    set --
+  else
+    set -- /usr/bin/sudo -n
+  fi
+  "$@" /usr/bin/env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin DEBIAN_FRONTEND=noninteractive /bin/sh -c '
+    /usr/bin/apt-get -o DPkg::Lock::Timeout=15 update &&
+    /usr/bin/apt-get -o DPkg::Lock::Timeout=15 install -y --no-install-recommends python3
+  ' </dev/null >/dev/null 2>&1
+)
+if ! github_python_ready; then
+  if ! install_github_python || ! github_python_ready; then
+    printf '%s\\n' 'ARMADA_GITHUB_FAILURE bootstrap' >&2
+    exit 1
+  fi
+fi
 /usr/bin/python3 -I <<'ARMADA_GITHUB_TOKEN'
 import os,subprocess,sys
 try:
