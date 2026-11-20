@@ -68,13 +68,13 @@ function writeToken(directory: string, token: Record<string, unknown>) {
   }
 }
 
-function redactPayload(value: unknown, mask: (text: string) => string): unknown {
+const redactPayload: (value: unknown, mask: (text: string) => string) => unknown = (value, mask) => {
   if (typeof value === "string") return mask(value);
   if (Array.isArray(value)) return value.map((entry) => redactPayload(entry, mask));
   if (value && typeof value === "object")
     return Object.fromEntries(Object.entries(value).map(([key, entry]) => [mask(key), redactPayload(entry, mask)]));
   return value;
-}
+};
 
 export class AntigravityDriver implements Driver {
   private readonly acp: AcpDriver;
