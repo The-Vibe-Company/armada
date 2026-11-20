@@ -58,7 +58,7 @@ describe("run", () => {
   });
 
   test.each([
-    "launch",
+    "new",
     "list",
     "detail",
     "recovery",
