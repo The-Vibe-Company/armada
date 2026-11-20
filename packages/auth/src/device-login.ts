@@ -8,7 +8,7 @@ interface DeviceSql {
 type Poll =
   | { status: "expired_token" | "access_denied" }
   | { status: "authorization_pending" | "slow_down"; interval: number }
-  | { status: "approved"; userId: string };
+  | { status: "approved"; userId: string; id: string; codeEnc: Uint8Array<ArrayBuffer> };
 
 const requests = "armada_auth.oauth_device_requests";
 
@@ -47,12 +47,12 @@ export function createDeviceLoginStore(db: DeviceSql) {
       return row ? { user_code: row.user_code, hostname: row.hostname } : null;
     },
 
-    async decide(id: string, userCode: string, userId: string, approve: boolean) {
+    async decide(id: string, userCode: string, userId: string, codeEnc: Uint8Array<ArrayBuffer> | null) {
       const { rows } = await db.query(
-        `update ${requests} set state = $4, user_id = $3
+        `update ${requests} set state = $4, user_id = $3, oauth_code_enc = $5
          where id = $1 and user_code = $2 and state = 'pending' and expires_at > clock_timestamp()
          returning id`,
-        [id, userCode, userId, approve ? "approved" : "denied"],
+        [id, userCode, userId, codeEnc ? "approved" : "denied", codeEnc],
       );
       return rows.length > 0;
     },
@@ -61,12 +61,14 @@ export function createDeviceLoginStore(db: DeviceSql) {
       const hash = await sha256Hex(deviceCode);
       return transaction<Poll>(async (sql) => {
         const { rows } = await sql.query<{
+          id: string;
+          oauth_code_enc: Uint8Array<ArrayBuffer> | null;
           state: string;
           user_id: string;
           poll_interval: number;
           early: boolean;
         }>(
-          `select state, user_id, poll_interval, next_poll_at > clock_timestamp() as early
+          `select id, oauth_code_enc, state, user_id, poll_interval, next_poll_at > clock_timestamp() as early
            from ${requests} where device_hash = $1 and expires_at > clock_timestamp() for update`,
           [hash],
         );
@@ -75,11 +77,13 @@ export function createDeviceLoginStore(db: DeviceSql) {
         if (row.state === "denied") return { status: "access_denied" };
         if (!row.early && row.state === "approved") {
           const consumed = await sql.query(
-            `update ${requests} set state = 'consumed'
+            `update ${requests} set state = 'consumed', oauth_code_enc = null
              where device_hash = $1 and expires_at > clock_timestamp() returning id`,
             [hash],
           );
-          return consumed.rows.length ? { status: "approved", userId: row.user_id } : { status: "expired_token" };
+          return consumed.rows.length && row.oauth_code_enc
+            ? { status: "approved", userId: row.user_id, id: row.id, codeEnc: row.oauth_code_enc }
+            : { status: "expired_token" };
         }
         const interval = row.early ? Math.min(row.poll_interval + 5, 600) : row.poll_interval;
         await sql.query(

@@ -109,7 +109,8 @@ Required environment (the server refuses to start without it):
 | --- | --- |
 | `ARMADA_DATABASE_URL` | Privileged Postgres connection (the Supabase `postgres` role). The server's own queries carry the visibility rules. |
 | `SUPABASE_URL`, `SUPABASE_ANON_KEY` | The Supabase project used for sign-in. |
-| `SUPABASE_SERVICE_ROLE_KEY` | Server-only Supabase service-role JWT from the same project. Required for CLI device login. The dashboard uses its existing `ARMADA_MCP_URL` and user session, with no access to this key. |
+| `ARMADA_CLI_OAUTH_CLIENT_ID` | Dedicated confidential client registered with the Supabase OAuth 2.1 server. Register the exact dashboard URL ending in `/cli-login` as its redirect URI and set its token endpoint authentication method to `client_secret_post`. |
+| `ARMADA_CLI_OAUTH_CLIENT_SECRET` | Secret for the dedicated CLI OAuth client. Set it on Armada server only. |
 | `ARMADA_CLI_CONSENT_KEY` | 32 random bytes encoded as 64 lowercase hex characters, shared with the dashboard server. Required to sign and verify CLI login consent. |
 | `ARMADA_AUTH_SECRET` | At least 16 characters; seals the OAuth server's sign-in cookie. |
 | `ARMADA_PUBLIC_URL` | The origin clients reach. |

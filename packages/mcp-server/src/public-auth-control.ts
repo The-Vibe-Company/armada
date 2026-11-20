@@ -3,6 +3,7 @@ import {
   assertEmail,
   assertEmailCode,
   BodyTooLargeError,
+  DEVICE_REFRESH_PREFIX,
   exchangeSupabaseCode,
   refreshSupabaseSession,
   type Session,
@@ -18,7 +19,10 @@ import { required } from "./control-input.ts";
 import { fail } from "./control-response.ts";
 import { defineRoutes } from "./routes.ts";
 
-type PublicAuthOptions = Pick<ControlOptions, "supabase" | "now" | "publicUrl" | "exchangeNative" | "refreshNative">;
+type PublicAuthOptions = Pick<
+  ControlOptions,
+  "supabase" | "now" | "publicUrl" | "exchangeNative" | "refreshNative" | "deviceLogin"
+>;
 
 async function emailVerifyRoute(request: Request, options: PublicAuthOptions): Promise<Response> {
   try {
@@ -143,6 +147,11 @@ async function refreshRoute(request: Request, options: PublicAuthOptions): Promi
   try {
     const body = await readBody(request);
     const token = required(body, "refreshToken");
+    if (token.startsWith(DEVICE_REFRESH_PREFIX)) {
+      if (!options.deviceLogin) return fail(503, "unavailable", "CLI sign-in is unavailable.");
+      const oauth = options.deviceLogin.oauth(options.supabase, options.now?.() ?? new Date());
+      return Response.json(await oauth.refresh(token), { headers: { "cache-control": "no-store" } });
+    }
     const refreshed = options.refreshNative ? await options.refreshNative(token) : await nativeRefresh(options, token);
     return Response.json(refreshed, { headers: { "cache-control": "no-store" } });
   } catch (error) {
