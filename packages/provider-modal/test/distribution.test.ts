@@ -10,13 +10,11 @@ import { createRunnerDistribution, MODAL_IMAGE_LOCK, type RunnerDistribution } f
 (process.platform === "linux" ? test : test.skip)(
   "image artifact RUNs replay in real Linux shells beyond MAX_ARG_STRLEN and verify bytes before publication",
   async () => {
-    // Incompressible and larger than the real bundle's usual compressed size, forcing many chunks.
     const samples = [randomBytes(1024 * 1024)];
     const actual = Bun.file(join(import.meta.dir, "../../agent-runtime/dist/main.js"));
     if (await actual.exists()) samples.push(Buffer.from(await actual.arrayBuffer()));
     for (const bundle of samples) {
       const digest = createHash("sha256").update(bundle).digest("hex");
-      // Red witness: Linux rejects the former single-command strategy before a shell can run it.
       try {
         execFileSync("/bin/sh", ["-c", `printf '%s' '${bundle.toString("base64")}' >/dev/null`]);
         throw Error("oversized shell argument unexpectedly succeeded");
@@ -31,7 +29,7 @@ import { createRunnerDistribution, MODAL_IMAGE_LOCK, type RunnerDistribution } f
         },
       } as unknown as Image;
       const client = { images: { fromRegistry: () => image } } as unknown as ModalClient;
-      const capabilities = {} as RunnerDistribution["capabilities"]; // No harness operation is exercised at the image boundary.
+      const capabilities = {} as RunnerDistribution["capabilities"];
       const distribution = createRunnerDistribution({
         ...MODAL_IMAGE_LOCK,
         bundle,
@@ -44,13 +42,10 @@ import { createRunnerDistribution, MODAL_IMAGE_LOCK, type RunnerDistribution } f
       await distribution.image(client);
       expect(commands[0]).toContain("python3-venv");
       expect(commands[0]).toContain("git-2.52.0.tar.xz");
-      // Bookworm's libcurl4-openssl-dev does not provide the OpenSSL headers Git includes.
       expect(commands[0]).toMatch(/apt-get install[^;]* 'libssl-dev'(?: |;)/);
       expect(commands[0]).toContain("/opt/armada/runtime-bun/bun");
       const root = await mkdtemp(join(tmpdir(), "armada-image-replay-"));
       try {
-        // Skip the three OS/tool/user installation steps; replay all captured artifact steps verbatim
-        // apart from mapping the image's installation directory to this isolated fixture directory.
         for (const instruction of commands) {
           if (instruction.startsWith("RUN ")) expect(Buffer.byteLength(instruction.slice(4))).toBeLessThan(48 * 1024);
         }
@@ -64,10 +59,8 @@ import { createRunnerDistribution, MODAL_IMAGE_LOCK, type RunnerDistribution } f
         }
         expect(Buffer.from(await Bun.file(join(root, "main.js")).arrayBuffer())).toEqual(bundle);
         expect(await readdir(root)).toEqual(["main.js"]);
-        // The same captured final RUN refuses a corrupt digest and cannot replace a published artifact.
         const final = runs.at(-1);
         if (!final) throw Error("missing artifact finalization");
-        // Rehydrate only the scratch chunks, leaving the previously verified main.js in place.
         for (const run of runs.slice(0, -1))
           execFileSync("/bin/sh", ["-c", run.slice(4).replaceAll("/opt/armada", root)]);
         expect(() =>
@@ -152,9 +145,9 @@ import { createRunnerDistribution, MODAL_IMAGE_LOCK, type RunnerDistribution } f
       expect(execFileSync(join(runtime, "runtime-bun/bun"), ["--version"], { encoding: "utf8" }).trim()).toBe("1.4.2");
       const before = calls;
       await distribution.prepareRuntime?.(sdk, { ...fresh, generation: 2 });
-      expect(calls).toBe(before); // No code change during native checkpoint restore.
+      expect(calls).toBe(before);
       await distribution.prepareRuntime?.(sdk, { ...fresh, freshStatePreparedGeneration: 1 });
-      expect(calls).toBe(before); // An uncertain same-generation bootstrap must not be rewritten either.
+      expect(calls).toBe(before);
       const userFile = join(root, "keep-native-state");
       execFileSync("sudo", ["sh", "-c", 'printf "%s" "native state untouched" > "$1"', "sh", userFile]);
       execFileSync("sudo", ["rm", join(runtime, "main.js")]);

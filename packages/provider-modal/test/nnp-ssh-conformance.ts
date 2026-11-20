@@ -1,5 +1,3 @@
-/** Actual approved-image SSH behavior with NNP inherited by sshd. No account credentials or model
- * calls: root is selected solely from trusted golden metadata; workers remain user-only. */
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
