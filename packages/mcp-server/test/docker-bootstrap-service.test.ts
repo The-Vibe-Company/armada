@@ -533,6 +533,36 @@ test.each(["codex", "claude", "opencode"] as const)(
   },
 );
 
+test.each(["replacement ticket", "issuer role change"])("Docker idle-stop proof is invalid after %s", async (cause) => {
+  const db = database();
+  const f = await fixture();
+  if (cause === "issuer role change")
+    await db.query("update public.members set role='admin' where org_id=$1 and user_id=$2", [
+      f.actor.orgId,
+      f.actor.userId,
+    ]);
+  const authority = createRuntimeEnrolments(sql, key, { allowDockerIssue: true });
+  const issue = () => authority.issue({ ownerId: f.actor.userId, sandboxId: f.sandbox.id, configuration: {} });
+  const session = await authority.enrol((await issue()).enrolmentToken);
+  const requestId = randomUUID();
+  await db.query(
+    `insert into public.runtime_checkpoints(sandbox_id,epoch,request_id,watermark,completed_at)
+     values($1,$2,$3,0,now())`,
+    [f.sandbox.id, session.epoch, requestId],
+  );
+  if (cause === "replacement ticket") await issue();
+  else
+    await db.query("update public.members set role='member' where org_id=$1 and user_id=$2", [
+      f.admin.orgId,
+      f.admin.userId,
+    ]);
+  await expect(
+    hosts.enqueueSandbox(f.actor, f.sandbox.id, { requestId, operation: "stop", idleCheckpointRequest: requestId }),
+  ).rejects.toThrow();
+  expect((await reservations.get(f.actor, f.sandbox.id)).status).toBe("ready");
+  expect(await hosts.poll(f.hostToken, f.installationId)).toBeNull();
+});
+
 test.each([false, true])("idle checkpoint fences Docker stop and retained restore (merge stop=%s)", async (merged) => {
   const db = database();
   const f = await fixture();

@@ -498,6 +498,7 @@ export async function admitCheckpointedIdleStop(tx: Sql, sandboxId: string, gene
     `select p.merge_stop from public.runtime_checkpoints p
      join public.runtime_enrolments r on r.sandbox_id=p.sandbox_id and r.epoch=p.epoch
      where p.sandbox_id=$1 and p.request_id=$2::uuid and r.lifecycle_generation=$3
+       and r.runtime_hash is not null
        and p.completed_at is not null
        and p.watermark=(select coalesce(max(sequence),0) from public.runtime_events where sandbox_id=$1)`,
     [sandboxId, requestId, generation],
