@@ -24,7 +24,6 @@ import type {
   Machine,
   McpConfiguration,
   ModalManagementProvenance,
-  ModalResourceReceipt,
   ModalStore,
   RunnerDistribution,
   RunnerTransport,
@@ -96,7 +95,6 @@ export interface ModalProvider extends Provider {
   prepareNativeHarnessCwd(request: { sandboxId: string; harness: Harness; cwd: string }): Promise<void>;
   configureMcp(request: { sandboxId: string; configuration: McpConfiguration }): Promise<{ revision: string }>;
   restoreGoldenMaster(request: { sandboxId?: string; snapshotId: string }): Promise<SandboxInfo>;
-  resourceReceipts(): Promise<ModalResourceReceipt[]>;
   collectRetiredSnapshot: NonNullable<Provider["collectRetiredSnapshot"]>;
   sshKey(request: {
     sandboxId: string;
@@ -161,7 +159,7 @@ export function createModalProvider(options: ModalProviderOptions) {
     if (origin !== scopeKey(source.scope))
       throw refusal("forbidden", "Machine source golden authority does not match this provider connection.");
   }
-  const { sandboxInfo, resourceReceipt, inspection } = createSandboxInspection({
+  const { sandboxInfo, resourceReceipt, inspection, readResourceReceipts } = createSandboxInspection({
     store,
     client,
     runner,
@@ -658,5 +656,5 @@ export function createModalProvider(options: ModalProviderOptions) {
         : value,
     ]),
   ) as unknown as ModalProvider;
-  return { provider: adapter, captureRuntimeWork: createRuntimeCapture(store, physical) };
+  return { provider: adapter, captureRuntimeWork: createRuntimeCapture(store, physical), readResourceReceipts };
 }
