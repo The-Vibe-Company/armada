@@ -69,7 +69,10 @@ const {
         ('${scope.orgId}','00000000-0000-0000-0000-000000000004','member');
     `);
     // Worker lifecycle cases need a saved image. Golden lifecycle cases create their own.
-    const { provider, store } = fixture(scope, db);
+    const { provider, store } = fixture(
+      scope,
+      createFixtureSql(() => db),
+    );
     const builder = await provider.createGolden({});
     goldenTemplate = await store.get(builder.id);
     workerSnapshot = crypto.randomUUID();
@@ -88,33 +91,36 @@ const {
 beforeAll(setup);
 afterAll(close);
 const prepared = new Map<string, Promise<string>>();
-const fixtureSql: Sql = {
-  transaction: (work) => getDb().transaction(work),
-  async query<T>(statement: string, params: unknown[] = []) {
-    const db = getDb();
-    if (
-      !params.length ||
-      params.some((value) => value !== null && typeof value !== "string" && typeof value !== "number")
-    )
-      return db.query<T>(statement, params);
-    let entry = prepared.get(statement);
-    if (!entry) {
-      const name = `modal_fixture_${prepared.size}`;
-      entry = db.exec(`prepare ${name} as ${statement}`).then(() => name);
-      prepared.set(statement, entry);
-    }
-    const name = await entry;
-    const args = params
-      .map((value) => {
-        if (value === null) return "null";
-        const escaped = String(value).replaceAll("\\", "\\\\").replaceAll("'", "''");
-        return `E'${escaped}'`;
-      })
-      .join(",");
-    const [result] = await db.exec(`execute ${name}(${args})`);
-    return { rows: result!.rows as T[] };
-  },
-};
+function createFixtureSql(getDatabase: typeof getDb): Sql {
+  return {
+    transaction: (work) => getDatabase().transaction(work),
+    async query<T>(statement: string, params: unknown[] = []) {
+      const db = getDatabase();
+      if (
+        !params.length ||
+        params.some((value) => value !== null && typeof value !== "string" && typeof value !== "number")
+      )
+        return db.query<T>(statement, params);
+      let entry = prepared.get(statement);
+      if (!entry) {
+        const name = `modal_fixture_${prepared.size}`;
+        entry = db.exec(`prepare ${name} as ${statement}`).then(() => name);
+        prepared.set(statement, entry);
+      }
+      const name = await entry;
+      const args = params
+        .map((value) => {
+          if (value === null) return "null";
+          const escaped = String(value).replaceAll("\\", "\\\\").replaceAll("'", "''");
+          return `E'${escaped}'`;
+        })
+        .join(",");
+      const [result] = await db.exec(`execute ${name}(${args})`);
+      return { rows: result!.rows as T[] };
+    },
+  };
+}
+const fixtureSql = createFixtureSql(getDb);
 function fixture(
   accessScope: Scope = scope,
   sql: Sql = fixtureSql,
