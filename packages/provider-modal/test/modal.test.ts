@@ -64,7 +64,6 @@ beforeAll(async () => {
       ('${scope.orgId}','${scope.userId}','admin'),
       ('${scope.orgId}','00000000-0000-0000-0000-000000000004','member');
   `);
-  // Worker lifecycle cases need a saved image. Golden lifecycle cases create their own.
   const { provider, store } = fixture();
   const builder = await provider.createGolden({});
   goldenTemplate = await store.get(builder.id);
@@ -374,7 +373,6 @@ function fixture(
       return machine.info;
     },
     cleanupDelays,
-    /** Runs the retired-image collections that deletes detached, in order. */
     runDetached: async () => {
       for (let work = detached.shift(); work; work = detached.shift()) await work();
     },
@@ -510,7 +508,6 @@ test("stored composition reads ingested turns without any live SDK, runner or li
       done: false,
     });
     expect(queries - beforeMissing).toBeLessThanOrEqual(5);
-    // An exclusive writer does not block history; membership and source guards remain live.
     await f.store.lease(row.id, async () => {
       expect((await stored.provider.events({ sandboxId: row.id })).events[0]).toEqual(history[0]);
     });
@@ -639,7 +636,6 @@ test("a failed Modal builder image records safe diagnostics and frees capacity w
   };
   f.distribution.image = async () => image as unknown as Image;
   const sdkCreate = spyOn(f.client.sandboxes, "create").mockImplementation(async () => {
-    // The SDK normally runs this implicit build before submitting sandbox creation.
     await image.build();
     throw new Error("Fixture image build unexpectedly completed");
   });
@@ -875,7 +871,6 @@ test("durable golden recovery persists an interrupted Modal builder before exact
     expect(f.log).not.toContain("terminate");
   }
   f.lookupError(undefined);
-  // A prior observation can have persisted a physical ID. That does not waive current tags.
   const known = await f.client.sandboxes.fromName("pinned", reserved.physicalName, {
     environment: "main",
     includeTerminated: true,
@@ -907,7 +902,6 @@ test("durable golden recovery persists an interrupted Modal builder before exact
     expect(f.log).not.toContain("terminate");
   }
   f.ownership();
-  // A later named lookup succeeds: cleanup only, no SDK create retry or command execution.
   await retry();
   expect((await row()).state).toBe("failed");
   expect((await f.store.get(reserved.info.id)).phase).toBe("deleted");
@@ -920,9 +914,6 @@ test("durable golden recovery persists an interrupted Modal builder before exact
   expect(f.log.filter((x) => x === "terminate")).toHaveLength(1);
 });
 
-// The job owns a rolled-back artifact's collection: the real provider's builder history must not retain it forever.
-// `interrupted`: the worker retired the artifact, then its builder delete failed mid-termination.
-// `abandoned`: the worker died right after recording the artifact, before any remote cleanup.
 test.each(["interrupted", "abandoned"] as const)(
   "a rolled-back Modal build artifact is collected by the job reconciler before its %s builder is deleted",
   async (mode) => {
@@ -977,7 +968,6 @@ test.each(["interrupted", "abandoned"] as const)(
         retryable: true,
       });
     });
-    // A transient termination failure leaves the builder's own delete interrupted in `deleting`.
     let terminations = 0;
     f.onTerminate(async () => {
       if (++terminations === 1 && mode === "interrupted")
@@ -1005,7 +995,6 @@ test.each(["interrupted", "abandoned"] as const)(
     expect(await tick()).toBe(true);
     expect(await state()).toBe("recovery_required");
     expect((await f.store.get(builder.id)).phase).toBe(parked);
-    // Recovery itself retired a still-live artifact; only the image service blocks its collection.
     await expect(f.provider.getSnapshot(artifact)).rejects.toMatchObject({ code: "not_found" });
     f.onImageDelete(undefined);
     await retry();
@@ -1017,8 +1006,6 @@ test.each(["interrupted", "abandoned"] as const)(
   },
 );
 
-// Authoring gate: SDK-bound resource requests, no-allocation rejection and restoration
-// are provider-owned behavior; pure policy tests cannot detect dropped SDK options.
 test.each([
   ["small", 1, 4096],
   ["medium", 2, 8192],
@@ -1369,7 +1356,6 @@ test("cleanup reconciles an unknown enrolled Modal resume create without activat
   expect((await f.store.get(worker.id)).physicalId).toBeUndefined();
   expect(f.creates).toBe(2);
   const beforeCleanup = f.log.length;
-  // Production failure cleanup calls stop, not another resume/admission attempt.
   await f.provider.stop({ sandboxId: worker.id });
   expect(f.log.slice(beforeCleanup)).toEqual(["terminate"]);
   expect(f.creates).toBe(2);
@@ -1762,8 +1748,6 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     expect((await f.store.get(row.id)).generation).toBe(2);
   });
   test("durable event pages cross cursor digit widths in numeric order after compute stops", async () => {
-    // Real migrations + PostgreSQL execution own this regression: the old ORDER BY
-    // resolves the text output name, not the bigint used by the resume predicate.
     const f = fixture();
     const row = await activeWorker(f);
     const eventCount = 13;
@@ -1775,7 +1759,6 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     await db.query("select setval('public.modal_events_cursor_seq', $1, false)", [start]);
     const events: AgentEvent[] = Array.from({ length: eventCount }, (_, i) => ({
       id: `ordered-${i}`,
-      // Deliberately not time/UUID ordered: the durable cursor is authoritative.
       at: eventCount - i,
       promptId: "ordered-prompt",
       conversationId: i > 1 && i < eventCount - 1 && i % 7 === 3 ? "other-conversation" : "ordered-conversation",
@@ -1870,8 +1853,6 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     await expect(f.provider.getSnapshot(name)).rejects.toMatchObject({ code: "not_found" });
     expect((await f.provider.get(fork.id)).state).toBe("ready");
     await f.provider.delete({ sandboxId: fork.id });
-    // The receipt never waits on another source's retired images; the detached collection
-    // removes the last fork's snapshot image without any further user operation.
     expect(f.log).not.toContain("delete-image");
     await f.runDetached();
     expect(f.log.filter((x) => x === "delete-image")).toHaveLength(1);
@@ -1890,8 +1871,6 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
       leased.push(id);
       return lease(id, work);
     };
-    // The second fork still uses the snapshot image: the source is not leased, so its own
-    // lifecycle requests are never refused by a collection that has nothing to remove.
     await f.runDetached();
     expect(leased).not.toContain(builder.id);
     expect(f.log).not.toContain("delete-image");
@@ -1913,13 +1892,10 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
       expect(await f.provider.delete({ sandboxId: fork.id })).toEqual({ status: "deleted" });
       await f.runDetached();
     });
-    // A busy source is skipped, not retried.
     expect(f.cleanupDelays).toEqual([]);
     const ownImages = imageDeletes();
     expect((await f.store.get(fork.id)).phase).toBe("deleted");
     expect(f.log.filter((x) => x === "terminate")).toHaveLength(terminations);
-    // The tombstone stays durable. The retirement worker's retry reports it pending while the
-    // source is leased, then collects it once the lease clears, with no further user request.
     expect(await f.store.tombstoneSources()).toContain(builder.id);
     await f.store.lease(builder.id, async () => {
       expect(await f.provider.collectRetiredSnapshot(name)).toBe("pending");
@@ -1952,7 +1928,6 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     await f.provider.delete({ sandboxId: builder.id });
     await f.provider.restoreGoldenMaster({ snapshotId: broken });
     await f.provider.snapshot({ sandboxId: builder.id, name: next });
-    // With the builder deleted, nothing references either image.
     await f.provider.delete({ sandboxId: builder.id });
     const brokenImage = (await f.store.image(broken)).imageId;
     const nextImage = (await f.store.image(next)).imageId;
@@ -1963,11 +1938,9 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
       if (id === brokenImage) throw new Error("image service refused");
       if (id === nextImage && nextFailures-- > 0) throw new Error("image service unavailable");
     });
-    // Both retirements commit their tombstones; neither image is collected yet.
     await f.provider.deleteSnapshot(broken);
     await f.provider.deleteSnapshot(next);
     attempts.length = 0;
-    // The named retry claims and deletes only its own tombstone, never the sibling that keeps failing.
     expect(await f.provider.collectRetiredSnapshot(next)).toBe("collected");
     expect(attempts).toEqual([nextImage!]);
     expect((await f.store.images(builder.id)).filter((x) => x.deleted).map((x) => x.info.name)).toEqual([broken]);
@@ -1978,12 +1951,10 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     const name = crypto.randomUUID();
     await f.provider.snapshot({ sandboxId: a.id, name });
     const stale = await f.store.image(name);
-    // Another collector finished first: the old tombstone is gone and the name is free again.
     await f.store.removeImage(name);
     await f.store.purgeImage(name, stale.sourceId, stale.imageId!);
     await f.provider.snapshot({ sandboxId: b.id, name });
     await f.store.removeImage(name);
-    // The stale collector finishes late and purges what it claimed: the old source and image.
     await f.store.purgeImage(name, stale.sourceId, stale.imageId!);
     const retired = (await f.store.images(b.id)).filter((x) => x.deleted);
     expect(retired.map((x) => x.info.name)).toEqual([name]);
@@ -1994,7 +1965,6 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     const { builder, name: first } = await savedGolden(f);
     const restore = crypto.randomUUID(),
       second = crypto.randomUUID();
-    // Restore from a later snapshot so the builder itself no longer references the first image.
     await f.provider.delete({ sandboxId: builder.id });
     await f.provider.restoreGoldenMaster({ snapshotId: first });
     await f.provider.snapshot({ sandboxId: builder.id, name: restore });
@@ -2009,7 +1979,6 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     const firstImage = (await f.store.images(builder.id)).find((x) => x.info.name === first)?.imageId;
     let held = false;
     f.onImageDelete(async (id) => {
-      // Hold only the detached collector's call; a later collection may retry the claim at once.
       if (id !== firstImage || held) return;
       held = true;
       entered.resolve();
@@ -2018,12 +1987,9 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     expect(await f.provider.delete({ sandboxId: fork.id })).toEqual({ status: "deleted" });
     const collecting = f.runDetached();
     await entered.promise;
-    // The claim is durable and the source lease is already released while the image call is open.
     expect((await f.store.images(builder.id)).find((x) => x.info.name === first)?.collecting).toBe(true);
-    // Retiring another snapshot of the same source is admitted and writes its tombstone.
     await f.provider.deleteSnapshot(second);
     await expect(f.provider.getSnapshot(second)).rejects.toMatchObject({ code: "not_found" });
-    // Deleting the source machine itself is admitted too.
     expect(await f.provider.delete({ sandboxId: builder.id })).toEqual({ status: "deleted" });
     expect((await f.store.get(builder.id)).phase).toBe("deleted");
     release.resolve();
@@ -2035,17 +2001,13 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
   test("a claimed retired image whose deletion failed is retried without its source lease", async () => {
     const f = fixture();
     const { builder, name } = await savedGolden(f);
-    // The first physical deletion fails after the claim; the tombstone stays claimed.
     let failures = 1;
     f.onImageDelete(async () => {
       if (failures-- > 0) throw Object.assign(new Error("image service unavailable"), { name: "TimeoutError" });
     });
-    // The retirement is committed with its tombstone: the failed collection is logged, not thrown,
-    // and the worker's collection retry owns it from here.
     await f.provider.deleteSnapshot(name);
     await expect(f.provider.getSnapshot(name)).rejects.toMatchObject({ code: "not_found" });
     expect((await f.store.images(builder.id)).find((x) => x.info.name === name)?.collecting).toBe(true);
-    // The source is busy with its own lifecycle, and the claimed image is still collected.
     await f.store.lease(builder.id, () => f.provider.collectRetiredSnapshot(name));
     expect(await f.store.tombstoneSources()).not.toContain(builder.id);
   });
@@ -2065,10 +2027,8 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
         throw Object.assign(new Error("image service unavailable"), { name: "TimeoutError" });
       }
     });
-    // The retirement's own collection holds the remote call open.
     const retiring = f.provider.deleteSnapshot(name);
     await entered.promise;
-    // An overlapping sweep while the claim is live dispatches nothing.
     await expect(f.provider.collectRetiredSnapshot(name)).resolves.toBe("pending");
     expect(calls).toBe(1);
     const expire = () =>
@@ -2076,15 +2036,12 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
         `update public.modal_images set record=jsonb_set(record,'{collectUntil}','0') where record->>'imageId'=$1`,
         [imageId],
       );
-    // The holder outlives its claim and a newer collector takes it; the stale holder's late
-    // failure never releases the newer claim.
     await expire();
     expect(await f.store.takeImage(name, builder.id, imageId!, "newer")).toBe(true);
     release.resolve();
     await retiring;
     const claimed = (await f.store.images(builder.id)).find((x) => x.info.name === name);
     expect(claimed?.collectToken).toBe("newer");
-    // A crashed newer holder's claim expires too, and the next sweep takes and completes it.
     await expire();
     await expect(f.provider.collectRetiredSnapshot(name)).resolves.toBe("collected");
     expect(calls).toBe(2);
@@ -2095,7 +2052,6 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     const { builder, name } = await savedGolden(f);
     await f.provider.delete({ sandboxId: builder.id });
     const lease = f.store.lease.bind(f.store);
-    // Retirement writes the tombstone between restore's read and its source lease.
     f.store.lease = async (id, work) => {
       f.store.lease = lease;
       await f.store.removeImage(name);
@@ -2118,7 +2074,6 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     expect(refused).toMatchObject({ code: "conflict", providerCode: "snapshot_source_busy", retryable: true });
     expect(isNonMutatingProviderRefusal(refused)).toBe(true);
     expect((await f.provider.getSnapshot(name)).name).toBe(name);
-    // The retirement's next attempt succeeds once the lease clears.
     await f.provider.deleteSnapshot(name);
     await expect(f.provider.getSnapshot(name)).rejects.toMatchObject({ code: "not_found" });
   });
@@ -2132,7 +2087,6 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     expect(recovery).toBeDefined();
     await f.provider.deleteSnapshot(name);
     expect(f.log).not.toContain("delete-image");
-    // Recovery references are durable independently of an already-retired saved-handle row.
     await f.store.purgeImage(name, saved.sourceId, saved.imageId!);
     expect(await f.store.imageReferenced(saved.imageId!)).toBe(true);
     expect(await f.store.imageReferenced(recovery!)).toBe(true);
@@ -2191,7 +2145,6 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
         builder = await f.provider.createGolden({});
       const source = await f.store.get(builder.id),
         physical = await f.client.sandboxes.fromId(source.physicalId!);
-      // SDK snapshots may share immutable physical content without a logical source-image link.
       physical.snapshotFilesystem = async () => ({ imageId: recovery }) as Image;
       const name = crypto.randomUUID();
       await f.provider.snapshot({ sandboxId: builder.id, name });
@@ -2652,7 +2605,7 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     await provider.snapshot({ sandboxId: builder.id, name: snapshot });
     expect((await f.store.get(builder.id)).managementAuthority).toEqual(requested);
     expect((await f.store.image(snapshot)).managementAuthority).toEqual(requested);
-    const { provider: restoredConnection } = await createComposedModalProvider(configuration); // New server adapter retains chosen immutable context.
+    const { provider: restoredConnection } = await createComposedModalProvider(configuration);
     const fork = await restoredConnection.fork({ from: snapshot });
     expect((await f.store.get(fork.id)).managementAuthority).toEqual(requested);
     await restoredConnection.stop({ sandboxId: fork.id });
@@ -2720,7 +2673,7 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     await settleDetachedModalCollections();
     calls = f.log.filter((x) => x === "delete-image").length;
     await expect(userKey.provider.collectRetiredSnapshot(snapshot)).resolves.toBe("pending");
-    expect(f.log.filter((x) => x === "delete-image")).toHaveLength(calls); // Cannot collect another authority's tombstone.
+    expect(f.log.filter((x) => x === "delete-image")).toHaveLength(calls);
     await restoredConnection.delete({ sandboxId: fork.id });
     expect(f.log.filter((x) => x === "delete-image").length).toBeGreaterThan(calls);
     close();
@@ -3300,7 +3253,6 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
         expect(input).toMatchObject({ input: { sandboxId: row.id, harness: "codex", text: "default cwd" } });
       if (op === "prompt") expect((input as { input: object }).input).not.toHaveProperty("cwd");
     });
-    // Only prepared durable state may set the private additive field; never trust an injected caller field.
     await f.provider.prompt({
       ...{ sandboxId: row.id, harness: "codex" as const, text: "default cwd", cwd: "/unprepared" },
     });
@@ -3596,14 +3548,12 @@ for (const mode of ["checkpoint", "hard_exit", "legacy_scrub_failure"])
       if (!before.physicalId) throw Error("missing physical machine");
       const physical = await f.client.sandboxes.fromId(before.physicalId);
       if (!physical) throw Error("missing SDK sandbox");
-      // External physical expiry: SDK poll reports exit, and the native runner is gone.
       await physical.terminate();
       f.onRpc(async () => {
         throw Error("runner expired");
       });
     }
     if (mode === "legacy_scrub_failure") {
-      // Old deployed rows have checkpoint phase but no new attempt marker.
       await f.store.lease(machine.id, async (current, save) => {
         current.phase = "checkpoint";
         current.info.state = "stopping";
@@ -3795,7 +3745,6 @@ test("only newly managed VM incarnations expose resource observations", async ()
 test("declared outputs are read on live compute only, never by resuming a stopped recovery image", async () => {
   const f = fixture();
   const fork = await activeWorker(f);
-  // Observation never takes the lifecycle lease: a sample overlapping a stop or prompt does not refuse it.
   const read = await f.store.lease(fork.id, async () => f.provider.readOutputs?.({ sandboxId: fork.id }));
   expect(read?.map((file) => [file.name, Buffer.from(file.bytes).toString()])).toEqual([["final.pdf", "final"]]);
   expect(f.sdkCommands.at(-1)?.argv.at(-1)).toBe(OUTPUT_COLLECTOR);
@@ -3840,7 +3789,6 @@ test("ordinary stop retains its new disk checkpoint across resume with generatio
     expect(stopped.recoveryImageId).toBeString();
     expect(stopped.info.stopNote).toBeUndefined();
     expect(f.log.slice(start)).toEqual(["checkpoint", "scrub", "snapshot", "terminate"]);
-    // Idempotent stop must not spend the ordinary fallback budget or discard this disk.
     await f.provider.stop({ sandboxId: machine.id });
     expect((await f.store.get(machine.id)).recoveryImageId).toBe(stopped.recoveryImageId);
     if (generation === 1) {
@@ -3895,7 +3843,6 @@ test.each([
         if (!row.processBaseline) throw Error("Missing pre-admission baseline");
         return { ...row.processBaseline, admissionState: "sealed", managedRunnerPid };
       };
-    // Observe the durable pre-admission row, not just the final in-memory baseline.
     const lease = f.store.lease.bind(f.store);
     f.store.lease = (id, work) =>
       lease(id, (row, save) =>

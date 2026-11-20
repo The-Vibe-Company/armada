@@ -1,6 +1,3 @@
-/** Opt-in Linux/Docker OS regression. Only public artifact/source and synthetic fixture data enter
- * this disposable container. Execute with --core-reference pointing at current production core src
- * whose unmodified baselineSetup function is exported by the isolated reference harness. */
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -167,7 +164,6 @@ if (import.meta.main) {
       timeoutMs: 600_000,
     });
     await probeModalSsh(provider, machine.info.id, { script: scanCommand, timeoutMs: 600_000 });
-    // Real production npm launcher, not dist/codex: preserve the observed no-PATH red witness.
     const bare = Bun.spawn(
       ["docker", "exec", container, "env", "-i", "HOME=/tmp/codex-noauth", "/usr/local/bin/codex", "--version"],
       { stdout: "ignore", stderr: "ignore" },

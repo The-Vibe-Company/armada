@@ -1,5 +1,3 @@
-/** Opt-in actual Linux process regression in an isolated Docker PID/mount namespace. Runs the
- * production pidfd scope code; never run the quiescer against the coding worker/host namespace. */
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -136,8 +134,6 @@ DAEMON_JSON
       }
       if (!mismatch) throw Error("Foreign process namespace was accepted");
       await prepareFilesystemSnapshot(sdk, target);
-      // Trigger after the exact production quiescence/removal boundary. No managed FD was held
-      // while sleeping; FD-only or PPid=user checks would let this recreate during snapshot.
       await run([
         "docker",
         "exec",
