@@ -1949,23 +1949,25 @@ the child prompt with the same prefix and a `lane: "child"` marker containing
 `answer`. The smoke runner verifies that exact child prompt in the message evidence
 before checking the child's answer.
 
-### Provider inventory preflight
+### Provider inventory gate
 
-Ordinary and pinned staging smoke inspect Railway logs from the live staging
-server and its immediate predecessor before replacing the live deployment. The
-check uses the staging project, environment and service configured for deployment.
-Modal and Docker each need a complete live reaper observation within five
-minutes. Every observed live source must have a fresh, complete latest
-observation. Missing, incomplete or truncated evidence fails the smoke before
-any probe launches. The staging server can still be replaced so a new
-deployment can restore missing observations.
+Ordinary and pinned staging smoke check the configured Railway staging service
+before and after deployment. The outgoing deployment can contribute overdue
+evidence even if it was replaced before its first successful sweep. Fresh
+coverage comes from the candidate's exact Railway deployment ID.
 
-The check reports physical machine IDs observed overdue in either queried
-deployment in the last 15 minutes, even if the Modal reaper subsequently deleted
-the machine. Docker's inventory path reports overdue containers. Both providers
-need to be reporting on staging for the smoke to pass. If staging is replaced
-twice within the lookback window, the oldest deployment's observations can
-leave the query scope before 15 minutes have elapsed.
+The reaper starts eligible and schedules its next sweep 60 seconds after the
+previous sweep completes. The gate gives the candidate up to three minutes to
+report a complete observation within the last five minutes for both Modal and
+Docker and every observed candidate source. Missing or incomplete coverage at
+the deadline blocks smoke before any probe launches. Truncated logs or overdue
+machines block smoke immediately.
+
+Each check looks back 15 minutes across the two deployments it queries and
+reports observed overdue physical machine IDs, even if the Modal reaper
+subsequently deleted the machine. Docker's inventory path reports overdue
+containers. Frequent replacement can move older deployments out of the query
+scope before their observations reach 15 minutes.
 
 The ordinary journal cleanup submits a bounded delete request per receipt and
 retains IDs with unresolved outcomes for the next run or manual sweep.
