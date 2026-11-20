@@ -126,7 +126,7 @@ async function modalAdmissionFixture() {
     orgId: f.people.org,
     ownerId: f.people.owner,
     request: { key: "launch-key", digest: "launch-digest" },
-    sandbox: { goldenId, harness: "codex", model: "gpt-5", reasoningEffort: "medium" },
+    sandbox: { goldenId, harness: "codex", model: "gpt-5", reasoningEffort: "medium", effectiveTtlSeconds: 1800 },
     allocation: { source: { kind: "snapshot", ref: "snapshot" }, size: null, computeTtlSeconds: 3600 },
     initialPrompt: "initial instructions",
     deadline: new Date("2100-01-01T00:00:00Z"),
@@ -142,12 +142,22 @@ test("Modal admission commits an unbound sandbox, scoped job and encrypted turn 
   expect(
     (
       await db.query(
-        `select s.provider_sandbox_id, s.lifecycle_generation::text as generation, s.status, p.snapshot_id
+        `select s.provider_sandbox_id, s.lifecycle_generation::text as generation, s.status, p.snapshot_id,
+              s.effective_ttl_seconds, extract(epoch from (s.expires_at-s.created_at))::int as expiry_seconds
        from sandboxes s join sandbox_source_snapshots p on p.sandbox_id=s.id where s.id=$1`,
         [sandbox.id],
       )
     ).rows,
-  ).toEqual([{ provider_sandbox_id: null, generation: "1", status: "starting", snapshot_id: "snapshot" }]);
+  ).toEqual([
+    {
+      provider_sandbox_id: null,
+      generation: "1",
+      status: "starting",
+      snapshot_id: "snapshot",
+      effective_ttl_seconds: 1800,
+      expiry_seconds: 1800,
+    },
+  ]);
   const job = await store.claim("launch", crypto.randomUUID(), 30, 1);
   expect(job).toMatchObject({
     sandbox_id: sandbox.id,
@@ -168,6 +178,14 @@ test("Modal admission commits an unbound sandbox, scoped job and encrypted turn 
   expect(JSON.parse(await decryptSecret(turn!.payload_enc, launchEncryptionKey))).toEqual({
     prompt: input.initialPrompt,
   });
+});
+
+test("a stale Modal snapshot cannot leave a launch receipt behind", async () => {
+  const { sql, db, input } = await modalAdmissionFixture();
+  await db.query("update goldens set provider_snapshot_id='replacement' where id=$1", [input.sandbox.goldenId]);
+  await expect(admitModalLaunch(sql, launchEncryptionKey, input)).rejects.toMatchObject({ code: "conflict" });
+  expect((await db.query("select id from jobs")).rows).toEqual([]);
+  expect((await db.query("select id from sandboxes where golden_id=$1", [input.sandbox.goldenId])).rows).toEqual([]);
 });
 
 test("Modal keyed replay returns the current status and refuses a changed request", async () => {

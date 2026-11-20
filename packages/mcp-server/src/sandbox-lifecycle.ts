@@ -45,8 +45,8 @@ export interface ModalLaunchAdmission {
     | "visibility"
     | "externalRef"
     | "stopWhenWorkMerged"
-  >;
-  allocation: ModalLaunchAllocation;
+  > & { effectiveTtlSeconds: number };
+  allocation: ModalLaunchAllocation & { source: { kind: "snapshot" } };
   initialPrompt?: string;
   deadline: Date;
   maxAttempts: number;
@@ -76,7 +76,7 @@ export async function admitModalLaunch(sql: Sql, encryptionKey: string, input: M
          from public.goldens g join public.members m on m.org_id=g.org_id and m.user_id=$3
          where g.id=$1 and g.org_id=$2 and g.provider='modal' and g.removed_at is null
            and (g.visibility='org' or g.owner_id=$3)
-         for share of g,m`,
+         for update of g for share of m`,
         [sandbox.goldenId, orgId, ownerId],
       );
       if (!golden) throw new GoldenError("not_found", "Modal golden not found.");
@@ -117,17 +117,15 @@ export async function admitModalLaunch(sql: Sql, encryptionKey: string, input: M
         return { sandbox: { id: receipt.sandbox_id, status: receipt.status ?? "deleted" } };
       }
 
-      if (allocation.source.kind === "snapshot") {
-        const snapshot = allocation.source.ref;
-        if (golden.provider_snapshot_id !== snapshot)
-          throw new GoldenError("conflict", "Golden snapshot changed during launch preparation.");
-        await tx.query("select public.lock_golden_snapshot('modal', $1)", [snapshot]);
-        const { rows } = await tx.query(
-          "select 1 from public.golden_snapshot_retirements where provider='modal' and old_snapshot=$1 and sealed",
-          [snapshot],
-        );
-        if (rows.length) throw new GoldenError("conflict", "Golden snapshot is being retired.");
-      }
+      const snapshot = allocation.source.ref;
+      if (golden.provider_snapshot_id !== snapshot)
+        throw new GoldenError("conflict", "Golden snapshot changed during launch preparation.");
+      await tx.query("select public.lock_golden_snapshot('modal', $1)", [snapshot]);
+      const { rows: sealed } = await tx.query(
+        "select 1 from public.golden_snapshot_retirements where provider='modal' and old_snapshot=$1 and sealed",
+        [snapshot],
+      );
+      if (sealed.length) throw new GoldenError("conflict", "Golden snapshot is being retired.");
 
       await tx.query(
         `insert into public.sandboxes
@@ -148,19 +146,17 @@ export async function admitModalLaunch(sql: Sql, encryptionKey: string, input: M
           sandbox.reasoningEffort,
           sandbox.repositoryDir ?? null,
           sandbox.requestedTtlSeconds ?? null,
-          allocation.computeTtlSeconds,
+          sandbox.effectiveTtlSeconds,
           sandbox.credentialId ?? null,
           sandbox.credentialVersion ?? null,
           sandbox.externalRef ?? null,
           sandbox.stopWhenWorkMerged ?? true,
         ],
       );
-      if (allocation.source.kind === "snapshot") {
-        await tx.query("insert into public.sandbox_source_snapshots (sandbox_id,snapshot_id) values ($1,$2)", [
-          sandboxId,
-          allocation.source.ref,
-        ]);
-      }
+      await tx.query("insert into public.sandbox_source_snapshots (sandbox_id,snapshot_id) values ($1,$2)", [
+        sandboxId,
+        snapshot,
+      ]);
       if (input.initialPrompt !== undefined) {
         await store.enqueue(
           "launch_initial_turn",
