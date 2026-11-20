@@ -11,7 +11,7 @@ import { createSqlData } from "../src/data.ts";
 import { createRuntimeEnrolments } from "../src/runtime-enrolment.ts";
 import { extendSandbox } from "../src/sandbox-extend.ts";
 import { rowOnlyDatabase } from "./row-only-database.ts";
-import { bunLikeSql, ENCRYPTION_KEY } from "./support.ts";
+import { bunLikeSql, ENCRYPTION_KEY, fakeBoat } from "./support.ts";
 
 const NOW = "2026-11-13T12:00:00.000Z";
 beforeEach(() => setSystemTime(new Date(NOW)));
@@ -113,13 +113,13 @@ test.each(["settled", "lease expired", "queue fault", "commit fault"] as const)(
     const sandbox = (await store.get(id))!;
     let renewed = false;
     const provider = {
-      id: "boat" as const,
+      ...fakeBoat().provider,
       async extendLifetime() {
         if (outcome === "lease expired")
           await db.query("update sandboxes set activity_until=clock_timestamp() where id=$1", [id]);
         return new Date(now.getTime() + 240_000);
       },
-    } as Provider;
+    } satisfies Provider;
     if (outcome === "queue fault")
       await db.exec("alter table account_turn_queue add constraint extension_queue_fault check (state <> 'failed')");
     try {
