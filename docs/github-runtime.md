@@ -242,7 +242,7 @@ It simulates cache expiry, not the actual passage of eight hours at GitHub.
    remain staging values):
 
    ```sh
-   armada launch "$SNAPSHOT" --org "$ORG" --provider modal \
+   armada new "$SNAPSHOT" --org "$ORG" --provider modal \
      --agent "$HARNESS" --model "$MODEL" --credential-id "$MODEL_ACCOUNT_ID" \
      --no-connections --ttl 1h --json
    ```

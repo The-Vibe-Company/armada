@@ -9,7 +9,7 @@ const requestId = "44444444-4444-4444-8444-444444444444";
 const idempotencyKey = "Launch_Key_With_Case";
 const image = `worker@sha256:${"a".repeat(64)}`;
 const args = [
-  "launch",
+  "new",
   "--provider",
   "docker",
   "--agent",

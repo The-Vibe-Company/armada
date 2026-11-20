@@ -1,6 +1,6 @@
 # Skillpack skills at sandbox launch
 
-`armada launch SNAPSHOT --provider boat --agent codex --skill example/notes@1.0.0 --skill example/other@2.0.0`
+`armada new SNAPSHOT --provider boat --agent codex --skill example/notes@1.0.0 --skill example/other@2.0.0`
 installs exact public catalog pins before the first turn, including for idle
 launches. Use `slug@version` for a private workspace pin and
 `org/slug@version` for a public pin. API and MCP launch accept `skills: string[]`.

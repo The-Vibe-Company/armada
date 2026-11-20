@@ -135,7 +135,7 @@ test("published Armada skill commands and flags match the live CLI usage contrac
   expect(validate("armada golden nonexistent-subcommand", contract)).toContain("Unknown command");
   expect(validate("armada template nonexistent-subcommand", contract)).toContain("Unknown command");
   expect(validate("armada template list --request-key accidental", contract)).toContain("Unknown flag");
-  expect(validate("armada launch example --nonexistent-flag", contract)).toContain("Unknown flag");
+  expect(validate("armada new example --nonexistent-flag", contract)).toContain("Unknown flag");
   expect(validate("armada stop sandbox --skill team/example@1.0.0", contract)).toContain("Unknown flag");
   expect(validate("armada vars nonexistent-command", contract)).toContain("Unknown command");
   expect(validate("armada secrets read secret", contract)).toContain("Unknown command");

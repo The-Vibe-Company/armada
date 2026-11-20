@@ -39,8 +39,8 @@ test("the main package lists every platform binary at its own version", async ()
 
 test("the launcher runs the platform binary with the arguments and its exit code", () => {
   const bin = install(join(dir, "full"), true);
-  const result = Bun.spawnSync([runtime, bin, "launch", "monka", "--json"]);
-  expect(result.stdout.toString()).toBe("args: launch monka --json\n");
+  const result = Bun.spawnSync([runtime, bin, "new", "monka", "--json"]);
+  expect(result.stdout.toString()).toBe("args: new monka --json\n");
   expect(result.exitCode).toBe(3);
 });
 

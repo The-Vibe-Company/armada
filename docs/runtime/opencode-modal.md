@@ -42,7 +42,7 @@ the retired `deepseek-chat` alias is not a launch default. API keys are stdin/fi
 armada creds set opencode --name deepseek --base-url https://api.deepseek.com \
   --models deepseek-flash --file /private/deepseek-key
 armada creds list --json
-armada launch MODAL_SNAPSHOT --provider modal --agent opencode \
+armada new MODAL_SNAPSHOT --provider modal --agent opencode \
   --credential-id ACCOUNT_UUID --model armada/deepseek-flash \
   --reasoning-effort default 'Reply with exactly: armada-opencode-ok'
 ```

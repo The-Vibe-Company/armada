@@ -42,12 +42,17 @@ staging_armada org list
 staging_armada snapshot list --org "$staging_org" --provider modal
 ```
 
+Set `sandbox_create_command` to the top-level sandbox creation command shown by
+`staging_armada --help` for the installed version. Current releases use `new`.
+The rehearsed 2.57.2 binary below uses `launch`.
+
 Once the version matches the pin and the org and snapshot are visible, launch
 the rehearsal worker. During an incident, replace the prompt with the repair
 task and include the assigned branch and acceptance criteria.
 
 ```bash
-staging_armada launch "$staging_snapshot" --org "$staging_org" --provider modal \
+read -r -p 'Sandbox creation command from pinned CLI help: ' sandbox_create_command
+staging_armada "$sandbox_create_command" "$staging_snapshot" --org "$staging_org" --provider modal \
   --agent codex "Summarize the repository without changing any files."
 ```
 
@@ -106,7 +111,7 @@ incident notes so you can recover the submission if you lose the terminal.
 Keep credentials out of the prompt and notes.
 
 ```bash
-staging_armada launch "$docker_prompt" \
+staging_armada "$sandbox_create_command" "$docker_prompt" \
   --provider docker --host "$staging_host" --org "$staging_org" \
   --agent codex --credential-id "$docker_account" --repo "$worker_repo" \
   --idempotency-key "$docker_launch_key"

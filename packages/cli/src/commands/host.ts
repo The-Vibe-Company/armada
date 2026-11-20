@@ -35,7 +35,7 @@ For CLI install, supply the one-use registration token on stdin, never in argv.
 Treat installer output as sensitive; do not paste it into shared logs.
 
 Inspect a command's options with armada host <command> --help.
-To launch on a registered host, use armada launch --provider docker.
+To launch on a registered host, use armada new --provider docker.
 Example: armada host list --org ORG_UUID --json
 Example: armada host show workstation --org ORG_UUID
 `,

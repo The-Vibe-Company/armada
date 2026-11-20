@@ -35,7 +35,7 @@ credential wins over the org's, and a refused personal key never silently falls
 back to wider org authority. Storage uses the existing AES-GCM encrypted vault;
 a user JWT cannot read `value_enc`. The value is never an argument.
 
-Ordinary sandbox launch accepts `armada launch SNAPSHOT --provider boat --agent codex --skill notes@1.0.0`
+Ordinary sandbox launch accepts `armada new SNAPSHOT --provider boat --agent codex --skill notes@1.0.0`
 (and repeated `--skill` flags). The API `skills` array accepts both private
 `slug@exact-version` and public `org/slug@exact-version` pins, as do template and
 delegated child launches. Distinct pins must have distinct installed slugs.
@@ -69,7 +69,7 @@ On Modal staging, the coordinator can use a private pin and a configured
 Skillpack credential with:
 
 ```sh
-armada launch SNAPSHOT --provider modal --agent codex --skill notes@1.0.0 --json
+armada new SNAPSHOT --provider modal --agent codex --skill notes@1.0.0 --json
 ```
 
 Boat checks are coordinator-only and on demand. Check `sandbox.skills[]` for

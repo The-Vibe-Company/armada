@@ -1000,7 +1000,7 @@ class Component extends DCLogic {
     return { title:s ? 'Edit ' + s.id : 'New snapshot', desc:s ? 'Saving rebuilds it. Running sandboxes keep the version they started from.' : 'Armada clones the repositories in a disposable sandbox, runs your setup, scans for secrets and only then saves.', submit:s ? 'Save and rebuild' : 'Build snapshot',
       initial:s ? { id:s.id, repos:s.repos.join('\n'), provider:s.provider, machine:s.machine || 'small', vis:s.vis, setup:s.setup === '—' ? '' : s.setup, init:s.init === '—' ? '' : s.init } : { id:'', repos:'', provider:'Boat', machine:'small', vis:'Organization', setup:'', init:'' },
       fields:[
-        { id:'id', label:'Name', kind:'mono', ph:'web', req:1, readOnly:!!s, help:s ? 'A snapshot keeps its name.' : 'Used from the CLI: armada launch <name>' },
+        { id:'id', label:'Name', kind:'mono', ph:'web', req:1, readOnly:!!s, help:s ? 'A snapshot keeps its name.' : 'Used from the CLI: armada new <name>' },
         { id:'repos', label:'Repositories', kind:'code', rows:3, ph:'the-vibe-company/armada@main', req:1, help:'One per line, owner/repo@branch. Cloned over your GitHub connection.' },
         { id:'provider', label:'Machine', kind:'chips', options:[{ value:'Boat', label:'Boat', logo:'boat' }, { value:'Modal', label:'Modal', logo:'modal' }] },
         { id:'machine', label:'Machine size', kind:'chips', options:(v) => SIZE_KEYS.map(k => ({ value:k, label:SIZES[k].label, sub:sizeSpec(k) + (v.provider === 'Boat' ? ' · ' + SIZES[k].disk + ' GB disk' : '') })), help:'The default for launches from this snapshot. A launch can pick another size.' },

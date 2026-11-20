@@ -4,7 +4,7 @@ For a Boat or Modal launch, select a repository configured on the starting snaps
 `my-snapshot` with the configured directory `web`, an idle launch looks like this.
 
 ```sh
-armada launch my-snapshot --provider boat --agent codex --repo web
+armada new my-snapshot --provider boat --agent codex --repo web
 ```
 
 You can also pass the repository's `owner/repo` identity, for example

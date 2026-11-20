@@ -39,7 +39,7 @@ export default {
   armada snapshot list [--provider boat|modal|docker] [--org UUID] [--json]
                                            Snapshots you can see; Docker requires --org.
   armada snapshot get UUID --provider docker --org UUID [--json]
-                                           Read snapshot build state; launch ready snapshots with launch --provider docker --agent codex --golden UUID.
+                                           Read snapshot build state; launch ready snapshots with armada new --provider docker --agent codex --golden UUID.
   armada snapshot rebuild UUID --provider docker --org UUID [--request-id UUID] [--json]
                                            Build a new snapshot from saved repos/setup on its original host; keep the old one.`,
     "snapshot-admin": `  armada snapshot retirement dry-run|reconcile <snapshot-id> [--limit 1-50] [--org UUID]

@@ -103,8 +103,8 @@ the coordinator alone runs staging checks after normal deployment.
    and repeat the wait and status commands for both sandboxes.
 
    ```bash
-   armada launch "$SNAPSHOT_NAME" --provider modal --agent claude "Reply OK"
-   armada launch "$SNAPSHOT_NAME" --provider modal --agent codex "Reply OK"
+   armada new "$SNAPSHOT_NAME" --provider modal --agent claude "Reply OK"
+   armada new "$SNAPSHOT_NAME" --provider modal --agent codex "Reply OK"
    armada wait "$SANDBOX_ID"
    armada status "$SANDBOX_ID" --json
    ```
