@@ -1,6 +1,3 @@
-/** Real OS boundary. Run only as PID1 in a disposable namespace:
- * sudo unshare --pid --fork --mount-proc $(which bun) packages/provider-modal/test/checkpoint-process-conformance.ts
- * Requires the native runtime build; never quiesce the worker's namespace. */
 import { spawn } from "node:child_process";
 import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -19,7 +16,6 @@ if (process.argv.includes("--parent")) {
   const servers = ["armada_orchestrator", "armada_fixture"].map(
     (name) => `${name}={command=${JSON.stringify(bun)},args=${JSON.stringify(["-e", mcp])}}`,
   );
-  // A local failing endpoint is sufficient: MCP startup precedes model execution.
   const endpoint = Bun.serve({ port: 0, fetch: () => new Response("fixture", { status: 400 }) });
   const child = spawn(
     codex,
@@ -68,8 +64,6 @@ if (process.argv.includes("--parent")) {
   let restricted = false;
   const fixtureHome = mkdtempSync(join(tmpdir(), "checkpoint-home-"));
   const wrapper = join(fixtureHome, "signal-policy");
-  // A persistent root platform exec service exists before admission. Its late
-  // root child is not an Armada writer and may ignore in-sandbox signals.
   const platform = Bun.spawn(
     [
       "setpriv",
@@ -123,8 +117,6 @@ console.log(JSON.stringify({ready:true}));
   }
   let controlPid = 0,
     writerPid = 0;
-  // Real seccomp, not a controller mock. Native mode denies numeric kill, so a
-  // silent fallback cannot masquerade as evidence that the pidfd path works.
   const deniedSyscalls = denyPidfd ? ["__NR_pidfd_open", "__NR_pidfd_send_signal"] : ["__NR_kill"];
   async function compilePolicy() {
     const compiler = Bun.spawn(["cc", "-x", "c", "-o", wrapper, "-"], {
@@ -164,7 +156,6 @@ execvp(argv[1],argv+1);return 126;}`);
   let lastInspectionOutput = "";
   const sdk = {
     exec: async (argv: string[]) => {
-      // Use the already-built local Bun rather than requiring an installed Modal image.
       let args = argv.map((arg) => (arg === "/opt/armada/runtime-bun/bun" ? bun : arg));
       if (argv[0] === "/usr/bin/env") args[args.length - 1] = args.at(-1)!.replaceAll("/home/user", fixtureHome);
       if (argv[0] === "bash")
@@ -242,8 +233,6 @@ execvp(argv[1],argv+1);return 126;}`);
   } finally {
     clearTimeout(deadline);
   }
-  // Keep CAP_KILL but remove ptrace and one capability held by PID1: even root
-  // cannot read PID1 namespace links. This must not prevent a checkpoint.
   restricted = true;
   const inspectionProbe = await Bun.spawn(
     ["setpriv", "--bounding-set=-sys_ptrace,-net_raw", "readlink", "/proc/1/ns/pid"],
@@ -272,7 +261,6 @@ execvp(argv[1],argv+1);return 126;}`);
   await prepareFilesystemSnapshot(sdk, { ...machine, golden: false });
   if (denyPidfd && !lastInspectionOutput.includes("pidfd_open_ENOSYS"))
     throw Error("Real pidfd denial was not observed");
-  // Bootstrap control helpers may remain stopped after their managed child exits.
   const live = (await import("node:fs"))
     .readdirSync("/proc")
     .filter((pid) => /^\d+$/.test(pid))
@@ -289,8 +277,6 @@ execvp(argv[1],argv+1);return 126;}`);
     throw Error("Managed process survived quiescence");
   if (!live.includes(String(platform.pid)) || !live.includes(String(controlPid)))
     throw Error("Platform control processes must survive checkpoint");
-  // A real same-session root orphan must not gain control trust when a Linux
-  // PR_SET_CHILD_SUBREAPER adopts it after its intermediate parent exits.
   writerPid = await platformChild(undefined, true);
   const raw = readFileSync(`/proc/${writerPid}/stat`, "utf8"),
     parts = raw.slice(raw.lastIndexOf(")") + 2).split(" ");
@@ -313,7 +299,6 @@ execvp(argv[1],argv+1);return 126;}`);
       throw error;
   }
   await platformChild(undefined, false, writerPid);
-  // Even an exact baseline control must not retain a managed-state FD.
   const { mkdirSync } = await import("node:fs");
   mkdirSync(join(fixtureHome, ".armada-runtime"), { recursive: true });
   writerPid = await platformChild(join(fixtureHome, ".armada-runtime", "positive-writer"));
@@ -340,6 +325,5 @@ execvp(argv[1],argv+1);return 126;}`);
     "/dev/stdout",
     `PASS: unreadable PID1 namespaces checkpoint with ${denyPidfd ? "pidfds denied" : "numeric signals denied"}; platform root control survives and root managed writer refuses\n`,
   );
-  // PID1 exit tears down the intentionally retained platform controls in this private namespace.
   process.exit(0);
 }

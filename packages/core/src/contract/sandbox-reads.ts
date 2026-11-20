@@ -36,7 +36,9 @@ const launchOptionsOutput = z
           enabled: z.boolean(),
           launchSources: z
             .array(z.string())
-            .describe('"golden" launches by golden name; "image" launches on a Docker host.'),
+            .describe(
+              '"golden" uses a snapshot (by name on Boat or Modal, by ID on Docker); "image" launches directly on a Docker host.',
+            ),
           harnesses: z.array(z.string()),
           capabilities: z.record(z.string(), z.boolean()),
           unsupportedReasons: z.record(z.string(), z.string()),
@@ -52,8 +54,6 @@ const launchOptionsOutput = z
 export const launchOptionsOperation = {
   name: "launchOptions",
   toolName: "launch_options",
-  mcpDescription:
-    "Read the server-wide launch catalog: harnesses, models, credential kinds, machine sizes, TTL limits, and provider capabilities. The MCP launch tool accepts Boat and Modal goldens.",
   route: { method: "POST", path: "/api/v1/launch/options" },
   input: { body: z.object({}) },
   output: launchOptionsOutput,
@@ -61,7 +61,7 @@ export const launchOptionsOperation = {
   destructive: false,
   audience: "agent",
   description:
-    "What a launch can ask for on this server: harnesses with their models and credential kinds, machine sizes, TTL limits, and each provider's launch sources and capabilities. Read it before offering launch choices.",
+    "What a launch can ask for on this server: harnesses with their models and credential kinds, machine sizes, TTL limits, and each provider's launch sources and capabilities. The MCP launch tool accepts Boat and Modal snapshots. Read this catalog before offering launch choices.",
   errors: ["invalid", "unauthorized", "dependency_unavailable", "internal"],
 } as const satisfies Operation<z.ZodType, z.ZodType>;
 

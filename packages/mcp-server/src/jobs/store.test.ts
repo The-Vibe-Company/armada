@@ -326,54 +326,61 @@ test.each([
   }
 });
 
+async function interruptedDockerTurn(status: "starting" | "running") {
+  const f = await fixture();
+  const { db, people, store } = f;
+  const sandboxId = crypto.randomUUID();
+  const requestId = crypto.randomUUID();
+  const hostId = crypto.randomUUID();
+  const installationId = crypto.randomUUID();
+  const dockerGeneration = crypto.randomUUID();
+  await db.query(
+    `insert into docker_hosts (id,org_id,owner_id,installation_id,hash,registration_expires_at)
+       values ($1,$2,$3,$4,repeat('a',64),'-infinity')`,
+    [hostId, people.org, people.owner, installationId],
+  );
+  await db.query(
+    `insert into sandboxes (id,org_id,owner_id,harness,status,provider,lifecycle_generation,expires_at,
+         visibility,access_owner_id,docker_host_id,docker_installation_id,docker_generation,docker_image,provider_sandbox_id)
+       values ($1,$2,$3,'codex',$8,'docker',3,'infinity',
+         'private',$3,$4,$5,$6,'sha256:' || repeat('b',64),$7)`,
+    [
+      sandboxId,
+      people.org,
+      people.owner,
+      hostId,
+      installationId,
+      dockerGeneration,
+      `armada-${installationId}-${hostId}-${sandboxId}-${dockerGeneration}`,
+      status,
+    ],
+  );
+  await seedTurn(f, sandboxId, requestId);
+  const id = await store.enqueue(
+    "turn_dispatch",
+    sandboxId,
+    2,
+    requestId,
+    { requestId },
+    { orgId: people.org, maxAttempts: 2 },
+  );
+  await db.query(
+    `update account_turn_queue set state='dispatching',dispatch_generation=2,dispatch_until='-infinity'
+       where sandbox_id=$1 and request_id=$2`,
+    [sandboxId, requestId],
+  );
+  await db.query("insert into account_agent_reservations (sandbox_id,account_id) values ($1,$2)", [
+    sandboxId,
+    f.openaiCredentialId,
+  ]);
+  return { f, sandboxId, requestId, hostId, installationId, dockerGeneration, id };
+}
+
 test.each(["current", "pending", "other request", "other epoch", "old issuer", "revoked host"] as const)(
   "a Docker prompt response can retarget a stale turn only with current replay evidence (%s)",
   async (evidence) => {
-    const f = await fixture();
+    const { f, sandboxId, requestId, hostId, id } = await interruptedDockerTurn("running");
     const { db, people, store } = f;
-    const sandboxId = crypto.randomUUID();
-    const requestId = crypto.randomUUID();
-    const hostId = crypto.randomUUID();
-    const installationId = crypto.randomUUID();
-    const dockerGeneration = crypto.randomUUID();
-    await db.query(
-      `insert into docker_hosts (id,org_id,owner_id,installation_id,hash,registration_expires_at)
-       values ($1,$2,$3,$4,repeat('a',64),'-infinity')`,
-      [hostId, people.org, people.owner, installationId],
-    );
-    await db.query(
-      `insert into sandboxes (id,org_id,owner_id,harness,status,provider,lifecycle_generation,expires_at,
-         visibility,access_owner_id,docker_host_id,docker_installation_id,docker_generation,docker_image,provider_sandbox_id)
-       values ($1,$2,$3,'codex','running','docker',3,'infinity',
-         'private',$3,$4,$5,$6,'sha256:' || repeat('b',64),$7)`,
-      [
-        sandboxId,
-        people.org,
-        people.owner,
-        hostId,
-        installationId,
-        dockerGeneration,
-        `armada-${installationId}-${hostId}-${sandboxId}-${dockerGeneration}`,
-      ],
-    );
-    await seedTurn(f, sandboxId, requestId);
-    const id = await store.enqueue(
-      "turn_dispatch",
-      sandboxId,
-      2,
-      requestId,
-      { requestId },
-      { orgId: people.org, maxAttempts: 2 },
-    );
-    await db.query(
-      `update account_turn_queue set state='dispatching',dispatch_generation=2,dispatch_until='-infinity'
-       where sandbox_id=$1 and request_id=$2`,
-      [sandboxId, requestId],
-    );
-    await db.query("insert into account_agent_reservations (sandbox_id,account_id) values ($1,$2)", [
-      sandboxId,
-      f.openaiCredentialId,
-    ]);
     await db.query(
       `insert into runtime_enrolments (sandbox_id,lifecycle_generation,epoch,runtime_hash,docker_issuer_fence)
        select $1,3,2,repeat('c',64),user_id::text || ':' || (epoch + $4::bigint)::text
@@ -403,6 +410,81 @@ test.each(["current", "pending", "other request", "other epoch", "old issuer", "
           `select q.state, exists(
              select 1 from account_agent_reservations r where r.sandbox_id=q.sandbox_id and r.account_id=q.account_id
            ) as reserved from account_turn_queue q where q.sandbox_id=$1 and q.request_id=$2`,
+          [sandboxId, requestId],
+        )
+      ).rows,
+    ).toEqual([{ state: "dispatching", reserved: true }]);
+  },
+);
+
+test.each([
+  ["pending while starting", "starting", null, true],
+  ["completed before prompt", "running", "completed", true],
+  ["failed", "starting", "failed", false],
+  ["refused", "starting", null, false],
+  ["revoked host", "starting", null, false],
+  ["unrelated request", "starting", null, false],
+  ["old actor epoch", "starting", null, false],
+  ["old source generation", "starting", null, false],
+  ["physical claim pending", "starting", null, false],
+  ["prompt already submitted", "running", "completed", false],
+] as const)(
+  "a stale turn resumes only from its live Docker host job (%s)",
+  async (scenario, status, outcome, recover) => {
+    const { f, sandboxId, requestId, hostId, installationId, dockerGeneration, id } =
+      await interruptedDockerTurn(status);
+    const { db, people, store } = f;
+    const resumeId = scenario === "unrelated request" ? crypto.randomUUID() : requestId;
+    await db.query(
+      `insert into docker_resume_claims
+       (request_id,sandbox_id,host_id,installation_id,generation,actor_id,lifecycle_generation,accepted)
+     values ($1,$2,$3,$4,$5,$6,$7,$8)`,
+      [
+        resumeId,
+        sandboxId,
+        hostId,
+        installationId,
+        dockerGeneration,
+        people.owner,
+        scenario === "old source generation" ? 1 : 2,
+        scenario === "physical claim pending" ? null : true,
+      ],
+    );
+    await db.query(
+      `insert into docker_host_jobs
+       (request_id,host_id,input_enc,bound_sandbox_id,bound_actor_id,bound_actor_epoch,bound_operation,
+        outcome,completed_at,refused_resume_generation)
+     select $1,$2,decode(repeat('00',29),'hex'),$3,$4,epoch + $5::bigint,'resume',$6,
+       case when $6::text is not null then now() end, $7
+     from mcp_actor_epochs where org_id=$8 and user_id=$4`,
+      [
+        resumeId,
+        hostId,
+        sandboxId,
+        people.owner,
+        scenario === "old actor epoch" ? -1 : 0,
+        outcome,
+        scenario === "refused" ? 3 : null,
+        people.org,
+      ],
+    );
+    if (scenario === "revoked host") await db.query("update docker_hosts set revoked_at=now() where id=$1", [hostId]);
+    if (scenario === "prompt already submitted") {
+      await db.query(
+        `insert into runtime_commands (sandbox_id,request_id,epoch,request_enc) values ($1,$2,1,''::bytea)`,
+        [sandboxId, `docker_prompt_${requestId}`],
+      );
+    }
+    const owner = crypto.randomUUID();
+    const job = (await store.claim("turn_dispatch", owner, 30, 1))!;
+    expect(job).toMatchObject({ id, generation: recover ? "3" : "2", payload: { requestId } });
+    expect(await store.inspect(job, owner)).toBe(recover ? "dispatch" : "stale");
+    expect(
+      (
+        await db.query(
+          `select q.state, exists(select 1 from account_agent_reservations r
+      where r.sandbox_id=q.sandbox_id and r.account_id=q.account_id) as reserved
+     from account_turn_queue q where q.sandbox_id=$1 and q.request_id=$2`,
           [sandboxId, requestId],
         )
       ).rows,
