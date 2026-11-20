@@ -2038,10 +2038,14 @@ export function createDockerHostStore(sql: Sql, key: string) {
           logical = await sandbox(tx, job.bound_sandbox_id ?? deny(), host, installationId);
           const { job: restore, lifecycleGeneration } = await readStoredJob(job);
           if (restore.operation !== "restore" || restore.request.generation !== job.request_id) deny();
-          if (lifecycleGeneration !== String(logical.lifecycle_generation)) return;
-          if (logical.docker_generation !== restore.predecessor.request.generation) deny();
+          if (logical.status === "deleted" || lifecycleGeneration !== String(logical.lifecycle_generation)) return;
           await requireRestoreBindings(tx, logical, restore);
-          if (logical.status !== "starting" && logical.status !== "stopping") return;
+          if (logical.docker_generation === restore.request.generation) {
+            if (job.outcome !== "completed" || job.cancelled_at) deny();
+          } else {
+            if (logical.docker_generation !== restore.predecessor.request.generation) deny();
+            if (logical.status !== "starting" && logical.status !== "stopping") return;
+          }
         } else {
           if (
             job.bound_operation !== "create" &&

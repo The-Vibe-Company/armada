@@ -1,9 +1,10 @@
-import type { SandboxStatus } from "@armada/core";
+import type { SandboxPlacementProviderId, SandboxStatus } from "@armada/core";
 import {
   decryptSecret,
   HOST_CAPABILITIES,
   isFinalPromptStatus,
   isSandboxProvider,
+  type OutputFailureReason,
   type Provider,
   ProviderError,
   type Sql,
@@ -14,6 +15,7 @@ import { releaseAccountCapacity } from "./account-capacity.ts";
 import type { Job } from "./jobs/runner.ts";
 import { mergedWorkProof } from "./merged-work.ts";
 import { nativeIdleDue, nativeQuiescent } from "./native-idle.ts";
+import { LIVE_OUTPUT_CANDIDATE } from "./output-transfers.ts";
 import { SANDBOX_VISIBLE } from "./sandbox-visibility.ts";
 import { INTERRUPTED_LAUNCH_REASON } from "./turns.ts";
 import { deferTransactionWake, eventFeedWakeKey, runtimeWakes } from "./wake-bus.ts";
@@ -92,6 +94,28 @@ export function recordStoppedCheckpointNote(tx: Sql, id: string, epoch: string, 
       `Armada runtime checkpoint acknowledged for epoch ${epoch} through event ${watermark}; host stop is confirmed. No Git work archive is claimed.`,
     ],
   );
+}
+
+export async function claimOutputFailure(sql: Sql, id: string, reason: OutputFailureReason, generation: string | null) {
+  const claim = await sql.query<{ provider: SandboxPlacementProviderId; status: string }>(
+    `update public.sandboxes
+     set outputs_failure_reasons=array_append(outputs_failure_reasons,$2)
+     where id=$1 and status<>'deleted' and not application_secret_tainted
+     and ($3::bigint is null or lifecycle_generation=$3::bigint)
+     and not ($2 = any(outputs_failure_reasons))
+     returning provider, status`,
+    [id, reason, generation],
+  );
+  return claim.rows[0];
+}
+
+export async function markOutputCollectorSupported(sql: Sql, id: string, generation: string, providerId: string) {
+  const verified = await sql.query(
+    `update public.sandboxes set outputs_collector_supported=true
+     where id=$1 and lifecycle_generation=$2::bigint and provider_sandbox_id=$3 and ${LIVE_OUTPUT_CANDIDATE} returning id`,
+    [id, generation, providerId],
+  );
+  return verified.rows.length > 0;
 }
 
 export const UNENROLLED_RESUME_STOP = "runtime_resume_unenrolled";

@@ -60,8 +60,6 @@ packages/mcp-server/src/sandbox-account-change.ts	modal_server_harnesses	update
 packages/mcp-server/src/sandbox-account-change.ts	sandbox_account_usage_pricing	insert
 packages/mcp-server/src/sandbox-account-change.ts	sandboxes	update
 packages/mcp-server/src/sandbox-lifecycle.ts	runtime_idle_turns	insert
-packages/mcp-server/src/sandbox-outputs.ts	sandboxes	update
-packages/mcp-server/src/sandbox-outputs.ts	sandboxes	update
 packages/mcp-server/src/sandbox-pull-requests.ts	sandboxes	update
 packages/mcp-server/src/sandbox-pull-requests.ts	sandboxes	update
 packages/mcp-server/src/sandbox-pull-requests.ts	sandboxes	update
