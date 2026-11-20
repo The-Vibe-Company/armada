@@ -18,9 +18,7 @@ export type UsageGroup =
   | "mcp"
   | "mcp-bindings"
   | "bind-credential"
-  | "snapshots"
-  | "credential-setup"
-  | "credential-accounts";
+  | "snapshots";
 
 export type Command = {
   name: string;

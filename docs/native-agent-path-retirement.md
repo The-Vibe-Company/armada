@@ -84,7 +84,7 @@ Modal default-on release (#2740), to be completed by the coordinator after deplo
 | --- | --- | --- |
 | Pending rollout | Pending | Pending coordinator verification |
 
-For #2737, the coordinator ran a read-only count from CLI source on main (`9773b5fad`). The inventory covered the single real user's personal credentials and every organization returned by `armada org list --json` for that owner. The coordinator used `armada creds list --json` for personal credentials and `armada creds list --org <id> --json` for each organization, then counted model-kind rows missing an ID or version. Credential identifiers, names and values were omitted from the record.
+For #2737, the coordinator ran a read-only count from CLI source on main (`9773b5fad`). The inventory covered the single real user's personal credentials and every organization returned by `armada org list --json` for that owner. The coordinator used `armada account ls --json` for personal credentials and `armada account ls --org <id> --json` for each organization, then counted model-kind rows missing an ID or version. Credential identifiers, names and values were omitted from the record.
 
 | Environment | Unbound legacy model credentials | Measured at (UTC) | Evidence |
 | --- | --- | --- | --- |

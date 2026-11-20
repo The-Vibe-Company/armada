@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
+import { accountCommand } from "../src/account-commands.ts";
 import { productionAuthIo } from "../src/auth-commands.ts";
-import { credsCommand } from "../src/vault-commands.ts";
 
 test("creds list shows account exhaustion, monthly API spend, and unknown pricing", async () => {
   let output = "";
@@ -53,7 +53,7 @@ test("creds list shows account exhaustion, monthly API spend, and unknown pricin
     throw new Error("Listing accounts requires no input");
   };
 
-  expect(await credsCommand(["list"], { auth, readStdin: unused, readFile: unused })).toBe(0);
+  expect(await accountCommand(["ls"], { auth, readStdin: unused, readFile: unused })).toBe(0);
 
   const lines = output.split("\n");
   expect(lines.find((line) => line.includes("user-api"))).toContain("API: — USD this month");

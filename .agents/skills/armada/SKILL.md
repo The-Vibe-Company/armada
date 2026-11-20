@@ -83,8 +83,8 @@ any receipt UUID returned. On success, pass `sandbox.id` to subsequent tools.
 - Choose the harness and a model/effort it supports. Launch selections persist
   for later turns. Do not assume provider sizes have equal price or performance.
 - If a runtime launch returns `credential_binding_required`, add the model account
-  in Models → Add account or run `armada creds set KIND --name NAME --file PATH`.
-  Use `armada creds list` to find the account ID, then retry the launch with
+  in Models → Add account or run `armada account add KIND --name NAME --file PATH`.
+  Use `armada account ls` to find the account ID, then retry the launch with
   `--credential-id ACCOUNT`.
 - Bound TTL, size and concurrency to the task. Start small unless evidence calls
   for more. `armada advice SANDBOX --json` provides bounded historical resource

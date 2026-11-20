@@ -38,7 +38,6 @@ test("bare families share login-free successful discovery", async () => {
     "vars",
     "secrets",
     "mcp",
-    "creds",
     "org",
     "account",
     "token",
@@ -73,7 +72,7 @@ test("usage and authentication failures give relevant recovery", async () => {
   expect(usage.err).toContain("armada ls --help");
   expect(usage.err).not.toContain("inspect armada ls");
   for (const args of [
-    ["creds", "set", "bogus"],
+    ["account", "add", "bogus"],
     ["new", "starter", "--provider", "boat", "--agent", "codex", "--ttl", "bad"],
     ["frobnicate"],
   ]) {

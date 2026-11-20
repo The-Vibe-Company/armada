@@ -425,26 +425,26 @@ describe("#624 v3 native credits and meters, as the producer reports them", () =
 test("the terminal sign-in is only the command the server reports, with the name as one literal argument", () => {
   const reported = parseAuthCapabilities({
     hostedOAuth: false,
-    claude: { login: null, import: "armada creds import claude --name <name> --file <private-token-file>" },
-    codex: { login: "armada creds login codex --name <name>" },
+    claude: { login: null, import: "armada account import claude --name <name> --file <private-token-file>" },
+    codex: { login: "armada account login codex --name <name>" },
   });
   expect(reported?.hostedOAuth).toBe(false);
-  expect(terminalLogin(reported, "codex_auth", "Work")).toBe("armada creds login codex --name 'Work'");
+  expect(terminalLogin(reported, "codex_auth", "Work")).toBe("armada account login codex --name 'Work'");
   expect(terminalLogin(reported, "codex_auth", `Bob's $HOME`)).toBe(
-    `armada creds login codex --name 'Bob'\\''s $HOME'`,
+    `armada account login codex --name 'Bob'\\''s $HOME'`,
   );
   expect(terminalLogin(reported, "claude_oauth", "Work")).toBeNull();
   expect(terminalLogin(null, "codex_auth", "Work")).toBeNull();
   for (const command of [
-    "armada creds login codex; curl https://example.test",
-    "armada creds login codex --name <name> --org <org>",
-    "armada creds login codex --name $(whoami)",
+    "armada account login codex; curl https://example.test",
+    "armada account login codex --name <name> --org <org>",
+    "armada account login codex --name $(whoami)",
   ]) {
     expect(parseAuthCapabilities({ codex: { login: command } })?.terminal).toEqual({});
     expect(parseAuthCapabilities({ nativeCLI: [{ kind: "codex_auth", command }] })?.terminal).toEqual({});
   }
-  expect(parseAuthCapabilities({ nativeCLI: { codex_auth: "armada creds login codex" } })?.terminal).toEqual({
-    codex_auth: "armada creds login codex",
+  expect(parseAuthCapabilities({ nativeCLI: { codex_auth: "armada account login codex" } })?.terminal).toEqual({
+    codex_auth: "armada account login codex",
   });
 });
 

@@ -106,7 +106,7 @@ export const MAX_AUTH_FILE_LENGTH = 65536;
 export const CODEX_AUTH_PATH = "/home/user/.codex/auth.json";
 
 interface KindInfo {
-  /** The name `armada creds set <name>` takes. */
+  /** The name `armada account add <name>` takes. */
   name?: string;
   label: string;
   /** What launch injects it as. A file kind has no variable. */
@@ -351,8 +351,8 @@ export async function resolveModalTokens(
   throw new VaultError(
     "missing_credential",
     input.visibility === "private"
-      ? "No Modal token pair for you or your org. Run 'armada creds set modal' or ask an org admin to set the org's."
-      : "Your org has no Modal token pair. An org admin sets it with 'armada creds set modal --org <name>'.",
+      ? "No Modal token pair for you or your org. Run 'armada account add modal' or ask an org admin to set the org's."
+      : "Your org has no Modal token pair. An org admin sets it with 'armada account add modal --org <name>'.",
   );
 }
 
@@ -486,7 +486,7 @@ export async function resolveCredentials(
   }
   throw new VaultError(
     "missing_credential",
-    `No ${HARNESS_CATALOG[input.harness].label} credential for you or your org. Run 'armada creds set ${credentialName(kinds[0] ?? "claude_oauth")}'.`,
+    `No ${HARNESS_CATALOG[input.harness].label} credential for you or your org. Run 'armada account add ${credentialName(kinds[0] ?? "claude_oauth")}'.`,
   );
 }
 
@@ -509,8 +509,8 @@ export async function resolveBoatKey(
   throw new VaultError(
     "missing_credential",
     input.visibility === "private"
-      ? "No boat.dev key for you or your org. Run 'armada creds set boat' or ask an org admin to set the org key."
-      : "Your org has no boat.dev key. An org admin sets it with 'armada creds set boat --org <name>'.",
+      ? "No boat.dev key for you or your org. Run 'armada account add boat' or ask an org admin to set the org key."
+      : "Your org has no boat.dev key. An org admin sets it with 'armada account add boat --org <name>'.",
   );
 }
 

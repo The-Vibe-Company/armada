@@ -559,18 +559,18 @@ export type ModelAuthOwnership = ReturnType<typeof createModelAuthOwnership>;
 /** Honest UI capability: consent runs in the user's native CLI, never this service. */
 export const modelAuthCapabilities = {
   hostedOAuth: false,
-  nativeCLI: { codex_auth: "armada creds login codex" },
+  nativeCLI: { codex_auth: "armada account login codex" },
   nativeSubscriptionParallelSandboxes: true,
   nativeSubscriptionResume: true,
   nativeSubscriptionExec: true,
   claude: {
     login: null,
-    import: "armada creds import claude --name <name> --file <private-token-file>",
+    import: "armada account import claude --name <name> --file <private-token-file>",
     preparation: "Run the official claude setup-token locally. Model-only tokens cannot read profile allowance.",
   },
   codex: {
-    login: "armada creds login codex --name <name>",
-    import: "armada creds import codex --name <name> --file <private-auth-json>",
+    login: "armada account login codex --name <name>",
+    import: "armada account import codex --name <name> --file <private-auth-json>",
     preparation: "Install official Codex locally. Device login requires an eligible ChatGPT account.",
   },
   provisioning:

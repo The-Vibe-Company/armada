@@ -194,7 +194,7 @@ test("Skillpack connection reports only visible metadata and never advertises un
   });
 });
 
-describe("armada org and armada creds against the control API", () => {
+describe("armada org and armada account against the control API", () => {
   test("organization setup is org-only, live-authorized, validated and encrypted through CLI/API", async () => {
     await withServer(async ({ db, options, cli }) => {
       const admin = cli(STAN);
@@ -206,7 +206,7 @@ describe("armada org and armada creds against the control API", () => {
       options.providerValidator = async () => {
         calls++;
       };
-      await member.run(["creds", "set", "boat"], { stdin: "personal-test-value" });
+      await member.run(["account", "add", "boat"], { stdin: "personal-test-value" });
       const status = async () => JSON.parse((await member.run(["org", "setup", "--json"])).out);
       expect(await status()).toEqual({
         org: { ...org, role: "member" },
@@ -246,9 +246,9 @@ describe("armada org and armada creds against the control API", () => {
         scope: "org",
       });
       expect(
-        JSON.parse((await member.run(["creds", "list", "--org", org.id, "--json"])).out).orgs[0].credentials,
+        JSON.parse((await member.run(["account", "ls", "--org", org.id, "--json"])).out).orgs[0].credentials,
       ).toEqual([{ kind: "boat", createdAt: null }]);
-      expect((await admin.run(["creds", "rm", "boat", "--org", org.id])).code).toBe(0);
+      expect((await admin.run(["account", "rm", "--kind", "boat", "--org", org.id])).code).toBe(0);
       expect((await status()).ready).toBe(false);
       await expect(
         resolveBoatKey(options.store, KEY, { userId: STAN, orgId: org.id, visibility: "org" }),
@@ -387,26 +387,26 @@ describe("armada org and armada creds against the control API", () => {
       expect((await stan.run(["org", "members", "list"])).out).toContain("ada@example.com  member");
 
       expect(
-        (await stan.run(["creds", "set", "claude-oauth", "--org", "Vibe"], { stdin: `${TOKEN_SECRET}\n` })).code,
+        (await stan.run(["account", "add", "claude-oauth", "--org", "Vibe"], { stdin: `${TOKEN_SECRET}\n` })).code,
       ).toBe(0);
-      expect((await stan.run(["creds", "set", "boat", "--org", "Vibe"], { stdin: "boat-org-key" })).code).toBe(0);
+      expect((await stan.run(["account", "add", "boat", "--org", "Vibe"], { stdin: "boat-org-key" })).code).toBe(0);
       expect(
         (
-          await stan.run(["creds", "set", "codex-auth", "--file", "/home/stan/auth.json"], {
+          await stan.run(["account", "add", "codex-auth", "--file", "/home/stan/auth.json"], {
             files: { "/home/stan/auth.json": AUTH_JSON },
           })
         ).code,
       ).toBe(0);
-      expect((await ada.run(["creds", "set", "boat"], { stdin: "boat-ada-key" })).code).toBe(0);
+      expect((await ada.run(["account", "add", "boat"], { stdin: "boat-ada-key" })).code).toBe(0);
 
-      const adaSees = await ada.run(["creds", "list"]);
+      const adaSees = await ada.run(["account", "ls"]);
       expect(adaSees.out).toContain("You:\n  boat");
       expect(adaSees.out).toContain("Org Vibe (member):\n  boat\n  claude-oauth");
       expect(adaSees.out).not.toContain("codex-auth");
-      const denied = await ada.run(["creds", "set", "anthropic", "--org", "Vibe"], { stdin: "sk-ant-api03-x" });
+      const denied = await ada.run(["account", "add", "anthropic", "--org", "Vibe"], { stdin: "sk-ant-api03-x" });
       expect(denied.code).toBe(1);
       expect(denied.err).toContain("Only an org admin can do that.");
-      expect((await ada.run(["creds", "rm", "claude-oauth", "--org", "Vibe"])).code).toBe(1);
+      expect((await ada.run(["account", "rm", "--kind", "claude-oauth", "--org", "Vibe"])).code).toBe(1);
       expect((await ada.run(["org", "members", "remove", "stan@example.com"])).err).toContain("Only an org admin");
 
       const org = (await options.store.memberships(STAN))[0];
@@ -431,8 +431,8 @@ describe("armada org and armada creds against the control API", () => {
         expect(everything()).not.toContain(secret);
       }
 
-      expect((await stan.run(["creds", "rm", "boat", "--org", "Vibe"])).code).toBe(0);
-      expect((await stan.run(["creds", "list", "--org", "Vibe"])).out).not.toContain("  boat");
+      expect((await stan.run(["account", "rm", "--kind", "boat", "--org", "Vibe"])).code).toBe(0);
+      expect((await stan.run(["account", "ls", "--org", "Vibe"])).out).not.toContain("  boat");
     });
   });
 
@@ -493,16 +493,16 @@ describe("armada org and armada creds against the control API", () => {
     await withServer(async ({ cli }) => {
       const stan = cli(STAN);
       await stan.run(["org", "create", "Vibe"]);
-      const tty = await stan.run(["creds", "set", "openai"], { stdin: null });
+      const tty = await stan.run(["account", "add", "openai"], { stdin: null });
       expect(tty.code).toBe(2);
       expect(tty.err).toContain("Pipe the value on stdin");
-      const extra = await stan.run(["creds", "set", "openai", "sk-pasted-on-the-command-line"]);
+      const extra = await stan.run(["account", "add", "openai", "sk-pasted-on-the-command-line"]);
       expect(extra.code).toBe(2);
       expect(extra.err).not.toContain("sk-pasted");
-      const unknown = await stan.run(["creds", "set", "not-a-credential"], { stdin: "x" });
+      const unknown = await stan.run(["account", "add", "not-a-credential"], { stdin: "x" });
       expect(unknown.code).toBe(2);
       expect(unknown.err).toContain("Unknown credential 'not-a-credential'");
-      const spaced = await stan.run(["creds", "set", "openai"], { stdin: "sk one two" });
+      const spaced = await stan.run(["account", "add", "openai"], { stdin: "sk one two" });
       expect(spaced.code).toBe(2);
       expect(spaced.err).not.toContain("one two");
     });
@@ -1850,28 +1850,33 @@ test("CLI named-account operations preserve safe IDs and CAS through the authent
   await withServer(async ({ cli }) => {
     const admin = cli(STAN);
     await admin.run(["org", "create", "Accounts"]);
-    expect((await admin.run(["creds", "set", "openai", "--name", "Work"], { stdin: "work-test-key" })).code).toBe(0);
+    expect((await admin.run(["account", "add", "openai", "--name", "Work"], { stdin: "work-test-key" })).code).toBe(0);
     expect(
-      (await admin.run(["creds", "set", "openai", "--name", "Personal"], { stdin: "personal-test-key" })).code,
+      (await admin.run(["account", "add", "openai", "--name", "Personal"], { stdin: "personal-test-key" })).code,
     ).toBe(0);
-    const listed = await admin.run(["creds", "list", "--json"]);
+    const listed = await admin.run(["account", "ls", "--json"]);
     expect(listed.out).not.toContain("work-test-key");
     expect(listed.out).not.toContain("valueEnc");
     const accounts = JSON.parse(listed.out).user;
     expect(accounts).toHaveLength(2);
     const id = accounts.find((row: { name: string }) => row.name === "Work").id;
-    expect((await admin.run(["creds", "rename", id, "Renamed"])).code).toBe(0);
-    expect((await admin.run(["creds", "default", id])).code).toBe(0);
     expect(
-      (await admin.run(["creds", "set", "openai", "--id", id, "--expected-version", "1"], { stdin: "new-test-key" }))
+      (await admin.run(["api", "creds/accounts/rename", JSON.stringify({ scope: "user", id, name: "Renamed" })])).code,
+    ).toBe(0);
+    expect((await admin.run(["account", "default", id])).code).toBe(0);
+    expect(
+      (await admin.run(["account", "add", "openai", "--id", id, "--expected-version", "1"], { stdin: "new-test-key" }))
         .code,
     ).toBe(0);
     expect(
-      (await admin.run(["creds", "set", "openai", "--id", id, "--expected-version", "1"], { stdin: "stale-test-key" }))
-        .code,
+      (
+        await admin.run(["account", "add", "openai", "--id", id, "--expected-version", "1"], {
+          stdin: "stale-test-key",
+        })
+      ).code,
     ).not.toBe(0);
-    expect((await admin.run(["creds", "remove", id])).code).toBe(0);
-    expect(JSON.parse((await admin.run(["creds", "list", "--json"])).out).user).toHaveLength(1);
+    expect((await admin.run(["account", "rm", id])).code).toBe(0);
+    expect(JSON.parse((await admin.run(["account", "ls", "--json"])).out).user).toHaveLength(1);
   });
 });
 
@@ -1990,15 +1995,15 @@ test.each(["claude", "codex", "privatized"] as const)(
       ])
         expect(
           (
-            await owner.run(["creds", "set", harness === "claude" ? "claude-oauth" : "codex-auth", "--name", name!], {
+            await owner.run(["account", "add", harness === "claude" ? "claude-oauth" : "codex-auth", "--name", name!], {
               stdin: harness === "claude" ? value! : nativeToken(value!),
             })
           ).code,
         ).toBe(0);
-      await owner.run(["creds", "set", harness === "claude" ? "openai" : "claude-oauth", "--name", "WrongHarness"], {
+      await owner.run(["account", "add", harness === "claude" ? "openai" : "claude-oauth", "--name", "WrongHarness"], {
         stdin: "wrong-harness-key",
       });
-      const accounts = JSON.parse((await owner.run(["creds", "list", "--json"])).out).user as {
+      const accounts = JSON.parse((await owner.run(["account", "ls", "--json"])).out).user as {
         id: string;
         name: string;
       }[];
@@ -2631,7 +2636,7 @@ test("CLI/API connection checks require the owner and current bound revision, ex
     const key = crypto.randomUUID();
     expect(
       (
-        await owner.run(["creds", "set", "openai", "--name", "Foundry"], {
+        await owner.run(["account", "add", "openai", "--name", "Foundry"], {
           stdin: JSON.stringify({
             endpoint: { version: 1, baseUrl: "https://example.com/v1" },
             apiKey: key,
@@ -2687,7 +2692,7 @@ test("CLI/API connection checks require the owner and current bound revision, ex
         };
       },
     };
-    const args = ["creds", "test", id, "--model", "deployment", "--json"];
+    const args = ["account", "test", id, "--model", "deployment", "--json"];
     const denied = await other.run(args);
     expect(denied.code).not.toBe(0);
     expect(denied.err).toContain("Only the sandbox owner");
@@ -2731,7 +2736,7 @@ test("CLI/API connection checks require the owner and current bound revision, ex
     expect(malformed.code).not.toBe(0);
     expect(malformed.out + malformed.err).not.toContain(key);
     const before = calls;
-    const badFlags = await owner.run(["creds", "test", id, "--model", "deployment", "--file", "never-read"]);
+    const badFlags = await owner.run(["account", "test", id, "--model", "deployment", "--file", "never-read"]);
     expect(badFlags.code).not.toBe(0);
     expect(badFlags.err).toContain("accept only --model");
     expect(calls).toBe(before);
@@ -2741,7 +2746,7 @@ test("CLI/API connection checks require the owner and current bound revision, ex
     expect(calls).toBe(before);
     expect(
       (
-        await owner.run(["creds", "set", "openai", "--id", account, "--expected-version", "1"], {
+        await owner.run(["account", "add", "openai", "--id", account, "--expected-version", "1"], {
           stdin: JSON.stringify({
             endpoint: { version: 1, baseUrl: "https://example.com/v1" },
             apiKey: crypto.randomUUID(),
@@ -2755,7 +2760,7 @@ test("CLI/API connection checks require the owner and current bound revision, ex
     // A standard vendor key has no endpoint metadata, but the same bound runtime can probe it.
     expect(
       (
-        await owner.run(["creds", "set", "openai", "--id", account, "--expected-version", "2"], {
+        await owner.run(["account", "add", "openai", "--id", account, "--expected-version", "2"], {
           stdin: "vendor_key_placeholder",
         })
       ).code,
@@ -2769,8 +2774,8 @@ test("CLI/API connection checks require the owner and current bound revision, ex
       (
         await owner.run(
           [
-            "creds",
-            "set",
+            "account",
+            "add",
             "opencode",
             "--name",
             "Custom OpenCode",
@@ -2795,7 +2800,7 @@ test("CLI/API connection checks require the owner and current bound revision, ex
     expectedHarness = "opencode";
     expectedModel = "armada/chosen";
     receipt = { ok: true, status: 200, error: null, code: null };
-    expect((await owner.run(["creds", "test", openCodeSandbox, "--model", expectedModel, "--json"])).code).toBe(0);
+    expect((await owner.run(["account", "test", openCodeSandbox, "--model", expectedModel, "--json"])).code).toBe(0);
     expect(calls).toBe(beforeOpenCode + 1);
     const boatGolden = (
       await db.query<{ id: string }>(
@@ -2812,7 +2817,7 @@ test("CLI/API connection checks require the owner and current bound revision, ex
     expectedSandboxId = "boat_probe";
     expectedHarness = "codex";
     expectedModel = "deployment";
-    const boatArgs = ["creds", "test", boatId, "--model", expectedModel, "--json"];
+    const boatArgs = ["account", "test", boatId, "--model", expectedModel, "--json"];
     const generation = (
       await db.query<{ lifecycle_generation: number }>("select lifecycle_generation from sandboxes where id=$1", [
         boatId,
@@ -2833,7 +2838,7 @@ test("CLI/API connection checks require the owner and current bound revision, ex
       "insert into sandboxes(id,provider,provider_sandbox_id,golden_id,org_id,owner_id,harness,status,credential_id,credential_version) values($1,'boat','native_probe',$2,$3,$4,'codex','ready',$5,3)",
       [nativeId, boatGolden, org.id, STAN, account],
     );
-    expect((await owner.run(["creds", "test", nativeId, "--model", expectedModel, "--json"])).code).not.toBe(0);
+    expect((await owner.run(["account", "test", nativeId, "--model", expectedModel, "--json"])).code).not.toBe(0);
     expect(calls).toBe(afterBoat);
     await db.query("update sandboxes set status='stopped',stopped_at=now() where id=$1", [boatId]);
     expect((await owner.run(boatArgs)).code).not.toBe(0);
