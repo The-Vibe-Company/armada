@@ -18,6 +18,7 @@ let schemaChecked = false;
 const logs: string[] = [];
 const warming = Promise.withResolvers<void>();
 const warmingEntered = Promise.withResolvers<void>();
+let warmingQueryStarted = false;
 const intervals = spyOn(globalThis, "setInterval");
 const sleep = spyOn(Bun, "sleep").mockImplementation((async () => {
   assert.equal(intervals.mock.calls.length, 0, "No background timer may bypass boot backoff");
@@ -48,6 +49,7 @@ Bun.SQL = class {
         errno: "XX000",
       });
     if (text.startsWith("select distinct app_id")) {
+      warmingQueryStarted = true;
       warmingEntered.resolve();
       await warming.promise;
     }
@@ -116,57 +118,56 @@ try {
   const release = Promise.withResolvers<void>();
   const streamed = Promise.withResolvers<void>();
   let listenerStarted = false;
-  const starting = startServer(
-    {
-      ...env,
-      ARMADA_MODAL_DIALOUT: "1",
-      ARMADA_MODAL_RUNTIME_MANIFEST: manifestPath,
-      ARMADA_RUNTIME_ARTIFACT_DIR: artifactDir,
+  const warmingEnv = {
+    ...env,
+    ARMADA_MODAL_DIALOUT: "1",
+    ARMADA_MODAL_RUNTIME_MANIFEST: manifestPath,
+    ARMADA_RUNTIME_ARTIFACT_DIR: artifactDir,
+  };
+  const starting = startServer(warmingEnv, {
+    log: (line) => {
+      if (line.startsWith("armada serve: listening")) listenerStarted = true;
     },
-    {
-      log: () => {
-        listenerStarted = true;
-      },
-      logError: (line) => logs.push(line),
-      routes: [
-        async (request) => {
-          if (new URL(request.url).pathname === "/stream-fixture") {
-            return new Response(
-              new ReadableStream({
-                async start(controller) {
-                  controller.enqueue(new TextEncoder().encode("started"));
-                  await streamed.promise;
-                  assert.equal(
-                    pools.slice(0, 2).every((pool) => pool.closed === 0),
-                    true,
-                    "POST response retains SQL",
-                  );
-                  assert.equal(mcpClosed, false, "POST tool stream retains MCP until EOF");
-                  controller.enqueue(new TextEncoder().encode("finished"));
-                  controller.close();
-                },
-              }),
-              { headers: { "content-type": "text/event-stream" } },
-            );
-          }
-          if (new URL(request.url).pathname !== "/drain-fixture") return null;
-          entered.resolve();
-          await release.promise;
-          assert.equal(
-            pools.slice(0, 2).every((pool) => pool.closed === 0),
-            true,
-            "HTTP work retains SQL during drain",
+    logError: (line) => logs.push(line),
+    routes: [
+      async (request) => {
+        if (new URL(request.url).pathname === "/stream-fixture") {
+          return new Response(
+            new ReadableStream({
+              async start(controller) {
+                controller.enqueue(new TextEncoder().encode("started"));
+                await streamed.promise;
+                assert.equal(
+                  pools.slice(0, 2).every((pool) => pool.closed === 0),
+                  true,
+                  "POST response retains SQL",
+                );
+                assert.equal(mcpClosed, false, "POST tool stream retains MCP until EOF");
+                controller.enqueue(new TextEncoder().encode("finished"));
+                controller.close();
+              },
+            }),
+            { headers: { "content-type": "text/event-stream" } },
           );
-          return new Response("finished");
-        },
-      ],
-    },
-  );
+        }
+        if (new URL(request.url).pathname !== "/drain-fixture") return null;
+        entered.resolve();
+        await release.promise;
+        assert.equal(
+          pools.slice(0, 2).every((pool) => pool.closed === 0),
+          true,
+          "HTTP work retains SQL during drain",
+        );
+        return new Response("finished");
+      },
+    ],
+  });
   try {
     await Promise.race([warmingEntered.promise, starting]);
     assert.equal(listenerStarted, true, "Startup must reach listen while Modal warming is pending");
-  } finally {
-    warming.reject(new Error("private startup detail"));
+  } catch (error) {
+    warming.resolve();
+    throw error;
   }
   const server = await starting;
   try {
@@ -175,6 +176,8 @@ try {
     assert.equal(intervals.mock.calls.length > 0, true);
     const response = await fetch(`http://127.0.0.1:${server.port}/healthz`);
     assert.equal(response.status, 200);
+    assert.equal(warmingQueryStarted, true, "Health must respond with the warming query pending");
+    warming.reject(new Error("private startup detail"));
     const healthy = (await response.json()) as { ok: boolean; idlePauseDelayMs: number };
     assert.equal(healthy.ok, true);
     assert.equal(
@@ -234,6 +237,7 @@ try {
       await drained;
     }
   } finally {
+    warming.resolve();
     await server.stop(true);
     await server.workerDone;
   }

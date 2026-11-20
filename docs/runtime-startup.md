@@ -77,16 +77,15 @@ bootstrap also checks that path for the runtime executable and verifies size
 and SHA256 before publishing it to the private cache. Provider-run Modal and
 Boat do not mount the Volume.
 
-On startup the server uses the registered Modal App credentials to create
-or warm the Volume in each bound environment. Enrolled launches and resumes
+After the HTTP listener starts, the server uses the registered Modal App
+credentials to warm the Volume in each bound environment in the background. Enrolled launches and resumes
 also request warming for new bindings and failed startup seeds. A launch
 that races warming can use the existing verified HTTP installer. The seeder
 verifies existing entries and writes only missing or invalid manifest digests, verifies uploaded
 bytes by SHA-256 and size, and preserves digests from other deployments. The
 server image includes the Modal Python SDK used for Volume uploads. The Modal
-credentials need permission to create and write the Volume. The first seed
-can take longer than a warm launch, so existing registered Apps are warmed
-before the server begins serving requests.
+credentials need permission to create and write the Volume. Server health
+checks run independently of Volume warming.
 
 The trusted launcher holds exclusive launch/lifecycle ownership and supplies
 only `{serverUrl,enrolmentToken}` to `armada-runtime dialout` on private stdin.
