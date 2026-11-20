@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, expect, spyOn, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import {
   createSqlSandboxStore,
   createSqlVaultStore,
@@ -7,23 +7,14 @@ import {
   resolveGitHubAccess,
 } from "@armada/core/server";
 import { captureGitHubAuditLogs } from "../../../scripts/test-support/github-audit.ts";
-import { openMigratedDatabase } from "../../../scripts/test-support/migrated-database.ts";
 import { createLegacyGitHubPreparation, refreshLegacyGitHub } from "../src/github-legacy.ts";
+import { useMigratedDatabase } from "./migrated-database.ts";
 import { ENCRYPTION_KEY } from "./support.ts";
 
-let connection: Awaited<ReturnType<typeof openMigratedDatabase>> | undefined;
-beforeAll(async () => {
-  connection = await openMigratedDatabase();
-});
-afterAll(async () => {
-  const db = connection;
-  connection = undefined;
-  await db?.close();
-});
+const database = useMigratedDatabase();
 
 test("opted-in next-prompt preparation repairs siblings and never blocks prompts on install failure", async () => {
-  const db = connection;
-  if (!db) throw new Error("Missing legacy GitHub schema fixture");
+  const db = database();
   const people = { org: crypto.randomUUID(), owner: crypto.randomUUID() };
   // GitHub repair uses its own grant below, not model or provider credentials.
   await db.query("insert into auth.users(id) values($1)", [people.owner]);

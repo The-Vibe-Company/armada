@@ -915,7 +915,15 @@ export function createSandboxLifecycle(
             const { status } = current;
             const interrupted = status === "starting";
             const failed = interrupted || physicalExit;
-            const toState = failed ? "failed" : terminal && status !== "failed" ? "stopped" : status;
+            const pendingRetention =
+              waitingForRetention && (status === "ready" || status === "running" || status === "stopping");
+            const toState = failed
+              ? "failed"
+              : terminal && status !== "failed"
+                ? "stopped"
+                : pendingRetention
+                  ? "stopping"
+                  : status;
             const expiredStop = terminal && expired && status !== "failed" && current.status_reason !== "work_merged";
             const statusReason = interrupted
               ? (current.status_reason ?? INTERRUPTED_LAUNCH_REASON)
@@ -932,7 +940,7 @@ export function createSandboxLifecycle(
               : current.stopped_at;
             const stopRequestedAt = terminal
               ? null
-              : interrupted || waitingForRetention
+              : interrupted || pendingRetention
                 ? (current.stop_requested_at ?? current.settled_at)
                 : current.stop_requested_at;
             if (toState !== status) {
@@ -946,21 +954,21 @@ export function createSandboxLifecycle(
                   ? "launch_interrupted"
                   : physicalExit
                     ? "provider_exit_without_checkpoint"
-                    : expiredStop
-                      ? "expired"
-                      : "provider_stopped",
+                    : pendingRetention
+                      ? "stop_requested"
+                      : expiredStop
+                        ? "expired"
+                        : "provider_stopped",
                 effects: [],
                 settlement: { lease: token, statusReason, stopRequestedAt, stoppedAt: exitTime },
               });
               if (result.kind === "conflict") return true;
             }
             if (toState === status) {
-              const pendingRetention = waitingForRetention && !failed;
               await tx.query(
                 `update public.sandboxes set
-                 status=case when $2 then 'stopping'::public.sandbox_status else status end,
-                 transition_context=case when $2 then jsonb_build_object('actor','reconciler','code','stop_requested') end,
                  status_reason=$3,stop_requested_at=$4,stopped_at=$5,
+                 transition_context=null,
                  stop_generation=case when $2 and stop_requested_at is null then stop_generation+1 else stop_generation end
                where id=$1`,
                 [row.id, pendingRetention, statusReason, stopRequestedAt, exitTime],
