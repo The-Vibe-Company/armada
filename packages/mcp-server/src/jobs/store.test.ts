@@ -1087,7 +1087,7 @@ test.each([
   }
 });
 
-test.each(["boat", "docker"] as const)(
+test.each(["boat", "docker", "docker with a current prompt"] as const)(
   "a stale %s turn preserves its open dispatch window across an interrupted requeue",
   async (provider) => {
     const f = await turnFixture();
@@ -1097,7 +1097,21 @@ test.each(["boat", "docker"] as const)(
       await f.db.query("update sandboxes set lifecycle_generation=3 where id=$1", [sandboxId]);
       return { sandboxId, requestId };
     };
-    const { sandboxId, requestId } = provider === "docker" ? await interruptedDockerTurn("running", f) : await setup();
+    const { sandboxId, requestId } = provider === "boat" ? await setup() : await interruptedDockerTurn("running", f);
+    const currentPrompt = provider === "docker with a current prompt";
+    if (currentPrompt) {
+      await f.db.query(
+        `insert into runtime_enrolments (sandbox_id,lifecycle_generation,epoch,runtime_hash,docker_issuer_fence)
+         select $1,3,2,repeat('c',64),user_id::text || ':' || epoch::text
+         from mcp_actor_epochs where org_id=$2 and user_id=$3`,
+        [sandboxId, f.people.org, f.people.owner],
+      );
+      await f.db.query(
+        `insert into runtime_commands (sandbox_id,request_id,epoch,request_enc)
+         values ($1,$2,2,''::bytea)`,
+        [sandboxId, `docker_prompt_${requestId}`],
+      );
+    }
     await f.makeDue(sandboxId);
     await f.db.query(
       `update account_turn_queue set state='dispatching', dispatch_generation=2, dispatch_until='2100-01-01T00:00:00Z'
@@ -1144,6 +1158,14 @@ test.each(["boat", "docker"] as const)(
     expect(await runner.reconcileOne(signal)).toBe(false);
     await f.db.query("update account_turn_queue set dispatch_until='-infinity' where request_id=$1", [requestId]);
     await f.makeDue(sandboxId);
+    if (currentPrompt) {
+      const owner = crypto.randomUUID();
+      const claim = await f.store.claim("turn_dispatch", owner, 30, 1);
+      expect(claim).toMatchObject({ generation: "3", payload: { requestId } });
+      expect(await f.store.inspect(claim!, owner)).toBe("dispatch");
+      expect(dispatches).toBe(0);
+      return;
+    }
     expect(await runner.reconcileOne(signal)).toBe(true);
     await runner.drain();
     expect((await state()).rows).toEqual([
