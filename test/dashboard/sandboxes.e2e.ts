@@ -55,13 +55,22 @@ for (const organization of [
     session: organization.session,
   }, async ({ app, screen, browser }) => {
     await app.open(`/sandboxes/${organization.id}`);
+    const transcript = browser.locator('[role="log"][aria-label="Messages"]');
+    if (organization.session === "large") {
+      const loadOlder = screen.getByRole("button", "Load older messages");
+      await expect(loadOlder).toBeVisible();
+      const earlier = screen.getByText("Earlier fixture response", { exact: true });
+      await expect(earlier).toHaveCount(0);
+      await loadOlder.tap();
+      await expect(transcript).toContainText("Earlier fixture response");
+    }
     for (const message of ["Inspect the fixture task", "Summarize the fixture result"]) {
       await screen.getByRole("textbox", "Message").fill(message);
       await screen.getByRole("button", /^(Send|Send as new turn)$/).tap();
-      await expect(browser.locator('[role="log"][aria-label="Messages"]')).toContainText(message);
+      await expect(transcript).toContainText(message);
     }
     await screen.getByRole("button", "Interrupt").tap();
-    await expect(browser.locator('[role="log"][aria-label="Messages"]')).toContainText("Interrupted");
+    await expect(transcript).toContainText("Interrupted");
     await screen.getByRole("button", "Stop").tap();
     await screen.getByRole("button", "Stop sandbox").tap();
     await expect(screen.getByRole("textbox", "Message")).toHaveAttribute(

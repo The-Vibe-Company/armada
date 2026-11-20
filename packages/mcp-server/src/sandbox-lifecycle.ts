@@ -56,6 +56,7 @@ interface SandboxTransition {
     statusReason: string | null;
     stopRequestedAt: string | null;
     stoppedAt: string | null;
+    activityLease?: string;
   };
 }
 
@@ -63,6 +64,7 @@ type SandboxTransitionResult = { kind: "applied"; generation: number } | { kind:
 
 export async function transitionSandbox(tx: Sql, input: SandboxTransition) {
   const settlement = input.settlement;
+  const activityLease = settlement?.activityLease;
   const {
     rows: [result],
   } = await tx.query<{ applied: boolean; generation: string | null }>(
@@ -70,6 +72,7 @@ export async function transitionSandbox(tx: Sql, input: SandboxTransition) {
       $1::uuid, $2::bigint, array(select jsonb_array_elements_text($3::jsonb)::public.sandbox_status),
       $4::public.sandbox_status, $5::text, $6::text, $7::jsonb
       ${settlement ? ", $8::text, $9::timestamptz, $10::timestamptz, $11::uuid" : ""}
+      ${activityLease === undefined ? "" : ", $12::uuid"}
     )`,
     [
       input.sandboxId,
@@ -82,6 +85,7 @@ export async function transitionSandbox(tx: Sql, input: SandboxTransition) {
       ...(settlement
         ? [settlement.statusReason, settlement.stopRequestedAt, settlement.stoppedAt, settlement.lease]
         : []),
+      ...(activityLease === undefined ? [] : [activityLease]),
     ],
   );
   if (!result) throw new Error("Sandbox transition did not return a result.");
@@ -503,22 +507,32 @@ export async function requestFailedRuntimeResumeStop(
   generation: number | undefined,
   retained: boolean,
 ) {
-  const changed = await tx.query<{ status: "stopping" | "failed" }>(
-    `update public.sandboxes set
-    status=case when $4 and not application_secret_tainted then 'stopping'::public.sandbox_status else 'failed'::public.sandbox_status end,
-    transition_context=jsonb_build_object('actor','runtime_resume','code',
-      case when $4 and not application_secret_tainted then $5::text else 'restore_unconfirmed' end),
-    status_reason=case when $4 and not application_secret_tainted then null
-      else 'Runtime resume failed before a restored worker was confirmed; cleanup requested.' end,
-    stop_requested_at=now(),stop_generation=stop_generation+1,
-    activity_lease_id=null,activity_until=null,lifecycle_generation=lifecycle_generation+1,
-    reconcile_after=case when $4 and not application_secret_tainted then 'infinity'::timestamptz else now() end
-    where id=$1 and status='starting' and activity_lease_id=$2 and lifecycle_generation=$3
-      and activity_until>clock_timestamp() and stop_requested_at is null and deleted_at is null
-      and (reconcile_lease_until is null or reconcile_lease_until<=clock_timestamp()) returning status`,
-    [sandboxId, requestId, generation, retained, UNENROLLED_RESUME_STOP],
+  if (generation === undefined) return;
+  const {
+    rows: [sandbox],
+  } = await tx.query<{ application_secret_tainted: boolean }>(
+    "select application_secret_tainted from public.sandboxes where id=$1 for update",
+    [sandboxId],
   );
-  return changed.rows[0]?.status;
+  if (!sandbox) return;
+  const toState = retained && !sandbox.application_secret_tainted ? "stopping" : "failed";
+  const result = await transitionSandbox(tx, {
+    sandboxId,
+    expectedGeneration: generation,
+    fromStates: ["starting"],
+    toState,
+    actor: "runtime_resume",
+    code: toState === "stopping" ? UNENROLLED_RESUME_STOP : "restore_unconfirmed",
+    effects: [],
+    settlement: {
+      lease: null,
+      activityLease: requestId,
+      statusReason: null,
+      stopRequestedAt: null,
+      stoppedAt: null,
+    },
+  });
+  if (result.kind === "applied") return toState;
 }
 
 const dockerStartupStates = ["starting", "ready", "running"] as const;

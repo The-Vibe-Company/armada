@@ -1,5 +1,5 @@
 /** API-only vault checks. Secret canaries and response bodies must never reach output. */
-export type VaultSmokeCode =
+type VaultSmokeCode =
   | "invalid_response"
   | "secret_exposed"
   | "unexpected_acceptance"

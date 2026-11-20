@@ -57,17 +57,20 @@ The provider hard-deadline/headroom contract must include runtime grants and MCP
 lease expiry, not just SQL `expires_at`. Existing Modal machines without headroom
 cannot safely receive an extension beyond their physical deadline.
 
-## Required staging verification (not performed)
+## Staging verification checklist (not performed)
 
-For each provider and harness, launch from a staging golden with a two-minute
-logical lifetime; give it a random non-secret recall token and create an
-unpushed change. Let it expire once while idle and once while a turn is running.
-Verify clean interruption, stopped/expired status and recoverable work, then send
-another prompt using the same sandbox ID and require recall of the original
-token and inspection of the unpushed change. Separately extend before expiry and
-verify the original deadline passes without stopping. Repeat with a removed
-provider disk/checkpoint and require an explicit non-restorable response with the
-work recovery reference. Do not run these destructive checks against production.
+For the applicable harnesses on Modal, launch from a staging snapshot with a
+two-minute logical lifetime. Create an unpushed change. Let the sandbox expire
+once while idle and once while a turn is running. Check interruption, retained
+work and the expiry reason. A new prompt to an expired sandbox should return
+`sandbox_terminal`. Separately, extend the sandbox before expiry and verify that
+it stays running past the original deadline.
+
+The proposed recovery checks in #854 cover conversation recall and access to
+unpushed changes after expiry, plus the missing disk or checkpoint case. Verify
+those expectations when that recovery path ships. Boat verification is
+coordinator-only and on demand. Run expiry checks only against disposable
+sandboxes.
 
 ## Initial delivery scope
 

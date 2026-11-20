@@ -1,8 +1,9 @@
 import type { Harness } from "../packages/core/src/contract.ts";
 import { redactForLog } from "../packages/mcp-server/src/log.ts";
 import { observeSmokeLaunch } from "./smoke-launch.ts";
+
 /** Ordinary sandbox access probe. The owner API only observes and safely cleans up; the native model exercises MCP. */
-export interface ScopedProbeCase {
+interface ScopedProbeCase {
   org: string;
   provider: "boat" | "modal";
   harness: Harness;
