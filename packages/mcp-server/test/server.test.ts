@@ -548,6 +548,64 @@ describe("tools", () => {
     expect(boat.keys).toEqual([SECRETS.personalBoat]);
   });
 
+  test.each(["accepted", "superseded", "journal failure"] as const)(
+    "prompted native launch settlement (%s)",
+    async (scenario) => {
+      const { boat, client, db, people, token } = await start();
+      const mcp = await client(await token(people.member));
+      if (scenario === "superseded") {
+        const prompt = boat.provider.prompt.bind(boat.provider);
+        boat.provider.prompt = async (request) => {
+          const receipt = await prompt(request);
+          await db.exec("update sandboxes set status='stopping' where status='starting'");
+          return receipt;
+        };
+      }
+      if (scenario === "journal failure")
+        await db.exec(`alter table sandbox_transitions add constraint reject_native_launch_journal
+          check (code <> 'native_send_accepted')`);
+
+      const launched = await call(mcp, "launch", {
+        provider: "boat",
+        golden: "shared",
+        harness: "claude",
+        prompt: "hello",
+      }).finally(async () => {
+        if (scenario === "journal failure")
+          await db.exec("alter table sandbox_transitions drop constraint reject_native_launch_journal");
+      });
+
+      const accepted = scenario === "accepted";
+      const superseded = scenario === "superseded";
+      expect(launched.isError).toBe(!accepted);
+      if (accepted) expect(launched.data).toMatchObject({ sandbox: { status: "running" }, promptId: "prompt_1" });
+      expect(
+        (
+          await db.query(`select status, lifecycle_generation::int as generation, activity_lease_id,
+          task_prompt_id, conversation_ids from sandboxes`)
+        ).rows,
+      ).toEqual([
+        {
+          status: accepted ? "running" : superseded ? "stopping" : "failed",
+          generation: superseded ? 1 : 2,
+          activity_lease_id: superseded ? expect.any(String) : null,
+          task_prompt_id: accepted ? "prompt_1" : null,
+          conversation_ids: accepted ? [expect.any(String)] : [],
+        },
+      ]);
+      expect(
+        (
+          await db.query(`select from_status, actor, code, generation::int from sandbox_transitions
+          where to_status='running'`)
+        ).rows,
+      ).toEqual(
+        accepted
+          ? [{ from_status: "starting", actor: "native_turn", code: "native_send_accepted", generation: 2 }]
+          : [],
+      );
+    },
+  );
+
   test.each(["applied", "superseded", "reported", "rollback"] as const)(
     "launch failure settlement (%s)",
     async (scenario) => {

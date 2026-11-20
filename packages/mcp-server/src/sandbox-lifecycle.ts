@@ -276,7 +276,7 @@ export async function publishDockerRuntimeReadiness(
   return transition.kind === "applied";
 }
 
-export async function finishEnrolledRuntimeLaunch(
+export async function finishLaunchSuccess(
   tx: Sql,
   scope: [string[], string],
   sandboxId: string,
@@ -286,13 +286,20 @@ export async function finishEnrolledRuntimeLaunch(
 ) {
   const {
     rows: [sandbox],
-  } = await tx.query<{ enrolled_path: boolean; owned: boolean }>(
+  } = await tx.query<{ enrolled_path: boolean; native_path: boolean; owned: boolean }>(
     `select ((s.provider='boat' and s.boat_runtime) or
              (s.provider='modal' and s.runtime_transport is not distinct from 'dialout')) as enrolled_path,
+      (s.provider in ('boat','modal') and not s.boat_runtime and s.runtime_transport is null) as native_path,
       s.owner_id=$2 as owned
      from public.sandboxes s where s.id=$3::uuid and ${SANDBOX_VISIBLE} for update of s`,
     [...scope, sandboxId],
   );
+  if (sandbox?.native_path && prompt) {
+    if (!sandbox.owned) return "conflict";
+    return (await finishPromptedNativeLaunch(tx, sandboxId, generation, activityToken, prompt))
+      ? "applied"
+      : "conflict";
+  }
   if (sandbox && !sandbox.enrolled_path) return "other_path";
   if (!sandbox?.owned) return "conflict";
   const live = await tx.query(
@@ -333,6 +340,31 @@ export async function finishEnrolledRuntimeLaunch(
     await tx.query("update public.sandboxes set activity_lease_id=null,activity_until=null where id=$1", [sandboxId]);
   }
   return "applied";
+}
+
+async function finishPromptedNativeLaunch(
+  tx: Sql,
+  sandboxId: string,
+  generation: number,
+  activityToken: string,
+  prompt: { promptId: string; conversationIds: string[] },
+) {
+  const {
+    rows: [receipt],
+  } = await tx.query<{ generation: string }>(
+    `update public.sandboxes s set lifecycle_generation=s.lifecycle_generation+1,
+       task_prompt_id=$4, conversation_ids=$5::text[]
+     where s.id=$1 and s.lifecycle_generation=$2 and s.activity_lease_id=$3
+       and s.status='starting' and s.stop_requested_at is null and s.stopped_at is null and s.deleted_at is null
+       and s.task_prompt_id is null and cardinality(s.conversation_ids)=0
+     returning s.lifecycle_generation::text as generation`,
+    [sandboxId, generation, activityToken, prompt.promptId, prompt.conversationIds],
+  );
+  if (!receipt) return false;
+  await publishNativeTurn(tx, sandboxId, "starting", receipt.generation, activityToken, "native_send_accepted");
+  await tx.query("update public.sandboxes set activity_lease_id=null,activity_until=null where id=$1", [sandboxId]);
+  await releaseAccountCapacity(tx, sandboxId);
+  return true;
 }
 
 export async function recordDockerPromptAccepted(
