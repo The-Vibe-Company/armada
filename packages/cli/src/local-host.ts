@@ -225,7 +225,7 @@ async function downloadHost(native: LocalHostIo, server: string): Promise<Uint8A
   return bytes;
 }
 
-export async function localHostCommand(argv: readonly string[], io: Io, native: LocalHostIo): Promise<number> {
+export async function localHostCommand(argv: readonly string[], io: Io, native: LocalHostIo) {
   let otherOrigin: string | undefined;
   try {
     if (argv.length === 1 && ["--help", "-h"].includes(argv[0] ?? "")) {
