@@ -348,9 +348,9 @@ test.each(["launch", "message"] as const)(
           goldenId: golden.id,
           orgId: p.org,
           ownerId: p.owner,
-          harness: "claude",
+          harness: "codex",
           model: selection.model,
-          reasoningEffort: undefined,
+          reasoningEffort: "high",
           status: "ready",
           visibility: "private",
         });
