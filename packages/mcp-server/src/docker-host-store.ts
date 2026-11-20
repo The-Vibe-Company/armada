@@ -1913,6 +1913,24 @@ export function createDockerHostStore(sql: Sql, key: string) {
       function authorize(expectedGeneration?: string) {
         return transaction(async (tx) => {
           id(requestId);
+          const restoreReceipt = (
+            await tx.query<StoredJob & { placed_generation: string | null }>(
+              `select j.*,s.docker_generation as placed_generation from public.docker_host_jobs j
+               join public.docker_hosts h on h.id=j.host_id
+               left join public.sandboxes s on s.id=j.bound_sandbox_id and s.docker_host_id=h.id
+                 and s.docker_installation_id=h.installation_id and s.org_id=h.org_id
+               where j.request_id=$1 and j.bound_operation='restore' and h.hash=$2 and h.installation_id=$3`,
+              [requestId, hash(hostToken), installationId],
+            )
+          ).rows[0];
+          if (restoreReceipt) {
+            const restore = await readJob(restoreReceipt);
+            if (restore.operation !== "restore" || restore.request.generation !== requestId) deny();
+            if (restoreReceipt.placed_generation === restore.request.generation) deny();
+            // Before placement handoff there is no replacement runtime output to publish.
+            // Acknowledge the daemon's probe so it can retire the expiry obligation.
+            return;
+          }
           const host = await authenticate(tx, hostToken, installationId);
           const job =
             (

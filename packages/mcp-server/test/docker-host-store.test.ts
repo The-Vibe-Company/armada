@@ -719,6 +719,26 @@ test("authenticated restore expiry settles the exact starting generation before 
   ]);
 });
 
+test("an expired pre-handoff restore settles the output probe without reading an archive", async () => {
+  const a = await restoreFixture();
+  await a.poll();
+  await store.expired(a.hostToken, a.installationId, { requestId: a.restore.requestId });
+  const signal = new AbortController().signal;
+  const outputs = (token: string, installation: string, body: ReadableStream<Uint8Array> | null) =>
+    store.retainedOutputs(token, installation, a.restore.requestId, body, signal);
+  await denied(outputs(a.hostToken, randomUUID(), null));
+  expect(await outputs(a.hostToken, a.installationId, null)).toBe(204);
+  const archive = new ReadableStream<Uint8Array>(
+    {
+      pull() {
+        throw new Error("Pre-handoff restore output must not be read");
+      },
+    },
+    { highWaterMark: 0 },
+  );
+  expect(await outputs(a.hostToken, a.installationId, archive)).toBe(204);
+});
+
 test("restore work is gated and stays eligible behind an excluded predecessor cleanup", async () => {
   const a = await restoreFixture();
   const excluded = [a.cleanupId];
