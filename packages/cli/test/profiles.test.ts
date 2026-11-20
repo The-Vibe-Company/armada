@@ -183,3 +183,14 @@ test("default profile organization preferences use the saved login origin", asyn
   expect(origins).toEqual(["https://custom.example"]);
   expect(JSON.parse(output)).toEqual({ org: "chosen_org" });
 });
+
+test("exec rejects shell text without the argument separator", async () => {
+  let stderr = "";
+  const code = await run(
+    ["exec", "11111111-1111-4111-8111-111111111111", "pwd"],
+    { out: () => {}, err: (text) => (stderr += text) },
+    { env: {} },
+  );
+  expect(code).toBe(2);
+  expect(stderr).toContain("Use armada exec [sandbox-id] -- COMMAND");
+});

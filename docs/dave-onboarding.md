@@ -323,7 +323,7 @@ armada new first-modal --org my-team --provider modal --agent codex \
 
 `armada new` asks the server to resolve credentials and fork the snapshot. It prints the sandbox id
 (`--json` prints the full record). Use that ID for `armada status <sandbox-id>`,
-`armada logs <sandbox-id>` and, when finished, `armada stop <sandbox-id>` to stop charges.
+`armada events <sandbox-id>` and, when finished, `armada stop <sandbox-id>` to stop charges.
 Omit the prompt to leave the sandbox waiting for your first `armada send` instead. Optional `--repo` selects one repository already recorded in the
 snapshot, by `owner/repo` or by its configured directory, and starts the agent there: the
 agent's real initial working directory, set after the pulls and init and before its first prompt,
@@ -616,6 +616,6 @@ JSON selection commands return `{"org":<organization>}` when selecting and
 authorizing the request and keep the process running. It writes
 `{"authenticated":true}` after saving the session. `armada logout --json`
 returns `{"authenticated":false}`. Host mutations
-accept `--json`: limits and retention return the host ID and requested policy,
-revoke returns the host ID and `revoked:true`, and add returns the registration
-receipt without waiting for check-in. Protect that short-lived installer receipt.
+accept `--json`. The `limits` verb returns the host ID and requested policy.
+The `rm` verb returns the host ID and `revoked:true`. The `add` verb returns
+the registration receipt without waiting for check-in. Protect that short-lived installer receipt.

@@ -30,6 +30,8 @@ export async function operation(
     command === "list" ? ["--page-info"] : command === "rm" ? ["--yes"] : command === "status" ? ["--live"] : [],
   );
   const end = argv.indexOf("--");
+  if (command === "exec" && (end < 0 || end === argv.length - 1 || args.positionals.length > argv.length - end))
+    throw new GoldenError("invalid_config", "Use armada exec [sandbox-id] -- COMMAND.");
   const payload = command === "send" || command === "steer" || command === "exec";
   const implicitWithPayload = payload && end >= 0 && args.positionals.length === argv.length - end - 1;
   const implicitReport =

@@ -43,7 +43,7 @@ JSON receipt must show `sandbox.runtimeTransport: "dialout"` and
 ```sh
 armada wait "$MODAL_SANDBOX_UUID" --timeout 300 --org "$ORG_UUID"
 armada status "$MODAL_SANDBOX_UUID" --org "$ORG_UUID" --json
-armada logs "$MODAL_SANDBOX_UUID" --all --org "$ORG_UUID" --json
+armada events "$MODAL_SANDBOX_UUID" -f --org "$ORG_UUID" --json
 armada stop "$MODAL_SANDBOX_UUID" --org "$ORG_UUID"
 ```
 

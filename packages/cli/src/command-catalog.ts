@@ -31,7 +31,7 @@ Quick start / common examples:
   armada list
   armada status SANDBOX_ID
   armada send SANDBOX_ID "Continue the task"
-  armada logs SANDBOX_ID --tail 20
+  armada events SANDBOX_ID --tail 20
   armada stop SANDBOX_ID
   eval "$(armada completion bash)"
 
@@ -52,7 +52,6 @@ ${sandboxUsage("bind-credential")}
 ${sandboxUsage("sandbox")}
 ${sandboxUsage("snapshot-admin")}
 ${sandboxUsage("mcp")}
-${sandboxUsage("logs")}
 ${sandboxUsage("session")}
 ${sandboxUsage("org")}
 ${sandboxUsage("account")}

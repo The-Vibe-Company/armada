@@ -82,7 +82,7 @@ armada new "$GOLDEN" --provider "$PROVIDER" --repo "$REPO" --agent "$REVIEW_HARN
 # Persist returned sandbox UUID immediately, then register cleanup.
 armada status "$REVIEWER_ID" --json
 armada wait "$REVIEWER_ID" --timeout 600 --json
-armada logs "$REVIEWER_ID" --all --json
+armada events "$REVIEWER_ID" -f --json
 armada stop "$REVIEWER_ID" --json
 armada status "$REVIEWER_ID" --json
 ~~~

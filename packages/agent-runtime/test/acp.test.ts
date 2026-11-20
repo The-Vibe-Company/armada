@@ -3,7 +3,9 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, wr
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { RequestRefused } from "../src/errors.ts";
-import { AcpDriver, AntigravityDriver, type DriverEvent } from "../src/index.ts";
+import { AcpDriver, AntigravityDriver, type DriverEvent, Journal } from "../src/index.ts";
+
+import { executeWithReceipt } from "../src/request-receipts.ts";
 
 // The real stdio transport owns load replay, cancel-response races and multi-turn usage attribution.
 // The existing Runner tests cannot observe wire behavior inside a native harness process.
@@ -252,7 +254,11 @@ function antigravityFixture(credential: ConstructorParameters<typeof Antigravity
         root,
         cwd: root,
         credential,
-        registerSecrets: (values) => registered.push(...values),
+        journal: {
+          registerApplicationSecrets: (values) => {
+            registered.push(...values);
+          },
+        },
       }),
     context: (text: string, model?: string) => ({
       request: { sandboxId: "s", harness: "opencode" as const, text, ...(model === undefined ? {} : { model }) },
@@ -382,3 +388,43 @@ antigravityTest("Antigravity passes the Gemini key only in a private child envir
     f.clean();
   }
 });
+
+antigravityTest(
+  "Antigravity credentials are scrubbed inside workspace command output before a receipt is written",
+  async () => {
+    const root = mkdtempSync(join(tmpdir(), "antigravity-receipt-"));
+    const journal = new Journal(":memory:", (text) => text);
+    const apiKey = "key42";
+    try {
+      new AntigravityDriver({
+        executable: join(root, "unused"),
+        root,
+        cwd: root,
+        credential: { method: "gemini-api-key", apiKey },
+        journal,
+      });
+      const response = await executeWithReceipt(
+        journal,
+        {
+          version: 1,
+          sandboxId: "sandbox",
+          requestId: "workspace-receipt",
+          op: "workspaceExec",
+          input: { command: "fixture", cwd: root, timeoutSeconds: 1, phase: "init", index: 0, attempt: 1 },
+        },
+        async () => ({
+          exitCode: 0,
+          stdout: { text: `prefix${apiKey}suffix`, truncated: false },
+          stderr: { text: "", truncated: false },
+        }),
+      );
+      expect(await response.json()).toMatchObject({ result: { stdout: "prefix[REDACTED]suffix" } });
+      expect(journal.db.query("SELECT body FROM requests WHERE id = ?").get("workspace-receipt")).toMatchObject({
+        body: expect.stringContaining("prefix[REDACTED]suffix"),
+      });
+    } finally {
+      journal.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  },
+);
