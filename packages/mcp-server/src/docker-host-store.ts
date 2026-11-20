@@ -15,6 +15,7 @@ import {
   decryptSecret,
   encryptSecret,
   isSnapshotBaselineTool,
+  type MachineIdentity,
   readOutputArchive,
   type SnapshotBaselineTool,
   VaultError,
@@ -1478,7 +1479,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
       actor: Actor,
       claim: Pick<RunnerJob, "id" | "sandbox_id" | "generation" | "lease_epoch">,
       requestId: string,
-    ) {
+    ): Promise<MachineIdentity> {
       return transaction(async (tx) => {
         const { host, row } = await lockSandboxAdmission(tx, actor, claim.sandbox_id ?? deny(), "restore");
         id(requestId);
@@ -1490,7 +1491,8 @@ export function createDockerHostStore(sql: Sql, key: string) {
             [requestId, host.id, row.id],
           )
         ).rows[0];
-        if (!receipt || receipt.outcome !== "completed" || receipt.cancelled_at !== null) deny();
+        if (!receipt || receipt.outcome !== "completed" || receipt.cancelled_at !== null || !receipt.result_machine_id)
+          deny();
         const { job, runnerJobId } = await readStoredJob(receipt, row.lifecycle_generation);
         if (
           job.operation !== "restore" ||
@@ -1509,7 +1511,8 @@ export function createDockerHostStore(sql: Sql, key: string) {
           predecessor: job.predecessor.request.generation,
           replacement: requestId,
         });
-        return placement ?? deny();
+        if (!placement) deny();
+        return { sandboxId: row.id, generation: Number(claim.generation), machineId: receipt.result_machine_id };
       });
     },
     enqueueSandbox(actor: Actor, sandboxId: string, selection: Selection) {
