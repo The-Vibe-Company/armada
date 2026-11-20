@@ -1764,6 +1764,56 @@ describe("tools", () => {
     },
   );
 
+  test.each(["stopped", "callback", "stale callback", "rollback"] as const)(
+    "native resume admission journals the current activity only (%s)",
+    async (scenario) => {
+      const server = await start();
+      const { boat, client, db, people, token } = server;
+      const { id, machine } = await seedRunningSandbox(server);
+      const stopped = scenario === "stopped" || scenario === "rollback";
+      if (stopped) await boat.provider.stop({ sandboxId: machine.id });
+      if (scenario === "rollback")
+        await db.exec("alter table sandboxes add constraint reject_native_start check (status <> 'starting')");
+      const mcp = await client(await token(people.member));
+      const prompt = boat.provider.prompt;
+      boat.provider.prompt = async (request) => {
+        if (scenario === "stale callback")
+          await db.query("update sandboxes set lifecycle_generation=lifecycle_generation+1 where id=$1", [id]);
+        if (!stopped) await request.onResumeStage?.("accepted");
+        return prompt(request);
+      };
+
+      const sent = await call(mcp, "send", { id, prompt: "continue" });
+
+      const refused = scenario === "stale callback" || scenario === "rollback";
+      expect(Boolean(sent.isError)).toBe(refused);
+      if (scenario === "rollback") {
+        const { rows } = await db.query(
+          "select status, lifecycle_generation::int, activity_lease_id from sandboxes where id=$1",
+          [id],
+        );
+        expect(rows).toEqual([{ status: "stopped", lifecycle_generation: 1, activity_lease_id: null }]);
+      }
+      const { rows } = await db.query(
+        `select from_status,actor,code,generation::int from sandbox_transitions
+         where sandbox_id=$1 and to_status='starting'`,
+        [id],
+      );
+      expect(rows).toEqual(
+        refused
+          ? []
+          : [
+              {
+                from_status: scenario === "stopped" ? "stopped" : "running",
+                actor: "native_turn",
+                code: "native_resume_admitted",
+                generation: 2,
+              },
+            ],
+      );
+    },
+  );
+
   test.each(["handoff", "stale", "queue_failure"] as const)(
     "native send retention refusal settles atomically (%s)",
     async (scenario) => {

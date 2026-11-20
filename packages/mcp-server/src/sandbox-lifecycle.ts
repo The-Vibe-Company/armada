@@ -645,6 +645,26 @@ export async function recordRuntimeStartupFailure(
   return result;
 }
 
+export async function publishNativeResumeAdmission(
+  tx: Sql,
+  sandboxId: string,
+  fromState: SandboxStatus,
+  generation: string,
+  activityLease: string,
+) {
+  const result = await transitionSandbox(tx, {
+    sandboxId,
+    expectedGeneration: generation,
+    fromStates: [fromState],
+    toState: "starting",
+    actor: "native_turn",
+    code: "native_resume_admitted",
+    effects: [],
+    settlement: { lease: null, activityLease, statusReason: null, stopRequestedAt: null, stoppedAt: null },
+  });
+  if (result.kind === "conflict") throw new VaultError("conflict", "Native resume lost its activity fence.");
+}
+
 export async function publishNativeChildSend(
   tx: Sql,
   sandboxId: string,
