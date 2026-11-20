@@ -484,7 +484,6 @@ export function configureTools(
         ownerStop: true,
         onlyIfIdle: args.only_if_idle === true,
       };
-      const stopSettlement: Pick<ServerSandboxPatch, "ownerStop"> = { ownerStop: true };
       const retainedGuard: Pick<ServerSandboxPatch, "retainedRuntimeStop"> = checkpoint
         ? { retainedRuntimeStop: checkpoint.requestId }
         : {};
@@ -518,7 +517,7 @@ export function configureTools(
                 status: found.status === "failed" ? ("failed" as const) : ("stopping" as const),
               },
               patch: {
-                ...stopSettlement,
+                ownerStop: true as const,
                 status: found.status === "failed" ? ("failed" as const) : ("stopping" as const),
                 stopRequested: true,
               },
@@ -557,7 +556,7 @@ export function configureTools(
           return {
             result: { id: found.id, status, ...(preservationNote ? { preservationNote } : {}) },
             patch: {
-              ...stopSettlement,
+              ownerStop: true as const,
               status,
               stopRequested: !terminal,
               ...(status === "failed" || found.statusReason === "expired" ? { statusReason: found.statusReason } : {}),
