@@ -2,11 +2,8 @@ import type { AgentEvent, Sql } from "@armada/core";
 import type { IngestGrantClaims, IngestPayload, Scope } from "./ports.ts";
 import { appendModalEvents } from "./store.ts";
 
-/** Mount at an exact server-owned POST route. verifyGrant must cryptographically verify and resolve
- * scope server-side, never from request JSON. The token is only an expiring sandbox/generation grant. */
 export function createModalIngestHandler(options: {
   sql: Sql;
-  /** Runs inside the authenticated archive transaction, before ACK; replays must be idempotent. */
   projectEvents?(tx: Sql, scope: Scope, claims: IngestGrantClaims, events: AgentEvent[]): Promise<void>;
   publishNativeAuth?(
     scope: Scope,
@@ -21,7 +18,6 @@ export function createModalIngestHandler(options: {
     try {
       const { claims, scope } = await options.verifyGrant(request.headers.get("x-armada-runner-grant") ?? "");
       if (claims.expiresAt <= Date.now()) return new Response(null, { status: 401 });
-      // Bound bytes as well as batch count before JSON parsing.
       const reader = request.body?.getReader();
       if (!reader) return new Response(null, { status: 400 });
       let bytes = 0;

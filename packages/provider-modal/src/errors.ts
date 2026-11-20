@@ -26,14 +26,11 @@ export function modalError(error: unknown): ProviderError {
     TimeoutError: "unavailable",
     SandboxTimeoutError: "unavailable",
   };
-  // Do not copy upstream messages, causes or request bodies: they may contain credentials.
   let status: number | undefined;
-  // nice-grpc ClientError exposes numeric gRPC status (0..16), not an HTTP status.
   if (error instanceof Error && error.name === "ClientError") {
     const code = Reflect.get(error, "code");
     if (Number.isInteger(code) && code >= 0 && code <= 16) status = code;
   }
-  // gRPC numbers are not HTTP statuses. Only classify validated SDK ClientErrors.
   const grpcCodes: Partial<Record<number, ProviderErrorCode>> = {
     3: "invalid_request",
     4: "unavailable",
@@ -49,7 +46,6 @@ export function modalError(error: unknown): ProviderError {
     new ProviderError({
       provider: "modal",
       code,
-      // Transport retryability is not permission to replay a mutating lifecycle step.
       retryable: code === "unavailable",
       message: "Modal operation failed; consult the durable lifecycle phase before retrying.",
       ...(status === undefined ? {} : { status }),
@@ -59,7 +55,6 @@ export function modalError(error: unknown): ProviderError {
   );
 }
 
-/** Keep public build diagnostics and discard the rest of the upstream payload, including shell commands. */
 export function modalBuilderImageError(error: unknown): ProviderError {
   const safe = modalError(error);
   const text = error instanceof Error ? error.message : "";
@@ -88,7 +83,6 @@ export function modalBuilderImageError(error: unknown): ProviderError {
   );
 }
 
-/** Retains only sanitized operation metadata and explicit resource provenance, never an upstream cause. */
 export class ModalOperationError extends ProviderError {
   readonly receipt: import("./ports.ts").ModalResourceReceipt;
   constructor(error: unknown, receipt: import("./ports.ts").ModalResourceReceipt) {
@@ -110,7 +104,6 @@ export function modalFailureReceipt(error: unknown): import("./ports.ts").ModalR
   return error instanceof ModalOperationError ? error.receipt : undefined;
 }
 
-/** Closed lifecycle labels only; never retain SDK messages or causal payloads. */
 export async function lifecycleStep<T>(
   code:
     | "modal_checkpoint_runner"

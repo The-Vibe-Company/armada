@@ -77,7 +77,11 @@ managementAuthority provenance. It also accepts explicit
 public client injection. `ModalStore.imageReferenced` is a server-only boolean
 reference check: it counts private target references across visibility scopes
 without returning private resource IDs, owners, events or rows to a source caller.
-GC and fork reservation serialize on the source lease.
+GC and fork reservation serialize on the source lease. Store entry points recheck
+live organization membership, including for private owners. Lifecycle phase
+commits renew the 15-minute lease, and expired holders cannot commit late results.
+Image collection claims expire after five minutes. Tombstone deletion matches the
+name, source and image ID so a late collector cannot purge a replacement artifact.
 
 ## Runner / grants / credentials
 
@@ -88,6 +92,17 @@ Modal proxy token uses Authorization; the runner application token uses
 in registry JSON. Ingest validates live membership, scope, generation and producer
 sequence, dedupes identical replays, rejects conflicting replay and ACKs only after
 contiguous durable commit. No database/user/provider token reaches the runner.
+The handler bounds the request body before parsing JSON and checks the batch size.
+An injected grant verifier must authenticate the token cryptographically and resolve
+scope from trusted server state. Request JSON supplies no authority. Event
+projection runs in the same authenticated archive transaction before ACK and must
+tolerate replays.
+The archive stops at a missing producer sequence so downstream consumers see
+contiguous events.
+
+The deployment tag uses a fixed-width hash of the Modal environment and public
+ingest origin. This keeps the identity stable within Modal's tag budget and lets
+the inventory reaper match the exact tag.
 
 `resolveHarnessEnvironment(machine,launchEnv)` runs for each active generation,
 never for golden builders. It returns allowlisted `claudeEnv`, `codexEnv`, optional
@@ -193,6 +208,8 @@ No nested `input` wrapper is added. The only returned value is the exact acknowl
 revision; extra runner fields/config/auth are never echoed or saved in provider SQL.
 HTTP success/enveloped errors must match version/requestId; existing protocol1 bare
 safe errors on HTTP409 remain supported without changing the frozen wire protocol.
+The transport maps allowlisted runner error codes to public diagnostics and drops
+raw runner error details.
 
 Register this provider through the real server provider factory before core calls
 `connections.prepare`. First fork boot precedes canonical Armada sandbox/binding
@@ -458,8 +475,13 @@ with `receipt` and `details.resourceReceipt`; `modalFailureReceipt(error)` retur
 The whitelist contains logical/physical IDs, deterministic name, durable/observed phase,
 registryConfirmed, generation, Image/source/recovery references, binding and nonsensitive
 management provenance. No request/env/MCP config, auth, labels, prompt text or raw SDK
-cause is included. Known SDK Image IDs survive in a failure receipt even when their
-SQL commit failed; new named snapshot IDs are also retained in Machine.snapshotImages.
+cause is included. SDK error classification uses recognized error names and
+validated numeric gRPC statuses from SDK ClientError instances. Public builder
+image failures keep only recognized build diagnostics, and lifecycle failure logs
+use allowlisted labels. Check the durable lifecycle phase before retrying any
+mutation, including when a transport error is marked retryable. Known SDK Image
+IDs survive in a failure receipt even when their SQL commit failed. New named
+snapshot IDs are also retained in Machine.snapshotImages.
 The SDK response-loss case where no Image ID was ever received remains unrecoverable.
 
 `provider.resourceReceipts()` inventories authorized target/context records (including
