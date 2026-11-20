@@ -506,7 +506,7 @@ armada --profile staging org list
 ```
 
 After the staging login above, inspect organization membership and select the
-organization in that profile with `armada --profile staging org use NAME`.
+organization in that profile with `armada --profile staging login --org NAME`.
 Do not paste session files or tokens into diagnostics or shared logs.
 
 
