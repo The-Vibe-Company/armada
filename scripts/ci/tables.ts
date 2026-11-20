@@ -22,7 +22,7 @@ const owners = [
   ["sandbox_launch_stages", [`${core}/launch-stages.ts`, `${server}/launch-stage-record.ts`]],
   ["sandbox_output*", [`${server}/sandbox-outputs.ts`, `${server}/output-transfers.ts`]],
   ["sandbox_*_pricing sandbox_turn_models", [`${core}/sandbox.ts`, `${server}/turn-pricing.ts`]],
-  ["sandbox_work_recovery", [`${server}/work-preservation.ts`]],
+  ["sandbox_work_recovery", [`${server}/sandbox-lifecycle.ts`, `${server}/work-preservation.ts`]],
   [
     "provider_launch_requests ordinary_launch_receipts native_*",
     [`${server}/ordinary-launch-receipts.ts`, `${server}/native-*.ts`, `${server}/provider-*.ts`],

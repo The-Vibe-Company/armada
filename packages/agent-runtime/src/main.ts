@@ -15,6 +15,7 @@ import {
   validateExecReadables,
 } from "./exec-env.ts";
 import { GitHubBroker, type GitHubBrokerConfiguration } from "./github-broker.ts";
+import { runGitHubClient } from "./github-client.ts";
 import { githubRuntimeEnvironment, installUserGitHubTools, runGitHubInstallMode } from "./github-tools.ts";
 import { runHarnessInstallMode } from "./harness-cache.ts";
 import { checkpointIdentityKey } from "./identity.ts";
@@ -605,17 +606,20 @@ async function main(dialout = false) {
     });
   }
 }
-void (
-  process.argv[2] === "github-install"
-    ? runGitHubInstallMode()
-    : process.argv[2] === "install-artifact"
-      ? runArtifactInstallMode()
-      : process.argv[2] === "install-harness"
-        ? runHarnessInstallMode()
-        : main(process.argv[2] === "dialout")
-).catch(async (error: unknown) => {
-  startupReason = runtimeStartupFailure(error, startupReason);
-  await reportRuntimeFailure?.(error).catch(() => {});
-  process.stderr.write("runner_boot_failed\n");
-  process.exitCode = 1;
-});
+if (process.argv[2] === "github-client") {
+  process.exitCode = await runGitHubClient(process.argv.slice(3));
+} else
+  void (
+    process.argv[2] === "github-install"
+      ? runGitHubInstallMode()
+      : process.argv[2] === "install-artifact"
+        ? runArtifactInstallMode()
+        : process.argv[2] === "install-harness"
+          ? runHarnessInstallMode()
+          : main(process.argv[2] === "dialout")
+  ).catch(async (error: unknown) => {
+    startupReason = runtimeStartupFailure(error, startupReason);
+    await reportRuntimeFailure?.(error).catch(() => {});
+    process.stderr.write("runner_boot_failed\n");
+    process.exitCode = 1;
+  });
