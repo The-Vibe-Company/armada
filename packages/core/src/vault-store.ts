@@ -348,7 +348,6 @@ export function createSqlVaultStore(sql: Sql): VaultStore {
         });
         return;
       }
-      // Keep the conflict target tied to the singleton kinds as the model catalog grows.
       await sql.query(
         `insert into public.credentials(scope,owner_id,kind,value_enc) values($1::public.credential_scope,$2,$3::public.credential_kind,$4::bytea) on conflict(scope,owner_id,kind) where kind in ('boat','modal','skillpack') do update set value_enc=excluded.value_enc`,
         [scope, ownerId, kind, valueEnc],

@@ -368,7 +368,7 @@ test("singleton credentials can be replaced with the provider-only index", async
         [people.stan],
       );
       expect(rows).toHaveLength(1);
-      expect(await decryptSecret(rows[0]!.value_enc, KEY)).toBe("second");
+      expect(await decryptSecret(new Uint8Array(rows[0]!.value_enc), KEY)).toBe("second");
     }, db);
   } finally {
     await db.exec("rollback");
