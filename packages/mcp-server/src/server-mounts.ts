@@ -17,11 +17,11 @@ import { createRuntimeProgress } from "./runtime-progress.ts";
 import type { MountFactory, ServerModule } from "./server-registration.ts";
 
 const authenticate =
-  ({ authStore, config }: Parameters<MountFactory>[0]) =>
+  ({ authStore, handlerOptions }: Parameters<MountFactory>[0]) =>
   (request: Request) =>
     authenticateCaller(request.headers.get("authorization"), {
       store: authStore,
-      supabase: { supabaseUrl: config.supabaseUrl, anonKey: config.anonKey },
+      supabase: handlerOptions.supabase,
       now: new Date(),
     });
 
