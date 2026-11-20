@@ -18,6 +18,83 @@ import { INTERRUPTED_LAUNCH_REASON } from "./turns.ts";
 import { deferTransactionWake, eventFeedWakeKey, runtimeWakes } from "./wake-bus.ts";
 import { preserveBeforeStop, purgeWorkRecovery, recordStopDispatch } from "./work-preservation.ts";
 
+export type StopFence = [
+  providerId: string | null,
+  token: string | null,
+  generation: number | null,
+  kind: string | null,
+];
+
+// Modal runtime capture uses the existing stop owner, including on lease takeover.
+export const RUNTIME_STOP_OWNER = `stop_requested_at is not null and deleted_at is null
+  and provider='modal' and runtime_transport='dialout' and provider_sandbox_id=$2::text
+  and lifecycle_generation=$4::bigint
+  and (($5::text='activity' and activity_lease_id=$3::uuid and activity_until>clock_timestamp())
+    or ($5::text='reconcile' and reconcile_lease=$3::uuid and reconcile_lease_until>clock_timestamp()
+      and (activity_until is null or activity_until<=clock_timestamp())))
+  and exists(select 1 from public.members m where m.org_id=sandboxes.org_id and m.user_id=sandboxes.owner_id)`;
+
+// A completed receipt wins over late failure or timeout in the same stop.
+export const STOP_EPOCH = `id=$1::uuid
+  and (case when stop_requested_at is null then null else stop_generation end) is not distinct from $6::bigint
+  and ($2::text is null or (${RUNTIME_STOP_OWNER}))`;
+export const NOTE_FENCE = `${STOP_EPOCH}
+  and ($6::bigint is null or preservation_stop_generation is distinct from $6::bigint)`;
+
+export function writePreservationNote(
+  sql: Sql,
+  id: string,
+  note: string | null,
+  stopToken: string | null,
+  fence: StopFence,
+) {
+  return sql.query(`update public.sandboxes set preservation_note=$7 where ${NOTE_FENCE}`, [
+    id,
+    ...fence,
+    stopToken,
+    note,
+  ]);
+}
+
+export function recordWorkRecovery(
+  sql: Sql,
+  id: string,
+  fence: StopFence,
+  stopToken: string | null,
+  note: string,
+  recoveryId: string,
+  encrypted: Uint8Array,
+) {
+  return sql.query<{ id: string }>(
+    `with accepted as (
+    update public.sandboxes set preservation_note=$7,preservation_stop_generation=$6::bigint
+    where ${NOTE_FENCE} and not application_secret_tainted returning id
+  ) insert into public.sandbox_work_recovery(id,sandbox_id,archive_enc)
+    select $8::uuid,id,$9::bytea from accepted returning id`,
+    [id, ...fence, stopToken, note, recoveryId, encrypted],
+  );
+}
+
+export function recordCleanWork(sql: Sql, id: string, fence: StopFence, stopToken: string | null) {
+  return sql.query<{ id: string }>(
+    `update public.sandboxes set preservation_note=null,
+    preservation_stop_generation=$6::bigint where ${NOTE_FENCE} and not application_secret_tainted returning id`,
+    [id, ...fence, stopToken],
+  );
+}
+
+export function recordStoppedCheckpointNote(tx: Sql, id: string, epoch: string, watermark: number) {
+  return tx.query(
+    `update public.sandboxes set preservation_note=$2
+     where id=$1 and stopped_at is not null and status in ('stopped','failed') and not application_secret_tainted
+       and preservation_stop_generation is distinct from stop_generation`,
+    [
+      id,
+      `Armada runtime checkpoint acknowledged for epoch ${epoch} through event ${watermark}; host stop is confirmed. No Git work archive is claimed.`,
+    ],
+  );
+}
+
 export const UNENROLLED_RESUME_STOP = "runtime_resume_unenrolled";
 const OPERATOR_CLEANUP_PREFIX = "Operator cleanup required:";
 
