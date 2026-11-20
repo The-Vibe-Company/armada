@@ -24,7 +24,6 @@ test("the compiled CLI bundle contains no provider or database-client runtime", 
 
   const entry = result.outputs.find(({ kind }) => kind === "entry-point");
   if (!entry) throw new Error("CLI build did not emit an entry point.");
-  // Direct HTTP clients do not necessarily import a database package.
-  const bundle = await entry.text();
-  expect(bundle).not.toMatch(/SUPABASE_URL|\/rest\/v1\/|\.well-known\/armada/);
+  const directDatabaseClientMarkers = /SUPABASE_URL|\/rest\/v1\/|\.well-known\/armada/;
+  expect(await entry.text()).not.toMatch(directDatabaseClientMarkers);
 });
