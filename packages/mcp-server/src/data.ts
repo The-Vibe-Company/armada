@@ -939,7 +939,7 @@ export function createSqlData(
         if (reason !== undefined && stopAdmissionReason === undefined) set("status_reason", reason, "::text");
         if (sets.length === 0) return;
         let fence = "";
-        if (nativeReceipt) fence += " and s.activity_until>clock_timestamp()";
+        if (nativeReceipt?.kind === "steer") fence += " and s.activity_until>clock_timestamp()";
         if (patch.turnActivity !== undefined)
           fence += " and s.status in ('ready','running') and s.stop_requested_at is null and s.deleted_at is null";
         if (patch.turnActivity === "claim") fence += " and s.activity_lease_id is null";

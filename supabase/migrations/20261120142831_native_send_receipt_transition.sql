@@ -255,7 +255,8 @@ begin
       or sandbox.status not in ('starting', 'ready', 'stopping', 'stopped', 'failed')
       or sandbox.deleted_at is not null or sandbox.stop_requested_at is not null
       or sandbox.activity_lease_id is distinct from p_activity_lease
-      or (sandbox.activity_until > clock_timestamp()) is not true then
+      -- An accepted send can settle after expiry if its lease token and generation still match.
+      or (p_code <> 'native_send_accepted' and (sandbox.activity_until > clock_timestamp()) is not true) then
       return query select false, null::bigint;
       return;
     end if;
@@ -471,7 +472,6 @@ begin
     )
     on conflict (idem_key) do nothing;
   end loop;
-
   -- #2796 appends the event_log reference here, in this transaction.
   return query select true, sandbox.lifecycle_generation;
 end
