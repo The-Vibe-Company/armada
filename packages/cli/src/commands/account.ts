@@ -148,9 +148,8 @@ Example: armada account logout
   },
   helpWhenBare: true,
   useSelectedOrg(argv) {
-    if (argv[0] !== "ls") return false;
     const args = parseAccountArgs(argv);
-    return args.positionals.length === 1 && !args.options.has("--presets");
+    return args.positionals[0] === "ls" && args.positionals.length === 1 && !args.options.has("--presets");
   },
   async run(argv, { auth, deps }) {
     return accountCommand(argv, vaultIo(auth, deps));

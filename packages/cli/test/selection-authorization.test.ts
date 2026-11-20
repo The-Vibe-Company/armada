@@ -299,3 +299,15 @@ test("account login codex requires a name before starting native device authoriz
   expect(await h.run(["account", "login", "codex"])).toBe(2);
   expect(h.output().err).toContain("Creating an account requires --name.");
 });
+
+test("account ls uses the selected organization with flags before or after the verb", async () => {
+  const h = harness(async (input, init) => {
+    const request = new Request(String(input), init);
+    expect(new URL(request.url).pathname).toBe("/api/v1/creds/list");
+    expect(await request.json()).toEqual({ org });
+    return Response.json({ user: [], orgs: [] });
+  });
+  h.auth.preferences = { read: async () => org, write: async () => {} };
+  expect(await h.run(["account", "ls", "--json"])).toBe(0);
+  expect(await h.run(["account", "--json", "ls"])).toBe(0);
+});
