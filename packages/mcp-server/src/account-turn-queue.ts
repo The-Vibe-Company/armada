@@ -17,9 +17,8 @@ import {
   NATIVE_DISPATCH_UNCERTAIN,
   QUEUED_DISPATCH_EVIDENCE,
   QUEUED_TURN_CANCELLED,
-  RUNTIME_LANE,
-  RUNTIME_REQUEST_EVIDENCE,
   TURN_FIFO_ELIGIBLE,
+  TURN_RECOVERY_ELIGIBLE,
   UNCERTAIN_DISPATCH_MESSAGE,
   UNSETTLED_TASK,
 } from "./account-turn-dispatch.ts";
@@ -425,7 +424,7 @@ export function createAccountTurnQueue(sql: Sql, key: string) {
         const candidates = (
           await sql.query<Entry>(
             `select q.* from public.account_turn_queue q join public.sandboxes s on s.id=q.sandbox_id
-             where (q.state='queued' or (q.state='dispatching' and q.dispatch_until<=now() and q.dispatch_generation is not null and ((${RUNTIME_LANE} and ${RUNTIME_REQUEST_EVIDENCE}) or (s.lifecycle_generation=q.dispatch_generation and s.activity_lease_id is null and not coalesce(${RUNTIME_REQUEST_EVIDENCE},false)))))
+             where (q.state='queued' or (q.state='dispatching' and ${TURN_RECOVERY_ELIGIBLE}))
            and ${TURN_FIFO_ELIGIBLE}
            order by case when q.sequence>$1::bigint then 0 else 1 end,q.sequence limit 20`,
             [scanAfter],

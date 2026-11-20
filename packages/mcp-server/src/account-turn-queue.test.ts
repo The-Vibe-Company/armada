@@ -173,6 +173,64 @@ test("a shared claim that loses its lease leaves the receipt and capacity availa
   expect((await sql.query("select sandbox_id from account_agent_reservations")).rows).toEqual([]);
 });
 
+test("lease expiry during shared admission rolls back the dispatch window and reservation", async () => {
+  const sandboxId = ids[0]!;
+  const requestId = requests[0]!;
+  await queue.accept(caller, { id: sandboxId, request_id: requestId, prompt: "next" });
+  const claim = await claimTurn(requestId);
+  const expiring = {
+    ...claim,
+    async canDispatch(tx: Sql) {
+      await tx.query(
+        `update jobs set lease_until='-infinity' where id=$1
+         and exists(select 1 from account_turn_queue where sandbox_id=$2 and request_id=$3 and state='dispatching')`,
+        [claim.job.id, sandboxId, requestId],
+      );
+      return claim.canDispatch(tx);
+    },
+  };
+  expect(await admitClaimedAccountTurn(sql, expiring)).toBeNull();
+  expect((await sql.query("select state,dispatch_until from account_turn_queue")).rows).toEqual([
+    { state: "queued", dispatch_until: null },
+  ]);
+  expect((await sql.query("select sandbox_id from account_agent_reservations")).rows).toEqual([]);
+});
+
+test.each([null, "1"])(
+  "shared recovery rechecks dispatch evidence when recorded generation is %s",
+  async (generation) => {
+    const sandboxId = ids[0]!;
+    const requestId = requests[0]!;
+    await queue.accept(caller, { id: sandboxId, request_id: requestId, prompt: "next" });
+    const claim = await claimTurn(requestId);
+    await sql.query(
+      "update account_turn_queue set state='dispatching',dispatch_generation=$1,dispatch_until='-infinity'",
+      [generation],
+    );
+    await sql.query("update sandboxes set provider='boat',boat_runtime=true,activity_lease_id=$2 where id=$1", [
+      sandboxId,
+      generation === null ? requestId : requests[1],
+    ]);
+    expect(await admitClaimedAccountTurn(sql, claim)).toBeNull();
+    expect((await sql.query("select sandbox_id from account_agent_reservations")).rows).toEqual([]);
+  },
+);
+
+test("shared recovery returns a newly expired dispatch without intent to FIFO", async () => {
+  const sandboxId = ids[0]!;
+  const requestId = requests[0]!;
+  await queue.accept(caller, { id: sandboxId, request_id: requestId, prompt: "next" });
+  const claim = await claimTurn(requestId);
+  await sql.query("update sandboxes set provider='boat',boat_runtime=true where id=$1", [sandboxId]);
+  await sql.query("update account_turn_queue set state='dispatching',dispatch_generation=1,dispatch_until='-infinity'");
+  await sql.query("insert into account_agent_reservations(sandbox_id,account_id) values($1,$2)", [sandboxId, account]);
+  expect(await admitClaimedAccountTurn(sql, claim)).toBeNull();
+  expect((await sql.query("select state,dispatch_until from account_turn_queue")).rows).toEqual([
+    { state: "queued", dispatch_until: null },
+  ]);
+  expect((await sql.query("select sandbox_id from account_agent_reservations")).rows).toEqual([]);
+});
+
 test("interrupted shared admission rolls back the receipt and reservation together", async () => {
   const sandboxId = ids[0]!;
   const requestId = requests[0]!;
