@@ -52,6 +52,7 @@ export function createDockerRuntimeLifecycle(sql: Sql, key: string, options: { e
     allowPending = false,
     reserveTurn = false,
     expectedLifecycleGeneration?: string,
+    assertClaim?: (tx: Sql) => Promise<void>,
   ) {
     return transaction(async (tx) => {
       if (options.enabled !== true) deny();
@@ -111,7 +112,10 @@ export function createDockerRuntimeLifecycle(sql: Sql, key: string, options: { e
       return authority.withOwner(sandboxId, actor.userId, async (_fenced, scope) => {
         const current = await createDockerSandboxService(scoped, key).get(actor, sandboxId);
         if (JSON.stringify(current) !== JSON.stringify(snapshot)) deny();
-        return work(scoped, authority, current, scope.epoch);
+        await assertClaim?.(scoped);
+        const result = await work(scoped, authority, current, scope.epoch);
+        await assertClaim?.(scoped);
+        return result;
       });
     });
   }
@@ -170,6 +174,7 @@ export function createDockerRuntimeLifecycle(sql: Sql, key: string, options: { e
       sandboxId: string,
       input: { requestId: string; text: string; conversationId?: string },
       preparedLaunchEpoch?: string,
+      assertClaim?: (tx: Sql) => Promise<void>,
     ) {
       return admitted(
         actor,
@@ -348,6 +353,8 @@ export function createDockerRuntimeLifecycle(sql: Sql, key: string, options: { e
         },
         false,
         true,
+        undefined,
+        assertClaim,
       );
     },
     journal(actor: Actor, sandboxId: string, input: { cursor?: string; limit?: number } = {}) {

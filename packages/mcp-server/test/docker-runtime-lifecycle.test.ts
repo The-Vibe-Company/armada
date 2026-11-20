@@ -115,6 +115,27 @@ async function ready(f: Fixture) {
 
 // These integration tests own the Docker lifecycle composition: concrete host ACK,
 // credential admission, enrolment, encrypted command replay and archive authorization.
+test("a queued Docker turn rolls back prompt admission when its claim expires before commit", async () => {
+  const f = await fixture();
+  const session = await ready(f);
+  const input = { requestId: randomUUID(), text: "queued turn" };
+  const commandId = `docker_prompt_${input.requestId}`;
+  const assertClaim = async (tx: Sql) => {
+    const command = await tx.query("select 1 from public.runtime_commands where sandbox_id=$1 and request_id=$2", [
+      f.sandbox.id,
+      commandId,
+    ]);
+    if (command.rows.length) throw new Error("Claim expired during prompt admission");
+  };
+
+  await denied(service.prompt(f.actor, f.sandbox.id, input, undefined, assertClaim));
+  expect((await commands.next(session.runtimeToken, session.epoch)).command).toBeNull();
+
+  const nextClaim = async () => {};
+  expect(await service.prompt(f.actor, f.sandbox.id, input, undefined, nextClaim)).toEqual({ state: "pending" });
+  expect((await commands.next(session.runtimeToken, session.epoch)).command?.requestId).toBe(commandId);
+});
+
 test("Docker readiness rejects an ACK read against an older lifecycle generation", async () => {
   const f = await fixture();
   const session = await f.enrol();

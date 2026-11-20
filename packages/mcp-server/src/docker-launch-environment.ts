@@ -12,7 +12,7 @@ export function createDockerLaunchEnvironment(
   clock?: { now(): number; wait(ms: number): Promise<void> },
 ) {
   const deliver = createRuntimeEnvironmentDelivery(sql, key, clock);
-  return async (caller: Caller, id: string) => {
+  return async (caller: Caller, id: string, assertClaim?: (tx: Sql) => Promise<void>) => {
     const row = (
       await sql.query<{ request_enc: Uint8Array<ArrayBuffer>; harness: Harness }>(
         `select d.request_enc,s.harness from public.docker_launch_requests d join public.sandboxes s on s.id=d.sandbox_id
@@ -29,6 +29,7 @@ export function createDockerLaunchEnvironment(
       provider: "docker",
       ownerId: caller.userId,
       id,
+      assertClaim,
       load: async (tx) => {
         const current = (
           await tx.query<{ org_id: string }>(
