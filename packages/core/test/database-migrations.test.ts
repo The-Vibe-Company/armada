@@ -22,6 +22,9 @@ function assertStatesCovered(_missing: Exclude<SandboxState, (typeof PROVIDER_ST
 
 assertStatesCovered(undefined as never);
 
+// WARNING: Remove these reserved labels in #3704 part 2 to avoid counting Antigravity twice.
+const RESERVED_ENUM_LABELS = ["antigravity"] as const;
+
 const files = readdirSync(migrationsDir)
   .filter((name) => name.endsWith(".sql"))
   .sort();
@@ -47,7 +50,7 @@ test("migrations apply on a fresh database", async () => {
       `);
   expect(unlocked.rows).toEqual([]);
 
-  expect(await labels(db, "harness")).toEqual([...HARNESSES]);
+  expect(await labels(db, "harness")).toEqual([...HARNESSES, ...RESERVED_ENUM_LABELS]);
   expect(await labels(db, "visibility")).toEqual([...VISIBILITIES]);
   expect(await labels(db, "sandbox_status")).toEqual([...PROVIDER_STATES, "deleted"]);
   expect(await labels(db, "member_role")).toEqual(["admin", "member"]);
@@ -62,6 +65,7 @@ test("migrations apply on a fresh database", async () => {
     "skillpack",
     "opencode",
     "morph",
+    ...RESERVED_ENUM_LABELS,
   ]);
   expect(await labels(db, "notify_status")).toEqual(["finished", "failed"]);
 });

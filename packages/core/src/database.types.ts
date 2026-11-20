@@ -5668,9 +5668,10 @@ export type Database = {
         | "modal"
         | "skillpack"
         | "opencode"
-        | "morph";
+        | "morph"
+        | "antigravity";
       credential_scope: "user" | "org";
-      harness: "claude" | "codex" | "opencode";
+      harness: "claude" | "codex" | "opencode" | "antigravity";
       member_role: "admin" | "member";
       notify_status: "finished" | "failed";
       sandbox_provider: "boat" | "modal" | "docker";
