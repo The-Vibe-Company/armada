@@ -1137,34 +1137,46 @@ export function createSandboxLifecycle(
             idleStop)
         ) {
           signal?.throwIfAborted();
-          const owned = await sql.transaction!(async (tx) => {
-            const {
-              rows: [current],
-            } = await tx.query<{
-              status: SandboxStatus;
-              code: string;
-              status_reason: string | null;
-              stop_requested_at: string;
-              stopped_at: string | null;
-            }>(
-              `select status, stopped_at::text, coalesce(stop_requested_at,clock_timestamp())::text as stop_requested_at,
-                case when $4 and status_reason is distinct from 'work_merged' then 'expired'
-                  when $5 and ($6 or status_reason='work_merged') then 'work_merged'
-                  when $5 then 'idle_paused' else 'stop_requested' end as code,
-                case when $4 and status not in ('starting','failed') and status_reason is distinct from 'work_merged' then 'expired'
-                  when $5 then case when $6 or status_reason='work_merged' then 'work_merged' else 'idle_paused' end
-                  else status_reason end as status_reason
-              from public.sandboxes
-              where id=$1::uuid and reconcile_lease=$2::uuid and lifecycle_generation=$3
-                and reconcile_lease_until>clock_timestamp() and (activity_until is null or activity_until<now())
-                and (not $6 or (activity_lease_id is null and stop_requested_at is null and expires_at>now()
-                  and ${mergedWorkProof("sandboxes")}))
-                and exists(select 1 from public.members m where m.org_id=sandboxes.org_id and m.user_id=sandboxes.owner_id)
-              for update`,
-              [row.id, token, row.lifecycle_generation, expired, idleStop, workMerged && idleStop],
-            );
-            if (!current) return false;
-            if (current.status === "ready" || current.status === "running") {
+          if (!sql.transaction) throw new Error("Reconciler stop admission requires a transaction.");
+          const stopConflict = new Error("Reconciler stop transition lost ownership.");
+          const owned = await sql
+            .transaction(async (tx) => {
+              const {
+                rows: [current],
+              } = await tx.query<{
+                status: SandboxStatus;
+                code: string;
+                status_reason: string | null;
+                stop_requested_at: string;
+                stopped_at: string | null;
+              }>(
+                `update public.sandboxes
+                set reconcile_lease_until=now()+interval '2 minutes',
+                  stop_generation=case when status not in ('ready','running') and stop_requested_at is null
+                    then stop_generation+1 else stop_generation end,
+                  stop_requested_at=case when status not in ('ready','running')
+                    then coalesce(stop_requested_at,clock_timestamp()) else stop_requested_at end,
+                  status_reason=case when status in ('ready','running') then status_reason
+                    when $4 and status='stopping' and status_reason is distinct from 'work_merged' then 'expired'
+                    when $5 then case when $6 or status_reason='work_merged' then 'work_merged' else 'idle_paused' end
+                    else status_reason end
+                where id=$1::uuid and reconcile_lease=$2::uuid and lifecycle_generation=$3
+                  and status in ('starting','ready','running','stopping','failed')
+                  and reconcile_lease_until>clock_timestamp() and (activity_until is null or activity_until<now())
+                  and (not $6 or (activity_lease_id is null and stop_requested_at is null and expires_at>now()
+                    and ${mergedWorkProof("sandboxes")}))
+                  and exists(select 1 from public.members m where m.org_id=sandboxes.org_id and m.user_id=sandboxes.owner_id)
+                returning status, stopped_at::text, coalesce(stop_requested_at,clock_timestamp())::text as stop_requested_at,
+                  case when $4 and status_reason is distinct from 'work_merged' then 'expired'
+                    when $5 and ($6 or status_reason='work_merged') then 'work_merged'
+                    when $5 then 'idle_paused' else 'stop_requested' end as code,
+                  case when $4 and status_reason is distinct from 'work_merged' then 'expired'
+                    when $5 then case when $6 or status_reason='work_merged' then 'work_merged' else 'idle_paused' end
+                    else status_reason end as status_reason`,
+                [row.id, token, row.lifecycle_generation, expired, idleStop, workMerged && idleStop],
+              );
+              if (!current) return false;
+              if (current.status !== "ready" && current.status !== "running") return true;
               const result = await transitionSandbox(tx, {
                 sandboxId: row.id,
                 expectedGeneration: row.lifecycle_generation,
@@ -1180,21 +1192,13 @@ export function createSandboxLifecycle(
                   stoppedAt: current.stopped_at,
                 },
               });
-              if (result.kind === "conflict") return false;
-              await tx.query(
-                "update public.sandboxes set reconcile_lease_until=now()+interval '2 minutes' where id=$1",
-                [row.id],
-              );
-            } else {
-              await tx.query(
-                `update public.sandboxes set reconcile_lease_until=now()+interval '2 minutes',
-                  stop_generation=case when stop_requested_at is null then stop_generation+1 else stop_generation end,
-                  stop_requested_at=$2::timestamptz,status_reason=$3 where id=$1`,
-                [row.id, current.stop_requested_at, current.status_reason],
-              );
-            }
-            return true;
-          });
+              if (result.kind === "conflict") throw stopConflict;
+              return true;
+            })
+            .catch((failure: unknown) => {
+              if (failure === stopConflict) return false;
+              throw failure;
+            });
           if (!owned) return true;
           signal?.throwIfAborted();
           // These durable phases already fence native admission. Active-only

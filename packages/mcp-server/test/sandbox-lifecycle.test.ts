@@ -298,7 +298,7 @@ for (const outcome of [
       effectiveTtlSeconds: 60,
     });
     if (outcome === "manual-stop") await db.query("update sandboxes set status='stopping' where id=$1", [id]);
-    if (!externalStop && outcome !== "stale" && outcome !== "manual-stop")
+    if (!externalStop && outcome !== "manual-stop")
       await db.query("update sandboxes set expires_at=now()-interval '1 second' where id=$1", [id]);
     const requests: string[] = [];
     let stopped = false;
@@ -329,7 +329,7 @@ for (const outcome of [
         return Response.json({
           ok: true,
           sandbox:
-            stopped || externalStop || outcome === "expired-external-stop" || outcome === "stale"
+            stopped || externalStop || outcome === "expired-external-stop"
               ? retainedSandbox({
                   stoppedAt: outcome === "invalid-stop-time" ? "not-a-date" : validStoppedAt,
                   snapshotVerifiedAt: validStoppedAt,
@@ -386,7 +386,7 @@ for (const outcome of [
     }
     if (outcome === "expired") {
       const before = await readStopIntent();
-      for (const boundary of ["lease renewal", "commit"]) {
+      for (const boundary of ["transition", "commit"]) {
         let injected = false;
         const faultingSql: Sql = {
           query: sql.query,
@@ -395,10 +395,12 @@ for (const outcome of [
               let admitted = false;
               const result = await work({
                 query: (statement, args) => {
-                  if (statement.includes("public.sandbox_transition(")) admitted = true;
-                  if (admitted && boundary === "lease renewal" && statement.includes("interval '2 minutes'")) {
-                    injected = true;
-                    throw new Error("injected stop lease renewal failure");
+                  if (statement.includes("public.sandbox_transition(")) {
+                    admitted = true;
+                    if (boundary === "transition") {
+                      injected = true;
+                      throw new Error("injected stop transition failure");
+                    }
                   }
                   return tx.query(statement, args);
                 },
