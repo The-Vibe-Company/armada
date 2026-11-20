@@ -352,7 +352,6 @@ export {
   type HarnessCapabilities,
   type InterruptRequest,
   isFinalPromptStatus,
-  type ListRequest,
   type Page,
   PROMPT_STATUSES,
   type PrepareNativeHarnessCwdRequest,

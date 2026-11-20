@@ -155,6 +155,5 @@ export function createRuntimeProvider(
     getSnapshot: unsupported,
     deleteSnapshot: unsupported,
     fork: unsupported,
-    list: unsupported,
   };
 }
