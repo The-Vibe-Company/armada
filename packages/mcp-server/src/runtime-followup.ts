@@ -100,6 +100,7 @@ export function createRuntimeFollowup(
       if (claim && !(await claim.canDispatch(tx)))
         throw new VaultError("conflict", "Queued runtime turn lease is no longer current.");
     };
+    const commandGuard = claim ? assertClaim : undefined;
     // Read-only probe before admission. Runner still owns the final busy check.
     const previous = await commands.result(caller.userId, found.id, commandId);
     if (previous.state === "missing" && found.taskPromptId) {
@@ -114,7 +115,7 @@ export function createRuntimeFollowup(
             found.id,
             undefined,
             undefined,
-            claim ? assertClaim : undefined,
+            commandGuard,
           )
         : undefined;
     if (!sql.transaction) throw new VaultError("unavailable", "Runtime send requires transactional admission.");
@@ -216,6 +217,8 @@ export function createRuntimeFollowup(
         },
         commandId,
         admitted.epoch,
+        undefined,
+        commandGuard,
       );
     const receipt = (value: Awaited<ReturnType<typeof submit>>) => ({
       id: found.id,
@@ -230,10 +233,12 @@ export function createRuntimeFollowup(
         authority.withOwner(found.id, caller.userId, async (tx, scope) => {
           if (scope.epoch !== admitted.epoch)
             throw new VaultError("conflict", "Runtime epoch changed before publication.");
+          await assertClaim(tx);
           await createSqlData(runtimeTransaction(tx))(caller).sandboxes.update(id, {
             ...patch,
             ...(finishActivity ? { turnActivity: "finish" } : {}),
           });
+          await assertClaim(tx);
         }),
     };
     return sandboxActivity(
@@ -243,7 +248,7 @@ export function createRuntimeFollowup(
       async (signal) => {
         const existing = await commands.result(caller.userId, found.id, commandId, admitted.epoch);
         if (existing.state === "missing") {
-          await prepareMcp?.(caller, found.id, signal, claim ? assertClaim : undefined);
+          await prepareMcp?.(caller, found.id, signal, commandGuard);
           if (found.runtimeTransport === "dialout")
             await restoreScopedAccess?.(
               caller.userId,
