@@ -2,7 +2,7 @@ import type { Provider } from "@armada/core";
 import type { boundModalApp, modalConnection } from "./client.ts";
 import { lifecycleStep, ModalOperationError, modalError, refusal } from "./errors.ts";
 import type { createImageCollection } from "./image-collection.ts";
-import { lookupModalCompute, terminateModalCompute } from "./machine.ts";
+import { lookupModalCompute, snapshotModalRecoveryImage, terminateModalCompute } from "./machine.ts";
 import type { createPhysicalLifecycle } from "./physical-lifecycle.ts";
 import type { Machine, ModalResourceReceipt, ModalStore, RunnerDistribution, RunnerTransport } from "./ports.ts";
 
@@ -92,9 +92,9 @@ export function createStopDeleteLifecycle(deps: {
       }
       row.phase = "snapshot";
       await save(row);
-      const image = await lifecycleStep("modal_checkpoint_snapshot", () => sb.snapshotFilesystem({ ttlMs: null }));
+      const recoveryImageId = await lifecycleStep("modal_checkpoint_snapshot", () => snapshotModalRecoveryImage(sb));
       if (row.recoveryImageId) row.retainedRecoveryIds = [...(row.retainedRecoveryIds ?? []), row.recoveryImageId];
-      row.recoveryImageId = image.imageId;
+      row.recoveryImageId = recoveryImageId;
       row.phase = "terminate";
       await save(row);
     }
