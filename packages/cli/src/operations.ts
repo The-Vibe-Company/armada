@@ -29,6 +29,12 @@ export async function operation(
           : [],
     command === "list" ? ["--page-info"] : command === "rm" ? ["--yes"] : command === "status" ? ["--live"] : [],
   );
+  const end = argv.indexOf("--");
+  const payload = command === "send" || command === "steer" || command === "exec";
+  const implicitWithPayload = payload && end >= 0 && args.positionals.length === argv.length - end - 1;
+  const implicitReport =
+    command === "report" && args.positionals.length === 1 && ["ready", "blocked"].includes(args.positionals[0] ?? "");
+  const [id, ...rest] = implicitWithPayload || implicitReport ? [undefined, ...args.positionals] : args.positionals;
   const options: Record<string, readonly string[]> = {
     list: ["--status", "--agent", "--harness", "--golden", "--owner", "--page", "--limit", "--page-info"],
     status: ["--live", "--prompt-id"],
@@ -39,10 +45,7 @@ export async function operation(
     exec: ["--cwd", "--timeout"],
     stop: [],
     wait: ["--timeout", "--prompt-id"],
-    report: [
-      "--prompt-id",
-      ...(args.positionals[1] === "blocked" ? ["--reason"] : ["--pr-number", "--pr-url", "--head-sha"]),
-    ],
+    report: ["--prompt-id", ...(rest[0] === "blocked" ? ["--reason"] : ["--pr-number", "--pr-url", "--head-sha"])],
     "bind-credential": ["--credential-id"],
     extend: ["--ttl"],
     rm: ["--yes"],
@@ -101,10 +104,6 @@ export async function operation(
     body.request_id = requestId?.toLowerCase() ?? crypto.randomUUID();
   }
   if (command === "list") Object.assign(body, sandboxListFilters(args));
-  const end = argv.indexOf("--");
-  const payload = command === "send" || command === "steer" || command === "exec";
-  const implicitWithPayload = payload && end >= 0 && args.positionals.length === argv.length - end - 1;
-  const [id, ...rest] = implicitWithPayload ? [undefined, ...args.positionals] : args.positionals;
   if (command === "extend") {
     if (org !== undefined) uuid(org, "--org");
     const ttl = single(args, "--ttl");
@@ -120,7 +119,7 @@ export async function operation(
   if (command === "report") {
     const [state] = rest;
     if (rest.length !== 1 || (state !== "ready" && state !== "blocked") || !body.prompt_id)
-      throw new GoldenError("invalid_config", "Use report <id> ready|blocked --prompt-id ID.");
+      throw new GoldenError("invalid_config", "Use report [sandbox-id] ready|blocked --prompt-id ID.");
     const outcome: Record<string, unknown> = { state };
     if (state === "blocked") outcome.reason = single(args, "--reason");
     else {

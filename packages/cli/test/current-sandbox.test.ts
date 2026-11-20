@@ -138,3 +138,17 @@ test("a symlink cannot select a sandbox from outside the invocation directory", 
     await rm(cwd, { recursive: true, force: true });
   }
 });
+
+test("report accepts an outcome without an explicit sandbox ID", async () => {
+  const cli = fixture(async (input, init) => {
+    expect(new URL(String(input)).pathname).toBe("/api/v1/sandbox/report");
+    expect(JSON.parse(String(init?.body))).toMatchObject({
+      id: first,
+      prompt_id: second,
+      outcome: { state: "blocked", reason: "Needs input" },
+    });
+    return Response.json({ accepted: true });
+  }, first);
+  const result = await cli.run(["report", "blocked", "--prompt-id", second, "--reason", "Needs input", "--json"]);
+  expect(result.exit).toBe(0);
+});
