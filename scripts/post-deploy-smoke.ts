@@ -584,7 +584,11 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
           }
         : undefined;
       if (!response.ok) {
-        const payload = (await response.json().catch(() => null)) as { error?: { code?: unknown } } | null;
+        const payload = (await response.json().catch((error: unknown) => {
+          if (timedOut(error))
+            throw new SmokeFailure("api_failed", response.status, undefined, launchResponse, requestTimeoutMs);
+          return null;
+        })) as { error?: { code?: unknown } } | null;
         if ([...protectedCanaries].some((value) => JSON.stringify(payload).includes(value)))
           throw new VaultSmokeFailure("secret_exposed");
         const code = payload?.error?.code;
@@ -661,6 +665,7 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
       const value = await read(remaining).catch((error: unknown) => {
         if (
           error instanceof SmokeFailure &&
+          error.code === "request_failed" &&
           error.transportTimeoutMs !== undefined &&
           until !== undefined &&
           io.now() >= until
@@ -1409,9 +1414,13 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
               { step: waitStep },
             );
           } catch (error) {
-            if (error instanceof SmokeFailure && error.code === "poll_limit_exceeded") {
+            if (
+              error instanceof SmokeFailure &&
+              (error.code === "poll_limit_exceeded" || error.transportTimeoutMs !== undefined)
+            ) {
               throw new SmokeFailure(error.code, error.status, {
                 ...lastResponse,
+                ...(error.status === undefined ? {} : { httpStatus: error.status }),
                 ...(error.transportTimeoutMs === undefined ? {} : { transportTimeoutMs: error.transportTimeoutMs }),
               });
             }
