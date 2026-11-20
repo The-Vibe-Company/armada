@@ -36,8 +36,6 @@ export interface ProviderInventoryMachine {
 }
 
 export interface Provider {
-  /** Physical inventory belonging to this source's bound deployment and provider account. */
-  listInventory?(signal?: AbortSignal): AsyncIterable<ProviderInventoryMachine>;
   /** Private GitHub-only configuration, never exec argv or a public command receipt. */
   configureGitHub?(request: {
     sandboxId: string;
