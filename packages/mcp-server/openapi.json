@@ -2402,7 +2402,7 @@
                           },
                           "baselineOutdated": {
                             "type": "boolean",
-                            "description": "True when the snapshot was built against an older developer baseline than this server's."
+                            "description": "True when a provider snapshot exists and its developer baseline version is unrecorded or older than this server's."
                           },
                           "providerSandboxId": {
                             "type": [
@@ -2586,7 +2586,7 @@
     "/api/v1/golden/capabilities": {
       "post": {
         "operationId": "golden_capabilities",
-        "description": "Reads the selected provider adapter's snapshot capacity without creating an App or resource. Null is unknown or unbounded.",
+        "description": "Reads the selected Boat or Modal adapter's snapshot capacity without creating an App or resource. Null is unknown or unbounded.",
         "security": [
           {
             "serviceToken": []

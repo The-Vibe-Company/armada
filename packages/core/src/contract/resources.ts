@@ -51,7 +51,9 @@ const GOLDEN_OUTPUT = z.object({
     .describe("The developer baseline version used to verify this snapshot. Null when unrecorded."),
   baselineOutdated: z
     .boolean()
-    .describe("True when the snapshot was built against an older developer baseline than this server's."),
+    .describe(
+      "True when a provider snapshot exists and its developer baseline version is unrecorded or older than this server's.",
+    ),
   providerSandboxId: z.string().nullable(),
   modal: z
     .object({ workspace: z.string(), environment: z.string(), appId: z.string() })
@@ -139,7 +141,7 @@ export const goldenOperations = {
     name: "readGoldenCapabilities",
     route: { method: "POST", path: "/api/v1/golden/capabilities" },
     description:
-      "Reads the selected provider adapter's snapshot capacity without creating an App or resource. Null is unknown or unbounded.",
+      "Reads the selected Boat or Modal adapter's snapshot capacity without creating an App or resource. Null is unknown or unbounded.",
     audience: "public",
     readOnly: true,
     destructive: false,
