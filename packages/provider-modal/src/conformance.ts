@@ -198,7 +198,7 @@ export async function runModalConformance(
     await provider.deleteSnapshot(snapshot);
     const after = await provider.events({ sandboxId: fork });
     if (JSON.stringify(before.events) !== JSON.stringify(after.events)) throw Error("deleted_event_history_changed");
-    checks.push("durable events after delete / last-fork image GC");
+    checks.push("durable events after fork deletion");
     fork = undefined;
     return { checks, preservedSandboxIds };
   } finally {
