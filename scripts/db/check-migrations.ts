@@ -123,8 +123,13 @@ function qualifiedName(tokens: readonly (string | undefined)[], start: number) {
       const content = token!.slice(3, -1).replaceAll('""', '"');
       let escapeCharacter = "\\";
       if (tokens[next] === "uescape") {
-        escapeCharacter = unicodeEscapeCharacter(tokens[next + 1]);
+        let literal = tokens[next + 1];
         next += 2;
+        while (literal && tokens[next]?.startsWith("'")) {
+          literal = literal.slice(0, -1) + tokens[next]!.slice(1);
+          next++;
+        }
+        escapeCharacter = unicodeEscapeCharacter(literal);
       }
       const marker = escapeCharacter.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
       const escapes = new RegExp(`${marker}(${marker}|[\\da-fA-F]{4}|\\+[\\da-fA-F]{6})`, "g");

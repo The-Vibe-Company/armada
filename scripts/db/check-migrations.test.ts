@@ -122,6 +122,11 @@ test.each([
   ['alter function public.f set "armada.share" to default', "armada.share"],
   [`alter function public.f() set U&"armada!002eshare" UESCAPE '!' from current`, "armada.share"],
   [String.raw`alter function public.f() set U&"armada!002eshare" UESCAPE E'\x21' to 'on'`, "armada.share"],
+  [
+    `alter function public.f() set U&"armada!002eshare" UESCAPE '' -- continued
+    '!' to 'on'`,
+    "armada.share",
+  ],
   ["create procedure public.p() language sql set armada.share = 'on' begin atomic select 1; end", "armada.share"],
   ["alter routine public.f() set armada.share to 'on'", "armada.share"],
 ])("rejects a custom routine setting in %s", (sql, parameter) => {
