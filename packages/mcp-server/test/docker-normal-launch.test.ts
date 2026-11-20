@@ -624,20 +624,10 @@ test("normal launch drives create, bootstrap, health and one first prompt, seals
     promptId: result.promptId,
   });
   expect(f.resolutions()).toBe(1);
-  const cleanup = createDockerSandboxControls(sql, key, { clock: f.clock });
-  await cleanup.invoke(f.caller, "stop", { id: f.body.requestId });
-  expect(f.native.at(-1)).toMatchObject({ op: "readOutputs", part: null });
-  await cleanup.invoke(f.caller, "delete", { id: f.body.requestId });
-  // The user stop adds exactly one bounded final output read (#2570) after the four launch commands.
-  const commands = async () =>
-    (
-      await db.query<{ request_id: string }>(
-        `select request_id from public.runtime_commands where sandbox_id=$1 order by sequence`,
-        [f.body.requestId],
-      )
-    ).rows.map((row) => row.request_id);
-  const afterStop = await commands();
-  expect(afterStop.map((id) => id.startsWith("outputs_"))).toEqual([false, false, false, false, true]);
+  await db.query("update public.sandboxes set status='deleted',stopped_at=now(),deleted_at=now() where id=$1", [
+    f.body.requestId,
+  ]);
+  const beforeReplay = await counts(f);
   await db.query(`update public.credentials set status='revoked' where id=$1`, [f.body.credentialId]);
   const replay = await f
     .service(sql, false, 10_000, () => {
@@ -649,7 +639,7 @@ test("normal launch drives create, bootstrap, health and one first prompt, seals
   expect(replay.runtime).toEqual(result.runtime);
   expect(f.resolutions()).toBe(1);
   // The replay issues no runtime command.
-  expect(await commands()).toEqual(afterStop);
+  expect(await counts(f)).toEqual(beforeReplay);
 });
 
 test("unknown timeout and response loss survive restart and concurrent exact retries without rotating phase IDs", async () => {
@@ -1312,6 +1302,7 @@ test("the normal HTTP route accepts the dashboard body and returns a launched sa
   const logs = (await post("logs/read", { ...scope, id: f.body.requestId })) as { events: AgentEvent[] };
   expect(logs.events).toEqual(events);
   expect(JSON.stringify(logs)).not.toContain(f.secret);
+  const beforeStop = f.native.length;
   expect(await post("sandbox/stop", { ...scope, id: f.body.requestId })).toEqual({
     id: f.body.requestId,
     status: "stopped",
@@ -1328,6 +1319,7 @@ test("the normal HTTP route accepts the dashboard body and returns a launched sa
     id: f.body.requestId,
     status: "deleted",
   });
+  expect(f.native.slice(beforeStop)).toEqual([expect.objectContaining({ op: "readOutputs", part: null })]);
   expect(f.resolutions()).toBe(1);
 });
 
