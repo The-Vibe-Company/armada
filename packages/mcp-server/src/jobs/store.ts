@@ -297,7 +297,11 @@ export function createJobsStore(sql: Sql, encryptionKey?: string) {
           return (
             (await withJobLease(sql, job, async (tx) => {
               const { rows } = await tx.query(
-                `update public.jobs set outcome=jsonb_set(coalesce(outcome, '{}'::jsonb), '{modal_machine}', $2::jsonb)
+                `update public.jobs set outcome=jsonb_set(
+                   case when outcome is null then '{}'::jsonb
+                        when jsonb_typeof(outcome) = 'object' then outcome
+                        else jsonb_build_object('result', outcome) end,
+                   '{modal_machine}', $2::jsonb)
                  where id=$1 and lease_until > clock_timestamp()
                    and (outcome->'modal_machine' is null or outcome->'modal_machine'->>'key' = $3)
                    and (outcome->'modal_machine'->'entry'->>'revision')::integer is not distinct from $4::integer
@@ -455,11 +459,17 @@ export function createJobsStore(sql: Sql, encryptionKey?: string) {
       const outcome = result.outcome === undefined ? null : JSON.stringify(result.outcome);
       const refundAttempt = result.status === "retry" && result.unattempted;
       const complete = async (db: Sql, generation: string | null) => {
+        // A handler result must preserve the launch evidence needed for takeover or cleanup.
         const { rows } = await db.query<{ completed: boolean }>(
           `select public.complete_job($1,$2,$3,$4,$5,
              case when $5 = 'failed' then jsonb_build_object('reason', $8::text, 'evidence', evidence)
                   else evidence end, $7) as completed
-           from (select coalesce($6::jsonb, (select outcome from public.jobs where id = $1)) as evidence) data`,
+           from (
+             select case when kind = 'launch' and outcome ? 'modal_machine' and $6::jsonb is not null
+                         then jsonb_build_object('result', $6::jsonb, 'modal_machine', outcome->'modal_machine')
+                         else coalesce($6::jsonb, outcome) end as evidence
+             from public.jobs where id = $1
+           ) data`,
           [
             ...claimIdentity(job, owner),
             generation,

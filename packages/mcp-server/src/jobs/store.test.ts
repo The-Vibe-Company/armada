@@ -69,7 +69,8 @@ test("a replacement launch claimant reads Modal create intent and fences the pre
   await f.db.query("update jobs set lease_until='-infinity' where id=$1", [jobId]);
 
   const restarted = createJobsStore(f.sql, encryptionKey);
-  const successor = (await restarted.claim("launch", crypto.randomUUID(), 30, 1))!;
+  const successorOwner = crypto.randomUUID();
+  const successor = (await restarted.claim("launch", successorOwner, 30, 1))!;
   const resumed = restarted.modalLaunchJournal(successor);
   expect(await resumed.read("machine-key")).toEqual(intent);
   await expect(journal.read("machine-key")).rejects.toThrow("claim is no longer current");
@@ -77,10 +78,18 @@ test("a replacement launch claimant reads Modal create intent and fences the pre
   expect(await resumed.compareAndSet("different-key", 1, receipt)).toBe(false);
   expect(await resumed.compareAndSet("machine-key", 1, receipt)).toBe(true);
   expect(await resumed.compareAndSet("machine-key", 1, { ...receipt, machineId: "other" })).toBe(false);
-  expect(await resumed.read("machine-key")).toEqual(receipt);
+  expect(
+    await restarted.complete(successor, successorOwner, {
+      status: "retry",
+      after: new Date(0),
+      outcome: { reason: "waiting_for_enrolment" },
+    }),
+  ).toBe(true);
+  const retried = restarted.modalLaunchJournal((await restarted.claim("launch", crypto.randomUUID(), 30, 1))!);
+  expect(await retried.read("machine-key")).toEqual(receipt);
   await f.db.query("update sandboxes set lifecycle_generation=3 where id=$1", [id]);
-  await expect(resumed.read("machine-key")).rejects.toThrow("claim is no longer current");
-  expect(await resumed.compareAndSet("machine-key", 2, { ...receipt, revision: 3 })).toBe(false);
+  await expect(retried.read("machine-key")).rejects.toThrow("claim is no longer current");
+  expect(await retried.compareAndSet("machine-key", 2, { ...receipt, revision: 3 })).toBe(false);
 });
 
 async function turnFixture() {
