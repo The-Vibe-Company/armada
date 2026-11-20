@@ -54,6 +54,7 @@ const sharedFailureCodes = [
   "host_full",
   "init_failed",
   "invalid_config",
+  "invalid_name",
   "missing_credential",
   "no_credentials",
   "no_running_turn",
@@ -67,6 +68,7 @@ const sharedFailureCodes = [
   "unknown",
   "unknown_route",
   "upstream",
+  "viewer_access_denied",
 ] as const;
 
 const sdkFailureCodes = [

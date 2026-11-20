@@ -1,46 +1,74 @@
 import { API_FAILURE_HELP, type ApiFailureCode } from "@armada/core";
 import type {
   DockerLaunchInput,
+  ExecInput,
   ExecResult,
   GoldenLaunchInput,
+  InterruptInput,
+  InterruptResult,
   LaunchEnvelope,
   LaunchInput,
+  ListInput,
+  ListResult,
   LogsInput,
   LogsResult,
+  OutputGetInput,
+  OutputsListInput,
+  OutputsListResult,
   PinnedModalLaunchInput,
   SandboxStatus,
   SendInput,
   SendResult,
   StatusInput,
+  SteerInput,
+  SteerResult,
   StopInput,
   StopResult,
   TemplateLaunchInput,
   TemplateLaunchResult,
+  ViewerTokenInput,
+  ViewerTokenResult,
   WaitInput,
   WaitResult,
 } from "@armada/core/contract";
 import type { ServerFailureCode } from "@armada/core/contract/failures";
-import { apiUrl, jsonPost, requestApi, TEMPLATE_LAUNCH_ROUTE } from "./request.ts";
+import { sandboxOutputOperations } from "@armada/core/contract/sandbox-outputs";
+import { sandboxViewerOperations } from "@armada/core/contract/sandbox-viewer";
+import { apiUrl, jsonPost, type RequestPolicy, requestApi, TEMPLATE_LAUNCH_ROUTE } from "./request.ts";
 import { sandboxClient } from "./sandboxes.ts";
 
 export type FailureCode = ServerFailureCode | "unknown_response" | "transport_error";
 
 export type {
   DockerLaunchInput,
+  ExecInput,
+  ExecResult,
   GoldenLaunchInput,
+  InterruptInput,
+  InterruptResult,
   LaunchInput,
+  ListInput,
+  ListResult,
   LogsInput,
   LogsResult,
+  OutputGetInput,
+  OutputsListInput,
+  OutputsListResult,
   PinnedModalLaunchInput,
   SandboxStatus,
   SendInput,
   SendResult,
   StatusInput,
+  SteerInput,
+  SteerResult,
   TemplateLaunchInput,
   TemplateLaunchResult,
+  ViewerTokenInput,
+  ViewerTokenResult,
   WaitInput,
 };
 export type LaunchResult = LaunchEnvelope;
+const { listSandboxOutputs, readSandboxOutput } = sandboxOutputOperations;
 
 /**
  * An Armada request failure. When `retryAfterSeconds` is set from the `Retry-After`
@@ -72,10 +100,12 @@ export interface ArmadaOptions {
   url?: string;
   fetch?: Fetch;
   timeoutMs?: number;
-  /** Extra attempts for read-only status, wait and logs. Mutations are never retried. Default 0, maximum 3. */
+  /** Extra attempts for read-only status, wait, logs, list and outputs. Mutations are never retried. Default 0, maximum 3. */
   readRetries?: number;
 }
 export type SandboxRef = Pick<StatusInput, "id" | "org">;
+
+const defaultOrigin = "https://armada.thevibecompany.co";
 
 function loopbackHost(hostname: string) {
   const host = hostname.toLowerCase();
@@ -90,7 +120,7 @@ export class Armada {
   private readonly timeoutMs: number | undefined;
   readonly #token: string;
   constructor(options: ArmadaOptions) {
-    const url = new URL(options.url ?? "https://armada.thevibecompany.co");
+    const url = new URL(options.url ?? defaultOrigin);
     if (
       !["https:", "http:"].includes(url.protocol) ||
       url.username ||
@@ -136,41 +166,106 @@ export class Armada {
     return this.#sandboxes.stop<StopResult>(input, options);
   }
 
-  /** UTF-8 file helpers over authorized exec. Requires guest `base64`; not a binary transfer API. */
-  readonly files = {
-    read: async (input: SandboxRef & { path: string }, options?: RequestOptions) => {
-      const result = await this.#sandboxes.exec<ExecResult>(
-        { id: input.id, ...(input.org ? { org: input.org } : {}), command: `cat < ${shellPath(input.path)}` },
+  list(input: ListInput = {}, options?: RequestOptions) {
+    return this.#sandboxes.list<ListResult>(input, options);
+  }
+  interrupt(input: InterruptInput, options?: RequestOptions) {
+    return this.#sandboxes.interrupt<InterruptResult>(input, options);
+  }
+  steer(input: SteerInput, options?: RequestOptions) {
+    return this.#sandboxes.steer<SteerResult>(input, options);
+  }
+  exec(input: ExecInput, options?: RequestOptions) {
+    return this.#sandboxes.exec<ExecResult>(
+      input,
+      options,
+      Math.max(300000, ((input.timeout_seconds ?? 120) + 30) * 1000),
+    );
+  }
+  /** Use an Armada client configured with the direct server URL for viewer token minting. */
+  async createViewerToken(input: ViewerTokenInput, options?: RequestOptions) {
+    if (this.origin === defaultOrigin)
+      throw new TypeError("Viewer token minting requires the direct Armada server URL.");
+    const operation = sandboxViewerOperations.mint;
+    return this.requestJson<ViewerTokenResult>(
+      operation.route.path,
+      () => jsonPost(input),
+      operation.readOnly,
+      options,
+    );
+  }
+
+  readonly outputs = {
+    list: async (input: OutputsListInput, options?: RequestOptions) => {
+      const { route, readOnly } = listSandboxOutputs;
+      const id = listSandboxOutputs.input.path.id.parse(input.id);
+      return this.requestJson<OutputsListResult>(
+        route.path.replace("{id}", id),
+        { method: route.method },
+        readOnly,
         options,
       );
-      checkExec(result);
-      return result.stdout;
     },
-    write: async (input: SandboxRef & { path: string; content: string }, options?: RequestOptions) => {
-      const bytes = new TextEncoder().encode(input.content);
-      if (bytes.length > 32768) throw new RangeError("File writes are limited to 32 KiB.");
-      let binary = "";
-      for (const byte of bytes) binary += String.fromCharCode(byte);
-      const result = await this.#sandboxes.exec<ExecResult>(
-        {
-          id: input.id,
-          ...(input.org ? { org: input.org } : {}),
-          command: `printf '%s' '${btoa(binary)}' | base64 -d > ${shellPath(input.path)}`,
-        },
+    /** Stream a stored output and expose its response headers, including ETag and Content-Range. */
+    get: async (input: OutputGetInput, options?: RequestOptions) => {
+      const { route, readOnly } = readSandboxOutput;
+      const id = readSandboxOutput.input.path.id.parse(input.id);
+      const name = readSandboxOutput.input.path.name.parse(input.name);
+      const path = route.path.replace("{id}", id).replace("{name}", encodeURIComponent(name));
+      const headers = new Headers({ accept: "*/*" });
+      if (input.range !== undefined) headers.set("range", input.range);
+      if (input.ifRange !== undefined) headers.set("if-range", input.ifRange);
+      const { response } = await this.fetchResponse(
+        path,
+        { method: route.method, headers },
+        readOnly,
         options,
+        undefined,
+        (response) => response.ok || response.status === 416,
       );
-      checkExec(result);
+      return response;
     },
   };
 
-  private async request<T>(
+  private request<T>(
     route: string,
     body: unknown,
     readOnly: boolean,
+    options?: RequestOptions,
+    defaultTimeoutMs?: number,
+  ) {
+    return this.requestJson<T>(`/api/v1/${route}`, () => jsonPost(body), readOnly, options, defaultTimeoutMs);
+  }
+
+  private async requestJson<T>(
+    path: string,
+    init: RequestInit | (() => RequestInit),
+    readOnly: boolean,
+    options?: RequestOptions,
+    defaultTimeoutMs?: number,
+  ) {
+    const { response, payload, bodyReadFailed } = await this.fetchResponse(
+      path,
+      init,
+      readOnly,
+      options,
+      defaultTimeoutMs,
+    );
+    if (bodyReadFailed) throw new ArmadaError("transport_error", 0, undefined, !readOnly);
+    if (!payload || typeof payload !== "object" || Array.isArray(payload))
+      throw new ArmadaError("unknown_response", response.status, undefined, !readOnly);
+    return payload as T;
+  }
+
+  private async fetchResponse(
+    path: string,
+    init: RequestInit | (() => RequestInit),
+    readOnly: boolean,
     options: RequestOptions = {},
     defaultTimeoutMs = 300000,
+    streamResponse?: RequestPolicy["streamResponse"],
   ) {
-    const result = await requestApi(apiUrl(this.origin, `/api/v1/${route}`), () => jsonPost(body), {
+    const result = await requestApi(apiUrl(this.origin, path), init, {
       fetch: (url, init) => this.fetcher(String(url), init),
       token: this.#token,
       timeoutMs: options.timeoutMs ?? this.timeoutMs ?? defaultTimeoutMs,
@@ -178,10 +273,11 @@ export class Armada {
       combineSignal: true,
       readOnly,
       readRetries: this.retries,
+      ...(streamResponse ? { streamResponse } : {}),
     });
     if (result.kind === "transport")
       throw new ArmadaError(result.failure.code, 0, undefined, result.failure.outcomeUnknown);
-    const { response, payload, failure, bodyReadFailed } = result;
+    const { response, failure } = result;
     if (failure)
       throw new ArmadaError(
         failure.code,
@@ -190,19 +286,8 @@ export class Armada {
         failure.outcomeUnknown,
         failure.retryAfterSeconds,
       );
-    if (bodyReadFailed) throw new ArmadaError("transport_error", 0, undefined, !readOnly);
-    if (!payload || typeof payload !== "object" || Array.isArray(payload))
-      throw new ArmadaError("unknown_response", response.status, undefined, !readOnly);
-    return payload as T;
+    return result;
   }
-}
-function shellPath(path: string) {
-  if (!path || path.includes("\0")) throw new TypeError("A nonempty file path without NUL is required.");
-  return `'${path.replace(/'/g, `'"'"'`)}'`;
-}
-function checkExec(result: ExecResult) {
-  if (result.exitCode !== 0 || result.timedOut || result.truncated)
-    throw new ArmadaError("unknown_response", 200, undefined, true);
 }
 
 /** Verify before parsing JSON; persist delivery IDs separately to prevent replay within the tolerance. */
