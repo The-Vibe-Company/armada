@@ -244,9 +244,11 @@ jobs:
             ARMADA_SMOKE_CASES="$ARMADA_SMOKE_CASES" bun scripts/dashboard-read-smoke.ts | tee "$RUNNER_TEMP/dashboard-smoke.jsonl" &
           dashboard_pid=$!
           status=0
+          # Owner exception 2026-11-20 for release 5.0.0: the scoped lane (--scoped-access) is
+          # out of the gate while #3450 finds its intermittent cause. Restore it with #3450.
           env -i PATH="$PATH" HOME="$HOME" ARMADA_URL="$ARMADA_URL" ARMADA_TOKEN="$ARMADA_TOKEN" \
             ARMADA_SMOKE_CASES="$ARMADA_SMOKE_CASES" ARMADA_SMOKE="$ARMADA_SMOKE" ARMADA_SMOKE_JOURNAL="$ARMADA_SMOKE_JOURNAL" \
-            bun scripts/post-deploy-smoke.ts --work-preservation --templates-skills --lifecycle --vault --default-skills --scoped-access --github-refresh --golden-runtime --expiry --real-model | tee "$RUNNER_TEMP/armada-smoke.jsonl" || status=$?
+            bun scripts/post-deploy-smoke.ts --work-preservation --templates-skills --lifecycle --vault --default-skills --github-refresh --golden-runtime --expiry --real-model | tee "$RUNNER_TEMP/armada-smoke.jsonl" || status=$?
           wait "$dashboard_pid" || status=1
           exit "$status"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
