@@ -52,8 +52,8 @@ profile/workspace label is not authentication; actual AppID is authoritative.
 There is no redirect/new-App fallback. The public SDK does not expose a separate
 verified authenticated-workspace accessor.
 
-Source snapshots use a separate SQL store and source lease. Fork reservations,
-get/list/events/runner grants use only target scope. No source-store fallback can
+Source snapshots use a separate SQL store. Fork reservations and
+get/list/events/runner grants use target scope. No source-store fallback can
 expose an org-scoped machine when a private target was requested. A fork persists
 source Image lineage; subsequent machine operations refuse a provider connection
 with the wrong source authority, even when both connections reach the same App.
@@ -77,8 +77,8 @@ managementAuthority provenance. It also accepts explicit
 public client injection. `ModalStore.imageReferenced` is a server-only boolean
 reference check: it counts private target references across visibility scopes
 without returning private resource IDs, owners, events or rows to a source caller.
-GC and fork reservation serialize on the source lease. Store entry points recheck
-live organization membership, including for private owners. Lifecycle phase
+Snapshot retirement and fork reservation serialize on the saved-image row.
+Store entry points recheck live organization membership, including for private owners. Lifecycle phase
 commits renew the 15-minute lease, and expired holders cannot commit late results.
 Image collection claims expire after five minutes. Tombstone deletion matches the
 name, source and image ID so a late collector cannot purge a replacement artifact.
@@ -392,10 +392,10 @@ remains upstream, in addition to live membership/owner/binding checks here.
   either runner path. It reads live compute without taking the lifecycle lease
   or starting a stopped workspace. The caller's pre-stop deadline bounds the
   whole wait. If stop wins the race, keep the previous measurement.
-- Before creating a native fork reference, reread the snapshot under the source
-  lease. Runtime forks pin a live handle under a row lock. Once an unreferenced
-  tombstone is marked collecting, remote deletion can run outside the source
-  lease. Only the holder of its expiring dispatch claim can issue that deletion.
+- Native and runtime forks pin a live handle under a shared image row lock.
+  The reservation commits before boot, and retirement checks references under
+  an exclusive image row lock. Once an unreferenced tombstone is marked
+  collecting, remote deletion can run outside the source lease. Only the holder of its expiring dispatch claim can issue that deletion.
   Release the claim on failure for immediate retry and purge only the matching
   source and physical Image record after success. Cleanup of other sources'
   retired images defaults to a detached task after delete, outside the delete

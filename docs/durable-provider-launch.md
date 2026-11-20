@@ -5,13 +5,14 @@ coordinator approval.
 
 ## Decision
 
-A launch belongs to a durable sandbox record from admission onward. Today,
-[the shared launcher](../packages/core/src/launch.ts) forks before registering
-the sandbox and omits the adapter's idempotency key. Its request-scoped deadline
-outlives the server's [25-second drain deadline](deployment-draining.md).
-A restart can lose the fork receipt and leave both paid compute and a golden
-operation fence behind. Modal also takes the source lifecycle lease through
-the child's entire boot, so concurrent forks can fail with `fork_source_busy`.
+A launch belongs to a durable sandbox record from admission onward. At the time
+of this proposal, [the shared launcher](../packages/core/src/launch.ts) forked
+before registering the sandbox and omitted the adapter's idempotency key. Its
+request-scoped deadline outlived the server's
+[25-second drain deadline](deployment-draining.md). A restart could lose the fork
+receipt and leave paid compute and a golden operation fence behind. Modal also
+held the source lifecycle lease through the child's entire boot, so concurrent
+forks could fail on source contention.
 
 Use the [normal Docker launch queue](../packages/mcp-server/src/docker-normal-launch.ts)
 as the precedent for acknowledgements, progress and worker claims. REST and
@@ -76,11 +77,10 @@ reserve another dispatch. An earlier intent can complete after cancellation
 or lease loss. The successor treats it as uncertain and reconciles by key
 before attempting another dispatch or declaring cleanup complete.
 
-For Modal, hold the source lifecycle lease only to recheck the exact ready
-snapshot and persist the provider-owned child reservation with the exact
-source, image and management authority. Make image retirement honor that reference, then release the source lease before
-booting under the child lease. Retry source contention in the queue within
-the launch deadline. For Boat, keep the golden revision fenced until the
+Modal now locks the exact ready snapshot row while committing the provider-owned
+child reservation with its source, image and management authority. Retirement
+honors that reference. The row lock ends before boot under the child lease.
+For Boat, keep the golden revision fenced until the
 provider has acquired its own durable reference or the fork outcome is resolved.
 
 When the receipt is missing, reconcile using the persisted provider binding,

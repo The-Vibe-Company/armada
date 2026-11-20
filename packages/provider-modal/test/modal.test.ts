@@ -1090,30 +1090,11 @@ async function seedHistoricalSnapshotTombstone(name: string) {
   );
 }
 
-test("overlapping forks refuse source contention definitively before allocating", async () => {
-  const f = fixture();
-  const { name } = await savedGolden(f);
-  const entered = deferred();
-  const release = deferred();
-  f.distribution.start = async () => {
-    entered.resolve();
-    await release.promise;
-  };
-  const first = f.provider.fork({ from: name });
-  await entered.promise;
-  const creates = f.creates;
-  try {
-    const error = await f.provider.fork({ from: name }).catch((error: unknown) => error);
-    expect(error).toMatchObject({ code: "conflict", providerCode: "fork_source_busy" });
-    expect(isNonMutatingProviderRefusal(error)).toBe(true);
-    expect(f.creates).toBe(creates);
-  } finally {
-    release.resolve();
-    await first;
-  }
-});
-test("enrolled Modal forks from one snapshot can boot concurrently", async () => {
-  const f = fixture(scope, fixtureSql, undefined, undefined, true);
+test.each([
+  ["native", undefined],
+  ["enrolled", true],
+] as const)("%s Modal forks from one snapshot can boot concurrently", async (_path, commonRuntime) => {
+  const f = fixture(scope, fixtureSql, undefined, undefined, commonRuntime);
   const { name } = await savedGolden(f);
   const entered = deferred();
   const release = deferred();
@@ -1140,7 +1121,10 @@ test("enrolled Modal forks from one snapshot can boot concurrently", async () =>
   }
 });
 
-test("enrolled Modal fork refuses a snapshot retired before reservation", async () => {
+test.each([
+  ["native", undefined],
+  ["enrolled", true],
+] as const)("%s Modal fork refuses a snapshot retired before reservation", async (_path, commonRuntime) => {
   const source = fixture();
   const { name } = await savedGolden(source);
   const fork = fixture(
@@ -1154,7 +1138,7 @@ test("enrolled Modal fork refuses a snapshot retired before reservation", async 
     },
     undefined,
     undefined,
-    true,
+    commonRuntime,
   );
   const requestKey = crypto.randomUUID();
   await expect(fork.provider.fork({ from: name, idempotencyKey: requestKey })).rejects.toMatchObject({
