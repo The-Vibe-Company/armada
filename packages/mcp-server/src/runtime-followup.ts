@@ -21,6 +21,21 @@ export interface RuntimeFollowupInput {
   reasoning_effort?: string | undefined;
 }
 export type RuntimeFollowup = ReturnType<typeof createRuntimeFollowup>;
+export class RuntimeFollowupConflict extends VaultError {
+  constructor(
+    readonly reason:
+      | "sandbox_not_ready"
+      | "runtime_binding_missing"
+      | "runtime_prompt_running"
+      | "runtime_reconciliation_active"
+      | "runtime_admission_changed"
+      | "runtime_activity_busy",
+    message: string,
+  ) {
+    super("conflict", message);
+  }
+}
+
 /** Running, owner-scoped, model-only continuation. No host, native credential
  * hooks, model switching or arbitrary new conversations. Idle Boat workers
  * open their first conversation using a request-derived identity. Stopped workers use the existing
@@ -83,7 +98,12 @@ export function createRuntimeFollowup(
       found.stopRequestedAt ||
       found.deletedAt
     )
-      throw new VaultError("conflict", "Runtime send requires an already-running, bound sandbox.");
+      throw new RuntimeFollowupConflict(
+        ["ready", "running"].includes(found.status) && !found.stopRequestedAt && !found.deletedAt
+          ? "runtime_binding_missing"
+          : "sandbox_not_ready",
+        "Runtime send requires an already-running, bound sandbox.",
+      );
     // A stable server-owned first-conversation ID keeps uncertain first-send
     // payloads identical even after publication adds that conversation to SQL.
     const firstConversation = `first_${requestId}`;
@@ -105,7 +125,8 @@ export function createRuntimeFollowup(
     const previous = await commands.result(caller.userId, found.id, commandId);
     if (previous.state === "missing" && found.taskPromptId) {
       const last = await agent.getPrompt({ sandboxId: found.providerSandboxId, promptId: found.taskPromptId });
-      if (!last.done) throw new VaultError("conflict", "Wait for the current runtime prompt to finish.");
+      if (!last.done)
+        throw new RuntimeFollowupConflict("runtime_prompt_running", "Wait for the current runtime prompt to finish.");
     }
     const configuredEpoch =
       previous.state === "missing" && (found.provider === "modal" || found.provider === "boat")
@@ -148,7 +169,10 @@ export function createRuntimeFollowup(
             (idleFirst && current.conversationIds.length === 0 && !current.taskPromptId)
           )
         )
-          throw new VaultError("conflict", "Runtime admission changed; inspect status before retrying.");
+          throw new RuntimeFollowupConflict(
+            lease?.reconciling ? "runtime_reconciliation_active" : "runtime_admission_changed",
+            "Runtime admission changed; inspect status before retrying.",
+          );
         // The durable command identity decides first: an admitted turn may have executed, so the
         // checkpoint fence below refuses only new work and never hides a stored reply.
         const saved = (
@@ -191,7 +215,10 @@ export function createRuntimeFollowup(
           return { current, epoch: scope.epoch, replay: false };
         }
         if (lease.activity_lease_id || saved)
-          throw new VaultError("conflict", "Runtime admission is busy or uncertain; reuse the original request_id.");
+          throw new RuntimeFollowupConflict(
+            "runtime_activity_busy",
+            "Runtime admission is busy or uncertain; reuse the original request_id.",
+          );
         await createSqlData(locked)(caller).sandboxes.update(found.id, {
           turnActivity: "claim",
           clearTaskOutcome: true,

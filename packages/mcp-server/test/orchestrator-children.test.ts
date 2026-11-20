@@ -15,6 +15,7 @@ import { launchCredentials } from "../src/launch-credentials.ts";
 import { createNativeWebhookPrompts } from "../src/native-webhook-prompts.ts";
 import { observeRequest } from "../src/request-observability.ts";
 import { createRuntimeEnrolments } from "../src/runtime-enrolment.ts";
+import { RuntimeFollowupConflict } from "../src/runtime-followup.ts";
 import { createRuntimeProvider } from "../src/runtime-provider.ts";
 import { launchSandboxChild } from "../src/sandbox-access-child-launch.ts";
 import { createSandboxChildren, type SandboxChildExecutor } from "../src/sandbox-access-children.ts";
@@ -449,23 +450,40 @@ test("an uncertain scoped message records a correlated operator diagnostic", asy
       status: "ready",
     });
     await db.query("insert into orchestrator_children values($1,$2,$3,$4)", [child.id, id, p.org, p.owner]);
-    const children = createSandboxChildren(sql, authority, {
-      async message() {
-        throw Object.assign(new Error("private provider response"), { code: "ECONNRESET" });
+    let claimMiss = false;
+    let admissions = 0;
+    let dispatches = 0;
+    const children = createSandboxChildren(
+      sql,
+      {
+        async admit(secret, request, reserve) {
+          if (claimMiss && ++admissions === 2)
+            await db.query(
+              "update orchestrator_child_operations set dispatched_at=now() where orchestrator_id=$1 and idempotency_key=$2",
+              [id, "message-claim-miss"],
+            );
+          return authority.admit(secret, request, reserve);
+        },
       },
-      async launch() {
-        throw Error("unexpected");
+      {
+        async message() {
+          dispatches++;
+          throw new RuntimeFollowupConflict("runtime_reconciliation_active", "private provider response");
+        },
+        async launch() {
+          throw Error("unexpected");
+        },
+        async stop() {
+          throw Error("unexpected");
+        },
+        async read() {
+          throw Error("unexpected");
+        },
+        async reconcile(op) {
+          return { operationId: op.id, sandboxId: op.sandboxId, state: "unknown" };
+        },
       },
-      async stop() {
-        throw Error("unexpected");
-      },
-      async read() {
-        throw Error("unexpected");
-      },
-      async reconcile(op) {
-        return { operationId: op.id, sandboxId: op.sandboxId, state: "unknown" };
-      },
-    });
+    );
     const lines: string[] = [];
     let receipt: Awaited<ReturnType<typeof children.message>> | undefined;
     const response = await observeRequest(
@@ -475,18 +493,56 @@ test("an uncertain scoped message records a correlated operator diagnostic", asy
       },
       (line) => lines.push(line),
     );
-    expect(receipt?.state).toBe("uncertain");
+    if (!receipt) throw Error("Missing child message receipt.");
+    const original = receipt;
+    expect(original.state).toBe("uncertain");
     expect(lines.map((line) => JSON.parse(line))).toContainEqual(
       expect.objectContaining({
         event: "operator_failure",
         phase: "scoped.child_message.execution",
         code: "child_outcome_unconfirmed",
-        message: "ECONNRESET",
+        causeCode: "runtime_reconciliation_active",
         sandboxId: child.id,
-        operationId: receipt?.id,
+        operationId: original.id,
         requestId: response?.headers.get("x-request-id"),
       }),
     );
+    const replayResponse = await observeRequest(
+      async () => {
+        expect(await children.message(token, "message-outcome", child.id, "synthetic child prompt")).toEqual(original);
+        return new Response();
+      },
+      (line) => lines.push(line),
+    );
+    expect(lines.map((line) => JSON.parse(line))).toContainEqual(
+      expect.objectContaining({
+        phase: "scoped.child_message.receipt",
+        causeCode: "prior_uncertain_receipt",
+        sandboxId: child.id,
+        operationId: original.id,
+      }),
+    );
+    expect(replayResponse?.status).toBe(200);
+    claimMiss = true;
+    const claimMissResponse = await observeRequest(
+      async () => {
+        const target = child.id.toUpperCase();
+        const missed = await children.message(token, "message-claim-miss", target, "synthetic child prompt");
+        expect(missed).toMatchObject({ state: "uncertain", sandboxId: target });
+        expect(lines.map((line) => JSON.parse(line))).toContainEqual(
+          expect.objectContaining({
+            phase: "scoped.child_message.receipt",
+            causeCode: "dispatch_claim_missing",
+            sandboxId: child.id,
+            operationId: missed.id,
+          }),
+        );
+        return new Response();
+      },
+      (line) => lines.push(line),
+    );
+    expect(claimMissResponse?.status).toBe(200);
+    expect(dispatches).toBe(1);
     expect(lines.join("\n")).not.toContain("private provider response");
   } finally {
     await close();
