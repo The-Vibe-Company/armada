@@ -23,7 +23,12 @@ function recordUncertainMessageReceipt(
   recordOperatorDiagnostic(
     "scoped.child_message.receipt",
     { errorClass: "ChildReceiptUncertain", message: "Child message outcome unconfirmed", stack: [] },
-    { operationId: receipt.id, sandboxId: receipt.sandboxId, code: "child_outcome_unconfirmed", causeCode },
+    {
+      operationId: receipt.id,
+      sandboxId: receipt.sandboxId.toLowerCase(),
+      code: "child_outcome_unconfirmed",
+      causeCode,
+    },
   );
 }
 
