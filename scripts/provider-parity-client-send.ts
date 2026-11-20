@@ -1,6 +1,5 @@
 import { createParityClients, type ProofClient } from "./provider-parity-clients.ts";
 
-export type { ProofClient as SendClient } from "./provider-parity-clients.ts";
 export { ClientProofError as ClientSendError } from "./provider-parity-clients.ts";
 
 interface Io {
