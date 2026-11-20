@@ -6,11 +6,10 @@ import { createTurnDispatchJob, type DispatchTurn } from "../account-turn-dispat
 import { createAccountTurnQueue } from "../account-turn-queue.ts";
 import { retentionMaintenanceJob, seedRetentionMaintenance } from "../retention-maintenance.ts";
 import { scopedRuntimeSql } from "../runtime-enrolment.ts";
-import { admitModalLaunch, type ModalLaunchAdmission } from "../sandbox-lifecycle.ts";
 import type { LaneFactory } from "../server-worker-modules.ts";
 import { sqlOver } from "../sql.ts";
 import { runtimeWakes } from "../wake-bus.ts";
-import { dispatchModalLaunch } from "./modal-launch.ts";
+import { admitModalLaunch, dispatchModalLaunch, type ModalLaunchAdmission } from "./modal-launch.ts";
 import { createJobsRunner, type Job } from "./runner.ts";
 import { createJobsStore, JOBS_WAKE, withJobLease } from "./store.ts";
 

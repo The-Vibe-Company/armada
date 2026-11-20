@@ -1,10 +1,129 @@
-import type { Machine, MachineIdentity, Sql } from "@armada/core/server";
+import type { SandboxStatus } from "@armada/core";
+import { GoldenError, type Machine, type MachineIdentity, type Sql } from "@armada/core/server";
 import { createModalMachine, type ModalMachineOptions } from "@armada/provider-modal";
-import { bindModalLaunchMachine } from "../sandbox-lifecycle.ts";
+import { bindModalLaunchMachine, insertStartingModalSandbox, type ModalLaunchSandbox } from "../sandbox-lifecycle.ts";
 import type { Job, JobContext } from "./runner.ts";
-import { createJobsStore, withJobLease } from "./store.ts";
+import { ConflictingJobRequest, createJobsStore, withJobLease } from "./store.ts";
 
 export type ModalLaunchAllocation = Omit<Parameters<Machine["create"]>[0], "sandboxId" | "generation" | "signal">;
+export interface ModalLaunchAdmission {
+  orgId: string;
+  ownerId: string;
+  request?: { key: string; digest: string };
+  sandbox: ModalLaunchSandbox;
+  allocation: ModalLaunchAllocation & { source: { kind: "snapshot" } };
+  initialPrompt?: string;
+  deadline: Date;
+  maxAttempts: number;
+}
+
+// WARNING: Activate only after the receipt backfill and launch runner integration.
+export async function admitModalLaunch(sql: Sql, encryptionKey: string, input: ModalLaunchAdmission) {
+  if (!sql.transaction) throw new Error("Modal admission requires a transaction.");
+  const { orgId, ownerId, sandbox, allocation, request } = input;
+  const sandboxId = crypto.randomUUID();
+  const generation = 1;
+  const store = createJobsStore(sql, encryptionKey);
+  const key = request ? JSON.stringify(["ordinary", request.key]) : JSON.stringify(["unkeyed", sandboxId]);
+
+  try {
+    return await sql.transaction(async (tx) => {
+      const {
+        rows: [golden],
+      } = await tx.query<{
+        visibility: "org" | "private";
+        provider_snapshot_id: string | null;
+        modal_workspace: string;
+        modal_environment: string;
+        modal_app_id: string;
+      }>(
+        `select g.visibility, g.provider_snapshot_id, g.modal_workspace, g.modal_environment, g.modal_app_id
+         from public.goldens g join public.members m on m.org_id=g.org_id and m.user_id=$3
+         where g.id=$1 and g.org_id=$2 and g.provider='modal' and g.removed_at is null
+           and (g.visibility='org' or g.owner_id=$3)
+         for update of g for share of m`,
+        [sandbox.goldenId, orgId, ownerId],
+      );
+      if (!golden) throw new GoldenError("not_found", "Modal golden not found.");
+
+      const jobId = await store.enqueue(
+        "launch",
+        sandboxId,
+        generation,
+        key,
+        {
+          allocation,
+          modal: {
+            workspace: golden.modal_workspace,
+            environment: golden.modal_environment,
+            appId: golden.modal_app_id,
+          },
+        },
+        {
+          orgId,
+          deadline: input.deadline,
+          maxAttempts: input.maxAttempts,
+          request: { ownerId, digest: request?.digest ?? sandboxId },
+        },
+        tx,
+      );
+      const {
+        rows: [receipt],
+      } = await tx.query<{ sandbox_id: string; status: SandboxStatus | null; golden_id: string | null }>(
+        `select j.sandbox_id, s.status, s.golden_id from public.jobs j
+         left join public.sandboxes s on s.id=j.sandbox_id and s.org_id=j.org_id and s.owner_id=j.request_owner_id
+         where j.id=$1 and j.kind='launch' and j.org_id=$2 and j.request_owner_id=$3`,
+        [jobId, orgId, ownerId],
+      );
+      if (!receipt) throw new Error("Modal launch receipt is missing.");
+      if (receipt.sandbox_id !== sandboxId) {
+        if (receipt.golden_id && receipt.golden_id !== sandbox.goldenId)
+          throw new GoldenError("conflict", "Launch key conflicts with an existing receipt.");
+        return { sandbox: { id: receipt.sandbox_id, status: receipt.status ?? "deleted" } };
+      }
+
+      const snapshot = allocation.source.ref;
+      if (golden.provider_snapshot_id !== snapshot)
+        throw new GoldenError("conflict", "Golden snapshot changed during launch preparation.");
+      await tx.query("select public.lock_golden_snapshot('modal', $1)", [snapshot]);
+      const { rows: sealed } = await tx.query(
+        "select 1 from public.golden_snapshot_retirements where provider='modal' and old_snapshot=$1 and sealed",
+        [snapshot],
+      );
+      if (sealed.length) throw new GoldenError("conflict", "Golden snapshot is being retired.");
+
+      await insertStartingModalSandbox(
+        tx,
+        {
+          sandboxId,
+          orgId,
+          ownerId,
+          generation,
+          snapshot,
+          visibility: sandbox.visibility === "private" ? "private" : golden.visibility,
+        },
+        sandbox,
+      );
+      if (input.initialPrompt !== undefined) {
+        await store.enqueue(
+          "launch_initial_turn",
+          sandboxId,
+          generation,
+          jobId,
+          { prompt: input.initialPrompt },
+          { orgId, maxAttempts: 1 },
+          tx,
+        );
+      }
+      return { sandbox: { id: sandboxId, status: "starting" as const } };
+    });
+  } catch (error) {
+    if (error instanceof ConflictingJobRequest)
+      throw new GoldenError("conflict", "Launch key conflicts with an existing receipt.");
+    throw error;
+  }
+}
+
 type DispatchContext = Pick<JobContext, "canDispatch" | "signal">;
 
 interface ModalLaunchPlan {
