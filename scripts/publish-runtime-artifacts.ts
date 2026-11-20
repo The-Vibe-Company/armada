@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { chmod, copyFile, mkdir } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
+import { stageAntigravityArchive } from "../packages/agent-runtime/src/antigravity-build.ts";
 import { OPENCODE_ARTIFACT } from "../packages/agent-runtime/src/opencode-artifact.ts";
 import { publishedRuntimeArchitectures } from "../packages/agent-runtime/src/publication.ts";
 
@@ -12,11 +13,18 @@ type PublicationManifest = {
   runtime: FilePin;
   harnesses: Record<string, { archive: FilePin }>;
   opencode: FilePin;
+  antigravity: Record<"x64" | "arm64", FilePin>;
 };
 
 export async function publishManifest(manifest: PublicationManifest, source: string, destination: string) {
   await mkdir(destination, { recursive: true });
-  const pins = [manifest.runtime, ...Object.values(manifest.harnesses).map((h) => h.archive), manifest.opencode];
+  const pins = [
+    manifest.runtime,
+    ...Object.values(manifest.harnesses).map((h) => h.archive),
+    manifest.opencode,
+    manifest.antigravity.x64,
+    manifest.antigravity.arm64,
+  ];
   for (const pin of pins) {
     if (
       !/^[a-f0-9]{64}$/.test(pin.sha256) ||
@@ -66,6 +74,10 @@ if (import.meta.main) {
       version: OPENCODE_ARTIFACT.version,
       bytes: OPENCODE_ARTIFACT.bytes[architecture],
       sha256: OPENCODE_ARTIFACT.sha256[architecture],
+    };
+    manifest.antigravity = {
+      x64: await stageAntigravityArchive(source, "x64"),
+      arm64: await stageAntigravityArchive(source, "arm64"),
     };
     await publishManifest(manifest, source, destination);
     await Bun.write(join(manifests, `${architecture}.json`), JSON.stringify(manifest, null, 2));
