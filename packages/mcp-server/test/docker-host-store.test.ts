@@ -1171,7 +1171,7 @@ test("restore dispatch cancels stale intent and reconciles a late physical recei
     (await db.query("select result_machine_id from docker_host_jobs where request_id=$1", [result.requestId])).rows,
   ).toEqual([{ result_machine_id: result.machineId }]);
   await store.expired(a.hostToken, a.installationId, { requestId: result.requestId });
-  await denied(store.complete(a.hostToken, a.installationId, { ...result, outcome: "failed" }));
+  await denied(store.complete(a.hostToken, a.installationId, { requestId: result.requestId, outcome: "failed" }));
   expect(await store.pendingStartsForHost(a.hostToken, a.installationId, true)).toEqual([]);
   expect(await lifecycle(a.sandboxId)).toMatchObject({ status: "starting" });
 });
