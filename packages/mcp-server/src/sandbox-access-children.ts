@@ -10,6 +10,7 @@ import {
   validateSkillPins,
 } from "@armada/core/server";
 import type { ChildAuthority } from "./child-authority.ts";
+import { DataError } from "./data.ts";
 import { recordOperatorDiagnostic } from "./request-observability.ts";
 import { ChildLaunchNotAllocated } from "./sandbox-access-child-launch.ts";
 import { trackedOperations } from "./tracked-operations.ts";
@@ -253,12 +254,16 @@ export function createSandboxChildren(sql: Sql, authority: ChildAuthority, execu
           new ChildLaunchNotAllocated("preallocation_rejected", "dispatch_admission", error).record(receipt);
         } else {
           const diagnostic = failureDiagnostic(error);
+          const denied = error instanceof DelegatedAuthorityDenied;
           recordOperatorDiagnostic(
             `scoped.child_${input.action}.dispatch_admission`,
-            error instanceof DelegatedAuthorityDenied
-              ? { ...diagnostic, errorClass: "DelegatedAuthorityDenied" }
-              : diagnostic,
-            { sandboxId: receipt.sandboxId, operationId: receipt.id, code: "child_dispatch_not_admitted" },
+            denied ? { ...diagnostic, errorClass: "DelegatedAuthorityDenied" } : diagnostic,
+            {
+              sandboxId: receipt.sandboxId,
+              operationId: receipt.id,
+              code: "child_dispatch_not_admitted",
+              refusalCode: denied ? "authority_denied" : "dispatch_admission_error",
+            },
           );
         }
         // No executor was invoked. Failed fresh admission is confirmed non-allocation,
@@ -374,10 +379,16 @@ export function createSandboxChildren(sql: Sql, authority: ChildAuthority, execu
           : "child_outcome_unconfirmed";
       if (noAllocation) error.record(operation);
       else {
+        const refusalCode = notDispatched
+          ? error.cause instanceof DataError && error.cause.code === "sandbox_not_ready"
+            ? "sandbox_not_ready"
+            : "native_admission_error"
+          : undefined;
         recordOperatorDiagnostic(`scoped.child_${input.action}.${phase}`, failureDiagnostic(error), {
           sandboxId: operation.sandboxId,
           operationId: operation.id,
           code,
+          refusalCode,
         });
       }
       if (!recovery)
