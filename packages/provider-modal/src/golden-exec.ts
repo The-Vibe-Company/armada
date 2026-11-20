@@ -3,8 +3,6 @@ import type { ExecRequest, ExecResult } from "@armada/core";
 import type { Sandbox } from "modal";
 import { refusal } from "./errors.ts";
 
-/** A private one-command supervisor, NOT an HTTP privileged API. Command contents use stdin.
- * Child env is public/credential-free; timeout and retained output are scoped to this command. */
 const supervisor = String.raw`
 import {spawn} from "node:child_process";
 const r=JSON.parse(await Bun.stdin.text());
@@ -55,7 +53,6 @@ async function executeCommand(sandbox: Sandbox, request: ExecRequest, userPrefix
     ],
     { mode: "text", workdir: cwd, env: {}, secrets: [], timeoutMs: (timeout + 5) * 1000, stderr: "ignore" },
   );
-  // Drain while writing/waiting so neither child stream can backpressure a long scanner/build.
   const output = process.stdout.readText();
   output.catch(() => {});
   try {
