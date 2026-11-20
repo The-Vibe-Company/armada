@@ -71,7 +71,7 @@ export interface ServerSandboxPatch extends SandboxPatch {
   nativeRetentionRefusal?: string;
   nativeResumeAdmission?: string;
   nativeChildSend?: { fromState: SandboxStatus; placement: string };
-  nativeSteerReceipt?: { fromState: SandboxStatus; placement: string };
+  nativeTurnReceipt?: { fromState: SandboxStatus; placement: string; kind: "send" | "steer" };
   ownerStop?: true;
   onlyIfIdle?: boolean;
   retainedRuntimeStop?: string;
@@ -869,11 +869,11 @@ export function createSqlData(
             Boolean(patch.advanceGeneration) === Boolean(patch.renewActivity))
         )
           throw new DataError("Native resume requires its activity generation, token and phase.");
-        const steerReceipt = patch.nativeSteerReceipt;
-        const steerGeneration = patch.expectedGeneration;
-        const steerToken = patch.activityToken;
-        if (steerReceipt && (!patch.finishActivity || steerGeneration === undefined || !steerToken))
-          throw new DataError("Native steer publication requires its activity fence.");
+        const nativeReceipt = patch.nativeTurnReceipt;
+        const receiptGeneration = patch.expectedGeneration;
+        const receiptToken = patch.activityToken;
+        if (nativeReceipt && (!patch.finishActivity || receiptGeneration === undefined || !receiptToken))
+          throw new DataError("Native turn publication requires its activity fence.");
         const childSend = patch.nativeChildSend;
         const childSendToken = patch.activityToken;
         if (childSend && (!patch.advanceGeneration || patch.expectedGeneration === undefined || !childSendToken))
@@ -938,7 +938,7 @@ export function createSqlData(
         if (reason !== undefined && stopAdmissionReason === undefined) set("status_reason", reason, "::text");
         if (sets.length === 0) return;
         let fence = "";
-        if (steerReceipt) fence += " and s.activity_until>clock_timestamp()";
+        if (nativeReceipt) fence += " and s.activity_until>clock_timestamp()";
         if (patch.turnActivity !== undefined)
           fence += " and s.status in ('ready','running') and s.stop_requested_at is null and s.deleted_at is null";
         if (patch.turnActivity === "claim") fence += " and s.activity_lease_id is null";
@@ -1114,8 +1114,8 @@ export function createSqlData(
             }
             return updated;
           });
-        } else if (steerReceipt && steerGeneration !== undefined && steerToken) {
-          if (!sql.transaction) throw new Error("Native steer publication requires a transaction.");
+        } else if (nativeReceipt && receiptGeneration !== undefined && receiptToken) {
+          if (!sql.transaction) throw new Error("Native turn publication requires a transaction.");
           result = await sql.transaction(async (tx) => {
             const locked = await tx.query<{ id: string }>(
               `select s.id from public.sandboxes s where s.id=$3::uuid and ${SANDBOX_VISIBLE}
@@ -1123,20 +1123,20 @@ export function createSqlData(
                 and s.status=$6::public.sandbox_status and s.provider_sandbox_id=$7
                 and s.provider in ('boat','modal') and not s.boat_runtime and s.runtime_transport is null
                 and s.deleted_at is null and s.status<>'deleted' and s.stop_requested_at is null for update`,
-              [...scope, id, steerGeneration, steerToken, steerReceipt.fromState, steerReceipt.placement],
+              [...scope, id, receiptGeneration, receiptToken, nativeReceipt.fromState, nativeReceipt.placement],
             );
             if (!locked.rows.length) return { rows: [] };
-            if (steerReceipt.fromState !== "running")
+            if (nativeReceipt.fromState !== "running")
               await publishNativeTurn(
                 tx,
                 id,
-                steerReceipt.fromState,
-                String(steerGeneration),
-                steerToken,
-                "native_steer_accepted",
+                nativeReceipt.fromState,
+                String(receiptGeneration),
+                receiptToken,
+                nativeReceipt.kind === "send" ? "native_send_accepted" : "native_steer_accepted",
               );
             const published = await applyUpdate(tx);
-            if (!published.rows[0]?.id) throw new DataError("Native steer publication is stale.", "sandbox_not_ready");
+            if (!published.rows[0]?.id) throw new DataError("Native turn publication is stale.", "sandbox_not_ready");
             return published;
           });
         } else if (childSend && childSendToken) {

@@ -259,13 +259,17 @@ export function configureTools(
         const conversationIds = appendConversation(found.conversationIds, receipt.conversationId);
         return {
           patch: {
-            status: "running",
+            nativeTurnReceipt: {
+              fromState: activationOpened ? "starting" : found.status,
+              placement: found.providerSandboxId,
+              kind: "send",
+            },
             taskPromptId: receipt.promptId,
             statusReason: null,
             conversationIds,
             stoppedAt: null,
             rearmDeadline: receipt.resumed === true && found.statusReason !== "idle_paused",
-          },
+          } satisfies ServerSandboxPatch,
           result: {
             id: found.id,
             promptId: receipt.promptId,
@@ -321,7 +325,7 @@ export function configureTools(
           else await data.sandboxes.recordPendingSteer?.(found.id, found.providerSandboxId, found.taskPromptId || null);
           return {
             patch: {
-              nativeSteerReceipt: { fromState: found.status, placement: found.providerSandboxId },
+              nativeTurnReceipt: { fromState: found.status, placement: found.providerSandboxId, kind: "steer" },
               statusReason: null,
               taskPromptId,
               conversationIds: appendConversation(found.conversationIds, receipt.conversationId),
