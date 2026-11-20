@@ -5128,7 +5128,7 @@ export type Database = {
           model: string | null;
           reasoning_effort: string | null;
           provider: Database["public"]["Enums"]["sandbox_provider"];
-          provider_sandbox_id: string;
+          provider_sandbox_id: string | null;
           visibility: Database["public"]["Enums"]["visibility"];
           source_golden_visibility: Database["public"]["Enums"]["visibility"] | null;
           access_owner_id: string;
@@ -5205,7 +5205,7 @@ export type Database = {
           model?: string | null;
           reasoning_effort?: string | null;
           provider: Database["public"]["Enums"]["sandbox_provider"];
-          provider_sandbox_id: string;
+          provider_sandbox_id?: string | null;
           visibility: Database["public"]["Enums"]["visibility"];
           source_golden_visibility?: Database["public"]["Enums"]["visibility"] | null;
           access_owner_id: string;
@@ -5282,7 +5282,7 @@ export type Database = {
           model?: string | null;
           reasoning_effort?: string | null;
           provider?: Database["public"]["Enums"]["sandbox_provider"];
-          provider_sandbox_id?: string;
+          provider_sandbox_id?: string | null;
           visibility?: Database["public"]["Enums"]["visibility"];
           source_golden_visibility?: Database["public"]["Enums"]["visibility"] | null;
           access_owner_id?: string;

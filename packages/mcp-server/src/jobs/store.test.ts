@@ -9,7 +9,7 @@ import type { LaneFactory } from "../server-worker-modules.ts";
 import { sqlOver } from "../sql.ts";
 import { runtimeWakes } from "../wake-bus.ts";
 import { createJobsRunner, type Job } from "./runner.ts";
-import { createJobsStore, JOBS_WAKE } from "./store.ts";
+import { createJobsStore, JOBS_WAKE, withJobLease } from "./store.ts";
 
 const database = rowOnlyDatabase();
 const signal = new AbortController().signal;
@@ -90,6 +90,54 @@ test("a replacement launch claimant reads Modal create intent and fences the pre
   await f.db.query("update sandboxes set lifecycle_generation=3 where id=$1", [id]);
   await expect(retried.read("machine-key")).rejects.toThrow("claim is no longer current");
   expect(await retried.compareAndSet("machine-key", 2, { ...receipt, revision: 3 })).toBe(false);
+});
+
+test("an unbound Modal launch can publish only its leased allocation receipt", async () => {
+  const f = await fixture();
+  const goldenId = crypto.randomUUID();
+  const id = crypto.randomUUID();
+  await f.db.query(
+    `insert into goldens (id, org_id, owner_id, name, visibility, provider, modal_workspace, modal_environment, modal_app_id)
+     values ($1, $2, $3, 'modal-launch', 'private', 'modal', 'workspace', 'main', 'ap-test')`,
+    [goldenId, f.people.org, f.people.owner],
+  );
+  await f.db.query(
+    `insert into sandboxes (id, golden_id, org_id, owner_id, harness, provider, status, lifecycle_generation)
+     values ($1, $2, $3, $4, 'codex', 'modal', 'starting', 2)`,
+    [id, goldenId, f.people.org, f.people.owner],
+  );
+  const bind = (tx: Sql, machineId: string) =>
+    tx.query("update sandboxes set provider_sandbox_id=$2 where id=$1 returning provider_sandbox_id", [id, machineId]);
+  await expect(bind(f.sql, "guessed")).rejects.toMatchObject({ code: "23514" });
+  await expect(f.sql.query("update sandboxes set status='ready' where id=$1", [id])).rejects.toMatchObject({
+    code: "23514",
+  });
+
+  const jobId = await f.store.enqueue("launch", id, 2, id, null, {
+    orgId: f.people.org,
+    maxAttempts: 3,
+    deadline: new Date("2100-01-01T00:00:00Z"),
+    request: { ownerId: f.people.owner, digest: "fixture" },
+  });
+  const original = (await f.store.claim("launch", crypto.randomUUID(), 30, 1))!;
+  expect(
+    await f.store.modalLaunchJournal(original).compareAndSet("machine-key", undefined, {
+      operation: "create",
+      phase: "allocated",
+      intent: "fixture",
+      revision: 1,
+      machineId: "allocated",
+    }),
+  ).toBe(true);
+  await f.db.query("update jobs set lease_until='-infinity' where id=$1", [jobId]);
+  await expect(bind(f.sql, "allocated")).rejects.toMatchObject({ code: "23514" });
+
+  const successor = (await f.store.claim("launch", crypto.randomUUID(), 30, 1))!;
+  expect(await withJobLease(f.sql, original, (tx) => bind(tx, "allocated"))).toBeUndefined();
+  await expect(withJobLease(f.sql, successor, (tx) => bind(tx, "guessed"))).rejects.toMatchObject({ code: "23514" });
+  const result = await withJobLease(f.sql, successor, (tx) => bind(tx, "allocated"));
+  expect(result?.rows).toEqual([{ provider_sandbox_id: "allocated" }]);
+  await expect(withJobLease(f.sql, successor, (tx) => bind(tx, "guessed"))).rejects.toMatchObject({ code: "23514" });
 });
 
 async function turnFixture() {
