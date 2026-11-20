@@ -38,7 +38,6 @@ export async function readSandboxConversation(id: string, cursor: string | null,
   }
 
   const backward = conversationReadDirection(sandbox, source) === "backward";
-  // A broken log lane must not prevent status from collecting delayed usage.
   let observedStatus: unknown;
   const statusRead = () => gateway.status(id).catch(() => ({}));
   const metadata = async () => {
