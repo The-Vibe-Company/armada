@@ -138,8 +138,9 @@ test.each(["settled", "lease expired", "queue fault", "commit fault"] as const)(
     const settled = outcome === "settled";
     const {
       rows: [state],
-    } = await db.query<{ expires_at: Date }>(
+    } = await db.query(
       `select status,status_reason,lifecycle_generation::int,stop_generation::int,expires_at,
+         expires_at<=clock_timestamp() as expired,
          stop_requested_at is not null as stop_requested,activity_lease_id is not null as leased,
          activity_until is not null as lease_deadline,reconcile_after<=now() as scheduled,
          (select state from account_turn_queue where sandbox_id=s.id) as queued_turn
@@ -155,11 +156,10 @@ test.each(["settled", "lease expired", "queue fault", "commit fault"] as const)(
       leased: !settled,
       lease_deadline: !settled,
       scheduled: settled,
+      expired: settled,
       queued_turn: settled ? "failed" : "queued",
       ...(settled ? {} : { expires_at: initial }),
     });
-    if (settled) expect(state!.expires_at).toBeInstanceOf(Date);
-    if (settled) expect(state!.expires_at.getTime()).toBeLessThan(initial.getTime());
     expect(
       (
         await db.query(
