@@ -208,6 +208,8 @@ No nested `input` wrapper is added. The only returned value is the exact acknowl
 revision; extra runner fields/config/auth are never echoed or saved in provider SQL.
 HTTP success/enveloped errors must match version/requestId; existing protocol1 bare
 safe errors on HTTP409 remain supported without changing the frozen wire protocol.
+The transport maps allowlisted runner error codes to public diagnostics and drops
+raw runner error details.
 
 Register this provider through the real server provider factory before core calls
 `connections.prepare`. First fork boot precedes canonical Armada sandbox/binding
