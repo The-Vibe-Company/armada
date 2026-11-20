@@ -41,7 +41,7 @@ export default {
   name: "account",
   summary: "Manage model credentials, GitHub access and your Armada session",
   usage: {
-    account: `  armada account <command>                   Manage encrypted model accounts (see account --help)
+    account: `  armada account --help                      Discover encrypted model account commands
   armada account ls|add|login|rm github      GitHub connection and installation
   armada account status|logout               Armada identity / revoke current login session`,
   },
