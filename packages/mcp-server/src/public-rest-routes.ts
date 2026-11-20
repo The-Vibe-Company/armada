@@ -36,8 +36,6 @@ export const UNPUBLISHED_REST_ROUTES: Readonly<Record<string, string>> = {
   "golden/visibility": "Golden administration.",
   "golden/retirement/dry-run": "Golden snapshot retirement administration.",
   "golden/retirement/reconcile": "Golden snapshot retirement administration.",
-  "sandbox/bind-credential": "Dashboard credential repair.",
-  "sandbox/test-model-connection": "Dashboard credential check.",
 };
 
 /** Why a forwarded route is outside the description, or undefined when it has no reason. */

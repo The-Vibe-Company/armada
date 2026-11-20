@@ -5,6 +5,7 @@ import {
   operations as contractOperations,
   controlRouteKey,
   PUBLIC_CONTROL_ROUTES,
+  sandboxCheckOperations,
   skillDefaultOperations,
   tokenOperations,
 } from "@armada/core/contract";
@@ -130,7 +131,12 @@ test("published OpenAPI and migrated admin operations follow their proxy routing
       })),
     );
     expect(operations.length).toBeGreaterThan(0);
-    for (const { route } of Object.values({ ...accountOperations, ...skillDefaultOperations })) {
+    for (const { audience, route } of Object.values({
+      ...accountOperations,
+      ...sandboxCheckOperations,
+      ...skillDefaultOperations,
+    })) {
+      if (audience !== "admin") continue;
       expect(published.paths[route.path]?.[route.method.toLowerCase()]).toBeUndefined();
       operations.push({ path: route.path, verb: route.method, direct: false });
     }
