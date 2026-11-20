@@ -12,7 +12,7 @@ import { captureGitHubAuditLogs } from "../../../scripts/test-support/github-aud
 import helperManifest from "../../core/helper/manifest.json";
 import { handleControlRequest } from "../src/control.ts";
 import { createSqlData } from "../src/data.ts";
-import { createSandboxLifecycle } from "../src/sandbox-lifecycle.ts";
+import { createSandboxLifecycle, recordRuntimeStartupFailure } from "../src/sandbox-lifecycle.ts";
 import { readStatus } from "../src/turns.ts";
 import { encryptedRecoveryExec } from "./fixtures/recovery-exec.ts";
 import { migratedDatabase } from "./migrated-database.ts";
@@ -547,6 +547,77 @@ describe("tools", () => {
     expect(boat.forks[0]?.env).toEqual({ CLAUDE_CODE_OAUTH_TOKEN: SECRETS.ownerClaude });
     expect(boat.keys).toEqual([SECRETS.personalBoat]);
   });
+
+  test.each(["applied", "superseded", "reported", "rollback"] as const)(
+    "launch failure settlement (%s)",
+    async (scenario) => {
+      const { boat, client, db, people, token } = await start();
+      const mcp = await client(await token(people.member));
+      if (scenario === "rollback")
+        await db.exec(`alter table sandboxes add constraint reject_launch_diagnostic
+        check (status_reason is null or status_reason='launch_failed')`);
+      boat.provider.prompt = async () => {
+        if (scenario === "superseded") await db.exec("update sandboxes set status='stopping' where status='starting'");
+        if (scenario === "reported") {
+          await bunLikeSql(db).transaction!(async (tx) => {
+            const {
+              rows: [launch],
+            } = await tx.query<{ id: string; generation: string }>(
+              "select id, lifecycle_generation::text as generation from sandboxes where status='starting'",
+            );
+            if (!launch) throw new Error("Missing starting launch");
+            await recordRuntimeStartupFailure(
+              tx,
+              launch.id,
+              launch.generation,
+              "bootstrap_failed",
+              "Startup already reported a failure",
+            );
+          });
+        }
+        throw new Error("Initial prompt submission failed.");
+      };
+
+      const launched = await call(mcp, "launch", {
+        provider: "boat",
+        golden: "shared",
+        harness: "claude",
+        prompt: "hello",
+      }).finally(async () => {
+        if (scenario === "rollback") await db.exec("alter table sandboxes drop constraint reject_launch_diagnostic");
+      });
+      expect(launched.isError).toBe(true);
+      const { rows } = await db.query(
+        "select status, status_reason, lifecycle_generation::int, activity_lease_id from sandboxes",
+      );
+      const settled = scenario === "applied" || scenario === "reported";
+      const reason =
+        scenario === "applied"
+          ? expect.stringContaining("Initial prompt submission failed.")
+          : scenario === "reported"
+            ? "Startup already reported a failure"
+            : null;
+      const state = settled ? "failed" : scenario === "superseded" ? "stopping" : "starting";
+      expect(rows).toEqual([
+        {
+          status: state,
+          status_reason: reason,
+          lifecycle_generation: settled ? 2 : 1,
+          activity_lease_id: settled ? null : expect.any(String),
+        },
+      ]);
+      const journal = await db.query(
+        "select from_status, actor, code, generation::int from sandbox_transitions where to_status='failed'",
+      );
+      expect(journal.rows).toEqual(
+        scenario === "applied"
+          ? [{ from_status: "starting", actor: "lifecycle_runner", code: "launch_failed", generation: 2 }]
+          : scenario === "reported"
+            ? [{ from_status: "starting", actor: "lifecycle_runner", code: "bootstrap_failed", generation: 1 }]
+            : [],
+      );
+    },
+  );
 
   test("launch of someone else's private golden is refused like a missing one, before any fork", async () => {
     const { token, client, people, boat } = await start();

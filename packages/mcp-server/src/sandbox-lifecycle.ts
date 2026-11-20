@@ -621,6 +621,32 @@ export async function completeSandboxDeletion(
   return true;
 }
 
+export async function finishLaunchFailure(
+  tx: Sql,
+  scope: [string[], string],
+  sandboxId: string,
+  generation: number,
+  activityToken: string,
+  message: string,
+) {
+  const {
+    rows: [sandbox],
+  } = await tx.query<{ generation: string; status: "starting" | "failed" }>(
+    `update public.sandboxes s set lifecycle_generation=s.lifecycle_generation+1,
+       activity_lease_id=null, activity_until=null
+     where s.id=$3 and ${SANDBOX_VISIBLE} and (s.status='starting' or (s.status='failed' and s.stopped_at is null))
+       and s.provider in ('boat','modal') and s.deleted_at is null and s.stop_requested_at is null
+       and s.lifecycle_generation=$4 and s.activity_lease_id=$5
+     returning s.lifecycle_generation::text as generation, s.status`,
+    [...scope, sandboxId, generation, activityToken],
+  );
+  if (!sandbox) return false;
+  if (sandbox.status === "failed") return true;
+  const result = await recordRuntimeStartupFailure(tx, sandboxId, sandbox.generation, "launch_failed", message);
+  if (result.kind === "conflict") throw new Error("Locked launch failure could not transition.");
+  return true;
+}
+
 export async function recordRuntimeStartupFailure(
   tx: Sql,
   sandboxId: string,
