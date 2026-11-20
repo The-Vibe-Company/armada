@@ -296,6 +296,7 @@ export class Invitations {
   }
 }
 
+/** Explicit opt-in only. Creating the mail sender never sends email. */
 export function invitationMailFromEnv(env: Record<string, string | undefined>): InvitationMail | undefined {
   if (env.ARMADA_INVITATION_MAIL !== "supabase") return;
   const origin = env.ARMADA_DASHBOARD_URL;
