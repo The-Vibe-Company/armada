@@ -10,7 +10,7 @@ import {
   encryptSecret,
   setCredential,
 } from "@armada/core/server";
-import { createSqlModalStore, type Machine, type Scope, scopeKey } from "@armada/provider-modal";
+import { type Machine, type Scope, scopeKey } from "@armada/provider-modal";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -544,7 +544,10 @@ test("MCP renewal finds a private Modal machine forked from an org golden with i
       managementAuthority: { credentialScope: "org", credentialOwnerId: people.org },
       sourceImage: { scopeKey: scopeKey({ ...scope, visibility: "org" }), name: "source", imageId: "im-source" },
     };
-    await createSqlModalStore(db, scope).reserve("private-fork", machine);
+    await db.query(
+      "insert into modal_machines(scope,org_id,owner_id,visibility,id,request_key,record) values($1,$2,$3,'private',$4,$5,$6::jsonb)",
+      [scopeKey(scope), scope.orgId, scope.userId, machine.info.id, "private-fork", JSON.stringify(machine)],
+    );
     const connection = crypto.randomUUID(),
       grant = crypto.randomUUID(),
       lease = crypto.randomUUID();

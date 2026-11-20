@@ -1109,12 +1109,15 @@ test.each([
     await prepare(sandbox, row);
   };
   const first = f.provider.fork({ from: name });
-  await Promise.race([entered.promise, first]);
   try {
+    await Promise.race([entered.promise, first]);
+    expect(firstBoot).toBe(false);
     const second = await f.provider.fork({ from: name });
     expect(second.state).toBe("ready");
     release.resolve();
-    expect((await first).id).not.toBe(second.id);
+    const firstChild = await first;
+    expect(firstChild.state).toBe("ready");
+    expect(firstChild.id).not.toBe(second.id);
   } finally {
     release.resolve();
     await first;
