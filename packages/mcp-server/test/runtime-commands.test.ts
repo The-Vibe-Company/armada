@@ -997,11 +997,10 @@ test.each(["before issuance", "during issuance"] as const)(
       "select enrolment_hash is not null as pending from runtime_enrolments where sandbox_id=$1",
       [f.id],
     );
-    expect(ticket.rows).toEqual([{ pending: expiry === "after commit" }]);
-    if (expiry !== "after commit")
-      expect(
-        await f.authority.withSession(session.runtimeToken, session.epoch, async (_tx, scope) => scope.epoch),
-      ).toBe(session.epoch);
+    expect(ticket.rows).toEqual([{ pending: false }]);
+    expect(await f.authority.withSession(session.runtimeToken, session.epoch, async (_tx, scope) => scope.epoch)).toBe(
+      session.epoch,
+    );
   },
 );
 
