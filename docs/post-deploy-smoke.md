@@ -1844,9 +1844,9 @@ Run against the staging **dashboard origin**, separately from the server-origin
 compute probes above. Record the tested SHA, origin and each result; this journey
 has not passed merely because the server-origin smoke passed.
 
-1. Use a disposable CLI configuration directory and unset `ARMADA_TOKEN`.
-   Export `ARMADA_URL` with the staging dashboard origin in the shell where
-   you run every command in this journey.
+1. Unset `ARMADA_TOKEN`. In the shell where you run this journey, export
+   `XDG_CONFIG_HOME` pointing to a new disposable directory and `ARMADA_URL`
+   set to the staging dashboard origin.
    Run `armada login` in a terminal. Discovery must offer the enabled methods
    without errors. Anonymous `GET /api/v1/auth/methods` on that same origin must
    return 200 JSON and no-store.
