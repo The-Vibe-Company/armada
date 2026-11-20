@@ -382,13 +382,16 @@ async function boundFixture(
   return { ...host, sandboxId, generation, owner, create };
 }
 
-async function machineCreateFixture() {
-  const host = await fixture();
+async function machineCreateFixture(
+  registered?: Awaited<ReturnType<typeof fixture>>,
+  image = job().request.image,
+  snapshotId?: string,
+) {
+  const host = registered ?? (await fixture());
   const sandboxId = randomUUID();
   const bindings = createDockerMachineBindings(sql, { ...host, deploymentId: randomUUID() });
   const generation = await bindings.bind({ sandboxId, generation: 1 });
-  const image = job().request.image;
-  const a = await boundFixture(host, { sandboxId, generation, expiresAt: Date.UTC(2099, 0, 1), image });
+  const a = await boundFixture(host, { sandboxId, generation, expiresAt: Date.UTC(2099, 0, 1), image, snapshotId });
   const request = {
     sandboxId,
     generation: 1,
@@ -403,6 +406,9 @@ test("Machine create replays one intent and recovers the authenticated container
   const a = await machineCreateFixture();
   const create = () => store.submitMachineCreate(a.owner, a.request);
   await denied(store.submitMachineCreate(a.owner, { ...a.request, computeTtlSeconds: 300 }));
+  const { faultingStore, failure } = failDockerJobCommit(a.generation, null);
+  await expect(faultingStore.submitMachineCreate(a.owner, a.request)).rejects.toMatchObject({ cause: failure });
+  expect(await store.poll(a.hostToken, a.installationId)).toBeNull();
   expect(await create()).toEqual({ kind: "pending" });
   expect(await create()).toEqual({ kind: "pending" });
 
@@ -425,6 +431,37 @@ test("Machine create replays one intent and recovers the authenticated container
   expect(await store.poll(a.hostToken, a.installationId)).toBeNull();
 });
 
+test("Machine create freezes a snapshot from the admitted host installation", async () => {
+  const host = await fixture();
+  const db = database();
+  const snapshotId = randomUUID();
+  const image = `sha256:${"c".repeat(64)}`;
+  await store.poll(host.hostToken, host.installationId);
+  await db.query(
+    `insert into docker_snapshots(id,org_id,owner_id,host_id,installation_id,name,visibility,config,
+     request_hash,actor_epoch,issuer_epoch,generation,base_image,status,image_id,build_expires_at)
+     values($1,$2,$3,$4,$5,'machine-source','private','{}', $6,1,1,$7,$8,'ready',$9,now()+interval '1 hour')`,
+    [
+      snapshotId,
+      host.actor.orgId,
+      host.memberId,
+      host.hostId,
+      host.installationId,
+      "b".repeat(64),
+      randomUUID(),
+      job().request.image,
+      image,
+    ],
+  );
+  const a = await machineCreateFixture(host, image, snapshotId);
+  await denied(store.submitMachineCreate(a.owner, { ...a.request, source: { kind: "image", ref: image } }));
+  await store.submitMachineCreate(a.owner, { ...a.request, source: { kind: "snapshot", ref: snapshotId } });
+  expect(await store.poll(a.hostToken, a.installationId)).toMatchObject({
+    operation: "create",
+    request: { image, snapshot: { id: snapshotId, ownerId: a.owner.userId, visibility: "private" } },
+  });
+});
+
 test("Machine create does not infer identity from an ID-less receipt", async () => {
   const a = await machineCreateFixture();
   await store.submitMachineCreate(a.owner, a.request);
@@ -440,10 +477,27 @@ test("a stale Machine create does not dispatch or fail the current generation", 
   await db.query("update sandboxes set lifecycle_generation=2 where id=$1", [a.sandboxId]);
 
   await denied(store.submitMachineCreate(a.owner, a.request));
+  await store.expired(a.hostToken, a.installationId, { requestId: a.generation });
+  await store.cleaned(a.hostToken, a.installationId, { requestId: a.generation });
   expect(await store.poll(a.hostToken, a.installationId)).toBeNull();
   await store.complete(a.hostToken, a.installationId, { requestId: a.generation, outcome: "failed" });
   const sandbox = await db.query("select status from sandboxes where id=$1", [a.sandboxId]);
   expect(sandbox.rows).toEqual([{ status: "starting" }]);
+});
+
+test("retiring a host cancels its stale Machine create without failing a newer startup", async () => {
+  const a = await machineCreateFixture();
+  await store.submitMachineCreate(a.owner, a.request);
+  const db = database();
+  await db.query("update sandboxes set lifecycle_generation=2 where id=$1", [a.sandboxId]);
+
+  await store.revoke(a.actor, a.hostId);
+  const { rows } = await db.query(
+    `select s.status,j.outcome,j.cancelled_at is not null as cancelled
+     from sandboxes s join docker_host_jobs j on j.bound_sandbox_id=s.id where j.request_id=$1`,
+    [a.generation],
+  );
+  expect(rows).toEqual([{ status: "starting", outcome: "failed", cancelled: true }]);
 });
 
 async function prepareRestore(registered?: Awaited<ReturnType<typeof fixture>>, useSnapshot = false) {
