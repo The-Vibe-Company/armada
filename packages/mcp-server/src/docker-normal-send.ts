@@ -127,9 +127,9 @@ export function createDockerNormalSend(
       if (previous) conversationId = JSON.parse(await decryptSecret(previous.request_enc, key)).input.conversationId;
       if (!previous) {
         await createDockerLaunchEnvironment(sql, key, clock)(caller, row.id, assertClaim);
-        await options.github?.prepareTurn(caller, row.id);
+        await options.github?.prepareTurn(caller, row.id, assertClaim);
       }
-      if (!previous && row.docker_snapshot_id) await options.prepareSnapshotGitHub?.(caller, row.id);
+      if (!previous && row.docker_snapshot_id) await options.prepareSnapshotGitHub?.(caller, row.id, assertClaim);
       for (;;) {
         let result: Awaited<ReturnType<typeof runtime.prompt>>;
         try {

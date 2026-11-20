@@ -22,6 +22,7 @@ import {
   type SteerReceipt,
   type SteerRequest,
 } from "@armada/core";
+import type { Sql } from "@armada/core/server";
 import { PRIVATE_SKILL_FAILURES, PrivateSkillError } from "../../core/src/private-skill-error.ts";
 import { type createRuntimeCommands, RuntimeCommandRefused } from "./runtime-commands.ts";
 
@@ -128,6 +129,7 @@ export function createRuntimeAgent(
     expectedEpoch?: string,
     timeoutMs?: number,
     check?: (result: T) => void,
+    assertClaim?: (tx: Sql) => Promise<void>,
   ): Promise<T> {
     // The command boundary records the request-correlated outcome. `check` is the caller's own
     // semantic validation (it throws the caller's public error); the boundary reuses it so a
@@ -146,6 +148,7 @@ export function createRuntimeAgent(
         ...(signal ? { signal } : {}),
         ...(command.op === "workspaceExec" ? { timeoutMs: 610_000 } : timeoutMs ? { timeoutMs } : {}),
         ...(expectedEpoch !== undefined ? { expectedEpoch } : {}),
+        ...(assertClaim ? { assertClaim } : {}),
         accept: (candidate) => "result" in candidate.body && valid(candidate.body.result),
       });
     } catch (error) {
@@ -334,15 +337,20 @@ export function createRuntimeAgent(
         ...(!reference.includes("/") && workspaceId ? { workspaceId } : {}),
       }));
     },
-    async configureGitHub(configuration: GitHubRuntimeConfiguration, requestId: string): Promise<void> {
+    async configureGitHub(
+      configuration: GitHubRuntimeConfiguration,
+      requestId: string,
+      assertClaim?: (tx: Sql) => Promise<void>,
+    ): Promise<void> {
       await invoke<{ acknowledged?: boolean }>(
         { ...identity(requestId), op: "configureGitHub", configuration },
         undefined,
-        undefined,
+        assertClaim ? configuration.generation : undefined,
         undefined,
         (result) => {
           if (result?.acknowledged !== true) throw refusal("unavailable", requestId);
         },
+        assertClaim,
       );
     },
     /** Supply the same requestId to reconcile an uncertain prompt admission. `check` is the
