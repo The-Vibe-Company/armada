@@ -87,6 +87,7 @@ export interface ServerOptions {
 export async function createServerServices(env: Record<string, string | undefined>, options: ServerOptions) {
   const { config, scriptedModel, idleDelayMs, catalogAuthentication, boat, modalRuntime, dockerManifest } =
     await readStartupConfiguration(env);
+  const dockerEnabled = dockerManifest !== undefined;
   const boatDeploymentId = env.ARMADA_BOAT_DEPLOYMENT_ID?.trim();
   const boatInventory = boatDeploymentId ? { deploymentId: boatDeploymentId } : {};
   const runtimeHostFor = (apiKey: string) => createObservedBoatProvider({ apiKey, ...boatInventory });
@@ -97,7 +98,7 @@ export async function createServerServices(env: Record<string, string | undefine
   const runtimeEnrolments = createRuntimeEnrolments(sql, config.encryptionKey);
   const runtimeCommands = createRuntimeCommands(runtimeEnrolments, config.encryptionKey);
   const runtimeCheckpoint = createRuntimeCheckpoint(sql, config.encryptionKey, runtimeCommands, {
-    docker: env.ARMADA_DOCKER_HOSTS === "1" && env.ARMADA_DOCKER_PLACEMENT === "1",
+    docker: dockerEnabled,
   });
   const runtimeStopCheckpoint = createRuntimeStopCheckpoint(sql, runtimeCheckpoint);
   let subscriptionMigration: ReturnType<typeof createSubscriptionMigration>;
