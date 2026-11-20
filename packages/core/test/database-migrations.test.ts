@@ -44,7 +44,6 @@ test("migrations apply on a fresh database", async () => {
       `);
   expect(unlocked.rows).toEqual([]);
 
-  // Antigravity is reserved in storage before the launch catalog enables it.
   expect(await labels(db, "harness")).toEqual([...HARNESSES, "antigravity"]);
   expect(await labels(db, "visibility")).toEqual([...VISIBILITIES]);
   expect(await labels(db, "sandbox_status")).toEqual([...PROVIDER_STATES, "deleted"]);
