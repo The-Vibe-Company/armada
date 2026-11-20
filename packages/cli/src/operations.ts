@@ -1,5 +1,6 @@
 import { AuthError } from "@armada/auth";
 import { GoldenError, HARNESSES } from "@armada/core";
+import type { ListInput, ListResult } from "@armada/core/contract";
 import { invalidAgentMessage } from "./agent-validation.ts";
 import { acceptedOptions, flag, parseArgs, single, uuid } from "./args.ts";
 import { ArmadaApiError, type ArmadaCommandClient, createArmadaApiClient } from "./armada-api.ts";
@@ -77,8 +78,7 @@ export async function operation(
   }
   let api: Promise<ArmadaCommandClient> | undefined;
   const client = () => (api ??= createArmadaApiClient(auth));
-  const list = async (body: Parameters<ArmadaCommandClient["sandboxes"]["list"]>[0]) =>
-    (await client()).sandboxes.list(body);
+  const list = async (body: ListInput) => (await client()).sandboxes.list<ListResult>(body);
   const resolveId = (id: string | undefined) =>
     command === "status"
       ? resolveSandboxReference(id, current, org, list)
