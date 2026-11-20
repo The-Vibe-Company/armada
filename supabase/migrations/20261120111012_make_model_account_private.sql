@@ -5,7 +5,6 @@ create function public.make_model_account_private(p_actor uuid, p_account uuid, 
 returns uuid
 language plpgsql
 set search_path = ''
-set armada.make_model_account_private = 'on'
 as $$
 declare
   v_kind public.credential_kind;
@@ -46,9 +45,11 @@ begin
     raise exception 'Another sandbox owner or a pending launch still uses this account.' using errcode = '55000';
   end if;
 
+  perform pg_catalog.set_config('armada.make_model_account_private', 'on', true);
   update public.credentials
   set scope = 'user', owner_id = p_actor, is_default = false
   where id = p_account;
+  perform pg_catalog.set_config('armada.make_model_account_private', '', true);
 
   update public.agent_defaults
   set credential_id = case when credential_id = p_account then null else credential_id end,
