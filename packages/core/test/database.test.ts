@@ -25,6 +25,7 @@ describe("database", () => {
     await withDb(async (db) => {
       const people = await fixture(db);
       const golden = await insertGolden(db, people, { name: "legacy", visibility: "org", owner: people.admin });
+      await db.query("update goldens set provider_snapshot_id = 'snap-1' where id = $1", [golden]);
 
       await asUser(db, people.admin, () =>
         db.query("update goldens set boat_snapshot_id = 'snap-2' where id = $1", [golden]),
