@@ -9,6 +9,7 @@ import { dockerRuntimeConfiguration } from "./docker-runtime-configuration.ts";
 import { createDockerSandboxService } from "./docker-sandbox-service.ts";
 import type { RuntimeConfigurationInput } from "./runtime-configuration.ts";
 import { createRuntimeEnrolments, scopedRuntimeSql } from "./runtime-enrolment.ts";
+import type { RuntimeTurnClaim } from "./runtime-resume.ts";
 import { transitionSandbox } from "./sandbox-lifecycle.ts";
 
 type Actor = { userId: string; orgId: string };
@@ -98,7 +99,13 @@ export function createDockerBootstrapService(sql: Sql, key: string, options: Opt
       reasoningEffort: row.reasoning_effort,
     };
   }
-  async function bootstrap(actor: Actor, sandboxId: string, requestId: string, resume = false) {
+  async function bootstrap(
+    actor: Actor,
+    sandboxId: string,
+    requestId: string,
+    resume = false,
+    turnClaim?: RuntimeTurnClaim,
+  ) {
     try {
       if (options.enabled !== true || !uuid.test(requestId) || !sql.transaction) deny();
       // This read must precede resolution: an admin may diagnose, but not bootstrap, an owner's sandbox.
@@ -127,12 +134,15 @@ export function createDockerBootstrapService(sql: Sql, key: string, options: Opt
         );
         if (!acknowledged.rows.length) deny();
       }
+      let handoff = false;
       if (resume && !known) {
-        const refused = await sql.query(
-          `select 1 from public.docker_resume_claims where request_id=$1 and sandbox_id=$2 and actor_id=$3 and accepted=false`,
+        const physicalClaim = await sql.query<{ accepted: boolean | null }>(
+          `select accepted from public.docker_resume_claims where request_id=$1 and sandbox_id=$2 and actor_id=$3`,
           [requestId, sandboxId, actor.userId],
         );
-        if (refused.rows.length) throw new DockerRetentionEnded();
+        const accepted = physicalClaim.rows[0]?.accepted;
+        if (accepted === false) throw new DockerRetentionEnded();
+        handoff = turnClaim !== undefined && accepted === true;
       }
       const restore = resume && !known ? await restoreCheckpoint(sql, sandboxId) : undefined;
       let projected: Awaited<ReturnType<typeof dockerRuntimeConfiguration>> | undefined;
@@ -155,7 +165,7 @@ export function createDockerBootstrapService(sql: Sql, key: string, options: Opt
         });
         if (restore) Object.assign(projected.configuration, { restoreCheckpoint: restore });
       }
-      return await sql.transaction(async (tx) => {
+      async function lockPrerequisites(tx: Sql) {
         const hint =
           (
             await tx.query<{ issuer_id: string }>(
@@ -194,6 +204,25 @@ export function createDockerBootstrapService(sql: Sql, key: string, options: Opt
         );
         if (!host.rows.length) deny();
         if (host.rows[0]!.draining_at) throw new DockerHostDraining();
+      }
+
+      async function requireTurnClaim(tx: Sql) {
+        if (turnClaim && !(await turnClaim.canDispatch(tx))) deny();
+      }
+
+      async function admit(tx: Sql) {
+        const scoped = scopedRuntimeSql(tx);
+        async function requireStableSandbox() {
+          const current = await createDockerSandboxService(scoped, key).get(actor, sandboxId);
+          if (JSON.stringify(current) !== JSON.stringify(snapshot) || (turnClaim && current.stopRequestedAt !== null))
+            deny();
+          return current;
+        }
+        if (turnClaim) {
+          if (!handoff) await tx.query("select id from public.sandboxes where id=$1 for update", [sandboxId]);
+          await requireStableSandbox();
+          if (!handoff) await requireTurnClaim(tx);
+        }
         // A stopped generation is only admitted after the host has durably
         // excluded cleanup. Until then this is a request, not a lifecycle change.
         let acceptedGeneration: string | undefined;
@@ -217,14 +246,15 @@ export function createDockerBootstrapService(sql: Sql, key: string, options: Opt
           );
           if (!claim.rows.length) deny();
           if (claim.rows[0]!.accepted === false) throw new DockerRetentionEnded();
-          if (claim.rows[0]!.accepted !== true)
+          if (claim.rows[0]!.accepted !== true || (turnClaim && !handoff)) {
+            if (handoff) deny();
+            await requireTurnClaim(tx);
             return { requestId, operation: "resume" as const, state: "claiming" as const };
+          }
           acceptedGeneration = claim.rows[0]!.lifecycle_generation;
         }
-        await tx.query(`select id from public.sandboxes where id=$1 for update`, [sandboxId]);
-        const scoped = scopedRuntimeSql(tx);
-        const current = await createDockerSandboxService(scoped, key).get(actor, sandboxId);
-        if (JSON.stringify(current) !== JSON.stringify(snapshot)) deny();
+        if (!turnClaim) await tx.query(`select id from public.sandboxes where id=$1 for update`, [sandboxId]);
+        const current = await requireStableSandbox();
         const original = await tx.query(
           `select 1 from public.docker_host_jobs j join public.mcp_actor_epochs e
              on e.org_id=$3 and e.user_id=$2 and e.epoch=j.bound_actor_epoch
@@ -303,11 +333,36 @@ export function createDockerBootstrapService(sql: Sql, key: string, options: Opt
           operation: resume ? "resume" : "bootstrap",
           bootstrapDescriptor: descriptor,
         });
+        if (!handoff) await requireTurnClaim(tx);
         return {
           requestId,
           operation: resume ? ("resume" as const) : ("bootstrap" as const),
           state: existing?.outcome ?? "pending",
         };
+      }
+
+      if (handoff && turnClaim) {
+        let admitted: Awaited<ReturnType<typeof admit>> | undefined;
+        await turnClaim.handoffGeneration({
+          lockPrerequisites,
+          async advance(tx, job) {
+            const { payload } = job;
+            if (
+              job.sandbox_id !== sandboxId ||
+              !payload ||
+              typeof payload !== "object" ||
+              !("requestId" in payload) ||
+              payload.requestId !== requestId
+            )
+              deny();
+            admitted = await admit(tx);
+          },
+        });
+        return admitted ?? deny();
+      }
+      return await sql.transaction(async (tx) => {
+        await lockPrerequisites(tx);
+        return admit(tx);
       });
     } catch (error) {
       if (
@@ -322,6 +377,7 @@ export function createDockerBootstrapService(sql: Sql, key: string, options: Opt
   }
   return {
     bootstrap: (actor: Actor, sandboxId: string, requestId: string) => bootstrap(actor, sandboxId, requestId),
-    resume: (actor: Actor, sandboxId: string, requestId: string) => bootstrap(actor, sandboxId, requestId, true),
+    resume: (actor: Actor, sandboxId: string, requestId: string, claim?: RuntimeTurnClaim) =>
+      bootstrap(actor, sandboxId, requestId, true, claim),
   };
 }

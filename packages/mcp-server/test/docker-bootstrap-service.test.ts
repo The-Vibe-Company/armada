@@ -18,6 +18,8 @@ import { createDockerHostStore } from "../src/docker-host-store.ts";
 import { createDockerRuntimeLifecycle } from "../src/docker-runtime-lifecycle.ts";
 import { createDockerSandboxControls } from "../src/docker-sandbox-controls.ts";
 import { createDockerSandboxService } from "../src/docker-sandbox-service.ts";
+import type { Job } from "../src/jobs/runner.ts";
+import { createJobsStore } from "../src/jobs/store.ts";
 import { launchCredentials } from "../src/launch-credentials.ts";
 import { createRuntimeCheckpoint } from "../src/runtime-checkpoint.ts";
 import { createRuntimeCommands } from "../src/runtime-commands.ts";
@@ -1348,5 +1350,115 @@ test.each(refusalOrders)(
       epoch: String(Number(source.epoch) + 1),
       configuration: { restoreCheckpoint: { epoch: source.epoch, conversationId, watermark: 0 } },
     });
+  },
+);
+
+test.each(["physical claim", "resume mailbox"] as const)(
+  "queued Docker wake rolls back when the lease expires during %s admission",
+  async (phase) => {
+    const db = database();
+    const f = await fixture();
+    const sandboxId = f.sandbox.id;
+    await service.bootstrap(f.actor, sandboxId, f.requestId);
+    await hosts.complete(f.hostToken, f.installationId, { requestId: f.requestId, outcome: "completed" });
+    const {
+      rows: [stopped],
+    } = await sql.query<{ generation: string }>(
+      "update public.sandboxes set status='stopped',stopped_at=now() where id=$1 returning lifecycle_generation::text as generation",
+      [sandboxId],
+    );
+    const requestId = randomUUID();
+    const owner = randomUUID();
+    const store = createJobsStore(sql, key);
+    await store.enqueue(
+      "turn_dispatch",
+      sandboxId,
+      Number(stopped!.generation),
+      requestId,
+      { requestId },
+      {
+        orgId: f.actor.orgId,
+        maxAttempts: 3,
+      },
+    );
+    const {
+      rows: [row],
+    } = await sql.query<Job>(
+      `select id,kind,sandbox_id,generation::text,lease_epoch::text,attempts,max_attempts,outcome
+       from public.claim_job('turn_dispatch',$1,30,32)`,
+      [owner],
+    );
+    if (!row) throw new Error("Expected the queued turn job.");
+    const job = { ...row, payload: { requestId } };
+    const claim = {
+      canDispatch: async (tx?: Sql) => (await store.inspect(job, owner, tx)) === "dispatch",
+      handoffGeneration: (handoff: Parameters<typeof store.handoffGeneration>[2]) =>
+        store.handoffGeneration(job, owner, handoff),
+    };
+    if (phase === "resume mailbox") {
+      expect((await service.resume(f.actor, sandboxId, requestId, claim)).state).toBe("claiming");
+      await hosts.claimResume(f.hostToken, f.installationId, requestId, true);
+    }
+
+    const table = phase === "physical claim" ? "docker_resume_claims" : "docker_host_jobs";
+    await db.exec(`create function public.expire_docker_turn_lease() returns trigger language plpgsql as $$
+      begin
+        update public.jobs set lease_until='-infinity' where id='${job.id}';
+        return new;
+      end $$;
+      create trigger expire_docker_turn_lease after insert on public.${table}
+        for each row execute function public.expire_docker_turn_lease();`);
+    try {
+      await denied(service.resume(f.actor, sandboxId, requestId, claim));
+    } finally {
+      await db.exec(
+        `drop trigger expire_docker_turn_lease on public.${table}; drop function public.expire_docker_turn_lease();`,
+      );
+    }
+    expect(
+      (
+        await sql.query(
+          `select s.status,s.lifecycle_generation=j.generation as same_generation,
+             r.lifecycle_generation=j.generation as same_enrolment,
+             exists(select 1 from public.sandbox_transitions t
+               where t.sandbox_id=s.id and t.code='docker_resume_admitted') as journaled,
+             exists(select 1 from public.docker_resume_claims c where c.request_id=$2) as physical_claim,
+             exists(select 1 from public.docker_host_jobs h where h.request_id=$2) as mailbox
+           from public.sandboxes s join public.jobs j on j.sandbox_id=s.id
+           join public.runtime_enrolments r on r.sandbox_id=s.id where j.id=$1`,
+          [job.id, requestId],
+        )
+      ).rows,
+    ).toEqual([
+      {
+        status: "stopped",
+        same_generation: true,
+        same_enrolment: true,
+        journaled: false,
+        physical_claim: phase === "resume mailbox",
+        mailbox: false,
+      },
+    ]);
+
+    if (phase === "physical claim") {
+      expect((await service.resume(f.actor, sandboxId, requestId, claim)).state).toBe("claiming");
+      await hosts.claimResume(f.hostToken, f.installationId, requestId, true);
+    }
+    expect((await service.resume(f.actor, sandboxId, requestId, claim)).state).toBe("pending");
+    expect((await service.resume(f.actor, sandboxId, requestId, claim)).state).toBe("pending");
+    expect(
+      (
+        await sql.query(
+          `select s.status,j.generation=c.lifecycle_generation+1 as advanced,
+             s.lifecycle_generation=j.generation and r.lifecycle_generation=j.generation as same_generation
+           from public.sandboxes s join public.jobs j on j.sandbox_id=s.id
+           join public.runtime_enrolments r on r.sandbox_id=s.id
+           join public.docker_resume_claims c on c.sandbox_id=s.id and c.request_id=$2
+           join public.docker_host_jobs h on h.bound_sandbox_id=s.id and h.request_id=c.request_id
+           where j.id=$1`,
+          [job.id, requestId],
+        )
+      ).rows,
+    ).toEqual([{ status: "starting", advanced: true, same_generation: true }]);
   },
 );
