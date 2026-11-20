@@ -419,7 +419,8 @@ test.each(["launch", "message"] as const)(
         expect.objectContaining({
           event: "operator_failure",
           phase: `scoped.child_${action}.dispatch_admission`,
-          ...(action === "message" ? { refusalCode: "authority_denied" } : {}),
+          code: "child_dispatch_not_admitted",
+          refusalCode: "authority_denied",
           errorClass: "DelegatedAuthorityDenied",
           sandboxId: receipt.sandboxId,
           operationId: receipt.id,
@@ -1434,7 +1435,8 @@ test.each(["golden lookup failure", "placement refusal", "parent revocation duri
           expect(diagnostics.map((line) => JSON.parse(line))).toEqual([
             expect.objectContaining({
               phase: placementRefused ? "scoped.child_launch.provider_placement" : "scoped.child_launch.golden_lookup",
-              code: placementRefused ? "unavailable" : "invalid_config",
+              code: "child_preallocation_rejected",
+              refusalCode: placementRefused ? "unavailable" : "invalid_config",
               errorClass: placementRefused ? "VaultError" : "GoldenError",
               sandboxId: receipt.sandboxId,
               operationId: receipt.id,

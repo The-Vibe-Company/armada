@@ -535,6 +535,7 @@ test("a Modal sandbox stopped over HTTP is deleted by the next request, and fail
       },
       sandboxes: {
         fromId: async (physicalId: string) => ({
+          sandboxId: physicalId,
           snapshotFilesystem: async () => {
             sdk.push(`snapshot:${physicalId}`);
             return { imageId: `recovery-${physicalId}` };
