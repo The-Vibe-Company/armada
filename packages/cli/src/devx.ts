@@ -231,14 +231,14 @@ export async function doctor(argv: readonly string[], auth: AuthIo): Promise<num
             host.state === "draining"
               ? DOCKER_HOST_DRAINING_MESSAGE
               : host.state !== "online"
-                ? "Check the host machine; run armada host status there."
+                ? "Check the host machine; run armada-docker-host status there."
                 : host.version === VERSION
                   ? ""
-                  : `CLI ${VERSION}. Check the host installation with armada host status on the host machine.`
+                  : `CLI ${VERSION}. Check the host installation with armada-docker-host status on the host machine.`
           }`,
         );
     } catch {
-      add("Hosts", "unknown", "Could not read hosts. Run armada host list.");
+      add("Hosts", "unknown", "Could not read hosts. Run armada host ls.");
     }
     try {
       const accounts = await control<{ user: CredentialInfo[]; orgs: OrgCredentials[] }>(auth, "creds/list", { org });

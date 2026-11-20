@@ -81,7 +81,7 @@ test.each([VERSION, "0.0.1", null])(
       `Host desk\t${hostVersion === VERSION ? "ok" : hostVersion ? "warning" : "unknown"}\t`,
     );
     if (hostVersion && hostVersion !== VERSION)
-      expect(f.output()).toContain("Check the host installation with armada host status on the host machine.");
+      expect(f.output()).toContain("Check the host installation with armada-docker-host status on the host machine.");
     expect(f.output()).toContain("Account Work\tactive");
     expect(f.output()).toContain("GitHub\tok\tConnected as owner");
     expect(f.output()).toContain("The-Vibe-Company (selected repositories), owner (all repositories)");

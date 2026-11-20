@@ -90,7 +90,7 @@ host. Staging supplies the Codex account and authorized repository access as in
 path 1. See the [Docker host quickstart](own-machine-quickstart.md) for setup.
 
 ```bash
-staging_armada host list --org "$staging_org" --json
+staging_armada api docker/hosts/list "{\"org\":\"$staging_org\"}"
 staging_armada creds list --org "$staging_org" --json
 read -r -p 'Owner staging Docker host UUID: ' staging_host
 read -r -p 'Staging Codex account UUID: ' docker_account

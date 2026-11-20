@@ -5,81 +5,39 @@ export default {
   name: "host",
   summary: "Manage registered Docker hosts",
   usage: {
-    host: `  armada host install --server HTTPS_ORIGIN   Install on the Docker machine; one-use token on stdin, no login
-  armada host status|uninstall [--server HTTPS_ORIGIN]  Local host wrappers; no login
+    host: `  armada host install --server HTTPS_ORIGIN   Install on the Docker machine; one-use token on stdin
   armada host add [--name NAME] [--org UUID]
-  armada host list [--json] [--org UUID]
-  armada host show HOST [--json] [--org UUID]
+  armada host ls [HOST] [--org UUID] [--json]
   armada host limits HOST [--cpus N] [--memory SIZE] [--max-sandboxes N | --auto] [--org UUID]
-  armada host retention HOST --retention 24h [--org UUID]
-  armada host revoke UUID [--org UUID]`,
+  armada host rm UUID [--org UUID]`,
   },
   help: `Usage: armada host <command> [arguments]
-Manage Docker machines registered with Armada, not individual sandboxes.
-
-Account commands (Armada login or ARMADA_TOKEN required):
-  add        Register a machine and obtain a one-use installer command.
-  list       Inspect host IDs, names, state and resources; supports --json.
-  show       Inspect one host by UUID or exact name; supports --json.
-  limits     Update host resource limits by UUID or exact name.
-  retention  Update stopped sandbox retention by UUID or exact host name.
-  revoke     Revoke a host registration by UUID.
-Select an organization with armada org use or --org UUID.
-Use UUIDs from host list when names are ambiguous.
-
-Local machine commands (run on the Docker machine; no Armada login):
-  install    Install/register the local host daemon using --server HTTPS_ORIGIN.
-  status     Inspect the local host daemon.
-  uninstall  Remove the local host installation.
-For CLI install, supply the one-use registration token on stdin, never in argv.
-Treat installer output as sensitive; do not paste it into shared logs.
-
-Inspect a command's options with armada host <command> --help.
-To launch on a registered host, use armada launch --provider docker.
-Example: armada host list --org ORG_UUID --json
-Example: armada host show workstation --org ORG_UUID
+Manage Docker machines registered with Armada.
+  install  Install or upgrade the local daemon on the Docker machine.
+  add      Register a machine and obtain a one-use installer command.
+  ls       Inspect registered hosts, or select one by UUID or exact name.
+  limits   Update host resource limits by UUID or exact name.
+  rm       Revoke a host registration by UUID.
+Pass --org UUID for server commands. For install, supply the one-use token on stdin.
+Use armada host <command> --help for options.
 `,
   subcommandHelp: {
-    "host list": `Usage: armada host list [--org UUID] [--json]
-List registered Docker hosts after Armada login and server authorization.
-Select an organization first or pass --org UUID. Use IDs/names with host show.
-Example: armada host list --org ORG_UUID --json
-`,
-    "host show": `Usage: armada host show <UUID|name> [--org UUID] [--json]
-Inspect one Docker host after Armada login and server authorization.
-Select an organization first or pass --org UUID. Names must match exactly and be unambiguous.
-A UUID can identify a revoked host; name lookup excludes revoked hosts.
-Example: armada host show workstation --org ORG_UUID --json
-`,
-    "host retention": `Usage: armada host retention <UUID|name> --retention <duration> [--org UUID] [--json]
-Only the member who added the Docker host can change retention.
-Use 0 for next-sweep removal, or seconds/minutes/hours/days (24h, 30m, 7d), maximum 365d.
-Applies at next check-in, including existing stopped sandbox deadlines.
---json returns {hostId, retentionSeconds}.
-Example: armada host retention workstation --retention 24h
+    "host ls": `Usage: armada host ls [<UUID|name>] [--org UUID] [--json]
+List registered hosts, or inspect one host. Exact name lookup excludes revoked hosts.
+A UUID can identify a revoked host. Use UUIDs when names are ambiguous.
 `,
     "host limits": `Usage: armada host limits <UUID|name> [--org UUID] [--json]
   [--cpus <N>] [--memory <size>] [--max-sandboxes <N>] [--auto]
-Update Docker host policy after Armada login and server authorization.
-Select an organization first or pass --org UUID. Supply at least one override or --auto.
-Combine overrides as needed:
---cpus must be at least 0.01; --max-sandboxes must be a positive integer.
---auto resets all limits and cannot be combined with overrides.
-Container changes apply on the next start or resume. Inspect with host show.
---json returns {hostId, ...requestedPolicy}.
-Example: armada host limits workstation --org ORG_UUID --cpus 2 --memory 4GiB
+Supply at least one override or --auto. --auto resets all limits.
+--cpus must be at least 0.01. --max-sandboxes must be a positive integer.
+Container changes apply on the next start or resume. Inspect with armada host ls HOST.
 `,
-    "host revoke": `Usage: armada host revoke <UUID> [--org UUID] [--json]
-Revoke a Docker host after Armada login and server authorization.
-Select an organization first or pass --org UUID. Use a host UUID from host list, not a name.
---json returns {hostId, revoked:true}.
-Example: armada host revoke HOST_UUID --org ORG_UUID
+    "host rm": `Usage: armada host rm <UUID> [--org UUID] [--json]
+Revoke a Docker host registration. Use a UUID from armada host ls.
 `,
-    "host add": `Usage: armada host add [--name <name>] [--org <UUID>] [--json]
-Register your Docker machine after Armada login. Select an organization first or pass --org.
-Run the returned installer only on your intended host; its registration token is short-lived.
---json returns the registration receipt without waiting; protect its short-lived installer token.
-Example: armada host add --name workstation
+    "host add": `Usage: armada host add [--name <name>] [--org UUID] [--json]
+Register a machine and run the returned installer on that machine.
+Protect the short-lived installer token in the output. --json returns the receipt without waiting.
 `,
   },
   helpWhenBare: true,
