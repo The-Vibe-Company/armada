@@ -219,15 +219,12 @@ test.each([
       scenario.startsWith("older job") || scenario === "runtime request already at dispatch generation" ? 3 : 2,
     ],
   );
+  const pendingWake = activity === "resume" && scenario.startsWith("unfinished");
   await db.query(`update sandboxes set lifecycle_generation=$2, activity_lease_id=$3, activity_until=$4 where id=$1`, [
     sandboxId,
     scenario === "runtime request advanced after claim" ? 2 : generation,
-    activity === "request" || scenario.startsWith("unfinished")
-      ? requestId
-      : activity === "other"
-        ? crypto.randomUUID()
-        : null,
-    activity === "request" || activity === "other" || scenario.startsWith("unfinished") ? "infinity" : null,
+    activity === "request" || pendingWake ? requestId : activity === "other" ? crypto.randomUUID() : null,
+    activity === "request" || activity === "other" || pendingWake ? "infinity" : null,
   ]);
   await db.query("insert into account_agent_reservations (sandbox_id, account_id) values ($1, $2)", [
     sandboxId,
@@ -248,7 +245,7 @@ test.each([
     );
   }
   if (activity === "resume") {
-    const finished = !scenario.startsWith("unfinished");
+    const finished = !pendingWake;
     await db.query(
       `insert into runtime_enrolments (sandbox_id,lifecycle_generation,epoch,runtime_hash)
        values ($1,$2,$3,case when $4 then repeat('a',64) end)`,
