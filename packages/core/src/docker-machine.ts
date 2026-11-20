@@ -422,7 +422,11 @@ export function createDockerMachineExecutor(options: {
         object(config.Labels)[restoredFrom] !== sourceId
       )
         fail("ownership_mismatch");
-      if (status.Running !== false || (status.Status !== "created" && status.Status !== "exited"))
+      // Docker can persist dead before a failed removal finishes.
+      if (
+        status.Running !== false ||
+        (status.Status !== "created" && status.Status !== "exited" && status.Status !== "dead")
+      )
         fail("docker_failed");
       await checked(["container", "rm", id]);
     }
