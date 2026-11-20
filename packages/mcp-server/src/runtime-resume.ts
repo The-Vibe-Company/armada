@@ -308,6 +308,14 @@ export function createRuntimeResume(
     const publishing = {
       ...store,
       async update(id: string, patch: Parameters<typeof store.update>[1]) {
+        if (patch.renewActivity && claim) {
+          return sql.transaction!(async (tx) => {
+            await tx.query("select id from public.sandboxes where id=$1 for update", [id]);
+            await assertClaim(tx);
+            await createSqlData(tx)(caller).sandboxes.update(id, patch);
+            await assertClaim(tx);
+          });
+        }
         if (!patch.finishActivity) return store.update(id, patch);
         await authority.withOwner(found.id, caller.userId, async (tx, scope) => {
           if (scope.epoch !== admitted.op.target_epoch || !receipt || patch.expectedGeneration === undefined)
