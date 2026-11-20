@@ -686,10 +686,9 @@ text alias. Fixture timestamps and UUIDs deliberately differ from cursor order.
 The live Modal conformance fixture is opt-in and billable. The coordinator
 must expose the supplied listen port through HTTPS at the ingest URL before
 running it. Pass management and model configuration only over private stdin.
-The fixture supports explicitly authorized SDK profile loading. Keep credential
-files, inherited configuration, SDK causes, and tokens out of diagnostics.
-Source generated scripts from current production core and explicitly select
-trusted provenance independently of the fixture's access scope.
+The fixture requires explicit tokens and refuses operator profiles, borrowed
+Apps, and caller-supplied management authority. Keep SDK causes and tokens out
+of diagnostics. Source generated scripts from current production core.
 
 Use a fresh exclusive evidence directory and retain the journal, including
 pending and ambiguous creates. Never retry ambiguous creation or adopt an App
