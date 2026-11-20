@@ -4,7 +4,6 @@ import type { Operation } from "./index.ts";
 const position = z.string().regex(/^(0|[1-9][0-9]{0,18})$/);
 const maxId = "9223372036854775807";
 
-// For full-length IDs, match the maximum or a smaller digit at the first differing position.
 const cursorAlternatives = ["0", `[1-9][0-9]{0,${maxId.length - 2}}`, maxId];
 for (const [index, digit] of Array.from(maxId).entries()) {
   const lowestDigit = index === 0 ? 1 : 0;
