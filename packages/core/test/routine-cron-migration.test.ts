@@ -2,30 +2,30 @@ import { afterAll, beforeAll, expect, test } from "bun:test";
 import { readdirSync } from "node:fs";
 import { join } from "node:path";
 import { migrationsDir, openDatabase } from "../../../scripts/db/apply.ts";
+import { closeableFixture } from "../../mcp-server/test/closeable.fixture.ts";
 
 const migration = "20261112073106_routine_cron_schedule.sql";
-let connection: Awaited<ReturnType<typeof openDatabase>> | undefined;
-
-beforeAll(async () => {
+const fixture = closeableFixture(async () => {
   const db = await openDatabase();
-  connection = db;
-  await db.exec(await Bun.file(join(migrationsDir, "../../scripts/db/supabase-prereq.sql")).text());
-  for (const filename of readdirSync(migrationsDir)
-    .filter((file) => file.endsWith(".sql") && file < migration)
-    .sort())
-    await db.exec(await Bun.file(join(migrationsDir, filename)).text());
+  try {
+    await db.exec(await Bun.file(join(migrationsDir, "../../scripts/db/supabase-prereq.sql")).text());
+    for (const filename of readdirSync(migrationsDir)
+      .filter((file) => file.endsWith(".sql") && file < migration)
+      .sort())
+      await db.exec(await Bun.file(join(migrationsDir, filename)).text());
+    return db;
+  } catch (error) {
+    await db.close();
+    throw error;
+  }
 });
-afterAll(async () => {
-  const db = connection;
-  connection = undefined;
-  await db?.close();
-});
+beforeAll(fixture.setup);
+afterAll(fixture.close);
 
 // Owns the deployed interval -> cron data upgrade, not fresh-schema behavior or
 // parser internals. These persisted rows predate the new columns and migration.
 test("cron migration preserves UTC phase, paused state, unsupported intervals and historical occurrence keys", async () => {
-  const db = connection;
-  if (!db) throw new Error("Missing historical schema fixture");
+  const db = fixture.get();
   const owner = crypto.randomUUID(),
     org = crypto.randomUUID(),
     template = crypto.randomUUID();
