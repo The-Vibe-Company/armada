@@ -645,6 +645,26 @@ export async function recordRuntimeStartupFailure(
   return result;
 }
 
+export async function publishNativeChildSend(
+  tx: Sql,
+  sandboxId: string,
+  fromState: SandboxStatus,
+  generation: string,
+  activityLease: string,
+) {
+  const result = await transitionSandbox(tx, {
+    sandboxId,
+    expectedGeneration: generation,
+    fromStates: [fromState],
+    toState: "running",
+    actor: "native_turn",
+    code: "native_child_send_admitted",
+    effects: [],
+    settlement: { lease: null, activityLease, statusReason: null, stopRequestedAt: null, stoppedAt: null },
+  });
+  if (result.kind === "conflict") throw new Error("Native child send lost its activity fence.");
+}
+
 export async function recordObservedProviderState(
   sql: Sql,
   scope: [string[], string],
