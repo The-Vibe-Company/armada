@@ -244,8 +244,9 @@ export function SandboxChat(props: Props) {
 
   const read = useCallback(
     async (session: PollSession): Promise<ReadResult> => {
-      const url = new URL(`/api/sandboxes/${sandboxId}/events`, window.location.origin);
-      const cursorBefore = currentHistory.current.cursor;
+      const { cursor: cursorBefore, loaded } = currentHistory.current;
+      const path = loaded ? "events" : "history";
+      const url = new URL(`/api/sandboxes/${sandboxId}/${path}`, window.location.origin);
       if (cursorBefore) url.searchParams.set("cursor", cursorBefore);
       const controller = new AbortController();
       session.controller = controller;
@@ -313,9 +314,8 @@ export function SandboxChat(props: Props) {
     if (!boundary || loadingOlder || !session || !isCurrent(session)) return;
     setLoadingOlder(true);
     try {
-      const url = new URL(`/api/sandboxes/${sandboxId}/events`, window.location.origin);
+      const url = new URL(`/api/sandboxes/${sandboxId}/history`, window.location.origin);
       url.searchParams.set("cursor", boundary);
-      url.searchParams.set("direction", "backward");
       const response = await fetch(url, { cache: "no-store" });
       const body: unknown = await response.json();
       if (!isCurrent(session)) return;

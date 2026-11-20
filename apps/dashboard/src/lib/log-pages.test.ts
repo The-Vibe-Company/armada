@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mergeEvents, readLogPages } from "./events.ts";
+import { conversationReadDirection, mergeEvents, readLogPages } from "./events.ts";
 
 describe("dashboard log catch-up", () => {
   test("returns the first page before later history is available, then resumes in replay order", async () => {
@@ -75,4 +75,14 @@ describe("dashboard log catch-up", () => {
       hasMore: false,
     });
   });
+});
+
+test.each([
+  [{ provider: "docker", runtime_transport: null, boat_runtime: false }, "backward"],
+  [{ provider: "modal", runtime_transport: "dialout", boat_runtime: false }, "backward"],
+  [{ provider: "boat", runtime_transport: null, boat_runtime: true }, "backward"],
+  [{ provider: "boat", runtime_transport: null, boat_runtime: false }, "forward"],
+] as const)("chooses history direction for %p independently of the live cursor", (sandbox, direction) => {
+  expect(conversationReadDirection(sandbox, "history")).toBe(direction);
+  expect(conversationReadDirection(sandbox, "follow")).toBe("forward");
 });
