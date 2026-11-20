@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { chmod, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, relative } from "node:path";
 import { verifyAntigravityArchive } from "../src/antigravity-build.ts";
 import { prepareAntigravity } from "../src/antigravity-install.ts";
 
@@ -54,7 +54,7 @@ test("preparation verifies a pre-filled executable before using it", async () =>
     await chmod(candidate, 0o755);
     const input = {
       cacheDir,
-      candidate,
+      candidate: relative(process.cwd(), candidate),
       serverUrl: "https://armada.example",
       pin: { archive: pin(Buffer.from("unused")), executable: pin(trusted) },
     };

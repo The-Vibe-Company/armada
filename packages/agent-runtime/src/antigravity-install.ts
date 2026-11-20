@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { constants } from "node:fs";
 import { lstat, mkdir, open, rename, rm } from "node:fs/promises";
-import { isAbsolute, join } from "node:path";
+import { isAbsolute, join, resolve } from "node:path";
 import { ANTIGRAVITY_ARTIFACT } from "./antigravity-artifact.ts";
 import { installRuntimeArtifact, type RuntimeArtifact } from "./artifact-cache.ts";
 
@@ -50,7 +50,10 @@ export async function prepareAntigravity(
   fetcher: Parameters<typeof installRuntimeArtifact>[1] = fetch,
 ) {
   const { cacheDir, candidate, serverUrl, sharedDir, pin = currentPin() } = input;
-  if (candidate && (await verifiedExecutable(candidate, pin.executable))) return candidate;
+  if (candidate) {
+    const path = resolve(candidate);
+    if (await verifiedExecutable(path, pin.executable)) return path;
+  }
   if (!isAbsolute(cacheDir) || !/^[a-f0-9]{64}$/.test(pin.executable.sha256)) throw Error("invalid_antigravity_cache");
   await mkdir(cacheDir, { recursive: true, mode: 0o700 });
   const info = await lstat(cacheDir);
