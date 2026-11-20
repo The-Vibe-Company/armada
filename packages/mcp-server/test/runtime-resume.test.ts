@@ -360,8 +360,8 @@ describe("runtime resume admission rollback", () => {
 describe("queued runtime wake admission", () => {
   const fixture = scopedRuntimeFixture(() => stopped(), { perTest: true });
 
-  test.each(["current lease", "stale lease", "failed job retarget", "different job request"] as const)(
-    "commits the resume intent and job generation together (%s)",
+  test.each(["current", "publication loss", "stale", "retarget failure", "wrong request"] as const)(
+    "fences queued wake admission and publication (%s)",
     async (scenario) => {
       const f = await fixture();
       const request = input(f.row.id);
@@ -387,7 +387,7 @@ describe("queued runtime wake admission", () => {
       const owner = crypto.randomUUID();
       const job = (await store.claim("turn_dispatch", owner, 30, 1))!;
       expect(job.id).toBe(id);
-      if (scenario === "stale lease") await f.db.query("update jobs set lease_until='-infinity' where id=$1", [id]);
+      if (scenario === "stale") await f.db.query("update jobs set lease_until='-infinity' where id=$1", [id]);
       const read = async () =>
         (
           await f.db.query(
@@ -417,15 +417,22 @@ describe("queued runtime wake admission", () => {
         };
       });
       const send = createRuntimeFollowup(f.sql, ENCRYPTION_KEY, f.bridge, undefined, resume);
-      const sentRequest = scenario === "different job request" ? input(f.row.id) : request;
+      const sentRequest = scenario === "wrong request" ? input(f.row.id) : request;
       const claim = {
-        canDispatch: async (tx?: Parameters<typeof store.inspect>[2]) =>
-          (await store.inspect(job, owner, tx)) === "dispatch",
+        async canDispatch(tx?: Parameters<typeof store.inspect>[2]) {
+          if ((await store.inspect(job, owner, tx)) !== "dispatch") return false;
+          if (scenario !== "publication loss" || !tx) return true;
+          const { rows } = await tx.query(
+            "select 1 from runtime_resumes where sandbox_id=$1 and request_id=$2 and receipt is not null",
+            [f.row.id, request.request_id],
+          );
+          return rows.length === 0;
+        },
         handoffGeneration: (handoff: Parameters<typeof store.handoffGeneration>[2]) =>
           store.handoffGeneration(job, owner, handoff),
       };
       const attempt = () => send(f.caller, sentRequest, claim);
-      if (scenario === "current lease") {
+      if (scenario === "current") {
         const dispatch = createQueuedSandboxDispatch({
           authStore: createMemoryAuthStore(),
           supabase: { supabaseUrl: "https://unused.test", anonKey: "fixture" },
@@ -445,8 +452,26 @@ describe("queued runtime wake admission", () => {
           requestId: request.request_id,
         });
         expect(preparations).toBe(1);
+      } else if (scenario === "publication loss") {
+        await expect(attempt()).rejects.toMatchObject({ code: "conflict" });
+        expect(await read()).toMatchObject({ status: "starting", intent: true });
+        expect(f.starts).toHaveLength(2);
+        await f.db.query("update jobs set lease_until='-infinity' where id=$1", [id]);
+        const accepted = await f.bridge.result(f.caller.userId, f.row.id, `resume_${request.request_id}`, "2");
+        expect(accepted.state).toBe("finished");
+        const successor = crypto.randomUUID();
+        const retry = (await store.claim("turn_dispatch", successor, 30, 1))!;
+        expect(retry.id).toBe(id);
+        await expect(
+          send(f.caller, request, {
+            canDispatch: async (tx) => (await store.inspect(retry, successor, tx)) === "dispatch",
+            handoffGeneration: () => Promise.reject(Error("An enrolled wake cannot advance generation again.")),
+          }),
+        ).resolves.toMatchObject({ resumed: true, requestId: request.request_id });
+        expect(preparations).toBe(1);
+        expect(f.starts).toHaveLength(2);
       } else {
-        if (scenario === "failed job retarget") {
+        if (scenario === "retarget failure") {
           await f.db.exec(
             `alter table jobs add constraint test_refuse_turn_retarget check (generation = ${before}) not valid`,
           );
@@ -457,7 +482,7 @@ describe("queued runtime wake admission", () => {
           }
         } else {
           await expect(attempt()).rejects.toThrow(
-            scenario === "stale lease"
+            scenario === "stale"
               ? "Turn job lease is no longer current"
               : "Queued wake does not match the claimed turn job.",
           );
