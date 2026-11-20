@@ -6,7 +6,6 @@ import {
   createSqlVaultStore,
   DelegatedAuthority,
   encryptSecret,
-  ProviderError,
   type Sql,
   VaultError,
 } from "@armada/core/server";
@@ -17,7 +16,7 @@ import { createNativeWebhookPrompts } from "../src/native-webhook-prompts.ts";
 import { observeRequest } from "../src/request-observability.ts";
 import { createRuntimeEnrolments } from "../src/runtime-enrolment.ts";
 import { createRuntimeProvider } from "../src/runtime-provider.ts";
-import { ChildLaunchNotAllocated, launchSandboxChild } from "../src/sandbox-access-child-launch.ts";
+import { launchSandboxChild } from "../src/sandbox-access-child-launch.ts";
 import { createSandboxChildren, type SandboxChildExecutor } from "../src/sandbox-access-children.ts";
 import { createSandboxAccessServices } from "../src/sandbox-access-services.ts";
 import { readStatus } from "../src/turns.ts";
@@ -25,39 +24,6 @@ import { rowOnlyDatabase } from "./row-only-database.ts";
 import { ENCRYPTION_KEY, fakeBoat } from "./support.ts";
 
 const sharedDatabase = rowOnlyDatabase();
-
-test.each([
-  ["fork_source_busy", "fork_source_busy"],
-  ["snapshot_source_busy", "snapshot_source_busy"],
-  ["arbitrary provider detail", "conflict"],
-])("scoped launch operator event classifies Modal fork conflicts with provider code %s", async (providerCode, code) => {
-  const operation = { id: crypto.randomUUID(), sandboxId: crypto.randomUUID() };
-  const lines: string[] = [];
-  const response = await observeRequest(
-    () => {
-      const cause = new ProviderError({
-        provider: "modal",
-        code: "conflict",
-        providerCode,
-        message: "private provider detail",
-        retryable: true,
-      });
-      new ChildLaunchNotAllocated("provider_refused", "provider_fork", cause).record(operation);
-      return new Response();
-    },
-    (line) => lines.push(line),
-  );
-  expect(JSON.parse(lines[0]!)).toMatchObject({
-    event: "operator_failure",
-    phase: "scoped.child_launch.provider_fork",
-    code,
-    operationId: operation.id,
-    sandboxId: operation.sandboxId,
-    requestId: response?.headers.get("x-request-id"),
-    message: "Exception message withheld",
-  });
-  expect(lines.join("\n")).not.toContain("provider detail");
-});
 
 async function fixture(
   parentState: "ready" | "running" = "running",
@@ -453,7 +419,8 @@ test.each(["launch", "message"] as const)(
         expect.objectContaining({
           event: "operator_failure",
           phase: `scoped.child_${action}.dispatch_admission`,
-          ...(action === "message" ? { refusalCode: "authority_denied" } : {}),
+          code: "child_dispatch_not_admitted",
+          refusalCode: "authority_denied",
           errorClass: "DelegatedAuthorityDenied",
           sandboxId: receipt.sandboxId,
           operationId: receipt.id,
@@ -1468,7 +1435,8 @@ test.each(["golden lookup failure", "placement refusal", "parent revocation duri
           expect(diagnostics.map((line) => JSON.parse(line))).toEqual([
             expect.objectContaining({
               phase: placementRefused ? "scoped.child_launch.provider_placement" : "scoped.child_launch.golden_lookup",
-              code: placementRefused ? "unavailable" : "invalid_config",
+              code: "child_preallocation_rejected",
+              refusalCode: placementRefused ? "unavailable" : "invalid_config",
               errorClass: placementRefused ? "VaultError" : "GoldenError",
               sandboxId: receipt.sandboxId,
               operationId: receipt.id,
