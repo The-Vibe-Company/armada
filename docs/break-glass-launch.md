@@ -38,20 +38,29 @@ staging_armada() {
 }
 staging_armada --version
 staging_armada login --url https://armada-mcp-staging.up.railway.app
+staging_armada --help
+```
+
+For both staging paths, set `sandbox_create_command` to the top-level sandbox creation command shown by
+`staging_armada --help` for the installed version. Current releases use `new`.
+The rehearsed 2.57.2 binary below uses `launch`.
+
+```bash
+read -r -p 'Sandbox creation command from pinned CLI help: ' sandbox_create_command
+```
+
+For the Modal path, check the org and snapshot:
+
+```bash
 staging_armada org list
 staging_armada snapshot list --org "$staging_org" --provider modal
 ```
-
-Set `sandbox_create_command` to the top-level sandbox creation command shown by
-`staging_armada --help` for the installed version. Current releases use `new`.
-The rehearsed 2.57.2 binary below uses `launch`.
 
 Once the version matches the pin and the org and snapshot are visible, launch
 the rehearsal worker. During an incident, replace the prompt with the repair
 task and include the assigned branch and acceptance criteria.
 
 ```bash
-read -r -p 'Sandbox creation command from pinned CLI help: ' sandbox_create_command
 staging_armada "$sandbox_create_command" "$staging_snapshot" --org "$staging_org" --provider modal \
   --agent codex "Summarize the repository without changing any files."
 ```
@@ -88,7 +97,7 @@ The coordinator ran `armada stop` and confirmed `stopped` with `armada status`.
 
 ## 2. Launch on the owner's Docker host through staging
 
-Use the same staging wrapper and login. Staging must already allow Docker
+Use the staging wrapper, login, and command selection from the common setup above. Staging must already allow Docker
 placement and the owner must have registered an online host in that staging org.
 The daemon uses its existing staging registration. Its credential stays on the
 host. Staging supplies the Codex account and authorized repository access as in
