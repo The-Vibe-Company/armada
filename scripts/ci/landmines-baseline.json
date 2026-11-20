@@ -621,7 +621,6 @@
     "packages/core/test/version.test.ts": 2,
     "packages/core/test/vm-resource-reading.test.ts": 1,
     "packages/core/test/work-preservation.probe.ts": 5,
-    "packages/docker-host/src/daemon.ts": 107,
     "packages/docker-host/test/artifact-cache.test.ts": 3,
     "packages/docker-host/test/cli.test.ts": 2,
     "packages/docker-host/test/daemon.test.ts": 43,
