@@ -46,6 +46,7 @@ beforeAll(async () => {
     create table runtime_enrolments(sandbox_id uuid,epoch bigint);
     create table runtime_checkpoints(sandbox_id uuid,epoch bigint,merge_stop boolean);
     create table docker_host_jobs(bound_sandbox_id uuid,position bigint,request_id uuid);
+    create table docker_resume_claims(sandbox_id uuid,request_id uuid);
     create table runtime_resumes(sandbox_id uuid,request_id uuid);
     create table runtime_idle_turns(sandbox_id uuid,prompt_id text,settled boolean);
     create table account_agent_reservations(sandbox_id uuid primary key,account_id uuid);`);
