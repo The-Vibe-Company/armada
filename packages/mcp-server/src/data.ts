@@ -45,6 +45,7 @@ import {
   expireAfterExtension,
   finishEnrolledRuntimeLaunch,
   publishOwnerStop,
+  recordNativeRetentionRefusal,
   recordObservedProviderState,
   settleRuntimeTurn,
 } from "./sandbox-lifecycle.ts";
@@ -65,6 +66,7 @@ export interface SandboxView extends SandboxRecord {
 export interface ServerSandboxPatch extends SandboxPatch {
   deleteCompleted?: true;
   expireAfterExtension?: true;
+  nativeRetentionRefusal?: string;
   ownerStop?: true;
   onlyIfIdle?: boolean;
   retainedRuntimeStop?: string;
@@ -767,6 +769,17 @@ export function createSqlData(
         );
       },
       async update(id, patch) {
+        const { nativeRetentionRefusal } = patch;
+        if (nativeRetentionRefusal !== undefined) {
+          const { expectedGeneration, activityToken } = patch;
+          if (!sql.transaction || expectedGeneration === undefined || !activityToken)
+            throw new DataError("Retention refusal requires its activity generation and token.");
+          const applied = await sql.transaction((tx) =>
+            recordNativeRetentionRefusal(tx, scope, id, expectedGeneration, activityToken, nativeRetentionRefusal),
+          );
+          if (!applied) throw new DataError("Retention refusal is stale.", "sandbox_not_ready");
+          return;
+        }
         if (patch.expireAfterExtension) {
           const { expectedGeneration, activityToken } = patch;
           if (!sql.transaction || expectedGeneration === undefined || !activityToken || !patch.finishActivity)

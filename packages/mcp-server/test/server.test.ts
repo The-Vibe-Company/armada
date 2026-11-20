@@ -1758,30 +1758,97 @@ describe("tools", () => {
     ]);
   });
 
-  test("native send hands a fresh pre-dispatch retention refusal to the stop reconciler", async () => {
-    const { token, client, people, boat, db } = await start();
-    const mcp = await client(await token(people.member));
-    const { data } = await call(mcp, "launch", { provider: "boat", golden: "shared", harness: "claude" });
-    expect((await call(mcp, "stop", { id: launchSandboxId(data) })).data.status).toBe("stopped");
-    boat.provider.prompt = async () => {
-      boat.sandbox("bx_1").info.retainedSnapshot = "unconfirmed";
-      throw new BoatRetentionUnconfirmed();
-    };
-    const refused = await call(mcp, "send", { id: launchSandboxId(data), prompt: "continue" });
-    expect(refused.isError).toBe(true);
-    expect(refused.text).toContain("Boat retained data has not been verified");
-    const row = (
-      await db.query("select status, activity_lease_id, stop_requested_at from sandboxes where id=$1", [
-        launchSandboxId(data),
-      ])
-    ).rows[0];
-    expect(row).toMatchObject({ status: "stopping", activity_lease_id: null, stop_requested_at: expect.any(Date) });
-    boat.sandbox("bx_1").info.retainedSnapshot = "usable";
-    const lifecycle = createSandboxLifecycle(bunLikeSql(db), async () => boat.provider);
-    expect(await lifecycle.reconcileOne()).toBe(true);
-    expect((await call(mcp, "status", { id: launchSandboxId(data) })).data.status).toBe("stopped");
-    expect(boat.stops).toHaveLength(1);
-  });
+  test.each(["handoff", "stale", "queue_failure"] as const)(
+    "native send retention refusal settles atomically (%s)",
+    async (scenario) => {
+      const { token, client, people, boat, db } = await start();
+      const mcp = await client(await token(people.member));
+      const { data } = await call(mcp, "launch", { provider: "boat", golden: "shared", harness: "claude" });
+      const id = launchSandboxId(data);
+      expect((await call(mcp, "stop", { id })).data.status).toBe("stopped");
+      const {
+        rows: [stopped],
+      } = await db.query<{ generation: number }>(
+        "select lifecycle_generation::int as generation from sandboxes where id=$1",
+        [id],
+      );
+      const requestId = crypto.randomUUID();
+      const successor = crypto.randomUUID();
+      boat.provider.prompt = async () => {
+        await db.query(
+          `insert into account_turn_queue(sandbox_id,request_id,account_id,owner_id,org_id,actor_epoch,credential_version,
+          input_hash,input_enc,conversation_id,state,dispatch_generation)
+         select s.id,$2,c.id,s.owner_id,s.org_id,1,1,'hash','data','conversation','dispatching',s.lifecycle_generation
+         from sandboxes s join credentials c on c.owner_id=s.org_id and c.kind='openai' where s.id=$1`,
+          [id, requestId],
+        );
+        if (scenario === "stale")
+          await db.query(
+            "update sandboxes set lifecycle_generation=lifecycle_generation+1,activity_lease_id=$2 where id=$1",
+            [id, successor],
+          );
+        boat.sandbox("bx_1").info.retainedSnapshot = "unconfirmed";
+        throw new BoatRetentionUnconfirmed();
+      };
+      if (scenario === "queue_failure")
+        await db.exec(
+          "alter table account_turn_queue add constraint reject_retention_refusal check (state <> 'failed')",
+        );
+      try {
+        const refused = await call(mcp, "send", { id, prompt: "continue" });
+        expect(refused.isError).toBe(true);
+        const {
+          rows: [row],
+        } = await db.query(
+          `select s.status,s.activity_lease_id,s.stop_requested_at,s.lifecycle_generation::int,q.state as queue_state
+         from sandboxes s join account_turn_queue q on q.sandbox_id=s.id and q.request_id=$2 where s.id=$1`,
+          [id, requestId],
+        );
+        const { rows: handoff } = await db.query(
+          `select from_status,to_status,actor,code,generation::int from sandbox_transitions
+         where sandbox_id=$1 and from_status='starting' and to_status='stopping'`,
+          [id],
+        );
+        if (scenario !== "handoff") {
+          if (scenario === "stale") expect(refused.text).toContain("Retention refusal is stale.");
+          expect(row).toEqual({
+            status: "starting",
+            activity_lease_id: scenario === "stale" ? successor : expect.any(String),
+            stop_requested_at: null,
+            lifecycle_generation: stopped!.generation + (scenario === "stale" ? 2 : 1),
+            queue_state: "dispatching",
+          });
+          expect(handoff).toEqual([]);
+          return;
+        }
+        expect(refused.text).toContain("Boat retained data has not been verified");
+        expect(row).toEqual({
+          status: "stopping",
+          activity_lease_id: null,
+          stop_requested_at: expect.any(Date),
+          lifecycle_generation: stopped!.generation + 2,
+          queue_state: "failed",
+        });
+        expect(handoff).toEqual([
+          {
+            from_status: "starting",
+            to_status: "stopping",
+            actor: "lifecycle_runner",
+            code: "native_retention_unconfirmed",
+            generation: stopped!.generation + 2,
+          },
+        ]);
+        boat.sandbox("bx_1").info.retainedSnapshot = "usable";
+        const lifecycle = createSandboxLifecycle(bunLikeSql(db), async () => boat.provider);
+        expect(await lifecycle.reconcileOne()).toBe(true);
+        expect((await call(mcp, "status", { id })).data.status).toBe("stopped");
+        expect(boat.stops).toHaveLength(1);
+      } finally {
+        if (scenario === "queue_failure")
+          await db.exec("alter table account_turn_queue drop constraint reject_retention_refusal");
+      }
+    },
+  );
 
   test("user stop leaves an unverified archive in worker custody without dispatching another stop", async () => {
     const server = await start();
