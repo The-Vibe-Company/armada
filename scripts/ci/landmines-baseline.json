@@ -1581,7 +1581,7 @@
     "packages/mcp-server/src/mcp-stdio-bootstrap.ts": 1,
     "packages/mcp-server/src/merged-work.ts": 1,
     "packages/mcp-server/src/modal-event-usage.ts": 1,
-    "packages/mcp-server/src/modal-integration.ts": 5,
+    "packages/mcp-server/src/modal-integration.ts": 4,
     "packages/mcp-server/src/modal-launch-environment.ts": 1,
     "packages/mcp-server/src/modal-runtime-launch.ts": 1,
     "packages/mcp-server/src/model-auth-state.ts": 10,
