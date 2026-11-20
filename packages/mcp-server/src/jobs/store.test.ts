@@ -176,6 +176,10 @@ test.each([
   ["published runtime follow-up", 3, "command", "-infinity", true, false],
   ["unfinished runtime follow-up", 3, "command", "-infinity", true, false],
   ["older-epoch runtime follow-up", 3, "command", "-infinity", true, false],
+  ["published runtime resume", 3, "resume", "-infinity", true, false],
+  ["unfinished runtime resume", 3, "resume", "-infinity", true, false],
+  ["older-epoch runtime resume", 3, "resume", "-infinity", true, false],
+  ["unrelated runtime resume", 3, "resume", "-infinity", true, false],
   ["runtime legacy window still open", 2, null, "infinity", true, false],
   ["runtime dispatch has no evidence", 2, null, "-infinity", true, false],
   ["older job for abandoned runtime dispatch", 3, null, "-infinity", true, false],
@@ -233,6 +237,22 @@ test.each([
       `insert into runtime_commands (sandbox_id, request_id, epoch, request_enc, result_enc)
        values ($1,$2,1,''::bytea,case when $3 then ''::bytea end)`,
       [sandboxId, `follow_${requestId}`, finished],
+    );
+  }
+  if (activity === "resume") {
+    const finished = scenario !== "unfinished runtime resume";
+    await db.query(
+      `insert into runtime_enrolments (sandbox_id,lifecycle_generation,epoch,runtime_hash)
+       values ($1,$2,$3,repeat('a',64))`,
+      [sandboxId, generation, scenario === "older-epoch runtime resume" ? 3 : 2],
+    );
+    await db.query(
+      `insert into runtime_resumes (sandbox_id,request_id,source_epoch,target_epoch,watermark,request_hash,
+         conversation_id,model,reasoning_effort,phase,verified_at,receipt)
+       values ($1,$2,1,2,0,repeat('a',64),'fixture','fixture','low',
+         case when $3 then 'complete' else 'dispatched' end,
+         case when $3 then now() end,case when $3 then '{"resumed":true}'::jsonb end)`,
+      [sandboxId, scenario === "unrelated runtime resume" ? crypto.randomUUID() : requestId, finished],
     );
   }
   const outcome = async () =>
@@ -293,6 +313,7 @@ test.each([
   if (
     reset ||
     scenario === "published runtime follow-up" ||
+    scenario === "published runtime resume" ||
     scenario === "runtime request advanced generation" ||
     scenario === "runtime request already at dispatch generation" ||
     scenario === "runtime request advanced after claim" ||
