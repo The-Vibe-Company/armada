@@ -2,6 +2,7 @@ import type { MachineSizeEvidence, PlanLimit } from "@armada/core";
 import {
   type AgentEvent,
   dedupeEvents,
+  isSandboxProvider,
   type ModelRateLimit,
   modelRateLimit,
   type PromptOutcome,
@@ -310,7 +311,7 @@ export async function readStatus(
       patch.stoppedAt = (info.stoppedAt ?? options.now).toISOString();
     } else if (sandbox.stoppedAt !== null && next !== "failed") patch.stoppedAt = null;
     if (
-      (next === "stopped" && !runtime && (sandbox.provider === "boat" || sandbox.provider === "modal")) ||
+      (next === "stopped" && !runtime && isSandboxProvider(sandbox.provider)) ||
       ((sandbox.status === "ready" || sandbox.status === "running") &&
         (next === "stopped" ||
           next === "failed" ||
