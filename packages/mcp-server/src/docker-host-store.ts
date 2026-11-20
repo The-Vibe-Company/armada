@@ -1047,9 +1047,9 @@ export function createDockerHostStore(sql: Sql, key: string) {
       installationId: string,
       serverUrl: string,
       report: readonly DockerInventoryContainer[],
-    ): Required<Pick<Machine, "listInventory">> {
+    ) {
       return {
-        async *listInventory(signal) {
+        async *listInventory(signal?: AbortSignal) {
           signal?.throwIfAborted();
           const entries = await transaction(async (tx) => {
             const { id: hostId } = await authenticate(tx, hostToken, installationId);
@@ -1058,14 +1058,13 @@ export function createDockerHostStore(sql: Sql, key: string) {
               projectDockerMachineInventory(tx, { hostId, installationId, deploymentId }, report, signal),
             );
           });
-          // Release the transaction before yielding to an arbitrarily slow consumer.
           signal?.throwIfAborted();
           for (const entry of entries) {
             signal?.throwIfAborted();
             yield entry;
           }
         },
-      };
+      } satisfies Required<Pick<Machine, "listInventory">>;
     },
     async inventoryOwnership(hostToken: string, installationId: string, sandboxIds: readonly string[]) {
       return transaction(async (tx) => {
