@@ -1,4 +1,4 @@
-import { HARNESSES } from "@armada/core";
+import { HARNESSES, ProviderError } from "@armada/core";
 import { modalFailureReceipt } from "./errors.ts";
 import type { ModalResourceReceipt } from "./ports.ts";
 import type { ModalProvider } from "./provider.ts";
@@ -191,12 +191,15 @@ export async function runModalConformance(
     }
     if (turns.length) checks.push("both real model conversations resume after restore");
     const before = await provider.events({ sandboxId: fork });
-    await provider.deleteSnapshot(snapshot);
-    checks.push("snapshot logical deletion with live fork");
+    const retirement = await provider.deleteSnapshot(snapshot).catch((error: unknown) => error);
+    if (!(retirement instanceof ProviderError) || retirement.providerCode !== "snapshot_source_busy")
+      throw Error("live_fork_snapshot_retirement_not_refused", { cause: retirement });
+    checks.push("snapshot retirement refuses a live fork");
     await provider.delete({ sandboxId: fork });
+    await provider.deleteSnapshot(snapshot);
     const after = await provider.events({ sandboxId: fork });
     if (JSON.stringify(before.events) !== JSON.stringify(after.events)) throw Error("deleted_event_history_changed");
-    checks.push("durable events after delete / last-fork image GC");
+    checks.push("durable events after fork deletion");
     fork = undefined;
     return { checks, preservedSandboxIds };
   } finally {
