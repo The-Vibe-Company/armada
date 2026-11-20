@@ -73,6 +73,32 @@ export async function observeModalCompute(
   return { kind: "present", machine, phase } as const;
 }
 
+export async function lookupModalCompute(
+  client: Pick<ModalClient, "sandboxes">,
+  machineId: string,
+  signal?: AbortSignal,
+) {
+  signal?.throwIfAborted();
+  const sandbox = await client.sandboxes.fromId(machineId);
+  if (sandbox.sandboxId !== machineId) throw conflict("Modal lookup returned a different machine.");
+  return sandbox;
+}
+
+export async function terminateModalCompute(
+  sandbox: Sandbox,
+  { wait = true, signal }: { wait?: boolean; signal?: AbortSignal | undefined } = {},
+) {
+  signal?.throwIfAborted();
+  const exitCode = await sandbox.poll();
+  signal?.throwIfAborted();
+  if (exitCode !== null) return;
+  if (wait) await sandbox.terminate({ wait: true });
+  else await sandbox.terminate();
+  signal?.throwIfAborted();
+  if ((await sandbox.poll()) === null) throw refusal("unavailable", "Modal termination has not completed.");
+  signal?.throwIfAborted();
+}
+
 async function optional<T>(operation: () => Promise<T>) {
   try {
     return await operation();
@@ -117,10 +143,7 @@ export function createModalMachine(options: ModalMachineOptions) {
   }
 
   async function exact(id: MachineIdentity, signal?: AbortSignal) {
-    signal?.throwIfAborted();
-    const sandbox = await client.sandboxes.fromId(id.machineId);
-    if (sandbox.sandboxId !== id.machineId) throw conflict("Modal lookup returned a different machine.");
-    return verify(sandbox, id);
+    return verify(await lookupModalCompute(client, id.machineId, signal), id);
   }
 
   async function current(id: MachineIdentity) {
@@ -177,15 +200,6 @@ export function createModalMachine(options: ModalMachineOptions) {
     return identity(request, sandbox.sandboxId);
   }
 
-  async function terminate(sandbox: Sandbox, signal?: AbortSignal) {
-    if ((await sandbox.poll()) === null) {
-      signal?.throwIfAborted();
-      await sandbox.terminate();
-      signal?.throwIfAborted();
-      if ((await sandbox.poll()) === null) throw refusal("unavailable", "Modal termination has not completed.");
-    }
-  }
-
   return {
     create: (request) => allocate(request, "create"),
     async bootstrap(request) {
@@ -228,7 +242,7 @@ export function createModalMachine(options: ModalMachineOptions) {
           if (!image.imageId) throw refusal("unavailable", "Modal checkpoint returned no image.");
           entry = await save(request, entry, { ...entry, recoveryImageId: image.imageId });
         }
-        await terminate(sb, request.signal);
+        await terminateModalCompute(sb, { wait: false, signal: request.signal });
         await save(request, entry, { ...entry, phase: "stopped" });
       }
       return entry.recoveryImageId ? retained(request, entry.recoveryImageId) : null;
@@ -263,7 +277,7 @@ export function createModalMachine(options: ModalMachineOptions) {
         entry = await save(request, entry, { ...entry, phase: "deleting", deleteScope: request.scope });
       await bound();
       const sb = await optional(() => exact(request, request.signal));
-      if (sb) await optional(() => terminate(sb, request.signal));
+      if (sb) await optional(() => terminateModalCompute(sb, { wait: false, signal: request.signal }));
       const image = entry.recoveryImageId;
       if (request.scope === "physical-and-retained" && image) {
         request.signal?.throwIfAborted();

@@ -4,6 +4,7 @@ import { NotFoundError, type Sandbox } from "modal";
 import type { boundModalApp, modalConnection } from "./client.ts";
 import { modalBuilderImageError, modalError, refusal } from "./errors.ts";
 import { DEPLOYMENT_TAG } from "./inventory.ts";
+import { lookupModalCompute } from "./machine.ts";
 import type { Machine, RunnerDistribution, RunnerTransport, Scope } from "./ports.ts";
 import type { ModalProviderOptions } from "./provider.ts";
 import { SSH_PORT } from "./ssh.ts";
@@ -45,7 +46,7 @@ export function createPhysicalLifecycle(deps: {
     await bound();
     signal?.throwIfAborted();
     if (!row.physicalId) throw refusal("sandbox_not_ready", "No current physical machine.");
-    return client.sandboxes.fromId(row.physicalId);
+    return lookupModalCompute(client, row.physicalId, signal);
   }
   function ownershipTags(row: Machine) {
     return {

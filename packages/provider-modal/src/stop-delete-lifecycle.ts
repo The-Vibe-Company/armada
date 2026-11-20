@@ -2,6 +2,7 @@ import type { Provider } from "@armada/core";
 import type { boundModalApp, modalConnection } from "./client.ts";
 import { lifecycleStep, ModalOperationError, modalError, refusal } from "./errors.ts";
 import type { createImageCollection } from "./image-collection.ts";
+import { lookupModalCompute, terminateModalCompute } from "./machine.ts";
 import type { createPhysicalLifecycle } from "./physical-lifecycle.ts";
 import type { Machine, ModalResourceReceipt, ModalStore, RunnerDistribution, RunnerTransport } from "./ports.ts";
 
@@ -68,8 +69,7 @@ export function createStopDeleteLifecycle(deps: {
       await save(row);
       if (row.physicalId) {
         const sb = await physical(row);
-        await sb.terminate({ wait: true });
-        if ((await sb.poll()) === null) throw refusal("unavailable", "Termination has not completed.");
+        await terminateModalCompute(sb);
       }
       row.phase = "stopped";
       row.info.state = "stopped";
@@ -98,8 +98,7 @@ export function createStopDeleteLifecycle(deps: {
       row.phase = "terminate";
       await save(row);
     }
-    await lifecycleStep("modal_checkpoint_terminate", () => sb.terminate({ wait: true }));
-    if ((await sb.poll()) === null) throw refusal("unavailable", "Termination has not completed.");
+    await lifecycleStep("modal_checkpoint_terminate", () => terminateModalCompute(sb));
     row.phase = "stopped";
     row.info.state = "stopped";
     row.info.providerState = "stopped";
@@ -184,10 +183,7 @@ export function createStopDeleteLifecycle(deps: {
         if (!exitConfirmed && row.physicalId) {
           await boundNotAbsence();
           try {
-            const sb = await client.sandboxes.fromId(row.physicalId);
-            await sb.terminate({ wait: true });
-            if ((await sb.poll()) === null)
-              throw refusal("unavailable", "Owned machine termination is not complete; delete remains pending.");
+            await terminateModalCompute(await lookupModalCompute(client, row.physicalId));
           } catch (error) {
             if (modalError(error).code !== "not_found") throw error;
           }

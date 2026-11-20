@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import type { ResumeStageObserver, SandboxInfo } from "@armada/core";
 import type { Sandbox } from "modal";
 import { ModalOperationError, refusal } from "./errors.ts";
-import { observeModalCompute } from "./machine.ts";
+import { observeModalCompute, terminateModalCompute } from "./machine.ts";
 import type { Machine, ModalResourceReceipt, ModalStore, RunnerDistribution } from "./ports.ts";
 import type { ModalProvider } from "./provider.ts";
 import { bootstrapModalRuntime, validateRuntimeTicket } from "./runtime-bootstrap.ts";
@@ -125,8 +125,7 @@ export function createRuntimeLifecycle({
           } else if (!row.recoveryImageId || !prior || !row.quiesced) {
             throw refusal("conflict", "Termination lacks a retained common checkpoint.");
           }
-          await sb.terminate({ wait: true });
-          if ((await sb.poll()) === null) throw refusal("unavailable", "Termination has not completed.");
+          await terminateModalCompute(sb);
           row.phase = "stopped";
           row.info.state = "stopped";
           row.info.providerState = "stopped";
@@ -235,11 +234,7 @@ export function createRuntimeLifecycle({
           row.info.state = "stopping";
           await save(row);
         }
-        const replacement = await physical(row);
-        if ((await replacement.poll()) === null) {
-          await replacement.terminate({ wait: true });
-          if ((await replacement.poll()) === null) throw refusal("unavailable", "Replacement exit is unconfirmed.");
-        }
+        await terminateModalCompute(await physical(row));
         row.runtimeCheckpoint = { ...checkpoint, physicalId: row.physicalId, generation: row.generation };
         row.phase = "stopped";
         row.info.state = "stopped";
