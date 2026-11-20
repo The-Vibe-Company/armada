@@ -16,6 +16,7 @@ import type { Job } from "./jobs/runner.ts";
 import { mergedWorkProof } from "./merged-work.ts";
 import { nativeIdleDue, nativeQuiescent } from "./native-idle.ts";
 import { LIVE_OUTPUT_CANDIDATE } from "./output-transfers.ts";
+import { recordNativeIdleTurn } from "./runtime-idle-evidence.ts";
 import { SANDBOX_VISIBLE } from "./sandbox-visibility.ts";
 import { INTERRUPTED_LAUNCH_REASON } from "./turns.ts";
 import { deferTransactionWake, eventFeedWakeKey, runtimeWakes } from "./wake-bus.ts";
@@ -1350,16 +1351,7 @@ export function createSandboxLifecycle(
                  and exists(select 1 from public.members m where m.org_id=sandboxes.org_id and m.user_id=sandboxes.owner_id)`,
               [row.id, token, row.lifecycle_generation, row.task_prompt_id, turn.status],
             );
-            await sql.query(
-              `insert into public.runtime_idle_turns(sandbox_id,prompt_id,settled)
-               select id,task_prompt_id,true from public.sandboxes
-               where id=$1 and reconcile_lease=$2::uuid and lifecycle_generation=$3
-                 and reconcile_lease_until>now() and activity_lease_id is null
-                 and task_prompt_id=$4 and stop_requested_at is null
-                 and exists(select 1 from public.members m where m.org_id=sandboxes.org_id and m.user_id=sandboxes.owner_id)
-               on conflict(sandbox_id,prompt_id) do update set settled=true`,
-              [row.id, token, row.lifecycle_generation, row.task_prompt_id],
-            );
+            await recordNativeIdleTurn(sql, row.id, token, row.lifecycle_generation, row.task_prompt_id);
           }
         }
         const workMerged = row.work_merged === true && !row.stop_requested_at;

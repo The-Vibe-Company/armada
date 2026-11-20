@@ -5,7 +5,7 @@ import type { Caller } from "./caller.ts";
 import { createSqlData, type SandboxView } from "./data.ts";
 import { createGoldenRuntimeEnvironment } from "./golden-runtime-environment.ts";
 import type { GenerationHandoff } from "./jobs/runner.ts";
-import { recordLaunchStageQuietly } from "./launch-stage-record.ts";
+import { recordLaunchStageQuietly, recordResumeAcceptedAt } from "./launch-stage-record.ts";
 import { runtimeBridgeTarget } from "./provider-runtime-admission.ts";
 import { lockRuntimeAccount } from "./runtime-account-admission.ts";
 import { runtimeAgentFor } from "./runtime-agent.ts";
@@ -262,14 +262,7 @@ export function createRuntimeResume(
       });
       if (transition.kind === "conflict")
         throw new VaultError("conflict", "Runtime resume admission lost its retained stop or dispatch authority.");
-      await tx.query(
-        `update public.sandbox_launch_stages l set at=least(l.at,r.created_at)
-           from public.runtime_resumes r
-          where l.sandbox_id=$1 and l.stage='accepted'
-            and l.activation=(select max(a.activation) from public.sandbox_launch_stages a where a.sandbox_id=$1)
-            and r.sandbox_id=l.sandbox_id and r.request_id=$2`,
-        [found.id, requestId],
-      );
+      await recordResumeAcceptedAt(tx, found.id, requestId);
       const active = await createSqlData(tx)(caller).sandboxes.get(found.id);
       if (!active) throw new VaultError("not_found", "Runtime resume admission disappeared.");
       return { current: active, op, first: true };

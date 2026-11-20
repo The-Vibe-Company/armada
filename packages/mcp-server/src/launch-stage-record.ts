@@ -29,6 +29,18 @@ export async function recordLaunchStageForActivation(
   );
 }
 
+/** Date the current activation from the resume intent inside its admission transaction. */
+export function recordResumeAcceptedAt(tx: Pick<Sql, "query">, sandboxId: string, requestId: string) {
+  return tx.query(
+    `update public.sandbox_launch_stages l set at=least(l.at,r.created_at)
+       from public.runtime_resumes r
+      where l.sandbox_id=$1 and l.stage='accepted'
+        and l.activation=(select max(a.activation) from public.sandbox_launch_stages a where a.sandbox_id=$1)
+        and r.sandbox_id=l.sandbox_id and r.request_id=$2`,
+    [sandboxId, requestId],
+  );
+}
+
 /** Measurement outside a lifecycle transaction must never change the outcome it measures. */
 export async function recordLaunchStageQuietly(
   sql: Pick<Sql, "query">,
