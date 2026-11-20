@@ -100,7 +100,22 @@ export function transactionErrors(sql: string) {
   return errors;
 }
 
+function unicodeEscapeCharacter(literal: string | undefined) {
+  if (!literal) return "\\";
+  if (!/^e'/i.test(literal)) return literal.slice(1, -1);
+  const value = literal.slice(2, -1);
+  if (value === "\\b") return "\b";
+  const numeric = /^\\(?:x([\da-f]{1,2})|u([\da-f]{4})|U([\da-f]{8})|([0-7]{1,3}))$/i.exec(value);
+  if (numeric) {
+    const octal = numeric[4];
+    const codePoint = octal ? Number.parseInt(octal, 8) & 0xff : Number.parseInt(value.slice(2), 16);
+    if (codePoint <= 0x10ffff) return String.fromCodePoint(codePoint);
+  }
+  return value.startsWith("\\") ? value.slice(1) : value;
+}
+
 function qualifiedName(tokens: readonly (string | undefined)[], start: number) {
+  const parts: string[] = [];
   let name: string | undefined;
   let next = start;
   do {
@@ -109,8 +124,13 @@ function qualifiedName(tokens: readonly (string | undefined)[], start: number) {
       const content = token!.slice(3, -1).replaceAll('""', '"');
       let escapeCharacter = "\\";
       if (tokens[next] === "uescape") {
-        escapeCharacter = tokens[next + 1]?.slice(1, -1) ?? escapeCharacter;
+        let literal = tokens[next + 1];
         next += 2;
+        while (literal && tokens[next]?.startsWith("'")) {
+          literal = literal.slice(0, -1) + tokens[next]!.slice(1);
+          next++;
+        }
+        escapeCharacter = unicodeEscapeCharacter(literal);
       }
       const marker = escapeCharacter.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
       const escapes = new RegExp(`${marker}(${marker}|[\\da-fA-F]{4}|\\+[\\da-fA-F]{6})`, "g");
@@ -124,10 +144,44 @@ function qualifiedName(tokens: readonly (string | undefined)[], start: number) {
     } else {
       name = token && /^[a-z_\u0080-\uffff][\w$\u0080-\uffff]*$/.test(token) ? token : undefined;
     }
+    if (name !== undefined) parts.push(name);
     if (tokens[next] !== ".") break;
     next++;
   } while (name !== undefined);
-  return { name, next };
+  return { name, next, parts };
+}
+
+export function routineSettingErrors(sql: string) {
+  const errors: string[] = [];
+  for (const { tokens, startsAt } of sqlStatements(sql)) {
+    const [verb, second, third] = tokens;
+    const kind = verb === "create" && second === "or" && third === "replace" ? tokens[3] : second;
+    if (verb !== "create" && verb !== "alter") continue;
+    if (kind !== "function" && kind !== "procedure" && !(verb === "alter" && kind === "routine")) continue;
+
+    let depth = 0;
+    for (const [index, token] of tokens.entries()) {
+      if (token === "(" || token === "[") depth++;
+      if (token === ")" || token === "]") depth--;
+      if (depth !== 0) continue;
+      if (verb === "create" && token === "begin" && tokens[index + 1] === "atomic") break;
+      if (token !== "set") continue;
+
+      const { next, parts } = qualifiedName(tokens, index + 1);
+      const parameter = parts.join(".");
+      const assignment = tokens[next];
+      if (!parameter.includes(".")) continue;
+      if (assignment !== "=" && assignment !== "to" && !(assignment === "from" && tokens[next + 1] === "current")) {
+        continue;
+      }
+      const line = sql.slice(0, startsAt).split(/\r\n|\r|\n/).length;
+      errors.push(
+        `Line ${line}: ${verb.toUpperCase()} ${kind.toUpperCase()} cannot SET custom parameter ${parameter}. ` +
+          "Use pg_catalog.set_config(name, value, true) in the routine body.",
+      );
+    }
+  }
+  return errors;
 }
 
 // Split lists of DROP targets and ALTER TABLE actions, while retaining commas
@@ -256,10 +310,10 @@ function checkMigrationSql(paths: string[], base: string, head: string) {
     path,
     sql: execFileSync("git", ["show", `${head}:${path}`], { encoding: "utf8" }),
   }));
-  const transactionFailures = migrations.flatMap(({ path, sql }) =>
-    transactionErrors(sql).map((error) => `${path}: ${error}`),
+  const sqlFailures = migrations.flatMap(({ path, sql }) =>
+    [...transactionErrors(sql), ...routineSettingErrors(sql)].map((error) => `${path}: ${error}`),
   );
-  if (transactionFailures.length) throw new Error(transactionFailures.join("\n"));
+  if (sqlFailures.length) throw new Error(sqlFailures.join("\n"));
 
   const drops = migrations.flatMap(({ path, sql }) => {
     const statements = destructiveStatements(sql);
