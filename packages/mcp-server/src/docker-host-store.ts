@@ -1927,8 +1927,6 @@ export function createDockerHostStore(sql: Sql, key: string) {
             const restore = await readJob(restoreReceipt);
             if (restore.operation !== "restore" || restore.request.generation !== requestId) deny();
             if (restoreReceipt.placed_generation === restore.request.generation) deny();
-            // Before placement handoff there is no replacement runtime output to publish.
-            // Acknowledge the daemon's probe so it can retire the expiry obligation.
             return;
           }
           const host = await authenticate(tx, hostToken, installationId);
