@@ -170,6 +170,10 @@ export async function deleteModalCompute(
   });
 }
 
+export async function deleteModalRecoveryImage(client: Pick<ModalClient, "images">, imageId: string) {
+  await optional(() => client.images.delete(imageId));
+}
+
 export function createModalMachine(options: ModalMachineOptions) {
   const { client, journal, binding, appName, deploymentId, prepareCheckpoint, resolveRuntimeTicket } = options;
   const bound = () => boundModalApp(client, appName, binding);
@@ -327,7 +331,7 @@ export function createModalMachine(options: ModalMachineOptions) {
       const image = entry.recoveryImageId;
       if (request.scope === "physical-and-retained" && image) {
         request.signal?.throwIfAborted();
-        await optional(() => client.images.delete(image));
+        await deleteModalRecoveryImage(client, image);
       }
       await save(request, entry, { ...entry, phase: "deleted" });
     },

@@ -4,6 +4,7 @@ import { lifecycleStep, ModalOperationError, modalError, refusal } from "./error
 import type { createImageCollection } from "./image-collection.ts";
 import {
   deleteModalCompute,
+  deleteModalRecoveryImage,
   lookupModalCompute,
   snapshotModalRecoveryImage,
   terminateModalCompute,
@@ -196,13 +197,7 @@ export function createStopDeleteLifecycle(deps: {
           ...(row.retainedRecoveryIds ?? []),
           ...(row.recoveryImageId ? [row.recoveryImageId] : []),
         ])) {
-          await cleanupStep(sandboxId, async () => {
-            try {
-              await client.images.delete(imageId);
-            } catch (error) {
-              if (modalError(error).code !== "not_found") throw error;
-            }
-          });
+          await cleanupStep(sandboxId, () => deleteModalRecoveryImage(client, imageId));
         }
         row.phase = "deleted";
         await save(row);
