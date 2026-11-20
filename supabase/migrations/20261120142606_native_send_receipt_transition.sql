@@ -432,6 +432,7 @@ begin
         else s.stop_requested_at
       end end,
       stopped_at = case
+        when p_code = 'native_send_accepted' then null
         when leased_native_turn then s.stopped_at
         when native_retention_refusal then null
         when docker_expiry or docker_cleanup then coalesce(s.stopped_at, now())
