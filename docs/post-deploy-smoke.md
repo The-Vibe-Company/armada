@@ -400,9 +400,9 @@ A named `time_to_ready` pass records milliseconds from immediately before
 launch through its ready observation, tagged with provider/harness and case.
 Each ordinary worker also emits `lifecycle_cleanup_summary`, with total elapsed
 time, known leftover IDs and an explicit unknown-launch flag. An ambiguous
-launch cannot be retried or declared clean: use the reported org/snapshot/start
-time to reconcile staging resources before rerunning. No new correlation API is
-introduced. Interrupted runners still require operator reconciliation.
+launch cannot be retried or declared clean: use the reported `org`, `golden` (snapshot name),
+and `startedAt` fields to reconcile staging resources before rerunning. No new
+correlation API is introduced. Interrupted runners still require operator reconciliation.
 
 This mode adds one tiny model turn and one retained stop/resume physical incarnation
 per selected pair, not a new logical sandbox. Expect roughly 1–4 extra minutes
@@ -471,7 +471,8 @@ checkout/restore is claimed beyond the existing Git pack/object proof.
 The earlier stop receipt is invalidated before these verification reads, so any
 failure still runs idempotent cleanup rather than trusting potentially stale
 state. `preservation_cleanup_summary` reports known leftover IDs or an unknown
-launch with org/snapshot/start time, plus a validated recovery ID when available.
+launch with `org`, `golden` (snapshot name), and `startedAt`, plus a validated
+recovery ID when available.
 Archive bytes, commit IDs and note/provider text are never logged.
 
 No new allocation, model turn, case field, secret or migration. The dirty worker
@@ -610,7 +611,8 @@ verdict to success. Failed workers retain logical failed status after cleanup;
 their finite durable stoppedAt receipt confirms physical exit because the
 terminal-failure status projection intentionally hides provider state. A failed
 row without that receipt remains unconfirmed. `expiry_cleanup_summary` reports leftover IDs or ambiguous
-launches with org/snapshot/start time. Lost create responses are never retried.
+launches with `org`, `golden` (snapshot name), and `startedAt`. Lost create
+responses are never retried.
 This is not a resource janitor: an interrupted runner or unknown create still
 requires operator reconciliation.
 
@@ -1843,7 +1845,8 @@ compute probes above. Record the tested SHA, origin and each result; this journe
 has not passed merely because the server-origin smoke passed.
 
 1. Use a disposable CLI configuration directory and unset `ARMADA_TOKEN`.
-   Set `ARMADA_URL` to the staging dashboard origin for the whole journey.
+   Export `ARMADA_URL` with the staging dashboard origin in the shell where
+   you run every command in this journey.
    Run `armada login` in a terminal. Discovery must offer the enabled methods
    without errors. Anonymous `GET /api/v1/auth/methods` on that same origin must
    return 200 JSON and no-store.
