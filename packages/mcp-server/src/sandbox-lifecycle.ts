@@ -177,7 +177,6 @@ export async function finishEnrolledRuntimeLaunch(
         activity_lease_id=null,activity_until=null where id=$1`,
       [sandboxId, prompt.promptId, prompt.conversationIds],
     );
-    await releaseAccountCapacity(tx, sandboxId);
     await settleRuntimeTurn(tx, sandboxId, generation);
   } else {
     await tx.query("update public.sandboxes set activity_lease_id=null,activity_until=null where id=$1", [sandboxId]);

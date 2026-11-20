@@ -200,17 +200,39 @@ test("an accepted initial launch prompt publishes under the enrolled generation"
   }
   expect(await store.get(f.id)).toMatchObject({ status: "starting", taskPromptId: null, conversationIds: [] });
 
+  await f.db.query("insert into public.runtime_idle_turns(sandbox_id,prompt_id,settled) values($1,$2,true)", [
+    f.id,
+    patch.taskPromptId,
+  ]);
+  const journal = async () =>
+    (
+      await f.db.query(
+        "select to_status,actor,generation::text from sandbox_transitions where sandbox_id=$1 order by id",
+        [f.id],
+      )
+    ).rows;
+  await f.db.exec(
+    "alter table sandbox_transitions add constraint test_reject_settlement check (code <> 'runtime_turn_settled') not valid",
+  );
+  try {
+    await expect(publish()).rejects.toThrow("test_reject_settlement");
+    expect(await store.get(f.id)).toMatchObject({ status: "starting", taskPromptId: null, conversationIds: [] });
+    expect(await journal()).toEqual([]);
+  } finally {
+    await f.db.exec("alter table sandbox_transitions drop constraint test_reject_settlement");
+  }
+
   await publish();
   expect(await store.get(f.id)).toMatchObject({
-    status: "running",
+    status: "ready",
     lifecycleGeneration: expectedGeneration,
     taskPromptId: "first-prompt",
     conversationIds: ["conversation"],
   });
-  expect(
-    (await f.db.query("select to_status,actor,generation::text from sandbox_transitions where sandbox_id=$1", [f.id]))
-      .rows,
-  ).toEqual([{ to_status: "running", actor: "runtime_enrolment", generation: ticket.lifecycleGeneration }]);
+  expect(await journal()).toEqual([
+    { to_status: "running", actor: "runtime_enrolment", generation: ticket.lifecycleGeneration },
+    { to_status: "ready", actor: "runtime_turn", generation: ticket.lifecycleGeneration },
+  ]);
   expect((await f.request("session", session.runtimeToken, session.epoch)).status).toBe(200);
 });
 
