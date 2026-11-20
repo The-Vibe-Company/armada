@@ -7,7 +7,7 @@ import {
   type SandboxStore,
   sandboxActivity,
 } from "@armada/core/server";
-import type { ServerSandboxStore } from "./data.ts";
+import type { ServerSandboxPatch, ServerSandboxStore } from "./data.ts";
 import { ToolError } from "./tool-error.ts";
 
 /** Caller resolves owner/admin interior access (or scoped own-child authority) before entry. */
@@ -87,17 +87,8 @@ export async function extendSandbox(
           !Number.isFinite(hard.getTime()) ||
           !sandbox.expiresAt ||
           hard.getTime() < new Date(sandbox.expiresAt).getTime() + SANDBOX_STOP_MARGIN_SECONDS * 1000;
-        return {
-          result: null,
-          patch: unsafe
-            ? {
-                status: "stopping" as const,
-                statusReason: "expired",
-                expiresAt: new Date().toISOString(),
-                stopRequested: true,
-              }
-            : {},
-        };
+        const patch: ServerSandboxPatch = unsafe ? { expireAfterExtension: true } : {};
+        return { result: null, patch };
       }
       await renewLeases?.();
       const expiresAt = requested.toISOString();

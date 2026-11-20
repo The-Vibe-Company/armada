@@ -1,10 +1,17 @@
 import { afterEach, beforeEach, expect, setSystemTime, test } from "bun:test";
-import { type Provider, ProviderError, type SandboxPatch, type SandboxRecord, type SandboxStore } from "@armada/core";
+import {
+  type Provider,
+  ProviderError,
+  type SandboxPatch,
+  type SandboxRecord,
+  type SandboxStore,
+  type Sql,
+} from "@armada/core";
 import { createSqlData } from "../src/data.ts";
 import { createRuntimeEnrolments } from "../src/runtime-enrolment.ts";
 import { extendSandbox } from "../src/sandbox-extend.ts";
 import { rowOnlyDatabase } from "./row-only-database.ts";
-import { ENCRYPTION_KEY } from "./support.ts";
+import { bunLikeSql, ENCRYPTION_KEY } from "./support.ts";
 
 const NOW = "2026-11-13T12:00:00.000Z";
 beforeEach(() => setSystemTime(new Date(NOW)));
@@ -69,27 +76,112 @@ test("extension confirms provider headroom before publishing the logical deadlin
   }
 });
 
-test("a physical cap below the retained deadline schedules stop and releases the preservation-blocking lease", async () => {
-  const f = fixture();
-  let renewed = false;
-  const provider = {
-    id: "modal",
-    extendLifetime: async (_input: unknown) => new Date("2026-11-13T12:04:00.000Z"),
-  } as Provider;
-  await expect(
-    extendSandbox(f.store, f.sandbox, provider, 1200, async () => {
-      renewed = true;
-    }),
-  ).rejects.toMatchObject({ code: "extension_state" });
-  expect(f.patches.at(-1)).toMatchObject({
-    status: "stopping",
-    statusReason: "expired",
-    expiresAt: NOW,
-    stopRequested: true,
-    finishActivity: true,
-  });
-  expect(renewed).toBe(false);
-});
+test.each(["settled", "lease expired", "queue fault", "commit fault"] as const)(
+  "unsafe extension settlement with %s",
+  async (outcome) => {
+    const { db, people, sharedGoldenId, openaiCredentialId } = await database();
+    const { now } = (await db.query<{ now: Date }>("select clock_timestamp() as now")).rows[0]!;
+    setSystemTime(now);
+    const initial = new Date(now.getTime() + 300_000);
+    const id = crypto.randomUUID();
+    await db.query(
+      `insert into sandboxes(id,golden_id,org_id,owner_id,provider,provider_sandbox_id,harness,status,expires_at,reconcile_after)
+       values($1,$2,$3,$4,'boat','physical','codex','running',$5,'infinity')`,
+      [id, sharedGoldenId, people.org, people.owner, initial],
+    );
+    await db.query(
+      `insert into account_turn_queue(sandbox_id,request_id,account_id,owner_id,org_id,actor_epoch,credential_version,
+         input_hash,input_enc,conversation_id,state)
+       values($1,$2,$3,$4,$5,1,1,'hash','data','conversation','queued')`,
+      [id, crypto.randomUUID(), openaiCredentialId, people.owner, people.org],
+    );
+    const realSql = bunLikeSql(db);
+    const sql: Sql = {
+      ...realSql,
+      transaction: (work) =>
+        realSql.transaction!(async (tx) => {
+          const result = await work(tx);
+          if (outcome === "commit fault") throw new Error("extension commit fault");
+          return result;
+        }),
+    };
+    const store = createSqlData(sql)({
+      via: "service",
+      userId: people.owner,
+      orgs: [{ orgId: people.org, role: "member" }],
+    }).sandboxes;
+    const sandbox = (await store.get(id))!;
+    let renewed = false;
+    const provider = {
+      id: "boat",
+      async extendLifetime() {
+        if (outcome === "lease expired")
+          await db.query("update sandboxes set activity_until=clock_timestamp() where id=$1", [id]);
+        return new Date(now.getTime() + 240_000);
+      },
+    } as Provider;
+    if (outcome === "queue fault")
+      await db.exec("alter table account_turn_queue add constraint extension_queue_fault check (state <> 'failed')");
+    try {
+      const result = extendSandbox(store, sandbox, provider, 1200, async () => {
+        renewed = true;
+      });
+      if (outcome === "settled") await expect(result).rejects.toMatchObject({ code: "extension_state" });
+      if (outcome === "lease expired") await expect(result).rejects.toMatchObject({ code: "sandbox_not_ready" });
+      if (outcome === "queue fault") await expect(result).rejects.toThrow("extension_queue_fault");
+      if (outcome === "commit fault") await expect(result).rejects.toThrow("extension commit fault");
+    } finally {
+      if (outcome === "queue fault")
+        await db.exec("alter table account_turn_queue drop constraint extension_queue_fault");
+    }
+    expect(renewed).toBe(false);
+    const settled = outcome === "settled";
+    const {
+      rows: [state],
+    } = await db.query(
+      `select status,status_reason,lifecycle_generation::int,stop_generation::int,expires_at,
+         stop_requested_at is not null as stop_requested,activity_lease_id is not null as leased,
+         activity_until is not null as lease_deadline,reconcile_after<=now() as scheduled,
+         (select state from account_turn_queue where sandbox_id=s.id) as queued_turn
+       from sandboxes s where id=$1`,
+      [id],
+    );
+    expect(state).toMatchObject({
+      status: settled ? "stopping" : "running",
+      status_reason: settled ? "expired" : null,
+      lifecycle_generation: sandbox.lifecycleGeneration! + (settled ? 2 : 1),
+      stop_generation: settled ? 1 : 0,
+      stop_requested: settled,
+      leased: !settled,
+      lease_deadline: !settled,
+      scheduled: settled,
+      queued_turn: settled ? "failed" : "queued",
+      ...(settled ? {} : { expires_at: initial }),
+    });
+    if (settled) expect(state!.expires_at).toBeInstanceOf(Date);
+    if (settled) expect((state!.expires_at as Date).getTime()).toBeLessThan(initial.getTime());
+    expect(
+      (
+        await db.query(
+          "select actor,code,from_status,to_status,generation::int from sandbox_transitions where sandbox_id=$1",
+          [id],
+        )
+      ).rows,
+    ).toEqual(
+      settled
+        ? [
+            {
+              actor: "expiry",
+              code: "extension_expired",
+              from_status: "running",
+              to_status: "stopping",
+              generation: sandbox.lifecycleGeneration! + 2,
+            },
+          ]
+        : [],
+    );
+  },
+);
 
 test("a definite physical refusal preserves the old logical deadline and releases activity ownership", async () => {
   const f = fixture();
