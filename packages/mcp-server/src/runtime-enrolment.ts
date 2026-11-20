@@ -176,6 +176,7 @@ export function createRuntimeEnrolments(sql: Sql, encryptionKey: string, options
     commandGrantExpiresAt?: number;
     expectedGeneration?: number;
     assertClaim?: (tx: Sql) => Promise<void>;
+    assertBeforeTicket?: (tx: Sql) => Promise<void>;
   }) {
     const serialized = JSON.stringify(input.configuration);
     if (Buffer.byteLength(serialized) > 1048576) throw new RuntimeEnrolmentDenied();
@@ -192,6 +193,7 @@ export function createRuntimeEnrolments(sql: Sql, encryptionKey: string, options
         throw new RuntimeEnrolmentDenied();
       if (sandbox.provider === "docker" && options.allowDockerIssue !== true) throw new RuntimeEnrolmentDenied();
       await input.assertClaim?.(tx);
+      await input.assertBeforeTicket?.(tx);
       const parent = (
         await tx.query<{ id: string }>(
           "select id from public.armada_access_parents where sandbox_id=$1 and kind='sandbox'",

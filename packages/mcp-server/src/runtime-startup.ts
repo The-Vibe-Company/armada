@@ -46,6 +46,7 @@ export function createRuntimeStartup(
     commandGrantExpiresAt?: number;
     expectedGeneration?: number;
     assertClaim?: (tx?: Sql) => Promise<void>;
+    assertBeforeTicket?: (tx: Sql) => Promise<void>;
     signal?: AbortSignal;
     /** Readiness budget AFTER the bounded host bootstrap returns. */
     readinessTimeoutMs?: number;
@@ -93,6 +94,7 @@ export function createRuntimeStartup(
         expectedProviderSandboxId: providerSandboxId,
         configuration: input.configuration,
         ...(input.assertClaim ? { assertClaim: input.assertClaim } : {}),
+        ...(input.assertBeforeTicket ? { assertBeforeTicket: input.assertBeforeTicket } : {}),
         ...(input.expectedGeneration === undefined ? {} : { expectedGeneration: input.expectedGeneration }),
         ...(input.commandGrantExpiresAt !== undefined ? { commandGrantExpiresAt: input.commandGrantExpiresAt } : {}),
       });

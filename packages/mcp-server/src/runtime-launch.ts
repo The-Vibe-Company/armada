@@ -12,6 +12,7 @@ import { runtimeWorkspace } from "./runtime-workspace.ts";
 type LaunchPolicy = NonNullable<LaunchOptions["runtime"]>;
 type LaunchInput = Parameters<LaunchPolicy["start"]>[0] & {
   assertDispatch?: (tx?: Sql) => Promise<void>;
+  assertBeforeTicket?: (tx: Sql) => Promise<void>;
 };
 export type RuntimeLaunchPolicy = Omit<LaunchPolicy, "start"> & {
   start(input: LaunchInput): ReturnType<LaunchPolicy["start"]>;
@@ -75,6 +76,7 @@ export function createRuntimeLaunch(options: RuntimeLaunchOptions, provider: "bo
       ...(sandbox.lifecycleGeneration === undefined ? {} : { expectedGeneration: sandbox.lifecycleGeneration }),
       ...(commandGrantExpiresAt !== undefined ? { commandGrantExpiresAt } : {}),
       ...(input.assertDispatch ? { assertClaim: input.assertDispatch } : {}),
+      ...(input.assertBeforeTicket ? { assertBeforeTicket: input.assertBeforeTicket } : {}),
       signal,
     });
     await environment.deliver(provider, actor, sandbox.id, ready.epoch, signal, input.assertDispatch);

@@ -1,6 +1,7 @@
 import { decryptSecret, encryptSecret, type Sql, toBytea } from "@armada/core/server";
 import {
   COMPLETED_RUNTIME_WAKE,
+  CONFIRMED_WAKE_WITHOUT_TICKET,
   DISPATCH_ABANDONED,
   DISPATCHING_TURN_CANCELLED,
   ENROLLED_PENDING_RUNTIME_WAKE,
@@ -175,7 +176,8 @@ export function createJobsStore(sql: Sql, encryptionKey?: string) {
                  or (q.state = 'dispatching' and ${RUNTIME_LANE}
                    and s.status in ('starting','ready','running')
                    and q.dispatch_generation in (s.lifecycle_generation, s.lifecycle_generation - 1)
-                   and (${COMPLETED_RUNTIME_WAKE} or ${ENROLLED_PENDING_RUNTIME_WAKE} or (q.dispatch_until <= clock_timestamp()
+                   and (${COMPLETED_RUNTIME_WAKE} or ${ENROLLED_PENDING_RUNTIME_WAKE}
+                     or ${CONFIRMED_WAKE_WITHOUT_TICKET} or (q.dispatch_until <= clock_timestamp()
                      and (s.activity_lease_id = q.request_id
                        or (s.activity_lease_id is null and ${CURRENT_DOCKER_RESUME_JOB})
                        or (s.activity_lease_id is null and s.status in ('ready','running')
