@@ -1,7 +1,6 @@
-import type { LaunchOptions } from "@armada/core/server";
 import type { ModalProvider } from "@armada/provider-modal";
 import type { RuntimeConfigurationInput } from "./runtime-configuration.ts";
-import { createRuntimeLaunch, type RuntimeLaunchOptions } from "./runtime-launch.ts";
+import { createRuntimeLaunch, type RuntimeLaunchOptions, type RuntimeLaunchPolicy } from "./runtime-launch.ts";
 import { runtimeConfigurationWithVariables } from "./runtime-readable-variables.ts";
 
 /** First-answer slice: same enrolled startup and journal, Modal supplies only compute. */
@@ -9,7 +8,7 @@ export function modalRuntimeLaunch(
   options: RuntimeLaunchOptions & {
     modelAuth?: NonNullable<RuntimeConfigurationInput["modelAuth"]>;
   },
-): NonNullable<LaunchOptions["runtime"]> {
+): RuntimeLaunchPolicy {
   const startRuntime = createRuntimeLaunch(options, "modal");
   return {
     supportsScopedAccess: true,
