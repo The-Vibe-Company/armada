@@ -278,10 +278,10 @@ function normalize(body: DockerAdmissionInput, org: string, hostId: string, imag
 /** A launch that did not become ready, in the host's own words when it could not fetch the image (#1507). */
 const repositoryAccessMessage = (message: string | null | undefined): message is string =>
   typeof message === "string" &&
-  (/^Repository [A-Za-z0-9][A-Za-z0-9_.-]{0,80} needs a GitHub connection with read access\. Run armada github connect, grant your account and the Armada GitHub App access, then launch again\.$/.test(
+  (/^Repository [A-Za-z0-9][A-Za-z0-9_.-]{0,80} needs a GitHub connection with read access\. Run armada account login github, grant your account and the Armada GitHub App access, then launch again\.$/.test(
     message,
   ) ||
-    /^Repository [A-Za-z0-9][A-Za-z0-9_.-]{0,80} could not be verified as public before launch\. Run armada github connect or retry when GitHub is available\.$/.test(
+    /^Repository [A-Za-z0-9][A-Za-z0-9_.-]{0,80} could not be verified as public before launch\. Run armada account login github or retry when GitHub is available\.$/.test(
       message,
     ));
 const notReady = (row: Row) => {

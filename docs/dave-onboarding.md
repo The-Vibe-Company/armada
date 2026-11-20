@@ -262,14 +262,14 @@ before allocation, and lowering a cap does not stop existing running agents.
 ### Authorize GitHub
 
 ```sh
-armada github connect
-armada github status
+armada account login github
+armada account ls github
 ```
 
 Complete the browser authorization as the GitHub user who can access **both** repositories.
-If installation access is missing, run `armada github install`, select the GitHub account or
+If installation access is missing, run `armada account add github`, select the GitHub account or
 organization and grant the Armada GitHub App access to both repositories (ask its owner to
-approve if required), then check `armada github status` again. Continue only once connected
+approve if required), then check `armada account ls github` again. Continue only once connected
 with the required repository access. This is separate from using GitHub to sign in to Armada.
 See [GitHub App details](github-app.md).
 
@@ -547,22 +547,12 @@ revoke takes an ID, not a secret value. Armada service tokens authenticate
 scripts via ARMADA_TOKEN; they are not model/provider API credentials.
 Family help makes no API request or token mutation.
 
-### GitHub command discovery
-
-`armada github --help` (or `-h`) shows a focused integration index.
-Manage uses an installation ID from status; refresh uses a sandbox ID.
-Connect/reconnect concern account authorization, and install waits for a new
-installation. Leaf help explains browser and no-browser output and bounded
-waiting. A URL is not authorization proof. Family help does not open browsers
-or call GitHub/Armada, and bare no-argument behavior is unchanged.
-
 ### Account command discovery
 
-`armada account --help` (or `-h`) shows server status and remote sign-out
-choices without making requests or signing out. Remote account logout requires
-a personal session; local `armada logout` only clears saved login. Use leaf
-help for details, including ARMADA_TOKEN precedence. Bare no-argument account
-invocation retains its existing behavior.
+`armada account --help` lists the GitHub connection and installation commands,
+server account status, and remote sign-out. Use GitHub's settings to manage an
+existing installation. Remote account logout requires a personal session.
+`armada logout` clears the saved local login.
 
 ### Script output, errors and exit codes
 

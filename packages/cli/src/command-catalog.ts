@@ -54,7 +54,6 @@ ${sandboxUsage("mcp")}
 ${sandboxUsage("session")}
 ${sandboxUsage("org")}
 ${sandboxUsage("account")}
-${sandboxUsage("github")}
 ${sandboxUsage("invitations")}
 ${sandboxUsage("credential-setup")}
 ${sandboxUsage("automation")}

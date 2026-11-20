@@ -108,12 +108,12 @@ export function launchCredentials(
               const denied = () =>
                 new LaunchError(
                   "no_credentials",
-                  `Repository ${repository.dir} needs a GitHub connection with read access. Run armada github connect, grant your account and the Armada GitHub App access, then launch again.`,
+                  `Repository ${repository.dir} needs a GitHub connection with read access. Run armada account login github, grant your account and the Armada GitHub App access, then launch again.`,
                 );
               const unknown = () =>
                 new LaunchError(
                   "no_credentials",
-                  `Repository ${repository.dir} could not be verified as public before launch. Run armada github connect or retry when GitHub is available.`,
+                  `Repository ${repository.dir} could not be verified as public before launch. Run armada account login github or retry when GitHub is available.`,
                 );
               const request = async (suffix = "") => {
                 try {

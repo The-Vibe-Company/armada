@@ -39,7 +39,7 @@ Manage snapshots, templates, default skill pins, variables and application secre
 the dashboard or the authenticated REST API. Launch an existing template with
 `armada template launch` or `POST /api/v1/templates/launch` and reuse its request key on retry.
 
-For GitHub repair, run `armada github refresh <sandbox>`. Read broker status via
+For GitHub repair, run `armada api github/refresh '{"id":"<sandbox>"}'`. Read broker status via
 `POST /api/v1/github/runtime-status`.
 
 For MCP coordinator launches, call `launch` with optional `size`, a stable

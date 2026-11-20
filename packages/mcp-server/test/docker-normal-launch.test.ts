@@ -347,7 +347,7 @@ async function fixture(
           async authorizeRepositories(_actor, _resolved, repos) {
             throw new LaunchError(
               "no_credentials",
-              `Repository ${repos[0]!.dir} needs a GitHub connection with read access. Run armada github connect, grant your account and the Armada GitHub App access, then launch again.`,
+              `Repository ${repos[0]!.dir} needs a GitHub connection with read access. Run armada account login github, grant your account and the Armada GitHub App access, then launch again.`,
             );
           },
         }

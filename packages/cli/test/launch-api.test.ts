@@ -268,7 +268,8 @@ test("repository authorization refusal keeps no_credentials and the reconnect re
             {
               error: {
                 code: "no_credentials",
-                message: "Repository private needs a GitHub connection with read access. Run armada github connect.",
+                message:
+                  "Repository private needs a GitHub connection with read access. Run armada account login github.",
               },
             },
             { status: 400 },
@@ -280,5 +281,5 @@ test("repository authorization refusal keeps no_credentials and the reconnect re
   const failure = JSON.parse(errors.trim().split("\n").at(-1)!);
   expect(failure.error.code).toBe("no_credentials");
   expect(failure.error.message).toContain("Repository private");
-  expect(failure.error.message).toContain("armada github connect");
+  expect(failure.error.message).toContain("armada account login github");
 });

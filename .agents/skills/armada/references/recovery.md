@@ -8,7 +8,7 @@ not establish a successful agent outcome.
 - Authentication: confirm server and account. Ask for login renewal; do not
   repeatedly launch to test credentials. Missing org membership needs an admin.
 - GitHub authorization: inspect connection/App access, reconnect if needed,
-  then `armada github refresh SANDBOX`. Do not refresh unrelated credentials.
+  then `armada api github/refresh '{"id":"SANDBOX"}'`. Do not refresh unrelated credentials.
 - Private skill failure: check exact pin, package authorization and the stored
   Skillpack credential. Do not retry with a public lookalike or silently omit the
   requested skill. A local installation is not proof remote launch can fetch it.

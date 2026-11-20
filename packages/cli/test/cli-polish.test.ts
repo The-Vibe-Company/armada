@@ -41,7 +41,6 @@ test("bare families share login-free successful discovery", async () => {
     "creds",
     "org",
     "account",
-    "github",
     "token",
     "skill",
   ]) {
