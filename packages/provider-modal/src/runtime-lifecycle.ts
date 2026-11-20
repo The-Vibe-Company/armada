@@ -1,11 +1,11 @@
 import { createHash } from "node:crypto";
 import type { ResumeStageObserver, SandboxInfo } from "@armada/core";
-import { runtimeBootstrapScript, SHARED_ARTIFACT_CACHE_PATH } from "@armada/core/server";
 import type { Sandbox } from "modal";
 import { ModalOperationError, refusal } from "./errors.ts";
+import { observeModalCompute } from "./machine.ts";
 import type { Machine, ModalResourceReceipt, ModalStore, RunnerDistribution } from "./ports.ts";
 import type { ModalProvider } from "./provider.ts";
-import { dispatchRuntimeBootstrap, validateRuntimeTicket } from "./runtime-bootstrap.ts";
+import { bootstrapModalRuntime, validateRuntimeTicket } from "./runtime-bootstrap.ts";
 
 interface RuntimeLifecycleDependencies {
   store: ModalStore;
@@ -41,22 +41,23 @@ export function createRuntimeLifecycle({
         if (
           !row.commonRuntime ||
           row.golden ||
+          !row.physicalId ||
           row.phase !== "active" ||
           row.runtimeStartAttempted ||
           row.runtimeResumeGeneration !== input.resumeGeneration
         )
           throw refusal("conflict", "Enrolled runtime bootstrap requires a fresh host-only incarnation.");
         const sb = await physical(row);
-        if ((await sb.poll()) !== null) throw refusal("sandbox_not_ready", "Physical machine has exited.");
+        const { phase } = await observeModalCompute(
+          { sandboxId: input.sandboxId, generation: row.generation, machineId: row.physicalId },
+          sb,
+        );
+        if (phase === "stopped") throw refusal("sandbox_not_ready", "Physical machine has exited.");
         row.runtimeStartAttempted = true;
         await save(row);
-        await dispatchRuntimeBootstrap(
+        await bootstrapModalRuntime(
           sb,
-          () => [
-            "node",
-            "-e",
-            runtimeBootstrapScript(serverUrl, input.artifact, input.cacheDir, SHARED_ARTIFACT_CACHE_PATH),
-          ],
+          row.physicalId,
           serverUrl,
           input,
           "Enrolled Modal bootstrap failed; spawn outcome must be reconciled.",

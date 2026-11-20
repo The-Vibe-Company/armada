@@ -6,13 +6,12 @@ import {
   type MachineIdentity,
   type MachineIncarnation,
   type RetainedMachine,
-  runtimeBootstrapScript,
 } from "@armada/core/server";
 import type { ModalClient, Sandbox } from "modal";
 import { boundModalApp } from "./client.ts";
 import { modalError, refusal } from "./errors.ts";
 import { createModalMachineInventory } from "./inventory.ts";
-import { dispatchRuntimeBootstrap, type RuntimeTicket, validateRuntimeTicket } from "./runtime-bootstrap.ts";
+import { bootstrapModalRuntime, type RuntimeTicket, validateRuntimeTicket } from "./runtime-bootstrap.ts";
 
 type Create = Parameters<Machine["create"]>[0];
 type Bootstrap = Parameters<Machine["bootstrap"]>[0];
@@ -119,7 +118,9 @@ export function createModalMachine(options: ModalMachineOptions) {
 
   async function exact(id: MachineIdentity, signal?: AbortSignal) {
     signal?.throwIfAborted();
-    return verify(await client.sandboxes.fromId(id.machineId), id);
+    const sandbox = await client.sandboxes.fromId(id.machineId);
+    if (sandbox.sandboxId !== id.machineId) throw conflict("Modal lookup returned a different machine.");
+    return verify(sandbox, id);
   }
 
   async function current(id: MachineIdentity) {
@@ -198,7 +199,14 @@ export function createModalMachine(options: ModalMachineOptions) {
       const sb = await exact(request, request.signal);
       const ticket = await resolveRuntimeTicket(request);
       request.signal?.throwIfAborted();
-      if (ticket) await bootstrapRuntime(sb, request, ticket);
+      if (ticket)
+        await bootstrapModalRuntime(
+          sb,
+          request.machineId,
+          validateRuntimeTicket(ticket),
+          ticket,
+          "Enrolled Modal bootstrap failed; reconcile the runtime binding.",
+        );
     },
     async stop(request) {
       let entry = await current(request);
@@ -294,28 +302,4 @@ export function createModalMachine(options: ModalMachineOptions) {
     },
     ...createModalMachineInventory(client, appName, binding, null),
   } satisfies Machine;
-}
-
-async function bootstrapRuntime(sb: Sandbox, request: Bootstrap, ticket: RuntimeTicket) {
-  const serverUrl = validateRuntimeTicket(ticket);
-  const lock = `/run/armada-runtime-${digest(request.machineId)}.lock`;
-  const baseScript = runtimeBootstrapScript(serverUrl, ticket.artifact, ticket.cacheDir);
-  const stdio = "stdio:['pipe','ignore','ignore']";
-  if (!baseScript.includes(stdio)) throw refusal("unavailable", "Modal bootstrap could not pass its runtime lock.");
-  const script = baseScript.replace(stdio, "stdio:['pipe','ignore','ignore',9]");
-  const lockAndExec = `exec 9>"$1" || exit 1
-shift
-flock -n -E 75 9
-case $? in
-  0) exec "$@" ;;
-  75) cat >/dev/null; exit 75 ;;
-  *) exit 1 ;;
-esac`;
-  await dispatchRuntimeBootstrap(
-    sb,
-    () => ["sh", "-c", lockAndExec, "sh", lock, "node", "-e", script],
-    serverUrl,
-    ticket,
-    "Enrolled Modal bootstrap failed; reconcile the runtime binding.",
-  );
 }
