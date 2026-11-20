@@ -26,13 +26,18 @@ const files = readdirSync(migrationsDir)
   .filter((name) => name.endsWith(".sql"))
   .sort();
 const migrationDatabase = closeableFixture(openDatabase);
-beforeAll(migrationDatabase.setup);
+const credentialDatabase = closeableFixture(() => migrationDatabase.get().clone());
+beforeAll(async () => {
+  await migrationDatabase.setup();
+  expect(await applyMigrations(migrationDatabase.get())).toEqual(files);
+  await credentialDatabase.setup();
+});
+afterAll(credentialDatabase.close);
 afterAll(migrationDatabase.close);
 
 test("migrations apply on a fresh database", async () => {
   const db = migrationDatabase.get();
   expect(files.every((name) => /^\d{14}_[a-z0-9_]+\.sql$/.test(name))).toBe(true);
-  expect(await applyMigrations(db)).toEqual(files);
 
   const unlocked = await db.query<{ name: string }>(`
         select c.relname as name
@@ -59,6 +64,38 @@ test("migrations apply on a fresh database", async () => {
     "morph",
   ]);
   expect(await labels(db, "notify_status")).toEqual(["finished", "failed"]);
+});
+
+test("authenticated owners cannot directly write a newly added credential kind", async () => {
+  const db = credentialDatabase.get();
+  await db.exec("alter type public.credential_kind add value 'fixture_model_account'");
+  const owner = crypto.randomUUID();
+  await db.query("insert into auth.users(id) values ($1)", [owner]);
+  const insert =
+    "insert into public.credentials(scope, owner_id, kind, value_enc) values ('user', $1, 'fixture_model_account', $2)";
+  const stored = new Uint8Array([1]);
+  const attempted = new Uint8Array([2]);
+  await db.query("select set_config('request.jwt.claim.sub', $1, false)", [owner]);
+
+  await db.exec("set role authenticated");
+  try {
+    await expect(db.query(insert, [owner, attempted])).rejects.toThrow(/row-level security/);
+  } finally {
+    await db.exec("reset role");
+  }
+
+  await db.query(insert, [owner, stored]);
+  await db.exec("set role authenticated");
+  try {
+    const rotate = await db.query("update public.credentials set value_enc = $1 where owner_id = $2", [
+      attempted,
+      owner,
+    ]);
+    const remove = await db.query("delete from public.credentials where owner_id = $1", [owner]);
+    expect([rotate.affectedRows, remove.affectedRows]).toEqual([0, 0]);
+  } finally {
+    await db.exec("reset role");
+  }
 });
 
 async function labels(db: PGlite, name: string): Promise<string[]> {
