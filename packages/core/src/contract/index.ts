@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { accountOperations } from "./accounts.ts";
+import type { ServerFailureCode } from "./failures.ts";
 import { createdInboundTrigger, createInboundTriggerBody, createInboundTriggerQuery } from "./inbound-trigger.ts";
 import { launchInput } from "./launch.ts";
 import { launchEnvelope } from "./launch-response.ts";
@@ -182,3 +183,16 @@ export type StopResult = z.infer<typeof operations.stopSandbox.output>;
 export type LogsInput = z.infer<typeof operations.readLogs.input.body>;
 export type LogsResult = z.infer<typeof operations.readLogs.output>;
 export type ExecResult = z.infer<typeof operations.execSandbox.output>;
+
+type SdkOperationName =
+  | "launch"
+  | "launchTemplate"
+  | "sendPrompt"
+  | "sandboxStatus"
+  | "waitSandbox"
+  | "stopSandbox"
+  | "readLogs"
+  | "execSandbox";
+type UnmappedSdkError = Exclude<(typeof operations)[SdkOperationName]["errors"][number], ServerFailureCode>;
+const sdkErrorsCovered: UnmappedSdkError extends never ? true : never = true;
+void sdkErrorsCovered;

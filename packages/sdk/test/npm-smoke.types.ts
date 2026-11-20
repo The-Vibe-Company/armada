@@ -33,6 +33,11 @@ const docker = () =>
     idempotencyKey: "saved-launch-key-0001",
   });
 
+const invalidBoatRuntime = () =>
+  // @ts-expect-error A launch with runtimeVersion requires the complete explicit runtime variant.
+  client.launch({ provider: "boat", golden: "worker", harness: "codex", runtimeVersion: 1 });
+void invalidBoatRuntime;
+
 type Equal<A, B> = (<T>() => T extends A ? 1 : 2) extends <T>() => T extends B ? 1 : 2 ? true : false;
 type Assert<T extends true> = T;
 

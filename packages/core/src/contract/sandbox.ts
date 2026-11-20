@@ -298,6 +298,7 @@ function sandboxOperation<
   Input extends z.ZodRawShape,
   Output extends z.ZodRawShape,
   const Branch extends [] | [{ flag: string; operation: string }],
+  const Errors extends readonly string[] = [],
 >(
   name: string,
   path: `/api/v1/sandbox/${string}`,
@@ -311,7 +312,7 @@ function sandboxOperation<
     output: Output;
     readOnly?: boolean;
     destructive?: boolean;
-    errors?: readonly string[];
+    errors?: Errors;
   },
   ...branch: Branch
 ) {
@@ -329,7 +330,7 @@ function sandboxOperation<
     audience,
     description: tool.description,
     ...(tool.mcpDescription === undefined ? {} : { mcpDescription: tool.mcpDescription }),
-    errors: [...sandboxDispatchErrors, ...(tool.errors ?? [])],
+    errors: [...sandboxDispatchErrors, ...(tool.errors ?? [])] as const,
   } satisfies Operation<z.ZodType, z.ZodType> & { toolName: string; tool: typeof tool; mcpBranch: Branch[0] };
 }
 
