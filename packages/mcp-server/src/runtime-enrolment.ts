@@ -75,7 +75,6 @@ export async function preserveResumeRefusalTicket(
   }
 }
 
-/** Locks prerequisites before the sandbox and checks the exact ticket authority after it. */
 export type RuntimeTicketGuard = {
   lockPrerequisites(tx: Sql): Promise<void>;
   check(tx: Sql): Promise<void>;

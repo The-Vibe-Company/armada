@@ -688,7 +688,6 @@ describe.each(["boat", "modal"] as const)("queued runtime wake admission (%s)", 
       expect(await hasTicket()).toBe(false);
       expect(restores).toBe(1);
       expect(bootstraps).toBe(0);
-      // A dormant job from the pre-cutover dispatcher retains its original generation.
       await f.db.query("update jobs set generation=$2 where id=$1", [id, before]);
       const successor = crypto.randomUUID();
       const retry = (await store.claim("turn_dispatch", successor, 30, 1))!;
