@@ -920,6 +920,7 @@
       "post": {
         "operationId": "triggers",
         "description": "Create an inbound trigger in the selected organization and return its signing key once.",
+        "x-armada-direct-server": true,
         "security": [
           {
             "serviceToken": []
@@ -939,9 +940,9 @@
         ],
         "requestBody": {
           "required": true,
-          "description": "Send at most 131072 bytes of serialized JSON. The dashboard endpoint refuses a larger body with HTTP 413 without forwarding it, and the server refuses a body over its own limit, which is never lower, with HTTP 413 before any handler runs.",
-          "x-max-body-bytes": 131072,
-          "x-oversized-body-status": 413,
+          "description": "Send at most 4096 bytes of serialized JSON.",
+          "x-max-body-bytes": 4096,
+          "x-oversized-body-status": 400,
           "content": {
             "application/json": {
               "schema": {
@@ -985,6 +986,15 @@
         "responses": {
           "201": {
             "description": "Success",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "$schema": "http://json-schema.org/draft-07/schema#",
+                  "type": "string",
+                  "const": "no-store"
+                }
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -1009,8 +1019,8 @@
               }
             }
           },
-          "413": {
-            "description": "The serialized request body exceeds 131072 bytes. Nothing was dispatched.",
+          "400": {
+            "description": "Invalid request, including a serialized body over 4096 bytes. Nothing was dispatched.",
             "content": {
               "application/json": {
                 "schema": {

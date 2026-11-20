@@ -273,6 +273,19 @@ test("the published administrative document contains exactly the table's admin m
   expect(publishedMethods.sort()).toEqual(adminMethods.sort());
 });
 
+test("the administrative document describes direct trigger creation and its one-time secret response", () => {
+  const trigger = adminPublished.paths["/api/v1/triggers"].post;
+  expect(trigger).toMatchObject({
+    "x-armada-direct-server": true,
+    requestBody: { "x-max-body-bytes": 4096, "x-oversized-body-status": 400 },
+    responses: {
+      "400": expect.any(Object),
+      "201": { headers: { "Cache-Control": { schema: { const: "no-store" } } } },
+    },
+  });
+  expect(trigger.responses).not.toHaveProperty("413");
+});
+
 test("scoped REST advertises the grants, idempotency headers and body refusal used on the server", () => {
   const prefix = "/api/v1/orchestrator-tools";
   for (const [method, needsKey] of [

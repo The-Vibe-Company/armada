@@ -1,4 +1,4 @@
-import type { z } from "zod";
+import { z } from "zod";
 import { accountOperations } from "./accounts.ts";
 import { createdInboundTrigger, createInboundTriggerBody, createInboundTriggerQuery } from "./inbound-trigger.ts";
 import { launchInput } from "./launch.ts";
@@ -110,9 +110,16 @@ export const launch = {
 export const createInboundTrigger = {
   name: "createInboundTrigger",
   route: { method: "POST", path: "/api/v1/triggers" },
-  input: { body: createInboundTriggerBody, query: createInboundTriggerQuery },
+  directServer: true,
+  input: {
+    body: createInboundTriggerBody,
+    query: createInboundTriggerQuery,
+    maxBodyBytes: 4096,
+    oversizedBodyStatus: 400,
+  },
   output: createdInboundTrigger,
   successStatus: 201,
+  successHeaders: { "Cache-Control": z.literal("no-store") },
   readOnly: false,
   destructive: false,
   audience: "admin",
