@@ -609,7 +609,7 @@ export async function recordRuntimeStartupFailure(
   return result;
 }
 
-export async function recordObservedRuntimeState(
+export async function recordObservedMachineState(
   sql: Sql,
   scope: [string[], string],
   observation: {
@@ -617,34 +617,51 @@ export async function recordObservedRuntimeState(
     generation: number;
     fromState: "ready" | "running";
     toState: "failed" | "stopped";
-    reason: string | null;
+    reason: string | null | undefined;
     stoppedAt: string | null;
+    providerRunPlacement?: string;
   },
 ) {
-  if (!sql.transaction) throw new Error("Runtime observation publication requires a transaction.");
-  const { sandboxId, generation, fromState, toState, reason, stoppedAt } = observation;
+  if (!sql.transaction) throw new Error("Machine observation publication requires a transaction.");
+  const { sandboxId, generation, fromState, toState, reason, stoppedAt, providerRunPlacement } = observation;
   return sql.transaction(async (tx) => {
-    const eligible = await tx.query(
-      `select s.id from public.sandboxes s
+    const eligible = await tx.query<{ status_reason: string | null }>(
+      `select s.status_reason from public.sandboxes s
        where s.id=$3::uuid and ${SANDBOX_VISIBLE}
-         and ((s.provider='boat' and s.boat_runtime) or (s.provider='modal' and s.runtime_transport='dialout'))
+         and s.provider in ('boat','modal')
+         and case when $4::text is null then
+           ((s.provider='boat' and s.boat_runtime) or (s.provider='modal' and s.runtime_transport='dialout'))
+         else s.provider_sandbox_id=$4 and not s.boat_runtime and s.runtime_transport is distinct from 'dialout' end
          and s.stop_requested_at is null and s.deleted_at is null
          and (s.activity_until is null or s.activity_until<now())
          and (s.reconcile_lease_until is null or s.reconcile_lease_until<now())
        for update of s`,
-      [...scope, sandboxId],
+      [...scope, sandboxId, providerRunPlacement ?? null],
     );
-    if (!eligible.rows.length) return { kind: "conflict" } satisfies SandboxTransitionResult;
+    const row = eligible.rows[0];
+    if (!row) return { kind: "conflict" } satisfies SandboxTransitionResult;
     const result = await transitionSandbox(tx, {
       sandboxId,
       expectedGeneration: generation,
       fromStates: [fromState],
       toState,
       actor: toState === "stopped" ? "runtime_observation" : "lifecycle_runner",
-      code: toState === "stopped" ? "runtime_provider_stopped" : "runtime_provider_failure",
+      code:
+        toState === "failed"
+          ? "runtime_provider_failure"
+          : providerRunPlacement === undefined
+            ? "runtime_provider_stopped"
+            : "provider_stopped",
       effects: [],
       ...(toState === "stopped"
-        ? { settlement: { lease: null, statusReason: reason, stopRequestedAt: null, stoppedAt } }
+        ? {
+            settlement: {
+              lease: null,
+              statusReason: reason === undefined ? row.status_reason : reason,
+              stopRequestedAt: null,
+              stoppedAt,
+            },
+          }
         : {}),
     });
     if (result.kind === "applied") {

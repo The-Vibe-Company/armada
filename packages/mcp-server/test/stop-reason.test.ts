@@ -215,9 +215,17 @@ test.each([
   }
 });
 
-test.each(["ready", "running", "stale", "release_failed"] as const)(
-  "a confirmed runtime stop journals only a current observation (%s)",
-  async (scenario) => {
+test.each([
+  { runtime: true, scenario: "ready" },
+  { runtime: true, scenario: "running" },
+  { runtime: true, scenario: "stale" },
+  { runtime: false, scenario: "ready" },
+  { runtime: false, scenario: "stale" },
+  { runtime: false, scenario: "changed_state" },
+  { runtime: false, scenario: "release_failed" },
+] as const)(
+  "a confirmed stop journals only a current observation (runtime=$runtime, $scenario)",
+  async ({ runtime, scenario }) => {
     const { db, people, sharedGoldenId, openaiCredentialId } = await failureDatabase();
     const boat = fakeBoat();
     const machine = await boat.provider.fork({ from: "snapshot" });
@@ -228,8 +236,8 @@ test.each(["ready", "running", "stale", "release_failed"] as const)(
     const from = scenario === "running" ? "running" : "ready";
     await db.query(
       `insert into sandboxes(id,provider,provider_sandbox_id,golden_id,org_id,owner_id,harness,status,boat_runtime)
-       values ($1,'boat',$2,$3,$4,$5,'codex',$6,true)`,
-      [id, machine.id, sharedGoldenId, people.org, people.owner, from],
+       values ($1,'boat',$2,$3,$4,$5,'codex',$6,$7)`,
+      [id, machine.id, sharedGoldenId, people.org, people.owner, from, runtime],
     );
     await db.query("insert into account_agent_reservations(sandbox_id,account_id) values ($1,$2)", [
       id,
@@ -247,23 +255,32 @@ test.each(["ready", "running", "stale", "release_failed"] as const)(
         id,
         renewedExpiry,
       ]);
-    if (scenario === "release_failed")
+    if (scenario === "changed_state") await db.query("update sandboxes set status='running' where id=$1", [id]);
+    if (scenario === "release_failed") {
+      await db.query(
+        `insert into account_turn_queue(sandbox_id,request_id,account_id,owner_id,org_id,actor_epoch,credential_version,
+          input_hash,input_enc,conversation_id,state,dispatch_generation)
+         values ($1,$2,$3,$4,$5,1,1,'hash','data','conversation','dispatching',$6)`,
+        [id, crypto.randomUUID(), openaiCredentialId, people.owner, people.org, sandbox.lifecycleGeneration],
+      );
       await db.exec(`create function reject_stop_release() returns trigger language plpgsql as $$
         begin raise exception 'Stop reservation release failed'; end $$;
         create trigger reject_stop_release before delete on account_agent_reservations
         for each row execute function reject_stop_release();`);
+    }
     const applied = scenario === "ready" || scenario === "running";
+    const expectedStatus = applied ? "stopped" : scenario === "changed_state" ? "running" : from;
     try {
       const observation = readStatus(boat.provider, store, sandbox, { now: new Date("2026-01-02T00:00:00Z") });
       if (scenario === "release_failed") await expect(observation).rejects.toThrow("Stop reservation release failed");
       else
         expect(await observation).toMatchObject({
-          status: applied ? "stopped" : from,
+          status: expectedStatus,
           statusReason: null,
           ...(scenario === "stale" ? { expiresAt: renewedExpiry } : {}),
         });
       expect(await store.get(id)).toMatchObject({
-        status: applied ? "stopped" : from,
+        status: expectedStatus,
         statusReason: null,
         stoppedAt: applied ? stoppedAt.toISOString() : null,
       });
@@ -278,7 +295,7 @@ test.each(["ready", "running", "stale", "release_failed"] as const)(
                 from_status: from,
                 to_status: "stopped",
                 actor: "runtime_observation",
-                code: "runtime_provider_stopped",
+                code: runtime ? "runtime_provider_stopped" : "provider_stopped",
                 generation: sandbox.lifecycleGeneration,
               },
             ]

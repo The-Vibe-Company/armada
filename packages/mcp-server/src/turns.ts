@@ -310,11 +310,13 @@ export async function readStatus(
       patch.stoppedAt = (info.stoppedAt ?? options.now).toISOString();
     } else if (sandbox.stoppedAt !== null && next !== "failed") patch.stoppedAt = null;
     if (
-      (next === "failed" || next === "stopped") &&
-      (sandbox.status === "ready" || sandbox.status === "running") &&
-      runtime
+      (next === "stopped" || (runtime && next === "failed")) &&
+      (sandbox.status === "ready" || sandbox.status === "running")
     )
-      patch.runtimeObservationFrom = sandbox.status;
+      patch.machineObservation = {
+        fromState: sandbox.status,
+        ...(runtime ? {} : { providerRunPlacement: sandbox.providerSandboxId }),
+      };
     try {
       await store.update(sandbox.id, patch);
     } catch (error) {
