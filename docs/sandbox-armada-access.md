@@ -18,7 +18,7 @@ Set `SNAPSHOT_NAME` to a Boat snapshot name and `ACCOUNT_ID` to an active named
 Codex account ID.
 
 ```sh
-armada launch "$SNAPSHOT_NAME" --provider boat --agent codex --credential-id "$ACCOUNT_ID" \
+armada new "$SNAPSHOT_NAME" --provider boat --agent codex --credential-id "$ACCOUNT_ID" \
   --armada-access --max-active-children 3 "Your task"
 ```
 

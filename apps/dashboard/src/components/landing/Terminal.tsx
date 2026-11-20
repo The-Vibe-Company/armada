@@ -47,8 +47,8 @@ export function Terminal({ commands, title }: { commands: TerminalCommand[]; tit
         return later(state.typed === 0 ? 500 : 38 + ((state.typed * 7) % 5) * 9, step);
       }
       if (state.lines < lines) {
-        // `armada launch` waits before it prints: the sandbox is forked and the agent started first.
-        const wait = state.lines === 0 ? (c.command.startsWith("armada launch") ? 1500 : 350) : 34;
+        // `armada new` waits before it prints: the sandbox is forked and the agent started first.
+        const wait = state.lines === 0 ? (c.command.startsWith("armada new") ? 1500 : 350) : 34;
         return later(wait, () => {
           set({ ...state, lines: state.lines + 1 });
           step();

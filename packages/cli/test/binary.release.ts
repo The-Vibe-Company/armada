@@ -74,7 +74,7 @@ test("compiled launch preserves account selection and owner defaults without all
       const child = Bun.spawn(
         [
           binary,
-          "launch",
+          "new",
           "fixture",
           "--provider",
           "boat",

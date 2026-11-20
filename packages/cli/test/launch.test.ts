@@ -3,27 +3,35 @@ import type { AuthIo } from "../src/auth-commands.ts";
 import { run } from "../src/run.ts";
 import { memorySessionStore } from "../src/session.ts";
 
-describe("launch command", () => {
+describe("new command", () => {
+  test("launch is an unknown command", async () => {
+    const calls: string[] = [];
+    const result = await capture(["launch", "web", "--provider", "modal", "--agent", "codex"], {
+      auth: offlineAuth(calls),
+    });
+    expect(result.code).toBe(2);
+    expect(result.err).toContain("unknown command 'launch'");
+    expect(calls).toEqual([]);
+  });
+
   test("bad flags and a missing credential fail before anything starts", async () => {
     const calls: string[] = [];
     const base = { auth: offlineAuth(calls) };
-    expect((await capture(["launch", "web", "--provider", "boat"], base)).err).toContain(
-      "Pass --agent claude or codex",
-    );
-    expect((await capture(["launch", "web", "--provider", "boat", "--agent", "not-a-harness"], base)).code).toBe(2);
+    expect((await capture(["new", "web", "--provider", "boat"], base)).err).toContain("Pass --agent claude or codex");
+    expect((await capture(["new", "web", "--provider", "boat", "--agent", "not-a-harness"], base)).code).toBe(2);
     expect(
-      (await capture(["launch", "web", "--provider", "boat", "--agent", "claude", "--ttl", "soon"], base)).err,
+      (await capture(["new", "web", "--provider", "boat", "--agent", "claude", "--ttl", "soon"], base)).err,
     ).toContain("is not a duration");
-    expect((await capture(["launch", "--provider", "boat", "--agent", "claude"], base)).code).toBe(2);
-    expect((await capture(["launch", "web", "--provider", "boat", "--agent", "claude", "a", "b"], base)).code).toBe(2);
+    expect((await capture(["new", "--provider", "boat", "--agent", "claude"], base)).code).toBe(2);
+    expect((await capture(["new", "web", "--provider", "boat", "--agent", "claude", "a", "b"], base)).code).toBe(2);
     const repeatedRepo = await capture(
-      ["launch", "web", "--provider", "boat", "--agent", "claude", "--repo", "acme/web", "--repo", "acme/api"],
+      ["new", "web", "--provider", "boat", "--agent", "claude", "--repo", "acme/web", "--repo", "acme/api"],
       base,
     );
     expect(repeatedRepo.code).toBe(2);
     expect(repeatedRepo.err).toContain("--repo can only be set once.");
     const effort = await capture(
-      ["launch", "web", "--provider", "boat", "--agent", "claude", "--reasoning-effort", "ultra"],
+      ["new", "web", "--provider", "boat", "--agent", "claude", "--reasoning-effort", "ultra"],
       base,
     );
     expect(effort.err).toContain("Use one of: low, medium, high, xhigh, max");
@@ -32,7 +40,7 @@ describe("launch command", () => {
 
   test("a provider selection still requires Armada authentication, not local provider credentials", async () => {
     const calls: string[] = [];
-    const result = await capture(["launch", "web", "--agent", "claude", "--provider", "modal"], {
+    const result = await capture(["new", "web", "--agent", "claude", "--provider", "modal"], {
       auth: offlineAuth(calls),
     });
     expect(result.code).toBe(3);

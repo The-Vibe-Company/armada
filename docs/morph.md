@@ -20,12 +20,12 @@ Use the ordinary launch flow for the target snapshot or Docker host, with
 For example (replace uppercase IDs; `MODAL_SNAPSHOT` is a Modal snapshot):
 
 ```sh
-armada launch MODAL_SNAPSHOT --provider modal --agent claude "Reply briefly" --credential-id ACCOUNT_UUID --model morph-kimik31
-armada launch MODAL_SNAPSHOT --provider modal --agent codex "Reply briefly" --credential-id ACCOUNT_UUID --model morph-kimik31
-armada launch MODAL_SNAPSHOT --provider modal --agent opencode "Reply briefly" --credential-id ACCOUNT_UUID --model morph-kimik31
-armada launch "Reply briefly" --provider docker --host HOST_UUID --org ORG_UUID --agent claude --credential-id ACCOUNT_UUID --model morph-kimik31
-armada launch "Reply briefly" --provider docker --host HOST_UUID --org ORG_UUID --agent codex --credential-id ACCOUNT_UUID --model morph-kimik31
-armada launch "Reply briefly" --provider docker --host HOST_UUID --org ORG_UUID --agent opencode --credential-id ACCOUNT_UUID --model morph-kimik31
+armada new MODAL_SNAPSHOT --provider modal --agent claude "Reply briefly" --credential-id ACCOUNT_UUID --model morph-kimik31
+armada new MODAL_SNAPSHOT --provider modal --agent codex "Reply briefly" --credential-id ACCOUNT_UUID --model morph-kimik31
+armada new MODAL_SNAPSHOT --provider modal --agent opencode "Reply briefly" --credential-id ACCOUNT_UUID --model morph-kimik31
+armada new "Reply briefly" --provider docker --host HOST_UUID --org ORG_UUID --agent claude --credential-id ACCOUNT_UUID --model morph-kimik31
+armada new "Reply briefly" --provider docker --host HOST_UUID --org ORG_UUID --agent codex --credential-id ACCOUNT_UUID --model morph-kimik31
+armada new "Reply briefly" --provider docker --host HOST_UUID --org ORG_UUID --agent opencode --credential-id ACCOUNT_UUID --model morph-kimik31
 ```
 
 Modal, Docker hosts and runtime-backed Boat use the same credential envelopes.

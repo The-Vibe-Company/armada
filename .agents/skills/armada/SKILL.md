@@ -17,7 +17,7 @@ IDs, and quote prompts as single arguments.
 Sandbox commands emit JSON when stdout is piped or redirected. On failure,
 parse the final stderr line for `error.code`, `error.message`, and `error.hint`.
 An explicit sandbox ID overrides `ARMADA_SANDBOX` and the local
-`.armada/sandbox` file written by a successful launch. Prefer explicit IDs in
+`.armada/sandbox` file written by a successful `armada new` in that directory. Prefer explicit IDs in
 coordinator scripts that manage several sandboxes from one directory.
 
 ## 1. Establish identity and scope
@@ -73,7 +73,7 @@ any receipt UUID returned. On success, pass `sandbox.id` to subsequent tools.
   before reading the receipt. Use the shared `SendInput` for follow-up prompts.
   Docker returns `golden: null`. Docker REST launches require `idempotencyKey`.
   Save the key and replay the identical request after an uncertain launch.
-  With `armada launch --provider docker`, pass the saved key as `--idempotency-key`.
+  With `armada new --provider docker`, pass the saved key as `--idempotency-key`.
   For a pinned Modal template on `sandbox/launch`, supply `idempotencyKey` and
   read `sandbox.id`. With `templates/launch` or `armada template launch`, use
   `requestKey` or `--request-key` and read the template receipt.
@@ -93,11 +93,11 @@ any receipt UUID returned. On success, pass `sandbox.id` to subsequent tools.
 Example (replace the skill pin with an accessible, exact version):
 
 ```sh
-armada launch GOLDEN --agent codex "Implement the agreed change; push the branch and report tests" --provider boat --ttl 30m --skill review-helper@1.2.3 --json
+armada new GOLDEN --agent codex "Implement the agreed change; push the branch and report tests" --provider boat --ttl 30m --skill review-helper@1.2.3 --json
 ```
 
 Launch without a prompt creates an idle sandbox. Capture its returned sandbox
-ID from `sandbox.id` in `armada launch --json` output immediately. If the
+ID from `sandbox.id` in `armada new --json` output immediately. If the
 terminal disconnects before you capture the ID, inspect `armada list --owner me --json` and detail to avoid paid
 duplicates. Skill pins are repeatable, exact launch-time references, not floating
 latest versions. Private pins use bare slug@exact-version in the credential’s workspace; qualified

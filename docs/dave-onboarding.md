@@ -186,10 +186,10 @@ actual IDs for "OpenAI API" and "Personal ChatGPT". After building `first-modal`
 choose the account for each launch by substituting its UUID below.
 
 ```sh
-armada launch first-modal --org my-team --provider modal --agent codex \
+armada new first-modal --org my-team --provider modal --agent codex \
   --credential-id OPENAI_API_ACCOUNT_UUID "Summarize the repositories"
 # OR use the subscription account:
-armada launch first-modal --org my-team --provider modal --agent codex \
+armada new first-modal --org my-team --provider modal --agent codex \
   --credential-id CHATGPT_ACCOUNT_UUID "Summarize the repositories"
 ```
 
@@ -244,7 +244,7 @@ Replace `ACCOUNT_UUID` with the ID returned by list. The same Morph account supp
 Claude Code, Codex and OpenCode. On a Modal snapshot, choose it explicitly:
 
 ```sh
-armada launch first-modal --org my-team --provider modal --agent codex   --credential-id ACCOUNT_UUID --model morph-kimik31 "Summarize the repositories"
+armada new first-modal --org my-team --provider modal --agent codex   --credential-id ACCOUNT_UUID --model morph-kimik31 "Summarize the repositories"
 ```
 
 Build `first-modal` below before running that launch. Morph also supports Docker
@@ -314,14 +314,14 @@ to step 6 only when the job is `succeeded` and `first-modal` is listed for Modal
 ## 6. Launch from the CLI
 
 ```sh
-armada launch first-modal --org my-team --provider modal --agent claude \
+armada new first-modal --org my-team --provider modal --agent claude \
   "Summarize the two repositories without changing files"
 # OR, if you stored Codex credentials in step 5:
-armada launch first-modal --org my-team --provider modal --agent codex \
+armada new first-modal --org my-team --provider modal --agent codex \
   "Summarize the two repositories without changing files"
 ```
 
-`armada launch` asks the server to resolve credentials and fork the snapshot. It prints the sandbox id
+`armada new` asks the server to resolve credentials and fork the snapshot. It prints the sandbox id
 (`--json` prints the full record). Use that ID for `armada status <sandbox-id>`,
 `armada events <sandbox-id>` and, when finished, `armada stop <sandbox-id>` to stop charges.
 Omit the prompt to leave the sandbox waiting for your first `armada send` instead. Optional `--repo` selects one repository already recorded in the

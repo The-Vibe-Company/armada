@@ -75,7 +75,7 @@ test("usage and authentication failures give relevant recovery", async () => {
   expect(usage.err).not.toContain("inspect armada list");
   for (const args of [
     ["creds", "set", "bogus"],
-    ["launch", "starter", "--provider", "boat", "--agent", "codex", "--ttl", "bad"],
+    ["new", "starter", "--provider", "boat", "--agent", "codex", "--ttl", "bad"],
     ["frobnicate"],
   ]) {
     const invalid = await invoke(args);
@@ -93,7 +93,7 @@ test("usage and authentication failures give relevant recovery", async () => {
 test("invalid agents list the catalog for list and Docker launch", async () => {
   for (const argv of [
     ["list", "--agent", "bogus"],
-    ["launch", "--provider", "docker", "--agent", "bogus"],
+    ["new", "--provider", "docker", "--agent", "bogus"],
   ]) {
     const result = await invoke(argv);
     expect(result.code).toBe(2);
@@ -103,8 +103,8 @@ test("invalid agents list the catalog for list and Docker launch", async () => {
 
 test("explicit launches require an agent on both Docker and golden paths", async () => {
   for (const argv of [
-    ["launch", "starter", "--provider", "boat"],
-    ["launch", "--provider", "docker", "--host", "office"],
+    ["new", "starter", "--provider", "boat"],
+    ["new", "--provider", "docker", "--host", "office"],
   ]) {
     const result = await invoke(argv);
     expect(result.code).toBe(2);
@@ -113,7 +113,7 @@ test("explicit launches require an agent on both Docker and golden paths", async
 });
 
 test("Docker placement distinguishes absent and malformed host selectors", async () => {
-  const args = ["launch", "--provider", "docker", "--agent", "codex", "--org", "00000000-0000-0000-0000-000000000001"];
+  const args = ["new", "--provider", "docker", "--agent", "codex", "--org", "00000000-0000-0000-0000-000000000001"];
   const missing = await invoke(args);
   expect(missing.code).toBe(2);
   expect(missing.err).toContain("requires --host UUID|NAME or --golden SNAPSHOT_UUID");
@@ -138,7 +138,7 @@ test("token, deployment and uncertain launch errors retain appropriate recovery"
   );
   expect(deployment.err).toContain("Ask an administrator");
   expect(deployment.err).not.toContain("armada status --setup");
-  const launch = await invoke(["launch", "web", "--provider", "boat", "--agent", "codex"], true);
+  const launch = await invoke(["new", "web", "--provider", "boat", "--agent", "codex"], true);
   expect(launch.err).toContain("Run armada list to check before retrying");
   expect(launch.err).not.toContain("armada status --setup");
 });

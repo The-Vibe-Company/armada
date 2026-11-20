@@ -30,8 +30,8 @@ deployment and selected account use that path before running it. In
 and `modalRuntime.defaultPath: "runtime"` on the target server.
 
 ```sh
-armada launch "$BOAT_SNAPSHOT_NAME" --agent claude --provider boat --org "$ORG_UUID" --credential-id "$CLAUDE_ACCOUNT_UUID" --model claude-fable-5-2 "Reply with probe only. Do not use tools."
-armada launch "$MODAL_SNAPSHOT_NAME" --agent claude --provider modal --org "$ORG_UUID" --credential-id "$CLAUDE_ACCOUNT_UUID" --model claude-fable-5-2 --json "Reply with probe only. Do not use tools."
+armada new "$BOAT_SNAPSHOT_NAME" --agent claude --provider boat --org "$ORG_UUID" --credential-id "$CLAUDE_ACCOUNT_UUID" --model claude-fable-5-2 "Reply with probe only. Do not use tools."
+armada new "$MODAL_SNAPSHOT_NAME" --agent claude --provider modal --org "$ORG_UUID" --credential-id "$CLAUDE_ACCOUNT_UUID" --model claude-fable-5-2 --json "Reply with probe only. Do not use tools."
 ```
 
 The Boat native prompt must reject with the readable model_selection_mismatch

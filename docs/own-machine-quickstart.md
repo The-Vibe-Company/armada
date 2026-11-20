@@ -120,7 +120,7 @@ the corresponding `armada-docker-host@SHA256_SERVER_ORIGIN` binary and pass
 Replace `your-org/your-repo` with an accessible repository. No snapshot is needed:
 
 ```sh
-armada launch "Summarize this repository; do not change files" \
+armada new "Summarize this repository; do not change files" \
   --provider docker --host office --org ORG_UUID --agent codex \
   --repo your-org/your-repo@main
 armada status SANDBOX_ID
@@ -159,7 +159,7 @@ armada snapshot new workspace --provider docker --host office --org ORG_UUID \
 armada snapshot ls --provider docker --org ORG_UUID
 armada snapshot show SNAPSHOT_UUID --provider docker --org ORG_UUID
 # Wait for ready, then use the returned snapshot UUID:
-armada launch "Summarize both repositories" --provider docker \
+armada new "Summarize both repositories" --provider docker \
   --golden SNAPSHOT_UUID --org ORG_UUID --agent codex
 ```
 
