@@ -476,7 +476,9 @@ test("an uncertain scoped message records a correlated operator diagnostic", asy
       },
       (line) => lines.push(line),
     );
-    expect(receipt?.state).toBe("uncertain");
+    if (!receipt) throw Error("Missing child message receipt.");
+    const original = receipt;
+    expect(original.state).toBe("uncertain");
     expect(lines.map((line) => JSON.parse(line))).toContainEqual(
       expect.objectContaining({
         event: "operator_failure",
@@ -484,13 +486,13 @@ test("an uncertain scoped message records a correlated operator diagnostic", asy
         code: "child_outcome_unconfirmed",
         causeCode: "runtime_reconciliation_active",
         sandboxId: child.id,
-        operationId: receipt?.id,
+        operationId: original.id,
         requestId: response?.headers.get("x-request-id"),
       }),
     );
     await observeRequest(
       async () => {
-        expect(await children.message(token, "message-outcome", child.id, "synthetic child prompt")).toEqual(receipt);
+        expect(await children.message(token, "message-outcome", child.id, "synthetic child prompt")).toEqual(original);
         return new Response();
       },
       (line) => lines.push(line),
@@ -500,7 +502,7 @@ test("an uncertain scoped message records a correlated operator diagnostic", asy
         phase: "scoped.child_message.receipt",
         causeCode: "prior_uncertain_receipt",
         sandboxId: child.id,
-        operationId: receipt?.id,
+        operationId: original.id,
       }),
     );
     expect(lines.join("\n")).not.toContain("private provider response");

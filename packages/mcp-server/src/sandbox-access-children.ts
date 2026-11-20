@@ -543,7 +543,7 @@ export function createSandboxChildren(sql: Sql, authority: ChildAuthority, execu
     stop: (token: string, key: string, sandboxId: string) => mutate(token, key, { action: "stop", sandboxId }),
     extend: (token: string, key: string, sandboxId: string, ttlSeconds: number) =>
       mutate(token, key, { action: "extend", sandboxId, ttlSeconds }),
-    async read(token: string, sandboxId: string): Promise<unknown> {
+    async read(token: string, sandboxId: string) {
       const identity = await authority.admit(token, { method: "read", childId: sandboxId }, async (_tx, p) => p);
       return executor.read(sandboxId, identity.ownerId, identity.orgId);
     },
