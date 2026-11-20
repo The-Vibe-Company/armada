@@ -1,8 +1,8 @@
 import { z } from "zod";
 import { memberEmailPattern } from "../member-email.ts";
 import type { Operation } from "./index.ts";
+import { orgReference as org, orgSummary } from "./organizations.ts";
 
-const org = z.string({ error: "org must be text." }).nullish();
 const email = z
   .string({ error: (issue) => (issue.input == null ? "email is required." : "email must be text.") })
   .meta({
@@ -43,7 +43,7 @@ export const memberOperations = {
     description: "List members of an organization the caller belongs to.",
     input: { body: z.looseObject({ org }), bodyRequired: false },
     output: z.strictObject({
-      org: z.strictObject({ id: z.string(), name: z.string(), role }),
+      org: orgSummary,
       members: z.array(member),
     }),
     readOnly: true,
