@@ -232,10 +232,7 @@ export function configureTools(
             .catch(async (error: unknown) => {
               if (error instanceof BoatRetentionUnconfirmed && generation !== undefined) {
                 await data.sandboxes.update(found.id, {
-                  status: "stopping",
-                  stoppedAt: null,
-                  stopRequested: true,
-                  finishActivity: true,
+                  nativeRetentionRefusal: found.providerSandboxId,
                   activityToken,
                   expectedGeneration: generation + 1,
                 });

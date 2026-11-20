@@ -520,6 +520,41 @@ export async function expireAfterExtension(
   return result.kind === "applied";
 }
 
+export async function recordNativeRetentionRefusal(
+  tx: Sql,
+  scope: [string[], string],
+  sandboxId: string,
+  generation: number,
+  activityToken: string,
+  providerSandboxId: string,
+) {
+  const { rows } = await tx.query<{ status: SandboxStatus }>(
+    `select s.status from public.sandboxes s
+     where s.id=$3::uuid and ${SANDBOX_VISIBLE} and s.provider_sandbox_id=$4 for update of s`,
+    [...scope, sandboxId, providerSandboxId],
+  );
+  const current = rows[0];
+  if (!current) return false;
+
+  const result = await transitionSandbox(tx, {
+    sandboxId,
+    expectedGeneration: generation,
+    fromStates: [current.status],
+    toState: "stopping",
+    actor: "lifecycle_runner",
+    code: "native_retention_unconfirmed",
+    effects: [],
+    settlement: {
+      lease: null,
+      statusReason: null,
+      stopRequestedAt: null,
+      stoppedAt: null,
+      activityLease: activityToken,
+    },
+  });
+  return result.kind === "applied";
+}
+
 export async function publishOwnerStop(
   tx: Sql,
   stop: {
