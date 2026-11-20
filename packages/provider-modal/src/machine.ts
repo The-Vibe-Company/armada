@@ -192,11 +192,23 @@ export function createModalMachine(options: ModalMachineOptions) {
     return verify(await lookupModalCompute(client, id.machineId, signal), id);
   }
 
-  async function current(id: MachineIdentity) {
+  async function current(id: MachineIdentity & { signal?: AbortSignal }, recovery?: "adopt-create") {
     const entry = await journal.read(key(id));
-    if (!entry || entry.machineId !== id.machineId)
-      throw conflict("Modal receipt does not match the addressed machine.");
-    return entry;
+    if (entry && entry.machineId === id.machineId) return entry;
+    if (
+      recovery === "adopt-create" &&
+      entry?.operation === "create" &&
+      entry.phase === "creating" &&
+      !entry.machineId
+    ) {
+      id.signal?.throwIfAborted();
+      await bound();
+      const sandbox = await named(id);
+      id.signal?.throwIfAborted();
+      if (sandbox?.sandboxId === id.machineId)
+        return save(id, entry, { ...entry, phase: "allocated", machineId: sandbox.sandboxId });
+    }
+    throw conflict("Modal receipt does not match the addressed machine.");
   }
 
   async function allocate(request: Create, operation: "create" | "resume", validateSource?: () => Promise<void>) {
@@ -243,7 +255,8 @@ export function createModalMachine(options: ModalMachineOptions) {
     create: (request) => allocate(request, "create"),
     async bootstrap(request) {
       request.signal?.throwIfAborted();
-      const entry = await current(request);
+      const entry = await current(request, "adopt-create");
+      request.signal?.throwIfAborted();
       const runtimeBinding = digest(request.bindingRef);
       if (entry.phase !== "allocated" || (entry.runtimeBinding && entry.runtimeBinding !== runtimeBinding))
         throw conflict("Modal machine conflicts with the runtime binding.");
@@ -304,7 +317,8 @@ export function createModalMachine(options: ModalMachineOptions) {
     },
     async delete(request) {
       request.signal?.throwIfAborted();
-      let entry = await current(request);
+      let entry = await current(request, "adopt-create");
+      request.signal?.throwIfAborted();
       if (entry.phase === "deleted") {
         if (entry.deleteScope === request.scope || entry.deleteScope === "physical-and-retained") return;
       } else if (entry.phase === "stopping" || (entry.phase === "deleting" && entry.deleteScope !== request.scope)) {

@@ -1,3 +1,4 @@
+import { expect, test } from "bun:test";
 import { capabilities, type MachineIdentity } from "@armada/core/server";
 import { type ModalClient, NotFoundError } from "modal";
 import { type MachineConformanceFixture, testMachineConformance } from "../../core/test-support/machine-conformance.ts";
@@ -225,3 +226,36 @@ testMachineConformance("Modal machine", {
     delete: ["termination response", "delete receipt"],
   },
 });
+
+for (const recovery of ["bootstrap", "delete"] as const) {
+  test(`Modal can ${recovery} an observed allocation after the create response is lost`, async () => {
+    const world = fixture();
+    const scope = { deploymentId: "deployment-a", bindingId: "binding-a" };
+    const incarnation = { sandboxId: "interrupted-launch", generation: 1 };
+    const interrupted = world.adapter(scope, (step) => {
+      if (step === "create response") throw new Error("create response lost");
+    });
+    await expect(
+      interrupted.create({
+        ...incarnation,
+        source: { kind: "image", ref: "source" },
+        size: null,
+        computeTtlSeconds: 600,
+      }),
+    ).rejects.toThrow("create response lost");
+
+    const successor = world.adapter(scope);
+    const observed = await successor.observe(incarnation);
+    if (observed.kind !== "present") throw new Error("Expected the original Modal allocation");
+    const { machine } = observed;
+    if (recovery === "bootstrap") {
+      await successor.bootstrap({ ...machine, bindingRef: "runtime-binding" });
+      expect(world.runtimeBindings(machine)).toEqual(["runtime-binding"]);
+      expect(world.liveMachines().map(({ machineId }) => machineId)).toEqual([machine.machineId]);
+    } else {
+      await successor.delete({ ...machine, scope: "physical-only" });
+      expect(await successor.observe(machine)).toEqual({ kind: "absent", receipt: { operation: "delete" } });
+      expect(world.liveMachines()).toEqual([]);
+    }
+  });
+}
