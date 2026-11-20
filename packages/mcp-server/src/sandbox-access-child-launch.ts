@@ -32,13 +32,24 @@ export class ChildLaunchNotAllocated extends Error {
 
   record(operation: Pick<ChildOperation, "id" | "sandboxId">) {
     const error = this.cause;
-    const code =
+    let code: string =
       error instanceof VaultError ||
       error instanceof LaunchError ||
       error instanceof GoldenError ||
       error instanceof ProviderError
         ? error.code
         : this.reason;
+    // Provider codes can carry upstream text. Preserve only these known Modal fork refusals.
+    if (
+      this.reason === "provider_refused" &&
+      this.guard === "provider_fork" &&
+      error instanceof ProviderError &&
+      error.provider === "modal" &&
+      error.code === "conflict" &&
+      (error.providerCode === "fork_source_busy" || error.providerCode === "snapshot_source_busy")
+    ) {
+      code = error.providerCode;
+    }
     const diagnostic = failureDiagnostic(error ?? this);
     const errorClass =
       error instanceof GoldenError
