@@ -48,12 +48,12 @@ beforeAll(async () => {
       activity_lease_id uuid,task_prompt_id text,lifecycle_generation bigint default 1,reconcile_lease_until timestamptz,
       docker_host_id uuid,docker_installation_id uuid,docker_generation uuid);
     create table runtime_commands(sandbox_id uuid,sequence bigint,request_id text);
-    create table runtime_enrolments(sandbox_id uuid,epoch bigint);
+    create table runtime_enrolments(sandbox_id uuid,epoch bigint,runtime_hash text,lifecycle_generation bigint);
     create table runtime_checkpoints(sandbox_id uuid,epoch bigint,merge_stop boolean);
     create table docker_host_jobs(bound_sandbox_id uuid,position bigint,request_id uuid);
     create table docker_resume_claims(sandbox_id uuid,request_id uuid,actor_id uuid,host_id uuid,
       installation_id uuid,generation uuid,lifecycle_generation bigint,accepted boolean);
-    create table runtime_resumes(sandbox_id uuid,request_id uuid);
+    create table runtime_resumes(sandbox_id uuid,request_id uuid,target_epoch bigint,phase text,receipt jsonb);
     create table runtime_idle_turns(sandbox_id uuid,prompt_id text,settled boolean);
     create table account_agent_reservations(sandbox_id uuid primary key,account_id uuid);`);
   // Apply this migration against a minimal real schema: no hand-written queue store behavior.

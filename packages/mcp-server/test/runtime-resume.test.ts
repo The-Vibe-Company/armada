@@ -1,7 +1,15 @@
 import { describe, expect, jest, setSystemTime, spyOn, test } from "bun:test";
 import { createMemoryAuthStore } from "@armada/auth";
-import { createSqlVaultStore, DelegatedAuthority, type Provider, type Sql } from "@armada/core/server";
+import {
+  createSqlVaultStore,
+  DelegatedAuthority,
+  decryptSecret,
+  encryptSecret,
+  type Provider,
+  type Sql,
+} from "@armada/core/server";
 import { fakeBoat, retainedSandbox, sandbox as sdkSandbox } from "../../provider-boat/test/support.ts";
+import { admitClaimedAccountTurn, dispatchAccountTurn } from "../src/account-turn-dispatch.ts";
 import { createAccountTurnQueue } from "../src/account-turn-queue.ts";
 import { boatRuntimeResume } from "../src/boat-runtime-resume.ts";
 import { createQueuedSandboxDispatch, dispatchControlCommand } from "../src/control.ts";
@@ -622,11 +630,35 @@ describe.each(["boat", "modal"] as const)("queued runtime wake admission (%s)", 
         runtimeSend: send,
       });
       const { runtimeVersion: _version, ...sendInput } = sentRequest;
-      await expect(dispatch(f.caller, sendInput, claim)).resolves.toMatchObject({
-        resumed: true,
-        requestId: request.request_id,
-      });
+      const receipt = await dispatch(f.caller, sendInput, claim);
+      expect(receipt).toMatchObject({ resumed: true, requestId: request.request_id });
+
+      await f.db.query("update jobs set lease_until='-infinity' where id=$1", [id]);
+      await f.sql.query("update account_turn_queue set input_enc=$3 where sandbox_id=$1 and request_id=$2", [
+        f.row.id,
+        request.request_id,
+        await encryptSecret(JSON.stringify(sendInput), ENCRYPTION_KEY),
+      ]);
+      const successor = crypto.randomUUID();
+      const retry = (await store.claim("turn_dispatch", successor, 30, 1))!;
+      const successorClaim = {
+        job: retry,
+        canDispatch: async (tx?: Sql) => (await store.inspect(retry, successor, tx)) === "dispatch",
+        handoffGeneration: () => Promise.reject(Error("A completed wake cannot advance generation again.")),
+      };
+      const admission = await admitClaimedAccountTurn(f.sql, successorClaim);
+      if (!admission) throw new Error("Expected the successor to recover the completed wake.");
+      await dispatchAccountTurn(f.sql, ENCRYPTION_KEY, admission.entry, admission.caller, dispatch, successorClaim);
+      const {
+        rows: [saved],
+      } = await f.sql.query<{ state: string; result_enc: Uint8Array<ArrayBuffer> }>(
+        "select state,result_enc from account_turn_queue where sandbox_id=$1 and request_id=$2",
+        [f.row.id, request.request_id],
+      );
+      expect(saved?.state).toBe("admitted");
+      expect(JSON.parse(await decryptSecret(saved!.result_enc, ENCRYPTION_KEY))).toEqual(receipt);
       expect(preparations).toBe(1);
+      expect(f.starts).toHaveLength(2);
     } else if (scenario === "replaced epoch") {
       await expect(attempt()).rejects.toMatchObject({ code: "conflict" });
       expect(replacementEpoch).toBe("3");

@@ -25,6 +25,18 @@ const STOPPED_DOCKER_WAKE_IN_PROGRESS = `(s.provider='docker' and s.status='stop
 export const QUEUED_DISPATCH_EVIDENCE = `(q.native_prompt_id is not null
   or (s.task_prompt_id=q.request_id::text) is true or (${RUNTIME_REQUEST_EVIDENCE}) is true)`;
 export const RUNTIME_LANE = `(s.provider='docker' or s.boat_runtime or s.runtime_transport='dialout')`;
+// A current, completed wake can only return its stored receipt. A successor
+// with the job lease does not have to wait for the previous dispatch window.
+export const COMPLETED_RUNTIME_WAKE = `(s.provider in ('boat','modal') and ${RUNTIME_LANE}
+  and s.status in ('ready','running') and s.activity_lease_id is null
+  and q.dispatch_generation in (s.lifecycle_generation, s.lifecycle_generation - 1)
+  and exists(
+    select 1 from public.runtime_resumes r
+    join public.runtime_enrolments e on e.sandbox_id=r.sandbox_id and e.epoch=r.target_epoch
+    where r.sandbox_id=s.id and r.request_id=q.request_id
+      and r.phase='complete' and r.receipt is not null and e.runtime_hash is not null
+      and e.lifecycle_generation=s.lifecycle_generation
+  ))`;
 export const TURN_RECOVERY_ELIGIBLE = `(q.dispatch_until<=now() and q.dispatch_generation is not null
   and ((${RUNTIME_LANE} and ${RUNTIME_REQUEST_EVIDENCE})
     or (s.lifecycle_generation=q.dispatch_generation and s.activity_lease_id is null
@@ -146,9 +158,9 @@ export async function admitAccountTurn(sql: Sql, candidate: AdmissionEntry, clai
       await tx.query("select id from public.credentials where id=$1 for update", [candidate.account_id]);
       const current = await tx.query(
         `select q.request_id from public.account_turn_queue q where q.sandbox_id=$1 and q.request_id=$2 and q.state=$3
-      and (q.state='queued' or q.dispatch_until<=now())
+      and (q.state='queued' or q.dispatch_until<=now() or $4::boolean)
       and ${TURN_FIFO_ELIGIBLE} for update of q`,
-        [candidate.sandbox_id, candidate.request_id, candidate.state],
+        [candidate.sandbox_id, candidate.request_id, candidate.state, Boolean(claim)],
       );
       if (!current.rows.length) return null;
       if (recovering && !claim) {
@@ -202,7 +214,7 @@ export async function admitAccountTurn(sql: Sql, candidate: AdmissionEntry, clai
       if (claim && recovering) {
         const { rows } = await tx.query(
           `select q.request_id from public.account_turn_queue q join public.sandboxes s on s.id=q.sandbox_id
-           where q.sandbox_id=$1 and q.request_id=$2 and ${TURN_RECOVERY_ELIGIBLE}`,
+           where q.sandbox_id=$1 and q.request_id=$2 and (${TURN_RECOVERY_ELIGIBLE} or ${COMPLETED_RUNTIME_WAKE})`,
           [candidate.sandbox_id, candidate.request_id],
         );
         if (!rows.length) return null;
