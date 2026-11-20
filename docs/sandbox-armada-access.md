@@ -5,10 +5,14 @@ method separately using existing pinned Skillpack launch skills.
 
 ## API / CLI
 
-`POST /api/v1/sandbox/launch` accepts normal launch fields plus
-`armadaAccessVersion: 1`, `armadaAccess: true` (or
-`{ "maxActiveChildren": 3 }`) and an explicit named `credentialId`. Limits are
-1–100, default 3. Omit `armadaAccess` or set it to false to leave access disabled.
+For a standard Boat or Modal snapshot launch with Codex, send
+`armadaAccessVersion: 1` and `armadaAccess: true` (or
+`{ "maxActiveChildren": 3 }` for the `armadaAccess` value) to
+`POST /api/v1/sandbox/launch`. The sandbox needs a bound named account. Use
+`credentialId` to select one explicitly, or rely on an eligible default.
+Child limits are 1–100, default 3. Omit `armadaAccess` or set it to false to
+leave access disabled. Docker, pinned template and explicit runtime launch
+requests do not support enabling scoped access.
 
 Set `SNAPSHOT_NAME` to a Boat snapshot name and `ACCOUNT_ID` to an active named
 Codex account ID.
@@ -57,7 +61,10 @@ The coordinator runs these checks for Modal/Codex after an authorized staging
 rollout. Run Boat/Codex checks on demand only, outside staging acceptance.
 
 - [ ] Launch a private parent with `--armada-access --credential-id ACCOUNT_ID`.
-  Supply the selected snapshot ID, account ID and account version in its task.
+  Supply the Armada snapshot record ID (`golden.id` in the launch response),
+  `sandbox.credentialId` and `sandbox.credentialVersion` in its task. The child
+  launch tool takes these as `selection.goldenId`, `selection.credentialId`
+  and `selection.credentialVersion`.
 - [ ] Ask it to launch a child, message it, poll delegated `read` until the
   answer appears (the existing delegated gateway has no blocking wait tool),
   then stop the child. Record parent/child Armada IDs and response evidence.
