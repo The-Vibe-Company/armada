@@ -34,7 +34,7 @@ import type {
 import type { ServerFailureCode } from "@armada/core/contract/failures";
 import { sandboxOutputOperations } from "@armada/core/contract/sandbox-outputs";
 import { sandboxViewerOperations } from "@armada/core/contract/sandbox-viewer";
-import { apiUrl, jsonPost, requestApi, TEMPLATE_LAUNCH_ROUTE } from "./request.ts";
+import { apiUrl, jsonPost, type RequestPolicy, requestApi, TEMPLATE_LAUNCH_ROUTE } from "./request.ts";
 import { sandboxClient } from "./sandboxes.ts";
 
 export type FailureCode = ServerFailureCode | "unknown_response" | "transport_error";
@@ -105,6 +105,8 @@ export interface ArmadaOptions {
 }
 export type SandboxRef = Pick<StatusInput, "id" | "org">;
 
+const defaultOrigin = "https://armada.thevibecompany.co";
+
 function loopbackHost(hostname: string) {
   const host = hostname.toLowerCase();
   return host === "localhost" || host === "[::1]" || /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(host);
@@ -118,7 +120,7 @@ export class Armada {
   private readonly timeoutMs: number | undefined;
   readonly #token: string;
   constructor(options: ArmadaOptions) {
-    const url = new URL(options.url ?? "https://armada.thevibecompany.co");
+    const url = new URL(options.url ?? defaultOrigin);
     if (
       !["https:", "http:"].includes(url.protocol) ||
       url.username ||
@@ -180,7 +182,10 @@ export class Armada {
       Math.max(300000, ((input.timeout_seconds ?? 120) + 30) * 1000),
     );
   }
-  createViewerToken(input: ViewerTokenInput, options?: RequestOptions) {
+  /** Use an Armada client configured with the direct server URL for viewer token minting. */
+  async createViewerToken(input: ViewerTokenInput, options?: RequestOptions) {
+    if (this.origin === defaultOrigin)
+      throw new TypeError("Viewer token minting requires the direct Armada server URL.");
     const operation = sandboxViewerOperations.mint;
     return this.requestJson<ViewerTokenResult>(
       operation.route.path,
@@ -216,7 +221,7 @@ export class Armada {
         readOnly,
         options,
         undefined,
-        true,
+        (response) => response.ok || response.status === 416,
       );
       return response;
     },
@@ -258,7 +263,7 @@ export class Armada {
     readOnly: boolean,
     options: RequestOptions = {},
     defaultTimeoutMs = 300000,
-    streamResponse = false,
+    streamResponse?: RequestPolicy["streamResponse"],
   ) {
     const result = await requestApi(apiUrl(this.origin, path), init, {
       fetch: (url, init) => this.fetcher(String(url), init),
@@ -268,7 +273,7 @@ export class Armada {
       combineSignal: true,
       readOnly,
       readRetries: this.retries,
-      streamResponse,
+      ...(streamResponse ? { streamResponse } : {}),
     });
     if (result.kind === "transport")
       throw new ArmadaError(result.failure.code, 0, undefined, result.failure.outcomeUnknown);

@@ -15,8 +15,8 @@ export interface RequestPolicy {
   renewToken?: () => Promise<string>;
   readOnly?: boolean;
   readRetries?: number;
-  /** Leave a successful download body for the caller to consume. */
-  streamResponse?: boolean;
+  /** Return matching download responses without reading their bodies. */
+  streamResponse?: (response: Response) => boolean;
 }
 
 interface Failure {
@@ -89,8 +89,7 @@ export const requestApi: (
       renewed = true;
       continue;
     }
-    if (response.ok && policy.streamResponse)
-      return { kind: "response", response, payload: null, bodyReadFailed: false };
+    if (policy.streamResponse?.(response)) return { kind: "response", response, payload: null, bodyReadFailed: false };
     let payload: unknown = null;
     let bodyReadFailed = false;
     let text: string | undefined;
@@ -127,12 +126,9 @@ export const requestApi: (
       !signal.aborted
     )
       continue;
-    const rawCode =
-      typeof error === "string"
-        ? error
-        : error && typeof error === "object" && "code" in error && typeof error.code === "string"
-          ? error.code
-          : undefined;
+    const structuredCode =
+      error && typeof error === "object" && "code" in error && typeof error.code === "string" ? error.code : undefined;
+    const rawCode = typeof error === "string" ? error : structuredCode;
     const code: FailureCode = rawCode && isServerFailureCode(rawCode) ? rawCode : "unknown_response";
     return {
       kind: "response",

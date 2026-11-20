@@ -337,10 +337,11 @@ function testControl<Input>(
     let calls = 0;
     const client = new Armada({
       token: "service_placeholder",
+      url: "https://direct.armada.test",
       readRetries: 1,
       fetch: async (url, init) => {
         calls++;
-        expect(new URL(String(url)).pathname).toBe(`/api/v1/${route}`);
+        expect(String(url)).toBe(`https://direct.armada.test/api/v1/${route}`);
         expect(init?.method).toBe("POST");
         expect(new Headers(init?.headers).get("authorization")).toBe("Bearer service_placeholder");
         expect(JSON.parse(String(init?.body))).toEqual(input);
@@ -354,7 +355,7 @@ function testControl<Input>(
 
 testControl(
   "sandbox/list",
-  { page: 2, limit: 1, externalRef: "work-item", org: "example" },
+  { page: 2, limit: 1, externalRef: "work-item", org: "00000000-0000-4000-8000-000000000003" },
   { sandboxes: [], total: 1, page: 2, limit: 1, hasMore: false, nextPage: null },
   (client, input) => client.list(input),
   true,
@@ -387,6 +388,7 @@ testControl(
 test("viewer token denial preserves the server failure code", async () => {
   const client = new Armada({
     token: "service_placeholder",
+    url: "https://direct.armada.test",
     fetch: async () => Response.json({ error: "viewer_access_denied" }, { status: 403 }),
   });
   await expect(client.createViewerToken({ id: outputSandboxId })).rejects.toMatchObject({
@@ -394,6 +396,13 @@ test("viewer token denial preserves the server failure code", async () => {
     status: 403,
     outcomeUnknown: false,
   });
+});
+
+test("viewer token minting requires an explicit direct server origin", async () => {
+  const fetch = jest.fn(async () => new Response());
+  const client = new Armada({ token: "service_placeholder", fetch });
+  await expect(client.createViewerToken({ id: outputSandboxId })).rejects.toThrow("direct Armada server URL");
+  expect(fetch).not.toHaveBeenCalled();
 });
 
 test("outputs.list uses the snapshot GET and forwards cancellation", async () => {
@@ -454,6 +463,16 @@ test("outputs.get rejects a dot path segment before sending a request", async ()
   const client = new Armada({ token: "service_placeholder", fetch });
   await expect(client.outputs.get({ id: outputSandboxId, name: ".." })).rejects.toThrow();
   expect(fetch).not.toHaveBeenCalled();
+});
+
+test("outputs.get preserves the available length when a range is unsatisfiable", async () => {
+  const client = new Armada({
+    token: "service_placeholder",
+    fetch: async () => new Response(null, { status: 416, headers: { "content-range": "bytes */5" } }),
+  });
+  const response = await client.outputs.get({ id: outputSandboxId, name: "artifact.bin", range: "bytes=8-" });
+  expect(response.status).toBe(416);
+  expect(response.headers.get("content-range")).toBe("bytes */5");
 });
 
 test("outputs.get maps a flat API error without exposing a success stream", async () => {
