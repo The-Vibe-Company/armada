@@ -360,145 +360,147 @@ describe("runtime resume admission rollback", () => {
 describe("queued runtime wake admission", () => {
   const fixture = scopedRuntimeFixture(() => stopped(), { perTest: true });
 
-  test.each([
-    "current lease",
-    "lease lost during publication",
-    "stale lease",
-    "failed job retarget",
-    "different job request",
-  ] as const)("commits the resume intent and job generation together (%s)", async (scenario) => {
-    const f = await fixture();
-    const request = input(f.row.id);
-    const before = (await createSqlData(f.sql)(f.caller).sandboxes.get(f.row.id))!.lifecycleGeneration!;
-    const store = createJobsStore(f.sql, ENCRYPTION_KEY);
-    const id = await store.enqueue(
-      "turn_dispatch",
-      f.row.id,
-      before,
-      request.request_id,
-      { requestId: request.request_id },
-      { orgId: f.row.orgId, maxAttempts: 2 },
-    );
-    await f.db.query(
-      `insert into account_turn_queue
+  test.each(["current", "publication loss", "stale", "retarget failure", "wrong request"] as const)(
+    "fences queued wake admission and publication (%s)",
+    async (scenario) => {
+      const f = await fixture();
+      const request = input(f.row.id);
+      const before = (await createSqlData(f.sql)(f.caller).sandboxes.get(f.row.id))!.lifecycleGeneration!;
+      const store = createJobsStore(f.sql, ENCRYPTION_KEY);
+      const id = await store.enqueue(
+        "turn_dispatch",
+        f.row.id,
+        before,
+        request.request_id,
+        { requestId: request.request_id },
+        { orgId: f.row.orgId, maxAttempts: 2 },
+      );
+      await f.db.query(
+        `insert into account_turn_queue
            (sandbox_id,request_id,account_id,owner_id,org_id,actor_epoch,credential_version,input_hash,input_enc,
             conversation_id,queued_generation,state,dispatch_generation,dispatch_until)
          select id,$2,credential_id,owner_id,org_id,1,credential_version,'fixture',''::bytea,$3,
                 lifecycle_generation,'dispatching',lifecycle_generation,'infinity'
          from sandboxes where id=$1`,
-      [f.row.id, request.request_id, f.first.conversationId],
-    );
-    const owner = crypto.randomUUID();
-    const job = (await store.claim("turn_dispatch", owner, 30, 1))!;
-    expect(job.id).toBe(id);
-    if (scenario === "stale lease") await f.db.query("update jobs set lease_until='-infinity' where id=$1", [id]);
-    const read = async () =>
-      (
-        await f.db.query(
-          `select s.status,s.lifecycle_generation::text,j.generation::text,
+        [f.row.id, request.request_id, f.first.conversationId],
+      );
+      const owner = crypto.randomUUID();
+      const job = (await store.claim("turn_dispatch", owner, 30, 1))!;
+      expect(job.id).toBe(id);
+      if (scenario === "stale") await f.db.query("update jobs set lease_until='-infinity' where id=$1", [id]);
+      const read = async () =>
+        (
+          await f.db.query(
+            `select s.status,s.lifecycle_generation::text,j.generation::text,
                 exists(select 1 from runtime_resumes r where r.sandbox_id=s.id and r.request_id=$2) as intent
              from jobs j join sandboxes s on s.id=j.sandbox_id where j.id=$1`,
-          [id, request.request_id],
-        )
-      ).rows[0];
-    let preparations = 0;
-    const resume = createRuntimeResume(f.sql, ENCRYPTION_KEY, f.bridge, async () => {
-      preparations++;
-      expect(await read()).toEqual({
-        status: "starting",
-        lifecycle_generation: String(before + 1),
-        generation: String(before + 1),
-        intent: true,
+            [id, request.request_id],
+          )
+        ).rows[0];
+      let preparations = 0;
+      const resume = createRuntimeResume(f.sql, ENCRYPTION_KEY, f.bridge, async () => {
+        preparations++;
+        expect(await read()).toEqual({
+          status: "starting",
+          lifecycle_generation: String(before + 1),
+          generation: String(before + 1),
+          intent: true,
+        });
+        return {
+          async start(_signal, restore) {
+            f.deliverPromptEventsBeforeReply();
+            return f.reboot(restore);
+          },
+          async stop() {
+            throw Error("Unexpected stop during queued wake");
+          },
+        };
       });
-      return {
-        async start(_signal, restore) {
-          f.deliverPromptEventsBeforeReply();
-          return f.reboot(restore);
+      const send = createRuntimeFollowup(f.sql, ENCRYPTION_KEY, f.bridge, undefined, resume);
+      const sentRequest = scenario === "wrong request" ? input(f.row.id) : request;
+      const claim = {
+        async canDispatch(tx?: Parameters<typeof store.inspect>[2]) {
+          if ((await store.inspect(job, owner, tx)) !== "dispatch") return false;
+          if (scenario !== "publication loss" || !tx) return true;
+          const { rows } = await tx.query(
+            "select 1 from runtime_resumes where sandbox_id=$1 and request_id=$2 and receipt is not null",
+            [f.row.id, request.request_id],
+          );
+          return rows.length === 0;
         },
-        async stop() {
-          throw Error("Unexpected stop during queued wake");
-        },
+        handoffGeneration: (handoff: Parameters<typeof store.handoffGeneration>[2]) =>
+          store.handoffGeneration(job, owner, handoff),
       };
-    });
-    const send = createRuntimeFollowup(f.sql, ENCRYPTION_KEY, f.bridge, undefined, resume);
-    const sentRequest = scenario === "different job request" ? input(f.row.id) : request;
-    const claim = {
-      async canDispatch(tx?: Parameters<typeof store.inspect>[2]) {
-        if ((await store.inspect(job, owner, tx)) !== "dispatch") return false;
-        if (scenario !== "lease lost during publication" || !tx) return true;
-        const { rows } = await tx.query(
-          "select 1 from runtime_resumes where sandbox_id=$1 and request_id=$2 and receipt is not null",
+      const attempt = () => send(f.caller, sentRequest, claim);
+      if (scenario === "current") {
+        const dispatch = createQueuedSandboxDispatch({
+          authStore: createMemoryAuthStore(),
+          supabase: { supabaseUrl: "https://unused.test", anonKey: "fixture" },
+          store: createSqlVaultStore(f.sql),
+          encryptionKey: ENCRYPTION_KEY,
+          data: createSqlData(f.sql),
+          providers: {
+            async resolve() {
+              throw new Error("Runtime send does not call a native provider.");
+            },
+          },
+          runtimeSend: send,
+        });
+        const { runtimeVersion: _version, ...sendInput } = sentRequest;
+        await expect(dispatch(f.caller, sendInput, claim)).resolves.toMatchObject({
+          resumed: true,
+          requestId: request.request_id,
+        });
+        expect(preparations).toBe(1);
+      } else if (scenario === "publication loss") {
+        await expect(attempt()).rejects.toMatchObject({ code: "conflict" });
+        expect(await read()).toMatchObject({ status: "starting", intent: true });
+        expect(f.starts).toHaveLength(2);
+        await f.db.query("update jobs set lease_until='-infinity' where id=$1", [id]);
+        const accepted = await f.bridge.result(f.caller.userId, f.row.id, `resume_${request.request_id}`, "2");
+        expect(accepted.state).toBe("finished");
+        await f.db.query(
+          "update account_turn_queue set dispatch_until='-infinity' where sandbox_id=$1 and request_id=$2",
           [f.row.id, request.request_id],
         );
-        return rows.length === 0;
-      },
-      handoffGeneration: (handoff: Parameters<typeof store.handoffGeneration>[2]) =>
-        store.handoffGeneration(job, owner, handoff),
-    };
-    const attempt = () => send(f.caller, sentRequest, claim);
-    if (scenario === "current lease") {
-      const dispatch = createQueuedSandboxDispatch({
-        authStore: createMemoryAuthStore(),
-        supabase: { supabaseUrl: "https://unused.test", anonKey: "fixture" },
-        store: createSqlVaultStore(f.sql),
-        encryptionKey: ENCRYPTION_KEY,
-        data: createSqlData(f.sql),
-        providers: {
-          async resolve() {
-            throw new Error("Runtime send does not call a native provider.");
-          },
-        },
-        runtimeSend: send,
-      });
-      const { runtimeVersion: _version, ...sendInput } = sentRequest;
-      await expect(dispatch(f.caller, sendInput, claim)).resolves.toMatchObject({
-        resumed: true,
-        requestId: request.request_id,
-      });
-      expect(preparations).toBe(1);
-    } else if (scenario === "lease lost during publication") {
-      await expect(attempt()).rejects.toMatchObject({ code: "conflict" });
-      expect(await read()).toMatchObject({ status: "starting", intent: true });
-      expect(f.starts).toHaveLength(2);
-      await f.db.query("update jobs set lease_until='-infinity' where id=$1", [id]);
-      await f.db.query("update account_turn_queue set dispatch_until='-infinity' where sandbox_id=$1", [f.row.id]);
-      const successor = crypto.randomUUID();
-      const retry = (await store.claim("turn_dispatch", successor, 30, 1))!;
-      expect(retry.id).toBe(id);
-      await expect(
-        send(f.caller, request, {
-          canDispatch: async (tx) => (await store.inspect(retry, successor, tx)) === "dispatch",
-          handoffGeneration: () => Promise.reject(Error("An enrolled wake cannot advance generation again.")),
-        }),
-      ).resolves.toMatchObject({ resumed: true, requestId: request.request_id });
-      expect(preparations).toBe(1);
-      expect(f.starts).toHaveLength(2);
-    } else {
-      if (scenario === "failed job retarget") {
-        await f.db.exec(
-          `alter table jobs add constraint test_refuse_turn_retarget check (generation = ${before}) not valid`,
-        );
-        try {
-          await expect(attempt()).rejects.toThrow("test_refuse_turn_retarget");
-        } finally {
-          await f.db.exec("alter table jobs drop constraint test_refuse_turn_retarget");
-        }
+        const successor = crypto.randomUUID();
+        const retry = (await store.claim("turn_dispatch", successor, 30, 1))!;
+        expect(retry.id).toBe(id);
+        await expect(
+          send(f.caller, request, {
+            canDispatch: async (tx) => (await store.inspect(retry, successor, tx)) === "dispatch",
+            handoffGeneration: () => Promise.reject(Error("An enrolled wake cannot advance generation again.")),
+          }),
+        ).resolves.toMatchObject({ resumed: true, requestId: request.request_id });
+        expect(preparations).toBe(1);
+        expect(f.starts).toHaveLength(2);
       } else {
-        await expect(attempt()).rejects.toThrow(
-          scenario === "stale lease"
-            ? "Turn job lease is no longer current"
-            : "Queued wake does not match the claimed turn job.",
-        );
+        if (scenario === "retarget failure") {
+          await f.db.exec(
+            `alter table jobs add constraint test_refuse_turn_retarget check (generation = ${before}) not valid`,
+          );
+          try {
+            await expect(attempt()).rejects.toThrow("test_refuse_turn_retarget");
+          } finally {
+            await f.db.exec("alter table jobs drop constraint test_refuse_turn_retarget");
+          }
+        } else {
+          await expect(attempt()).rejects.toThrow(
+            scenario === "stale"
+              ? "Turn job lease is no longer current"
+              : "Queued wake does not match the claimed turn job.",
+          );
+        }
+        expect(preparations).toBe(0);
+        expect(await read()).toEqual({
+          status: "stopped",
+          lifecycle_generation: String(before),
+          generation: String(before),
+          intent: false,
+        });
       }
-      expect(preparations).toBe(0);
-      expect(await read()).toEqual({
-        status: "stopped",
-        lifecycle_generation: String(before),
-        generation: String(before),
-        intent: false,
-      });
-    }
-  });
+    },
+  );
 });
 
 test("an already enrolled uncertain resume reconciles on a fresh server without another activation or ticket", async () => {
