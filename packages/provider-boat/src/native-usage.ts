@@ -16,7 +16,7 @@ const BOAT_INPUT_PREFIX = "<important-instructions-from-user>\n";
 const BOAT_INPUT_SUFFIX = "</important-instructions-from-user>";
 const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
 const command = (operation: string, ...args: string[]) =>
-  `python3 -I -c ${quote(NATIVE_USAGE_BOOTSTRAP)} ${[operation, ...args].map(quote).join(" ")}`;
+  `/usr/bin/python3 -I -c ${quote(NATIVE_USAGE_BOOTSTRAP)} ${[operation, ...args].map(quote).join(" ")}`;
 export async function admitNativeUsage(provider: Provider, sandboxId: string, text: string): Promise<string | null> {
   const ticket = randomUUID();
   try {
