@@ -112,7 +112,7 @@ describe("credentials", () => {
             ...input,
             action: "set",
             id: account.id!,
-            expectedVersion: account.version,
+            expectedVersion: 1,
             value: "rotated-key",
           });
         } else {
