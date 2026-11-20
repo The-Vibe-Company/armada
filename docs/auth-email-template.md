@@ -54,7 +54,7 @@ Operator-only hosted changes for project `dhfldqnfyimjjehkngmm`:
    No migration, production config push, SMTP or rate-limit change is needed.
 
 Postflight with separate fresh emails: current TestFlight email must contain
-the numeric code, and entering it must sign in. Verify that new-user emails
+the numeric code without a consuming link, and entering it must sign in. Verify that new-user emails
 also contain the code. Dashboard emails must retain a working link and code.
 Run `armada login` to exercise the dashboard consent page. Keep live codes,
 message bodies, links and sessions out of the evidence.

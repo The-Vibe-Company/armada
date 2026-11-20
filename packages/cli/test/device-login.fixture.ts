@@ -11,12 +11,16 @@ export function loginStarted() {
   });
 }
 
-export function loginAuthorized(accessToken = "new-access", expiresAt = "2099-01-01T00:00:00.000Z") {
+export function loginAuthorized(
+  accessToken = "new-access",
+  expiresAt = "2099-01-01T00:00:00.000Z",
+  email = "user@example.test",
+) {
   return Response.json({
     status: "authorized",
     accessToken,
     refreshToken: "refresh-token",
     expiresAt,
-    email: "user@example.test",
+    email,
   });
 }
