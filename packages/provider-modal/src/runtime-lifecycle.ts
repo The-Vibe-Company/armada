@@ -207,9 +207,15 @@ export function createRuntimeLifecycle({
             throw refusal("conflict", "Common resume belongs to another activation.");
           signal?.throwIfAborted();
           if (["reserved", "creating", "booting"].includes(row.phase)) return create(row, save, {}, onResumeStage);
-          if (row.phase !== "active" || (await (await physical(row)).poll()) !== null)
-            throw refusal("conflict", "Resume activation outcome is unavailable; do not allocate again.");
-          return sandboxInfo(row);
+          if (row.phase === "active") {
+            const sb = await physical(row);
+            const { phase } = await observeModalCompute(
+              { sandboxId: input.sandboxId, generation: row.generation, machineId: sb.sandboxId },
+              sb,
+            );
+            if (phase === "running") return sandboxInfo(row);
+          }
+          throw refusal("conflict", "Resume activation outcome is unavailable; do not allocate again.");
         });
       } catch (error) {
         if (observed) throw new ModalOperationError(error, await resourceReceipt(observed));
