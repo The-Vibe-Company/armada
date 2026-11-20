@@ -855,6 +855,7 @@ describe("credential values", () => {
     expect(parseCredentialKind("Codex-Auth")).toBe("codex_auth");
     expect(parseCredentialKind("opencode")).toBe("opencode");
     expect(() => parseCredentialKind("unknown")).toThrow(/Unknown credential 'unknown'/);
+    expect(() => parseCredentialKind("antigravity")).toThrow(/Unknown credential 'antigravity'/);
   });
 });
 

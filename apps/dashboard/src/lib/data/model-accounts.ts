@@ -1,3 +1,4 @@
+import { isHarness } from "@armada/core";
 import { cache } from "react";
 import { type AccountControl, createAccountControl } from "@/lib/account-control";
 import { ControlError } from "@/lib/control";
@@ -137,6 +138,7 @@ export async function readConnectionTestChoices(accounts: readonly ModelAccount[
     state: "ready",
     sandboxes: reads.flatMap(({ data }, index) =>
       (data ?? []).flatMap((row) =>
+        isHarness(row.harness) &&
         matchesConnectionTestSandbox(row, {
           id: row.id,
           ownerId: viewer.id,

@@ -1,5 +1,7 @@
 import {
   type CredentialKind,
+  type Harness,
+  isHarness,
   LAUNCH_STAGES,
   type LaunchTiming,
   type Sandbox,
@@ -44,6 +46,7 @@ function logSkipped(skipped: readonly SkippedSandboxRow[]) {
 
 export type SandboxDetail = Omit<
   Sandbox,
+  | "harness"
   | "docker_retention_deadline"
   | "external_ref"
   | "outputs_attempt_count"
@@ -60,7 +63,7 @@ export type SandboxDetail = Omit<
   | "pull_request_merge_proof"
   | "stop_when_work_merged"
   | "transition_context"
->;
+> & { harness: Harness };
 
 /** The interior row. Row level security returns it only to its owner or a current organization admin. */
 export async function getSandbox(supabase: Supabase, id: string): Promise<SandboxDetail | null> {
@@ -73,7 +76,8 @@ export async function getSandbox(supabase: Supabase, id: string): Promise<Sandbo
     .eq("org_id", selected.org.id)
     .maybeSingle();
   if (error) throw new Error(error.message);
-  return data;
+  if (!data || !isHarness(data.harness)) return null;
+  return { ...data, harness: data.harness };
 }
 
 /**
@@ -136,7 +140,10 @@ async function sandboxCosts(supabase: Supabase, ids: readonly string[]): Promise
     supabase,
     (data ?? []).map((row) => row.credential_id),
   );
-  for (const row of data ?? []) costs.set(row.id, costOfRow(row, kinds.get(row.credential_id ?? "") ?? null));
+  for (const row of data ?? []) {
+    if (!isHarness(row.harness)) continue;
+    costs.set(row.id, costOfRow({ ...row, harness: row.harness }, kinds.get(row.credential_id ?? "") ?? null));
+  }
   return costs;
 }
 
