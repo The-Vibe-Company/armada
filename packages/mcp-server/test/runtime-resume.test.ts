@@ -425,16 +425,7 @@ describe.each(["boat", "modal"] as const)("queued runtime wake admission (%s)", 
       ).rows[0];
     let preparations = 0;
     let replacementEpoch: string | undefined;
-    const resume = createRuntimeResume(
-      f.sql,
-      ENCRYPTION_KEY,
-      f.bridge,
-      prepare,
-      undefined,
-      undefined,
-      access?.restoreEnrolled,
-    );
-    async function prepare() {
+    const prepare: NonNullable<Parameters<typeof createRuntimeResume>[3]> = async () => {
       preparations++;
       expect(await read()).toEqual({
         status: "starting",
@@ -460,7 +451,16 @@ describe.each(["boat", "modal"] as const)("queued runtime wake admission (%s)", 
           throw Error("Unexpected stop during queued wake");
         },
       };
-    }
+    };
+    const resume = createRuntimeResume(
+      f.sql,
+      ENCRYPTION_KEY,
+      f.bridge,
+      prepare,
+      undefined,
+      undefined,
+      access?.restoreEnrolled,
+    );
     const send = createRuntimeFollowup(f.sql, ENCRYPTION_KEY, f.bridge, undefined, resume);
     const sentRequest = scenario === "wrong request" ? input(f.row.id) : request;
     const wakeEvidence = async (tx: Sql = f.sql) =>
