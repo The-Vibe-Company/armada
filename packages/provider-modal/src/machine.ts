@@ -73,7 +73,7 @@ export function allocateModalCompute(
   image: Image,
   { size, computeTtlSeconds, ...options }: AllocationOptions,
 ) {
-  const capacity = size === undefined ? null : machineCapacity("modal", size);
+  const capacity = size === null ? null : machineCapacity("modal", size);
   return client.sandboxes.create(app, image, {
     ...options,
     timeoutMs: computeTtlSeconds * 1000,
@@ -232,7 +232,7 @@ export function createModalMachine(options: ModalMachineOptions) {
         tags: tags(request),
         runtime: "vm",
         computeTtlSeconds,
-        ...(size === undefined ? {} : { size }),
+        size,
       });
     }
     await save(request, entry, { ...entry, phase: "allocated", machineId: sandbox.sandboxId });

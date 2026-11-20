@@ -170,7 +170,7 @@ export function createPhysicalLifecycle(deps: {
       sb = await measure("modal_sandbox_create", () =>
         allocateModalCompute(client, app, image, {
           ...(row.runtimePolicy === "explicit-vm-v1" ? { runtime: "vm" as const } : {}),
-          ...(row.size === undefined ? {} : { size: row.size }),
+          size: row.size ?? null,
           name: row.physicalName,
           tags: {
             ...ownershipTags(row),
