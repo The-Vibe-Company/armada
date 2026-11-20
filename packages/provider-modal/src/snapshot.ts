@@ -3,16 +3,12 @@ import { refusal } from "./errors.ts";
 import type { Machine } from "./ports.ts";
 import { scrubSsh } from "./ssh.ts";
 
-/** Caller has already committed the checkpoint's exact durable event ACK. The runner and SSH/user
- * descendants must be dead before unlinking SQLite or native state. Recovery checkpoints keep it. */
 export async function prepareFilesystemSnapshot(sandbox: Sandbox, machine: Machine): Promise<void> {
   await scrubSsh(sandbox, machine);
   if (!machine.golden) return;
   await removeManagedState(sandbox);
 }
 
-/** No runtime has been started in this incarnation: the registry marker is committed before boot.
- * New logical forks must not inherit a golden's native/journal history; working recovery keeps it. */
 export async function prepareFreshFilesystem(sandbox: Sandbox, machine: Machine): Promise<void> {
   if (
     machine.phase !== "booting" ||

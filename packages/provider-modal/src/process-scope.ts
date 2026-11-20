@@ -3,8 +3,6 @@ import type { Sandbox } from "modal";
 import { refusal } from "./errors.ts";
 import type { Machine, ProcessBaseline } from "./ports.ts";
 
-// Runs only inside the SDK-selected physical sandbox. pidfds anchor signals to the inspected
-// incarnation where supported; gVisor fallback revalidates start identity before each owned-process signal.
 const controller = String.raw`
 import { readFileSync,readlinkSync,readdirSync,statSync } from "node:fs";
 import { dlopen,FFIType,read } from "bun:ffi";
@@ -202,9 +200,7 @@ async function invoke(sandbox: Sandbox, input: object, capture: boolean, signal?
               value,
             ),
         );
-    } catch {
-      /* Never retain remote exception text. */
-    }
+    } catch {}
   }
   if (exit !== 0)
     throw new ProviderError({
@@ -253,7 +249,6 @@ function validateProcessBaseline(data: ProcessBaseline, machine: Machine): Proce
     throw refusal("conflict", "Invalid physical control baseline; admission refused.");
   return data;
 }
-/** Seals exact trusted bootstrap controls once, before the provider publishes ready. */
 export async function sealProcessBaseline(
   sandbox: Sandbox,
   machine: Machine,

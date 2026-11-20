@@ -5,7 +5,6 @@ import type { Machine, SshPreparation } from "./ports.ts";
 import { quiesceSandboxProcesses } from "./process-scope.ts";
 
 export const SSH_PORT = 2222;
-/** Remove both daemon and established SSH sessions before saving any filesystem. */
 export async function scrubSsh(sandbox: Sandbox, machine: Machine): Promise<void> {
   await quiesceSandboxProcesses(sandbox, machine);
   const process = await sandbox.exec(
@@ -30,7 +29,6 @@ export function createSshPreparation(): SshPreparation {
   return {
     async prepare(sandbox, machine, publicKey) {
       const username = machine.golden ? "root" : "user";
-      // Only a single Ed25519 public key, never a shell expression or options supplied by the client.
       const match = /^ssh-ed25519 ([A-Za-z0-9+/]+={0,2})(?: [^\r\n]*)?$/.exec(publicKey.trim());
       if (!match || Buffer.from(match[1] ?? "", "base64").length !== 51)
         throw refusal("invalid_request", "An Ed25519 OpenSSH public key is required.");
