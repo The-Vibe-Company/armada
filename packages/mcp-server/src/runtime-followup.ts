@@ -256,6 +256,7 @@ export function createRuntimeFollowup(
               admitted.epoch,
               String(admitted.current.lifecycleGeneration),
               signal,
+              commandGuard,
             );
         }
         const accepted = await submit(signal);

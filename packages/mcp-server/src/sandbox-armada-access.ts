@@ -106,6 +106,7 @@ export function createSandboxArmadaAccess(input: {
     epoch: string,
     lifecycleGeneration: string,
     signal: AbortSignal,
+    assertClaim?: (tx: Sql) => Promise<void>,
   ) {
     signal.throwIfAborted();
     const parent = (
@@ -124,39 +125,49 @@ export function createSandboxArmadaAccess(input: {
       sandboxId,
       epoch,
       signal,
+      ...(assertClaim ? { assertClaim } : {}),
       lifecycleGeneration,
       mcpUrl: orchestratorScopedMcpUrl(input.publicUrl),
     });
+    const writeUnderOwner = <T>(write: (tx: Sql) => Promise<T>) =>
+      enrolments.withOwner(
+        sandboxId,
+        ownerId,
+        async (tx, scope) => {
+          if (scope.epoch !== epoch) throw new VaultError("conflict", "Scoped runtime epoch changed.");
+          await assertClaim?.(tx);
+          const result = await write(tx);
+          await assertClaim?.(tx);
+          return result;
+        },
+        lifecycleGeneration,
+      );
     const currentGrant = new Error("Scoped runtime grant is already acknowledged.");
     const runtimeFencedAuthority = authorityFor({
       ...sql,
+      query: (statement, params) =>
+        assertClaim ? writeUnderOwner((tx) => tx.query(statement, params)) : sql.query(statement, params),
       transaction: (write) =>
-        enrolments.withOwner(
-          sandboxId,
-          ownerId,
-          async (tx, scope) => {
-            if (scope.epoch !== epoch) throw new VaultError("conflict", "Scoped runtime epoch changed.");
-            const locked = await tx.query(
-              "select id from public.armada_access_parents where id=$1 and state='ready' for update skip locked",
-              [parent.id],
-            );
-            if (!locked.rows.length) throw new VaultError("conflict", "Scoped parent authority is unavailable.");
-            const current = await tx.query(
-              `select d.id from public.orchestrator_delegations d
+        writeUnderOwner(async (tx) => {
+          const locked = await tx.query(
+            "select id from public.armada_access_parents where id=$1 and state='ready' for update skip locked",
+            [parent.id],
+          );
+          if (!locked.rows.length) throw new VaultError("conflict", "Scoped parent authority is unavailable.");
+          const current = await tx.query(
+            `select d.id from public.orchestrator_delegations d
              join public.armada_access_parents p on p.id=d.orchestrator_id
              join public.sandboxes s on s.id=p.sandbox_id
              where p.id=$1 and d.epoch=p.authority_epoch and d.native_generation=$2
              and s.orchestrator_native_generation=$2 and d.acknowledged_at is not null
              and d.revoked_at is null and d.expires_at>now()
              and d.golden_ids=p.golden_ids and d.account_ids=p.credential_ids and d.scopes=$3::text[]`,
-              [parent.id, epoch, [...workerScopes]],
-            );
-            if (current.rows.length) throw currentGrant;
-            signal.throwIfAborted();
-            return write(tx);
-          },
-          lifecycleGeneration,
-        ),
+            [parent.id, epoch, [...workerScopes]],
+          );
+          if (current.rows.length) throw currentGrant;
+          signal.throwIfAborted();
+          return write(tx);
+        }),
     });
     try {
       await runtimeFencedAuthority.installEpoch(parent.id, transport, {

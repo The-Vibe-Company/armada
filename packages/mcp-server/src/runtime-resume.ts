@@ -390,6 +390,7 @@ export function createRuntimeResume(
                 admitted.op.target_epoch,
                 String(admitted.current.lifecycleGeneration),
                 signal,
+                commandGuard,
               );
           }
           // #2560: restored, verified and reauthorized; the resume prompt's dispatch is not launch time.
