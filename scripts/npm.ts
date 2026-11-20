@@ -43,12 +43,12 @@ export function platformPackage(target: Target) {
   return name;
 }
 
-export interface StagedPackage {
+interface StagedPackage {
   name: string;
   dir: string;
 }
 
-export interface StageOptions {
+interface StageOptions {
   /** A directory holding `armada-<target>` binaries. */
   binaries: string;
   out: string;
