@@ -46,30 +46,46 @@ export function boatRuntimeBootstrapScript(
   artifact: { sha256: string; bytes: number },
   cacheDir: string,
 ): string {
+  // Older Boat distributions can publish a Node package without global fetch.
+  // Pin the bootstrap download independently of whatever the golden's OS ships.
+  const nodeVersion = "22.22.2";
   return `set +x
 umask 077
+can_run_bootstrap() (
+  unset ARMADA_GIT_TOKEN ARMADA_SSH_PUBLIC_KEY
+  "$1" -e 'if (typeof fetch !== "function" || typeof AbortSignal.timeout !== "function") process.exit(1)' >/dev/null 2>&1
+)
 find_runtime_node() (
   unset ARMADA_GIT_TOKEN ARMADA_SSH_PUBLIC_KEY
-  for candidate in /usr/local/bin/node /usr/bin/node; do
-    if [ -x "$candidate" ] && "$candidate" -e 'if (typeof fetch !== "function" || typeof AbortSignal.timeout !== "function") process.exit(1)' >/dev/null 2>&1; then
+  for candidate in "$(type -P node)" /usr/local/bin/node /usr/bin/node; do
+    case "$candidate" in /*) ;; *) continue ;; esac
+    if [ -x "$candidate" ] && can_run_bootstrap "$candidate"; then
       printf '%s' "$candidate"
       return 0
     fi
   done
   return 1
 )
-install_runtime_node() (
+fetch_runtime_node() (
   unset ARMADA_GIT_TOKEN ARMADA_SSH_PUBLIC_KEY
-  export PATH=/usr/sbin:/usr/bin:/sbin:/bin DEBIAN_FRONTEND=noninteractive
-  if [ "$(id -u)" -eq 0 ]; then
-    /usr/bin/apt-get update && /usr/bin/apt-get install -y --no-install-recommends nodejs
-  else
-    /usr/bin/sudo -n /usr/bin/apt-get update && /usr/bin/sudo -n /usr/bin/env DEBIAN_FRONTEND=noninteractive /usr/bin/apt-get install -y --no-install-recommends nodejs
-  fi
+  export PATH=/usr/local/bin:/usr/bin:/bin
+  case "$(uname -m)" in
+    x86_64) arch=x64; digest=978978a635eef872fa68beae09f0aad0bbbae6757e444da80b570964a97e62a3 ;;
+    aarch64|arm64) arch=arm64; digest=b2f3a96f31486bfc365192ad65ced14833ad2a3c2e1bcefec4846902f264fa28 ;;
+    *) exit 1 ;;
+  esac
+  dist="node-v${nodeVersion}-linux-$arch"
+  cd -- "$node_tmp" || exit 1
+  curl -q -fsS --proto '=https' --max-time 20 --max-filesize 67108864 -o node.tar.gz "https://nodejs.org/dist/v${nodeVersion}/$dist.tar.gz" &&
+    printf '%s  node.tar.gz\\n' "$digest" | sha256sum -c - &&
+    tar -xzOf node.tar.gz "$dist/bin/node" > node && chmod 700 node
 )
 if ! runtime_node=$(find_runtime_node); then
-  install_runtime_node >/dev/null 2>&1 || exit 1
-  runtime_node=$(find_runtime_node) || exit 1
+  node_tmp=$(unset ARMADA_GIT_TOKEN ARMADA_SSH_PUBLIC_KEY; mktemp -d /tmp/armada-boat-node.XXXXXXXX) || exit 1
+  trap 'unset ARMADA_GIT_TOKEN ARMADA_SSH_PUBLIC_KEY; rm -rf -- "$node_tmp"' EXIT
+  fetch_runtime_node >/dev/null 2>&1 || exit 1
+  runtime_node="$node_tmp/node"
+  can_run_bootstrap "$runtime_node" || exit 1
 fi
 printf '%s' "$ARMADA_GIT_TOKEN" | (unset ARMADA_GIT_TOKEN ARMADA_SSH_PUBLIC_KEY; exec "$runtime_node" -e ${shellQuote(runtimeBootstrapScript(serverUrl, artifact, cacheDir))})
 `;

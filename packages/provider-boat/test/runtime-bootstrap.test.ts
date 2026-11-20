@@ -1,9 +1,12 @@
 import { expect, test } from "bun:test";
+import { runInNewContext } from "node:vm";
 import { boatRuntimeBootstrapScript } from "../src/runtime-bootstrap.ts";
 
-test("the remote bootstrap requires a verified system Node before dispatching the ticket", () => {
+test("the generated interpreter probe rejects Node without the APIs needed for artifact downloads", () => {
   const script = boatRuntimeBootstrapScript("https://armada.invalid", { sha256: "a".repeat(64), bytes: 1 }, "/cache");
-  expect(script).toMatch(
-    /if ! runtime_node=\$\(find_runtime_node\); then\s+install_runtime_node[^\n]+\|\| exit 1\s+runtime_node=\$\(find_runtime_node\) \|\| exit 1\s+fi\s+printf '%s' "\$ARMADA_GIT_TOKEN" \| \(unset ARMADA_GIT_TOKEN ARMADA_SSH_PUBLIC_KEY; exec "\$runtime_node" -e /,
-  );
+  const probe = script.match(/-e '([^']+)' >\/dev\/null 2>&1/)?.[1] ?? "";
+  const process = { exit: (code: number) => code };
+  expect(runInNewContext(probe, { process, AbortSignal })).toBe(1);
+  expect(runInNewContext(probe, { process, fetch, AbortSignal: {} })).toBe(1);
+  expect(runInNewContext(probe, { process, fetch, AbortSignal })).toBeUndefined();
 });
