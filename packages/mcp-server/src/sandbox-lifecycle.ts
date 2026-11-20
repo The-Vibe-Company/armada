@@ -616,7 +616,7 @@ export async function recordObservedProviderState(
     sandboxId: string;
     generation: number;
     fromState: "ready" | "running";
-    toState: "failed" | "stopped";
+    toState: "failed" | "stopped" | "ready" | "running";
     reason: string | null;
     stoppedAt: string | null;
     providerRunPlacement?: string;
@@ -624,6 +624,9 @@ export async function recordObservedProviderState(
 ) {
   if (!sql.transaction) throw new Error("Provider observation publication requires a transaction.");
   const { sandboxId, generation, fromState, toState, reason, stoppedAt, providerRunPlacement } = observation;
+  const nativeTurn = toState === "ready" || toState === "running";
+  if (nativeTurn && providerRunPlacement === undefined)
+    throw new Error("Native turn observation requires the observed placement.");
   return sql.transaction(async (tx) => {
     const eligible = await tx.query(
       `select s.id from public.sandboxes s
@@ -645,10 +648,14 @@ export async function recordObservedProviderState(
       expectedGeneration: generation,
       fromStates: [fromState],
       toState,
-      actor: toState === "stopped" ? "runtime_observation" : "lifecycle_runner",
-      code: `${path}_provider_${toState === "failed" ? "failure" : "stopped"}`,
+      actor: nativeTurn ? "native_turn" : toState === "stopped" ? "runtime_observation" : "lifecycle_runner",
+      code: nativeTurn
+        ? toState === "running"
+          ? "native_turn_running"
+          : "native_turn_settled"
+        : `${path}_provider_${toState === "failed" ? "failure" : "stopped"}`,
       effects: [],
-      ...(toState === "stopped"
+      ...(toState === "stopped" || nativeTurn
         ? { settlement: { lease: null, statusReason: reason, stopRequestedAt: null, stoppedAt } }
         : {}),
     });

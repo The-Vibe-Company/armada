@@ -309,7 +309,12 @@ export async function readStatus(
     } else if (next === "stopped") {
       patch.stoppedAt = (info.stoppedAt ?? options.now).toISOString();
     } else if (sandbox.stoppedAt !== null && next !== "failed") patch.stoppedAt = null;
-    if ((next === "stopped" || next === "failed") && (sandbox.status === "ready" || sandbox.status === "running"))
+    if (
+      (sandbox.status === "ready" || sandbox.status === "running") &&
+      (next === "stopped" ||
+        next === "failed" ||
+        (!runtime && next !== sandbox.status && (next === "ready" || next === "running")))
+    )
       patch.providerObservation = {
         fromState: sandbox.status,
         ...(runtime ? {} : { providerRunPlacement: sandbox.providerSandboxId }),
