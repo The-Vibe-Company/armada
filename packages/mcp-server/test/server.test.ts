@@ -84,8 +84,7 @@ function expectNoSecret(text: string) {
   for (const secret of allSecrets) expect(text).not.toContain(secret);
 }
 
-async function logsFixture() {
-  const { db, boat, people, client, token } = await start();
+async function seedRunningSandbox({ db, boat, people }: TestServer) {
   const machine = await boat.provider.fork({ from: "shared" });
   const id = crypto.randomUUID();
   await db.query(
@@ -94,6 +93,13 @@ async function logsFixture() {
      from goldens where org_id=$4 and name='shared'`,
     [id, people.member, machine.id, people.org],
   );
+  return { id, machine };
+}
+
+async function logsFixture() {
+  const server = await start();
+  const { boat, people, client, token } = server;
+  const { id, machine } = await seedRunningSandbox(server);
   await boat.provider.prompt({ sandboxId: machine.id, harness: "claude", text: "go" });
   const mcp = await client(await token(people.member));
   return { id, mcp, events: boat.sandbox(machine.id).events };
@@ -1694,10 +1700,10 @@ describe("tools", () => {
   });
 
   test("explicit new work cancels a pending stop receipt before the next stop", async () => {
-    const { token, client, people, boat, db } = await start();
+    const server = await start();
+    const { token, client, people, boat, db } = server;
     const mcp = await client(await token(people.member));
-    const launched = await call(mcp, "launch", { provider: "boat", golden: "shared", harness: "claude" });
-    const id = launchSandboxId(launched.data);
+    const { id, machine } = await seedRunningSandbox(server);
     boat.setExecOutput({ stdout: '{"status":"clean"}' });
     const stop = boat.provider.stop;
     boat.provider.stop = async () => {
@@ -1714,7 +1720,7 @@ describe("tools", () => {
     expect(sent.isError).not.toBe(true);
     const promptId = sent.data.promptId;
     if (typeof promptId !== "string") throw new Error("Missing accepted prompt id");
-    boat.finish("bx_1", promptId, "finished");
+    boat.finish(machine.id, promptId, "finished");
     boat.provider.stop = stop;
     const count = boat.execs.filter((r) => r.preservationStage === "collect_exec").length;
     expect((await call(mcp, "stop", { id })).isError).not.toBe(true);
@@ -1747,12 +1753,13 @@ describe("tools", () => {
   });
 
   test("user stop leaves an unverified archive in worker custody without dispatching another stop", async () => {
-    const { token, client, people, boat } = await start();
+    const server = await start();
+    const { token, client, people, boat } = server;
     const mcp = await client(await token(people.member));
-    const { data } = await call(mcp, "launch", { provider: "boat", golden: "shared", harness: "claude" });
-    const machine = boat.sandbox("bx_1");
+    const { id, machine: physical } = await seedRunningSandbox(server);
+    const machine = boat.sandbox(physical.id);
     machine.info = { ...machine.info, state: "stopped", providerState: "archived", retainedSnapshot: "unconfirmed" };
-    expect((await call(mcp, "stop", { id: launchSandboxId(data) })).data.status).toBe("stopping");
+    expect((await call(mcp, "stop", { id })).data.status).toBe("stopping");
     expect(boat.stops).toHaveLength(0);
   });
 
@@ -1760,18 +1767,18 @@ describe("tools", () => {
     const oldKey = process.env.ARMADA_ENCRYPTION_KEY;
     process.env.ARMADA_ENCRYPTION_KEY = ENCRYPTION_KEY;
     try {
-      const { token, client, people, boat, db, auth, clock } = await start();
+      const server = await start();
+      const { token, client, people, boat, db, auth, clock } = server;
       const bearer = await token(people.member);
       const mcp = await client(bearer);
-      const launched = await call(mcp, "launch", { provider: "boat", golden: "shared", harness: "claude" });
-      const id = launchSandboxId(launched.data);
+      const { id, machine } = await seedRunningSandbox(server);
       const archive = Buffer.from("private local-only commit recovery fixture").toString("base64");
       boat.setExecOutput({ stdout: JSON.stringify({ status: result }) });
       const capture = encryptedRecoveryExec(() => archive, boat.provider.exec);
       let captures = 0;
       boat.provider.exec = async (request) => {
         if (request.preservationStage === "collect_exec") captures++;
-        if (boat.sandbox("bx_1").info.state !== "ready")
+        if (boat.sandbox(machine.id).info.state !== "ready")
           throw new ProviderError({
             provider: "boat",
             code: "sandbox_not_ready",
@@ -1808,8 +1815,8 @@ describe("tools", () => {
       const lifecycle = createSandboxLifecycle(bunLikeSql(db), async () => boat.provider);
       expect(await lifecycle.reconcileOne()).toBe(true);
       expect(boat.stops).toHaveLength(1);
-      boat.sandbox("bx_1").info = {
-        ...boat.sandbox("bx_1").info,
+      boat.sandbox(machine.id).info = {
+        ...boat.sandbox(machine.id).info,
         state: "stopped",
         providerState: "archived",
         retainedSnapshot: "usable",

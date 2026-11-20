@@ -180,7 +180,7 @@ test.each(["acknowledged", "refused", "reply lost", "epoch replaced", "cancelled
   },
 );
 
-function stopPort(f: Awaited<ReturnType<typeof runtimeFixture>>) {
+function stopPort(f: Awaited<ReturnType<typeof runtimeFixture>>, commands = f.bridge) {
   let stopped = false,
     calls = 0;
   const physicalId = f.row.providerSandboxId!;
@@ -204,7 +204,7 @@ function stopPort(f: Awaited<ReturnType<typeof runtimeFixture>>) {
       ...f.context,
       runtimeStopCheckpoint: createRuntimeStopCheckpoint(
         f.sql,
-        createRuntimeCheckpoint(f.sql, ENCRYPTION_KEY, f.bridge),
+        createRuntimeCheckpoint(f.sql, ENCRYPTION_KEY, commands),
       ),
       provider: async () =>
         createRuntimeProvider(host, physicalId, {
@@ -222,10 +222,21 @@ const args = (id: string) => ({ id, request_id: crypto.randomUUID(), runtimeVers
 test("a definite runtime checkpoint refusal still allows compute cleanup", async () => {
   const f = await checkpointFixture("modal");
   try {
-    f.github(async () => {
-      throw Error("checkpoint runtime teardown refused");
+    const { runtimeToken, epoch } = f.active;
+    const commands = createRuntimeCommands(f.authority, ENCRYPTION_KEY, {
+      now: () => 0,
+      async wait() {
+        const { command } = await commands.next(runtimeToken, epoch);
+        if (command?.op !== "checkpoint") throw Error("Expected a pending checkpoint command");
+        await commands.complete(runtimeToken, epoch, {
+          epoch,
+          requestId: command.requestId,
+          status: 409,
+          body: { version: 1, requestId: command.requestId, error: "checkpoint runtime teardown refused" },
+        });
+      },
     });
-    const stop = stopPort(f);
+    const stop = stopPort(f, commands);
     await expect(callSharedTool(stop.context, "stop", { id: f.row.id })).resolves.toMatchObject({
       status: "stopped",
       preservationNote: "Runtime checkpoint was refused. No resumable checkpoint was recorded.",

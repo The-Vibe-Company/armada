@@ -1,7 +1,7 @@
 import { observeSmokeLaunch } from "./smoke-launch.ts";
 
 /** Coordinator-only scheduled execution proof; helper for the single --parity entrypoint. */
-export interface RoutineProbeCase {
+interface RoutineProbeCase {
   provider: "boat" | "modal" | "docker";
   harness: string;
   model: string;

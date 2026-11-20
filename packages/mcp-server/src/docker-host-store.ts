@@ -115,7 +115,7 @@ type Sandbox = {
 };
 type Selection = { requestId: string } & (
   | { operation: "create" | "delete" }
-  | (Omit<RestoreJob, "requestId"> & { lifecycleGeneration: number })
+  | (Omit<RestoreJob, "requestId"> & { lifecycleGeneration: number; runnerJobId: string })
   | { operation: "deletePhysical"; machineId: string; lifecycleGeneration: number }
   | { operation: "stop"; idleCheckpointRequest?: string; onlyIfIdle?: boolean }
   | { operation: "bootstrap" | "resume"; bootstrapDescriptor: BootstrapDescriptor }
@@ -275,12 +275,19 @@ export function createDockerHostStore(sql: Sql, key: string) {
     );
     return result.rows[0] ?? deny();
   }
-  async function insert(tx: Sql, hostId: string, job: Job, bound?: Bound, lifecycleGeneration?: string) {
+  async function insert(
+    tx: Sql,
+    hostId: string,
+    job: Job,
+    bound?: Bound,
+    lifecycleGeneration?: string,
+    runnerJobId?: string,
+  ) {
     const canonical = input(job);
     // Deliberately incompatible with old strict mailbox readers: a mixed-version
     // server must fail closed, never deliver bound work without actor admission.
     const serialized = bound
-      ? JSON.stringify({ bound: 1, job: JSON.parse(canonical), lifecycleGeneration })
+      ? JSON.stringify({ bound: 1, job: JSON.parse(canonical), lifecycleGeneration, runnerJobId })
       : canonical;
     const metadata: Bound = {
       snapshot_id: null,
@@ -326,6 +333,11 @@ export function createDockerHostStore(sql: Sql, key: string) {
     return { requestId: job.requestId };
   }
   async function readJob(row: StoredJob, expectedGeneration?: Sandbox["lifecycle_generation"]): Promise<Job> {
+    return (await readStoredJob(row, expectedGeneration)).job;
+  }
+
+  async function readStoredJob(row: StoredJob, expectedGeneration?: Sandbox["lifecycle_generation"]) {
+    let runnerJobId: string | undefined;
     const plaintext = await decryptSecret(row.input_enc, key).catch((error: unknown) => {
       if (row.bound_operation === "restore" && error instanceof DOMException && error.name === "OperationError") deny();
       throw error;
@@ -339,7 +351,16 @@ export function createDockerHostStore(sql: Sql, key: string) {
     }
     if (row.bound_sandbox_id !== null || row.snapshot_id) {
       const fenced = generationFenced(row.bound_operation);
-      exact(stored, fenced ? ["bound", "job", "lifecycleGeneration"] : ["bound", "job"]);
+      exact(stored, [
+        "bound",
+        "job",
+        ...(fenced ? ["lifecycleGeneration"] : []),
+        ...(row.bound_operation === "restore" ? ["runnerJobId"] : []),
+      ]);
+      if (row.bound_operation === "restore") {
+        id(stored.runnerJobId);
+        runnerJobId = stored.runnerJobId;
+      }
       if (stored.bound !== 1) deny();
       if (
         fenced &&
@@ -371,7 +392,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
         job.build.ownerId !== row.bound_actor_id)
     )
       deny();
-    return job;
+    return { job, runnerJobId };
   }
   async function sandbox(tx: Sql, sandboxId: string, host: Host, installationId: string) {
     const row = (await tx.query<Sandbox>(`select * from public.sandboxes where id=$1 for update`, [sandboxId])).rows[0];
@@ -579,7 +600,28 @@ export function createDockerHostStore(sql: Sql, key: string) {
     if (!bindings.rows.length) deny();
   }
 
-  async function enqueueRestore(tx: Sql, row: Sandbox, job: RestoreJob, bound: Bound, known: boolean) {
+  async function requireRestoreRunner(tx: Sql, runnerJobId: unknown, logical: Sandbox) {
+    id(runnerJobId);
+    const { rows } = await tx.query(
+      `with locked_runner as materialized (
+         select deadline_at from public.jobs where id=$1 and org_id=$2 and sandbox_id=$3 and generation=$4
+         and kind='turn_dispatch' and state in ('queued','leased') and attempts <= max_attempts
+         for update
+       )
+       select 1 from locked_runner where deadline_at > clock_timestamp()`,
+      [runnerJobId, logical.org_id, logical.id, logical.lifecycle_generation],
+    );
+    if (!rows.length) deny();
+  }
+
+  async function enqueueRestore(
+    tx: Sql,
+    row: Sandbox,
+    job: RestoreJob,
+    bound: Bound,
+    known: boolean,
+    runnerJobId: string,
+  ) {
     input(job);
     if (job.requestId !== job.request.generation) deny();
     if (!known) {
@@ -587,7 +629,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
       await validateRestoreTarget(tx, row, job);
       await verifyRestoreSource(tx, row, job);
     }
-    return insert(tx, row.docker_host_id, job, bound, String(row.lifecycle_generation));
+    return insert(tx, row.docker_host_id, job, bound, String(row.lifecycle_generation), runnerJobId);
   }
 
   async function refuseDraining(tx: Sql, hostId: string) {
@@ -600,7 +642,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
 
   async function admitRestore(tx: Sql, row: StoredJob, host: Host, installationId: string) {
     const logical = await sandbox(tx, row.bound_sandbox_id ?? deny(), host, installationId);
-    const job = await readJob(row, logical.lifecycle_generation);
+    const { job, runnerJobId } = await readStoredJob(row, logical.lifecycle_generation);
     if (job.operation !== "restore") deny();
     await permission(
       tx,
@@ -610,6 +652,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
       row.bound_actor_epoch,
     );
     await validateRestoreTarget(tx, logical, job);
+    await requireRestoreRunner(tx, runnerJobId, logical);
     return job;
   }
 
@@ -1304,7 +1347,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
     },
     async admitMachineRestore(
       actor: Actor,
-      job: Pick<RunnerJob, "sandbox_id" | "generation">,
+      job: Pick<RunnerJob, "id" | "sandbox_id" | "generation">,
       retained: RestoreJob["predecessor"] & { machineGeneration: number },
       handoffGeneration: (handoff: GenerationHandoff) => Promise<string>,
     ) {
@@ -1341,6 +1384,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
           await refuseDraining(tx, host.id);
           await admitDockerCapacity(tx, host.id);
           await admitDockerDisk(tx, host.id);
+          await requireRestoreRunner(tx, job.id, row);
           const transition = await transitionSandbox(tx, {
             sandboxId,
             expectedGeneration: expected,
@@ -1375,6 +1419,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
               bound_operation: "restore",
             },
             false,
+            job.id,
           );
           requestId = result.requestId;
         },
@@ -1392,7 +1437,9 @@ export function createDockerHostStore(sql: Sql, key: string) {
             : []),
           ...(selection.operation === "bootstrap" || selection.operation === "resume" ? ["bootstrapDescriptor"] : []),
           ...(selection.operation === "deletePhysical" ? ["machineId", "lifecycleGeneration"] : []),
-          ...(selection.operation === "restore" ? ["request", "predecessor", "lifecycleGeneration"] : []),
+          ...(selection.operation === "restore"
+            ? ["request", "predecessor", "lifecycleGeneration", "runnerJobId"]
+            : []),
         ]);
         id(selection.requestId);
         if (
@@ -1448,8 +1495,9 @@ export function createDockerHostStore(sql: Sql, key: string) {
           bound_operation: selection.operation,
         };
         if (selection.operation === "restore") {
-          const { lifecycleGeneration: _, ...job } = selection;
-          return enqueueRestore(tx, row, job, bound, known);
+          const { lifecycleGeneration: _, runnerJobId, ...job } = selection;
+          if (!known) await requireRestoreRunner(tx, runnerJobId, row);
+          return enqueueRestore(tx, row, job, bound, known, runnerJobId);
         }
         if (!known) await state(tx, row, selection.operation);
         let workMerged = false;

@@ -98,10 +98,19 @@ the coordinator alone runs staging checks after normal deployment.
 
 1. **Modal price/store/read path (start now):** vendor refresh + server calculator + storage
    and API DTO; switch dashboard/CLI to it, preserve visibility rules and metadata-
-   only redaction. Coordinator: launch one Claude and one Codex prompt via existing
-   `armada launch <modal-golden> --provider modal --agent <claude|codex> "Reply OK"`, then
-   `armada wait <id>` and `armada status <id> --json`; compare each bucket × frozen
-   rate by hand in the PR, inspect the same sandbox in dashboard and API status.
+   only redaction. The coordinator runs the following with `SNAPSHOT_NAME` set to an
+   existing Modal snapshot. Set `SANDBOX_ID` to each sandbox ID returned at launch
+   and repeat the wait and status commands for both sandboxes.
+
+   ```bash
+   armada launch "$SNAPSHOT_NAME" --provider modal --agent claude "Reply OK"
+   armada launch "$SNAPSHOT_NAME" --provider modal --agent codex "Reply OK"
+   armada wait "$SANDBOX_ID"
+   armada status "$SANDBOX_ID" --json
+   ```
+
+   Compare each bucket × frozen rate by hand in the PR and inspect the same
+   sandbox in dashboard and API status.
    Expect identical stored USD/basis (or explicit unknown for capture gaps).
    Complete the staging lifecycle smoke (send, steer, interrupt, stop/resume,
    delete) before advancing; preserve priced observations across resume/replay.
@@ -113,8 +122,8 @@ the coordinator alone runs staging checks after normal deployment.
    sessions to satisfy ticket acceptance. Through #1162's connection flow run a
    custom endpoint with configured prices, then without: override wins / unknown.
 3. **Totals:** reuse frozen shares for sandbox/routine/template/day-org totals,
-   one API plus dashboard view and `armada usage`; publish exact filters/commands
-   in that PR. Coordinator: sum two known sessions by UTC day and compare all
+   one API, a dashboard view and planned CLI reporting. Publish the supported
+   filters and commands in that PR. Coordinator: sum two known sessions by UTC day and compare all
    surfaces; add an unknown session and verify incomplete totals stay labelled.
 
 Design PR staging check: no deploy required; inspect this document against the
