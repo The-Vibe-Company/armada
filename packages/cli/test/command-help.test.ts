@@ -76,7 +76,7 @@ for (const command of [
   });
 }
 
-test("host help lists retention alongside the other account commands", async () => {
+test("host help shows the five host commands", async () => {
   let stdout = "";
   const fail = () => {
     throw new Error("Help must not perform authenticated or secret I/O");
@@ -87,7 +87,13 @@ test("host help lists retention alongside the other account commands", async () 
     { env: {}, fetch: Object.assign(fail, { preconnect: fail }) },
   );
   expect(code).toBe(0);
-  expect(stdout).toMatch(/^ {2}retention +Update stopped sandbox retention/m);
+  expect([...stdout.matchAll(/^ {2}(\w+) +\S/gm)].map((match) => match[1])).toEqual([
+    "install",
+    "add",
+    "ls",
+    "limits",
+    "rm",
+  ]);
 });
 
 test("events help rejects an invalid profile from the environment", async () => {

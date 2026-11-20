@@ -228,8 +228,11 @@ use the owner REST route `POST /api/v1/sandbox/resume` with `id` and a
 
 A `docker_host_upgrade_required` refusal means the daemon must be upgraded.
 After the protocol-aware release ships, use `armada host add` and run its
-generated installer on the existing Docker host. Check `armada host list --json`
-for the reported protocol and `upgradeRequired: false`.
+generated installer on the existing Docker host. Check `armada host ls --json`
+for the reported protocol and `upgradeRequired: false`. Use `armada host ls HOST`
+for a particular machine, `armada host limits HOST` for resource settings, and
+`armada host rm UUID` for authorized registration revocation. The local Docker
+daemon binary handles status and uninstall on the Docker machine.
 
 ## 5. Several sandboxes, including a sandbox as caller
 

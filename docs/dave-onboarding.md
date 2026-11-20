@@ -616,6 +616,6 @@ JSON selection commands return `{"org":<organization>}` when selecting and
 authorizing the request and keep the process running. It writes
 `{"authenticated":true}` after saving the session. `armada logout --json`
 returns `{"authenticated":false}`. Host mutations
-accept `--json`: limits and retention return the host ID and requested policy,
-revoke returns the host ID and `revoked:true`, and add returns the registration
-receipt without waiting for check-in. Protect that short-lived installer receipt.
+accept `--json`. The `limits` verb returns the host ID and requested policy.
+The `rm` verb returns the host ID and `revoked:true`. The `add` verb returns
+the registration receipt without waiting for check-in. Protect that short-lived installer receipt.
