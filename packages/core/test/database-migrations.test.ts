@@ -26,10 +26,13 @@ const files = readdirSync(migrationsDir)
   .filter((name) => name.endsWith(".sql"))
   .sort();
 const migrationDatabase = closeableFixture(openDatabase);
+const credentialDatabase = closeableFixture(() => migrationDatabase.get().clone());
 beforeAll(async () => {
   await migrationDatabase.setup();
   expect(await applyMigrations(migrationDatabase.get())).toEqual(files);
+  await credentialDatabase.setup();
 });
+afterAll(credentialDatabase.close);
 afterAll(migrationDatabase.close);
 
 test("migrations apply on a fresh database", async () => {
@@ -64,7 +67,7 @@ test("migrations apply on a fresh database", async () => {
 });
 
 test("authenticated owners cannot directly write a newly added credential kind", async () => {
-  const db = migrationDatabase.get();
+  const db = credentialDatabase.get();
   await db.exec("alter type public.credential_kind add value 'fixture_model_account'");
   const owner = crypto.randomUUID();
   await db.query("insert into auth.users(id) values ($1)", [owner]);
