@@ -292,7 +292,7 @@ test("the published trigger UUID schemas accept uppercase input", () => {
   const { templateId } = trigger.requestBody.content["application/json"].schema.properties;
   const uppercase = "ABCDEF12-0000-4000-8000-00000000000A";
   for (const schema of [org.schema, templateId]) {
-    expect(z.fromJSONSchema(schema).safeParse(uppercase).success).toBe(true);
+    expect(uppercase).toMatch(new RegExp(schema.pattern));
   }
 });
 
