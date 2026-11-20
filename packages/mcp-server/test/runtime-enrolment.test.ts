@@ -190,6 +190,16 @@ test("an accepted initial launch prompt publishes under the enrolled generation"
   } satisfies Parameters<typeof store.update>[1];
 
   await expect(store.update(f.id, { ...patch, activityToken: crypto.randomUUID() })).rejects.toThrow();
+  await f.db.query(
+    `with account as (
+       insert into credentials(scope,owner_id,kind,value_enc) values('user',$2,'openai',$3) returning id
+     )
+     insert into account_agent_reservations(sandbox_id,account_id) select $1,id from account`,
+    [f.id, f.people.owner, new Uint8Array([1])],
+  );
+  const lease = () => f.db.query("select activity_lease_id from sandboxes where id=$1", [f.id]);
+  const reservations = () =>
+    f.db.query("select account_id from account_agent_reservations where sandbox_id=$1", [f.id]);
   const publish = () => store.update(f.id, patch);
   await f.db.exec(`alter table sandboxes add constraint test_running_publication
     check (status <> 'running' or activity_lease_id is not null) not valid`);
@@ -217,6 +227,8 @@ test("an accepted initial launch prompt publishes under the enrolled generation"
   try {
     await expect(publish()).rejects.toThrow("test_reject_settlement");
     expect(await store.get(f.id)).toMatchObject({ status: "starting", taskPromptId: null, conversationIds: [] });
+    expect((await lease()).rows).toEqual([{ activity_lease_id: activityToken }]);
+    expect((await reservations()).rows).toHaveLength(1);
     expect(await journal()).toEqual([]);
   } finally {
     await f.db.exec("alter table sandbox_transitions drop constraint test_reject_settlement");
@@ -229,6 +241,8 @@ test("an accepted initial launch prompt publishes under the enrolled generation"
     taskPromptId: "first-prompt",
     conversationIds: ["conversation"],
   });
+  expect((await lease()).rows).toEqual([{ activity_lease_id: null }]);
+  expect((await reservations()).rows).toEqual([]);
   expect(await journal()).toEqual([
     { to_status: "running", actor: "runtime_enrolment", generation: ticket.lifecycleGeneration },
     { to_status: "ready", actor: "runtime_turn", generation: ticket.lifecycleGeneration },
