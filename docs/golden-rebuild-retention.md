@@ -102,8 +102,10 @@ API-only CLI against the normal Armada origin:
 ```sh
 armada api golden/retirement/dry-run '{"id":"GOLDEN_UUID","org":"ORG_UUID","limit":20}' > review.json
 # Review the exact proof/fingerprints in review.json before confirmation.
-jq --arg id GOLDEN_UUID --arg org ORG_UUID '{id: $id, org: $org, limit: 20, receipts: [.results[].receipt]}' review.json |
-  armada api golden/retirement/reconcile -
+body=$(jq -ce --arg id GOLDEN_UUID --arg org ORG_UUID '
+  [.results[].receipt | strings] | select(length > 0) |
+  {id: $id, org: $org, limit: 20, receipts: .}
+' review.json) && printf '%s' "$body" | armada api golden/retirement/reconcile -
 ```
 
 Equivalent authenticated POST routes are
