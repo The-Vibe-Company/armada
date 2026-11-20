@@ -289,7 +289,14 @@ test("SQL gateway delivers MCP objects and provider configuration is reused acro
             [sandbox],
           )
         ).rows[0];
-        expect(row).toMatchObject({ status: "ready", stopped_at: null });
+        expect(row).toMatchObject({ status: "starting", stopped_at: null });
+        expect(
+          (
+            await db.query("select id from sandbox_transitions where sandbox_id=$1 and actor='mcp_bootstrap'", [
+              sandbox,
+            ])
+          ).rows,
+        ).toEqual([]);
         const readiness = () =>
           db.query(
             "select at from sandbox_launch_stages where sandbox_id=$1 and activation=2 and stage='harness_ready'",

@@ -395,6 +395,7 @@ describe("ordinary scoped Armada smoke", () => {
           targetMatches: mode !== "missing" && mode !== "wrong-target",
           receiptTargetMatches: mode !== "missing",
           receiptIdValid: mode !== "missing",
+          receiptSandboxIdValid: mode !== "missing",
           receiptState: mode === "uncertain" ? "uncertain" : mode === "wrong-target" ? "succeeded" : "unrecognized",
           toolError: mode === "missing" ? null : false,
           authorityDenied: mode === "missing" ? null : false,
@@ -404,6 +405,35 @@ describe("ordinary scoped Armada smoke", () => {
       expect(f.state.sends).toBe(1);
     },
   );
+
+  test("failed stop proof reports receipt mismatches and only recognized extra tool names", async () => {
+    const f = fixture();
+    f.state.mutate = (tools) => {
+      const stop = at(tools, 3);
+      stop.input.idempotencyKey = "private-key";
+      stop.result.output = { structuredContent: { result: { state: "uncertain", sandboxId: other } } };
+      tools.push(f.wire("exec_command", {}, {}), f.wire("private-tool-name", {}, {}));
+    };
+    await expect(run(f)).rejects.toThrow("scoped_stop_unproven");
+    expect(f.output).toEqual([
+      {
+        step: "scoped_stop_diagnostic",
+        provider: "boat",
+        stopCount: 1,
+        readCount: 1,
+        keyMatches: false,
+        receiptIdValid: false,
+        receiptSandboxIdValid: true,
+        receiptState: "uncertain",
+        toolError: false,
+        authorityDenied: false,
+        targetMatches: true,
+        receiptTargetMatches: false,
+        extraToolNames: ["exec_command"],
+        unknownExtraToolCount: 1,
+      },
+    ]);
+  });
 
   test.each([true, false])("rejects non-MCP native actions in either control (enabled=%s)", async (enabled) => {
     const f = fixture(enabled);
@@ -494,7 +524,17 @@ describe("ordinary scoped Armada smoke", () => {
     expect(await f.probe.cleanup(parent, true)).toBe(false);
     expect(f.stopped).toEqual([child]);
     expect(f.state.sends).toBe(1);
-    expect(f.output[0]).toMatchObject({ unknownLaunch: true, operationIds: [operation], claimedSandboxIds: [child] });
+    expect(f.output[0]).toMatchObject({
+      step: "scoped_launch_diagnostic",
+      launchCount: 1,
+      keyMatches: true,
+      receiptState: "uncertain",
+    });
+    expect(f.output.at(-1)).toMatchObject({
+      unknownLaunch: true,
+      operationIds: [operation],
+      claimedSandboxIds: [child],
+    });
     expect(f.output.at(-1)?.launchRequestKey).toMatch(/^smoke-scoped-/);
   });
 
@@ -514,7 +554,7 @@ describe("ordinary scoped Armada smoke", () => {
     expect(await f.probe.cleanup(parent, true)).toBe(false);
     expect(f.stopped).toEqual([]);
     if (mode === "preexisting" || mode === "parent" || mode === "unclaimed") expect(f.journaled).toEqual([]);
-    expect(f.output[0]?.pass).toBe(false);
+    expect(f.output.at(-1)?.pass).toBe(false);
   });
 
   test("known launch claims are journaled even when final fleet snapshot is unreadable", async () => {
@@ -579,7 +619,7 @@ describe("ordinary scoped Armada smoke", () => {
     f.state.tools.push(late);
     expect(await f.probe.cleanup(parent, true)).toBe(false);
     expect(f.stopped).toEqual([child, other]);
-    expect(f.output[0]).toMatchObject({ leftoverSandboxIds: [child], claimedSandboxIds: [child, other] });
+    expect(f.output.at(-1)).toMatchObject({ leftoverSandboxIds: [child], claimedSandboxIds: [child, other] });
   });
 
   test("malformed local-key selection still preserves known cleanup receipts, without accepting it as proof", async () => {
@@ -590,7 +630,7 @@ describe("ordinary scoped Armada smoke", () => {
     await expect(run(f)).rejects.toThrow("scoped_launch_unproven");
     expect(await f.probe.cleanup(parent, true)).toBe(true);
     expect(f.stopped).toEqual([child]);
-    expect(f.output[0]).toMatchObject({ operationIds: [operation], claimedSandboxIds: [child] });
+    expect(f.output.at(-1)).toMatchObject({ operationIds: [operation], claimedSandboxIds: [child] });
   });
 
   test("excessively nested MCP output cannot bypass the bounded evidence parser", async () => {
@@ -619,8 +659,8 @@ describe("ordinary scoped Armada smoke", () => {
       await expect(run(f)).rejects.toThrow("scoped_launch_unproven");
       expect(await f.probe.cleanup(parent, true)).toBe(false);
       expect(f.stopped).toEqual([]);
-      expect(f.output[0]).toMatchObject({ unattributedSandboxIds: [child], claimedSandboxIds: [] });
-      if (mode === "missing-receipt") expect(f.output[0]?.unknownLaunch).toBe(true);
+      expect(f.output.at(-1)).toMatchObject({ unattributedSandboxIds: [child], claimedSandboxIds: [] });
+      if (mode === "missing-receipt") expect(f.output.at(-1)?.unknownLaunch).toBe(true);
     },
   );
 
