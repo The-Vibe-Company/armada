@@ -877,7 +877,12 @@ export function createSqlData(
           );
           if (outcome === "applied") return;
           if (outcome === "native_conflict")
-            throw new DataError("Native launch prompt publication is stale.", "sandbox_not_ready");
+            throw new DataError(
+              initialPrompt
+                ? "Native launch prompt publication is stale."
+                : "Native launch readiness publication is stale.",
+              "sandbox_not_ready",
+            );
           if (outcome === "conflict")
             throw new DataError("Runtime readiness publication is stale.", "sandbox_not_ready");
         }
