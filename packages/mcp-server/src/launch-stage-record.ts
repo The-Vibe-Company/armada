@@ -29,7 +29,6 @@ export async function recordLaunchStageForActivation(
   );
 }
 
-/** Date the current activation from the resume intent inside its admission transaction. */
 export function recordResumeAcceptedAt(tx: Pick<Sql, "query">, sandboxId: string, requestId: string) {
   return tx.query(
     `update public.sandbox_launch_stages l set at=least(l.at,r.created_at)

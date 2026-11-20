@@ -93,7 +93,6 @@ export async function projectRuntimeIdle(
   await apply(fresh, sequence);
 }
 
-/** Record a terminal provider-run turn under the current reconciliation fence. */
 export function recordNativeIdleTurn(
   sql: Pick<Sql, "query">,
   sandboxId: string,
