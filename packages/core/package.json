@@ -6,6 +6,7 @@
   "exports": {
     ".": "./src/index.ts",
     "./accounts": "./src/account-binding-policy.ts",
+    "./antigravity-credential": "./src/antigravity-credential.ts",
     "./contract": "./src/contract/index.ts",
     "./contract/failures": "./src/contract/failures.ts",
     "./contract/public-auth": "./src/contract/public-auth.ts",
