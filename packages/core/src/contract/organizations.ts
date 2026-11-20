@@ -14,7 +14,6 @@ function requiredText(field: string) {
   });
 }
 
-// The provider service checks allowed values and credential length after authorizing the organization.
 const provider = requiredText("provider").meta({ enum: ["boat", "modal"] });
 const value = requiredText("value").meta({
   description: "Provider credential. The response never includes its value.",

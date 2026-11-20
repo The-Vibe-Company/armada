@@ -35,7 +35,6 @@ function orgScopedRoute<T extends z.ZodType & { shape: { org: z.ZodType<string |
   };
 }
 
-// Provider routes resolve an explicit org name against live membership and then check bearer scope.
 function orgProviderRoute<T extends z.ZodType>(
   operation: { route: { method: "POST" }; input: { body: T } },
   handle: (context: ControlRouteContext, input: z.output<T>) => unknown,
