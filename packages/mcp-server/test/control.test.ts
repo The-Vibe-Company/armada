@@ -20,11 +20,7 @@ import {
   VaultError,
   type VaultStore,
 } from "@armada/core";
-import {
-  launchEnvelope,
-  sandboxCheckOperations,
-  skillpackOperations,
-} from "@armada/core/contract";
+import { launchEnvelope, sandboxCheckOperations, skillpackOperations } from "@armada/core/contract";
 import { createSkillDefaultsService, createSqlVaultStore, createTemplateService } from "@armada/core/server";
 import { appendModalEvents, createSqlModalStore, type Machine, type Scope, scopeKey } from "@armada/provider-modal";
 import type { PGlite } from "@electric-sql/pglite";
@@ -340,7 +336,9 @@ describe("armada org and armada creds against the control API", () => {
       const connected = await post(STAN, "connect", { provider: "boat", value: "first-value" });
       expect(connected.status).toBe(200);
       const connectedStatus = publishedResponse("org/provider/connect", "post", "admin").parse(connected.body);
-      expect(connectedStatus).toMatchObject({ providers: expect.arrayContaining([{ provider: "boat", configured: true }]) });
+      expect(connectedStatus).toMatchObject({
+        providers: expect.arrayContaining([{ provider: "boat", configured: true }]),
+      });
       expect((await post(STAN, "connect", { provider: "modal", value: pair })).status).toBe(200);
 
       options.providerValidator = async () => {
@@ -999,9 +997,12 @@ describe("control API", () => {
       }
       expect((await call("/api/v1/org/create", { method: "POST", headers, body: "{" }))?.status).toBe(400);
       expect((await call("/api/v1/org/create", { method: "POST", headers, body: "{}" }))?.status).toBe(400);
+      const org = await options.store.createOrg("Listed organization", STAN);
       const listed = await call("/api/v1/org/list", { method: "POST", headers });
       expect(listed?.status).toBe(200);
-      expect(publishedResponse("org/list", "post", "admin").parse(await listed?.json())).toEqual({ orgs: [] });
+      expect(publishedResponse("org/list", "post", "admin").parse(await listed?.json())).toEqual({
+        orgs: [{ ...org, role: "admin" }],
+      });
     });
   });
 
