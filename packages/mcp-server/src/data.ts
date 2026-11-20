@@ -853,7 +853,6 @@ export function createSqlData(
             "lifecycle_error = null",
           );
         }
-        if (patch.usageRuntimeUnknown) sets.push("usage_runtime_seconds = null", "usage_running_since = null");
         if (patch.clearTaskOutcome) sets.push("task_outcome = null", "task_prompt_id = null");
         if (patch.taskPromptId !== undefined) set("task_prompt_id", patch.taskPromptId, "::text");
         if (patch.status !== undefined) {
