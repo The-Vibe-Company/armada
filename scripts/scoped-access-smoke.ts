@@ -133,11 +133,18 @@ const knownExtraTools = [
 ];
 
 function receiptDiagnostic(call: Call | undefined, key: string) {
+  const keyMatches = call?.input.idempotencyKey === key;
+  const operationId = call?.result.id;
+  const sandboxId = call?.result.sandboxId;
   const state = call?.result.state;
   return {
-    keyMatches: call?.input.idempotencyKey === key,
-    receiptIdValid: uuid(call?.result.id),
-    receiptSandboxIdValid: uuid(call?.result.sandboxId),
+    keyMatches,
+    receiptIdValid: uuid(operationId),
+    receiptSandboxIdValid: uuid(sandboxId),
+    // The receipt carries identity and state. Correlate with the server's operator_failure for the cause.
+    ...((state === "failed" || state === "uncertain") &&
+      keyMatches &&
+      uuid(operationId) && { operationId, ...(uuid(sandboxId) && { sandboxId }) }),
     receiptState:
       typeof state === "string" && ["pending", "uncertain", "failed", "succeeded"].includes(state)
         ? state
