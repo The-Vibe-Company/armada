@@ -279,6 +279,30 @@ describe("ordinary scoped Armada smoke", () => {
     expect(f.stopped).toEqual([child]);
   });
 
+  test("reports a scoped launch MCP failure when Codex omits the MCP error flag", async () => {
+    const f = fixture();
+    f.state.mutate = (tools) => {
+      tools.splice(1);
+      at(tools).result.output = {
+        content: [{ type: "text", text: "scoped_operation_unavailable" }],
+        structuredContent: null,
+        _meta: { requestId: other, privateField: "private-metadata" },
+      };
+    };
+    await expect(run(f)).rejects.toThrow("scoped_launch_unproven");
+    expect(f.state.logReads).toBe(1);
+    expect(f.output).toContainEqual(
+      expect.objectContaining({
+        step: "scoped_launch_diagnostic",
+        toolError: true,
+        toolFailureCode: "scoped_operation_unavailable",
+        toolRequestId: other,
+        authorityDenied: false,
+      }),
+    );
+    expect(JSON.stringify(f.output)).not.toContain("private-metadata");
+  });
+
   test("waits for a late stop result in the finished parent turn without replaying it", async () => {
     const f = fixture();
     f.state.lateStop = true;
