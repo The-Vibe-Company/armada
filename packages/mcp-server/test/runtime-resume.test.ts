@@ -1,4 +1,4 @@
-import { describe, expect, setSystemTime, spyOn, test } from "bun:test";
+import { describe, expect, jest, setSystemTime, spyOn, test } from "bun:test";
 import { createMemoryAuthStore } from "@armada/auth";
 import { createSqlVaultStore, DelegatedAuthority, type Provider, type Sql } from "@armada/core/server";
 import { fakeBoat, retainedSandbox, sandbox as sdkSandbox } from "../../provider-boat/test/support.ts";
@@ -382,6 +382,7 @@ describe.each(["boat", "modal"] as const)("queued runtime wake admission (%s)", 
     "unenrolled failure",
     "unenrolled claim loss",
     "restore admission loss",
+    "heartbeat loss",
     "ambiguous deferral claim loss",
     "stale",
     "retarget failure",
@@ -401,6 +402,7 @@ describe.each(["boat", "modal"] as const)("queued runtime wake admission (%s)", 
     const scoped = scenario === "scoped grant loss";
     const unenrolled = scenario === "unenrolled failure" || scenario === "unenrolled claim loss";
     const ambiguous = scenario === "ambiguous deferral claim loss";
+    const heartbeat = scenario === "heartbeat loss";
     const f = await fixture();
     const access = scoped ? await scopedAccessFor(f) : undefined;
     const request = input(f.row.id);
@@ -424,7 +426,7 @@ describe.each(["boat", "modal"] as const)("queued runtime wake admission (%s)", 
       [f.row.id, request.request_id, f.first.conversationId],
     );
     const owner = crypto.randomUUID();
-    const job = (await store.claim("turn_dispatch", owner, 30, 1))!;
+    const job = (await store.claim("turn_dispatch", owner, heartbeat ? 120 : 30, 1))!;
     expect(job.id).toBe(id);
     if (scenario === "stale") await f.db.query("update jobs set lease_until='-infinity' where id=$1", [id]);
     const read = async () =>
@@ -438,7 +440,11 @@ describe.each(["boat", "modal"] as const)("queued runtime wake admission (%s)", 
       ).rows[0];
     let preparations = 0;
     let stops = 0;
+    const readActivityUntil = async (tx: Sql = f.sql) =>
+      (await tx.query<{ activity_until: string }>("select activity_until::text from sandboxes where id=$1", [f.row.id]))
+        .rows[0]?.activity_until;
     let activityUntil: string | undefined;
+    let heartbeatLost = false;
     let replacementEpoch: string | undefined;
     let restores = 0;
     const modalPlacement = modalRuntimeResume({
@@ -473,12 +479,16 @@ describe.each(["boat", "modal"] as const)("queued runtime wake admission (%s)", 
       if (scenario === "restore admission loss") return modalPlacement(f.caller, sandbox);
       return {
         async start(_signal, restore, confirmActivation) {
+          if (heartbeat) {
+            await f.sql.query("update sandboxes set activity_until=clock_timestamp()+interval '1 minute' where id=$1", [
+              f.row.id,
+            ]);
+            activityUntil = await readActivityUntil();
+            jest.advanceTimersByTime(30_000);
+            throw Error("Placement ends before runtime enrolment");
+          }
           if (ambiguous) {
-            activityUntil = (
-              await f.db.query<{ activity_until: string }>("select activity_until::text from sandboxes where id=$1", [
-                f.row.id,
-              ])
-            ).rows[0]?.activity_until;
+            activityUntil = await readActivityUntil();
             throw new BoatResumeActivationUncertain(Error("Activation response lost"));
           }
           if (unenrolled) {
@@ -540,6 +550,10 @@ describe.each(["boat", "modal"] as const)("queued runtime wake admission (%s)", 
           if (rows[0]?.activity_until !== activityUntil)
             await tx.query("update jobs set lease_until='-infinity' where id=$1", [id]);
         }
+        if (heartbeat && tx && activityUntil !== undefined) {
+          heartbeatLost ||= (await readActivityUntil(tx)) !== activityUntil;
+          if (heartbeatLost) return false;
+        }
         if ((await store.inspect(job, owner, tx)) !== "dispatch") return false;
         if (!tx || !scenario.endsWith(" loss")) return true;
         const evidence = await wakeEvidence(tx);
@@ -595,6 +609,16 @@ describe.each(["boat", "modal"] as const)("queued runtime wake admission (%s)", 
       expect(preparations).toBe(1);
       expect(restores).toBe(0);
       expect(await read()).toMatchObject({ status: "starting", intent: true });
+    } else if (heartbeat) {
+      jest.useFakeTimers();
+      try {
+        await expect(attempt()).rejects.toMatchObject({ code: "conflict" });
+        expect(heartbeatLost).toBe(true);
+        expect(await readActivityUntil()).toBe(activityUntil);
+        expect(await read()).toMatchObject({ status: "starting", intent: true });
+      } finally {
+        jest.useRealTimers();
+      }
     } else if (unenrolled || ambiguous) {
       await expect(attempt()).rejects.toMatchObject({ code: "conflict" });
       const settled = scenario === "unenrolled failure";
