@@ -8,6 +8,7 @@ import { executeWorkspaceCommand } from "./golden-exec.ts";
 import type { Machine, ModalResourceReceipt, ModalStore, RunnerDistribution } from "./ports.ts";
 import { quiesceSandboxProcesses } from "./process-scope.ts";
 import type { ModalProvider } from "./provider.ts";
+import { dispatchRuntimeBootstrap, validateRuntimeTicket } from "./runtime-bootstrap.ts";
 
 interface RuntimeLifecycleDependencies {
   store: ModalStore;
@@ -37,20 +38,7 @@ export function createRuntimeLifecycle({
 }: RuntimeLifecycleDependencies) {
   return {
     async startRuntime(input) {
-      const server = new URL(input.serverUrl);
-      if (
-        server.protocol !== "https:" ||
-        server.origin !== input.serverUrl.replace(/\/$/, "") ||
-        !input.cacheDir.startsWith("/") ||
-        input.cacheDir === "/" ||
-        input.cacheDir.includes("\0") ||
-        !/^[a-f0-9]{64}$/.test(input.artifact.sha256) ||
-        !Number.isSafeInteger(input.artifact.bytes) ||
-        input.artifact.bytes <= 0 ||
-        input.artifact.bytes > 512 * 1024 * 1024 ||
-        !/^armada_enrol_[a-f0-9]{64}$/.test(input.enrolmentToken)
-      )
-        throw refusal("invalid_request", "Invalid enrolled Modal bootstrap.");
+      const serverUrl = validateRuntimeTicket(input);
       await store.lease(input.sandboxId, async (row, save) => {
         assertMachineSource(row);
         if (
@@ -65,26 +53,17 @@ export function createRuntimeLifecycle({
         if ((await sb.poll()) !== null) throw refusal("sandbox_not_ready", "Physical machine has exited.");
         row.runtimeStartAttempted = true;
         await save(row);
-        try {
-          const child = await sb.exec(
-            [
-              "/usr/bin/env",
-              "-i",
-              "PATH=/usr/local/bin:/usr/bin:/bin",
-              "node",
-              "-e",
-              runtimeBootstrapScript(server.origin, input.artifact, input.cacheDir, SHARED_ARTIFACT_CACHE_PATH),
-            ],
-            { env: {}, secrets: [], timeoutMs: 150_000, workdir: "/home/user", stdout: "ignore", stderr: "ignore" },
-          );
-          await child.stdin.writeText(
-            JSON.stringify({ serverUrl: server.origin, enrolmentToken: input.enrolmentToken }),
-          );
-          await child.stdin.close();
-          if ((await child.wait()) !== 0) throw Error();
-        } catch {
-          throw refusal("unavailable", "Enrolled Modal bootstrap failed; spawn outcome must be reconciled.");
-        }
+        await dispatchRuntimeBootstrap(
+          sb,
+          () => [
+            "node",
+            "-e",
+            runtimeBootstrapScript(serverUrl, input.artifact, input.cacheDir, SHARED_ARTIFACT_CACHE_PATH),
+          ],
+          serverUrl,
+          input,
+          "Enrolled Modal bootstrap failed; spawn outcome must be reconciled.",
+        );
       });
     },
     async captureRuntimeWork({ sandboxId, physicalGeneration, signal, context, onWorkAtRisk }) {
