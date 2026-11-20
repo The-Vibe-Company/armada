@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { PGlite } from "@electric-sql/pglite";
 import { migrationsDir, openDatabase } from "../../../scripts/db/apply.ts";
+import { closeableFixture } from "../../mcp-server/test/closeable.fixture.ts";
 
 const IDENTITY = "20261109010000_sandbox_provider_identity.sql";
 const CONFIG = JSON.stringify({
@@ -11,30 +12,27 @@ const CONFIG = JSON.stringify({
   init: [],
 });
 
-function isolatedDatabase(open: () => Promise<PGlite>, prepare?: (db: PGlite) => Promise<void>) {
-  let connection: PGlite | undefined;
-  beforeAll(async () => {
-    const db = await open();
-    connection = db;
-    await prepare?.(db);
-  });
-  afterAll(async () => {
-    const db = connection;
-    connection = undefined;
-    await db?.close();
-  });
-  return () => {
-    if (!connection) throw new Error("Missing provider schema fixture");
-    return connection;
-  };
-}
+// The database as the previous release left it.
+const database = closeableFixture(async () => {
+  const db = await openDatabase();
+  try {
+    await applyUpTo(db, IDENTITY);
+    return db;
+  } catch (error) {
+    try {
+      await db.close();
+    } catch (closeError) {
+      throw new AggregateError([error, closeError], "Provider schema fixture setup and cleanup failed");
+    }
+    throw error;
+  }
+});
+beforeAll(database.setup);
+afterAll(database.close);
 
 describe("legacy upgrade", () => {
-  // The database as the previous release left it.
-  const getDatabase = isolatedDatabase(openDatabase, (db) => applyUpTo(db, IDENTITY));
-
-  test("existing goldens and sandboxes are backfilled to Boat with their ids, and server writes keep Boat aliases compatible", async () => {
-    const db = getDatabase();
+  test("existing goldens and sandboxes are backfilled to Boat with their ids", async () => {
+    const db = database.get();
     const people = await fixture(db);
     const golden = await db.query<{ id: string }>(
       `insert into goldens (org_id, name, visibility, owner_id, boat_sandbox_id, boat_snapshot_id, config)
@@ -48,7 +46,7 @@ describe("legacy upgrade", () => {
       [goldenId, people.org, people.member],
     );
 
-    await applyFrom(db, IDENTITY);
+    await db.exec(await Bun.file(join(migrationsDir, IDENTITY)).text());
     expect(
       (await db.query("select provider::text, provider_sandbox_id, provider_snapshot_id, modal_app_id from goldens"))
         .rows,
@@ -58,23 +56,6 @@ describe("legacy upgrade", () => {
     expect((await db.query("select provider::text, provider_sandbox_id, boat_id from sandboxes")).rows).toEqual([
       { provider: "boat", provider_sandbox_id: "bx_old", boat_id: "bx_old" },
     ]);
-
-    // A client of the previous release writes boat_* columns; a new one the neutral ones. Both stay one id.
-    await asUser(db, people.admin, () =>
-      db.query("update goldens set boat_snapshot_id = 'snap-2' where id = $1", [goldenId]),
-    );
-    // Trusted server writes retain the legacy Boat alias contract.
-    await db.query(
-      `insert into sandboxes (boat_id, golden_id, org_id, owner_id, harness, status)
-           values ('bx_legacy', $1, $2, $3, 'claude', 'starting')`,
-      [goldenId, people.org, people.admin],
-    );
-    expect((await db.query("select provider_snapshot_id, boat_snapshot_id from goldens")).rows).toEqual([
-      { provider_snapshot_id: "snap-2", boat_snapshot_id: "snap-2" },
-    ]);
-    expect(
-      (await db.query("select provider::text, provider_sandbox_id from sandboxes where boat_id = 'bx_legacy'")).rows,
-    ).toEqual([{ provider: "boat", provider_sandbox_id: "bx_legacy" }]);
   });
 });
 
@@ -100,23 +81,5 @@ async function applyUpTo(db: PGlite, first: string): Promise<void> {
   await db.exec(await Bun.file(PREREQ).text());
   for (const file of migrations().filter((name) => name < first)) {
     await db.exec(await Bun.file(join(migrationsDir, file)).text());
-  }
-}
-async function applyFrom(db: PGlite, first: string): Promise<void> {
-  for (const file of migrations().filter((name) => name >= first)) {
-    await db.exec(await Bun.file(join(migrationsDir, file)).text());
-  }
-}
-async function asUser<T>(db: PGlite, userId: string, run: () => Promise<T>): Promise<T> {
-  await db.exec("begin");
-  try {
-    await db.query("select set_config('request.jwt.claim.sub', $1, true)", [userId]);
-    await db.exec("set local role authenticated");
-    const value = await run();
-    await db.exec("commit");
-    return value;
-  } catch (error) {
-    await db.exec("rollback");
-    throw error;
   }
 }

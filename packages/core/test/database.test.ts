@@ -21,6 +21,29 @@ type Fixture = {
 };
 
 describe("database", () => {
+  test("legacy Boat writes keep provider identity in sync", async () => {
+    await withDb(async (db) => {
+      const people = await fixture(db);
+      const golden = await insertGolden(db, people, { name: "legacy", visibility: "org", owner: people.admin });
+
+      await asUser(db, people.admin, () =>
+        db.query("update goldens set boat_snapshot_id = 'snap-2' where id = $1", [golden]),
+      );
+      expect(
+        (await db.query("select provider_snapshot_id, boat_snapshot_id from goldens where id = $1", [golden])).rows,
+      ).toEqual([{ provider_snapshot_id: "snap-2", boat_snapshot_id: "snap-2" }]);
+
+      await db.query(
+        `insert into sandboxes (boat_id, golden_id, org_id, owner_id, harness, status)
+         values ('bx_legacy', $1, $2, $3, 'claude', 'starting')`,
+        [golden, people.org, people.admin],
+      );
+      expect(
+        (await db.query("select provider::text, provider_sandbox_id from sandboxes where boat_id = 'bx_legacy'")).rows,
+      ).toEqual([{ provider: "boat", provider_sandbox_id: "bx_legacy" }]);
+    });
+  });
+
   test("sandbox repository context must name a configured repo and stays immutable", async () => {
     await withDb(async (db) => {
       const people = await fixture(db);
