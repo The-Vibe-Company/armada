@@ -4,6 +4,7 @@ import { sha256Hex } from "@armada/auth";
 import { createSqlSandboxStore, DelegatedAuthority, decryptSecret, encryptSecret, type Sql } from "@armada/core/server";
 import { createDockerHostStore } from "./docker-host-store.ts";
 import type { Route } from "./http.ts";
+import { runtimeHealthMatches } from "./runtime-health.ts";
 import { runtimeHttpFailure } from "./runtime-http-failure.ts";
 import { publishDockerRuntimeReadiness } from "./sandbox-lifecycle.ts";
 
@@ -37,6 +38,7 @@ export interface RuntimeSessionScope {
 }
 /** Owner scopes also name the locked sandbox's provider for request-correlated command records. */
 export interface RuntimeOwnerScope extends RuntimeSessionScope {
+  lifecycleGeneration: string;
   provider?: "boat" | "modal" | "docker";
   commandGrantExpiresAt?: Date;
 }
@@ -312,7 +314,7 @@ export function createRuntimeEnrolments(sql: Sql, encryptionKey: string, options
       if (!updated) throw new RuntimeEnrolmentDenied();
       if (
         sandbox.status === "starting" &&
-        !(await publishDockerRuntimeReadiness(tx, sandbox.id, "bootstrap_enrolment"))
+        (await publishDockerRuntimeReadiness(tx, sandbox.id, sandbox.lifecycle_generation, "bootstrap")) === "conflict"
       )
         throw new RuntimeEnrolmentDenied();
       return { sandboxId: sandbox.id, epoch: updated.epoch, runtimeToken, configuration };
@@ -378,6 +380,35 @@ export function createRuntimeEnrolments(sql: Sql, encryptionKey: string, options
       return work(tx, { sandboxId: sandbox.id, epoch: row.epoch }, sandbox.lifecycle_generation);
     });
   }
+  async function dockerRestoreMatches(tx: Sql, scope: RuntimeSessionScope, health: unknown) {
+    if (!runtimeHealthMatches(health, scope.epoch)) return false;
+    const {
+      rows: [checkpoint],
+    } = await tx.query<{ epoch: string; watermark: string; conversation_ids: string[] }>(
+      `select c.epoch::text,c.watermark::text,s.conversation_ids
+       from public.sandboxes s join public.runtime_checkpoints c on c.sandbox_id=s.id
+       where s.id=$1 and s.provider='docker'
+       and c.epoch=$2::bigint-1 and c.watermark is not null`,
+      [scope.sandboxId, scope.epoch],
+    );
+    if (!checkpoint) return true;
+    return (
+      checkpoint.conversation_ids.length === 1 &&
+      runtimeHealthMatches(health, scope.epoch, {
+        epoch: checkpoint.epoch,
+        watermark: Number(checkpoint.watermark),
+        conversationId: checkpoint.conversation_ids[0] as string,
+      })
+    );
+  }
+
+  async function confirmDockerRestore(tx: Sql, scope: RuntimeSessionScope, generation: string, health: unknown) {
+    if (!(await dockerRestoreMatches(tx, scope, health))) return "unverified";
+    const publication = await publishDockerRuntimeReadiness(tx, scope.sandboxId, generation, "retained");
+    if (publication === "conflict") throw new RuntimeEnrolmentDenied();
+    return publication;
+  }
+
   /** Trusted server-side command issuer/readback, under the same owner/lifecycle fence. */
   async function withOwner<T>(
     sandboxId: string,
@@ -403,6 +434,7 @@ export function createRuntimeEnrolments(sql: Sql, encryptionKey: string, options
       return work(tx, {
         sandboxId: sandbox.id,
         epoch: row.epoch,
+        lifecycleGeneration: sandbox.lifecycle_generation,
         provider: sandbox.provider as NonNullable<RuntimeOwnerScope["provider"]>,
         ...(row.command_grant_expires_at ? { commandGrantExpiresAt: row.command_grant_expires_at } : {}),
       });
@@ -432,5 +464,14 @@ export function createRuntimeEnrolments(sql: Sql, encryptionKey: string, options
       return runtimeHttpFailure(error instanceof RuntimeEnrolmentDenied ? 401 : 503);
     }
   };
-  return { issue, enrol, withBootstrap, withSession, withOwner, lockSourceMembers, route };
+  return {
+    issue,
+    enrol,
+    withBootstrap,
+    withSession,
+    withOwner,
+    confirmDockerRestore,
+    lockSourceMembers,
+    route,
+  };
 }

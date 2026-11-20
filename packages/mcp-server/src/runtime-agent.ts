@@ -25,6 +25,7 @@ import {
 import type { Sql } from "@armada/core/server";
 import { PRIVATE_SKILL_FAILURES, PrivateSkillError } from "../../core/src/private-skill-error.ts";
 import { type createRuntimeCommands, RuntimeCommandRefused } from "./runtime-commands.ts";
+import { type RuntimeRestore, runtimeHealthMatches } from "./runtime-health.ts";
 
 const errors: Record<string, ProviderErrorCode> = {
   not_found: "not_found",
@@ -66,18 +67,6 @@ function runtimeRefusal(
     retryable: false,
     ...(requestId ? { details: { runtimeRequestId: requestId, runtimeOutcome: "unknown" } } : {}),
   });
-}
-
-type RuntimeRestore = { epoch: string; watermark: number; conversationId: string | null };
-/** Shared enrolled readiness and retained-session proof; transports keep envelope authorization. */
-export function runtimeHealthMatches(value: unknown, epoch: string, expected?: RuntimeRestore) {
-  const health = value as Record<string, unknown> | undefined;
-  const restored = health?.restoredFrom as Record<string, unknown> | undefined;
-  return (
-    health?.ready === true &&
-    health.generation === epoch &&
-    (!expected || (["epoch", "watermark", "conversationId"] as const).every((key) => restored?.[key] === expected[key]))
-  );
 }
 
 /** Build the bridge from persisted identity; callers retain owner/defaults and any authoritative cwd. */
