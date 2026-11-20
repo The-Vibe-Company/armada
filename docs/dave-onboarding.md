@@ -83,14 +83,14 @@ For a new organization, choose a name (this guide uses `my-team`) and run:
 
 ```sh
 armada org create my-team
-armada org use my-team
-armada org current
+armada login --org my-team
+armada status --setup
 ```
 
 Creation makes you its first admin. Selection persists for this Armada server; the examples
 below also pass `--org my-team` explicitly. Replace `my-team` consistently with your org's
 name or UUID. If joining an existing org instead, follow the invitation path below, then
-run `armada org use <org>`; an admin must complete its provider setup.
+run `armada login --org <org>`; an admin must complete its provider setup.
 
 ### Joining an existing org
 
@@ -609,8 +609,8 @@ installer output can be sensitive. Never put credential values in arguments.
 For an uncertain launch outcome, inspect existing sandbox/receipt state before
 retrying; template launches must preserve their original request key and body.
 
-JSON selection commands return `{"org":<organization>}` when selecting and
-`{"org":null}` when clearing with `org use none --json`. With no TTY,
+Pass `--org NAME|UUID` to login to save an organization or `--org none`
+to clear the selection. With no TTY,
 `armada login --json` writes a first JSON line containing `verificationUrl`,
 `userCode`, and `expiresAt` (UTC). Share the link and code with the person
 authorizing the request and keep the process running. It writes

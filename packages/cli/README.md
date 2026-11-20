@@ -53,7 +53,7 @@ organization list. Pass acceptance tokens through stdin or `--file`. The CLI
 omits rejected arguments from diagnostics and prints only approved invitation
 fields, so extra response fields such as tokens and acceptance URLs stay private.
 
-Select an organization with `armada org use` or `--org UUID` before using MCP
+Select an organization with `armada login --org NAME|UUID` or `--org UUID` before using MCP
 registry commands. Explicit CLI selectors take precedence over imported JSON
 definitions. The server owns endpoint validation, discovery, and authorization.
 For the sandbox connection list, the CLI sends both the public `sandboxId`

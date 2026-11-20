@@ -7,6 +7,8 @@ import { filePreferences } from "../src/preferences.ts";
 import { run } from "../src/run.ts";
 import { memorySessionStore } from "../src/session.ts";
 
+import { loginAuthorized, loginStarted } from "./device-login.fixture.ts";
+
 const org = "11111111-1111-4111-8111-111111111111";
 function harness(fetch: AuthIo["fetch"]) {
   let out = "";
@@ -39,12 +41,16 @@ function harness(fetch: AuthIo["fetch"]) {
   };
 }
 
-test("org use persists a validated UUID per server and scopes commands while explicit org wins", async () => {
+test("login --org persists a validated UUID per server and scopes commands while explicit org wins", async () => {
   const directory = await mkdtemp(join(tmpdir(), "armada-selection-"));
   try {
     const bodies: unknown[] = [];
     const h = harness(async (input, init) => {
       const request = new Request(String(input), init);
+      const path = new URL(request.url).pathname;
+      if (path.endsWith("/auth/device/start")) return loginStarted();
+      if (path.endsWith("/auth/device/poll")) return loginAuthorized();
+      if (path.endsWith("/org/list")) expect(request.headers.get("authorization")).toBe("Bearer new-access");
       bodies.push(await request.json());
       return Response.json(
         new URL(request.url).pathname === "/api/v1/org/list"
@@ -56,7 +62,7 @@ test("org use persists a validated UUID per server and scopes commands while exp
     });
     const path = join(directory, "preferences.json");
     h.auth.preferences = filePreferences(path);
-    expect(await h.run(["org", "use", "Team"])).toBe(0);
+    expect(await h.run(["login", "--org", "Team"])).toBe(0);
     h.auth.preferences = filePreferences(path);
     expect(await h.run(["list"])).toBe(0);
     expect(bodies.at(-1)).toEqual({ org });
@@ -75,13 +81,39 @@ test("org use persists a validated UUID per server and scopes commands while exp
     expect(await h.run(["org", "setup", "--org", "override"])).toBe(0);
     expect(bodies.at(-1)).toEqual({ org: "override" });
     expect(await h.auth.preferences.read("https://another.test")).toBeUndefined();
-    expect(await h.run(["org", "use", "outsider"])).toBe(2);
+    expect(await h.run(["login", "--org", "outsider"])).toBe(2);
     expect(await h.auth.preferences.read("https://armada.test")).toBe(org);
-    expect(await h.run(["org", "use", "none"])).toBe(0);
-    expect(await h.auth.preferences.read("https://armada.test")).toBeUndefined();
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
+});
+
+test("login --org none clears the selected organization after authorization", async () => {
+  const h = harness(async (input) => {
+    const path = new URL(String(input)).pathname;
+    if (path.endsWith("/auth/device/start")) return loginStarted();
+    if (path.endsWith("/auth/device/poll")) return loginAuthorized();
+    throw new Error("Unexpected request");
+  });
+  let selected: string | undefined = org;
+  h.auth.preferences = {
+    read: async () => selected,
+    write: async (origin, value) => {
+      expect(origin).toBe("https://armada.test");
+      selected = value;
+    },
+  };
+  expect(await h.run(["login", "--org", "none", "--json"])).toBe(0);
+  expect(selected).toBeUndefined();
+  expect(h.output().out.trim().split("\n").at(-1)).toBe('{"authenticated":true}');
+});
+
+test.each(["current", "use"])("org %s is rejected before an API request", async (verb) => {
+  const h = harness(async () => {
+    throw new Error("Unexpected request");
+  });
+  expect(await h.run(["org", verb, ...(verb === "use" ? ["Team"] : [])])).toBe(2);
+  expect(h.output().err).toContain("Run armada org create, list, setup, connect, invitations or members.");
 });
 
 test("MCP connect opens once and polls authenticated canonical status until actually connected", async () => {

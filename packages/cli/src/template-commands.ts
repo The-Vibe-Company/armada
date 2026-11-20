@@ -214,7 +214,7 @@ export async function templateCommand(argv: readonly string[], io: VaultIo): Pro
     if (repo !== undefined) body.repo = repo;
   }
   const selected = orgFlag ?? (await io.auth.preferences?.read(await resolveArmadaOrigin(io.auth)));
-  if (!selected) throw usage("Select an organization with --org NAME|UUID or armada org use.");
+  if (!selected) throw usage("Select an organization with --org NAME|UUID or armada login --org NAME|UUID.");
   if (UUID.test(selected)) body.org = selected;
   else {
     const { orgs } = await control<{ orgs: OrgSummary[] }>(io.auth, "org/list", {});

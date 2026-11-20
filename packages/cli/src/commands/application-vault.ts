@@ -6,7 +6,7 @@ function vaultSetHelp(resource: "vars" | "secrets") {
   return `Usage: armada ${resource} set NAME [--file PATH] [--scope personal|org] [--org NAME|UUID] [--json]
 Create a new ${resource === "vars" ? "readable application variable" : "write-only application secret"}, not a model/provider credential.
 Set creates an entry, not an update; duplicate names conflict.
-Requires Armada login or ARMADA_TOKEN; select an organization with --org or armada org use.
+Requires Armada login or ARMADA_TOKEN; select an organization with --org or armada login --org NAME|UUID.
 --scope personal|org selects visibility. Explicit --org requires explicit --scope;
 without --org, scope defaults to personal in the selected organization.
 Only administrators can create organization-scoped entries.
@@ -32,7 +32,7 @@ function secretLifecycleHelp(action: "rotate" | "revoke" | "delete") {
   }[action];
   return `Usage: armada secrets ${action} ID --expected-version N ${action === "rotate" ? "[--file PATH] " : ""}[--org NAME|UUID] [--json]
 ${effect}
-Requires Armada login or ARMADA_TOKEN; select an organization with --org or armada org use.
+Requires Armada login or ARMADA_TOKEN; select an organization with --org or armada login --org NAME|UUID.
 Use an ID and current version from secrets list, not a secret name.
 --expected-version is required and must be a positive safe integer. A stale version is
 refused, not retried automatically; inspect metadata before deciding to try again.
@@ -51,7 +51,7 @@ Manage ${resource === "vars" ? "readable application variables" : "write-only ap
 ${resource === "vars" ? "  set   Create a new variable from stdin or file, not an update.\n  list  Inspect visible metadata and IDs without values.\n  read  Print a value by ID, exactly without adding a newline; --json includes value." : "  set     Create a new secret from stdin or file, not an update.\n  list    Inspect visible metadata, IDs and versions, never values.\n  rotate  Replace an active secret value, guarded by --expected-version.\n  revoke  Terminally revoke and clear the stored value; no reactivation.\n  delete  Mark deleted and clear the value, allowing name reuse."}
 
 Actions require Armada login or ARMADA_TOKEN. Select an organization with --org
-NAME|UUID or armada org use. Explicit --org on set requires --scope personal|org;
+NAME|UUID or armada login --org NAME|UUID. Explicit --org on set requires --scope personal|org;
 otherwise set defaults to personal in the selected organization.
 Lists include your personal entries and visible organization entries.
 Only administrators can mutate organization-scoped entries; IDs determine scope.
@@ -75,7 +75,7 @@ export const vars = {
   subcommandHelp: {
     "vars list": `Usage: armada vars list [--org NAME|UUID] [--json]
 List readable application-variable metadata, not values or model credentials.
-Requires Armada login or ARMADA_TOKEN; select an organization with --org or armada org use.
+Requires Armada login or ARMADA_TOKEN; select an organization with --org or armada login --org NAME|UUID.
 Includes your personal entries and visible organization entries. Use IDs from this list
 with vars read; names are not accepted as read selectors.
 Human output is compact metadata; --json emits {items:[...]} with safe scalar metadata only.
@@ -84,7 +84,7 @@ Example: armada vars list --org ORG_UUID --json
 `,
     "vars read": `Usage: armada vars read ID [--org NAME|UUID] [--json]
 Read an application-variable value by ID from vars list, not by name.
-Requires Armada login or ARMADA_TOKEN; select an organization with --org or armada org use.
+Requires Armada login or ARMADA_TOKEN; select an organization with --org or armada login --org NAME|UUID.
 Your personal entries and authorized organization entries are readable; variables are not secrets.
 Default stdout is the value exactly, without adding a newline. --json emits
 {item: metadata, value: string} followed by a newline. Take care when sharing or piping values.
@@ -110,7 +110,7 @@ export const secrets = {
   subcommandHelp: {
     "secrets list": `Usage: armada secrets list [--org NAME|UUID] [--json]
 List application-secret metadata, never secret values or model credentials.
-Requires Armada login or ARMADA_TOKEN; select an organization with --org or armada org use.
+Requires Armada login or ARMADA_TOKEN; select an organization with --org or armada login --org NAME|UUID.
 Includes your personal entries and visible organization entries. IDs and versions are used
 by guarded rotate/revoke/delete operations; list itself makes no changes.
 Human output is compact metadata; --json emits {items:[...]} with safe scalar metadata only.

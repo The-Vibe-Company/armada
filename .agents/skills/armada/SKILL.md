@@ -28,7 +28,7 @@ For an interactive human, run `armada login` and authorize the request in the da
 using the printed link and matching short code. For automation, use an authorized
 ARMADA_TOKEN through the environment, never pasted into a prompt or command.
 ARMADA_URL selects the server; confirm it before any write. Do not inspect or
-print token values. `armada org use ORG` persists the selection for that server;
+print token values. `armada login --org ORG` persists the selection for that server;
 use explicit organization arguments in multi-org automation to avoid ambiguity.
 `armada org setup` diagnoses provider setup. Missing membership or provider
 access needs an authorized admin, not a retry loop.

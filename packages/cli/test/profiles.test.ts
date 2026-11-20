@@ -164,24 +164,24 @@ test("default profile organization preferences use the saved login origin", asyn
     },
     write: async () => {},
   };
-  let output = "";
-  auth.out = (s) => {
-    output += s;
+  let body: unknown;
+  auth.fetch = async (input, init) => {
+    expect(new URL(String(input)).origin).toBe("https://custom.example");
+    body = JSON.parse(String(init?.body));
+    return Response.json({ sandboxes: [] });
   };
   expect(
     await run(
-      ["org", "current"],
+      ["list"],
       {
-        out: (s) => {
-          output += s;
-        },
+        out: () => {},
         err: () => {},
       },
       { auth },
     ),
   ).toBe(0);
   expect(origins).toEqual(["https://custom.example"]);
-  expect(JSON.parse(output)).toEqual({ org: "chosen_org" });
+  expect(body).toEqual({ org: "chosen_org" });
 });
 
 test("exec rejects shell text without the argument separator", async () => {
