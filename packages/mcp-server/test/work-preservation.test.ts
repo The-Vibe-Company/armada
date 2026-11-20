@@ -265,6 +265,8 @@ async function withPreservationRow(
     sql: ReturnType<typeof bunLikeSql>;
     id: string;
     physical: string;
+    generation: number;
+    activity: string | null;
     boat: ReturnType<typeof fakeBoat>;
     provider: ReturnType<typeof fakeBoat>["provider"];
   }) => Promise<void>,
@@ -274,9 +276,15 @@ async function withPreservationRow(
   const id = crypto.randomUUID();
   const modal = machine === "modal";
   const physical = modal ? `modal_machine_${id}` : `bx_policy_${id}`;
-  await db.query(
-    `insert into sandboxes(id,golden_id,org_id,owner_id,provider,provider_sandbox_id,harness,status,runtime_transport,outputs_failure_reasons)
-    values($1,$2,$3,$4,$5,$6,$7,'running',$8,array['collector_unsupported'])`,
+  const activity = modal ? crypto.randomUUID() : null;
+  const inserted = await db.query<{ lifecycle_generation: number }>(
+    `insert into sandboxes(id,golden_id,org_id,owner_id,provider,provider_sandbox_id,harness,status,
+       runtime_transport,outputs_failure_reasons,stop_requested_at,stop_generation,activity_lease_id,activity_until)
+    values($1,$2,$3,$4,$5,$6,$7,$8,$9,array['collector_unsupported'],
+       case when $10::uuid is not null then now() end,
+       case when $10::uuid is not null then 1 else 0 end,
+       $10,case when $10::uuid is not null then now()+interval '2 minutes' end)
+    returning lifecycle_generation`,
     [
       id,
       modal ? modalGoldenId : goldenId,
@@ -285,7 +293,9 @@ async function withPreservationRow(
       machine,
       physical,
       modal ? "codex" : "claude",
+      modal ? "stopping" : "running",
       modal ? "dialout" : null,
+      activity,
     ],
   );
   const boat = fakeBoat();
@@ -300,7 +310,16 @@ async function withPreservationRow(
     }),
     quiesce: async () => {},
   };
-  await work({ db, id, physical, boat, provider, sql: bunLikeSql(db) });
+  await work({
+    db,
+    id,
+    physical,
+    generation: inserted.rows[0]!.lifecycle_generation,
+    activity,
+    boat,
+    provider,
+    sql: bunLikeSql(db),
+  });
 }
 
 test("confirmed work at risk records a closed stage/reason and owner action", async () => {
@@ -455,12 +474,16 @@ test("a late failed pass cannot overwrite a concurrent successful stop receipt",
 test("a fresh stop epoch does not reuse an earlier clean capture", async () => {
   await withPreservationRow(async ({ db, id, physical, sql, boat, provider }) => {
     boat.setExecOutput({ stdout: '{"status":"clean"}' });
-    await db.query("update sandboxes set stop_requested_at='2026-11-11T08:00:00Z',stop_generation=1 where id=$1", [id]);
+    await db.query(
+      `update sandboxes set stop_requested_at='2026-11-11T08:00:00Z',stop_generation=1,
+        preservation_stop_generation=1 where id=$1`,
+      [id],
+    );
     await preserveBeforeStop(sql, provider, id, physical);
-    const count = boat.execs.length;
+    expect(boat.execs).toHaveLength(0);
     await db.query("update sandboxes set stop_requested_at='2026-11-11T09:00:00Z',stop_generation=2 where id=$1", [id]);
     await preserveBeforeStop(sql, provider, id, physical);
-    expect(boat.execs.length).toBe(count + 1);
+    expect(boat.execs).toHaveLength(1);
   });
 });
 
@@ -563,18 +586,10 @@ test.each([
   "quiescence_rejected",
   "lost_receipt_response",
 ] as const)("Modal runtime stop preserves work independently of journal retention: %s", async (scenario) => {
-  await withPreservationRow(async ({ db, id, physical, sql, provider }) => {
-    const activity = crypto.randomUUID();
+  await withPreservationRow(async ({ db, id, physical, sql, provider, activity, generation }) => {
+    if (!activity) throw new Error("Missing Modal activity lease fixture");
     const reconcile = crypto.randomUUID();
     const archive = Buffer.from("dirty Modal workspace fixture").toString("base64");
-    await db.query(
-      `update sandboxes set status='stopping',stop_requested_at=now(),stop_generation=1,activity_lease_id=$2,
-         activity_until=now()+interval '2 minutes' where id=$1`,
-      [id, activity],
-    );
-    const generation = (
-      await db.query<{ lifecycle_generation: number }>("select lifecycle_generation from sandboxes where id=$1", [id])
-    ).rows[0]!.lifecycle_generation;
     const takeOver = () =>
       db.query(
         `update sandboxes set activity_lease_id=null,activity_until=null,reconcile_lease=$2,
