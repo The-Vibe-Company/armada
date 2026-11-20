@@ -49,7 +49,7 @@ test("first use leaves the launch free to proceed and shutdown cancels the pendi
   expect(cancellations).toBe(1);
 });
 
-test("a first use queues one seed when all four upload slots are busy", async () => {
+test("startup and first-use warming share four upload slots and coalesce by binding", async () => {
   const binding = { appId: "app", appName: "name", environment: "main", tokenId: "id", tokenSecret: "secret" };
   const runtime = { sha256: "a".repeat(64), bytes: 1 };
   const first = Promise.withResolvers<void>();
@@ -63,11 +63,12 @@ test("a first use queues one seed when all four upload slots are busy", async ()
     }
     await first.promise;
   });
-  for (const appId of ["one", "two", "three", "four", "last", "last"])
-    cache.beginWarming({ ...binding, appId }, () => {});
+  for (const appId of ["one", "two", "three", "four"]) cache.beginWarming({ ...binding, appId }, () => {});
+  const startup = cache.warm({ ...binding, appId: "last" });
+  cache.beginWarming({ ...binding, appId: "last" }, () => {});
   expect(started).toEqual(["one", "two", "three", "four"]);
   first.resolve();
-  await startedLast.promise;
+  await Promise.all([startup, startedLast.promise]);
   await cache.drain();
   expect(started).toEqual(["one", "two", "three", "four", "last"]);
 });
