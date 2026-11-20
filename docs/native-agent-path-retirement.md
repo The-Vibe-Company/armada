@@ -197,7 +197,7 @@ Also retire the owning tests and fixtures when their last caller goes away. Boat
 | [`agent-runtime/main.ts:445–461`](../packages/agent-runtime/src/main.ts#L445-L461) | 17 | Legacy Modal HTTP journal upload |
 | [`agent-runtime/main.ts:603–610`](../packages/agent-runtime/src/main.ts#L603-L610) | 8 | Legacy Modal runner HTTP listener |
 | [`agent-runtime/runtime.ts:134–157`](../packages/agent-runtime/src/runtime.ts#L134-L157) | 24 | Dial-out adapts requests to the shared HTTP handler. Remove only the external listener and preserve common command admission |
-| [`dashboard/app/api/sandboxes/[id]/events/route.ts:42–74`](../apps/dashboard/src/app/api/sandboxes/[id]/events/route.ts#L42-L74) | 33 | Native event pagination route and cursor policy |
+| [`dashboard/src/lib/events.ts`](../apps/dashboard/src/lib/events.ts) | 6 | `conversationReadDirection` selects forward reads for native history. The dashboard history and live events adapters share the conversation reader. |
 | [`dashboard/app/actions/sandboxes.ts:169–200`](../apps/dashboard/src/app/actions/sandboxes.ts#L169-L200) | 32 | Provider-specific native turn override policy |
 
 ### Deletion tickets and PR boundaries

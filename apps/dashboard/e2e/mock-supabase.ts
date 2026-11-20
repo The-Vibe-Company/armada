@@ -515,6 +515,15 @@ function seedLarge(target: State): void {
       },
     ]);
     if (variant === 2) target.events.set(sid, []);
+    if (i === 1) {
+      target.events.get(sid)?.unshift({
+        id: "earlier-fixture-message",
+        at: Date.parse(now) - 1,
+        kind: "message",
+        text: "Earlier fixture response",
+        conversationId: "large_conversation_1",
+      });
+    }
   }
   for (let i = 0; i < 12; i++)
     target.credentials.push({
@@ -1236,8 +1245,19 @@ function mcp(message: RpcMessage, userId: string | null): Response {
         },
       });
     case "logs": {
-      const since = typeof args.since_cursor === "string" ? Number(args.since_cursor) : 0;
-      return text({ events: events.slice(since), cursor: String(events.length), hasMore: false });
+      const since = typeof args.since_cursor === "string" ? String(args.since_cursor) : undefined;
+      if (args.direction === "backward" && target.id === id(11001)) {
+        const end = since ? Number(since.slice("older-".length)) : events.length;
+        const start = Math.max(0, end - 1);
+        return text({
+          events: events.slice(start, end),
+          cursor: String(end),
+          hasMore: start > 0,
+          ...(start > 0 ? { olderCursor: `older-${start}` } : {}),
+        });
+      }
+      if (since?.startsWith("older-")) return text({ error: "Backward cursor used for a forward read." }, true);
+      return text({ events: events.slice(Number(since ?? 0)), cursor: String(events.length), hasMore: false });
     }
     case "send": {
       if (args.steer === true) {
