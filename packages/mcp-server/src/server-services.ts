@@ -1,4 +1,4 @@
-import { assertProvider, createSqlAuthStore, oauthOptionsFromEnv } from "@armada/auth";
+import { createSqlAuthStore } from "@armada/auth";
 import {
   createApplicationVault,
   createGoldenAdoption,
@@ -17,9 +17,7 @@ import {
 import { repairHistoricalTurnModels } from "./account-model-upgrade.ts";
 import { createAccountTurnQueue } from "./account-turn-queue.ts";
 import { boatRuntimeLaunch } from "./boat-runtime-launch.ts";
-import { readBoatRuntimeManifest } from "./boat-runtime-manifest.ts";
 import { boatRuntimeResume } from "./boat-runtime-resume.ts";
-import { configFromEnv } from "./config.ts";
 import { type ConfiguredControlOptions, dispatchControlCommand } from "./control.ts";
 import { createCredentialBindingRecovery } from "./credential-binding-recovery.ts";
 import { createSqlCredentialList } from "./credential-list-sql.ts";
@@ -37,12 +35,10 @@ import { createGitHubAccountApi } from "./github-account.ts";
 import { configureBoatGitHub } from "./github-boat.ts";
 import { createSqlGoldenList } from "./golden-list.ts";
 import { type HandlerOptions, providerRegistry, type Route } from "./http.ts";
-import { idlePauseDelayMs } from "./idle-pause-policy.ts";
-import { invitationsFromEnv } from "./invitations.ts";
+import { Invitations } from "./invitations.ts";
 import { createJobsStore } from "./jobs/store.ts";
 import { createLangfuse } from "./langfuse.ts";
 import { launchCredentials } from "./launch-credentials.ts";
-import { catalogAuthenticationFromEnv } from "./mcp-catalog-client.ts";
 import { createMcpHttpIntegration } from "./mcp-http-integration.ts";
 import { bootstrapBoatMcp } from "./mcp-native.ts";
 import { createHistoricalSandboxProviderResolver, createMcpSandboxProviderResolver } from "./mcp-sandbox-provider.ts";
@@ -76,9 +72,9 @@ import { createSandboxAccountChange } from "./sandbox-account-change.ts";
 import { createSandboxArmadaAccess } from "./sandbox-armada-access.ts";
 import { createSandboxBillingAccount } from "./sandbox-billing-account.ts";
 import { createSandboxOutputs } from "./sandbox-outputs.ts";
-import { scriptedModelRoute } from "./scripted-model.ts";
 import sourceIdentity from "./source-identity.json";
 import { bunSql } from "./sql.ts";
+import { readStartupConfiguration } from "./startup-configuration.ts";
 import { createSubscriptionMigration } from "./subscription-migration.ts";
 
 export interface ServerOptions {
@@ -89,27 +85,28 @@ export interface ServerOptions {
 }
 
 export async function createServerServices(env: Record<string, string | undefined>, options: ServerOptions) {
-  const config = configFromEnv(env);
-  const scriptedModel = await scriptedModelRoute(env, config);
+  const {
+    config,
+    sql,
+    scriptedModel,
+    idleDelayMs,
+    catalogAuthentication,
+    invitationMail,
+    boat,
+    modalRuntime,
+    dockerManifest,
+  } = await readStartupConfiguration(env);
+  const dockerEnabled = dockerManifest !== undefined;
   const boatDeploymentId = env.ARMADA_BOAT_DEPLOYMENT_ID?.trim();
   const boatInventory = boatDeploymentId ? { deploymentId: boatDeploymentId } : {};
   const runtimeHostFor = (apiKey: string) => createObservedBoatProvider({ apiKey, ...boatInventory });
-  const idleDelayMs = idlePauseDelayMs(env);
   const launch: LaunchOptions = { extensionHeadroomSeconds: config.sandboxExtensionHeadroomSeconds };
-  const catalogAuthentication = catalogAuthenticationFromEnv(
-    env,
-    config.encryptionKey,
-    config.dashboardUrl,
-    config.development,
-  );
-  await catalogAuthentication("slack");
-  const sql = bunSql(config.databaseUrl, config.databasePoolMax);
   const jobs = createJobsStore(sql, config.encryptionKey);
   const webhooks = createOutboundWebhooks(sql, config.encryptionKey, config.dashboardUrl);
   const runtimeEnrolments = createRuntimeEnrolments(sql, config.encryptionKey);
   const runtimeCommands = createRuntimeCommands(runtimeEnrolments, config.encryptionKey);
   const runtimeCheckpoint = createRuntimeCheckpoint(sql, config.encryptionKey, runtimeCommands, {
-    docker: env.ARMADA_DOCKER_HOSTS === "1" && env.ARMADA_DOCKER_PLACEMENT === "1",
+    docker: dockerEnabled,
   });
   const runtimeStopCheckpoint = createRuntimeStopCheckpoint(sql, runtimeCheckpoint);
   let subscriptionMigration: ReturnType<typeof createSubscriptionMigration>;
@@ -266,24 +263,17 @@ export async function createServerServices(env: Record<string, string | undefine
     encryptionKey: config.encryptionKey,
     provider: (actor, target) => providers.resolve(target, { userId: actor.userId }),
   });
-  const imageBoatManifest = `/opt/armada/runtime-manifests/${process.arch}.json`;
-  const deployed = await readBoatRuntimeManifest(
-    env.ARMADA_BOAT_RUNTIME_MANIFEST ?? imageBoatManifest,
-    config.boatAgentPath,
-  );
-  const runtimeLaunch = deployed
+  const runtimeLaunch = boat
     ? boatRuntimeLaunch({
         sql,
         encryptionKey: config.encryptionKey,
         serverUrl: config.publicUrl,
         ...(runtimeGitHub ? { github: runtimeGitHub } : {}),
-        manifest: deployed.manifest,
-        architecture: deployed.architecture,
+        manifest: boat.manifest,
+        architecture: boat.architecture,
         modelAuth,
       })
     : undefined;
-  if (config.boatAgentPath === "runtime" && !runtimeLaunch)
-    throw Error("Boat runtime default requires installed runtime artifacts.");
   if (runtimeLaunch) {
     launch.boatEndpointRuntime = {
       policy: runtimeLaunch,
@@ -304,18 +294,9 @@ export async function createServerServices(env: Record<string, string | undefine
   }
   let warmModalArtifacts: ReturnType<typeof createModalArtifactCache> | undefined;
   let modalRuntimePolicy: ReturnType<typeof modalRuntimeLaunch> | undefined;
-  if (env.ARMADA_MODAL_DIALOUT === "1") {
-    if (!env.ARMADA_MODAL_RUNTIME_MANIFEST) throw Error("Modal runtime manifest required.");
-    const manifest = await Bun.file(env.ARMADA_MODAL_RUNTIME_MANIFEST).json();
-    if (
-      manifest?.protocol !== 1 ||
-      manifest.platform !== "linux" ||
-      manifest.libc !== "glibc" ||
-      !["x64", "arm64"].includes(manifest.architecture)
-    )
-      throw Error("Invalid Modal runtime manifest.");
-    if (!env.ARMADA_RUNTIME_ARTIFACT_DIR) throw Error("Modal runtime requires ARMADA_RUNTIME_ARTIFACT_DIR.");
-    warmModalArtifacts = createModalArtifactCache(manifest, env.ARMADA_RUNTIME_ARTIFACT_DIR);
+  if (modalRuntime) {
+    const { manifest, artifactDir } = modalRuntime;
+    warmModalArtifacts = createModalArtifactCache(manifest, artifactDir);
     modalRuntimePolicy = modalRuntimeLaunch({
       sql,
       encryptionKey: config.encryptionKey,
@@ -330,19 +311,9 @@ export async function createServerServices(env: Record<string, string | undefine
     store,
     app: githubApp,
   });
-  const dockerEnabled = env.ARMADA_DOCKER_HOSTS === "1" && env.ARMADA_DOCKER_PLACEMENT === "1";
   let dockerBootstrap: ReturnType<typeof createDockerBootstrapService> | undefined;
   let dockerArtifactSet: ReturnType<typeof createRuntimeArtifactSetRoute> | undefined;
-  if (dockerEnabled) {
-    if (!env.ARMADA_DOCKER_RUNTIME_MANIFEST) throw Error("Docker runtime manifest required.");
-    const dockerManifest = await Bun.file(env.ARMADA_DOCKER_RUNTIME_MANIFEST).json();
-    if (
-      dockerManifest?.protocol !== 1 ||
-      dockerManifest.platform !== "linux" ||
-      dockerManifest.libc !== "glibc" ||
-      !["x64", "arm64"].includes(dockerManifest.architecture)
-    )
-      throw Error("Invalid Docker runtime deployment manifest.");
+  if (dockerManifest) {
     dockerArtifactSet = createRuntimeArtifactSetRoute(dockerManifest);
     dockerBootstrap = createDockerBootstrapService(sql, config.encryptionKey, {
       enabled: true,
@@ -378,9 +349,7 @@ export async function createServerServices(env: Record<string, string | undefine
       (binding) => warmModalArtifacts?.beginWarming(binding, options.logError ?? console.error),
     )) as import("@armada/provider-modal").ModalProvider;
   };
-  if (config.modalAgentPath === "runtime") {
-    if (!modalRuntimePolicy)
-      throw Error("Modal runtime default requires the explicit runtime policy; no native fallback.");
+  if (config.modalAgentPath === "runtime" && modalRuntimePolicy) {
     launch.modalRuntimeDefault = {
       policy: modalRuntimePolicy,
       credentials: launchCredentials(store, config.encryptionKey, undefined, modelAuth),
@@ -499,7 +468,7 @@ export async function createServerServices(env: Record<string, string | undefine
     ),
     modelUsage: createModelUsageApi(sql),
     goldenRetirements,
-    invitations: invitationsFromEnv(sql, env),
+    invitations: new Invitations(sql, config.encryptionKey, invitationMail),
     templates,
     skillDefaults: createSkillDefaultsService(sql),
     routines: createRoutineService(sql),
@@ -597,12 +566,16 @@ export async function createServerServices(env: Record<string, string | undefine
     launch,
     modelAuth,
     publicUrl: config.publicUrl,
-    loginProviders: (env.ARMADA_AUTH_PROVIDERS ?? "")
-      .split(",")
-      .map((name) => name.trim())
-      .filter(Boolean)
-      .map(assertProvider),
-    oauth: oauthOptionsFromEnv({ store: authStore, env: { ...env, ARMADA_PUBLIC_URL: config.publicUrl } }),
+    loginProviders: config.loginProviders,
+    oauth: {
+      store: authStore,
+      fetch,
+      now: () => new Date(),
+      supabaseUrl: config.supabaseUrl,
+      anonKey: config.anonKey,
+      authSecret: config.authSecret,
+      publicUrl: config.publicUrl,
+    },
     authStore,
     supabase: { supabaseUrl: config.supabaseUrl, anonKey: config.anonKey },
     data,
