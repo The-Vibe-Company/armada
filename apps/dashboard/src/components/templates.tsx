@@ -3,7 +3,6 @@
 import type { Harness } from "@armada/core";
 import {
   BracesIcon,
-  LayoutTemplateIcon,
   LockIcon,
   LockKeyholeIcon,
   PencilIcon,
@@ -93,18 +92,6 @@ function ResultLine({ result }: { result: ActionResult | null }) {
     <p role="alert" className="text-sm text-destructive">
       {result.error}
     </p>
-  );
-}
-
-/** A template's mark on its row. */
-export function TemplateMark() {
-  return (
-    <span
-      aria-hidden
-      className="flex size-8 shrink-0 items-center justify-center rounded-md border border-primary/25 bg-primary/10 text-[var(--accent-text)] [&_svg]:size-4"
-    >
-      <LayoutTemplateIcon />
-    </span>
   );
 }
 

@@ -143,7 +143,7 @@ type HeaderRow = { key: number; name: string };
  * token, header values and client secret are uncontrolled password fields that React empties after every
  * submission, and nothing echoes them back. A success remounts the fields, so the form starts clean.
  */
-export function AddConnectionForm({ orgId, orgName, isAdmin }: { orgId: string; orgName: string; isAdmin: boolean }) {
+function AddConnectionForm({ orgId, orgName, isAdmin }: { orgId: string; orgName: string; isAdmin: boolean }) {
   const formRef = usePreservedActionForm();
   const [state, formAction] = useMutationState(addConnection);
   const [generation, setGeneration] = useState(0);
@@ -714,7 +714,7 @@ export function ServiceCatalog({
  * Name, who uses it and the launch default for a new connection to a catalog service, then its sign-in. The name
  * is a nickname for Armada only; the account it acts as is whatever the service's sign-in returns.
  */
-export function ConnectServiceDialog({
+function ConnectServiceDialog({
   service,
   taken,
   another,

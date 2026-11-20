@@ -1,6 +1,6 @@
 "use client";
 
-import { Clock3Icon, RefreshCwIcon } from "lucide-react";
+import { RefreshCwIcon } from "lucide-react";
 import Link from "next/link";
 import { useCallback, useEffect, useId, useMemo, useState } from "react";
 import { createRoutine, routineHistory, setRoutineState } from "@/app/actions/routines";
@@ -19,16 +19,6 @@ import { usePreservedActionForm } from "@/components/use-preserved-action-form";
 import { type RoutineItem, runDescription } from "@/lib/routines";
 import type { TemplateHeader } from "@/lib/templates";
 
-export function RoutineMark() {
-  return (
-    <span
-      aria-hidden
-      className="flex size-8 shrink-0 items-center justify-center rounded-md border bg-muted text-muted-foreground"
-    >
-      <Clock3Icon className="size-4" />
-    </span>
-  );
-}
 export function CreateRoutineDialog(props: { orgId: string; isAdmin: boolean; templates: TemplateHeader[] }) {
   const [open, setOpen] = useState(false),
     [generation, setGeneration] = useState(0);
