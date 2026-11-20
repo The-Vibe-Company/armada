@@ -41,7 +41,7 @@ test("token create, ls and revoke use the saved login and only creation prints t
   const token = "one-time-fixture";
   const summary = { id: "key-id", label: "worker", orgName: "Team", expiresAt };
   const cli = fixture(async (input, init) => {
-    const request = new Request(input, init);
+    const request = input instanceof Request ? new Request(input, init) : new Request(input.toString(), init);
     expect(request.headers.get("authorization")).toBe("Bearer saved-login");
     switch (new URL(request.url).pathname) {
       case "/api/v1/token/create":
@@ -72,7 +72,7 @@ test("whoami uses ARMADA_TOKEN in preference to a saved login", async () => {
   const identity = { userId: "user", auth: "key", key: { name: "worker", expiresAt } };
   const cli = fixture(
     async (input, init) => {
-      const request = new Request(input, init);
+      const request = input instanceof Request ? new Request(input, init) : new Request(input.toString(), init);
       expect(request.url).toBe(`${origin}/api/v1/token/whoami`);
       expect(request.headers.get("authorization")).toBe("Bearer key-fixture");
       return Response.json(identity);

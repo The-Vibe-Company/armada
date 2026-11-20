@@ -1,5 +1,6 @@
 "use client";
 
+import { useRouter } from "next/navigation";
 import { useState, useTransition } from "react";
 import { createApiKey } from "@/app/actions/api-keys";
 import { CreateDialog } from "@/components/create-dialog";
@@ -7,6 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 
 export function ApiKeyCreateDialog({ orgs }: { orgs: { id: string; name: string }[] }) {
+  const router = useRouter();
   const [open, setOpen] = useState(false);
   const [pending, startTransition] = useTransition();
   const [result, setResult] = useState<Awaited<ReturnType<typeof createApiKey>>>();
@@ -58,7 +60,13 @@ export function ApiKeyCreateDialog({ orgs }: { orgs: { id: string; name: string 
           <p role="status" className="text-sm text-muted-foreground">
             {copyStatus}
           </p>
-          <Button type="button" onClick={() => close(false)}>
+          <Button
+            type="button"
+            onClick={() => {
+              close(false);
+              router.refresh();
+            }}
+          >
             Done
           </Button>
         </div>
@@ -79,23 +87,30 @@ export function ApiKeyCreateDialog({ orgs }: { orgs: { id: string; name: string 
             });
           }}
         >
-          <label className="grid gap-2 text-sm font-medium" htmlFor="api-key-name">
-            Name
+          <div className="grid gap-2 text-sm font-medium">
+            <label htmlFor="api-key-name">Name</label>
             <Input id="api-key-name" name="name" required maxLength={80} disabled={pending} />
-          </label>
-          <label className="grid gap-2 text-sm font-medium">
-            Organization
-            <select className="h-9 rounded-md border bg-background px-3" name="org" required disabled={pending}>
+          </div>
+          <div className="grid gap-2 text-sm font-medium">
+            <label htmlFor="api-key-org">Organization</label>
+            <select
+              id="api-key-org"
+              className="h-9 rounded-md border bg-background px-3"
+              name="org"
+              required
+              disabled={pending}
+            >
               {orgs.map((org) => (
                 <option key={org.id} value={org.id}>
                   {org.name}
                 </option>
               ))}
             </select>
-          </label>
-          <label className="grid gap-2 text-sm font-medium">
-            Expires
+          </div>
+          <div className="grid gap-2 text-sm font-medium">
+            <label htmlFor="api-key-expiry">Expires</label>
             <select
+              id="api-key-expiry"
               className="h-9 rounded-md border bg-background px-3"
               name="expires"
               defaultValue="30d"
@@ -106,7 +121,7 @@ export function ApiKeyCreateDialog({ orgs }: { orgs: { id: string; name: string 
               <option value="1y">1 year</option>
               <option value="never">Never</option>
             </select>
-          </label>
+          </div>
           {result && (
             <p role="alert" className="text-sm text-destructive">
               {result.error}

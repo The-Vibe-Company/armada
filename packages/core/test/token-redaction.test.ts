@@ -5,12 +5,16 @@ import { redactKnownTokens } from "../src/index.ts";
 const recognized = [
   ...["ghu", "ghr", "ghs", "gho", "ghp"].map((prefix) => `${prefix}_${"A".repeat(36)}`),
   `github_pat_${"A".repeat(82)}`,
-  `armada_sk_${"aB0_-".repeat(8)}abc`,
   `armada_gw_${"aB0_-".repeat(8)}`,
   `cmp_pat_${"a1".repeat(24)}`,
 ];
 
 test.each(recognized)("masks recognized token %s wherever it appears", (token) => {
+  expect(redactKnownTokens(`failed: ${token}, retry ${token}`)).toBe("failed: ***, retry ***");
+});
+
+test("masks a recognized Armada API key wherever it appears", () => {
+  const token = `armada_sk_${"aB0_-".repeat(8)}abc`;
   expect(redactKnownTokens(`failed: ${token}, retry ${token}`)).toBe("failed: ***, retry ***");
 });
 

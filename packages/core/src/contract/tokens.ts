@@ -20,6 +20,7 @@ export const tokenOperations = {
     name: "listServiceTokens",
     route: { method: "POST", path: "/api/v1/token/list" },
     audience: "admin",
+    scopedAuth: ["personalSession"],
     readOnly: true,
     destructive: false,
     description: "List the caller's service tokens with a personal login, without token values or hashes.",
@@ -32,10 +33,10 @@ export const tokenOperations = {
     name: "createServiceToken",
     route: { method: "POST", path: "/api/v1/token/create" },
     audience: "admin",
+    scopedAuth: ["personalSession"],
     readOnly: false,
     destructive: false,
-    description:
-      "Create a service token for an organization in the caller's scope. The token value is returned only once.",
+    description: "Create a service token with a personal login. The token value is returned only once.",
     input: {
       body: z.strictObject({
         org: z.string().trim().min(1).optional().describe("Organization UUID or name."),
@@ -51,6 +52,7 @@ export const tokenOperations = {
     name: "whoami",
     route: { method: "POST", path: "/api/v1/token/whoami" },
     audience: "admin",
+    scopedAuth: ["personalSession", "serviceToken"],
     readOnly: true,
     destructive: false,
     description: "Identify the current personal login or API key.",
@@ -66,9 +68,10 @@ export const tokenOperations = {
     name: "revokeServiceToken",
     route: { method: "POST", path: "/api/v1/token/revoke" },
     audience: "admin",
+    scopedAuth: ["personalSession"],
     readOnly: false,
     destructive: true,
-    description: "Revoke an active service token owned by the caller and visible in their current scope.",
+    description: "Revoke an active service token owned by the caller using a personal login.",
     input: {
       body: z.object({
         id: z.guid({

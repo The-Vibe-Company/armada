@@ -12,7 +12,7 @@
         "description": "List the caller's service tokens with a personal login, without token values or hashes.",
         "security": [
           {
-            "serviceToken": []
+            "personalSession": []
           }
         ],
         "responses": {
@@ -132,10 +132,10 @@
     "/api/v1/token/create": {
       "post": {
         "operationId": "token_create",
-        "description": "Create a service token for an organization in the caller's scope. The token value is returned only once.",
+        "description": "Create a service token with a personal login. The token value is returned only once.",
         "security": [
           {
-            "serviceToken": []
+            "personalSession": []
           }
         ],
         "requestBody": {
@@ -282,6 +282,9 @@
         "description": "Identify the current personal login or API key.",
         "security": [
           {
+            "personalSession": []
+          },
+          {
             "serviceToken": []
           }
         ],
@@ -403,10 +406,10 @@
     "/api/v1/token/revoke": {
       "post": {
         "operationId": "token_revoke",
-        "description": "Revoke an active service token owned by the caller and visible in their current scope.",
+        "description": "Revoke an active service token owned by the caller using a personal login.",
         "security": [
           {
-            "serviceToken": []
+            "personalSession": []
           }
         ],
         "requestBody": {

@@ -70,10 +70,10 @@ protocol endpoints outside this namespace remain outside this catalogue.
 | `auth/exchange`, `auth/refresh`: LaunchError | 400, original launch code | Inspect the code; shared failure categories are not remapped here. |
 | `auth/exchange`, `auth/refresh`: VaultError | 400, original vault code | Original code survives even for missing_credential, conflict, credential_refused or unavailable. |
 | `auth/exchange`, `auth/refresh`: any other caught failure | 401 unauthorized | Login exchange/refresh refused; this can mask a dependency failure. |
-| `token/list`: any caught failure | 401 unauthorized | Authenticate again; catch also covers non-auth failures. |
-| `token/create`: invalid/conflicting org selectors | 400 invalid or 403 forbidden | Correct selectors and caller scope. |
-| `token/create`: any caught failure | 401 unauthorized | Token creation refused. |
-| `token/revoke`: scope rejection or any caught failure | 403 forbidden | Revocation refused. |
+| `token/list`, `token/create`, `token/revoke`, `token/whoami`: absent or refused bearer | 401 unauthorized | Sign in again or replace an invalid, expired, or revoked API key. |
+| `token/create`: invalid input or ambiguous organization | 400 invalid | Supply a valid name, expiry and organization. |
+| Token management with an API key or MCP token, out-of-scope organization, or revocation refused | 403 forbidden | Use a personal login and select an organization you belong to or a key you own. |
+| Token routes: auth or token store unavailable | 503 dependency_unavailable | Check service availability. If creation might have succeeded, inspect the key list before retrying. |
 | All above: unsupported method | 405 invalid | Use GET for auth/authorize, POST for the others. |
 
 The exchange/refresh VaultError catch maps **every** VaultError code to 400,

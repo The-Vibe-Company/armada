@@ -24,7 +24,6 @@ function tokenRouteStore(store: AuthStore): AuthStore {
   return {
     ...store,
     memberships: (...args) => dependency(() => store.memberships(...args)),
-
     listServiceTokens: (...args) => dependency(() => store.listServiceTokens(...args)),
     insertToken: (...args) => dependency(() => store.insertToken(...args)),
     revokeToken: (...args) => dependency(() => store.revokeToken(...args)),

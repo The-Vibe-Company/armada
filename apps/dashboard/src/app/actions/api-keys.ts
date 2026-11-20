@@ -20,7 +20,6 @@ export async function createApiKey(form: FormData) {
   try {
     const client = createControlClient({ serverUrl, token: viewer.token });
     const key = op.output.parse(await client.post(controlRouteKey(op.route), input.data));
-    revalidatePath("/settings/api-keys");
     return { ok: true as const, token: key.token, origin: new URL(serverUrl).origin };
   } catch (error) {
     return {
@@ -40,7 +39,7 @@ export async function revokeApiKey(id: string) {
     const client = createControlClient({ serverUrl, token: viewer.token });
     op.output.parse(await client.post(controlRouteKey(op.route), input));
     revalidatePath("/settings/api-keys");
-    return { ok: true as const };
+    return { ok: true as const, message: "API key revoked." };
   } catch (error) {
     return {
       ok: false as const,

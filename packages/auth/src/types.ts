@@ -1,5 +1,7 @@
 export type AuthFetch = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
 
+export const SERVICE_TOKEN_USAGE_INTERVAL_MS = 60_000;
+
 export type TokenTable = "service" | "mcp";
 export type MemberRole = "admin" | "member";
 

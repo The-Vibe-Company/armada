@@ -1,12 +1,13 @@
 import { assertHash } from "./codec.ts";
-import type {
-  AuthStore,
-  ListedToken,
-  Membership,
-  OAuthClientRecord,
-  OAuthCodeRecord,
-  TokenRecord,
-  TokenTable,
+import {
+  type AuthStore,
+  type ListedToken,
+  type Membership,
+  type OAuthClientRecord,
+  type OAuthCodeRecord,
+  SERVICE_TOKEN_USAGE_INTERVAL_MS,
+  type TokenRecord,
+  type TokenTable,
 } from "./types.ts";
 
 interface StoredToken extends TokenRecord {
@@ -51,7 +52,11 @@ export function createMemoryAuthStore(): MemoryAuthStore {
       if (!token || token.revokedAt || (token.expiresAt && token.expiresAt <= now)) return null;
       const member = members.find((row) => row.userId === token.userId && row.orgId === token.orgId);
       if (!member) return null;
-      if (token.lastUsedAt === null || token.lastUsedAt < now) token.lastUsedAt = now;
+      if (
+        token.lastUsedAt === null ||
+        Date.parse(now) - Date.parse(token.lastUsedAt) >= SERVICE_TOKEN_USAGE_INTERVAL_MS
+      )
+        token.lastUsedAt = now;
       return { token: publicToken(token), role: member.role };
     },
     async findTokenByHash(kind, hash) {

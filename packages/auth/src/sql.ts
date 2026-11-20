@@ -1,6 +1,14 @@
 import { assertHash } from "./codec.ts";
 import { AuthError } from "./errors.ts";
-import type { AuthStore, MemberRole, Membership, OAuthCodeRecord, TokenRecord, TokenTable } from "./types.ts";
+import {
+  type AuthStore,
+  type MemberRole,
+  type Membership,
+  type OAuthCodeRecord,
+  SERVICE_TOKEN_USAGE_INTERVAL_MS,
+  type TokenRecord,
+  type TokenTable,
+} from "./types.ts";
 
 export interface SqlQuery {
   query<T extends Record<string, unknown>>(sql: string, params?: readonly unknown[]): Promise<{ rows: T[] }>;
@@ -37,15 +45,23 @@ export function createSqlAuthStore(db: SqlQuery): AuthStore {
       return token && row ? { token, role: row.role } : null;
     },
     async useServiceToken(hash, now) {
+      // Verify on the statement snapshot. A concurrent touch can lose the write without refusing a valid key.
       assertHash(hash);
       const result = await db.query<TokenRow & { role: MemberRole }>(
-        `update public.service_tokens t
-         set last_used_at = greatest(t.last_used_at, $2::timestamptz)
-         from public.members m
-         where t.hash = $1 and m.user_id = t.user_id and m.org_id = t.org_id
-           and t.revoked_at is null and (t.expires_at is null or t.expires_at > $2::timestamptz)
-         returning t.id, t.user_id, t.org_id, t.label, t.revoked_at, t.created_at, t.expires_at, m.role`,
-        [hash, now],
+        `with valid as materialized (
+           select t.id, t.user_id, t.org_id, t.label, t.revoked_at, t.created_at, t.expires_at, m.role
+           from public.service_tokens t
+           join public.members m on m.user_id = t.user_id and m.org_id = t.org_id
+           where t.hash = $1 and t.revoked_at is null and (t.expires_at is null or t.expires_at > $2::timestamptz)
+         ), touch as (
+           update public.service_tokens t
+           set last_used_at = $2::timestamptz
+           from valid v
+           where t.id = v.id and t.revoked_at is null
+             and (t.last_used_at is null or t.last_used_at <= $2::timestamptz - $3::integer * interval '1 millisecond')
+         )
+         select id, user_id, org_id, label, revoked_at, created_at, expires_at, role from valid`,
+        [hash, now, SERVICE_TOKEN_USAGE_INTERVAL_MS],
       );
       const row = result.rows[0];
       const token = mapToken(row);

@@ -361,7 +361,7 @@ Avoid shell tracing and keep the key out of command arguments and logs.
 
 From your personal login, use `armada token ls` to find the key ID and
 `armada token revoke TOKEN_ID` to revoke it. You can also revoke it in Settings.
-Revocation takes effect on the next request.
+Revocation takes effect on the next request. The last-used timestamp updates at most once per minute.
 
 For **Claude Code**, edit the project's `.mcp.json` directly (merge this entry with any existing servers). Keep the variable reference literal in the file; Claude Code, not the shell, expands it:
 
