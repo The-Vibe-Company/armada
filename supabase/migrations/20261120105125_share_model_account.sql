@@ -60,7 +60,6 @@ create function public.share_model_account(p_actor uuid, p_account uuid, p_org u
 returns uuid
 language plpgsql
 set search_path = ''
-set armada.share_model_account = 'on'
 as $$
 declare
   v_kind public.credential_kind;
@@ -104,9 +103,11 @@ begin
       using errcode = '55000';
   end if;
 
+  perform pg_catalog.set_config('armada.share_model_account', 'on', true);
   update public.credentials
   set scope = 'org', owner_id = p_org, is_default = false
   where id = p_account;
+  perform pg_catalog.set_config('armada.share_model_account', '', true);
 
   update public.agent_defaults
   set credential_id = case when credential_id = p_account then null else credential_id end,
