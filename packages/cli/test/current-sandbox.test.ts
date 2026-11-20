@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { currentSandboxFile } from "../src/current-sandbox.ts";
@@ -120,4 +120,21 @@ test("machine failures end with one JSON line with code, message and hint", asyn
       hint: "Next step: run armada status --help.",
     },
   });
+});
+
+test("a symlink cannot select a sandbox from outside the invocation directory", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "armada-current-"));
+  try {
+    await mkdir(join(cwd, ".armada"));
+    await writeFile(join(cwd, "outside-selection"), first);
+    await symlink(join(cwd, "outside-selection"), join(cwd, ".armada/sandbox"));
+    const cli = fixture(async () => {
+      throw new Error("unexpected fetch");
+    });
+    const result = await cli.run(["status", "--json"], { sandboxFile: currentSandboxFile(cwd) });
+    expect(result.exit).toBe(2);
+    expect(JSON.parse(result.err).error.message).toContain("Could not read .armada/sandbox");
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
 });
