@@ -121,6 +121,7 @@ test.each([
   ],
   ['alter function public.f set "armada.share" to default', "armada.share"],
   [`alter function public.f() set U&"armada!002eshare" UESCAPE '!' from current`, "armada.share"],
+  [String.raw`alter function public.f() set U&"armada!002eshare" UESCAPE E'\x21' to 'on'`, "armada.share"],
   ["create procedure public.p() language sql set armada.share = 'on' begin atomic select 1; end", "armada.share"],
   ["alter routine public.f() set armada.share to 'on'", "armada.share"],
 ])("rejects a custom routine setting in %s", (sql, parameter) => {
@@ -141,7 +142,7 @@ test("allows built-in routine settings, schema changes and SQL inside function b
     alter function f() set "work_mem" to '4MB';
     alter function f() set schema private;
     create function g() returns text language sql return 'set armada.share to on';
-    create procedure p() language sql begin atomic set armada.share = 'on'; end;
+    create procedure p() language sql begin atomic update public.flags set armada.share = 'on'; end;
     set armada.share = 'off';
   `),
   ).toEqual([]);

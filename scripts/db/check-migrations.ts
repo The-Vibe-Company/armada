@@ -100,6 +100,19 @@ export function transactionErrors(sql: string) {
   return errors;
 }
 
+function unicodeEscapeCharacter(literal: string | undefined) {
+  if (!literal) return "\\";
+  if (!/^e'/i.test(literal)) return literal.slice(1, -1);
+  const value = literal.slice(2, -1);
+  const numeric = /^\\(?:x([\da-f]{1,2})|u([\da-f]{4})|U([\da-f]{8})|([0-7]{1,3}))$/i.exec(value);
+  if (numeric) {
+    const octal = numeric[4];
+    const codePoint = octal ? Number.parseInt(octal, 8) & 0xff : Number.parseInt(value.slice(2), 16);
+    if (codePoint <= 0x10ffff) return String.fromCodePoint(codePoint);
+  }
+  return value.startsWith("\\") ? value.slice(1) : value;
+}
+
 function qualifiedName(tokens: readonly (string | undefined)[], start: number) {
   const parts: string[] = [];
   let name: string | undefined;
@@ -110,7 +123,7 @@ function qualifiedName(tokens: readonly (string | undefined)[], start: number) {
       const content = token!.slice(3, -1).replaceAll('""', '"');
       let escapeCharacter = "\\";
       if (tokens[next] === "uescape") {
-        escapeCharacter = tokens[next + 1]?.slice(1, -1) ?? escapeCharacter;
+        escapeCharacter = unicodeEscapeCharacter(tokens[next + 1]);
         next += 2;
       }
       const marker = escapeCharacter.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -145,7 +158,6 @@ export function routineSettingErrors(sql: string) {
       if (token === "(" || token === "[") depth++;
       if (token === ")" || token === "]") depth--;
       if (depth !== 0) continue;
-      // Quoted bodies are opaque tokens. Unquoted SQL bodies start with BEGIN ATOMIC.
       if (verb === "create" && token === "begin" && tokens[index + 1] === "atomic") break;
       if (token !== "set") continue;
 
