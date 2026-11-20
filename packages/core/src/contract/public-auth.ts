@@ -98,7 +98,7 @@ export const publicAuthOperations = {
     route: { method: "POST", path: "/api/v1/auth/device/poll" },
     input: { body: z.object({ device_code: z.string().regex(/^[a-f0-9]{64}$/) }) },
     output: z.union([
-      session.extend({ status: z.literal("authorized"), email: z.email() }),
+      session.extend({ status: z.literal("authorized"), email: z.string().min(1) }),
       z.object({
         status: z.enum(["authorization_pending", "slow_down"]),
         interval: z.number().int().min(1).max(600),

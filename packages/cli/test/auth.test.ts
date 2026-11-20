@@ -159,13 +159,14 @@ describe("auth commands", () => {
       }
       expect(url).toBe(`${ORIGIN}/api/v1/auth/device/poll`);
       expect(JSON.parse(String(init?.body))).toEqual({ device_code: deviceCode });
-      return calls.length === 2 ? Response.json({ status: "slow_down", interval: 10 }) : loginAuthorized();
+      if (calls.length === 2) return Response.json({ status: "slow_down", interval: 10 });
+      return Response.json({ ...(await loginAuthorized().json()), email: "user!cli@example.test" });
     };
 
     const result = await capture(["login", "--url", "armada.example"], auth);
     expect(result).toEqual({
       code: 0,
-      out: "Signed in as user@example.test.\n",
+      out: "Signed in as user!cli@example.test.\n",
       err: `Open ${deviceLoginUrl} and confirm code 12AB34CD.\n`,
     });
     expect(waits).toEqual([5_000, 10_000]);

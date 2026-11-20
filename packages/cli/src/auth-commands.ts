@@ -128,7 +128,8 @@ export async function loginCommand(io: AuthIo, how: { url?: string | undefined; 
           refreshToken,
           expiresAt,
         });
-        io.out(how.json ? '{"authenticated":true}\n' : `Signed in as ${email}.\n`);
+        const account = email.replace(/[\p{Cc}\p{Cf}]/gu, "");
+        io.out(how.json ? '{"authenticated":true}\n' : `Signed in as ${account}.\n`);
         return;
       }
     }
