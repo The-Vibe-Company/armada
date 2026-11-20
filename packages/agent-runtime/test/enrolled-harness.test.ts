@@ -106,7 +106,7 @@ test.skipIf(process.platform !== "linux" || !["arm64", "x64"].includes(process.a
             antigravityCredential: { method: "gemini-api-key", apiKey: "fixture-model-material" },
           },
           async (url, options) => {
-            requests.push(new Request(url, options));
+            requests.push(new Request(url.href, options));
             return new Response(null, { status: 404 });
           },
           join(root, "shared"),
