@@ -284,8 +284,7 @@ const repositoryAccessMessage = (message: string | null | undefined): message is
     /^Repository [A-Za-z0-9][A-Za-z0-9_.-]{0,80} could not be verified as public before launch\. Run armada account login github or retry when GitHub is available\.$/.test(
       message,
     ));
-function storedRepositoryAccessMessage(reason: string | null): string | undefined {
-  // Older workers may have persisted the previous CLI spelling in status_reason.
+function storedRepositoryAccessMessage(reason: string | null) {
   const message = reason?.replace("Run armada github connect", "Run armada account login github");
   return repositoryAccessMessage(message) ? message : undefined;
 }
