@@ -369,10 +369,8 @@ describe("runtime resume admission rollback", () => {
   );
 });
 
-describe("queued runtime wake admission", () => {
-  const fixture = scopedRuntimeFixture(() => stopped(), { perTest: true });
-
-  const scopedFixture = scopedRuntimeFixture(() => stopped("codex", "modal"), { perTest: true });
+describe.each(["boat", "modal"] as const)("queued runtime wake admission (%s)", (provider) => {
+  const fixture = scopedRuntimeFixture(() => stopped("codex", provider), { perTest: true });
 
   const scenarios = [
     "current",
@@ -387,9 +385,10 @@ describe("queued runtime wake admission", () => {
     "replaced epoch",
   ] as const;
 
-  test.each([...scenarios])("fences queued wake admission and publication (%s)", async (scenario) => {
+  const cases = scenarios.filter((scenario) => (scenario === "scoped grant loss") === (provider === "modal"));
+  test.each(cases)("fences queued wake admission and publication (%s)", async (scenario) => {
     const scoped = scenario === "scoped grant loss";
-    const f = await (scoped ? scopedFixture() : fixture());
+    const f = await fixture();
     const access = scoped ? await scopedAccessFor(f) : undefined;
     const request = input(f.row.id);
     const before = (await createSqlData(f.sql)(f.caller).sandboxes.get(f.row.id))!.lifecycleGeneration!;

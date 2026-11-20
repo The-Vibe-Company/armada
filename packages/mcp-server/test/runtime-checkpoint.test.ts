@@ -224,6 +224,8 @@ test.each(["reservation", "command", "acknowledgement", "revocation", "scrub"] a
       command: "select 1 from runtime_commands where sandbox_id=$1",
       acknowledgement:
         "select 1 from orchestrator_delegations where orchestrator_id=$1 and acknowledged_at is not null",
+      revocation: "select 1 from orchestrator_delegations where orchestrator_id=$1 and revoked_at is not null",
+      scrub: "select 1 from runtime_commands where sandbox_id=$1 offset 1",
     }[point];
     let lost = false;
     await expect(
