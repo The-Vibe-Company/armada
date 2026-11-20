@@ -147,103 +147,116 @@ test("an unbound Modal launch can publish only its leased allocation receipt", a
   await expect(withJobLease(f.sql, successor, (tx) => bind(tx, "guessed"))).rejects.toMatchObject({ code: "23514" });
 });
 
-test.each(["create response", "bootstrap dispatch"] as const)(
-  "a replacement Modal launch runner completes after losing the %s",
-  async (failure) => {
-    const f = await fixture();
-    const id = await unboundModalSandbox(f);
-    const jobId = await f.store.enqueue("launch", id, 2, id, null, {
-      orgId: f.people.org,
-      maxAttempts: 3,
-      deadline: new Date("2100-01-01T00:00:00Z"),
-      request: { ownerId: f.people.owner, digest: "fixture" },
-    });
-    let allocations = 0;
-    let observed = 0;
-    let tags: Record<string, string> = {};
-    const bootstrapped: string[] = [];
-    const fail = (step: typeof failure, interrupted: boolean) => {
-      if (failure === step && interrupted) throw new Error("Lost worker");
+type ModalLaunchStep = "create response" | "bootstrap dispatch" | "image lookup" | "runtime ticket";
+
+async function modalLaunchFixture() {
+  const f = await fixture();
+  const id = await unboundModalSandbox(f);
+  const jobId = await f.store.enqueue("launch", id, 2, id, null, {
+    orgId: f.people.org,
+    maxAttempts: 3,
+    deadline: new Date("2100-01-01T00:00:00Z"),
+    request: { ownerId: f.people.owner, digest: "fixture" },
+  });
+  let allocations = 0;
+  let observed = 0;
+  let tags: Record<string, string> = {};
+  const bootstrapped: string[] = [];
+  const makeRunner = (atStep?: (step: ModalLaunchStep) => void | Promise<void>) => {
+    const sandbox = {
+      sandboxId: "physical",
+      getTags: async () => tags,
+      poll: async () => {
+        observed++;
+        return null;
+      },
+      async exec() {
+        await atStep?.("bootstrap dispatch");
+        const { rows } = await f.db.query<{ provider_sandbox_id: string }>(
+          "select provider_sandbox_id from sandboxes where id=$1",
+          [id],
+        );
+        bootstrapped.push(rows[0]!.provider_sandbox_id);
+        return { stdin: { writeText: async () => {}, close: async () => {} }, wait: async () => 0 };
+      },
     };
-    const makeRunner = (interrupted: boolean) => {
-      const sandbox = {
-        sandboxId: "physical",
-        getTags: async () => tags,
-        poll: async () => {
-          observed++;
-          return null;
+    const client = {
+      apps: { fromName: async () => ({ appId: "ap-test" }) },
+      images: {
+        async fromId() {
+          await atStep?.("image lookup");
+          return { imageId: "image" };
         },
-        async exec() {
-          fail("bootstrap dispatch", interrupted);
-          const { rows } = await f.db.query<{ provider_sandbox_id: string }>(
-            "select provider_sandbox_id from sandboxes where id=$1",
-            [id],
-          );
-          bootstrapped.push(rows[0]!.provider_sandbox_id);
-          return { stdin: { writeText: async () => {}, close: async () => {} }, wait: async () => 0 };
+      },
+      sandboxes: {
+        async create(_app: unknown, _image: unknown, options: { tags: Record<string, string> }) {
+          allocations++;
+          tags = options.tags;
+          await atStep?.("create response");
+          return sandbox;
         },
-      };
-      const client = {
-        apps: { fromName: async () => ({ appId: "ap-test" }) },
-        images: { fromId: async () => ({ imageId: "image" }) },
-        sandboxes: {
-          async create(_app: unknown, _image: unknown, options: { tags: Record<string, string> }) {
-            allocations++;
-            tags = options.tags;
-            fail("create response", interrupted);
-            return sandbox;
-          },
-          fromName: async () => sandbox,
-          fromId: async () => sandbox,
-        },
-      } as unknown as ModalMachineOptions["client"];
-      return createJobsRunner(
-        createJobsStore(f.sql),
-        {
-          launch: {
-            concurrency: 1,
-            async run(job, context) {
-              const outcome = await dispatchModalLaunch(f.sql, job, context, {
-                allocation: { source: { kind: "image", ref: "image" }, size: null, computeTtlSeconds: 600 },
-                bindingRef: job.id,
-                machine: {
-                  client,
-                  appName: "test",
-                  binding: { appId: "ap-test", workspace: "workspace", environment: "main" },
-                  deploymentId: "deployment",
-                  resolveRuntimeTicket: async () => ({
+        fromName: async () => sandbox,
+        fromId: async () => sandbox,
+      },
+    } as unknown as ModalMachineOptions["client"];
+    return createJobsRunner(
+      createJobsStore(f.sql),
+      {
+        launch: {
+          concurrency: 1,
+          async run(job, context) {
+            const outcome = await dispatchModalLaunch(f.sql, job, context, {
+              allocation: { source: { kind: "image", ref: "image" }, size: null, computeTtlSeconds: 600 },
+              bindingRef: job.id,
+              machine: {
+                client,
+                appName: "test",
+                binding: { appId: "ap-test", workspace: "workspace", environment: "main" },
+                deploymentId: "deployment",
+                async resolveRuntimeTicket() {
+                  await atStep?.("runtime ticket");
+                  return {
                     serverUrl: "https://armada.invalid",
                     artifact: { sha256: "a".repeat(64), bytes: 1 },
                     cacheDir: "/home/user/runtime-cache",
                     enrolmentToken: `armada_enrol_${"b".repeat(64)}`,
-                  }),
-                  prepareCheckpoint: async () => {},
+                  };
                 },
-              });
-              if (outcome !== "bootstrapped") throw new Error("Expected bootstrap");
-              return { status: "done" };
-            },
+                prepareCheckpoint: async () => {},
+              },
+            });
+            if (outcome.kind !== "bootstrapped") throw new Error("Expected bootstrap");
+            return { status: "done" };
           },
         },
-        () => {},
-        () => () => {},
-      );
-    };
+      },
+      () => {},
+      () => () => {},
+    );
+  };
+  return { f, id, jobId, makeRunner, effects: () => ({ allocations, observed, bootstrapped }) };
+}
 
-    const first = makeRunner(true);
+test.each(["create response", "bootstrap dispatch"] as const)(
+  "a replacement Modal launch runner completes after losing the %s",
+  async (failure) => {
+    const { f, jobId, makeRunner, effects } = await modalLaunchFixture();
+    const first = makeRunner((step) => {
+      if (step === failure) throw new Error("Lost worker");
+    });
     expect(await first.reconcileOne(signal)).toBe(true);
     await first.drain();
-    expect(allocations).toBe(1);
-    expect(bootstrapped).toEqual([]);
+    expect(effects().allocations).toBe(1);
+    expect(effects().bootstrapped).toEqual([]);
     expect((await f.db.query("select state from jobs where id=$1", [jobId])).rows).toEqual([{ state: "leased" }]);
     await f.db.query("update jobs set lease_until='-infinity' where id=$1", [jobId]);
 
-    const successor = makeRunner(false);
+    const successor = makeRunner();
     expect(await successor.reconcileOne(signal)).toBe(true);
     await successor.drain();
-    expect(allocations).toBe(1);
-    expect(bootstrapped).toEqual(["physical"]);
-    if (failure === "create response") expect(observed).toBe(1);
+    expect(effects().allocations).toBe(1);
+    expect(effects().bootstrapped).toEqual(["physical"]);
+    if (failure === "create response") expect(effects().observed).toBe(1);
     expect(
       (
         await f.db.query("select s.status, j.state from sandboxes s join jobs j on j.sandbox_id=s.id where j.id=$1", [
@@ -251,6 +264,33 @@ test.each(["create response", "bootstrap dispatch"] as const)(
         ])
       ).rows,
     ).toEqual([{ status: "starting", state: "done" }]);
+  },
+);
+
+test.each(["image lookup", "runtime ticket"] as const)(
+  "a Modal launch whose job deadline expires during %s cannot dispatch the prepared operation",
+  async (expiredAt) => {
+    const { f, jobId, makeRunner, effects } = await modalLaunchFixture();
+    const runner = makeRunner(async (step) => {
+      if (step === expiredAt) await f.db.query("update jobs set deadline_at='-infinity' where id=$1", [jobId]);
+    });
+    expect(await runner.reconcileOne(signal)).toBe(true);
+    await runner.drain();
+    expect(effects().allocations).toBe(expiredAt === "image lookup" ? 0 : 1);
+    expect(effects().bootstrapped).toEqual([]);
+  },
+);
+
+test.each(["expiry", "revoked membership"] as const)(
+  "a Modal job cannot allocate compute after sandbox %s",
+  async (revokedBy) => {
+    const { f, id, makeRunner, effects } = await modalLaunchFixture();
+    if (revokedBy === "expiry") await f.db.query("update sandboxes set expires_at='-infinity' where id=$1", [id]);
+    else await f.db.query("delete from members where org_id=$1 and user_id=$2", [f.people.org, f.people.owner]);
+    const runner = makeRunner();
+    expect(await runner.reconcileOne(signal)).toBe(true);
+    await runner.drain();
+    expect(effects().allocations).toBe(0);
   },
 );
 
