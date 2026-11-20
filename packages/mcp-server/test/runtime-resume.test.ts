@@ -1,4 +1,4 @@
-import { describe, expect, spyOn, test } from "bun:test";
+import { describe, expect, setSystemTime, spyOn, test } from "bun:test";
 import { createMemoryAuthStore } from "@armada/auth";
 import { createSqlVaultStore, DelegatedAuthority, type Provider } from "@armada/core/server";
 import { fakeBoat, retainedSandbox, sandbox as sdkSandbox } from "../../provider-boat/test/support.ts";
@@ -283,7 +283,7 @@ describe.each([
 describe("runtime resume admission rollback", () => {
   const fixture = scopedRuntimeFixture(() => stopped(), { perTest: true });
 
-  test.each(["generation conflict", "transition", "launch stage", "reread", "pre-commit"])(
+  test.each(["generation conflict", "elapsed expiry", "transition", "launch stage", "reread", "pre-commit"])(
     "leaves the retained stop intact after %s",
     async (fault) => {
       const f = await fixture();
@@ -292,7 +292,7 @@ describe("runtime resume admission rollback", () => {
       const read = async () =>
         (
           await f.db.query(
-            `select status, lifecycle_generation::text, activity_lease_id, stopped_at::text,
+            `select status, lifecycle_generation::text, activity_lease_id, stopped_at::text, expires_at::text,
             (select count(*)::int from public.runtime_resumes where sandbox_id=s.id) as intents,
             (select count(*)::int from public.sandbox_transitions where sandbox_id=s.id and to_status='starting') as edges
            from public.sandboxes s where id=$1`,
@@ -308,12 +308,25 @@ describe("runtime resume admission rollback", () => {
             let stageUpdated = false;
             const result = await work({
               ...tx,
-              query(statement, params) {
+              async query(statement, params) {
                 if (stageUpdated && fault === "reread") throw rollback;
                 if (statement.includes("from public.sandbox_transition(")) {
                   if (fault === "transition") throw rollback;
                   if (fault === "generation conflict") {
                     return tx.query(statement, [params![0], Number(params![1]) + 1, ...params!.slice(2)]);
+                  }
+                  if (fault === "elapsed expiry" && params?.[5] === "runtime_resume_admitted") {
+                    const expiry = await tx.query<{ expires_ms: number }>(
+                      `update public.sandboxes set expires_at=now()+interval '1 second' where id=$1
+                        returning ceil(extract(epoch from expires_at)*1000)::float8 as expires_ms`,
+                      [f.row.id],
+                    );
+                    setSystemTime(new Date(expiry.rows[0]!.expires_ms + 1));
+                    try {
+                      return await tx.query(statement, params);
+                    } finally {
+                      setSystemTime();
+                    }
                   }
                 }
                 if (statement.startsWith("update public.sandbox_launch_stages")) {
@@ -332,7 +345,7 @@ describe("runtime resume admission rollback", () => {
         throw Error("Unexpected placement preparation");
       });
       const attempt = resume(f.caller, request);
-      if (fault === "generation conflict") {
+      if (fault === "generation conflict" || fault === "elapsed expiry") {
         await expect(attempt).rejects.toMatchObject({ code: "conflict" });
       } else {
         await expect(attempt).rejects.toThrow(rollback.message);

@@ -377,7 +377,7 @@ async function interruptedDockerTurn(status: "starting" | "running") {
 }
 
 test.each(["current", "pending", "other request", "other epoch", "old issuer", "revoked host"] as const)(
-  "a Docker prompt response can retarget a stale turn only with current replay evidence (%s)",
+  "a Docker prompt command can retarget a stale turn only with current replay evidence (%s)",
   async (evidence) => {
     const { f, sandboxId, requestId, hostId, id } = await interruptedDockerTurn("running");
     const { db, people, store } = f;
@@ -402,8 +402,9 @@ test.each(["current", "pending", "other request", "other epoch", "old issuer", "
 
     const owner = crypto.randomUUID();
     const claim = await store.claim("turn_dispatch", owner, 30, 1);
-    expect(claim).toMatchObject({ id, generation: evidence === "current" ? "3" : "2", payload: { requestId } });
-    expect(await store.inspect(claim!, owner)).toBe(evidence === "current" ? "dispatch" : "stale");
+    const recoverable = evidence === "current" || evidence === "pending";
+    expect(claim).toMatchObject({ id, generation: recoverable ? "3" : "2", payload: { requestId } });
+    expect(await store.inspect(claim!, owner)).toBe(recoverable ? "dispatch" : "stale");
     expect(
       (
         await db.query(
