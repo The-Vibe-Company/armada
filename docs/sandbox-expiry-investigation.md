@@ -59,15 +59,17 @@ cannot safely receive an extension beyond their physical deadline.
 
 ## Required staging verification (not performed)
 
-For each provider and harness, launch from a staging golden with a two-minute
-logical lifetime; give it a random non-secret recall token and create an
-unpushed change. Let it expire once while idle and once while a turn is running.
+For each harness in the Modal staging matrix, launch from a staging snapshot
+with a two-minute logical lifetime. Give it a random non-secret recall token
+and create an unpushed change. Let it expire once while idle and once while a
+turn is running.
 Verify clean interruption, stopped/expired status and recoverable work, then send
 another prompt using the same sandbox ID and require recall of the original
 token and inspection of the unpushed change. Separately extend before expiry and
 verify the original deadline passes without stopping. Repeat with a removed
 provider disk/checkpoint and require an explicit non-restorable response with the
-work recovery reference. Do not run these destructive checks against production.
+work recovery reference. Boat verification is coordinator-only and on demand.
+Do not run these destructive checks against production.
 
 ## Initial delivery scope
 
