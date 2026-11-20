@@ -1,10 +1,12 @@
 import { readBoatRuntimeManifest } from "./boat-runtime-manifest.ts";
 import { configFromEnv } from "./config.ts";
 import { idlePauseDelayMs } from "./idle-pause-policy.ts";
+import { invitationMailFromEnv } from "./invitations.ts";
 import { catalogAuthenticationFromEnv } from "./mcp-catalog-client.ts";
 import { runtimeArtifactSet } from "./runtime-artifacts.ts";
 import { scriptedModelRoute } from "./scripted-model.ts";
 import { ServerConfigError } from "./server-config-error.ts";
+import { bunSql } from "./sql.ts";
 
 async function readManifest(path: string | undefined, name: string) {
   if (!path?.trim()) throw new ServerConfigError(`Set ${name}.`);
@@ -58,5 +60,22 @@ export async function readStartupConfiguration(env: Record<string, string | unde
     env.ARMADA_DOCKER_HOSTS === "1" && env.ARMADA_DOCKER_PLACEMENT === "1"
       ? await readManifest(env.ARMADA_DOCKER_RUNTIME_MANIFEST, "ARMADA_DOCKER_RUNTIME_MANIFEST")
       : undefined;
-  return { config, scriptedModel, idleDelayMs, catalogAuthentication, boat, modalRuntime, dockerManifest };
+  const invitationMail = invitationMailFromEnv(env);
+  let sql: ReturnType<typeof bunSql>;
+  try {
+    sql = bunSql(config.databaseUrl, config.databasePoolMax);
+  } catch {
+    throw new ServerConfigError("ARMADA_DATABASE_URL must be a valid PostgreSQL connection URL.");
+  }
+  return {
+    config,
+    sql,
+    scriptedModel,
+    idleDelayMs,
+    catalogAuthentication,
+    invitationMail,
+    boat,
+    modalRuntime,
+    dockerManifest,
+  };
 }

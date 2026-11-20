@@ -35,7 +35,7 @@ import { createGitHubAccountApi } from "./github-account.ts";
 import { configureBoatGitHub } from "./github-boat.ts";
 import { createSqlGoldenList } from "./golden-list.ts";
 import { type HandlerOptions, providerRegistry, type Route } from "./http.ts";
-import { invitationsFromEnv } from "./invitations.ts";
+import { Invitations } from "./invitations.ts";
 import { createJobsStore } from "./jobs/store.ts";
 import { createLangfuse } from "./langfuse.ts";
 import { launchCredentials } from "./launch-credentials.ts";
@@ -85,14 +85,22 @@ export interface ServerOptions {
 }
 
 export async function createServerServices(env: Record<string, string | undefined>, options: ServerOptions) {
-  const { config, scriptedModel, idleDelayMs, catalogAuthentication, boat, modalRuntime, dockerManifest } =
-    await readStartupConfiguration(env);
+  const {
+    config,
+    sql,
+    scriptedModel,
+    idleDelayMs,
+    catalogAuthentication,
+    invitationMail,
+    boat,
+    modalRuntime,
+    dockerManifest,
+  } = await readStartupConfiguration(env);
   const dockerEnabled = dockerManifest !== undefined;
   const boatDeploymentId = env.ARMADA_BOAT_DEPLOYMENT_ID?.trim();
   const boatInventory = boatDeploymentId ? { deploymentId: boatDeploymentId } : {};
   const runtimeHostFor = (apiKey: string) => createObservedBoatProvider({ apiKey, ...boatInventory });
   const launch: LaunchOptions = { extensionHeadroomSeconds: config.sandboxExtensionHeadroomSeconds };
-  const sql = bunSql(config.databaseUrl, config.databasePoolMax);
   const jobs = createJobsStore(sql, config.encryptionKey);
   const webhooks = createOutboundWebhooks(sql, config.encryptionKey, config.dashboardUrl);
   const runtimeEnrolments = createRuntimeEnrolments(sql, config.encryptionKey);
@@ -460,7 +468,7 @@ export async function createServerServices(env: Record<string, string | undefine
     ),
     modelUsage: createModelUsageApi(sql),
     goldenRetirements,
-    invitations: invitationsFromEnv(sql, env),
+    invitations: new Invitations(sql, config.encryptionKey, invitationMail),
     templates,
     skillDefaults: createSkillDefaultsService(sql),
     routines: createRoutineService(sql),

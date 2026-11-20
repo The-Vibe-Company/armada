@@ -22,7 +22,8 @@ try {
         return value;
       },
     });
-    await readStartupConfiguration(env);
+    const { sql } = await readStartupConfiguration(env);
+    await sql.close();
   } else {
     const server = await startServer(process.env);
     installShutdownHandlers(server);

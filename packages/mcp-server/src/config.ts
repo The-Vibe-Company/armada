@@ -110,9 +110,9 @@ export function configFromEnv(env: Record<string, string | undefined>): ServerCo
   }
   try {
     const database = new URL(databaseUrl);
-    if (!["postgres:", "postgresql:"].includes(database.protocol) || !database.hostname) throw new Error();
+    if (!["postgres:", "postgresql:"].includes(database.protocol)) throw new Error();
   } catch {
-    throw new ServerConfigError("ARMADA_DATABASE_URL must be a PostgreSQL URL with a hostname.");
+    throw new ServerConfigError("ARMADA_DATABASE_URL must be a PostgreSQL URL.");
   }
   const sandboxExtensionHeadroomSeconds = env.ARMADA_SANDBOX_EXTENSION_HEADROOM_SECONDS?.trim()
     ? Number(env.ARMADA_SANDBOX_EXTENSION_HEADROOM_SECONDS)

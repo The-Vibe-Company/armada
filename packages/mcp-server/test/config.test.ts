@@ -181,3 +181,26 @@ test.each([
     }),
   ).rejects.toThrow(name);
 });
+
+test("startup checks PostgreSQL client URL syntax without connecting", async () => {
+  const databaseUrl = "postgres://user:%zz@example.com/db";
+  await expect(
+    readStartupConfiguration({
+      ...ENV,
+      ARMADA_MODAL_DIALOUT: undefined,
+      ARMADA_MODAL_AGENT_PATH: "native",
+      ARMADA_DATABASE_URL: databaseUrl,
+    }),
+  ).rejects.toThrow("ARMADA_DATABASE_URL must be a valid PostgreSQL connection URL.");
+});
+
+test("startup requires an explicit dashboard origin when invitation mail is enabled", async () => {
+  await expect(
+    readStartupConfiguration({
+      ...ENV,
+      ARMADA_MODAL_DIALOUT: undefined,
+      ARMADA_MODAL_AGENT_PATH: "native",
+      ARMADA_INVITATION_MAIL: "supabase",
+    }),
+  ).rejects.toThrow("ARMADA_DASHBOARD_URL");
+});
