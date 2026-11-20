@@ -25,7 +25,7 @@ import {
 import type { Sql } from "@armada/core/server";
 import { PRIVATE_SKILL_FAILURES, PrivateSkillError } from "../../core/src/private-skill-error.ts";
 import { type createRuntimeCommands, RuntimeCommandRefused } from "./runtime-commands.ts";
-import { runtimeHealthMatches } from "./runtime-health.ts";
+import { type RuntimeRestore, runtimeHealthMatches } from "./runtime-health.ts";
 
 const errors: Record<string, ProviderErrorCode> = {
   not_found: "not_found",
