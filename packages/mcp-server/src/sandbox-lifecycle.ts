@@ -673,7 +673,7 @@ export async function publishNativeTurn(
   fromState: SandboxStatus,
   generation: string,
   activityLease: string,
-  code: "native_child_send_admitted" | "native_steer_accepted",
+  code: "native_child_send_admitted" | "native_steer_accepted" | "native_send_accepted",
 ) {
   const result = await transitionSandbox(tx, {
     sandboxId,
