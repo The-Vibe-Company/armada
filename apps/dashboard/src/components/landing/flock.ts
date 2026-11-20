@@ -158,8 +158,7 @@ function slotOffset(k: number, angle: number, len: number): { x: number; y: numb
 const wind = (time: number) => -0.18 + Math.sin(time * 0.045) * 0.14;
 
 /** The ships a sky this size holds: fewer on a phone. */
-const capOf = (width: number, height: number) =>
-  Math.round(Math.max(20, Math.min(80, (width * height) / 16_000)));
+const capOf = (width: number, height: number) => Math.round(Math.max(20, Math.min(80, (width * height) / 16_000)));
 
 const shipCount = (s: SkyState) => s.squadrons.reduce((n, q) => n + q.ships.length, 0);
 

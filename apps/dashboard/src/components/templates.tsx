@@ -1,15 +1,7 @@
 "use client";
 
 import type { Harness } from "@armada/core";
-import {
-  BracesIcon,
-  LockIcon,
-  LockKeyholeIcon,
-  PencilIcon,
-  PlugIcon,
-  RocketIcon,
-  Trash2Icon,
-} from "lucide-react";
+import { BracesIcon, LockIcon, LockKeyholeIcon, PencilIcon, PlugIcon, RocketIcon, Trash2Icon } from "lucide-react";
 import Link from "next/link";
 import {
   Children,
