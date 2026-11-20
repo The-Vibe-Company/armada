@@ -1,5 +1,6 @@
 import { z } from "zod";
 import published from "../openapi.json";
+import adminPublished from "../openapi-admin.json";
 
 type Operation = Record<
   "post" | "delete",
@@ -7,8 +8,13 @@ type Operation = Record<
 >;
 
 /** The checked-in OpenAPI HTTP 200 schema of a route, as a validator for handler responses. */
-export function publishedResponse(route: string, method: "post" | "delete" = "post"): z.ZodType {
-  const operation = (published.paths as unknown as Record<string, Operation>)[`/api/v1/${route}`];
+export function publishedResponse(
+  route: string,
+  method: "post" | "delete" = "post",
+  audience: "integration" | "admin" = "integration",
+): z.ZodType {
+  const document = audience === "admin" ? adminPublished : published;
+  const operation = (document.paths as unknown as Record<string, Operation>)[`/api/v1/${route}`];
   if (!operation) throw new Error(`No published route ${route}`);
   return z.fromJSONSchema(
     operation[method].responses["200"].content["application/json"].schema as Parameters<typeof z.fromJSONSchema>[0],
