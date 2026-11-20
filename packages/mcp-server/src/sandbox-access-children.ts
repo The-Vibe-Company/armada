@@ -250,27 +250,24 @@ export function createSandboxChildren(sql: Sql, authority: ChildAuthority, execu
             ).rows[0],
         );
       } catch (error) {
-        if (input.action === "launch") {
-          new ChildLaunchNotAllocated("preallocation_rejected", "dispatch_admission", error).record(receipt);
-        } else {
-          const diagnostic = failureDiagnostic(error);
-          const denied = error instanceof DelegatedAuthorityDenied;
-          recordOperatorDiagnostic(
-            `scoped.child_${input.action}.dispatch_admission`,
-            denied ? { ...diagnostic, errorClass: "DelegatedAuthorityDenied" } : diagnostic,
-            {
-              sandboxId: receipt.sandboxId,
-              operationId: receipt.id,
-              code: "child_dispatch_not_admitted",
-              refusalCode: denied ? "authority_denied" : "dispatch_admission_error",
-            },
-          );
-        }
+        const diagnostic = failureDiagnostic(error);
+        const denied = error instanceof DelegatedAuthorityDenied;
+        const code = "child_dispatch_not_admitted";
+        recordOperatorDiagnostic(
+          `scoped.child_${input.action}.dispatch_admission`,
+          denied ? { ...diagnostic, errorClass: "DelegatedAuthorityDenied" } : diagnostic,
+          {
+            sandboxId: receipt.sandboxId,
+            operationId: receipt.id,
+            code,
+            refusalCode: denied ? "authority_denied" : "dispatch_admission_error",
+          },
+        );
         // No executor was invoked. Failed fresh admission is confirmed non-allocation,
         // distinct from an unknown provider outcome after dispatch.
         await sql.query(
-          `update public.orchestrator_child_operations set state='failed',error_code='child_dispatch_not_admitted' where id=$1 and state='pending'`,
-          [receipt.id],
+          `update public.orchestrator_child_operations set state='failed',error_code=$2 where id=$1 and state='pending'`,
+          [receipt.id, code],
         );
         return { id: receipt.id, state: "failed", sandboxId: receipt.sandboxId };
       }
@@ -377,7 +374,7 @@ export function createSandboxChildren(sql: Sql, authority: ChildAuthority, execu
         : notDispatched
           ? "child_dispatch_not_admitted"
           : "child_outcome_unconfirmed";
-      if (noAllocation) error.record(operation);
+      if (noAllocation) error.record(operation, code);
       else {
         const refusalCode = notDispatched
           ? error.cause instanceof DataError && error.cause.code === "sandbox_not_ready"
