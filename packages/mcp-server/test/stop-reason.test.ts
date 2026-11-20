@@ -215,8 +215,8 @@ test.each([
   }
 });
 
-test.each(["ready", "running", "stale", "release_failed"] as const)(
-  "a confirmed runtime stop journals only a current observation (%s)",
+test.each(["ready", "running", "stale", "release_failed", "native", "native_stale_state"] as const)(
+  "a confirmed provider stop journals only a current observation (%s)",
   async (scenario) => {
     const { db, people, sharedGoldenId, openaiCredentialId } = await failureDatabase();
     const boat = fakeBoat();
@@ -226,10 +226,11 @@ test.each(["ready", "running", "stale", "release_failed"] as const)(
     boat.sandbox(machine.id).info.stoppedAt = stoppedAt;
     const id = crypto.randomUUID();
     const from = scenario === "running" ? "running" : "ready";
+    const native = scenario === "native" || scenario === "native_stale_state";
     await db.query(
       `insert into sandboxes(id,provider,provider_sandbox_id,golden_id,org_id,owner_id,harness,status,boat_runtime)
-       values ($1,'boat',$2,$3,$4,$5,'codex',$6,true)`,
-      [id, machine.id, sharedGoldenId, people.org, people.owner, from],
+       values ($1,'boat',$2,$3,$4,$5,'codex',$6,$7)`,
+      [id, machine.id, sharedGoldenId, people.org, people.owner, from, !native],
     );
     await db.query("insert into account_agent_reservations(sandbox_id,account_id) values ($1,$2)", [
       id,
@@ -247,23 +248,25 @@ test.each(["ready", "running", "stale", "release_failed"] as const)(
         id,
         renewedExpiry,
       ]);
+    if (scenario === "native_stale_state") await db.query("update sandboxes set status='running' where id=$1", [id]);
     if (scenario === "release_failed")
       await db.exec(`create function reject_stop_release() returns trigger language plpgsql as $$
         begin raise exception 'Stop reservation release failed'; end $$;
         create trigger reject_stop_release before delete on account_agent_reservations
         for each row execute function reject_stop_release();`);
-    const applied = scenario === "ready" || scenario === "running";
+    const applied = scenario === "ready" || scenario === "running" || scenario === "native";
+    const current = scenario === "native_stale_state" ? "running" : from;
     try {
       const observation = readStatus(boat.provider, store, sandbox, { now: new Date("2026-01-02T00:00:00Z") });
       if (scenario === "release_failed") await expect(observation).rejects.toThrow("Stop reservation release failed");
       else
         expect(await observation).toMatchObject({
-          status: applied ? "stopped" : from,
+          status: applied ? "stopped" : current,
           statusReason: null,
           ...(scenario === "stale" ? { expiresAt: renewedExpiry } : {}),
         });
       expect(await store.get(id)).toMatchObject({
-        status: applied ? "stopped" : from,
+        status: applied ? "stopped" : current,
         statusReason: null,
         stoppedAt: applied ? stoppedAt.toISOString() : null,
       });
@@ -278,7 +281,7 @@ test.each(["ready", "running", "stale", "release_failed"] as const)(
                 from_status: from,
                 to_status: "stopped",
                 actor: "runtime_observation",
-                code: "runtime_provider_stopped",
+                code: native ? "native_provider_stopped" : "runtime_provider_stopped",
                 generation: sandbox.lifecycleGeneration,
               },
             ]

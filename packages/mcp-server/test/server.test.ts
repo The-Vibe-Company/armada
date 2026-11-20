@@ -1732,6 +1732,32 @@ describe("tools", () => {
     expect(boat.execs.filter((r) => r.preservationStage === "collect_exec")).toHaveLength(count + 1);
   });
 
+  test("native send journals observed provider exit before opening a new activation", async () => {
+    const server = await start();
+    const { boat, client, db, people, token } = server;
+    const { id, machine } = await seedRunningSandbox(server);
+    await boat.provider.stop({ sandboxId: machine.id });
+    const mcp = await client(await token(people.member));
+
+    const sent = await call(mcp, "send", { id, prompt: "continue" });
+
+    expect(sent.isError).not.toBe(true);
+    const { rows } = await db.query(
+      `select from_status, to_status, actor, code, generation::int from sandbox_transitions
+       where sandbox_id=$1 and from_status='running' and to_status='stopped'`,
+      [id],
+    );
+    expect(rows).toEqual([
+      {
+        from_status: "running",
+        to_status: "stopped",
+        actor: "runtime_observation",
+        code: "native_provider_stopped",
+        generation: 1,
+      },
+    ]);
+  });
+
   test("native send hands a fresh pre-dispatch retention refusal to the stop reconciler", async () => {
     const { token, client, people, boat, db } = await start();
     const mcp = await client(await token(people.member));
