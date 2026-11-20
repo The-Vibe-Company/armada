@@ -198,4 +198,7 @@ alter table public.sandboxes drop constraint sandboxes_docker_binding_chk,
 alter table public.agent_defaults drop constraint agent_defaults_harness_check,
   add constraint agent_defaults_harness_check check (harness in ('claude','codex','opencode','antigravity'));
 
+alter table public.triggers drop constraint triggers_pool_harness_check,
+  add constraint triggers_pool_harness_check check (pool_harness in ('claude','codex','opencode','antigravity'));
+
 commit;
