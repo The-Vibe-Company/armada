@@ -369,7 +369,6 @@ test.each([null, true, false])("stopped Docker wake settlement follows host clai
     admission.entry,
     admission.caller,
     async () => {
-      // Bootstrap commits physical intent before it can commit the bound mailbox job.
       await sql.query(
         `insert into docker_resume_claims
        select id,$2,owner_id,docker_host_id,docker_installation_id,docker_generation,lifecycle_generation,$3
