@@ -59,6 +59,10 @@ export async function rememberSandbox(id: string, file: CurrentSandboxFile | und
   }
 }
 
+export async function readCurrentSandbox(env: AuthIo["env"], file: CurrentSandboxFile | undefined) {
+  return env.ARMADA_SANDBOX?.trim() || (await file?.read())?.trim() || undefined;
+}
+
 export async function resolveSandboxId(
   explicit: string | undefined,
   env: AuthIo["env"],
@@ -66,7 +70,21 @@ export async function resolveSandboxId(
   org: string | undefined,
   list: (input: ListInput & { org?: string }) => Promise<ListResult>,
 ) {
-  const id = explicit ?? (env.ARMADA_SANDBOX?.trim() || (await file?.read())?.trim());
+  return resolveSandboxReference(
+    explicit,
+    explicit === undefined ? await readCurrentSandbox(env, file) : undefined,
+    org,
+    list,
+  );
+}
+
+export async function resolveSandboxReference(
+  explicit: string | undefined,
+  current: string | undefined,
+  org: string | undefined,
+  list: (input: ListInput & { org?: string }) => Promise<ListResult>,
+) {
+  const id = explicit ?? current;
   if (!id) throw new AuthError("Pass a sandbox ID or set ARMADA_SANDBOX.", "usage");
   if (fullId.test(id)) return id.toLowerCase();
   if (!fullId.test(id + uuidTemplate.slice(id.length))) {
