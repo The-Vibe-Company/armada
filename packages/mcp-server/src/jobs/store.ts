@@ -24,6 +24,10 @@ const fence = "j.id = $1 and j.lease_owner = $2 and j.lease_epoch = $3 and j.lea
 const claimIdentity = (job: Job, owner: string) => [job.id, owner, job.lease_epoch];
 const claimKey = (job: Job, owner: string) => [...claimIdentity(job, owner), job.generation];
 
+const ADJACENT_REMOTE_RUNTIME_DISPATCH = `(q.state = 'dispatching'
+  and q.dispatch_generation = s.lifecycle_generation - 1
+  and s.provider in ('boat','modal') and ${RUNTIME_LANE} and s.status in ('ready','running'))`;
+
 const CURRENT_DOCKER_PROMPT_COMMAND = `(s.provider = 'docker' and exists(
   select 1 from public.runtime_commands c
   join public.runtime_enrolments e on e.sandbox_id = c.sandbox_id and e.epoch = c.epoch
@@ -132,6 +136,7 @@ export function createJobsStore(sql: Sql, encryptionKey?: string) {
           native_uncertain: boolean;
           abandoned: boolean;
           unrecoverable_dispatch: boolean;
+          open_dispatch_until: string | null;
         }>(
           `select s.lifecycle_generation::text as generation,
                   case when q.state = 'queued' then ${QUEUED_TURN_CANCELLED}
@@ -143,12 +148,13 @@ export function createJobsStore(sql: Sql, encryptionKey?: string) {
                     and (s.lifecycle_generation = $3 or s.status in ('ready','running'))) as abandoned,
                   (q.state = 'dispatching' and (q.dispatch_generation is null
                     or q.dispatch_generation < s.lifecycle_generation - 1
-                    or (q.dispatch_generation = s.lifecycle_generation - 1
-                      and (q.dispatch_until is null or q.dispatch_until <= clock_timestamp())
-                      and s.provider in ('boat','modal') and ${RUNTIME_LANE}
-                      and s.status in ('ready','running')
+                    or (${ADJACENT_REMOTE_RUNTIME_DISPATCH}
+                      and (q.dispatch_until is null or q.dispatch_until <= statement_timestamp())
                       and s.activity_lease_id is distinct from q.request_id
-                      and not ${QUEUED_DISPATCH_EVIDENCE}))) as unrecoverable_dispatch
+                      and not ${QUEUED_DISPATCH_EVIDENCE}))) as unrecoverable_dispatch,
+                  case when ${ADJACENT_REMOTE_RUNTIME_DISPATCH}
+                    and isfinite(q.dispatch_until) and q.dispatch_until > statement_timestamp()
+                    then q.dispatch_until::text end as open_dispatch_until
            from public.sandboxes s join public.account_turn_queue q on q.sandbox_id = s.id
            where s.id = $1 and q.request_id = $2`,
           [sandboxId, requestId, job.generation],
@@ -206,6 +212,15 @@ export function createJobsStore(sql: Sql, encryptionKey?: string) {
           );
           if (updated) return { ...job, generation: updated.generation };
           if (reset) throw new Error("Abandoned turn reset lost its generation fence.");
+        }
+        if (retiring && sandbox?.open_dispatch_until) {
+          const { rows } = await tx.query(
+            `update public.jobs j set state = 'queued', lease_owner = null, lease_until = null, run_after = $4,
+               attempts = case when $6::boolean then j.attempts - 1 else j.attempts end
+             where ${fence} and j.generation < $5 returning j.id`,
+            [...claimIdentity(job, owner), sandbox.open_dispatch_until, sandbox.generation, phase === "no_dispatch"],
+          );
+          if (rows.length) return job;
         }
         if (
           retiring &&
