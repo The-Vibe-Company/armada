@@ -352,18 +352,21 @@ async function finishPromptedNativeLaunch(
   const {
     rows: [receipt],
   } = await tx.query<{ generation: string }>(
-    `update public.sandboxes s set lifecycle_generation=s.lifecycle_generation+1,
-       task_prompt_id=$4, conversation_ids=$5::text[]
+    `update public.sandboxes s set lifecycle_generation=s.lifecycle_generation+1
      where s.id=$1 and s.lifecycle_generation=$2 and s.activity_lease_id=$3
        and s.status='starting' and s.stop_requested_at is null and s.stopped_at is null and s.deleted_at is null
        and s.task_prompt_id is null and cardinality(s.conversation_ids)=0
      returning s.lifecycle_generation::text as generation`,
-    [sandboxId, generation, activityToken, prompt.promptId, prompt.conversationIds],
+    [sandboxId, generation, activityToken],
   );
   if (!receipt) return false;
   await publishNativeTurn(tx, sandboxId, "starting", receipt.generation, activityToken, "native_send_accepted");
-  await tx.query("update public.sandboxes set activity_lease_id=null,activity_until=null where id=$1", [sandboxId]);
-  await releaseAccountCapacity(tx, sandboxId);
+  // Publishing the prompt identity transfers reserved capacity in the same transaction.
+  await tx.query(
+    `update public.sandboxes set task_prompt_id=$2, conversation_ids=$3::text[],
+       activity_lease_id=null, activity_until=null where id=$1`,
+    [sandboxId, prompt.promptId, prompt.conversationIds],
+  );
   return true;
 }
 

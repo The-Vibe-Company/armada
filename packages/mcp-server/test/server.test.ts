@@ -12,6 +12,7 @@ import { captureGitHubAuditLogs } from "../../../scripts/test-support/github-aud
 import helperManifest from "../../core/helper/manifest.json";
 import { handleControlRequest } from "../src/control.ts";
 import { createSqlData } from "../src/data.ts";
+import { createModelAuthOwnership } from "../src/model-auth.ts";
 import { createSandboxLifecycle, recordRuntimeStartupFailure } from "../src/sandbox-lifecycle.ts";
 import { readStatus } from "../src/turns.ts";
 import { encryptedRecoveryExec } from "./fixtures/recovery-exec.ts";
@@ -548,22 +549,28 @@ describe("tools", () => {
     expect(boat.keys).toEqual([SECRETS.personalBoat]);
   });
 
-  test.each(["accepted", "superseded", "journal failure"] as const)(
+  test.each(["accepted", "superseded", "journal failure", "receipt failure"] as const)(
     "prompted native launch settlement (%s)",
     async (scenario) => {
-      const { boat, client, db, people, token } = await start();
+      const { boat, client, db, people, token } = await start({
+        modelAuth: (db) => createModelAuthOwnership(db, ENCRYPTION_KEY),
+      });
       const mcp = await client(await token(people.member));
-      if (scenario === "superseded") {
-        const prompt = boat.provider.prompt.bind(boat.provider);
-        boat.provider.prompt = async (request) => {
-          const receipt = await prompt(request);
-          await db.exec("update sandboxes set status='stopping' where status='starting'");
-          return receipt;
-        };
-      }
+      await db.exec("update credentials set max_agents=1 where kind='claude_oauth'");
+      const prompt = boat.provider.prompt.bind(boat.provider);
+      let reservedAtDispatch = false;
+      boat.provider.prompt = async (request) => {
+        reservedAtDispatch = (await db.query("select sandbox_id from account_agent_reservations")).rows.length === 1;
+        const receipt = await prompt(request);
+        if (scenario === "superseded") await db.exec("update sandboxes set status='stopping' where status='starting'");
+        return receipt;
+      };
       if (scenario === "journal failure")
         await db.exec(`alter table sandbox_transitions add constraint reject_native_launch_journal
           check (code <> 'native_send_accepted')`);
+      if (scenario === "receipt failure")
+        await db.exec(`alter table sandboxes add constraint reject_native_launch_receipt
+          check (task_prompt_id is null)`);
 
       const launched = await call(mcp, "launch", {
         provider: "boat",
@@ -573,10 +580,14 @@ describe("tools", () => {
       }).finally(async () => {
         if (scenario === "journal failure")
           await db.exec("alter table sandbox_transitions drop constraint reject_native_launch_journal");
+        if (scenario === "receipt failure")
+          await db.exec("alter table sandboxes drop constraint reject_native_launch_receipt");
       });
 
       const accepted = scenario === "accepted";
       const superseded = scenario === "superseded";
+      expect(reservedAtDispatch).toBe(true);
+      expect((await db.query("select sandbox_id from account_agent_reservations")).rows).toEqual([]);
       expect(launched.isError).toBe(!accepted);
       if (accepted) expect(launched.data).toMatchObject({ sandbox: { status: "running" }, promptId: "prompt_1" });
       expect(
