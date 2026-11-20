@@ -102,6 +102,8 @@ export function createJobsStore(sql: Sql, encryptionKey?: string) {
     const retiring = phase !== "claim";
     try {
       return await sql.transaction(async (tx) => {
+        // WARNING: Acquire the write lock first to avoid a table lock upgrade against startup model repair.
+        await tx.query("lock table public.account_turn_queue in row exclusive mode nowait");
         const {
           rows: [receipt],
         } = await tx.query<{ state: string; account_id: string }>(
@@ -127,6 +129,7 @@ export function createJobsStore(sql: Sql, encryptionKey?: string) {
           queued_with_evidence: boolean;
           native_uncertain: boolean;
           abandoned: boolean;
+          superseded_dispatch: boolean;
         }>(
           `select s.lifecycle_generation::text as generation,
                   case when q.state = 'queued' then ${QUEUED_TURN_CANCELLED}
@@ -135,7 +138,9 @@ export function createJobsStore(sql: Sql, encryptionKey?: string) {
                   (q.state = 'dispatching' and (q.dispatch_until is null or q.dispatch_until <= clock_timestamp())
                     and ${NATIVE_DISPATCH_UNCERTAIN}) as native_uncertain,
                   (q.state = 'dispatching' and ${DISPATCH_ABANDONED}
-                    and (s.lifecycle_generation = $3 or s.status in ('ready','running'))) as abandoned
+                    and (s.lifecycle_generation = $3 or s.status in ('ready','running'))) as abandoned,
+                  (q.state = 'dispatching' and q.dispatch_generation < s.lifecycle_generation - 1)
+                    as superseded_dispatch
            from public.sandboxes s join public.account_turn_queue q on q.sandbox_id = s.id
            where s.id = $1 and q.request_id = $2`,
           [sandboxId, requestId, job.generation],
@@ -194,7 +199,12 @@ export function createJobsStore(sql: Sql, encryptionKey?: string) {
           if (updated) return { ...job, generation: updated.generation };
           if (reset) throw new Error("Abandoned turn reset lost its generation fence.");
         }
-        if (retiring) await retireClaim(tx, job, owner, sandbox?.generation ?? null);
+        if (
+          retiring &&
+          (await retireClaim(tx, job, owner, sandbox?.generation ?? null)) &&
+          sandbox?.superseded_dispatch
+        )
+          await failTurnReceipt(tx, sandboxId, requestId, true);
         return job;
       });
     } catch (error) {
