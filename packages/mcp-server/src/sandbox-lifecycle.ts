@@ -382,6 +382,7 @@ export async function publishOwnerStop(
     generation: string;
     fromState: SandboxStatus;
     toState: "stopping" | "stopped" | "failed";
+    statusReason?: string | null;
     code: "owner_stop_admitted" | "runtime_retained_stop" | "owner_stop_settled";
   },
 ) {
@@ -395,6 +396,9 @@ export async function publishOwnerStop(
       stop.code === "owner_stop_settled" ? "lifecycle_runner" : stop.code === "runtime_retained_stop" ? "api" : "owner",
     code: stop.code,
     effects: [],
+    ...(stop.statusReason !== undefined
+      ? { settlement: { lease: null, statusReason: stop.statusReason, stopRequestedAt: null, stoppedAt: null } }
+      : {}),
   });
   if (result.kind === "conflict") throw new Error("Locked owner stop could not transition.");
 }
