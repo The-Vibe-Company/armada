@@ -1,8 +1,8 @@
-import { memberEmailPattern } from "./contract/members.ts";
 import { type AgentDefault, type CredentialReader, parseCredentialValue } from "./credentials.ts";
 import { encryptSecret } from "./crypto.ts";
 import type { CredentialKind, CredentialScope, MemberRole } from "./database.types.ts";
 import type { GitHubConnectionStore } from "./github.ts";
+import { memberEmailPattern } from "./member-email.ts";
 import { VaultError } from "./vault-error.ts";
 
 export interface OrgSummary {
