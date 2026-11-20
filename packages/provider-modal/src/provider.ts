@@ -32,6 +32,7 @@ import type {
   Scope,
   SshPreparation,
 } from "./ports.ts";
+import type { RuntimeTicket } from "./runtime-bootstrap.ts";
 import { createRuntimeLifecycle } from "./runtime-lifecycle.ts";
 import { createSandboxInspection } from "./sandbox-inspection.ts";
 import { createSnapshotLifecycle } from "./snapshot-lifecycle.ts";
@@ -71,14 +72,7 @@ export interface ModalProviderOptions extends ModalConnection {
   beforePrompt?(provider: ModalProvider, sandboxId: string): Promise<void>;
 }
 export interface ModalProvider extends Provider {
-  startRuntime(input: {
-    sandboxId: string;
-    serverUrl: string;
-    enrolmentToken: string;
-    resumeGeneration?: number;
-    cacheDir: string;
-    artifact: { sha256: string; bytes: number };
-  }): Promise<void>;
+  startRuntime(input: RuntimeTicket & { sandboxId: string; resumeGeneration?: number }): Promise<void>;
   captureRuntimeWork(input: {
     sandboxId: string;
     physicalGeneration: string;

@@ -12,18 +12,12 @@ import type { ModalClient, Sandbox } from "modal";
 import { boundModalApp } from "./client.ts";
 import { modalError, refusal } from "./errors.ts";
 import { listModalInventory } from "./inventory.ts";
+import { dispatchRuntimeBootstrap, type RuntimeTicket, validateRuntimeTicket } from "./runtime-bootstrap.ts";
 
 type Create = Parameters<Machine["create"]>[0];
 type Bootstrap = Parameters<Machine["bootstrap"]>[0];
 type Stop = Parameters<Machine["stop"]>[0];
 type Delete = Parameters<Machine["delete"]>[0];
-type RuntimeTicket = {
-  serverUrl: string;
-  artifact: { sha256: string; bytes: number };
-  cacheDir: string;
-  enrolmentToken: string;
-};
-
 type RecordEntry = {
   revision: number;
   intent: string;
@@ -299,23 +293,9 @@ export function createModalMachine(options: ModalMachineOptions) {
 }
 
 async function bootstrapRuntime(sb: Sandbox, request: Bootstrap, ticket: RuntimeTicket) {
-  const server = new URL(ticket.serverUrl);
-  if (
-    server.protocol !== "https:" ||
-    server.origin !== ticket.serverUrl.replace(/\/$/, "") ||
-    !ticket.cacheDir.startsWith("/") ||
-    ticket.cacheDir === "/" ||
-    ticket.cacheDir.includes("\0") ||
-    !/^[a-f0-9]{64}$/.test(ticket.artifact.sha256) ||
-    !Number.isSafeInteger(ticket.artifact.bytes) ||
-    ticket.artifact.bytes <= 0 ||
-    ticket.artifact.bytes > 512 * 1024 * 1024 ||
-    !/^armada_enrol_[a-f0-9]{64}$/.test(ticket.enrolmentToken)
-  )
-    throw refusal("invalid_request", "Invalid enrolled Modal bootstrap.");
-
+  const serverUrl = validateRuntimeTicket(ticket);
   const lock = `/run/armada-runtime-${digest(request.machineId)}.lock`;
-  const baseScript = runtimeBootstrapScript(server.origin, ticket.artifact, ticket.cacheDir);
+  const baseScript = runtimeBootstrapScript(serverUrl, ticket.artifact, ticket.cacheDir);
   const stdio = "stdio:['pipe','ignore','ignore']";
   if (!baseScript.includes(stdio)) throw refusal("unavailable", "Modal bootstrap could not pass its runtime lock.");
   const script = baseScript.replace(stdio, "stdio:['pipe','ignore','ignore',9]");
@@ -327,27 +307,11 @@ case $? in
   75) cat >/dev/null; exit 75 ;;
   *) exit 1 ;;
 esac`;
-  try {
-    const child = await sb.exec(
-      [
-        "/usr/bin/env",
-        "-i",
-        "PATH=/usr/local/bin:/usr/bin:/bin",
-        "sh",
-        "-c",
-        lockAndExec,
-        "sh",
-        lock,
-        "node",
-        "-e",
-        script,
-      ],
-      { env: {}, secrets: [], timeoutMs: 150_000, workdir: "/home/user", stdout: "ignore", stderr: "ignore" },
-    );
-    await child.stdin.writeText(JSON.stringify({ serverUrl: server.origin, enrolmentToken: ticket.enrolmentToken }));
-    await child.stdin.close();
-    if ((await child.wait()) !== 0) throw Error();
-  } catch {
-    throw refusal("unavailable", "Enrolled Modal bootstrap failed; reconcile the runtime binding.");
-  }
+  await dispatchRuntimeBootstrap(
+    sb,
+    ["sh", "-c", lockAndExec, "sh", lock, "node", "-e", script],
+    serverUrl,
+    ticket.enrolmentToken,
+    "Enrolled Modal bootstrap failed; reconcile the runtime binding.",
+  );
 }
