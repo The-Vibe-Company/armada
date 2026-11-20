@@ -454,7 +454,19 @@ async function prepareRestore(registered?: Awaited<ReturnType<typeof fixture>>, 
       ],
     );
   await putIntent(cleanupId, "stop", { bound: 1, job: cleanup });
-  const selection = { ...restore, lifecycleGeneration: 2 };
+  const runnerJobId = await createJobsStore(sql, key).enqueue(
+    "turn_dispatch",
+    sandboxId,
+    2,
+    randomUUID(),
+    {},
+    {
+      orgId: a.owner.orgId,
+      deadline: new Date(expiresAt - 60_000),
+      maxAttempts: 2,
+    },
+  );
+  const selection = { ...restore, lifecycleGeneration: 2, runnerJobId };
   const poll = (running: string[] = [], supportsRestore = true, hostStore = store) =>
     hostStore.poll(
       a.hostToken,
@@ -505,6 +517,7 @@ test("runner restore admission commits the transition, binding and mailbox inten
     {},
     {
       orgId: a.owner.orgId,
+      deadline: new Date(expiresAt - 60_000),
       maxAttempts: 2,
     },
   );
@@ -649,6 +662,32 @@ test("restore enqueue preserves the frozen host-local snapshot binding", async (
   await expect(a.poll()).resolves.toEqual(a.restore);
 });
 
+test("an expired restore runner prevents redelivery but permits a late physical receipt", async () => {
+  const a = await restoreFixture();
+  expect(await a.poll()).toEqual(a.restore);
+  await database().query("update jobs set deadline_at='-infinity' where id=$1", [a.selection.runnerJobId]);
+  await createJobsStore(sql, key).enqueue(
+    "turn_dispatch",
+    a.sandboxId,
+    2,
+    randomUUID(),
+    {},
+    {
+      orgId: a.owner.orgId,
+      deadline: new Date(Date.UTC(2098, 0, 1)),
+      maxAttempts: 2,
+    },
+  );
+
+  expect(await a.poll([a.cleanupId])).toBeNull();
+  const result = { requestId: a.restore.requestId, outcome: "completed" as const };
+  await store.complete(a.hostToken, a.installationId, result);
+  const receipt = await database().query("select outcome, cancelled_at from docker_host_jobs where request_id=$1", [
+    result.requestId,
+  ]);
+  expect(receipt.rows).toEqual([{ outcome: "completed", cancelled_at: null }]);
+});
+
 test("restore work is gated and stays eligible behind an excluded predecessor cleanup", async () => {
   const a = await restoreFixture();
   const excluded = [a.cleanupId];
@@ -696,7 +735,12 @@ test("the daemon recovers pending restores and drains unrelated work with a full
   for (let index = 0; index < 13; index++) {
     const pair = await prepareRestore(host);
     const { requestId, ...job } = pair.restore;
-    await pair.putIntent(requestId, "restore", { bound: 1, job, lifecycleGeneration: "2" });
+    await pair.putIntent(requestId, "restore", {
+      bound: 1,
+      job,
+      lifecycleGeneration: "2",
+      runnerJobId: pair.selection.runnerJobId,
+    });
     pairs.push(pair);
   }
 
@@ -858,7 +902,10 @@ test.each(["target", "predecessor", "ciphertext"] as const)(
     const input =
       mismatch === "ciphertext"
         ? new Uint8Array(32)
-        : await encryptSecret(JSON.stringify({ bound: 1, job: intent, lifecycleGeneration: "2" }), key);
+        : await encryptSecret(
+            JSON.stringify({ bound: 1, job: intent, lifecycleGeneration: "2", runnerJobId: a.selection.runnerJobId }),
+            key,
+          );
     await database().query("update docker_host_jobs set input_enc=$2 where request_id=$1", [requestId, input]);
 
     await store.cleaned(a.hostToken, a.installationId, { requestId: a.cleanupId });
