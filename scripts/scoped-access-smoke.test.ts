@@ -303,6 +303,32 @@ describe("ordinary scoped Armada smoke", () => {
     expect(JSON.stringify(f.output)).not.toContain("private-metadata");
   });
 
+  test("correlates a failed launch with operator logs without printing receipt text", async () => {
+    const f = fixture();
+    f.state.mutate = (tools) => {
+      tools.splice(
+        0,
+        tools.length,
+        f.wire("launch", at(tools).input, {
+          id: operation,
+          sandboxId: child,
+          state: "failed",
+          error: { code: "unexpected-code", message: "private-provider-detail" },
+        }),
+      );
+    };
+    await expect(run(f)).rejects.toThrow("scoped_launch_unproven");
+    expect(f.output).toContainEqual(
+      expect.objectContaining({
+        step: "scoped_launch_diagnostic",
+        operationId: operation,
+        sandboxId: child,
+        receiptState: "failed",
+      }),
+    );
+    expect(JSON.stringify(f.output)).not.toMatch(/unexpected-code|private-provider-detail/);
+  });
+
   test("waits for a late stop result in the finished parent turn without replaying it", async () => {
     const f = fixture();
     f.state.lateStop = true;
@@ -477,6 +503,7 @@ describe("ordinary scoped Armada smoke", () => {
           receiptTargetMatches: mode !== "missing",
           receiptIdValid: mode !== "missing",
           receiptSandboxIdValid: mode !== "missing",
+          ...(mode === "uncertain" && { operationId: operation, sandboxId: child }),
           receiptState: mode === "uncertain" ? "uncertain" : mode === "wrong-target" ? "succeeded" : "unrecognized",
           toolError: mode === "missing" ? null : false,
           authorityDenied: mode === "missing" ? null : false,
