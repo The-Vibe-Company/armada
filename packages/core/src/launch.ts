@@ -800,6 +800,7 @@ export async function launchSandbox(
       timing.report(record.id, strategy.kind);
       return result;
     };
+    const expected = record.lifecycleGeneration === undefined ? {} : { expectedGeneration: record.lifecycleGeneration };
     try {
       await options.onRegistered?.(record);
       if (activityLeaseId)
@@ -820,15 +821,15 @@ export async function launchSandbox(
             }),
           }),
         );
-      // Caller-role legacy stores cannot mutate server coordination columns. Keep their
-      // original RLS-only flow; the deployed server always uses the owned scoped store.
       const completed = await start(new AbortController().signal);
-      await stores.sandboxes.update(record.id, completed.patch);
+      await stores.sandboxes.update(record.id, { ...completed.patch, ...expected });
       return reportTiming(completed.result);
     } catch (error) {
       const failure = withSandbox(error, record.id, secrets);
       if (!activityLeaseId)
-        await quietly(() => stores.sandboxes.update(record.id, { status: "failed", statusReason: failure.message }));
+        await quietly(() =>
+          stores.sandboxes.update(record.id, { status: "failed", statusReason: failure.message, ...expected }),
+        );
       await quietly(() => provider.stop({ sandboxId: forked.id }));
       throw failure;
     }
