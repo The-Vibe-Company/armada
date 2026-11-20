@@ -21,6 +21,8 @@ const build = Bun.spawn(
     process.execPath,
     "build",
     "--compile",
+    "--no-compile-autoload-bunfig",
+    "--no-compile-autoload-dotenv",
     `--target=bun-linux-${architecture}`,
     join(root, "src/main.ts"),
     "--outfile",

@@ -11,6 +11,15 @@ import {
   workPreservationError,
 } from "@armada/core/server";
 import type { RuntimeWorkProvider } from "./runtime-provider.ts";
+import {
+  NOTE_FENCE,
+  RUNTIME_STOP_OWNER,
+  recordCleanWork,
+  recordWorkRecovery,
+  STOP_EPOCH,
+  type StopFence,
+  writePreservationNote,
+} from "./sandbox-lifecycle.ts";
 import { captureFinalOutputs, recordOutputFailure } from "./sandbox-outputs.ts";
 
 function closedFailure(stage: string, reason: string, diagnostic?: ReturnType<typeof workPreservationError>): string {
@@ -40,33 +49,7 @@ export type StopAuthority = {
   signal?: AbortSignal | undefined;
 };
 
-type StopFence = [providerId: string | null, token: string | null, generation: number | null, kind: string | null];
 const NO_EXTRA_FENCE: StopFence = [null, null, null, null];
-
-// Modal runtime capture uses the existing stop owner, including on lease takeover.
-const RUNTIME_STOP_OWNER = `stop_requested_at is not null and deleted_at is null
-  and provider='modal' and runtime_transport='dialout' and provider_sandbox_id=$2::text
-  and lifecycle_generation=$4::bigint
-  and (($5::text='activity' and activity_lease_id=$3::uuid and activity_until>clock_timestamp())
-    or ($5::text='reconcile' and reconcile_lease=$3::uuid and reconcile_lease_until>clock_timestamp()
-      and (activity_until is null or activity_until<=clock_timestamp())))
-  and exists(select 1 from public.members m where m.org_id=sandboxes.org_id and m.user_id=sandboxes.owner_id)`;
-
-// A completed receipt wins over late failure or timeout in the same stop.
-const STOP_EPOCH = `id=$1::uuid
-  and (case when stop_requested_at is null then null else stop_generation end) is not distinct from $6::bigint
-  and ($2::text is null or (${RUNTIME_STOP_OWNER}))`;
-const NOTE_FENCE = `${STOP_EPOCH}
-  and ($6::bigint is null or preservation_stop_generation is distinct from $6::bigint)`;
-
-function writeNote(sql: Sql, id: string, note: string | null, stopToken: string | null, fence: StopFence) {
-  return sql.query(`update public.sandboxes set preservation_note=$7 where ${NOTE_FENCE}`, [
-    id,
-    ...fence,
-    stopToken,
-    note,
-  ]);
-}
 
 /** Runtime preservation policy records acknowledged journal evidence, never a Git archive. */
 export async function runtimePreservationNote(sql: Sql, id: string): Promise<string> {
@@ -225,7 +208,7 @@ async function preserveGitWork(
             resolve("pending");
             return;
           }
-          void writeNote(
+          void writePreservationNote(
             sql,
             id,
             progress.workAtRisk
@@ -318,7 +301,7 @@ async function captureAndStore(
     }
     progress.stopToken = stop.stop_token;
     if (stop.application_secret_tainted) {
-      await writeNote(
+      await writePreservationNote(
         sql,
         id,
         "Unpushed work was not preserved: application-secret exposure forbids archives and disk reuse; resume and recovery are unavailable.",
@@ -328,7 +311,7 @@ async function captureAndStore(
       return;
     }
     if (stop.boat_runtime) {
-      await writeNote(sql, id, await runtimePreservationNote(sql, id), stop.stop_token, progress.fence);
+      await writePreservationNote(sql, id, await runtimePreservationNote(sql, id), stop.stop_token, progress.fence);
       return;
     }
     if (stop.complete) {
@@ -397,14 +380,7 @@ async function captureAndStore(
       note = `unpushed work preserved at work_recovery:${id}/${recoveryId}`;
       // Receipt and encrypted archive commit atomically. A competing successful
       // pass or a changed stop epoch cannot create/replace a recovery receipt.
-      const saved = await sql.query<{ id: string }>(
-        `with accepted as (
-        update public.sandboxes set preservation_note=$7,preservation_stop_generation=$6::bigint
-        where ${NOTE_FENCE} and not application_secret_tainted returning id
-      ) insert into public.sandbox_work_recovery(id,sandbox_id,archive_enc)
-        select $8::uuid,id,$9::bytea from accepted returning id`,
-        [id, ...progress.fence, progress.stopToken, note, recoveryId, encrypted],
-      );
+      const saved = await recordWorkRecovery(sql, id, progress.fence, progress.stopToken, note, recoveryId, encrypted);
       if (!saved.rows.length) return "pending";
       observed("capture_committed");
       return;
@@ -413,11 +389,7 @@ async function captureAndStore(
       stage = progress.stage = "storage";
       reason = "failed";
       // Clean success is also durable: NULL note alone is not a receipt.
-      const saved = await sql.query<{ id: string }>(
-        `update public.sandboxes set preservation_note=null,
-        preservation_stop_generation=$6::bigint where ${NOTE_FENCE} and not application_secret_tainted returning id`,
-        [id, ...progress.fence, progress.stopToken],
-      );
+      const saved = await recordCleanWork(sql, id, progress.fence, progress.stopToken);
       if (!saved.rows.length) return "pending";
       observed("capture_committed");
       return;
@@ -479,7 +451,7 @@ async function captureAndStore(
       }),
     );
   try {
-    await writeNote(sql, id, note, progress.stopToken, progress.fence);
+    await writePreservationNote(sql, id, note, progress.stopToken, progress.fence);
   } catch (error) {
     defer ||= progress.fence[0] !== null;
     if (!expired() && note?.startsWith("unpushed work preserved"))

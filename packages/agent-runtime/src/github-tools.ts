@@ -1,6 +1,7 @@
 import { chmod, chown, lstat, mkdir, rename, stat, writeFile } from "node:fs/promises";
 import { isAbsolute, join, resolve } from "node:path";
 import { shellQuote as q } from "../../core/src/shell-quote.ts";
+import { githubToolCommands } from "./github-client.ts";
 
 /** Trusted runtime process controls only; user readable/exec environments cannot set BASH_ENV. */
 export function githubRuntimeEnvironment(
@@ -87,17 +88,9 @@ export async function installUserGitHubTools(input: {
   const git = await original(input.git),
     gh = await original(input.gh);
   await replace(join(input.root, "shell-env.sh"), githubShellEnvironmentScript(input.root), 0o600);
-  const client = join(input.root, "client.py");
-  await replace(client, `REQUIRE_ROOT=False\nGIT_EXECUTABLE=${JSON.stringify(git)}\n${GITHUB_CLIENT}`, 0o600);
-  for (const [name, executable, mode] of [
-    ["git", git, "git-run"],
-    ["gh", gh, "gh"],
-  ] as const) {
-    await replace(
-      join(bin, name),
-      `#!/bin/sh\nexec /usr/bin/python3 -I ${q(client)} ${mode} ${q(input.socket)} ${q(executable)} "$@"\n`,
-      0o700,
-    );
+  const commands = githubToolCommands(input.socket, git, gh, process);
+  for (const name of ["git", "gh"] as const) {
+    await replace(join(bin, name), `#!/bin/sh\n${commands[name]} "$@"\n`, 0o700);
   }
   for (const home of new Set(input.homes)) {
     const homeInfo = await lstat(home);
@@ -115,7 +108,7 @@ export async function installUserGitHubTools(input: {
           ]
         : []),
       ["--replace-all", "credential.https://github.com.helper", ""],
-      ["--add", "credential.https://github.com.helper", `!/usr/bin/python3 -I ${q(client)} git ${q(input.socket)}`],
+      ["--add", "credential.https://github.com.helper", commands.credential],
       ["credential.https://github.com.useHttpPath", "true"],
     ]) {
       const command = Bun.spawn([git, "config", "--file", config, ...args], {
@@ -133,11 +126,7 @@ export async function installUserGitHubTools(input: {
   });
   if (!response.ok) throw Error("github_tools_denied");
   await replace(join(input.root, "..", "github-socket"), join(input.root, "redact.sock"), 0o600);
-  await replace(
-    join(input.root, "..", "github-native-proxy"),
-    `#!/bin/sh\nexec /usr/bin/python3 -I ${q(client)} native ${q(join(input.root, "redact.sock"))} "$@"\n`,
-    0o700,
-  );
+  await replace(join(input.root, "..", "github-native-proxy"), `#!/bin/sh\n${commands.native} "$@"\n`, 0o700);
 }
 
 /** Code and socket address only. Credential bytes arrive exclusively on owner-private IPC. */
@@ -320,7 +309,7 @@ if len(sys.argv)>1 and sys.argv[1]=='git-run':
         os.execve(sys.argv[3],[sys.argv[3]]+sys.argv[4:],env)
 # sudo-rs supports named preservation, not preserving the entire environment.
 # Only variable NAMES cross argv; values remain in the inherited private environment.
-if globals().get('REQUIRE_ROOT',True) and len(sys.argv)>1 and (sys.argv[1]=='elevate' or (sys.argv[1]=='git-run' and os.getuid()!=0)):
+if len(sys.argv)>1 and (sys.argv[1]=='elevate' or (sys.argv[1]=='git-run' and os.getuid()!=0)):
     names=','.join(key for key in os.environ if re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*',key) and not key.startswith('SUDO_'))
     os.execv('/usr/bin/sudo',['sudo','-n','--preserve-env='+names,'/usr/bin/python3','-I',os.path.abspath(__file__)]+(sys.argv[2:] if sys.argv[1]=='elevate' else sys.argv[1:]))
 local_secrets=set(value.encode() for key,value in os.environ.items() if key in ("GH_TOKEN","GITHUB_TOKEN") and value)

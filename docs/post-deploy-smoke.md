@@ -276,6 +276,13 @@ First run the default smoke above with the staging gate off for the stock baseli
 then retire those workers and turn staging on before running the new mode. A zero
 exit from this partial check does not authorize production enablement.
 
+For the Modal runtime launch smoke, use a staging golden with Git, gh, and the
+normal runtime bootstrap tools installed, but without Python 3 on the image.
+Verify the absence of `/usr/bin/python3` and `python3` on PATH, launch with a
+disposable private repository, and confirm the initial checkout succeeds.
+From the checkout, run `git ls-remote origin` and `gh repo view --json nameWithOwner`
+to exercise the installed Git credential helper and gh shim against that repository.
+
 ### Work preservation
 
 Both staging workflow entrypoints now pass `--work-preservation`. This mode
