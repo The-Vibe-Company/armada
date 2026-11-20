@@ -160,6 +160,16 @@ async function optional<T>(operation: () => Promise<T>) {
   }
 }
 
+export async function deleteModalCompute(
+  lookup: () => Promise<Sandbox>,
+  options?: Parameters<typeof terminateModalCompute>[1],
+) {
+  await optional(async () => {
+    const sandbox = await lookup();
+    await terminateModalCompute(sandbox, options);
+  });
+}
+
 export function createModalMachine(options: ModalMachineOptions) {
   const { client, journal, binding, appName, deploymentId, prepareCheckpoint, resolveRuntimeTicket } = options;
   const bound = () => boundModalApp(client, appName, binding);
@@ -313,8 +323,7 @@ export function createModalMachine(options: ModalMachineOptions) {
       if (entry.phase !== "deleting")
         entry = await save(request, entry, { ...entry, phase: "deleting", deleteScope: request.scope });
       await bound();
-      const sb = await optional(() => exact(request, request.signal));
-      if (sb) await optional(() => terminateModalCompute(sb, { wait: false, signal: request.signal }));
+      await deleteModalCompute(() => exact(request, request.signal), { wait: false, signal: request.signal });
       const image = entry.recoveryImageId;
       if (request.scope === "physical-and-retained" && image) {
         request.signal?.throwIfAborted();
