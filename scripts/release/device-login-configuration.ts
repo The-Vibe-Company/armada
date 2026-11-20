@@ -1,7 +1,7 @@
 const serverRequired = ["ARMADA_CLI_CONSENT_KEY", "ARMADA_CLI_OAUTH_CLIENT_ID", "ARMADA_CLI_OAUTH_CLIENT_SECRET"];
 const dashboardRequired = ["ARMADA_CLI_CONSENT_KEY"];
 
-export function missingDeviceLoginConfiguration(railway: unknown, vercel: unknown): string[] {
+export function missingDeviceLoginConfiguration(railway: unknown, vercel: unknown) {
   if (!railway || typeof railway !== "object" || Array.isArray(railway))
     throw new Error("Could not read Railway server configuration.");
   if (!vercel || typeof vercel !== "object" || !("envs" in vercel) || !Array.isArray(vercel.envs))
@@ -45,7 +45,6 @@ if (import.meta.main) {
     for (const setting of missing) console.error(`::error::Missing CLI device login configuration (${setting})`);
     if (missing.length) process.exitCode = 1;
   } catch {
-    // Provider responses and parsing errors can contain configuration values.
     console.error("::error::Could not read CLI device login configuration from Railway or Vercel.");
     process.exitCode = 1;
   }
