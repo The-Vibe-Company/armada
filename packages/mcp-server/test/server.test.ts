@@ -1784,7 +1784,6 @@ describe("tools", () => {
         dispatched = true;
         return prompt(request);
       };
-
       const sent = await call(mcp, "send", { id, prompt: "continue" }).finally(async () => {
         if (scenario === "rollback") await db.exec("alter table sandboxes drop constraint reject_native_start");
       });
@@ -1804,18 +1803,14 @@ describe("tools", () => {
          where sandbox_id=$1 and to_status='starting'`,
         [id],
       );
-      expect(rows).toEqual(
-        refused
-          ? []
-          : [
-              {
-                from_status: scenario === "stopped" ? "stopped" : "running",
-                actor: "native_turn",
-                code: "native_resume_admitted",
-                generation: 2,
-              },
-            ],
-      );
+      const admission = {
+        from_status: stopped ? "stopped" : "running",
+        actor: "native_turn",
+        code: "native_resume_admitted",
+        generation: 2,
+      };
+      expect(rows).toEqual(refused ? [] : [admission]);
+      if (scenario === "stale callback") expect(sent.text).toContain("error code: sandbox_not_ready");
     },
   );
 

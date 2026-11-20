@@ -197,6 +197,7 @@ export function configureTools(
       },
       async (signal, activityToken) => {
         let activationOpened = machine.state === "stopped";
+        let admissionFailure: { error: unknown } | undefined;
         const receipt = await measure("send_submit", () =>
           provider
             .prompt({
@@ -224,13 +225,17 @@ export function configureTools(
                           await data.sandboxes.recordLaunchStage?.(found.id, stage, 0, generation + 1);
                         }
                       } catch (error) {
-                        if (stage === "accepted") throw error;
+                        if (stage === "accepted") {
+                          admissionFailure = { error };
+                          throw error;
+                        }
                       }
                     },
                   }
                 : {}),
             })
             .catch(async (error: unknown) => {
+              if (admissionFailure) throw admissionFailure.error;
               if (error instanceof BoatRetentionUnconfirmed && generation !== undefined) {
                 await data.sandboxes.update(found.id, {
                   nativeRetentionRefusal: found.providerSandboxId,
