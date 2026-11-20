@@ -5,25 +5,31 @@ method separately using existing pinned Skillpack launch skills.
 
 ## API / CLI
 
-`POST /api/v1/sandbox/launch` accepts normal launch fields plus
-`armadaAccessVersion: 1`, `armadaAccess: true` (or
-`{ "maxActiveChildren": 3 }`) and an explicit named `credentialId`. Limits are
-1–100, default 3. Existing launch routes also accept `armadaAccess`; omitted or
-false leaves access disabled. The versioned route prevents an older server from
-silently launching an access-enabled CLI request without access.
+For a standard Boat or Modal snapshot launch with Codex, send
+`armadaAccessVersion: 1` and `armadaAccess: true` (or
+`{ "maxActiveChildren": 3 }` for the `armadaAccess` value) to
+`POST /api/v1/sandbox/launch`. The sandbox needs a bound named account. Use
+`credentialId` to select one explicitly, or rely on an eligible default.
+Child limits are 1–100, default 3. Omit `armadaAccess` or set it to false to
+leave access disabled. Docker, pinned template and explicit runtime launch
+requests do not support enabling scoped access.
+
+Set `SNAPSHOT_NAME` to a Boat snapshot name and `ACCOUNT_ID` to an active named
+Codex account ID.
 
 ```sh
-armada launch my-golden --provider boat --agent codex --credential-id ACCOUNT_ID \
+armada launch "$SNAPSHOT_NAME" --provider boat --agent codex --credential-id "$ACCOUNT_ID" \
   --armada-access --max-active-children 3 "Your task"
 ```
 
-The parent is private, including from a shared golden, and remains visible through
+The parent is private, including when launched from a shared snapshot, and remains visible through
 ordinary sandbox APIs. Use ordinary status/logs/send/stop with its sandbox ID.
 Sending a follow-up to a retained stopped sandbox uses existing conversation
-resume. No synthetic resume prompt or separate managed identity is introduced. In the
-dashboard launch dialog, Advanced → Armada access is off by default and requires
-a usable named Codex account. It explicitly limits access to three owned children;
-changing the account or harness clears it. iPhone launch forms are unchanged.
+resume. No synthetic resume prompt or separate managed identity is introduced. In the dashboard launch
+dialog, open **Access · Private** and select **Let this agent launch other
+sandboxes**. The option is off by default and requires a Boat or Modal snapshot,
+Codex, and an active account. It allows up to three child sandboxes in the same
+organization using the selected snapshot and account.
 
 ## Access and safety
 
@@ -33,7 +39,7 @@ an agent can read its child's answer. Poll read to wait; no delegated wait tool
 exists. A nonsecret armada-tools reference documents schemas and idempotency.
 There is no owner CLI token, credential administration or arbitrary sandbox access.
 
-Only the parent's selected golden/account can launch children. Current owner/org
+Only the parent's selected snapshot and account can launch children. Current owner/org
 membership and account authorization are rechecked; messages/read/stop apply only
 to that parent's attributed children. Epochs last at most 24h and are bound to SQL
 lifecycle and physical generation. Native pre-prompt preparation reuses a valid current grant or renews access
@@ -41,7 +47,7 @@ after activation. Pending/uncertain allocations count against the child cap; reu
 idempotency keys and identical arguments after an ambiguous response.
 
 Authority uses existing private provider transports, never prompt/exec arguments,
-golden or checkpoint files. Stop revokes, quiesces and scrubs before checkpointing;
+snapshot or checkpoint files. Stop revokes, quiesces and scrubs before checkpointing;
 scrub failure prevents stop. Modal's runner independently refuses checkpointing a
 live epoch. A sandbox without the opt-in has no delegated Armada connection.
 
@@ -51,12 +57,14 @@ Apply `20261111140000_sandbox_armada_access.sql` via the normal deployment proce
 not from an agent. Scoped access uses the shared private gateway independently of the retired feature; a launch
 option cannot enable an unavailable provider.
 
-The coordinator runs these checks **after the authorized staging rollout**, once
-for Boat/Codex and once for Modal/Codex. They are post-merge operator checks,
-not a claim of real-provider validation by this PR.
+The coordinator runs these checks for Modal/Codex after an authorized staging
+rollout. Run Boat/Codex checks on demand only, outside staging acceptance.
 
 - [ ] Launch a private parent with `--armada-access --credential-id ACCOUNT_ID`.
-  Supply the selected golden/account IDs and account version in its task.
+  Supply the Armada snapshot record ID (`golden.id` in the launch response),
+  `sandbox.credentialId` and `sandbox.credentialVersion` in its task. The child
+  launch tool takes these as `selection.goldenId`, `selection.credentialId`
+  and `selection.credentialVersion`.
 - [ ] Ask it to launch a child, message it, poll delegated `read` until the
   answer appears (the existing delegated gateway has no blocking wait tool),
   then stop the child. Record parent/child Armada IDs and response evidence.

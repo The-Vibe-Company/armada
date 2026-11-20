@@ -173,6 +173,9 @@ test.each([
   ["runtime request advanced with an open window", 3, "request", "infinity", true, false],
   ["different runtime request advanced generation", 3, "other", "-infinity", true, false],
   ["runtime command persisted", 2, "command", "-infinity", true, false],
+  ["published runtime follow-up", 3, "command", "-infinity", true, false],
+  ["unfinished runtime follow-up", 3, "command", "-infinity", true, false],
+  ["older-epoch runtime follow-up", 3, "command", "-infinity", true, false],
   ["runtime legacy window still open", 2, null, "infinity", true, false],
   ["runtime dispatch has no evidence", 2, null, "-infinity", true, false],
   ["older job for abandoned runtime dispatch", 3, null, "-infinity", true, false],
@@ -218,11 +221,20 @@ test.each([
     sandboxId,
     f.openaiCredentialId,
   ]);
-  if (activity === "command")
+  if (activity === "command") {
+    const finished = scenario === "published runtime follow-up" || scenario === "older-epoch runtime follow-up";
+    if (generation === 3)
+      await db.query(
+        `insert into runtime_enrolments (sandbox_id,lifecycle_generation,epoch,runtime_hash)
+         values ($1,$2,$3,repeat('a',64))`,
+        [sandboxId, generation, scenario === "older-epoch runtime follow-up" ? 2 : 1],
+      );
     await db.query(
-      "insert into runtime_commands (sandbox_id, request_id, epoch, request_enc) values ($1,$2,1,''::bytea)",
-      [sandboxId, `follow_${requestId}`],
+      `insert into runtime_commands (sandbox_id, request_id, epoch, request_enc, result_enc)
+       values ($1,$2,1,''::bytea,case when $3 then ''::bytea end)`,
+      [sandboxId, `follow_${requestId}`, finished],
     );
+  }
   const outcome = async () =>
     (
       await db.query(
@@ -280,6 +292,7 @@ test.each([
   ]);
   if (
     reset ||
+    scenario === "published runtime follow-up" ||
     scenario === "runtime request advanced generation" ||
     scenario === "runtime request already at dispatch generation" ||
     scenario === "runtime request advanced after claim" ||

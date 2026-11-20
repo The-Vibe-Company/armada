@@ -11,10 +11,8 @@ export const CONTROL_BODY_MAX_BYTES = 128 * 1024;
 export const VAULT_CONTROL_BODY_MAX_BYTES = 64 * 1024;
 /** Control routes the server reads with the strict vault body reader. */
 export function vaultControlRoute(route: string): boolean {
-  return (
-    route === "skillpack/catalog" ||
-    route === "skillpack/versions" ||
-    ["skills/defaults/", "templates/", "routines/", "variables/", "secrets/"].some((prefix) => route.startsWith(prefix))
+  return ["skills/defaults/", "templates/", "routines/", "variables/", "secrets/"].some((prefix) =>
+    route.startsWith(prefix),
   );
 }
 /** The largest body a client may send to a control route through either public boundary. */
