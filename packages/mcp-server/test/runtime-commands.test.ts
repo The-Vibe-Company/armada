@@ -73,6 +73,35 @@ async function fixture() {
   };
 }
 
+test("an exact command replay checks the claim again before returning a stored reply", async () => {
+  const f = await fixture();
+  const active = await f.enrol();
+  const bridge = f.bridge();
+  const command = f.command("replay-fence");
+  await bridge.enqueue(f.people.owner, command, active.epoch);
+  const reply = {
+    epoch: active.epoch,
+    requestId: command.requestId,
+    status: 200,
+    body: { version: 1, requestId: command.requestId, result: { ready: true } },
+  };
+  await bridge.complete(active.runtimeToken, active.epoch, reply);
+  let current = true;
+  await expect(
+    bridge.call(f.people.owner, command, {
+      expectedEpoch: active.epoch,
+      async assertClaim() {
+        if (!current) throw Error("Claim expired during replay");
+        current = false;
+      },
+    }),
+  ).rejects.toThrow("Claim expired during replay");
+  expect(await bridge.result(f.people.owner, f.id, command.requestId, active.epoch)).toEqual({
+    state: "finished",
+    reply,
+  });
+});
+
 test("encrypted command mailbox survives replica restart, redelivers one stable ID and pins the first durable result", async () => {
   const f = await fixture();
 
