@@ -18,10 +18,19 @@ test("publication includes every requested digest and refuses missing or corrupt
       runtime: await pin("runtime"),
       harnesses: { codex: { archive: await pin("codex.tar.gz") } },
       opencode: await pin("opencode"),
+      antigravity: {
+        x64: await pin("antigravity-linux-x64.tar.gz"),
+        arm64: await pin("antigravity-linux-arm64.tar.gz"),
+      },
     };
     const destination = join(root, "published");
     await publishManifest(manifest, root, destination);
-    const pins = [manifest.runtime, manifest.harnesses.codex.archive, manifest.opencode];
+    const pins = [
+      manifest.runtime,
+      manifest.harnesses.codex.archive,
+      manifest.opencode,
+      ...Object.values(manifest.antigravity),
+    ];
     expect((await readdir(destination)).sort()).toEqual(pins.map((p) => p.sha256).sort());
     for (const p of pins) {
       expect(await Bun.file(join(destination, p.sha256)).text()).toBe(p.path);
