@@ -113,7 +113,7 @@ export function createSqlVaultStore(sql: Sql): VaultStore {
             );
           else {
             const created = await tx.query<{ id: string }>(
-              "insert into public.credentials(scope,owner_id,kind,value_enc,name,expires_at,max_agents) values($1::public.credential_scope,$2,$3::public.credential_kind,$4::bytea,$5,$6::timestamptz,$7) returning id",
+              "insert into public.credentials(scope,owner_id,kind,value_enc,name,expires_at,max_agents,created_by) values($1::public.credential_scope,$2,$3::public.credential_kind,$4::bytea,$5,$6::timestamptz,$7,$8) returning id",
               [
                 input.scope,
                 owner,
@@ -124,6 +124,7 @@ export function createSqlVaultStore(sql: Sql): VaultStore {
                 input.model === undefined && input.maxAgents !== undefined
                   ? input.maxAgents
                   : defaultAccountMaxAgents(kind),
+                userId,
               ],
             );
             id = created.rows[0]?.id;
@@ -325,8 +326,8 @@ export function createSqlVaultStore(sql: Sql): VaultStore {
             ]);
           } else
             await tx.query(
-              "insert into public.credentials(scope,owner_id,kind,value_enc,max_agents) values($1::public.credential_scope,$2,$3::public.credential_kind,$4::bytea,$5)",
-              [scope, ownerId, kind, valueEnc, defaultAccountMaxAgents(kind)],
+              "insert into public.credentials(scope,owner_id,kind,value_enc,max_agents,created_by) values($1::public.credential_scope,$2,$3::public.credential_kind,$4::bytea,$5,$6)",
+              [scope, ownerId, kind, valueEnc, defaultAccountMaxAgents(kind), actorId ?? null],
             );
           // Legacy kind writes preserve the old harness preference through explicit defaults.
           const preferred = await tx.query<{ id: string }>(
