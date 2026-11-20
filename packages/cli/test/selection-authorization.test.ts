@@ -200,9 +200,43 @@ test("GitHub connect waits for its own completed authorization, not a pre-existi
       connection: { status: "connected", installations: [] },
     });
   });
-  expect(await h.run(["github", "connect"])).toBe(0);
+  expect(await h.run(["account", "login", "github"])).toBe(0);
   expect(h.opened).toHaveLength(1);
   expect(polls).toBe(2);
+});
+
+test.each([
+  ["ls", "status", { connection: { status: "connected", installations: [] } }],
+  ["rm", "disconnect", { ok: true }],
+] as const)("account %s github returns the GitHub response", async (verb, route, response) => {
+  const h = harness(async (input, init) => {
+    const request = new Request(String(input), init);
+    expect(new URL(request.url).pathname).toBe(`/api/v1/github/${route}`);
+    expect(await request.json()).toEqual({});
+    return Response.json(response);
+  });
+  expect(await h.run(["account", verb, "github"])).toBe(0);
+  expect(JSON.parse(h.output().out)).toEqual(response);
+});
+
+test("account add github waits for a new installation", async () => {
+  const previous = { id: 1, account: "old", account_type: "User" };
+  let checked = 0;
+  const h = harness(async (input) => {
+    const path = new URL(String(input)).pathname;
+    if (path === "/api/v1/github/install") {
+      expect(checked).toBe(1);
+      return Response.json({ authorizationUrl: "https://github.com/apps/armada/installations/new" });
+    }
+    expect(path).toBe("/api/v1/github/status");
+    checked++;
+    const installations = checked < 3 ? [previous] : [previous, { ...previous, id: 2 }];
+    return Response.json({ connection: { status: "connected", installations } });
+  });
+  expect(await h.run(["account", "add", "github", "--no-browser"])).toBe(0);
+  expect(h.opened).toEqual([]);
+  expect(h.output().err).toContain("https://github.com/apps/armada/installations/new");
+  expect(JSON.parse(h.output().out).connection.installations).toHaveLength(2);
 });
 
 test("MCP reconnect revokes through the backend before starting a new authorization", async () => {

@@ -57,7 +57,7 @@ test.each([
   if (["private-no-connection", "contents-denied", "unknown-anonymous"].includes(mode))
     await expect(result).rejects.toMatchObject({
       code: "no_credentials",
-      message: expect.stringContaining("armada github connect"),
+      message: expect.stringContaining("armada account login github"),
     });
   else await result;
   expect(

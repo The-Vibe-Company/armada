@@ -16,9 +16,9 @@ idle timeout is disabled so it does not cut that budget short.
 Treat response diagnostics as untrusted. Vault writes, routine configuration,
 sandbox interior operations and invitation errors can contain request data or
 secrets. These paths select local diagnostics from recognised codes or fixed
-sentinels. The transport recognises the `unknown_route` code and the fixed
-provider-specific GitHub refresh refusal. Typed commands validate success receipts
-before reporting success. Their control routes use JSON objects, including `{}`
+sentinels. The transport recognises the `unknown_route` code. The API escape hatch
+reports HTTP status on refusal. Typed commands validate success receipts before
+reporting success. Their control routes use JSON objects, including `{}`
 for empty acknowledgements.
 
 ## Command dispatch

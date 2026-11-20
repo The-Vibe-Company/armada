@@ -1919,7 +1919,7 @@ test("repository authorization preflight refuses before fork", async () => {
   world.stores.credentials.authorizeRepositories = async (actor, _credentials, repos) => {
     expect(actor.userId).toBe(owner.userId);
     expect(repos.map((repo) => repo.dir)).toEqual(["web", "api"]);
-    throw new LaunchError("no_credentials", "Repository web needs GitHub access; run armada github connect.");
+    throw new LaunchError("no_credentials", "Repository web needs GitHub access; run armada account login github.");
   };
   await expect(
     launchSandbox(world.provider, world.stores, owner, { golden: "web", harness: "claude" }),

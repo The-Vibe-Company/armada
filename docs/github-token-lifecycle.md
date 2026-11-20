@@ -48,7 +48,7 @@ another install's lock, within its 45-second subprocess budget.
 Run as the sandbox's owner:
 
 ```sh
-armada github refresh SANDBOX_UUID
+armada api github/refresh '{"id":"SANDBOX_UUID"}'
 ```
 
 The HTTP operation is owner-only.
@@ -98,7 +98,7 @@ not the legacy repair command.
 
 Automatic preparation does not prevent local/model work when GitHub is unavailable,
 revoked or not configured: it injects no new access material and lets the prompt
-proceed. Explicit `armada github refresh` instead returns the closed failure so a
+proceed. Explicit `armada api github/refresh` instead returns the closed failure so a
 caller does not mistake it for a successful repair. Owner membership refusal remains closed. Automatic installation/transport failures
 are best-effort as described above; explicit repair still fails closed for unsafe
 filesystem/private-transport failures. This

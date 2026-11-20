@@ -185,25 +185,25 @@ export async function setupStatus(org: string | undefined, json: boolean, auth: 
         installations.length ? "ok" : "warning",
         `Connected as ${connection.login ?? "unknown user"}; ${
           installations.length
-            ? `App installations: ${installations.join(", ")}. Per-repository access is checked at launch. Run armada github status to inspect grants.`
+            ? `App installations: ${installations.join(", ")}. Per-repository access is checked at launch. Run armada account ls github to inspect grants.`
             : connection.installations
-              ? "no authorized App installations. Run armada github install, then armada github status."
-              : "installation scope unavailable. Run armada github status to inspect grants."
+              ? "no authorized App installations. Run armada account add github, then armada account ls github."
+              : "installation scope unavailable. Run armada account ls github to inspect grants."
         }`,
       );
     } else if (connection.status === "not_connected") {
-      add("GitHub", "warning", "Not connected. Run armada github connect, then armada github status.");
+      add("GitHub", "warning", "Not connected. Run armada account login github, then armada account ls github.");
     } else if (connection.status === "needs_reconnect" || connection.status === "revoked") {
       add(
         "GitHub",
         "warning",
-        "Connection expired or revoked. Run armada github reconnect, then armada github status.",
+        "Connection expired or revoked. Run armada account login github, then armada account ls github.",
       );
     } else {
       add(
         "GitHub",
         "unknown",
-        "Could not confirm GitHub access. Run armada github status; reconnect only if it reports an expired or revoked connection.",
+        "Could not confirm GitHub access. Run armada account ls github; reconnect only if it reports an expired or revoked connection.",
       );
     }
   } catch {
@@ -211,8 +211,8 @@ export async function setupStatus(org: string | undefined, json: boolean, auth: 
       "GitHub",
       "unknown",
       auth.env.ARMADA_TOKEN
-        ? "Could not read GitHub connection. For a service token, unset ARMADA_TOKEN and run armada login as a person, then armada github status; otherwise check the token and server connection."
-        : "Could not read GitHub connection. Run armada github status; check the server connection and sign in with armada login if the session expired.",
+        ? "Could not read GitHub connection. For a service token, unset ARMADA_TOKEN and run armada login as a person, then armada account ls github; otherwise check the token and server connection."
+        : "Could not read GitHub connection. Run armada account ls github; check the server connection and sign in with armada login if the session expired.",
     );
   }
   if (!org) add("Organization", "unknown", "No organization selected. Use --org UUID.");

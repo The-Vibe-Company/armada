@@ -54,7 +54,7 @@ armada creds set codex-auth --file ~/.codex/auth.json
 # Or Claude Code:
 # printenv CLAUDE_CODE_OAUTH_TOKEN | armada creds set claude-oauth
 armada creds list
-armada github connect
+armada account login github
 ```
 
 Use your own connected GitHub account with access to the repositories in the
