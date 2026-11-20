@@ -1,6 +1,5 @@
 import { createHash } from "node:crypto";
-import type { ModalBinding } from "@armada/core";
-import type { Machine, MachineInventoryEntry } from "@armada/core/server";
+import type { ModalBinding, ProviderInventoryMachine } from "@armada/core";
 import type { App, ModalClient } from "modal";
 import { abortable, boundModalApp } from "./client.ts";
 import { modalError, refusal } from "./errors.ts";
@@ -13,19 +12,19 @@ export function modalDeploymentId(environment: string, publicUrl: string) {
     .digest("hex");
 }
 
-export function createModalMachineInventory(
-  client: Pick<ModalClient, "apps" | "cpClient">,
+export function createModalInventory(
+  client: ModalClient,
   appName: string,
   binding: ModalBinding,
-  deploymentId: string | null,
+  deploymentId: string,
 ) {
   return {
     listInventory: (signal?: AbortSignal) =>
       listModalInventory(client, () => boundModalApp(client, appName, binding), deploymentId, signal),
-  } satisfies Required<Pick<Machine, "listInventory">>;
+  };
 }
 
-async function* listModalInventory(
+export async function* listModalInventory(
   client: Pick<ModalClient, "cpClient">,
   bound: () => Promise<App>,
   deploymentId: string | null,
@@ -54,22 +53,14 @@ async function* listModalInventory(
         if (sandbox.createdAt <= 0 || !Number.isFinite(createdAt.getTime()))
           throw refusal("unavailable", "Modal inventory returned an invalid creation time.");
         const sandboxId = ownership.get("armada_sandbox");
-        const generationTag = ownership.get("armada_generation");
-        const generation = Number(generationTag);
-        if (
-          !sandboxId?.trim() ||
-          !Number.isSafeInteger(generation) ||
-          generation < 1 ||
-          String(generation) !== generationTag
-        )
-          continue;
+        const generation = ownership.get("armada_generation");
         yield {
           machineId: sandbox.id,
           deploymentId: owner,
           createdAt,
-          sandboxId,
-          generation,
-        } satisfies MachineInventoryEntry;
+          ...(sandboxId ? { sandboxId } : {}),
+          ...(generation ? { generation } : {}),
+        } satisfies ProviderInventoryMachine;
       }
       const nextTimestamp = sandboxes.at(-1)?.createdAt;
       if (

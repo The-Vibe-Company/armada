@@ -1,8 +1,8 @@
 import { expect, test } from "bun:test";
-import { ProviderError } from "@armada/core";
+import { ProviderError, type ProviderInventoryMachine } from "@armada/core";
 import { type ModalClient, NotFoundError } from "modal";
 import {
-  createModalMachineInventory,
+  createModalInventory,
   createModalProvider,
   type Machine,
   type ModalProviderOptions,
@@ -45,7 +45,7 @@ function client(sdk: Partial<ModalClient>) {
 }
 
 function inventory(sandboxListV2: List) {
-  return createModalMachineInventory(
+  return createModalInventory(
     client({ cpClient: { sandboxListV2 } as ModalClient["cpClient"] }),
     "bound",
     binding,
@@ -78,6 +78,12 @@ function fixture(overrides: Partial<ModalProviderOptions>, sdk: Partial<ModalCli
   }).provider;
 }
 
+async function collect(iterable: AsyncIterable<ProviderInventoryMachine>) {
+  const machines: ProviderInventoryMachine[] = [];
+  for await (const machine of iterable) machines.push(machine);
+  return machines;
+}
+
 test("Modal inventory paginates the bound App and yields only exact deployment matches", async () => {
   const pages = new Map<number | undefined, ListedSandbox[]>([
     [
@@ -87,12 +93,16 @@ test("Modal inventory paginates the bound App and yields only exact deployment m
         listed("sb_untagged", 49, { armada_sandbox: "modal_untagged" }),
         listed("sb_foreign", 48, { ...tags, armada_deployment: "production_server" }),
         listed("sb_other_app", 47, tags, "ap_other"),
-        listed("sb_missing_identity", 46, { armada_deployment: deploymentId }),
-        listed("sb_malformed_generation", 45, { ...tags, armada_generation: "3e0" }),
       ],
     ],
-    [45, [listed("sb_second", 40.5, { ...tags, armada_sandbox: "modal_second", armada_generation: "1" })]],
-    [40.5, []],
+    [
+      47,
+      [
+        listed("sb_second", 40.5, { ...tags, armada_sandbox: "modal_second", armada_generation: "1" }),
+        listed("sb_without_generation", 40, { armada_deployment: deploymentId, armada_sandbox: "modal_orphan" }),
+      ],
+    ],
+    [40, []],
   ]);
   const sandboxListV2: List = async (request) => {
     expect(request.appId).toBe(appId);
@@ -105,9 +115,10 @@ test("Modal inventory paginates the bound App and yields only exact deployment m
   };
   const provider = inventory(sandboxListV2);
 
-  expect(await Array.fromAsync(provider.listInventory())).toEqual([
-    { machineId: "sb_first", sandboxId: "modal_owned", generation: 3, deploymentId, createdAt: new Date(50_125) },
-    { machineId: "sb_second", sandboxId: "modal_second", generation: 1, deploymentId, createdAt: new Date(40_500) },
+  expect(await collect(provider.listInventory())).toEqual([
+    { machineId: "sb_first", sandboxId: "modal_owned", generation: "3", deploymentId, createdAt: new Date(50_125) },
+    { machineId: "sb_second", sandboxId: "modal_second", generation: "1", deploymentId, createdAt: new Date(40_500) },
+    { machineId: "sb_without_generation", sandboxId: "modal_orphan", deploymentId, createdAt: new Date(40_000) },
   ]);
   expect(pages.size).toBe(0);
 });
