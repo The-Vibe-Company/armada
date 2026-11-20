@@ -18,6 +18,8 @@ begin
     end if;
     if sandbox.provider not in ('boat', 'modal') or sandbox.boat_runtime or sandbox.runtime_transport is not null
       or sandbox.status <> 'starting' or sandbox.activity_lease_id is distinct from p_activity_lease
+      or (sandbox.activity_until > clock_timestamp()) is not true
+      or sandbox.reconcile_lease_until > clock_timestamp()
       or sandbox.stop_requested_at is not null or sandbox.stopped_at is not null or sandbox.deleted_at is not null
       or sandbox.task_prompt_id is not null or cardinality(sandbox.conversation_ids) <> 0 then
       return query select false, null::bigint;
