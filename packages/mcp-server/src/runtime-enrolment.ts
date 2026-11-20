@@ -140,8 +140,14 @@ export function createRuntimeEnrolments(sql: Sql, encryptionKey: string, options
       if (!host.rows.length) throw new RuntimeEnrolmentDenied();
     }
     const row = (
-      await tx.query<{ id: string; lifecycle_generation: string; runtime_transport: string | null; status: string }>(
-        `select s.id,s.lifecycle_generation::text,s.runtime_transport,s.status from public.sandboxes s
+      await tx.query<{
+        id: string;
+        lifecycle_generation: string;
+        provider_sandbox_id: string;
+        runtime_transport: string | null;
+        status: string;
+      }>(
+        `select s.id,s.lifecycle_generation::text,s.provider_sandbox_id,s.runtime_transport,s.status from public.sandboxes s
        where s.id=$1 and (s.provider in ('boat','docker') or (s.provider='modal' and s.runtime_transport='dialout'))
        and (s.status in ('starting','ready','running') or ($7 and s.status='failed'))
        and s.stop_requested_at is null and s.deleted_at is null and s.expires_at>now()
@@ -166,6 +172,7 @@ export function createRuntimeEnrolments(sql: Sql, encryptionKey: string, options
     sandboxId: string;
     ownerId: string;
     configuration: Record<string, unknown>;
+    expectedProviderSandboxId?: string;
     commandGrantExpiresAt?: number;
     expectedGeneration?: number;
   }) {
@@ -176,7 +183,11 @@ export function createRuntimeEnrolments(sql: Sql, encryptionKey: string, options
     const hash = await sha256Hex(enrolmentToken);
     const receipt = await transaction(async (tx) => {
       const sandbox = await lockSandbox(tx, input.sandboxId, input.ownerId);
-      if (input.expectedGeneration !== undefined && sandbox.lifecycle_generation !== String(input.expectedGeneration))
+      if (
+        (input.expectedProviderSandboxId !== undefined &&
+          sandbox.provider_sandbox_id !== input.expectedProviderSandboxId) ||
+        (input.expectedGeneration !== undefined && sandbox.lifecycle_generation !== String(input.expectedGeneration))
+      )
         throw new RuntimeEnrolmentDenied();
       if (sandbox.provider === "docker" && options.allowDockerIssue !== true) throw new RuntimeEnrolmentDenied();
       const parent = (

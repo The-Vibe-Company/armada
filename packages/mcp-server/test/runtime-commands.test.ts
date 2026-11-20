@@ -1,4 +1,4 @@
-import { expect, spyOn, test } from "bun:test";
+import { expect, mock, spyOn, test } from "bun:test";
 import type { RunnerRequest } from "@armada/agent-runtime";
 import type { Sql } from "@armada/core/server";
 import { encryptSecret } from "@armada/core/server";
@@ -748,7 +748,7 @@ test("runtime startup privately issues configuration, awaits enrolment and fence
       harness: "codex",
       ownerId: f.people.owner,
       sandboxId: f.id,
-      providerSandboxId: "physical",
+      providerSandboxId: "command-native",
       cwd: root,
       defaults: { model: "gpt-5.4", reasoningEffort: "high" },
     });
@@ -779,7 +779,7 @@ test("runtime startup privately issues configuration, awaits enrolment and fence
             "sandboxId",
             "serverUrl",
           ]);
-          expect(input.sandboxId).toBe("physical");
+          expect(input.sandboxId).toBe("command-native");
           await expect(f.authority.withSession(previous.runtimeToken, previous.epoch, async () => {})).rejects.toThrow(
             "runtime_enrolment_denied",
           );
@@ -844,7 +844,7 @@ test("runtime startup privately issues configuration, awaits enrolment and fence
         start({
           ownerId: f.people.owner,
           sandboxId: f.id,
-          providerSandboxId: "physical",
+          providerSandboxId: "command-native",
           serverUrl: "https://armada.invalid",
           cacheDir: "/home/user/.armada-bootstrap",
           artifact: { sha256: "a".repeat(64), bytes: 10 },
@@ -882,6 +882,37 @@ test("runtime startup privately issues configuration, awaits enrolment and fence
     journal.close();
     await rm(root, { recursive: true, force: true });
   }
+});
+
+test("startup refuses a mismatched physical sandbox before replacing the live runtime", async () => {
+  const { createRuntimeStartup } = await import("../src/runtime-startup.ts");
+  const f = await fixture();
+  const session = await f.enrol();
+  const bootstrap = mock(async () => {
+    throw Error("unexpected bootstrap");
+  });
+  const start = createRuntimeStartup(f.authority, {
+    bootstrap,
+    health: async () => {
+      throw Error("unexpected health");
+    },
+  });
+
+  await expect(
+    start({
+      ownerId: f.people.owner,
+      sandboxId: f.id,
+      providerSandboxId: "different-machine",
+      serverUrl: "https://armada.invalid",
+      cacheDir: "/cache",
+      artifact: { sha256: "a".repeat(64), bytes: 10 },
+      configuration: { selectedHarness: "codex" },
+    }),
+  ).rejects.toMatchObject({ code: "sandbox_not_ready" });
+  expect(bootstrap).not.toHaveBeenCalled();
+  expect(await f.authority.withSession(session.runtimeToken, session.epoch, async (_tx, scope) => scope.epoch)).toBe(
+    session.epoch,
+  );
 });
 
 test.each(["selection", "pre-abort", "timeout", "bootstrap", "replacement", "lifecycle", "stop"] as const)(
@@ -924,7 +955,7 @@ test.each(["selection", "pre-abort", "timeout", "bootstrap", "replacement", "lif
     const pending = start({
       ownerId: f.people.owner,
       sandboxId: f.id,
-      providerSandboxId: "physical",
+      providerSandboxId: "command-native",
       serverUrl: "https://armada.invalid",
       cacheDir: "/cache",
       artifact: { sha256: "a".repeat(64), bytes: 10 },
