@@ -66,10 +66,10 @@ async function turnFixture() {
     return request;
   };
   const retryAt = new Date("2100-01-01T00:00:01Z");
-  const runnerFor = (send: DispatchTurn, store = f.store) =>
+  const runnerFor = (send: DispatchTurn, store = f.store, dispatchSql = f.sql) =>
     createJobsRunner(
       store,
-      { turn_dispatch: createTurnDispatchJob(f.sql, key, send, () => retryAt.getTime() - 1_000) },
+      { turn_dispatch: createTurnDispatchJob(dispatchSql, key, send, () => retryAt.getTime() - 1_000) },
       () => {},
       () => () => {},
     );
@@ -85,6 +85,47 @@ async function turnFixture() {
     },
   };
 }
+
+test("shared turn admission defers without spending an attempt during model repair", async () => {
+  const f = await turnFixture();
+  const id = await sandbox(f, true);
+  await f.accept(id);
+  const modelRepairSql = sqlOver({
+    unsafe: async (query, params) => (await f.db.query(query, params)).rows,
+    begin: (work) =>
+      f.db.transaction((tx) =>
+        work({
+          async unsafe(query, params) {
+            if (query.startsWith("lock table public.account_turn_queue"))
+              throw Object.assign(new Error("Model repair holds the queue lock"), { code: "55P03" });
+            return (await tx.query(query, params)).rows;
+          },
+        }),
+      ),
+  });
+  const sent: string[] = [];
+  const send: DispatchTurn = async (_caller, input) => sent.push(input.id);
+  const runner = f.runnerFor(send, f.store, modelRepairSql);
+  expect(await runner.reconcileOne(signal)).toBe(true);
+  await runner.drain();
+  expect(sent).toEqual([]);
+  expect(
+    (
+      await f.db.query(
+        `select q.state as receipt, j.state as job, j.attempts,
+                exists(select 1 from account_agent_reservations r where r.sandbox_id=q.sandbox_id) as reserved
+         from account_turn_queue q join jobs j using (sandbox_id) where q.sandbox_id=$1`,
+        [id],
+      )
+    ).rows,
+  ).toEqual([{ receipt: "queued", job: "queued", attempts: 0, reserved: false }]);
+
+  await f.makeDue(id);
+  const successor = f.runnerFor(send);
+  expect(await successor.reconcileOne(signal)).toBe(true);
+  await successor.drain();
+  expect(sent).toEqual([id]);
+});
 
 test.each(["deadline", "attempts"] as const)(
   "the turn handler settles receipts after exhausting %s",

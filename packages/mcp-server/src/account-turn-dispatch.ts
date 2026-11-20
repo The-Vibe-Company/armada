@@ -185,6 +185,8 @@ export async function admitAccountTurn(sql: Sql, candidate: AdmissionEntry, clai
         )
       ).rows[0];
       await tx.query("select id from public.credentials where id=$1 for update", [candidate.account_id]);
+      // WARNING: Startup model repair can queue ahead of a receipt table lock upgrade.
+      if (claim) await tx.query("lock table public.account_turn_queue in row exclusive mode nowait");
       const current = await tx.query(
         `select q.request_id from public.account_turn_queue q where q.sandbox_id=$1 and q.request_id=$2 and q.state=$3
       and (q.state='queued' or q.dispatch_until<=now() or $4::boolean)
@@ -311,6 +313,7 @@ export function createTurnDispatchJob(sql: Sql, key: string, dispatch: DispatchT
           unattempted: true,
           async commit(tx) {
             // WARNING: Waiting for the receipt here can deadlock with receipt-first claim reconciliation.
+            await tx.query("lock table public.account_turn_queue in row exclusive mode nowait");
             await tx.query(
               `with locked as materialized (
                  select sandbox_id, request_id from public.account_turn_queue
