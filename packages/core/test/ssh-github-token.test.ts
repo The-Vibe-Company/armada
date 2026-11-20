@@ -1,10 +1,13 @@
 import { expect, spyOn, test } from "bun:test";
 import { type ChildProcess, type spawn, spawnSync } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { GitHubHydrationError } from "../src/api-failure.ts";
 import { GoldenError } from "../src/golden-config.ts";
 import type { Provider } from "../src/provider.ts";
+import { shellQuote } from "../src/shell-quote.ts";
 import { type SshExecDeps, sshStdinCheckout } from "../src/ssh-executor.ts";
 import { GITHUB_TOKEN_CLIENT, GITHUB_TOKEN_INSTALLER, sshHydrateGitHubToken } from "../src/ssh-github-token.ts";
 
@@ -392,6 +395,76 @@ const diagnosticProvider = {
   id: "boat",
   sshKey: async () => ({ sshEndpoint: "ssh.test:2222", hostKey: "ssh-ed25519 AAAAPINNED" }),
 } as unknown as Provider;
+
+test("GitHub hydration provisions absent system Python without passing the payload to package tools", async () => {
+  const transport = diagnosticTransport();
+  await sshHydrateGitHubToken(
+    diagnosticProvider,
+    "bx-diagnostic",
+    "synthetic",
+    new Date(Date.now() + 60_000),
+    transport.deps,
+  );
+  const [payload, , ...script] = transport.input().split("\n");
+  const root = await mkdtemp(join(tmpdir(), "armada-github-python-"));
+  const interpreter = join(root, "python3");
+  const fixture = join(root, "python-fixture");
+  const apt = join(root, "apt-get");
+  const id = join(root, "id");
+  const sudo = join(root, "sudo");
+  const env = join(root, "env");
+  try {
+    await writeFile(id, "#!/bin/sh\nprintf '1000\\n'\n", { mode: 0o700 });
+    await writeFile(env, '#!/bin/sh\ntest -z "$ARMADA_GIT_TOKEN" || exit 91\nexec /usr/bin/env "$@"\n', {
+      mode: 0o700,
+    });
+    await writeFile(sudo, '#!/bin/sh\ntest -z "$ARMADA_GIT_TOKEN" && test "$1" = -n || exit 91\nshift\nexec "$@"\n', {
+      mode: 0o700,
+    });
+    await writeFile(
+      apt,
+      `#!/bin/sh
+test -z "$ARMADA_GIT_TOKEN" || exit 91
+case "$3" in
+  update) exit 0 ;;
+  install) exec /bin/cp ${shellQuote(fixture)} ${shellQuote(interpreter)} ;;
+  *) exit 92 ;;
+esac
+`,
+      { mode: 0o700 },
+    );
+    await writeFile(
+      fixture,
+      `#!/bin/sh
+if [ "$2" = -c ]; then
+  test -z "$ARMADA_GIT_TOKEN"
+else
+  test -n "$ARMADA_GIT_TOKEN" || exit 93
+  printf 'installer reached\\n'
+fi
+`,
+      { mode: 0o700 },
+    );
+    const result = spawnSync("/bin/bash", ["-s"], {
+      input: script
+        .join("\n")
+        .replaceAll("/usr/bin/python3", interpreter)
+        .replaceAll("/usr/bin/apt-get", apt)
+        .replaceAll("/usr/bin/id", id)
+        .replaceAll("/usr/bin/env", env)
+        .replaceAll("/run/armada-github-python.lock", join(root, "install.lock"))
+        .replaceAll("/usr/bin/sudo", sudo),
+      env: { ARMADA_GIT_TOKEN: payload },
+      encoding: "utf8",
+      timeout: 800,
+    });
+    expect(result.stderr).toBe("");
+    expect(result.status).toBe(0);
+    expect(result.stdout).toBe("installer reached\n");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
 
 // Execute the actual bootstrap from SSH stdin; only the child process boundary is substituted.
 test("bootstrap relays an exact installer phase and maps all other child stderr to sudo", async () => {
