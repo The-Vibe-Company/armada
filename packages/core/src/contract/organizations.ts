@@ -14,9 +14,12 @@ function requiredText(field: string) {
   });
 }
 
-const provider = requiredText("provider").meta({ enum: ["boat", "modal"] });
+export const orgProvider = z.enum(["boat", "modal"]);
+export const ORG_PROVIDER_CREDENTIAL_MAX_LENGTH = 16_384;
+
+const provider = requiredText("provider").meta({ enum: orgProvider.options });
 const value = requiredText("value").meta({
-  description: "Provider credential. The response never includes its value.",
+  description: `Provider credential, at most ${ORG_PROVIDER_CREDENTIAL_MAX_LENGTH} UTF-16 code units before trimming. The response never includes its value.`,
   writeOnly: true,
 });
 const scopeBody = z.looseObject({ org: orgReference });
@@ -24,7 +27,7 @@ const providerBody = scopeBody.extend({ provider });
 const providerStatus = z.strictObject({
   org: orgSummary,
   ready: z.boolean(),
-  providers: z.array(z.strictObject({ provider: z.enum(["boat", "modal"]), configured: z.boolean() })),
+  providers: z.array(z.strictObject({ provider: orgProvider, configured: z.boolean() })),
 });
 
 const metadata = {

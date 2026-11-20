@@ -22,7 +22,6 @@ import {
 } from "@armada/core";
 import {
   launchEnvelope,
-  organizationOperations,
   sandboxCheckOperations,
   skillpackOperations,
 } from "@armada/core/contract";
@@ -294,8 +293,8 @@ describe("armada org and armada creds against the control API", () => {
         options,
       );
       expect(implicit?.status).toBe(200);
-      const providerStatus = organizationOperations.readOrganizationProviderStatus.output.parse(await implicit?.json());
-      expect(providerStatus.org.id).toBe(org.id);
+      const providerStatus = publishedResponse("org/provider/status", "post", "admin").parse(await implicit?.json());
+      expect(providerStatus).toMatchObject({ org: { id: org.id } });
       const before = calls;
       expect((await request({ org: org.id, provider: "boat", value: "x".repeat(16_385) }))?.status).toBe(400);
       expect((await request({ org: other.id, provider: "boat", value: "test-value" }))?.status).toBe(404);
@@ -340,8 +339,8 @@ describe("armada org and armada creds against the control API", () => {
       const pair = JSON.stringify({ token_id: "ak-test12345678", token_secret: "as-test12345678" });
       const connected = await post(STAN, "connect", { provider: "boat", value: "first-value" });
       expect(connected.status).toBe(200);
-      const connectedStatus = organizationOperations.connectOrganizationProvider.output.parse(connected.body);
-      expect(connectedStatus.providers).toContainEqual({ provider: "boat", configured: true });
+      const connectedStatus = publishedResponse("org/provider/connect", "post", "admin").parse(connected.body);
+      expect(connectedStatus).toMatchObject({ providers: expect.arrayContaining([{ provider: "boat", configured: true }]) });
       expect((await post(STAN, "connect", { provider: "modal", value: pair })).status).toBe(200);
 
       options.providerValidator = async () => {
@@ -359,7 +358,7 @@ describe("armada org and armada creds against the control API", () => {
 
       const one = await post(STAN, "disconnect", { provider: "boat" });
       expect(one.status).toBe(200);
-      const disconnectedStatus = organizationOperations.disconnectOrganizationProvider.output.parse(one.body);
+      const disconnectedStatus = publishedResponse("org/provider/disconnect", "post", "admin").parse(one.body);
       expect(disconnectedStatus).toMatchObject({ org: { id: org.id, role: "admin" }, ready: true });
       expect(await configured()).toEqual({ boat: false, modal: true });
       // Already gone is the requested state, answered with the current status.
@@ -1002,7 +1001,7 @@ describe("control API", () => {
       expect((await call("/api/v1/org/create", { method: "POST", headers, body: "{}" }))?.status).toBe(400);
       const listed = await call("/api/v1/org/list", { method: "POST", headers });
       expect(listed?.status).toBe(200);
-      expect(organizationOperations.listOrganizations.output.parse(await listed?.json())).toEqual({ orgs: [] });
+      expect(publishedResponse("org/list", "post", "admin").parse(await listed?.json())).toEqual({ orgs: [] });
     });
   });
 
@@ -1549,8 +1548,8 @@ describe("control API", () => {
         options,
       );
       expect(response?.status).toBe(200);
-      const created = organizationOperations.createOrganization.output.parse(await response?.json());
-      expect(created.org).toMatchObject({ name: "Caller only", role: "admin" });
+      const created = publishedResponse("org/create", "post", "admin").parse(await response?.json());
+      expect(created).toMatchObject({ org: { name: "Caller only", role: "admin" } });
       expect((await options.store.memberships(STAN)).map((org) => org.name)).toContain("Caller only");
       expect((await options.store.memberships(ADA)).map((org) => org.name)).not.toContain("Caller only");
     });
