@@ -24,9 +24,15 @@ const fence = "j.id = $1 and j.lease_owner = $2 and j.lease_epoch = $3 and j.lea
 const claimIdentity = (job: Job, owner: string) => [job.id, owner, job.lease_epoch];
 const claimKey = (job: Job, owner: string) => [...claimIdentity(job, owner), job.generation];
 
-const ADJACENT_REMOTE_RUNTIME_DISPATCH = `(q.state = 'dispatching'
+const ADJACENT_RUNTIME_DISPATCH = `(q.state = 'dispatching'
   and q.dispatch_generation = s.lifecycle_generation - 1
-  and s.provider in ('boat','modal') and ${RUNTIME_LANE} and s.status in ('ready','running'))`;
+  and s.provider in ('boat','modal','docker') and ${RUNTIME_LANE} and s.status in ('ready','running'))`;
+
+const NO_ADJACENT_DISPATCH_EVIDENCE = `(s.activity_lease_id is distinct from q.request_id
+  and not ${QUEUED_DISPATCH_EVIDENCE}
+  and (s.provider <> 'docker' or not exists(
+    select 1 from public.docker_resume_claims c where c.sandbox_id = s.id and c.request_id = q.request_id
+  )))`;
 
 const CURRENT_DOCKER_PROMPT_COMMAND = `(s.provider = 'docker' and exists(
   select 1 from public.runtime_commands c
@@ -148,11 +154,11 @@ export function createJobsStore(sql: Sql, encryptionKey?: string) {
                     and (s.lifecycle_generation = $3 or s.status in ('ready','running'))) as abandoned,
                   (q.state = 'dispatching' and (q.dispatch_generation is null
                     or q.dispatch_generation < s.lifecycle_generation - 1
-                    or (${ADJACENT_REMOTE_RUNTIME_DISPATCH}
+                    or (${ADJACENT_RUNTIME_DISPATCH}
                       and (q.dispatch_until is null or q.dispatch_until <= statement_timestamp())
-                      and s.activity_lease_id is distinct from q.request_id
-                      and not ${QUEUED_DISPATCH_EVIDENCE}))) as unrecoverable_dispatch,
-                  case when ${ADJACENT_REMOTE_RUNTIME_DISPATCH}
+                      and ${NO_ADJACENT_DISPATCH_EVIDENCE}))) as unrecoverable_dispatch,
+                  case when ${ADJACENT_RUNTIME_DISPATCH}
+                    and (s.provider in ('boat','modal') or ${NO_ADJACENT_DISPATCH_EVIDENCE})
                     and isfinite(q.dispatch_until) and q.dispatch_until > statement_timestamp()
                     then q.dispatch_until::text end as open_dispatch_until
            from public.sandboxes s join public.account_turn_queue q on q.sandbox_id = s.id
