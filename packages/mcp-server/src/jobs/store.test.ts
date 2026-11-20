@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import type { Sql } from "@armada/core/server";
+import type { ModalMachineOptions } from "@armada/provider-modal";
 import { rowOnlyDatabase } from "../../test/row-only-database.ts";
 import { createTurnDispatchJob, type DispatchTurn } from "../account-turn-dispatch.ts";
 import { createAccountTurnQueue } from "../account-turn-queue.ts";
@@ -8,6 +9,7 @@ import { scopedRuntimeSql } from "../runtime-enrolment.ts";
 import type { LaneFactory } from "../server-worker-modules.ts";
 import { sqlOver } from "../sql.ts";
 import { runtimeWakes } from "../wake-bus.ts";
+import { dispatchModalLaunch } from "./modal-launch.ts";
 import { createJobsRunner, type Job } from "./runner.ts";
 import { createJobsStore, JOBS_WAKE, withJobLease } from "./store.ts";
 
@@ -92,8 +94,7 @@ test("a replacement launch claimant reads Modal create intent and fences the pre
   expect(await retried.compareAndSet("machine-key", 2, { ...receipt, revision: 3 })).toBe(false);
 });
 
-test("an unbound Modal launch can publish only its leased allocation receipt", async () => {
-  const f = await fixture();
+async function unboundModalSandbox(f: Awaited<ReturnType<typeof fixture>>) {
   const goldenId = crypto.randomUUID();
   const id = crypto.randomUUID();
   await f.db.query(
@@ -102,10 +103,16 @@ test("an unbound Modal launch can publish only its leased allocation receipt", a
     [goldenId, f.people.org, f.people.owner],
   );
   await f.db.query(
-    `insert into sandboxes (id, golden_id, org_id, owner_id, harness, provider, status, lifecycle_generation)
-     values ($1, $2, $3, $4, 'codex', 'modal', 'starting', 2)`,
+    `insert into sandboxes (id, golden_id, org_id, owner_id, harness, provider, status, lifecycle_generation, runtime_transport)
+     values ($1, $2, $3, $4, 'codex', 'modal', 'starting', 2, 'dialout')`,
     [id, goldenId, f.people.org, f.people.owner],
   );
+  return id;
+}
+
+test("an unbound Modal launch can publish only its leased allocation receipt", async () => {
+  const f = await fixture();
+  const id = await unboundModalSandbox(f);
   const bind = (tx: Sql, machineId: string) =>
     tx.query("update sandboxes set provider_sandbox_id=$2 where id=$1 returning provider_sandbox_id", [id, machineId]);
   await expect(bind(f.sql, "guessed")).rejects.toMatchObject({ code: "23514" });
@@ -139,6 +146,113 @@ test("an unbound Modal launch can publish only its leased allocation receipt", a
   expect(result?.rows).toEqual([{ provider_sandbox_id: "allocated" }]);
   await expect(withJobLease(f.sql, successor, (tx) => bind(tx, "guessed"))).rejects.toMatchObject({ code: "23514" });
 });
+
+test.each(["create response", "bootstrap dispatch"] as const)(
+  "a replacement Modal launch runner completes after losing the %s",
+  async (failure) => {
+    const f = await fixture();
+    const id = await unboundModalSandbox(f);
+    const jobId = await f.store.enqueue("launch", id, 2, id, null, {
+      orgId: f.people.org,
+      maxAttempts: 3,
+      deadline: new Date("2100-01-01T00:00:00Z"),
+      request: { ownerId: f.people.owner, digest: "fixture" },
+    });
+    let allocations = 0;
+    let observed = 0;
+    let tags: Record<string, string> = {};
+    const bootstrapped: string[] = [];
+    const fail = (step: typeof failure, interrupted: boolean) => {
+      if (failure === step && interrupted) throw new Error("Lost worker");
+    };
+    const makeRunner = (interrupted: boolean) => {
+      const sandbox = {
+        sandboxId: "physical",
+        getTags: async () => tags,
+        poll: async () => {
+          observed++;
+          return null;
+        },
+        async exec() {
+          fail("bootstrap dispatch", interrupted);
+          const { rows } = await f.db.query<{ provider_sandbox_id: string }>(
+            "select provider_sandbox_id from sandboxes where id=$1",
+            [id],
+          );
+          bootstrapped.push(rows[0]!.provider_sandbox_id);
+          return { stdin: { writeText: async () => {}, close: async () => {} }, wait: async () => 0 };
+        },
+      };
+      const client = {
+        apps: { fromName: async () => ({ appId: "ap-test" }) },
+        images: { fromId: async () => ({ imageId: "image" }) },
+        sandboxes: {
+          async create(_app: unknown, _image: unknown, options: { tags: Record<string, string> }) {
+            allocations++;
+            tags = options.tags;
+            fail("create response", interrupted);
+            return sandbox;
+          },
+          fromName: async () => sandbox,
+          fromId: async () => sandbox,
+        },
+      } as unknown as ModalMachineOptions["client"];
+      return createJobsRunner(
+        createJobsStore(f.sql),
+        {
+          launch: {
+            concurrency: 1,
+            async run(job, context) {
+              const outcome = await dispatchModalLaunch(f.sql, job, context, {
+                allocation: { source: { kind: "image", ref: "image" }, size: null, computeTtlSeconds: 600 },
+                bindingRef: job.id,
+                machine: {
+                  client,
+                  appName: "test",
+                  binding: { appId: "ap-test", workspace: "workspace", environment: "main" },
+                  deploymentId: "deployment",
+                  resolveRuntimeTicket: async () => ({
+                    serverUrl: "https://armada.invalid",
+                    artifact: { sha256: "a".repeat(64), bytes: 1 },
+                    cacheDir: "/home/user/runtime-cache",
+                    enrolmentToken: `armada_enrol_${"b".repeat(64)}`,
+                  }),
+                  prepareCheckpoint: async () => {},
+                },
+              });
+              if (outcome !== "bootstrapped") throw new Error("Expected bootstrap");
+              return { status: "done" };
+            },
+          },
+        },
+        () => {},
+        () => () => {},
+      );
+    };
+
+    const first = makeRunner(true);
+    expect(await first.reconcileOne(signal)).toBe(true);
+    await first.drain();
+    expect(allocations).toBe(1);
+    expect(bootstrapped).toEqual([]);
+    expect((await f.db.query("select state from jobs where id=$1", [jobId])).rows).toEqual([{ state: "leased" }]);
+    await f.db.query("update jobs set lease_until='-infinity' where id=$1", [jobId]);
+
+    const successor = makeRunner(false);
+    expect(await successor.reconcileOne(signal)).toBe(true);
+    await successor.drain();
+    expect(allocations).toBe(1);
+    expect(bootstrapped).toEqual(["physical"]);
+    if (failure === "create response") expect(observed).toBe(1);
+    expect(
+      (
+        await f.db.query("select s.status, j.state from sandboxes s join jobs j on j.sandbox_id=s.id where j.id=$1", [
+          jobId,
+        ])
+      ).rows,
+    ).toEqual([{ status: "starting", state: "done" }]);
+  },
+);
 
 async function turnFixture() {
   const f = await fixture();
