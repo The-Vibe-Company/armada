@@ -36,9 +36,9 @@ begin
   if (new.scope is distinct from old.scope or new.owner_id is distinct from old.owner_id)
     and not (
       coalesce(current_setting('armada.share_model_account', true), '') = 'on'
-      and current_user = (
-        select pg_get_userbyid(proowner) from pg_proc
-        where oid = 'public.share_model_account(uuid,uuid,uuid)'::regprocedure
+      and current_user is not distinct from (
+        select pg_catalog.pg_get_userbyid(proowner) from pg_catalog.pg_proc
+        where oid = 'public.share_model_account(uuid,uuid,uuid)'::pg_catalog.regprocedure
       )
       and old.scope = 'user' and new.scope = 'org'
       and old.kind in ('claude_oauth','anthropic','openai','codex_auth','opencode','morph')

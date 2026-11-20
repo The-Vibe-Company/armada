@@ -129,7 +129,15 @@ test.each(["anon", "authenticated", "service_role"])("the share function is ungr
 });
 
 test("the service role cannot bypass the share transaction by updating the table", async () => {
-  await db.exec("set local role service_role; set local armada.share_model_account = 'on'");
+  await db.exec(`
+    set local role service_role;
+    set local armada.share_model_account = 'on';
+    create temporary table pg_proc(oid oid, proowner oid);
+    insert into pg_temp.pg_proc values (
+      'public.share_model_account(uuid,uuid,uuid)'::pg_catalog.regprocedure,
+      (select oid from pg_catalog.pg_roles where rolname=current_user)
+    );
+  `);
   await expect(
     db.query("update public.credentials set scope='org', owner_id=$2 where id=$1", [account, org]),
   ).rejects.toMatchObject({ code: "23514" });
