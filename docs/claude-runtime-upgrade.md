@@ -76,8 +76,8 @@ For Fable on Boat, follow the [provider check](fable-provider-check.md): the
 native path is expected to refuse it.
 
 ```sh
-armada launch "SNAPSHOT_NAME" --provider PROVIDER --org ORG_UUID --agent claude --credential-id CLAUDE_ACCOUNT_UUID --model claude-fable-5-2 "Which model are you running? Report your exact model ID."
-armada launch "SNAPSHOT_NAME" --provider PROVIDER --org ORG_UUID --agent claude --credential-id CLAUDE_ACCOUNT_UUID --model claude-opus-5-5 "Which model are you running? Report your exact model ID."
+armada new "SNAPSHOT_NAME" --provider PROVIDER --org ORG_UUID --agent claude --credential-id CLAUDE_ACCOUNT_UUID --model claude-fable-5-2 "Which model are you running? Report your exact model ID."
+armada new "SNAPSHOT_NAME" --provider PROVIDER --org ORG_UUID --agent claude --credential-id CLAUDE_ACCOUNT_UUID --model claude-opus-5-5 "Which model are you running? Report your exact model ID."
 ```
 
 Inspect turn/model metadata as well as the response. Test with an entitled account;

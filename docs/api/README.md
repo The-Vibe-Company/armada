@@ -41,7 +41,7 @@ configured Codex account:
 
 Boat, Modal and Docker launch success responses use the `launchEnvelope`
 schema in `@armada/core/contract`. The CLI emits the same shape with `--json`,
-for example `armada launch review --provider modal --agent codex --json`.
+for example `armada new review --provider modal --agent codex --json`.
 Read the sandbox ID, provider and status from `sandbox.id`, `sandbox.provider`
 and `sandbox.status`. For Boat and Modal, read the snapshot name from
 `golden.name`. Docker returns `golden: null` even when the launch uses a Docker

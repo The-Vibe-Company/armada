@@ -180,7 +180,7 @@ export async function run(argv: readonly string[], io: Io, deps: Deps = {}): Pro
     }
     const printFailure = (message: string) =>
       io.err(
-        `armada: ${renderMessage(message)}\n${(error instanceof ArmadaApiError && argv[0] === "launch") || (argv[0] === "host" && argv[1] === "install") ? "" : failureHint(error, argv, Boolean(auth?.env.ARMADA_TOKEN))}`,
+        `armada: ${renderMessage(message)}\n${(error instanceof ArmadaApiError && argv[0] === "new") || (argv[0] === "host" && argv[1] === "install") ? "" : failureHint(error, argv, Boolean(auth?.env.ARMADA_TOKEN))}`,
       );
     if (error instanceof GoldenError) {
       printFailure(error.message);

@@ -78,7 +78,7 @@ disable permissions globally. This gate belongs to the coordinator, not worker.
 Source invocations need their own rule.
 
 ~~~sh
-armada launch "$GOLDEN" --provider "$PROVIDER" --repo "$REPO" --agent "$REVIEW_HARNESS" --model "$REVIEW_MODEL" --ttl 30m --no-connections --json "$(cat "$PROMPT_FILE")"
+armada new "$GOLDEN" --provider "$PROVIDER" --repo "$REPO" --agent "$REVIEW_HARNESS" --model "$REVIEW_MODEL" --ttl 30m --no-connections --json "$(cat "$PROMPT_FILE")"
 # Persist returned sandbox UUID immediately, then register cleanup.
 armada status "$REVIEWER_ID" --json
 armada wait "$REVIEWER_ID" --timeout 600 --json

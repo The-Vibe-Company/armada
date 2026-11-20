@@ -22,7 +22,7 @@ export const INSTALL = "npm install -g @the-vibe-company/armada";
 export const STORY = {
   golden: "armada snapshot new widgets --repo https://github.com/acme/widgets --provider modal",
   launch:
-    'armada launch widgets --provider modal --agent claude --model claude-opus-5-5 --reasoning-effort high "Add a dark theme"',
+    'armada new widgets --provider modal --agent claude --model claude-opus-5-5 --reasoning-effort high "Add a dark theme"',
   tools: "armada mcp add docs https://mcp.example.com/mcp --scope org",
   resume: 'armada send 6f1c2a9e-4b7d-4e2a-9c51-3d8e0f7a2b14 "Now cover the empty cart"',
   keys: "armada creds set codex-auth --file ~/.codex/auth.json",
@@ -39,7 +39,7 @@ export const SETUP: { command: string; note: string }[] = [
     note: "Build a Modal snapshot after connecting GitHub",
   },
   {
-    command: 'armada launch widgets --provider modal --agent codex "Fix the flaky checkout test"',
+    command: 'armada new widgets --provider modal --agent codex "Fix the flaky checkout test"',
     note: "Your first agent",
   },
 ];

@@ -71,7 +71,7 @@ from `models`, and `SANDBOX_UUID` with the sandbox ID from the launch receipt.
 ```sh
 armada creds set openai --name priced-connection --file /private/priced-connection.json
 armada creds list --json
-armada launch MODAL_SNAPSHOT --provider modal --agent codex --credential-id MODEL_ACCOUNT_UUID --model CODEX_DEPLOYMENT "Reply OK"
+armada new MODAL_SNAPSHOT --provider modal --agent codex --credential-id MODEL_ACCOUNT_UUID --model CODEX_DEPLOYMENT "Reply OK"
 armada wait SANDBOX_UUID
 ```
 

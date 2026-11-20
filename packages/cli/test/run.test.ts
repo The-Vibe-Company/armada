@@ -50,7 +50,7 @@ describe("run", () => {
     });
     expect(code).toBe(0);
     expect(out).toContain("armada snapshot new");
-    expect(out).toContain("armada launch <snapshot> --agent claude|codex");
+    expect(out).toContain("armada new <snapshot> --agent claude|codex");
     expect(out).toContain("armada login");
     expect(out).toContain("armada token create");
     expect(out).toContain("--profile overrides ARMADA_PROFILE");
@@ -58,7 +58,7 @@ describe("run", () => {
   });
 
   test.each([
-    "launch",
+    "new",
     "list",
     "detail",
     "recovery",
