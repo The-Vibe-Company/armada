@@ -111,10 +111,7 @@ export async function run(argv: readonly string[], io: Io, deps: Deps = {}): Pro
     ) {
       const stores = profileStores(selected.env);
       const env: NodeJS.ProcessEnv = { ...selected.env };
-      const discovery =
-        (argv.length === 1 && ["--help", "-h", "help", "--version", "-v"].includes(argv[0] ?? "")) ||
-        (argv.length === 2 && ["--help", "-h"].includes(argv[1] ?? "")) ||
-        argv[0] === "completion";
+      const discovery = (argv.length === 2 && ["--help", "-h"].includes(argv[1] ?? "")) || command === "completion";
       if (!env.ARMADA_TOKEN && !discovery && argv[0] !== "logout") {
         const login = argv[0] === "login";
         const explicitLoginOrigin = login && argv.some((arg) => arg === "--url" || arg.startsWith("--url="));
