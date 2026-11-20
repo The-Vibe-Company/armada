@@ -231,10 +231,10 @@ export async function doctor(argv: readonly string[], auth: AuthIo): Promise<num
             host.state === "draining"
               ? DOCKER_HOST_DRAINING_MESSAGE
               : host.state !== "online"
-                ? "Check the host machine; run armada-docker-host status there."
+                ? "On the host machine, check the status of the daemon instance for this server."
                 : host.version === VERSION
                   ? ""
-                  : `CLI ${VERSION}. Check the host installation with armada-docker-host status on the host machine.`
+                  : `CLI ${VERSION}. On the host machine, check the status of the daemon instance for this server.`
           }`,
         );
     } catch {

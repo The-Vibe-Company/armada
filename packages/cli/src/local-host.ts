@@ -118,7 +118,7 @@ The token is supplied on stdin, never as an argument. Protect token files and in
 Downloaded artifacts are digest-verified before execution. An already registered machine
 keeps its registration/name for the same server; another server gets a separate service.
 Do not blindly repeat registration after an uncertain failure.
-Inspect armada-docker-host status and Docker/systemd access before retrying.
+Inspect the daemon instance for this server and Docker/systemd access before retrying.
 Example: armada host install --server https://armada.example < /private/registration-token
 `;
 
