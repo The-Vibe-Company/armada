@@ -8,8 +8,11 @@ import {
   VaultError,
 } from "@armada/core/server";
 import { PGlite } from "@electric-sql/pglite";
+import { admitClaimedAccountTurn } from "./account-turn-dispatch.ts";
 import { createAccountTurnQueue } from "./account-turn-queue.ts";
 import type { Caller } from "./caller.ts";
+import type { Job } from "./jobs/runner.ts";
+import { createJobsStore } from "./jobs/store.ts";
 import { currentRequestId, observeRequest } from "./request-observability.ts";
 
 import { callSharedTool, ToolApiError } from "./tool-api.ts";
@@ -124,6 +127,129 @@ test("an accepted request creates one generation-fenced dispatch job across iden
   expect(JSON.parse(await decryptSecret(rows[0]!.payload_enc, btoa("x".repeat(32))))).toEqual({
     requestId: input.request_id,
   });
+});
+
+async function claimTurn(requestId: string) {
+  const worker = crypto.randomUUID();
+  const {
+    rows: [job],
+  } = await sql.query<Job>(
+    `select id,kind,sandbox_id,generation::text,lease_epoch::text,attempts,max_attempts,outcome
+     from public.claim_job('turn_dispatch',$1,30,32)`,
+    [worker],
+  );
+  if (!job) throw new Error("Expected a queued dispatch job.");
+  const store = createJobsStore(sql);
+  return {
+    job: { ...job, payload: { requestId } },
+    canDispatch: async (tx: Sql) => (await store.inspect(job, worker, tx)) === "dispatch",
+  };
+}
+
+test("a later shared claim cannot bypass the first eligible account receipt", async () => {
+  const first = ids[0]!;
+  const later = ids[1]!;
+  const requestId = requests[0]!;
+  for (const id of [first, later]) await queue.accept(caller, { id, request_id: requestId, prompt: "next" });
+  await sql.query("update jobs set run_after='infinity' where sandbox_id=$1", [first]);
+  const claim = await claimTurn(requestId);
+  expect(claim.job.sandbox_id).toBe(later);
+  expect(await admitClaimedAccountTurn(sql, claim)).toBeNull();
+  await sql.query("update account_turn_queue set state='failed' where sandbox_id=$1", [first]);
+  expect(await admitClaimedAccountTurn(sql, claim)).toMatchObject({ caller, entry: { sandbox_id: later } });
+  expect((await sql.query("select sandbox_id from account_agent_reservations")).rows).toEqual([{ sandbox_id: later }]);
+});
+
+test("a shared claim that loses its lease leaves the receipt and capacity available", async () => {
+  const sandboxId = ids[0]!;
+  const requestId = requests[0]!;
+  await queue.accept(caller, { id: sandboxId, request_id: requestId, prompt: "next" });
+  const claim = await claimTurn(requestId);
+  await sql.query("update jobs set lease_until='-infinity' where id=$1", [claim.job.id]);
+  expect(await admitClaimedAccountTurn(sql, claim)).toBeNull();
+  expect((await sql.query("select state,dispatch_until from account_turn_queue")).rows).toEqual([
+    { state: "queued", dispatch_until: null },
+  ]);
+  expect((await sql.query("select sandbox_id from account_agent_reservations")).rows).toEqual([]);
+});
+
+test("lease expiry during shared admission rolls back the dispatch window and reservation", async () => {
+  const sandboxId = ids[0]!;
+  const requestId = requests[0]!;
+  await queue.accept(caller, { id: sandboxId, request_id: requestId, prompt: "next" });
+  const claim = await claimTurn(requestId);
+  const expiring = {
+    ...claim,
+    async canDispatch(tx: Sql) {
+      await tx.query(
+        `update jobs set lease_until='-infinity' where id=$1
+         and exists(select 1 from account_turn_queue where sandbox_id=$2 and request_id=$3 and state='dispatching')`,
+        [claim.job.id, sandboxId, requestId],
+      );
+      return claim.canDispatch(tx);
+    },
+  };
+  expect(await admitClaimedAccountTurn(sql, expiring)).toBeNull();
+  expect((await sql.query("select state,dispatch_until from account_turn_queue")).rows).toEqual([
+    { state: "queued", dispatch_until: null },
+  ]);
+  expect((await sql.query("select sandbox_id from account_agent_reservations")).rows).toEqual([]);
+});
+
+test.each([null, "1"])(
+  "shared recovery rechecks dispatch evidence when recorded generation is %s",
+  async (generation) => {
+    const sandboxId = ids[0]!;
+    const requestId = requests[0]!;
+    await queue.accept(caller, { id: sandboxId, request_id: requestId, prompt: "next" });
+    const claim = await claimTurn(requestId);
+    await sql.query(
+      "update account_turn_queue set state='dispatching',dispatch_generation=$1,dispatch_until='-infinity'",
+      [generation],
+    );
+    await sql.query("update sandboxes set provider='boat',boat_runtime=true,activity_lease_id=$2 where id=$1", [
+      sandboxId,
+      generation === null ? requestId : requests[1],
+    ]);
+    expect(await admitClaimedAccountTurn(sql, claim)).toBeNull();
+    expect((await sql.query("select sandbox_id from account_agent_reservations")).rows).toEqual([]);
+  },
+);
+
+test("shared recovery returns a newly expired dispatch without intent to FIFO", async () => {
+  const sandboxId = ids[0]!;
+  const requestId = requests[0]!;
+  await queue.accept(caller, { id: sandboxId, request_id: requestId, prompt: "next" });
+  const claim = await claimTurn(requestId);
+  await sql.query("update sandboxes set provider='boat',boat_runtime=true where id=$1", [sandboxId]);
+  await sql.query("update account_turn_queue set state='dispatching',dispatch_generation=1,dispatch_until='-infinity'");
+  await sql.query("insert into account_agent_reservations(sandbox_id,account_id) values($1,$2)", [sandboxId, account]);
+  expect(await admitClaimedAccountTurn(sql, claim)).toBeNull();
+  expect((await sql.query("select state,dispatch_until from account_turn_queue")).rows).toEqual([
+    { state: "queued", dispatch_until: null },
+  ]);
+  expect((await sql.query("select sandbox_id from account_agent_reservations")).rows).toEqual([]);
+});
+
+test("interrupted shared admission rolls back the receipt and reservation together", async () => {
+  const sandboxId = ids[0]!;
+  const requestId = requests[0]!;
+  await queue.accept(caller, { id: sandboxId, request_id: requestId, prompt: "next" });
+  const claim = await claimTurn(requestId);
+  const interrupted: Sql = {
+    ...sql,
+    transaction: (work) =>
+      sql.transaction!(async (tx) => {
+        await work(tx);
+        throw new Error("Interrupted before admission commit.");
+      }),
+  };
+  await expect(admitClaimedAccountTurn(interrupted, claim)).rejects.toThrow("Interrupted before admission commit.");
+  expect((await sql.query("select state,dispatch_until from account_turn_queue")).rows).toEqual([
+    { state: "queued", dispatch_until: null },
+  ]);
+  expect((await sql.query("select sandbox_id from account_agent_reservations")).rows).toEqual([]);
+  expect(await admitClaimedAccountTurn(sql, claim)).toMatchObject({ entry: { sandbox_id: sandboxId } });
 });
 
 test("dispatch job insertion failure rolls back the queued prompt", async () => {
