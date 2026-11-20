@@ -126,6 +126,57 @@ test.each(["create", "stop", "delete"] as const)(
   },
 );
 
+test.each(["create", "restore"] as const)(
+  "%s replays the verified allocation ID after a lost acknowledgement and ledger compaction",
+  async (operation) => {
+    const { job, store, api, executor, state } = fixture();
+    const machineId = "b".repeat(64);
+    const allocation: Job =
+      operation === "create"
+        ? job
+        : {
+            ...job,
+            operation,
+            request: { ...job.request, generation: crypto.randomUUID(), expiresAt: 200_000 },
+            predecessor: { request: job.request, machineId: "a".repeat(64) },
+          };
+    api.poll = async () => ({ job: allocation });
+    let allocations = 0;
+    executor[operation] = async () => {
+      allocations++;
+      return { machineId };
+    };
+    const reported: unknown[] = [];
+    api.result = async (_state, receipt) => {
+      reported.push("machineId" in receipt ? receipt.machineId : undefined);
+      if (reported.length === 1) throw new Error("acknowledgement lost");
+    };
+    const run = () => tick(store, api, executor, false, () => 100_000);
+
+    await expect(run()).rejects.toThrow("acknowledgement lost");
+    expect(state().receipts).toContainEqual(expect.objectContaining({ outcome: "completed", machineId }));
+    await run();
+
+    const cleaned = await store.load();
+    const saved = cleaned.receipts.find((receipt) => receipt.requestId === allocation.requestId) ?? fail();
+    saved.cleaned = true;
+    cleaned.receipts.push({
+      requestId: crypto.randomUUID(),
+      operation: "buildSnapshot",
+      inputHash: "d".repeat(64),
+      request: { ...job.request, sandboxId: crypto.randomUUID(), image: "x".repeat(1_100_000) },
+      outcome: "completed",
+    });
+    compactReceipts(cleaned);
+    expect(cleaned.receipts).toHaveLength(0);
+    await store.save(cleaned);
+
+    await run();
+    expect(reported).toEqual([machineId, machineId, machineId]);
+    expect(allocations).toBe(1);
+  },
+);
+
 test("physical-only mailbox delete replays an uncommitted result for the same immutable ID", async () => {
   const { job, store, api, executor, acknowledgements, state } = fixture();
   const machineId = "a".repeat(64);

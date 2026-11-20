@@ -30,9 +30,10 @@ export type Receipt = {
   expiryReported?: true;
   expiryOutputsPending?: true;
 } & (
-  | { operation: "create" | "stop" | "delete" }
+  | { operation: "stop" | "delete" }
+  | { operation: "create"; machineId?: string }
   | { operation: "bootstrap" | "resume" | "deletePhysical"; inputHash: string }
-  | { operation: "restore"; inputHash: string; predecessorKey: string }
+  | { operation: "restore"; inputHash: string; predecessorKey: string; machineId?: string }
   | {
       operation: "buildSnapshot";
       inputHash: string;
@@ -60,6 +61,7 @@ export type State = {
     baselineVersion?: number | null,
     baselineTool?: SnapshotBaselineTool | null,
     missingRefIndex?: number | null,
+    machineId?: string,
   ][];
   cleanupLimit?: number;
   retention?: {
@@ -883,7 +885,11 @@ async function admitLocked(
         await executor.startRuntime(receipt.request, job.bootstrap);
       } else if (receipt.operation === "restore") {
         if (job.operation !== "restore" || !executor.restore) throw Error("Restore unavailable");
-        await executor.restore(receipt.request, job.predecessor);
+        const machineId = allocationMachineId(await executor.restore(receipt.request, job.predecessor));
+        if (machineId !== undefined) receipt.machineId = machineId;
+      } else if (receipt.operation === "create") {
+        const machineId = allocationMachineId(await executor.create(receipt.request));
+        if (machineId !== undefined) receipt.machineId = machineId;
       } else if (receipt.operation === "deletePhysical") {
         if (job.operation !== "deletePhysical") throw Error("Changed host job");
         await executor.delete(receipt.request, { scope: "physical-only", machineId: job.machineId });
@@ -1004,6 +1010,7 @@ async function admitLocked(
         ...(old[8] ? { baselineVersion: old[8] } : {}),
         ...(old[9] ? { baselineTool: old[9] } : {}),
         ...(old[10] ? { missingRefIndex: old[10] } : {}),
+        ...(old[11] ? { machineId: old[11] } : {}),
       } as Receipt;
       await api.result(state, replay);
       return "worked";
@@ -1096,6 +1103,12 @@ async function admitLocked(
   };
 }
 
+function allocationMachineId(result: unknown) {
+  if (result === null || typeof result !== "object" || !("machineId" in result)) return undefined;
+  const { machineId } = result;
+  return typeof machineId === "string" && /^[a-f0-9]{64}$/.test(machineId) ? machineId : undefined;
+}
+
 function isUncertainDockerFailure(error: unknown) {
   return error instanceof DockerMachineError && error.code === "docker_failed";
 }
@@ -1134,7 +1147,7 @@ export function compactReceipts(state: State): void {
       !covered.has(generationKey(receipt.request))
     )
       return true;
-    retired.push([
+    const compacted: NonNullable<State["retired"]>[number] = [
       receipt.requestId,
       digest(
         JSON.stringify([receipt.operation, fingerprint(receipt), "inputHash" in receipt ? receipt.inputHash : null]),
@@ -1148,7 +1161,10 @@ export function compactReceipts(state: State): void {
       receipt.operation === "buildSnapshot" ? (receipt.baselineVersion ?? null) : null,
       receipt.operation === "buildSnapshot" ? (receipt.baselineTool ?? null) : null,
       receipt.operation === "buildSnapshot" ? (receipt.missingRefIndex ?? null) : null,
-    ]);
+    ];
+    if ((receipt.operation === "create" || receipt.operation === "restore") && receipt.machineId)
+      compacted[11] = receipt.machineId;
+    retired.push(compacted);
     return false;
   });
 }
