@@ -69,7 +69,7 @@ selectors.
 Host names resolve within the selected organization through the host API.
 Local host commands with an explicit server can select an instance even if
 another server's daemon is unhealthy. If a registered daemon's server origin
-cannot be read, inspect the instance with `armada host status` before retrying
+cannot be read, inspect the instance with `armada-docker-host status` before retrying
 installation. The new registration token remains unused.
 
 The wrapper uses fixed failure diagnostics to keep native output and private

@@ -76,10 +76,10 @@ export async function run(argv: readonly string[], io: Io, deps: Deps = {}): Pro
     (error.code === "unauthorized" || (error instanceof ArmadaApiError && error.status === 401));
   try {
     const localArgs = selectProfile(argv, {}).args;
-    if (localArgs[0] === "host" && ["install", "status", "uninstall"].includes(localArgs[1] ?? ""))
+    if (localArgs[0] === "host" && localArgs[1] === "install")
       return finish(
         await localHostCommand(
-          localArgs.slice(1),
+          localArgs.slice(2),
           io,
           deps.localHost ??
             productionLocalHostIo({
@@ -178,7 +178,7 @@ export async function run(argv: readonly string[], io: Io, deps: Deps = {}): Pro
     }
     const printFailure = (message: string) =>
       io.err(
-        `armada: ${snapshotText(message)}\n${(error instanceof ArmadaApiError && argv[0] === "launch") || (argv[0] === "host" && ["install", "status", "uninstall"].includes(argv[1] ?? "")) ? "" : failureHint(error, argv, Boolean(auth?.env.ARMADA_TOKEN))}`,
+        `armada: ${snapshotText(message)}\n${(error instanceof ArmadaApiError && argv[0] === "launch") || (argv[0] === "host" && argv[1] === "install") ? "" : failureHint(error, argv, Boolean(auth?.env.ARMADA_TOKEN))}`,
       );
     if (error instanceof GoldenError) {
       printFailure(error.message);

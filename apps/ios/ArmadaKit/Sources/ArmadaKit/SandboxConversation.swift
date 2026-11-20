@@ -89,7 +89,7 @@ public enum SandboxPromptAdmission: Sendable, Equatable {
     case open, turnRunning, starting, stopping, failed, deleted, unknownStatus, expired, cannotResume
 }
 
-/// One page of a sandbox's `AgentEvent`s, oldest first: `POST /api/v1/logs/read` (`armada logs`).
+/// One page of a sandbox's `AgentEvent`s, oldest first: `POST /api/v1/logs/read` (`armada events`).
 /// Cursors are opaque and passed back unchanged; an event read twice keeps its id. `olderCursor`
 /// (backward reads only) continues before the oldest event of the page.
 public struct SandboxEventPage: Decodable, Sendable {

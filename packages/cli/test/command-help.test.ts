@@ -6,7 +6,7 @@ for (const command of [
   "--help",
   "api",
   "launch",
-  "logs",
+  "events",
   "list",
   "advice",
   "rm",
@@ -21,6 +21,7 @@ for (const command of [
   "send",
   "steer",
   "exec",
+  "outputs",
   "routine",
   "template",
   "snapshot",
@@ -36,7 +37,7 @@ for (const command of [
       const argv =
         command === "--help"
           ? [flag]
-          : command === "logs"
+          : command === "events"
             ? [command, flag]
             : ["--profile", "new-user", ...command.split(" "), flag];
       const fail = () => {
@@ -75,7 +76,7 @@ for (const command of [
   });
 }
 
-test("host help lists retention alongside the other account commands", async () => {
+test("host help shows the five host commands", async () => {
   let stdout = "";
   const fail = () => {
     throw new Error("Help must not perform authenticated or secret I/O");
@@ -86,16 +87,22 @@ test("host help lists retention alongside the other account commands", async () 
     { env: {}, fetch: Object.assign(fail, { preconnect: fail }) },
   );
   expect(code).toBe(0);
-  expect(stdout).toMatch(/^ {2}retention +Update stopped sandbox retention/m);
+  expect([...stdout.matchAll(/^ {2}(\w+) +\S/gm)].map((match) => match[1])).toEqual([
+    "install",
+    "add",
+    "ls",
+    "limits",
+    "rm",
+  ]);
 });
 
-test("logs help rejects an invalid profile from the environment", async () => {
+test("events help rejects an invalid profile from the environment", async () => {
   let stderr = "";
   const fail = () => {
     throw new Error("Invalid profile must not print help or make a request");
   };
   const code = await run(
-    ["logs", "--help"],
+    ["events", "--help"],
     { out: fail, err: (text) => (stderr += text) },
     { env: { ARMADA_PROFILE: "bad.profile" }, fetch: Object.assign(fail, { preconnect: fail }) },
   );

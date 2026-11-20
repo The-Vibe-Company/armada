@@ -1,7 +1,7 @@
 # Failure triage and recovery
 
 Start with `armada detail SANDBOX --json`, `armada status SANDBOX --json` and
-`armada logs SANDBOX --tail 100 --json`. Save safe error codes, prompt ID and
+`armada events SANDBOX --tail 100 --json`. Save safe error codes, prompt ID and
 provider identity, not secret-bearing output. Command exit success alone does
 not establish a successful agent outcome.
 
@@ -42,7 +42,7 @@ There is no standalone sandbox resume/recover command or general archive
 extraction command. Escalate unsupported recovery paths rather than inventing
 flags or calling undocumented endpoints.
 
-`armada exec SANDBOX "git status --short"` can inspect an accessible running
+`armada exec SANDBOX -- "git status --short"` can inspect an accessible running
 sandbox without starting an agent turn. Treat exec as arbitrary remote shell
 execution: use authorized, non-destructive commands and do not print secrets.
 `armada bind-credential SANDBOX --credential-id ACCOUNT --json` is owner-only
