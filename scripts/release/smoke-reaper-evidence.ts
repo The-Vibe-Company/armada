@@ -68,6 +68,7 @@ export function checkReaperEvidence(jsonl: string, now: number) {
     }
   }
   if (Math.max(volume.current, volume.previous) >= reaperLogLimit) problems.add("log_limit_reached");
+  const canWait = problems.size === 0 && machineIds.modal.size === 0 && machineIds.docker.size === 0;
   if (
     Number.isFinite(discoveryFailure) &&
     ![...latest.modal.values()].some((observation) => observation.healthy && observation.timestamp > discoveryFailure)
@@ -79,9 +80,11 @@ export function checkReaperEvidence(jsonl: string, now: number) {
       if (timestamp < now - freshMs || !healthy) problems.add(`incomplete_reaper_evidence:${provider}:${source}`);
     }
   }
+  const pass = canWait && problems.size === 0;
   return {
     step: "smoke_reaper_evidence",
-    pass: problems.size === 0 && machineIds.modal.size === 0 && machineIds.docker.size === 0,
+    pass,
+    retryable: !pass && canWait,
     problems: [...problems].sort(),
     overdueMachineIds: { modal: [...machineIds.modal].sort(), docker: [...machineIds.docker].sort() },
   };
