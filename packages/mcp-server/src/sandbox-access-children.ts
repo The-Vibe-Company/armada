@@ -281,9 +281,11 @@ export function createSandboxChildren(sql: Sql, authority: ChildAuthority, execu
       sandboxId: row.target_id,
       action: row.action,
     };
+    let phase: "execution" | "completion" = "execution";
     try {
       if (input.action === "launch") {
         const result = await executor.launch(operation, input.selection);
+        phase = "completion";
         // Store the physical receipt even if a later membership/generation check fails.
         await sql.query(`update public.orchestrator_child_operations set provider_sandbox_id=$2 where id=$1`, [
           row.id,
@@ -342,6 +344,7 @@ export function createSandboxChildren(sql: Sql, authority: ChildAuthority, execu
           }),
         );
       } else await executor.stop(operation);
+      phase = "completion";
       const completed = await sql.query(
         `update public.orchestrator_child_operations c set state='succeeded',error_code=null
         from public.armada_access_parents o,public.sandboxes s where c.id=$1 and o.id=c.orchestrator_id
@@ -362,21 +365,25 @@ export function createSandboxChildren(sql: Sql, authority: ChildAuthority, execu
       return { id: row.id, state: "succeeded", sandboxId: row.target_id };
     } catch (error) {
       const noAllocation = input.action === "launch" && error instanceof ChildLaunchNotAllocated;
-      if (noAllocation) error.record(operation);
       const notDispatched = input.action === "message" && error instanceof ChildMessageNotDispatched;
       const state = noAllocation || notDispatched ? "failed" : "uncertain";
+      const code = noAllocation
+        ? `child_${error.reason}`
+        : notDispatched
+          ? "child_dispatch_not_admitted"
+          : "child_outcome_unconfirmed";
+      if (noAllocation) error.record(operation);
+      else {
+        recordOperatorDiagnostic(`scoped.child_${input.action}.${phase}`, failureDiagnostic(error), {
+          sandboxId: operation.sandboxId,
+          operationId: operation.id,
+          code,
+        });
+      }
       if (!recovery)
         await sql.query(
           `update public.orchestrator_child_operations set state=$2,error_code=$3 where id=$1 and state in ('pending','uncertain')`,
-          [
-            row.id,
-            state,
-            noAllocation
-              ? `child_${error.reason}`
-              : notDispatched
-                ? "child_dispatch_not_admitted"
-                : "child_outcome_unconfirmed",
-          ],
+          [row.id, state, code],
         );
       const current = (
         await sql.query<{ state: string }>(`select state from public.orchestrator_child_operations where id=$1`, [
