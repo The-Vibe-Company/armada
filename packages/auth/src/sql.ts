@@ -45,7 +45,6 @@ export function createSqlAuthStore(db: SqlQuery): AuthStore {
       return token && row ? { token, role: row.role } : null;
     },
     async useServiceToken(hash, now) {
-      // Verify on the statement snapshot. A concurrent touch can lose the write without refusing a valid key.
       assertHash(hash);
       const result = await db.query<TokenRow & { role: MemberRole }>(
         `with valid as materialized (
