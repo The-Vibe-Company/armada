@@ -104,6 +104,7 @@ function unicodeEscapeCharacter(literal: string | undefined) {
   if (!literal) return "\\";
   if (!/^e'/i.test(literal)) return literal.slice(1, -1);
   const value = literal.slice(2, -1);
+  if (value === "\\b") return "\b";
   const numeric = /^\\(?:x([\da-f]{1,2})|u([\da-f]{4})|U([\da-f]{8})|([0-7]{1,3}))$/i.exec(value);
   if (numeric) {
     const octal = numeric[4];

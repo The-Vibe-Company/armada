@@ -127,6 +127,7 @@ test.each([
     '!' to 'on'`,
     "armada.share",
   ],
+  [`alter function public.f() set U&"armada\b002eshare" UESCAPE E'\\b' to 'on'`, "armada.share"],
   ["create procedure public.p() language sql set armada.share = 'on' begin atomic select 1; end", "armada.share"],
   ["alter routine public.f() set armada.share to 'on'", "armada.share"],
 ])("rejects a custom routine setting in %s", (sql, parameter) => {
