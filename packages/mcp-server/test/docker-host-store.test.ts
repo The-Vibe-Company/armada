@@ -694,6 +694,51 @@ test("an expired restore runner prevents redelivery but permits a late physical 
   expect(await receipt()).toEqual([{ outcome: "completed", cancelled: false }]);
 });
 
+test("authenticated restore expiry settles the exact starting generation before its completion ACK", async () => {
+  const a = await restoreFixture();
+  expect(await a.poll()).toEqual(a.restore);
+  const expiry = { requestId: a.restore.requestId };
+  await database().query("update jobs set deadline_at='-infinity' where id=$1", [a.selection.runnerJobId]);
+  const interrupted = failDockerObservationCommit(a.sandboxId, "docker_expiry_observed");
+  await expect(interrupted.faultingStore.expired(a.hostToken, a.installationId, expiry)).rejects.toMatchObject({
+    cause: interrupted.failure,
+  });
+  expect(await lifecycle(a.sandboxId)).toMatchObject({ status: "starting", lifecycle_generation: "2" });
+  expect(await dockerJournal(a.sandboxId, "docker_expiry_observed")).toEqual([]);
+
+  await store.expired(a.hostToken, a.installationId, expiry);
+  await store.complete(a.hostToken, a.installationId, { ...expiry, outcome: "completed" });
+  await store.expired(a.hostToken, a.installationId, expiry);
+  expect(await lifecycle(a.sandboxId)).toMatchObject({
+    status: "stopped",
+    status_reason: "expired",
+    lifecycle_generation: "3",
+  });
+  expect(await dockerJournal(a.sandboxId, "docker_expiry_observed")).toEqual([
+    { from_status: "starting", to_status: "stopped", generation: "3" },
+  ]);
+});
+
+test("an expired pre-handoff restore settles the output probe without reading an archive", async () => {
+  const a = await restoreFixture();
+  await a.poll();
+  await store.expired(a.hostToken, a.installationId, { requestId: a.restore.requestId });
+  const signal = new AbortController().signal;
+  const outputs = (token: string, installation: string, body: ReadableStream<Uint8Array> | null) =>
+    store.retainedOutputs(token, installation, a.restore.requestId, body, signal);
+  await denied(outputs(a.hostToken, randomUUID(), null));
+  expect(await outputs(a.hostToken, a.installationId, null)).toBe(204);
+  const archive = new ReadableStream<Uint8Array>(
+    {
+      pull() {
+        throw new Error("Pre-handoff restore output must not be read");
+      },
+    },
+    { highWaterMark: 0 },
+  );
+  expect(await outputs(a.hostToken, a.installationId, archive)).toBe(204);
+});
+
 test("restore work is gated and stays eligible behind an excluded predecessor cleanup", async () => {
   const a = await restoreFixture();
   const excluded = [a.cleanupId];
@@ -854,6 +899,7 @@ test("restore dispatch cancels stale intent and reconciles a late physical recei
   });
   await store.complete(a.hostToken, a.installationId, result);
   await store.complete(a.hostToken, a.installationId, result);
+  await store.expired(a.hostToken, a.installationId, { requestId: result.requestId });
   await denied(store.complete(a.hostToken, a.installationId, { ...result, outcome: "failed" }));
   expect(await store.pendingStartsForHost(a.hostToken, a.installationId, true)).toEqual([]);
   expect(await lifecycle(a.sandboxId)).toMatchObject({ status: "starting" });
