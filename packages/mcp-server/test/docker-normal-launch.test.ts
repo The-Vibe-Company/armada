@@ -1129,7 +1129,12 @@ test("canonical Docker admission replays a scoped key and makes the external ref
   }
 });
 
-test("the normal HTTP route accepts the dashboard body and returns a launched sandbox readable through normal controls", async () => {
+const competingPromptRefusals = [
+  ["conversation_busy", "conversation_busy", true],
+  ["native_auth_writer_busy (versioned)", "native_auth_writer_busy", true],
+  ["native_auth_writer_busy (wire)", "native_auth_writer_busy", false],
+] as const;
+test.each(competingPromptRefusals)("Docker controls settle after %s", async (_caseName, refusal, versioned) => {
   const f = await fixture();
   const idempotencyKey = `docker:${f.body.requestId}`;
   f.body.requestId = dockerLaunchRequestId(key, f.actor.userId, f.actor.orgId, idempotencyKey);
@@ -1254,27 +1259,30 @@ test("the normal HTTP route accepts the dashboard body and returns a launched sa
     }),
   ).toMatchObject({ state: "pending" });
   const competing = createRuntimeCommands(authority, key);
+  const requestId = `docker_prompt_${busyRequest}`;
   const rejectBusy = () =>
     competing.complete(session.runtimeToken, session.epoch, {
       epoch: session.epoch,
-      requestId: `docker_prompt_${busyRequest}`,
+      requestId,
       status: 409,
-      body: { version: 1, requestId: `docker_prompt_${busyRequest}`, error: "conversation_busy" },
+      body: versioned ? { version: 1, requestId, error: refusal } : { error: refusal },
     });
   const journal = await complete(events.slice(2), 3);
   expect(journal?.status).toBe(200);
   expect(await journal?.json()).toEqual({ acknowledgedSequence: 3 });
   expect(await post("sandbox/status", { ...scope, id: f.body.requestId })).toMatchObject({ status: "running" });
-  await database().exec(
-    "alter table sandbox_transitions add constraint test_reject_settlement check (code <> 'runtime_turn_settled') not valid",
-  );
-  try {
-    await expect(rejectBusy()).rejects.toThrow();
-    expect(await competing.result(f.actor.userId, f.body.requestId, `docker_prompt_${busyRequest}`)).toEqual({
-      state: "pending",
-    });
-  } finally {
-    await database().exec("alter table sandbox_transitions drop constraint test_reject_settlement");
+  if (refusal === "conversation_busy") {
+    await database().exec(
+      "alter table sandbox_transitions add constraint test_reject_settlement check (code <> 'runtime_turn_settled') not valid",
+    );
+    try {
+      await expect(rejectBusy()).rejects.toThrow();
+      expect(await competing.result(f.actor.userId, f.body.requestId, `docker_prompt_${busyRequest}`)).toEqual({
+        state: "pending",
+      });
+    } finally {
+      await database().exec("alter table sandbox_transitions drop constraint test_reject_settlement");
+    }
   }
   await rejectBusy();
   const listed = (await post("sandbox/list", { ...scope, status: ["ready"] })) as {

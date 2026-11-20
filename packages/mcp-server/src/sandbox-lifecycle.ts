@@ -12,6 +12,7 @@ import {
 } from "@armada/core/server";
 import type { ModalProvider } from "@armada/provider-modal";
 import { releaseAccountCapacity } from "./account-capacity.ts";
+import { isDockerPromptRefusal } from "./docker-prompt-refusal.ts";
 import type { Job } from "./jobs/runner.ts";
 import { mergedWorkProof } from "./merged-work.ts";
 import { nativeIdleDue, nativeQuiescent } from "./native-idle.ts";
@@ -388,8 +389,8 @@ export async function settleRuntimeTurn(tx: Sql, sandboxId: string, generation: 
   );
   if (!eligible) return;
   if (eligible.needs_command_evidence && key !== undefined) {
-    const ambiguousReplies = await tx.query<{ result_enc: Uint8Array<ArrayBuffer> }>(
-      `select c.result_enc from public.runtime_commands c
+    const ambiguousReplies = await tx.query<{ request_id: string; result_enc: Uint8Array<ArrayBuffer> }>(
+      `select c.request_id,c.result_enc from public.runtime_commands c
        where c.sandbox_id=$1 and c.epoch=$2 and starts_with(c.request_id,'docker_prompt_')
          and c.sequence>coalesce((select max(p.sequence) from public.runtime_commands p
            where p.sandbox_id=$1 and p.epoch=$2 and starts_with(p.request_id,'docker_prompt_')
@@ -397,11 +398,12 @@ export async function settleRuntimeTurn(tx: Sql, sandboxId: string, generation: 
        order by c.sequence desc`,
       [sandboxId, eligible.epoch],
     );
-    for (const { result_enc } of ambiguousReplies.rows) {
+    for (const { request_id, result_enc } of ambiguousReplies.rows) {
       const reply = JSON.parse(await decryptSecret(result_enc, key));
       if (
-        (reply.status === 400 || reply.status === 409) &&
-        ["conversation_busy", "invalid_request"].includes(reply.body?.error)
+        reply.epoch === eligible.epoch &&
+        reply.requestId === request_id &&
+        isDockerPromptRefusal(reply.status, reply.body, request_id)
       )
         continue;
       if (reply.status !== 200) return;

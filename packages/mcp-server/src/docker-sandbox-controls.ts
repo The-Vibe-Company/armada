@@ -33,6 +33,7 @@ import { DockerHostUpgradeRequired, supportsDockerHostProtocol } from "./docker-
 import { createDockerLaunchEnvironment } from "./docker-launch-environment.ts";
 import type { createDockerNormalSend } from "./docker-normal-send.ts";
 import { captureDockerStopOutputs, createDockerOutputReader } from "./docker-outputs.ts";
+import { isDockerPromptRefusal } from "./docker-prompt-refusal.ts";
 import { createDockerRuntimeLifecycle } from "./docker-runtime-lifecycle.ts";
 import { readEventPages } from "./event-pagination.ts";
 import { isPrivateModelEvent } from "./model-usage.ts";
@@ -279,19 +280,15 @@ export function createDockerSandboxControls(
         !object(reply) ||
         reply.epoch !== command.epoch ||
         reply.requestId !== command.request_id ||
-        !object(reply.body) ||
-        reply.body.version !== 1 ||
-        reply.body.requestId !== command.request_id
+        !object(reply.body)
       )
         return { sequence, known: false };
-      if (
-        (reply.status === 400 || reply.status === 409) &&
-        ["conversation_busy", "invalid_request"].includes(reply.body.error as string)
-      )
-        continue;
+      if (isDockerPromptRefusal(reply.status, reply.body, command.request_id)) continue;
       const receipt = reply.body.result;
       if (
         reply.status !== 200 ||
+        reply.body.version !== 1 ||
+        reply.body.requestId !== command.request_id ||
         Object.hasOwn(reply.body, "error") ||
         !object(receipt) ||
         typeof receipt.promptId !== "string" ||
