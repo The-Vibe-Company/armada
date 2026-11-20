@@ -16,7 +16,7 @@ import { nativeIdleDue, nativeQuiescent } from "./native-idle.ts";
 import { SANDBOX_VISIBLE } from "./sandbox-visibility.ts";
 import { INTERRUPTED_LAUNCH_REASON } from "./turns.ts";
 import { deferTransactionWake, eventFeedWakeKey, runtimeWakes } from "./wake-bus.ts";
-import { preserveBeforeStop, recordStopDispatch } from "./work-preservation.ts";
+import { preserveBeforeStop, purgeWorkRecovery, recordStopDispatch } from "./work-preservation.ts";
 
 export const UNENROLLED_RESUME_STOP = "runtime_resume_unenrolled";
 const OPERATOR_CLEANUP_PREFIX = "Operator cleanup required:";
@@ -325,6 +325,42 @@ export async function recordDockerCleanupReceipt(
     code: "docker_delete_completed",
     effects: [],
   });
+}
+
+export async function completeSandboxDeletion(
+  tx: Sql,
+  scope: [string[], string],
+  sandboxId: string,
+  generation: number,
+  activityToken: string,
+) {
+  const { rows } = await tx.query<{ generation: string }>(
+    `update public.sandboxes s set
+       lifecycle_generation=s.lifecycle_generation+1,
+       activity_lease_id=null, activity_until=null, preservation_note=null,
+       usage_runtime_seconds=case when s.stopped_at is null then null else s.usage_runtime_seconds end,
+       usage_running_since=case when s.stopped_at is null then null else s.usage_running_since end,
+       stopped_at=coalesce(s.stopped_at, clock_timestamp())
+     where s.id=$3 and ${SANDBOX_VISIBLE} and s.status in ('stopped','failed')
+       and s.lifecycle_generation=$4 and s.activity_lease_id=$5
+     returning s.lifecycle_generation::text as generation`,
+    [...scope, sandboxId, generation, activityToken],
+  );
+  const receipt = rows[0];
+  if (!receipt) return false;
+  const transition = await transitionSandbox(tx, {
+    sandboxId,
+    expectedGeneration: receipt.generation,
+    fromStates: ["stopped", "failed"],
+    toState: "deleted",
+    actor: "delete_job",
+    code: "sandbox_deleted",
+    effects: [],
+  });
+  if (transition.kind === "conflict") throw new Error("Locked sandbox deletion could not transition.");
+  await purgeWorkRecovery(tx, sandboxId);
+  await releaseAccountCapacity(tx, sandboxId);
+  return true;
 }
 
 export async function recordRuntimeStartupFailure(
