@@ -31,6 +31,7 @@ export type Command = {
   usage: string | Partial<Record<UsageGroup, string>>;
   help: string;
   subcommandHelp?: Readonly<Record<string, string>>;
+  automaticJson?: boolean;
   helpWhenBare?: boolean;
   validateProfileForHelp?: boolean;
   useSelectedOrg?: boolean | ((argv: readonly string[]) => boolean);

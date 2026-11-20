@@ -16,11 +16,22 @@ import {
   VaultError,
   VERSION,
 } from "@armada/core";
-import { acceptedOptions, flag, oneName, parseArgs, providerFlag, single, values } from "./args.ts";
+import {
+  acceptedOptions,
+  flag,
+  jsonRequested,
+  oneName,
+  parseArgs,
+  providerFlag,
+  single,
+  values,
+  withJsonFlag,
+} from "./args.ts";
 import { ArmadaApiError, createArmadaApiClient, resolveArmadaOrigin } from "./armada-api.ts";
 import { type AuthIo, loginCommand, productionAuthIo } from "./auth-commands.ts";
 import { commandWords, HELP } from "./command-catalog.ts";
 import { findCommand, focusedHelp } from "./commands/index.ts";
+import type { CurrentSandboxFile } from "./current-sandbox.ts";
 import { dockerSnapshotCommand } from "./docker-snapshots.ts";
 import { failureHint } from "./failure-hint.ts";
 import { type LocalHostIo, localHostCommand, productionLocalHostIo } from "./local-host.ts";
@@ -35,6 +46,8 @@ export interface Io {
 }
 
 export interface Deps {
+  stdoutIsTTY?: boolean;
+  sandboxFile?: CurrentSandboxFile;
   env?: Record<string, string | undefined>;
   fetch?: typeof fetch;
   sleep?: (ms: number) => Promise<void>;
@@ -45,6 +58,17 @@ export interface Deps {
 }
 
 export async function run(argv: readonly string[], io: Io, deps: Deps = {}): Promise<number> {
+  const machineOutput = deps.stdoutIsTTY === false || jsonRequested(argv);
+  const writeFailure = (code: string, message: string, hint: string | null) =>
+    io.err(`${JSON.stringify({ error: { code, message, hint } })}\n`);
+  const finish = (exitCode: number) => {
+    if (machineOutput && exitCode !== 0) {
+      const code = exitCode === 2 ? "usage" : exitCode === 3 ? "unauthorized" : "command_failed";
+      const message = "Armada could not complete the command.";
+      writeFailure(code, message, failureHint({ code, message }, argv, Boolean(auth?.env.ARMADA_TOKEN)).trim());
+    }
+    return exitCode;
+  };
   let signingIn = false;
   let auth: AuthIo | undefined;
   const sessionFailure = (error: unknown) =>
@@ -53,16 +77,18 @@ export async function run(argv: readonly string[], io: Io, deps: Deps = {}): Pro
   try {
     const localArgs = selectProfile(argv, {}).args;
     if (localArgs[0] === "host" && ["install", "status", "uninstall"].includes(localArgs[1] ?? ""))
-      return await localHostCommand(
-        localArgs.slice(1),
-        io,
-        deps.localHost ??
-          productionLocalHostIo({
-            ...(deps.fetch ? { fetch: deps.fetch } : {}),
-            ...(deps.readStdin ? { readStdin: deps.readStdin } : {}),
-          }),
+      return finish(
+        await localHostCommand(
+          localArgs.slice(1),
+          io,
+          deps.localHost ??
+            productionLocalHostIo({
+              ...(deps.fetch ? { fetch: deps.fetch } : {}),
+              ...(deps.readStdin ? { readStdin: deps.readStdin } : {}),
+            }),
+        ),
       );
-    if (localArgs.length === 1 && localArgs[0] === "skill") return skillCommand(["--help"], io);
+    if (localArgs.length === 1 && localArgs[0] === "skill") return finish(await skillCommand(["--help"], io));
     const bareCommand = localArgs.length === 1 ? findCommand(localArgs[0] ?? "") : undefined;
     if (bareCommand?.helpWhenBare) {
       io.out(bareCommand.help);
@@ -106,7 +132,7 @@ export async function run(argv: readonly string[], io: Io, deps: Deps = {}): Pro
         const client = await createArmadaApiClient(auth);
         await client.control("account/status", {});
       }
-      return await dispatch(argv, io, deps);
+      return finish(await dispatch(argv, io, deps));
     } catch (error) {
       if (
         !sessionFailure(error) ||
@@ -117,13 +143,13 @@ export async function run(argv: readonly string[], io: Io, deps: Deps = {}): Pro
         auth.env.ARMADA_TOKEN
       )
         throw error;
-      if (!argv.includes("--json") && auth.interactive && auth.confirmSignIn && (await auth.confirmSignIn())) {
+      if (!machineOutput && auth.interactive && auth.confirmSignIn && (await auth.confirmSignIn())) {
         signingIn = true;
         await loginCommand(auth);
         signingIn = false;
-        return await dispatch(argv, io, { ...deps, auth });
+        return finish(await dispatch(argv, io, { ...deps, auth }));
       }
-      if (argv.length === 0) {
+      if (argv.length === 0 && !machineOutput) {
         io.err("You are not signed in. Run armada login.\n");
         io.out(HELP);
         return 3;
@@ -135,19 +161,20 @@ export async function run(argv: readonly string[], io: Io, deps: Deps = {}): Pro
       sessionFailure(caught) && argv[0] !== "login" && !signingIn && !auth?.env.ARMADA_TOKEN
         ? new AuthError("You are not signed in. Run armada login.", "unauthorized")
         : caught;
-    if (
-      argv.includes("--json") &&
-      (error instanceof GoldenError ||
+    if (machineOutput) {
+      const known =
+        error instanceof GoldenError ||
         error instanceof LaunchError ||
         error instanceof VaultError ||
         error instanceof ProviderRoutingError ||
         error instanceof ProviderError ||
-        error instanceof AuthError)
-    ) {
-      io.err(
-        `${JSON.stringify({ error: { code: error instanceof ArmadaApiError ? error.serverCode : error.code, message: snapshotText(error.message), ...(error instanceof ArmadaApiError && error.legacyCode ? { legacyCode: error.legacyCode } : {}) } })}\n`,
+        error instanceof AuthError;
+      writeFailure(
+        error instanceof ArmadaApiError ? error.serverCode : known ? error.code : "internal_error",
+        known ? snapshotText(error.message) : "Armada could not complete the command.",
+        failureHint(known ? error : {}, argv, Boolean(auth?.env.ARMADA_TOKEN)).trim() || null,
       );
-      return failureExitCode(error);
+      return known ? failureExitCode(error) : 1;
     }
     const printFailure = (message: string) =>
       io.err(
@@ -200,7 +227,7 @@ async function dispatch(argv: readonly string[], io: Io, deps: Deps): Promise<nu
     return 0;
   }
   const registered = command ? findCommand(command) : undefined;
-  let rest = original;
+  let rest = deps.stdoutIsTTY === false && registered?.automaticJson ? withJsonFlag(original) : original;
   const terminator = rest.indexOf("--");
   const optionArgs = terminator < 0 ? rest : rest.slice(0, terminator);
   const useSelectedOrg = registered?.useSelectedOrg;

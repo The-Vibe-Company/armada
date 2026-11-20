@@ -577,9 +577,8 @@ terminates quietly with exit `0` and stops streaming/polling. This pipeline
 termination does not confirm or cancel an already-submitted mutation; inspect
 its state before retrying. Other output errors remain failures.
 
-Commands that support `--json` describe their response in leaf help. Common
-typed failures emit `{"error":{"code":"...","message":"..."}}` on **stderr**,
-not stdout; some API errors may additionally include `legacyCode`. Successful
+Commands that support `--json` describe their response in leaf help. In machine mode, failures end **stderr** with
+`{"error":{"code":"...","message":"...","hint":null}}`. Successful
 output and human diagnostics are separate streams. Warnings/progress can also
 appear on stderr, so do not assume the whole diagnostics stream is a single
 JSON document. A failed multi-page/long operation may have already produced

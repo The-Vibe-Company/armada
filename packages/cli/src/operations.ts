@@ -4,6 +4,7 @@ import { invalidAgentMessage } from "./agent-validation.ts";
 import { acceptedOptions, flag, parseArgs, single, uuid } from "./args.ts";
 import { ArmadaApiError, type ArmadaCommandClient, createArmadaApiClient } from "./armada-api.ts";
 import type { AuthIo } from "./auth-commands.ts";
+import { type CurrentSandboxFile, resolveSandboxId } from "./current-sandbox.ts";
 import { mcpCommand } from "./mcp-commands.ts";
 import { resourceAdviceText } from "./resource-advice.ts";
 import { sandboxListText } from "./sandbox-list.ts";
@@ -14,6 +15,7 @@ export async function operation(
   auth: AuthIo,
   read: (path?: string) => Promise<string>,
   readOptionalStdin: () => Promise<string> = async () => "",
+  sandboxFile?: CurrentSandboxFile,
 ) {
   if (command === "mcp") return mcpCommand(argv, auth, read, readOptionalStdin);
   const args = parseArgs(
@@ -46,9 +48,13 @@ export async function operation(
     rm: ["--yes"],
   };
   acceptedOptions(args, command, ["--org", "--json", ...(options[command] ?? [])]);
+  const org = single(args, "--org");
+  let api: Promise<ArmadaCommandClient> | undefined;
+  const client = () => (api ??= createArmadaApiClient(auth));
+  const resolveId = (id: string | undefined) =>
+    resolveSandboxId(id, auth.env, sandboxFile, org, async (body) => (await client()).sandboxes.list(body));
   if (command === "rm") {
     const [id, ...extra] = args.positionals;
-    uuid(id, "sandbox id");
     if (extra.length || [...args.options.keys()].some((key) => !["--yes", "--org", "--json"].includes(key)))
       throw new GoldenError("invalid_config", "Run armada rm <sandbox-id> --yes [--org UUID] [--json].");
     if (!flag(args, "--yes"))
@@ -56,10 +62,10 @@ export async function operation(
         "invalid_config",
         "Deletion permanently removes the disk and recovery archives. Pass --yes to confirm.",
       );
-    const org = single(args, "--org");
     if (org) uuid(org, "--org");
-    const client = await createArmadaApiClient(auth);
-    const result = await client.deleteSandbox<{ id: string; status: "deleted" }>(id, org);
+    const resolved = await resolveId(id);
+    uuid(resolved, "sandbox id");
+    const result = await (await client()).deleteSandbox<{ id: string; status: "deleted" }>(resolved, org);
     auth.out(flag(args, "--json") ? `${JSON.stringify(result)}\n` : `Deleted sandbox ${result.id}.\n`);
     return 0;
   }
@@ -95,14 +101,11 @@ export async function operation(
     body.request_id = requestId?.toLowerCase() ?? crypto.randomUUID();
   }
   if (command === "list") Object.assign(body, sandboxListFilters(args));
-  const [id, ...rest] = args.positionals;
-  if (command !== "list") {
-    if (!id) throw new GoldenError("invalid_config", `armada ${command} needs a sandbox id.`);
-    body.id = id;
-  }
+  const end = argv.indexOf("--");
+  const payload = command === "send" || command === "steer" || command === "exec";
+  const implicitWithPayload = payload && end >= 0 && args.positionals.length === argv.length - end - 1;
+  const [id, ...rest] = implicitWithPayload ? [undefined, ...args.positionals] : args.positionals;
   if (command === "extend") {
-    uuid(id, "sandbox id");
-    const org = single(args, "--org");
     if (org !== undefined) uuid(org, "--org");
     const ttl = single(args, "--ttl");
     if (ttl === undefined || [...args.options.keys()].some((key) => !["--ttl", "--org", "--json"].includes(key)))
@@ -134,6 +137,11 @@ export async function operation(
     body[command === "send" ? "prompt" : command === "steer" ? "text" : "command"] = rest.join(" ");
   } else if ((command === "list" && id) || rest.length)
     throw new GoldenError("invalid_config", "Unexpected arguments.");
+  if (command !== "list") {
+    const resolved = await resolveId(id);
+    if (command === "extend") uuid(resolved, "sandbox id");
+    body.id = resolved;
+  }
   const seconds =
     command === "wait"
       ? Number(body.timeout_seconds ?? 60)
@@ -148,7 +156,7 @@ export async function operation(
       : seconds === undefined
         ? undefined
         : AbortSignal.timeout((seconds + 15) * 1_000);
-  const request = createArmadaApiClient(auth).then((client) =>
+  const request = client().then((client) =>
     client.sandboxes[command === "detail" ? "status" : command](body, signal ? { signal } : undefined),
   );
   const result = await request.catch((error: unknown) => {
@@ -156,17 +164,14 @@ export async function operation(
       command === "stop" &&
       error instanceof ArmadaApiError &&
       error.code === "unavailable" &&
-      error.serverCode !== "unavailable" &&
-      error.legacyCode === undefined
+      error.status >= 500 &&
+      error.serverCode !== "unavailable"
     )
       throw new ArmadaApiError(
         error.serverCode,
         error.status,
-        error.status >= 500
-          ? `${error.message} Stop may already have been accepted. Run armada list --json to check state before retrying.`
-          : error.message,
+        `${error.message} Stop may already have been accepted. Run armada list --json to check state before retrying.`,
         error.details,
-        "unavailable",
         1,
       );
     if (
@@ -176,7 +181,7 @@ export async function operation(
       error.code === "unavailable"
     )
       throw new AuthError(
-        `${error.message} Outcome unknown. Run armada status ${args.positionals[0]} to check before retrying.`,
+        `${error.message} Outcome unknown. Run armada status ${body.id} to check before retrying.`,
         "unavailable",
       );
     if (command === "send" && error instanceof AuthError)
