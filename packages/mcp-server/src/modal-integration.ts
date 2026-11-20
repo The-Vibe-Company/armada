@@ -30,10 +30,14 @@ import { ModalClient } from "modal";
 import type { HandlerOptions } from "./http.ts";
 import type { GitHubLaunchOptions } from "./launch-credentials.ts";
 import { observeNativeFirstToken } from "./launch-stage-record.ts";
-import type { createModalArtifactCache, ModalArtifactBinding } from "./modal-artifact-cache.ts";
+import {
+  type createModalArtifactCache,
+  type ModalArtifactBinding,
+  modalArtifactFailure,
+} from "./modal-artifact-cache.ts";
 import { projectModalEventUsage } from "./modal-event-usage.ts";
 import { modalLaunchEnvironment } from "./modal-launch-environment.ts";
-import { createModalReaper, modalReaperSql } from "./modal-reaper.ts";
+import { boundedModalSql, createModalReaper } from "./modal-reaper.ts";
 import { createModelAuthOwnership } from "./model-auth.ts";
 import { diagnosticSandboxId } from "./provider-sandbox-target.ts";
 import { observeProvider, observeProviderCall } from "./request-observability.ts";
@@ -166,10 +170,11 @@ export async function createModalIntegration(options: {
   }
   async function warmRegisteredArtifactCaches(
     cache: ReturnType<typeof createModalArtifactCache>,
-    startupSql: Sql,
+    stop: AbortSignal,
     logError: (line: string) => void,
   ) {
-    const startupBudget = AbortSignal.timeout(120_000);
+    const startupBudget = AbortSignal.any([stop, AbortSignal.timeout(120_000)]);
+    const startupSql = boundedModalSql(options.sql);
     const vault = createSqlVaultStore(startupSql);
     const { rows } = await startupSql.query<{
       app_id: string;
@@ -180,24 +185,39 @@ export async function createModalIntegration(options: {
     }>(
       "select distinct app_id, app_name, environment, authority_scope, authority_owner_id from public.modal_server_apps",
     );
-    for (let offset = 0; offset < rows.length && !startupBudget.aborted; offset += 4) {
-      await Promise.all(
-        rows.slice(offset, offset + 4).map(async (row) => {
-          try {
-            const { tokenId, tokenSecret } = await resolveManagementCredentials(
-              { credentialScope: row.authority_scope, credentialOwnerId: row.authority_owner_id },
-              vault,
-            );
-            startupBudget.throwIfAborted();
-            await cache.warm(
-              { appId: row.app_id, appName: row.app_name, environment: row.environment, tokenId, tokenSecret },
-              startupBudget,
-            );
-          } catch {
-            logError("Modal startup artifact warming failed for a registered App. Retrying on enrolled allocation.");
-          }
-        }),
+    const reportFailure = (cause: string) => {
+      if (stop.aborted) return;
+      logError(
+        `Modal startup artifact warming failed for a registered App: ${startupBudget.aborted ? "startup warming deadline exceeded" : cause}. Retrying on enrolled allocation.`,
       );
+    };
+    for (let offset = 0; offset < rows.length && !startupBudget.aborted; offset += 4) {
+      const seeds: Promise<void>[] = [];
+      for (const row of rows.slice(offset, offset + 4)) {
+        if (startupBudget.aborted) break;
+        try {
+          const { tokenId, tokenSecret } = await resolveManagementCredentials(
+            { credentialScope: row.authority_scope, credentialOwnerId: row.authority_owner_id },
+            vault,
+          );
+          startupBudget.throwIfAborted();
+          seeds.push(
+            cache
+              .warm(
+                { appId: row.app_id, appName: row.app_name, environment: row.environment, tokenId, tokenSecret },
+                startupBudget,
+              )
+              .catch((error) => reportFailure(modalArtifactFailure(error))),
+          );
+        } catch (error) {
+          reportFailure(
+            error instanceof VaultError && error.code === "missing_credential"
+              ? "registered Modal credential is missing"
+              : "could not resolve the registered Modal credential",
+          );
+        }
+      }
+      await Promise.all(seeds);
     }
   }
   const modalTokensFor: NonNullable<HandlerOptions["modalTokensFor"]> = async (target, caller) => {
@@ -329,7 +349,7 @@ export async function createModalIntegration(options: {
     }
   }
   function inventoryReaper(log?: (line: string) => void) {
-    const sql = modalReaperSql(options.sql);
+    const sql = boundedModalSql(options.sql);
     const vault = createSqlVaultStore(sql);
     const clients = new Map<string, ModalClient>();
     const terminationDeadline = new AsyncLocalStorage<AbortSignal>();

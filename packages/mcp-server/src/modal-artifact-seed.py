@@ -7,6 +7,12 @@ import sys
 from pathlib import Path
 
 
+class SeedFailure(ValueError):
+    def __init__(self, code, message):
+        super().__init__(message)
+        self.code = code
+
+
 def matches(chunks, pin):
     digest = hashlib.sha256()
     size = 0
@@ -30,12 +36,15 @@ def seed(volume, directory, pins):
         if volume_matches(volume, pin):
             continue
         path = Path(directory, pin["sha256"])
-        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        try:
+            fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        except OSError as error:
+            raise SeedFailure(13, "Could not open local runtime artifact") from error
         with os.fdopen(fd, "rb") as source:
             if not stat.S_ISREG(os.fstat(source.fileno()).st_mode) or not matches(
                 iter(lambda: source.read(1024 * 1024), b""), pin
             ):
-                raise ValueError("Invalid local public runtime artifact")
+                raise SeedFailure(13, "Invalid local public runtime artifact")
             with volume.batch_upload(force=True) as batch:
                 batch.put_file(Path(f"/proc/self/fd/{source.fileno()}"), "/" + pin["sha256"], mode=0o444)
         if not volume_matches(volume, pin):
@@ -44,17 +53,28 @@ def seed(volume, directory, pins):
 
 def seed_bound_app(modal, request):
     environment = request["environment"]
-    client = modal.Client.from_credentials(request["tokenId"], request["tokenSecret"])
-    app = modal.App.lookup(request["appName"], environment_name=environment, client=client)
+    try:
+        client = modal.Client.from_credentials(request["tokenId"], request["tokenSecret"])
+    except Exception as error:
+        raise SeedFailure(10, "Modal credential authentication failed") from error
+    try:
+        app = modal.App.lookup(request["appName"], environment_name=environment, client=client)
+    except Exception as error:
+        raise SeedFailure(11, "Modal App lookup failed") from error
     if app.app_id != request["appId"]:
-        raise ValueError("Modal app binding mismatch")
-    volume = modal.Volume.from_name(
-        "armada-runtime-artifacts",
-        environment_name=environment,
-        create_if_missing=True,
-        client=client,
-    )
-    seed(volume, request["directory"], request["pins"])
+        raise SeedFailure(12, "Modal app binding mismatch")
+    try:
+        volume = modal.Volume.from_name(
+            "armada-runtime-artifacts",
+            environment_name=environment,
+            create_if_missing=True,
+            client=client,
+        )
+        seed(volume, request["directory"], request["pins"])
+    except SeedFailure:
+        raise
+    except Exception as error:
+        raise SeedFailure(14, "Modal volume operation failed") from error
 
 
 if __name__ == "__main__":
@@ -62,4 +82,7 @@ if __name__ == "__main__":
 
     import modal
 
-    seed_bound_app(modal, json.load(sys.stdin))
+    try:
+        seed_bound_app(modal, json.load(sys.stdin))
+    except SeedFailure as error:
+        sys.exit(error.code)

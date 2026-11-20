@@ -74,7 +74,6 @@ import { createSandboxArmadaAccess } from "./sandbox-armada-access.ts";
 import { createSandboxBillingAccount } from "./sandbox-billing-account.ts";
 import { createSandboxOutputs } from "./sandbox-outputs.ts";
 import sourceIdentity from "./source-identity.json";
-import { bunSql } from "./sql.ts";
 import { readStartupConfiguration } from "./startup-configuration.ts";
 import { createSubscriptionMigration } from "./subscription-migration.ts";
 
@@ -331,17 +330,6 @@ export async function createServerServices(env: Record<string, string | undefine
       credentials: { ...dockerCredentials, admit: dockerCredentials.admitExistingSandbox },
       modelAuth,
     });
-  }
-  if (warmModalArtifacts) {
-    const logError = options.logError ?? console.error;
-    const startupSql = bunSql(config.databaseUrl, 4, 5_000);
-    try {
-      await modal.warmRegisteredArtifactCaches(warmModalArtifacts, startupSql, logError);
-    } catch {
-      logError("Could not list registered Modal Apps for startup warming.");
-    } finally {
-      await startupSql.close();
-    }
   }
   const modalRuntimeHostFor = async (
     target: import("@armada/core").ProviderTarget,
