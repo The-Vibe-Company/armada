@@ -17,9 +17,9 @@ afterAll(async () => {
 });
 
 test("migrated fixtures isolate data, schema, roles and connection lifetime", async () => {
-  await firstFixture.get().exec(
-    "insert into orgs(name) values('first fixture'); create table fixture_only(id int); set role authenticated",
-  );
+  await firstFixture
+    .get()
+    .exec("insert into orgs(name) values('first fixture'); create table fixture_only(id int); set role authenticated");
   const second = secondFixture.get();
   expect((await second.query<{ count: number }>("select count(*)::int as count from orgs")).rows[0]?.count).toBe(0);
   expect(
