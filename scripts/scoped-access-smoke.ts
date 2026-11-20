@@ -54,7 +54,15 @@ function decoded(value: unknown): unknown {
     return value;
   }
 }
-function unpack(value: unknown, depth = 0): { result: Row; error: boolean; denied: boolean } {
+type ToolOutput = {
+  result: Row;
+  error: boolean;
+  denied: boolean;
+  failureCode?: "scoped_authority_denied" | "scoped_operation_unavailable";
+  requestId?: string;
+};
+
+function unpack(value: unknown, depth = 0): ToolOutput {
   if (depth > 5) return { result: {}, error: true, denied: false };
   value = decoded(value);
   const data = row(value);
@@ -66,19 +74,26 @@ function unpack(value: unknown, depth = 0): { result: Row; error: boolean; denie
   if (Array.isArray(data.content)) {
     const parts = data.content.map((part) => unpack(row(part).text, depth + 1));
     const found = parts.find((part) => Object.keys(part.result).length) ?? parts[0];
+    const failureCode = parts.find((part) => part.failureCode)?.failureCode;
+    const requestId = row(data._meta).requestId;
     return {
       result: found?.result ?? {},
       error: error || parts.some((part) => part.error),
       denied: parts.some((part) => part.denied),
+      ...(failureCode && { failureCode, ...(uuid(requestId) && { requestId }) }),
     };
   }
+  // Codex's app-server MCP result retains the text content but can omit MCP's isError flag.
+  const failureCode =
+    value === "scoped_authority_denied" || value === "scoped_operation_unavailable" ? value : undefined;
   return {
     result: row(data.result),
-    error,
+    error: error || failureCode !== undefined,
     denied:
-      value === "scoped_authority_denied" ||
+      failureCode === "scoped_authority_denied" ||
       data.message === "scoped_authority_denied" ||
       row(data.error).code === "scoped_authority_denied",
+    ...(failureCode && { failureCode }),
   };
 }
 function assistantAnswers(events: unknown[], expected: string): boolean {
@@ -103,7 +118,7 @@ function referenceRead(name: string, input: Row): boolean {
   const wrapped = /^(?:\/bin\/)?(?:bash|sh) -l?c (['"])(.*)\1$/.exec(command);
   return (wrapped?.[2] ?? command) === referenceCommand;
 }
-type Call = { id: string; name: string; input: Row; result: Row; error: boolean; denied: boolean };
+type Call = ToolOutput & { id: string; name: string; input: Row; outputPresent: boolean };
 
 const childTools = ["launch", "message", "read", "stop"];
 const knownExtraTools = [
@@ -130,6 +145,8 @@ function receiptDiagnostic(call: Call | undefined, key: string) {
         : "unrecognized",
     toolError: call?.error ?? null,
     authorityDenied: call?.denied ?? null,
+    ...(call?.failureCode && { toolFailureCode: call.failureCode }),
+    ...(call?.requestId && { toolRequestId: call.requestId }),
   };
 }
 
@@ -281,6 +298,7 @@ export function createScopedProbe(item: ScopedProbeCase, enabled: boolean, io: S
             name,
             input,
             ...output,
+            outputPresent: result.output !== undefined && result.output !== null,
             error: result.isError === true || output.error,
           });
       }
@@ -495,6 +513,7 @@ export function createScopedProbe(item: ScopedProbeCase, enabled: boolean, io: S
                 launchCount: launches.length,
                 inputFieldCount: launch ? Object.keys(launch.input).length : 0,
                 selectionMatches: !!launch && selected(launch.input),
+                toolOutputPresent: launch?.outputPresent ?? false,
                 ...receiptDiagnostic(launch, launchKey),
               }),
             );
