@@ -245,6 +245,23 @@ begin
     allowed_effects := array[]::text[];
   end if;
 
+  if p_actor = 'runtime_observation' and (
+    (p_code = 'native_provider_stopped' and p_to_state = 'stopped'
+      and sandbox.status in ('starting', 'stopping', 'failed', 'stopped'))
+    or (p_code = 'native_provider_failure' and p_to_state = 'failed'
+      and sandbox.status in ('failed', 'stopped') and sandbox.stop_requested_at is null)
+  ) then
+    if sandbox.provider not in ('boat', 'modal') or sandbox.boat_runtime
+      or sandbox.runtime_transport is not distinct from 'dialout'
+      or sandbox.deleted_at is not null or sandbox.activity_until >= now()
+      or sandbox.reconcile_lease_until >= now() then
+      return query select false, null::bigint;
+      return;
+    end if;
+    allowed_actors := array['runtime_observation'];
+    allowed_effects := array[]::text[];
+  end if;
+
   if (p_actor = any(allowed_actors)) is not true or (p_code ~ '^[a-z][a-z0-9_]{0,63}$') is not true
     or (p_actor = 'reconciler' or interrupted_resume) is distinct from (p_reconcile_lease is not null)
     or jsonb_typeof(p_effects) is distinct from 'array' then
@@ -267,7 +284,7 @@ begin
   end if;
 
   if p_actor = 'runtime_observation' and p_stopped_at is null then
-    raise exception 'runtime stop observation requires an exit timestamp' using errcode = '22023';
+    raise exception 'provider exit observation requires an exit timestamp' using errcode = '22023';
   end if;
 
   -- Docker resume enqueues its host mailbox job in the admission transaction.

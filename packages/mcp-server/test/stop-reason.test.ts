@@ -396,12 +396,14 @@ test.each(["accepted", "already running", "stale state", "expired lease"] as con
     const { db, people, sharedGoldenId } = await failureDatabase();
     const id = crypto.randomUUID();
     const activityToken = crypto.randomUUID();
-    const running = scenario === "already running" || scenario === "expired lease";
+    const generation = 1;
+    const expired = scenario === "expired lease";
+    const running = scenario === "already running" || expired;
     const status = running ? "running" : scenario === "stale state" ? "failed" : "ready";
     await db.query(
       `insert into sandboxes(id,provider,provider_sandbox_id,golden_id,org_id,owner_id,harness,status,
-        activity_lease_id,activity_until)
-       values ($1,'boat','placement',$2,$3,$4,'codex',$5,$6,$7)`,
+        activity_lease_id,activity_until,lifecycle_generation)
+       values ($1,'boat','placement',$2,$3,$4,'codex',$5,$6,$7,$8)`,
       [
         id,
         sharedGoldenId,
@@ -409,7 +411,8 @@ test.each(["accepted", "already running", "stale state", "expired lease"] as con
         people.owner,
         status,
         activityToken,
-        scenario === "expired lease" ? "-infinity" : "infinity",
+        expired ? "-infinity" : "infinity",
+        generation,
       ],
     );
     const store = createSqlData(db)({
@@ -417,23 +420,20 @@ test.each(["accepted", "already running", "stale state", "expired lease"] as con
       orgs: [{ orgId: people.org, role: "member" }],
       via: "service",
     }).sandboxes;
-    const expectedGeneration = (await store.get(id))?.lifecycleGeneration;
-    if (expectedGeneration === undefined) throw new Error("Missing fixture generation");
     const completed = scenario === "accepted" || scenario === "already running";
     const publication = store.update(id, {
       nativeSteerReceipt: { fromState: status === "running" ? "running" : "ready", placement: "placement" },
-      statusReason: null,
       taskPromptId: "accepted",
       conversationIds: ["conversation"],
       finishActivity: true,
-      expectedGeneration,
+      expectedGeneration: generation,
       activityToken,
     });
     if (completed) await publication;
     else await expect(publication).rejects.toThrow();
     expect(await store.get(id)).toMatchObject({
       status: completed ? "running" : status,
-      lifecycleGeneration: expectedGeneration + Number(completed),
+      lifecycleGeneration: generation + Number(completed),
       taskPromptId: completed ? "accepted" : null,
       conversationIds: completed ? ["conversation"] : [],
     });
@@ -444,18 +444,14 @@ test.each(["accepted", "already running", "stale state", "expired lease"] as con
       "select from_status,to_status,actor,code,generation::int from sandbox_transitions where sandbox_id=$1",
       [id],
     );
-    expect(rows).toEqual(
-      scenario === "accepted"
-        ? [
-            {
-              from_status: "ready",
-              to_status: "running",
-              actor: "native_turn",
-              code: "native_steer_accepted",
-              generation: expectedGeneration,
-            },
-          ]
-        : [],
-    );
+    expect(rows).toHaveLength(scenario === "accepted" ? 1 : 0);
+    if (scenario === "accepted")
+      expect(rows[0]).toEqual({
+        from_status: "ready",
+        to_status: "running",
+        actor: "native_turn",
+        code: "native_steer_accepted",
+        generation,
+      });
   },
 );
