@@ -1931,9 +1931,31 @@ export function createDockerHostStore(sql: Sql, key: string) {
               result.requestId,
             ])
           ).rows[0] ?? deny();
-        if (!job.bound_sandbox_id || job.bound_operation === "buildSnapshot" || generationFenced(job.bound_operation))
+        if (
+          !job.bound_sandbox_id ||
+          job.bound_operation === "buildSnapshot" ||
+          job.bound_operation === "deletePhysical"
+        )
           deny();
-        const logical = await boundMachine(tx, job, host, installationId);
+        let logical: Sandbox;
+        if (job.bound_operation === "restore") {
+          logical = await sandbox(tx, job.bound_sandbox_id, host, installationId);
+          const { job: restore, lifecycleGeneration } = await readStoredJob(job);
+          if (restore.operation !== "restore" || restore.request.generation !== job.request_id || !lifecycleGeneration)
+            deny();
+          if (logical.docker_generation !== restore.request.generation) {
+            const awaitingAttachment =
+              logical.status === "starting" &&
+              String(logical.lifecycle_generation) === lifecycleGeneration &&
+              logical.docker_generation === restore.predecessor.request.generation;
+            if (awaitingAttachment) deny();
+            return;
+          }
+          if (job.outcome !== "completed" || job.cancelled_at) deny();
+          await requireRestoreBindings(tx, logical, restore, lifecycleGeneration);
+        } else {
+          logical = await boundMachine(tx, job, host, installationId);
+        }
         // Status repeats across lifecycles; mailbox ordering identifies which
         // lifecycle owns this fact even after a later resume has stopped again.
         if (await supersededLifecycle(tx, job)) return;
