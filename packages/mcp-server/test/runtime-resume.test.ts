@@ -978,6 +978,7 @@ test.each(boatResumeRecoveryCases)(
     const requests: string[] = [];
     let activated = false;
     let canIssueTicket = false;
+    let beforeFailure: { generation: number; stop_generation: number } | undefined;
     const network = spyOn(globalThis, "fetch").mockImplementation((async (value: Parameters<typeof fetch>[0]) => {
       const url = String(value instanceof Request ? value.url : value);
       requests.push(url);
@@ -1003,7 +1004,14 @@ test.each(boatResumeRecoveryCases)(
         modelAuth: createModelAuthOwnership(f.sql, ENCRYPTION_KEY),
         policy: {
           async start(value) {
-            if (taint) await f.db.query("update sandboxes set application_secret_tainted=true where id=$1", [f.row.id]);
+            if (taint) {
+              const { rows } = await f.db.query<{ generation: number; stop_generation: number }>(
+                `update public.sandboxes set application_secret_tainted=true where id=$1
+                 returning lifecycle_generation::int as generation, stop_generation::int`,
+                [f.row.id],
+              );
+              beforeFailure = rows[0];
+            }
             await value.activate?.(value.signal);
             canIssueTicket = true;
             throw Error("Fixture ends before ticket issuance");
@@ -1079,6 +1087,28 @@ test.each(boatResumeRecoveryCases)(
       expect(result.rows).toEqual(
         expired || responseLost || fault ? [{ to_status: null, code: null, phase: "dispatched" }] : [expectedEdge],
       );
+      if (taint) {
+        if (!beforeFailure) throw Error("Missing admitted resume fence.");
+        const { rows } = await f.db.query(
+          `select s.lifecycle_generation::int as generation, s.stop_generation::int,
+                  t.generation::int as journal_generation,
+                  s.stop_requested_at is not null and s.reconcile_after <= now() as cleanup_due,
+                  s.activity_lease_id is null and s.activity_until is null as activity_released
+             from public.sandboxes s
+             join public.sandbox_transitions t on t.sandbox_id=s.id and t.code='restore_unconfirmed'
+            where s.id=$1`,
+          [f.row.id],
+        );
+        expect(rows).toEqual([
+          {
+            generation: beforeFailure.generation + 1,
+            stop_generation: beforeFailure.stop_generation + 1,
+            journal_generation: beforeFailure.generation + 1,
+            cleanup_due: true,
+            activity_released: true,
+          },
+        ]);
+      }
       if (!taint) expect(requests.some((path) => path.endsWith("/stop"))).toBe(false);
       if (responseLost) {
         const running = { body: { sandbox: sdkSandbox({ id: f.row.providerSandboxId, state: "running" }) } };
