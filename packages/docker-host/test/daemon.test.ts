@@ -147,10 +147,11 @@ test.each(["create", "restore"] as const)(
       return { machineId };
     };
     const reported: unknown[] = [];
-    api.result = async (_state, receipt) => {
-      reported.push("machineId" in receipt ? receipt.machineId : undefined);
+    api.result = httpApi((async (_url: string | URL | Request, init?: RequestInit) => {
+      reported.push(JSON.parse(String(init?.body)));
       if (reported.length === 1) throw new Error("acknowledgement lost");
-    };
+      return new Response(null, { status: 204 });
+    }) as typeof fetch).result;
     const run = () => tick(store, api, executor, false, () => 100_000);
 
     await expect(run()).rejects.toThrow("acknowledgement lost");
@@ -172,7 +173,13 @@ test.each(["create", "restore"] as const)(
     await store.save(cleaned);
 
     await run();
-    expect(reported).toEqual([machineId, machineId, machineId]);
+    const body = {
+      installationId: state().installationId,
+      requestId: allocation.requestId,
+      outcome: "completed",
+      machineId,
+    };
+    expect(reported).toEqual([body, body, body]);
     expect(allocations).toBe(1);
   },
 );
@@ -814,7 +821,17 @@ test("HTTP registration is single-use and host credentials remain in authorizati
     request: f.job.request,
     outcome: "completed",
   });
-  await api.result(state, { requestId: f.job.requestId, operation: "create", request: f.job.request }, true);
+  await api.result(
+    state,
+    {
+      requestId: f.job.requestId,
+      operation: "create",
+      request: f.job.request,
+      outcome: "completed",
+      machineId: "b".repeat(64),
+    },
+    true,
+  );
   expect(JSON.parse(String(calls.at(-1)?.init.body))).toEqual({
     installationId: state.installationId,
     requestId: f.job.requestId,

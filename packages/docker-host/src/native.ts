@@ -389,11 +389,18 @@ export function httpApi(
     },
     async result(state, receipt, expired, retained) {
       if (!expired && !receipt.outcome) throw new Error("Missing host receipt outcome");
+      const machineId =
+        !expired &&
+        receipt.outcome === "completed" &&
+        (receipt.operation === "create" || receipt.operation === "restore")
+          ? receipt.machineId
+          : undefined;
       const body: DockerHostResultRequest & { retained?: true } = {
         installationId: state.installationId,
         requestId: receipt.requestId,
         ...(!expired && retained && receipt.operation === "stop" && receipt.outcome === "failed" ? { retained } : {}),
         ...(expired ? { expired: true } : { outcome: receipt.outcome! }),
+        ...(machineId === undefined ? {} : { machineId }),
         ...(receipt.operation === "buildSnapshot" && receipt.imageId ? { imageId: receipt.imageId } : {}),
       };
       const baselineVersion = receipt.operation === "buildSnapshot" ? receipt.baselineVersion : undefined;
