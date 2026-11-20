@@ -93,10 +93,16 @@ in registry JSON. Ingest validates live membership, scope, generation and produc
 sequence, dedupes identical replays, rejects conflicting replay and ACKs only after
 contiguous durable commit. No database/user/provider token reaches the runner.
 The handler bounds the request body before parsing JSON and checks the batch size.
-Grant verification must resolve scope on the server. Event projection runs in the
-same authenticated archive transaction before ACK and must tolerate replays.
+An injected grant verifier must authenticate the token cryptographically and resolve
+scope from trusted server state. Request JSON supplies no authority. Event
+projection runs in the same authenticated archive transaction before ACK and must
+tolerate replays.
 The archive stops at a missing producer sequence so downstream consumers see
 contiguous events.
+
+The deployment tag uses a fixed-width hash of the Modal environment and public
+ingest origin. This keeps the identity stable within Modal's tag budget and lets
+the inventory reaper match the exact tag.
 
 `resolveHarnessEnvironment(machine,launchEnv)` runs for each active generation,
 never for golden builders. It returns allowlisted `claudeEnv`, `codexEnv`, optional
@@ -471,8 +477,9 @@ cause is included. SDK error classification uses recognized error names and
 validated numeric gRPC statuses from SDK ClientError instances. Public builder
 image failures keep only recognized build diagnostics, and lifecycle failure logs
 use allowlisted labels. Check the durable lifecycle phase before retrying any
-mutation, including when a transport error is marked retryable. Known SDK Image IDs survive in a failure receipt even when their
-SQL commit failed; new named snapshot IDs are also retained in Machine.snapshotImages.
+mutation, including when a transport error is marked retryable. Known SDK Image
+IDs survive in a failure receipt even when their SQL commit failed. New named
+snapshot IDs are also retained in Machine.snapshotImages.
 The SDK response-loss case where no Image ID was ever received remains unrecoverable.
 
 `provider.resourceReceipts()` inventories authorized target/context records (including
