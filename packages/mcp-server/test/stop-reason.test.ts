@@ -371,6 +371,7 @@ test.each([
   { from: "ready", to: "starting", outcome: "stale source" },
   { from: "failed", to: "stopping", outcome: "confirmed exit" },
   { from: "ready", to: "stopping", outcome: "journal failure" },
+  { from: "stopped", to: "starting", outcome: "commit failure" },
 ] as const)("native provider observation $from -> $to ($outcome)", async ({ from, to, outcome }) => {
   const { db, people, sharedGoldenId } = await failureDatabase();
   const boat = fakeBoat();
@@ -407,17 +408,24 @@ test.each([
   if (outcome === "stale source")
     await db.query("update sandboxes set status=$2,stopped_at=null,status_reason=null where id=$1", [id, staleState]);
   if (outcome === "confirmed exit") await db.query("update sandboxes set stopped_at=$2 where id=$1", [id, stoppedAt]);
-  if (outcome === "journal failure")
+  const commitFails = outcome === "commit failure";
+  const rollback = commitFails || outcome === "journal failure";
+  const rejected = commitFails ? "Observation commit rejected" : "Observation journal rejected";
+  if (rollback)
     await db.exec(`create function reject_availability_journal() returns trigger language plpgsql as $$
-      begin raise exception 'Availability journal rejected'; end $$;
-      create trigger reject_availability_journal before insert on sandbox_transitions
+      begin raise exception '${rejected}'; end $$;
+      ${
+        commitFails
+          ? "create constraint trigger reject_availability_journal after insert on sandbox_transitions deferrable initially deferred"
+          : "create trigger reject_availability_journal before insert on sandbox_transitions"
+      }
       for each row execute function reject_availability_journal();`);
 
   const applied = outcome === "applied";
   const status = applied ? to : outcome === "stale source" ? staleState : from;
   try {
     const observation = readStatus(boat.provider, store, sandbox, { now: new Date("2026-01-01") });
-    if (outcome === "journal failure") await expect(observation).rejects.toThrow("Availability journal rejected");
+    if (rollback) await expect(observation).rejects.toThrow(rejected);
     else expect(await observation).toMatchObject({ status });
     expect(await store.get(id)).toMatchObject({
       status,
@@ -444,7 +452,7 @@ test.each([
         : [],
     );
   } finally {
-    if (outcome === "journal failure")
+    if (rollback)
       await db.exec(
         "drop trigger reject_availability_journal on sandbox_transitions; drop function reject_availability_journal()",
       );
