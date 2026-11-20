@@ -179,6 +179,7 @@ export function createRuntimeAgent(
     async health(
       signal?: AbortSignal,
       expectedRestore?: RuntimeRestore,
+      admission?: { expectedEpoch: string; assertClaim: (tx: Sql) => Promise<void> },
     ): Promise<{ runtime: "armada"; epoch: string }> {
       const command = { ...identity(), op: "health" as const };
       // Retain epoch alongside the result for provenance validation.
@@ -186,6 +187,7 @@ export function createRuntimeAgent(
       try {
         reply = await commands.call(ownerId, command, {
           ...(signal ? { signal } : {}),
+          ...admission,
           accept: (candidate) => runtimeHealthMatches(candidate.body.result, candidate.epoch, expectedRestore),
         });
       } catch {
@@ -360,6 +362,7 @@ export function createRuntimeAgent(
       requestId: string = randomUUID(),
       expectedEpoch?: string,
       check?: (receipt: PromptReceipt) => void,
+      assertClaim?: (tx: Sql) => Promise<void>,
     ): Promise<PromptReceipt> {
       target(request.sandboxId);
       if (request.harness !== binding.harness || !request.text.trim()) throw refusal("invalid_request");
@@ -382,6 +385,7 @@ export function createRuntimeAgent(
         expectedEpoch,
         undefined,
         check,
+        assertClaim,
       );
     },
     async steer(request: SteerRequest, requestId: string = randomUUID()): Promise<SteerReceipt> {
