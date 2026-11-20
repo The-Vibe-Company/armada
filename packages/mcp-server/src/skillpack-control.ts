@@ -1,4 +1,4 @@
-import { controlRouteKey, skillpackOperations } from "@armada/core/contract";
+import { controlRouteKey, skillpackOperations, skillpackVersionInputs } from "@armada/core/contract";
 import {
   createSkillCatalog,
   listCredentials,
@@ -26,18 +26,19 @@ function parse<T extends z.ZodType>(schema: T, value: unknown) {
 }
 
 function catalogRoute(operation: typeof list | typeof versions) {
-  const { body: schema, maxBodyBytes } = operation.input;
+  const { shape: listFields } = list.input.body;
+  const fields = operation === list ? listFields : skillpackVersionInputs.public.shape;
   return {
     methods: [operation.route.method],
-    readBody: (request: Request) => readVaultControlBody(request, maxBodyBytes),
+    readBody: (request: Request) => readVaultControlBody(request, operation.input.maxBodyBytes),
     handler: async ({ caller, body, options }: ControlRouteContext) => {
       const { store, encryptionKey } = options;
       const { userId } = caller;
-      const org = scopedOrg(caller, parse(schema.shape.org, body.org) ?? undefined);
-      if (Object.keys(body).some((key) => !Object.hasOwn(schema.shape, key)))
+      const org = scopedOrg(caller, parse(fields.org, body.org) ?? undefined);
+      if (Object.keys(body).some((key) => !Object.hasOwn(fields, key)))
         throw new VaultError("invalid", "Invalid skill catalog request.");
-      const source = parse(schema.shape.source, body.source);
-      const offset = "offset" in schema.shape ? parse(schema.shape.offset, body.offset) : undefined;
+      const source = parse(listFields.source, body.source);
+      const offset = "offset" in fields ? parse(fields.offset, body.offset) : undefined;
       const member = await resolveOrg(store, userId, org);
       const credential =
         source === "private"
@@ -45,9 +46,9 @@ function catalogRoute(operation: typeof list | typeof versions) {
           : null;
       const catalog = options.skillCatalog ?? createSkillCatalog();
       const result =
-        "reference" in schema.shape
+        "reference" in fields
           ? await catalog.versions(
-              { source, reference: parse(schema.shape.reference, body.reference) },
+              { source, reference: parse(skillpackVersionInputs[source].shape.reference, body.reference) },
               credential?.key,
             )
           : await catalog.list({ source, ...(offset === undefined ? {} : { offset }) }, credential?.key);

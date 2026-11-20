@@ -9,9 +9,26 @@ const offset = z
   .min(0, { error: "Invalid catalog offset." })
   .max(10_000, { error: "Invalid catalog offset." })
   .optional();
-const reference = z
-  .string({ error: (issue) => (issue.input == null ? "reference is required." : "reference must be text.") })
-  .describe("Public references use org/slug. Private references use a bare slug.");
+const referenceText = z.string({
+  error: (issue) => (issue.input == null ? "reference is required." : "reference must be text."),
+});
+const catalogReferenceError = "Invalid Skillpack catalog request.";
+const slug = "[a-z0-9][a-z0-9-]{0,127}";
+const installableSlug = `(?!armada-tools$)${slug}`;
+export const skillpackVersionInputs = {
+  public: z.strictObject({
+    org,
+    source: z.literal("public"),
+    reference: referenceText
+      .max(250, { error: catalogReferenceError })
+      .regex(new RegExp(`^${slug}/${installableSlug}$`), { error: catalogReferenceError }),
+  }),
+  private: z.strictObject({
+    org,
+    source: z.literal("private"),
+    reference: referenceText.regex(new RegExp(`^${installableSlug}$`), { error: catalogReferenceError }),
+  }),
+};
 const versions = z.array(z.string());
 const credential = z.strictObject({
   kind: z.literal("skillpack"),
@@ -35,6 +52,7 @@ const credential = z.strictObject({
 
 const readMetadata = {
   audience: "admin",
+  scopedAuth: ["serviceToken", "personalSession"],
   readOnly: true,
   destructive: false,
   successHeaders: { "Cache-Control": z.literal("no-store") },
@@ -78,7 +96,10 @@ export const skillpackOperations = {
     route: { method: "POST", path: "/api/v1/skillpack/versions" },
     description:
       "List exact versions for a skill. The public catalog returns the currently published version. Query parameters are refused.",
-    input: { ...vaultBody, body: z.strictObject({ org, source, reference }) },
+    input: {
+      ...vaultBody,
+      body: z.discriminatedUnion("source", [skillpackVersionInputs.public, skillpackVersionInputs.private]),
+    },
     output: z.strictObject({ versions }),
     errors: discoveryErrors,
   },

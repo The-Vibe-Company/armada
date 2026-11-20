@@ -299,7 +299,7 @@ export function generateOpenApi({
           : {}),
         ...(request &&
           !viewerControl &&
-          !operation.scopedAuth &&
+          !operation.scopedAuth?.includes("epochGrant") &&
           !(operation.directServer && oversizedStatus === 400) && {
             "413": {
               description: `The serialized request body exceeds ${CONTROL_BODY_MAX_BYTES} bytes. Nothing was dispatched.`,

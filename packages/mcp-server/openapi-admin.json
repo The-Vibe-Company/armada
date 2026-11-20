@@ -923,6 +923,9 @@
         "security": [
           {
             "serviceToken": []
+          },
+          {
+            "personalSession": []
           }
         ],
         "requestBody": {
@@ -1107,6 +1110,9 @@
         "security": [
           {
             "serviceToken": []
+          },
+          {
+            "personalSession": []
           }
         ],
         "requestBody": {
@@ -1118,31 +1124,57 @@
             "application/json": {
               "schema": {
                 "$schema": "http://json-schema.org/draft-07/schema#",
-                "type": "object",
-                "properties": {
-                  "org": {
-                    "type": [
-                      "string",
-                      "null"
-                    ]
+                "oneOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "org": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "source": {
+                        "type": "string",
+                        "const": "public"
+                      },
+                      "reference": {
+                        "type": "string",
+                        "maxLength": 250,
+                        "pattern": "^[a-z0-9][a-z0-9-]{0,127}\\/(?!armada-tools$)[a-z0-9][a-z0-9-]{0,127}$"
+                      }
+                    },
+                    "required": [
+                      "source",
+                      "reference"
+                    ],
+                    "additionalProperties": false
                   },
-                  "source": {
-                    "type": "string",
-                    "enum": [
-                      "public",
-                      "private"
-                    ]
-                  },
-                  "reference": {
-                    "type": "string",
-                    "description": "Public references use org/slug. Private references use a bare slug."
+                  {
+                    "type": "object",
+                    "properties": {
+                      "org": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "source": {
+                        "type": "string",
+                        "const": "private"
+                      },
+                      "reference": {
+                        "type": "string",
+                        "pattern": "^(?!armada-tools$)[a-z0-9][a-z0-9-]{0,127}$"
+                      }
+                    },
+                    "required": [
+                      "source",
+                      "reference"
+                    ],
+                    "additionalProperties": false
                   }
-                },
-                "required": [
-                  "source",
-                  "reference"
-                ],
-                "additionalProperties": false
+                ]
               }
             }
           }
@@ -1246,6 +1278,9 @@
         "security": [
           {
             "serviceToken": []
+          },
+          {
+            "personalSession": []
           }
         ],
         "requestBody": {

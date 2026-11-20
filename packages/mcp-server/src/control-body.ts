@@ -31,7 +31,7 @@ async function readJsonBody(request: Request, vault: boolean, maxBytes: number) 
         const chunk = await reader.read();
         if (chunk.done) break;
         bytes += chunk.value.byteLength;
-        if (bytes > (vault ? VAULT_CONTROL_BODY_MAX_BYTES : MAX_BODY_BYTES)) {
+        if (bytes > maxBytes) {
           // Do not drain an untrusted stream, or wait for its producer to finish cancellation.
           void reader.cancel().catch(() => {});
           throw invalid("The request is too large.");

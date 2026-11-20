@@ -58,7 +58,7 @@ export {
 } from "./scoped.ts";
 
 export { skillDefaultOperations } from "./skill-defaults.ts";
-export { skillpackOperations } from "./skillpack.ts";
+export { skillpackOperations, skillpackVersionInputs } from "./skillpack.ts";
 export { tokenOperations } from "./tokens.ts";
 
 export interface Operation<Input extends z.ZodType, Output extends z.ZodType | undefined = undefined> {

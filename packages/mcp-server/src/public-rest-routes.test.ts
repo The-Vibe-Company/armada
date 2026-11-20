@@ -133,16 +133,18 @@ test("published OpenAPI and migrated admin operations follow their proxy routing
     const blocked: string[] = [];
     for (const { path: template, verb, direct } of operations) {
       const path = fillParameters(template);
+      const query =
+        path === "/api/v1/skillpack/catalog" || path === "/api/v1/skillpack/versions" ? "?source=public" : "";
       const forwarded: string[] = [];
       const response = await forwardControl(
-        new Request(`https://dashboard.test${path}`, {
+        new Request(`https://dashboard.test${path}${query}`, {
           method: verb,
           headers: { authorization: "Bearer masked", "content-type": "application/json" },
           ...(verb === "POST" ? { body: "{}" } : {}),
         }),
         path.replace(/^\/api\/v1\//, "").split("/"),
         async (target) => {
-          forwarded.push(new URL(target).pathname);
+          forwarded.push(target.pathname + target.search);
           return Response.json({});
         },
       );
@@ -150,7 +152,7 @@ test("published OpenAPI and migrated admin operations follow their proxy routing
       if (
         response.status !== expectedStatus ||
         forwarded.length !== (direct ? 0 : 1) ||
-        (!direct && forwarded[0] !== path)
+        (!direct && forwarded[0] !== path + query)
       )
         blocked.push(`${verb} ${path}`);
     }
