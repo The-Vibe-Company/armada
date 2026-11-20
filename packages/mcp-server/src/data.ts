@@ -870,13 +870,16 @@ export function createSqlData(
           patch.expectedGeneration !== undefined &&
           patch.activityToken
         ) {
-          if (!sql.transaction) throw new Error("Launch publication requires a transaction.");
+          if (!sql.transaction) throw new Error("Runtime readiness publication requires a transaction.");
           const { expectedGeneration, activityToken } = patch;
           const outcome = await sql.transaction((tx) =>
             finishLaunchSuccess(tx, scope, id, expectedGeneration, activityToken, initialPrompt),
           );
           if (outcome === "applied") return;
-          if (outcome === "conflict") throw new DataError("Launch publication is stale.", "sandbox_not_ready");
+          if (outcome === "native_conflict")
+            throw new DataError("Native launch prompt publication is stale.", "sandbox_not_ready");
+          if (outcome === "conflict")
+            throw new DataError("Runtime readiness publication is stale.", "sandbox_not_ready");
         }
         const nativeResume = patch.nativeResumeAdmission;
         if (

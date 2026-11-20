@@ -295,10 +295,9 @@ export async function finishLaunchSuccess(
     [...scope, sandboxId],
   );
   if (sandbox?.native_path && prompt) {
-    if (!sandbox.owned) return "conflict";
-    return (await finishPromptedNativeLaunch(tx, sandboxId, generation, activityToken, prompt))
-      ? "applied"
-      : "conflict";
+    const applied =
+      sandbox.owned && (await finishPromptedNativeLaunch(tx, sandboxId, generation, activityToken, prompt));
+    return applied ? "applied" : "native_conflict";
   }
   if (sandbox && !sandbox.enrolled_path) return "other_path";
   if (!sandbox?.owned) return "conflict";
