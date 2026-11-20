@@ -340,6 +340,77 @@ test.each([
 );
 
 test.each([
+  { to: "ready", outcome: "applied" },
+  { to: "running", outcome: "applied" },
+  { to: "running", outcome: "stale source" },
+  { to: "ready", outcome: "journal failure" },
+] as const)("native stopped observation to $to ($outcome)", async ({ to, outcome }) => {
+  const { db, people, sharedGoldenId } = await failureDatabase();
+  const boat = fakeBoat();
+  const machine = await boat.provider.fork({ from: "snapshot" });
+  const turn = await boat.provider.prompt({ sandboxId: machine.id, harness: "codex", text: "work" });
+  if (to === "ready") boat.finish(machine.id, turn.promptId, "finished");
+  const stoppedAt = "2026-01-01T00:00:00.000Z";
+  const id = crypto.randomUUID();
+  await db.query(
+    `insert into sandboxes(id,provider,provider_sandbox_id,golden_id,org_id,owner_id,harness,status,task_prompt_id,stopped_at)
+     values ($1,'boat',$2,$3,$4,$5,'codex','stopped',$6,$7)`,
+    [id, machine.id, sharedGoldenId, people.org, people.owner, turn.promptId, stoppedAt],
+  );
+  const store = createSqlData(db)({
+    userId: people.owner,
+    orgs: [{ orgId: people.org, role: "member" }],
+    via: "service",
+  }).sandboxes;
+  const sandbox = (await store.get(id))!;
+  if (outcome === "stale source")
+    await db.query(
+      "update sandboxes set status='failed',stopped_at=null,status_reason='Concurrent failure' where id=$1",
+      [id],
+    );
+  if (outcome === "journal failure")
+    await db.exec(`create function reject_availability_journal() returns trigger language plpgsql as $$
+      begin raise exception 'Availability journal rejected'; end $$;
+      create trigger reject_availability_journal before insert on sandbox_transitions
+      for each row execute function reject_availability_journal();`);
+
+  const applied = outcome === "applied";
+  const status = applied ? to : outcome === "stale source" ? "failed" : "stopped";
+  try {
+    const observation = readStatus(boat.provider, store, sandbox, { now: new Date("2026-01-01") });
+    if (outcome === "journal failure") await expect(observation).rejects.toThrow("Availability journal rejected");
+    else expect(await observation).toMatchObject({ status });
+    expect(await store.get(id)).toMatchObject({
+      status,
+      stoppedAt: status === "stopped" ? stoppedAt : null,
+      lifecycleGeneration: sandbox.lifecycleGeneration,
+    });
+    const { rows } = await db.query(
+      "select from_status,to_status,actor,code,generation::int from sandbox_transitions where sandbox_id=$1",
+      [id],
+    );
+    expect(rows).toEqual(
+      applied
+        ? [
+            {
+              from_status: "stopped",
+              to_status: to,
+              actor: "native_turn",
+              code: "native_provider_available",
+              generation: sandbox.lifecycleGeneration,
+            },
+          ]
+        : [],
+    );
+  } finally {
+    if (outcome === "journal failure")
+      await db.exec(
+        "drop trigger reject_availability_journal on sandbox_transitions; drop function reject_availability_journal()",
+      );
+  }
+});
+
+test.each([
   { from: "ready", to: "running", stale: false },
   { from: "running", to: "ready", stale: false },
   { from: "ready", to: "running", stale: true },
