@@ -89,6 +89,7 @@ export interface ControlOptions {
   mcp?: NonNullable<McpControlOptions["mcp"]>;
   connections?: LaunchStores["connections"];
   authStore: AuthStore;
+  deviceLogin?: NonNullable<ReturnType<typeof import("./device-login-control.ts").deviceLoginFromConfig>>;
   supabase: SupabaseProject;
   now?: () => Date;
   data?: DataSource;

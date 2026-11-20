@@ -3,6 +3,7 @@ import { applicationVaultRoutes } from "./application-vault-control.ts";
 import { logRoutes } from "./control-logs.ts";
 import { sandboxToolRoutes } from "./control-tool-routes.ts";
 import { credentialRoutes } from "./credential-control.ts";
+import { deviceLoginRoutes } from "./device-login-control.ts";
 import { eventStreamRoutes } from "./event-stream.ts";
 import { githubAccountRoutes } from "./github-account.ts";
 import { githubSandboxRoutes } from "./github-rest-controls.ts";
@@ -44,6 +45,7 @@ const controlModules = [
   credentialRoutes,
   skillpackRoutes,
   publicAuthRoutes,
+  deviceLoginRoutes,
   githubAccountRoutes,
   tokenRoutes,
   accountRoutes,

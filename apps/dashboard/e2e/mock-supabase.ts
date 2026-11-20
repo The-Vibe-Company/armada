@@ -3137,6 +3137,14 @@ const server = Bun.serve({
     }
     if (url.pathname.startsWith("/api/v1/")) {
       const route = url.pathname.slice("/api/v1/".length);
+      if (route === "auth/device/inspect" || route === "auth/device/decide") {
+        if (!viewer(request)) return controlFail(401, "unauthorized", "Sign in again.");
+        if (body.id !== "91550000-0000-4000-8000-000000000001")
+          return controlFail(404, "not_found", "CLI login request unavailable.");
+        if (route === "auth/device/inspect") return json({ user_code: "12AB34CD", hostname: "ssh-workstation" });
+        if (body.user_code === "12AB34CD" && body.approve === true) return json({ ok: true });
+        return controlFail(400, "invalid", "Invalid CLI login decision.");
+      }
       if (route === "docker/hosts/list" && body.org === LARGE) {
         const caller = viewer(request);
         if (!caller || !isMember(body.org, caller))

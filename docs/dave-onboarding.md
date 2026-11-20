@@ -65,12 +65,13 @@ The CLI talks only to the Armada API. It needs no Supabase, provider or database
 ## 3. Sign in
 
 ```sh
-armada login                                # opens the browser; GitHub by default
-armada login --provider google              # or Google
-armada login --email you@example.com        # no browser: type the code from the email
+armada login
 ```
 
-Browser login runs through Armada (PKCE, with a one-time callback on `127.0.0.1`). The CLI never talks to GitHub, Google or Supabase itself. With `--email`, Armada sends a sign-in email and the CLI asks for the code it contains. Without `--email`, the CLI never asks for an email address.
+Open the dashboard link printed by the CLI, sign in with an enabled dashboard
+method, and check that the approval screen shows the same short code and your
+terminal host. Click **Authorize** and return to the terminal. If the browser
+doesn't open automatically, use the printed link on any machine.
 
 The session (the Armada URL, an access token and a refresh token) is saved in `~/.config/armada/session.json` (`$XDG_CONFIG_HOME/armada` when set), readable only by you. Later commands reuse it and refresh it automatically. `armada logout` deletes it. For scripts and CI, set `ARMADA_TOKEN` to a service token (step 7) instead: it takes precedence over the saved session.
 
@@ -473,16 +474,15 @@ checks out or installs anything.
 ### Focused sign-in help
 
 Use `armada login --help` or `armada login -h` before configuring a session.
-Email and browser-provider flags are alternatives. Server selection follows
-explicit URL, then ARMADA_URL, then Armada's default API origin.
+Server selection follows explicit URL, then ARMADA_URL, then Armada's default API origin.
 Use a named profile and login URL to keep staging login/preferences separate:
 
 ```sh
-armada --profile staging login --url https://staging.example.com --provider github
+armada --profile staging login --url https://staging.example.com
 ```
 
 Replace the example origin with your actual staging server. Keep the terminal
-open until sign-in finishes; use an interactive terminal for email code entry.
+open until sign-in finishes in the browser.
 A saved personal login does not unset ARMADA_TOKEN: remove that variable from
 a command's environment when you intend to use the saved personal session.
 Never place tokens in command arguments. Help itself starts no sign-in flow.
@@ -611,8 +611,12 @@ For an uncertain launch outcome, inspect existing sandbox/receipt state before
 retrying; template launches must preserve their original request key and body.
 
 JSON selection commands return `{"org":<organization>}` when selecting and
-`{"org":null}` when clearing with `org use none --json`. Login and logout
-accept `--json` and return `{"authenticated":true|false}`. Host mutations
+`{"org":null}` when clearing with `org use none --json`. With no TTY,
+`armada login --json` writes a first JSON line containing `verificationUrl`,
+`userCode`, and `expiresAt` (UTC). Share the link and code with the person
+authorizing the request and keep the process running. It writes
+`{"authenticated":true}` after saving the session. `armada logout --json`
+returns `{"authenticated":false}`. Host mutations
 accept `--json`: limits and retention return the host ID and requested policy,
 revoke returns the host ID and `revoked:true`, and add returns the registration
 receipt without waiting for check-in. Protect that short-lived installer receipt.
