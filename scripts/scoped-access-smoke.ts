@@ -169,7 +169,7 @@ export function createScopedProbe(item: ScopedProbeCase, enabled: boolean, io: S
     }
     return fail("scoped_incomplete_snapshot");
   }
-  async function logs(id: string, until?: number) {
+  async function logs(id: string, phase: "initial_evidence" | "launch_evidence" | "cleanup", until?: number) {
     // Re-read from the start: providers can complete a tool in an existing event.
     let cursor: string | undefined;
     const cursors = new Set<string>();
@@ -188,12 +188,13 @@ export function createScopedProbe(item: ScopedProbeCase, enabled: boolean, io: S
         result = await io.request("logs/read", { org: item.org, ...options }, remaining);
       } catch (error) {
         // Never serialize errors, cursor values, provider responses or tool text.
-        const status = row(error).status;
+        const { status, transportTimeoutMs } = row(error);
         io.out(
           JSON.stringify({
             step: "scoped_logs_diagnostic",
             provider: item.provider,
             route: "logs/read",
+            phase,
             page,
             cursorPresent: cursor !== undefined,
             coalesce: options.coalesce,
@@ -201,6 +202,12 @@ export function createScopedProbe(item: ScopedProbeCase, enabled: boolean, io: S
             limit: options.limit,
             status:
               typeof status === "number" && Number.isInteger(status) && status >= 100 && status <= 599 ? status : null,
+            transportTimeoutMs:
+              typeof transportTimeoutMs === "number" &&
+              Number.isSafeInteger(transportTimeoutMs) &&
+              transportTimeoutMs > 0
+                ? transportTimeoutMs
+                : null,
           }),
         );
         throw error;
@@ -395,7 +402,7 @@ export function createScopedProbe(item: ScopedProbeCase, enabled: boolean, io: S
         }
       });
       await io.step("scoped_tool_evidence", async () => {
-        await logs(id);
+        await logs(id, "initial_evidence");
         evidenceUnknown = false;
         adopt();
         let tools = calls(true);
@@ -409,7 +416,7 @@ export function createScopedProbe(item: ScopedProbeCase, enabled: boolean, io: S
         if (enabled && !hasLaunchResult(tools)) {
           const until = Math.min(io.deadline, io.now() + 10_000);
           const updated = await observeSmokeLaunch(until, io, async () => {
-            await logs(id, until);
+            await logs(id, "launch_evidence", until);
             adopt();
             const seen = calls(true);
             return hasLaunchResult(seen) ? seen : undefined;
@@ -592,7 +599,7 @@ export function createScopedProbe(item: ScopedProbeCase, enabled: boolean, io: S
         let unattributed: string[] = [];
         if (parent) {
           try {
-            await logs(parent);
+            await logs(parent, "cleanup");
             evidenceUnknown = false;
           } catch {
             ok = false;
