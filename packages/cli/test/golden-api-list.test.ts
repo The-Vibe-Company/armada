@@ -106,3 +106,17 @@ test("snapshot show returns the durable build ID and state", async () => {
   expect(requests).toEqual([["/api/v1/golden/build/status", { jobId }]]);
   expect(JSON.parse(output)).toMatchObject({ jobId, state: "queued" });
 });
+
+test("snapshot show refuses organization names for admission-key recovery before sending a request", async () => {
+  const forbidden = () => {
+    throw new Error("Invalid recovery scope attempted I/O");
+  };
+  let errors = "";
+  const code = await run(
+    ["snapshot", "show", "--idempotency-key", "stable-admission-key", "--org", "Example"],
+    { out: forbidden, err: (text) => (errors += text) },
+    { env: { ARMADA_TOKEN: token }, fetch: Object.assign(forbidden, { preconnect: forbidden }) },
+  );
+  expect(code).toBe(2);
+  expect(errors).toContain("--org must be a UUID");
+});

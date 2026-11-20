@@ -7,7 +7,6 @@ These CLI additions use the same canonical Armada HTTP contracts as web. Server-
 Set `ORG_UUID` to the organization ID from `armada org list --json` before running the examples.
 
 ```sh
-armada org use "$ORG_UUID"
 armada api golden/capabilities
 armada api golden/capabilities '{"provider":"modal","org":"ORG_UUID"}'
 ```

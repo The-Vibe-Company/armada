@@ -18,7 +18,7 @@ Commands below start with `armada`. Select an organization with `org use NAME|UU
 | Snapshot list and identity | Separate Boat/Modal rows under private/shared sections | `snapshot ls [--provider boat\|modal] [--json]`; JSON includes safe `id` and `orgId` |
 | Snapshot capacity | Per-provider server-reported capacity | `armada api golden/capabilities`; null means unknown/unbounded, not zero |
 | Build / rebuild snapshots | Provider selection on create; rebuild keeps the stored provider, name and visibility | `snapshot new NAME --repo URL[@BRANCH]`; update with `--add-repo URL` or `--replace --config FILE` (see examples below) |
-| Durable build progress | Admission receipt, bounded status polling and recovery after reload | `snapshot show --build JOB_ID`, or `snapshot show --idempotency-key KEY --org ORG` |
+| Durable build progress | Admission receipt, bounded status polling and recovery after reload | `snapshot show --build JOB_ID`, or `snapshot show --idempotency-key KEY --org ORG_UUID` |
 | Snapshot builds | Build/rebuild workflow | Use `snapshot update` for Boat/Modal or `snapshot rebuild` for Docker |
 | Snapshot visibility | Owner/admin visibility controls | `armada api golden/visibility` |
 | Launch | Snapshot, agent, model, effort, TTL and MCP connections | `launch PRIVATE_SNAPSHOT --provider boat --agent claude\|codex\|opencode [PROMPT] --model ID --reasoning-effort LEVEL --ttl 4h --connections UUID,UUID`. Ordinary cloud launches inherit snapshot visibility. |

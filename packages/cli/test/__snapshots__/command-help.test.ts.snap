@@ -58,7 +58,7 @@ Usage:
   armada snapshot rm NAME|UUID [--provider boat|modal] [--org ORG] [--json]
   armada snapshot show NAME|UUID [--provider boat|modal|docker] [--org ORG] [--json]
   armada snapshot show --build JOB_ID [--json]
-  armada snapshot show --idempotency-key KEY --org ORG [--json]
+  armada snapshot show --idempotency-key KEY --org ORG_UUID [--json]
   armada launch <snapshot> --agent claude|codex|opencode ["prompt"] [--model <id>] [--reasoning-effort <level>]
                                            [--armada-access [--credential-id <id>] [--max-active-children <1..100>]]
                 --provider boat|modal [--repo <configured-dir|owner/repo>] [--ttl 4h] [--json]
@@ -492,7 +492,7 @@ Manage provider-scoped snapshots. Use a verb with --help for its options.
   armada snapshot rm NAME|UUID [--provider boat|modal] [--org ORG] [--json]
   armada snapshot show NAME|UUID [--provider boat|modal|docker] [--org ORG] [--json]
   armada snapshot show --build JOB_ID [--json]
-  armada snapshot show --idempotency-key KEY --org ORG [--json]
+  armada snapshot show --idempotency-key KEY --org ORG_UUID [--json]
 "
 `;
 

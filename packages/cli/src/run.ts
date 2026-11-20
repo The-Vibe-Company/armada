@@ -23,6 +23,7 @@ import {
   parseArgs,
   providerFlag,
   single,
+  uuid,
   values,
   withJsonFlag,
 } from "./args.ts";
@@ -307,7 +308,11 @@ export async function snapshotCommand([verb, ...rest]: readonly string[], io: Io
       (jobId !== undefined && (idempotencyKey !== undefined || org !== undefined)) ||
       (idempotencyKey !== undefined && !org)
     )
-      throw new GoldenError("invalid_config", "Use snapshot show --build JOB_ID or --idempotency-key KEY --org ORG.");
+      throw new GoldenError(
+        "invalid_config",
+        "Use snapshot show --build JOB_ID or --idempotency-key KEY --org ORG_UUID.",
+      );
+    if (idempotencyKey !== undefined) uuid(org, "--org");
     const client = await createArmadaApiClient({ ...auth, fetch: deps.fetch ?? auth.fetch });
     const job = await client.golden<GoldenBuildStatus>("build/status", { jobId, idempotencyKey, org });
     io.out(`${JSON.stringify(job)}\n`);
@@ -365,7 +370,7 @@ async function admitGoldenBuild(
 ): Promise<(NonNullable<GoldenBuildStatus["result"]> & { jobId: string }) | undefined> {
   const key = single(args, "--idempotency-key") ?? crypto.randomUUID();
   const seconds = buildWaitSeconds(args);
-  io.err(`Build admission key: ${key}. Recover with snapshot show --idempotency-key ${key} --org <org>.\n`);
+  io.err(`Build admission key: ${key}. Recover with snapshot show --idempotency-key ${key} --org ORG_UUID.\n`);
   const job = await client.golden<GoldenBuildStatus>(
     operation,
     { ...body, idempotencyKey: key },
@@ -478,7 +483,7 @@ async function update(positionals: string[], args: ReturnType<typeof parseArgs>,
           : error.status === 404
             ? "Run armada snapshot ls --org <org> --json and select the exact name, organization and --provider."
             : /idempotency/i.test(error.message)
-              ? "Recover the existing job with snapshot show --idempotency-key <key> --org <org>. Reuse a key only for the identical request."
+              ? "Recover the existing job with snapshot show --idempotency-key <key> --org ORG_UUID. Reuse a key only for the identical request."
               : /exists on boat and modal/i.test(error.message)
                 ? "Repeat the update with --provider boat or --provider modal; no build was admitted."
                 : error.status === 400

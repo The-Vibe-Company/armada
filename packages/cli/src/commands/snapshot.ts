@@ -10,7 +10,7 @@ const usage = {
   show: "armada snapshot show NAME|UUID [--provider boat|modal|docker] [--org ORG]",
 };
 const buildLookup = "armada snapshot show --build JOB_ID [--json]";
-const keyLookup = "armada snapshot show --idempotency-key KEY --org ORG [--json]";
+const keyLookup = "armada snapshot show --idempotency-key KEY --org ORG_UUID [--json]";
 const usageRows = [
   usage.ls,
   `${usage.new} [--provider boat|modal|docker] [--org ORG] [--private] [--json]

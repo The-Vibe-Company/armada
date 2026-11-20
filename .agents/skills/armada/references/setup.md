@@ -29,7 +29,7 @@ armada snapshot new NAME --repo https://github.com/example/project@main --provid
 
 Goldens must contain no secrets, including git history. Setup scripts are build
 inputs, not secret injection. On disconnect preserve the admission key and inspect
-`armada snapshot show --idempotency-key BUILD_KEY --org ORG`;
+`armada snapshot show --idempotency-key BUILD_KEY --org ORG_UUID`;
 do not resubmit with a new key. Use `armada snapshot show --build JOB_ID` once
 known. A failed secret scan needs source/history cleanup, never bypassing scans.
 `armada snapshot update NAME --replace --config CONFIG_FILE --provider boat` rebuilds an
