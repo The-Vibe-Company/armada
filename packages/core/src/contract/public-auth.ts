@@ -59,7 +59,10 @@ export const publicAuthOperations = {
     errors: ["invalid", "rate_limited", "unavailable"],
   },
   authDeviceInspect: {
-    ...anonymous,
+    audience: "public",
+    destructive: false,
+    directServer: true,
+    successHeaders: anonymous.successHeaders,
     name: "authDeviceInspect",
     route: { method: "POST", path: "/api/v1/auth/device/inspect" },
     input: { body: z.object({ id: z.uuid() }) },
@@ -69,11 +72,20 @@ export const publicAuthOperations = {
     errors: ["invalid", "unauthorized", "not_found", "unavailable"],
   },
   authDeviceDecide: {
-    ...anonymous,
+    audience: "public",
+    destructive: false,
+    directServer: true,
+    successHeaders: anonymous.successHeaders,
     name: "authDeviceDecide",
     route: { method: "POST", path: "/api/v1/auth/device/decide" },
     input: {
-      body: z.object({ id: z.uuid(), user_code: z.string().regex(/^[A-F0-9]{8}$/), approve: z.boolean() }),
+      body: z.object({
+        id: z.uuid(),
+        user_code: z.string().regex(/^[A-F0-9]{8}$/),
+        approve: z.boolean(),
+        issued_at: z.number().int(),
+        proof: z.string().regex(/^[a-f0-9]{64}$/),
+      }),
     },
     output: z.object({ ok: z.literal(true) }),
     readOnly: false,
@@ -190,8 +202,23 @@ export const githubCallbackOperations = {
   },
 } as const satisfies Record<string, Operation<z.ZodType, z.ZodType | undefined>>;
 
+export function deviceConsentMessage(
+  {
+    id,
+    user_code,
+    approve,
+    issued_at,
+  }: Omit<z.infer<typeof publicAuthOperations.authDeviceDecide.input.body>, "proof">,
+  userId: string,
+  authorization: string,
+) {
+  return JSON.stringify(["armada-cli-consent", id, user_code, approve, issued_at, userId, authorization]);
+}
+
 const publicMethods: Record<string, string[]> = Object.create(null);
-for (const { route } of Object.values({ ...publicAuthOperations, ...githubCallbackOperations })) {
+for (const operation of Object.values({ ...publicAuthOperations, ...githubCallbackOperations })) {
+  if (!("anonymous" in operation)) continue;
+  const { route } = operation;
   const key = route.path.slice("/api/v1/".length);
   publicMethods[key] ??= [];
   publicMethods[key].push(route.method);

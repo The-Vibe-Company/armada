@@ -162,7 +162,7 @@ describe("auth commands", () => {
       return calls.length === 2 ? Response.json({ status: "slow_down", interval: 10 }) : loginAuthorized();
     };
 
-    const result = await capture(["login", "--url", ORIGIN], auth);
+    const result = await capture(["login", "--url", "armada.example"], auth);
     expect(result).toEqual({
       code: 0,
       out: "Signed in as user@example.test.\n",

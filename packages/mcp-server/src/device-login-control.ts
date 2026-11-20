@@ -1,6 +1,7 @@
+import { createHmac, timingSafeEqual } from "node:crypto";
 import { BodyTooLargeError, createDeviceLoginStore, createDeviceSession } from "@armada/auth";
 import type { Sql } from "@armada/core";
-import { controlRouteKey, publicAuthOperations } from "@armada/core/contract";
+import { controlRouteKey, deviceConsentMessage, publicAuthOperations } from "@armada/core/contract";
 import { VaultError } from "@armada/core/server";
 import { authenticateCaller } from "./caller.ts";
 import { readBody } from "./control-body.ts";
@@ -8,8 +9,14 @@ import type { ControlOptions } from "./control-options.ts";
 import { fail } from "./control-response.ts";
 import { defineRoutes } from "./routes.ts";
 
-export function deviceLoginFromConfig(db: Sql, dashboardUrl: string, adminKey: string | undefined) {
-  return adminKey ? { store: createDeviceLoginStore(db), dashboardUrl, adminKey } : undefined;
+export function deviceLoginFromConfig(
+  db: Sql,
+  dashboardUrl: string,
+  adminKey: string | undefined,
+  consentKey: string | undefined,
+) {
+  if (!adminKey || !consentKey || !/^[a-f0-9]{64}$/.test(consentKey)) return undefined;
+  return { store: createDeviceLoginStore(db), dashboardUrl, adminKey, consentKey };
 }
 
 const { authDeviceStart, authDeviceInspect, authDeviceDecide, authDevicePoll } = publicAuthOperations;
@@ -22,7 +29,7 @@ async function handle(
   const device = options.deviceLogin;
   if (!device) return fail(503, "unavailable", "CLI sign-in is unavailable.");
   try {
-    const body = await readBody(request, 4096);
+    const body = await readBody(request);
     const now = options.now?.() ?? new Date();
     const respond = (value: unknown) => Response.json(value, { headers: { "cache-control": "no-store" } });
 
@@ -54,12 +61,13 @@ async function handle(
       return respond({ status: "authorized", accessToken, refreshToken, expiresAt, email });
     }
 
-    const caller = await authenticateCaller(request.headers.get("authorization"), {
+    const authorization = request.headers.get("authorization");
+    const caller = await authenticateCaller(authorization, {
       store: options.authStore,
       supabase: options.supabase,
       now,
     });
-    if (!caller.ok || caller.caller.via !== "supabase")
+    if (!authorization || !caller.ok || caller.caller.via !== "supabase")
       return fail(401, "unauthorized", "Sign in on the dashboard to continue.");
 
     const missing = () => fail(404, "not_found", "This CLI login request is no longer available.");
@@ -72,7 +80,13 @@ async function handle(
 
     const parsed = authDeviceDecide.input.body.safeParse(body);
     if (!parsed.success) return fail(400, "invalid", "Invalid CLI login decision.");
-    const { id, user_code, approve } = parsed.data;
+    const { id, user_code, approve, issued_at, proof } = parsed.data;
+    const expected = createHmac("sha256", device.consentKey)
+      .update(deviceConsentMessage(parsed.data, caller.caller.userId, authorization))
+      .digest();
+    if (Math.abs(now.getTime() - issued_at) > 60_000 || !timingSafeEqual(expected, Buffer.from(proof, "hex")))
+      return fail(401, "unauthorized", "Confirm the CLI login on the dashboard.");
+
     const decided = await device.store.decide(id, user_code, caller.caller.userId, approve);
     return decided ? respond({ ok: true }) : missing();
   } catch (error) {

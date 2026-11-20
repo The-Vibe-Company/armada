@@ -1363,10 +1363,15 @@
       "post": {
         "operationId": "auth_device_inspect",
         "description": "Read a pending CLI login request using a signed-in dashboard session.",
-        "security": [],
+        "x-armada-direct-server": true,
+        "security": [
+          {
+            "serviceToken": []
+          }
+        ],
         "requestBody": {
           "required": true,
-          "description": "Send at most 131072 bytes of serialized JSON. The dashboard endpoint refuses a larger body with HTTP 413 without forwarding it, and the server refuses a body over its own limit, which is never lower, with HTTP 413 before any handler runs.",
+          "description": "Send at most 131072 bytes of serialized JSON.",
           "x-max-body-bytes": 131072,
           "x-oversized-body-status": 413,
           "content": {
@@ -1475,10 +1480,15 @@
       "post": {
         "operationId": "auth_device_decide",
         "description": "Authorize or deny a pending CLI login as the signed-in dashboard user.",
-        "security": [],
+        "x-armada-direct-server": true,
+        "security": [
+          {
+            "serviceToken": []
+          }
+        ],
         "requestBody": {
           "required": true,
-          "description": "Send at most 131072 bytes of serialized JSON. The dashboard endpoint refuses a larger body with HTTP 413 without forwarding it, and the server refuses a body over its own limit, which is never lower, with HTTP 413 before any handler runs.",
+          "description": "Send at most 131072 bytes of serialized JSON.",
           "x-max-body-bytes": 131072,
           "x-oversized-body-status": 413,
           "content": {
@@ -1498,12 +1508,23 @@
                   },
                   "approve": {
                     "type": "boolean"
+                  },
+                  "issued_at": {
+                    "type": "integer",
+                    "minimum": -9007199254740991,
+                    "maximum": 9007199254740991
+                  },
+                  "proof": {
+                    "type": "string",
+                    "pattern": "^[a-f0-9]{64}$"
                   }
                 },
                 "required": [
                   "id",
                   "user_code",
-                  "approve"
+                  "approve",
+                  "issued_at",
+                  "proof"
                 ]
               }
             }

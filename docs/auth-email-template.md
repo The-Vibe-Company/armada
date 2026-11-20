@@ -43,8 +43,7 @@ Operator-only hosted changes for project `dhfldqnfyimjjehkngmm`:
 2. **Redirect URLs**: add exact
    `https://armada.thevibecompany.co/login?flow=code` and
    `https://armada.thevibecompany.co/auth/callback`.
-   Preserve existing browser OAuth and CLI loopback allow-list entries; no new
-   loopback entry is needed for API email login.
+   Preserve existing browser OAuth redirect entries for clients that use them.
 3. Email provider: **Email OTP Length = 6**, **Email OTP Expiration = 3600**
    seconds; no change needed if already set. Existing clients accept 6–10 digits.
 4. Install the reviewed canonical subject/body in **Magic Link** AND
@@ -54,11 +53,10 @@ Operator-only hosted changes for project `dhfldqnfyimjjehkngmm`:
    Template, Site URL and allow-list must agree before requesting an email.
    No migration, production config push, SMTP or rate-limit change is needed.
 
-Postflight with separate fresh emails: current TestFlight and CLI emails must
-contain the numeric code and **no link**, and typed codes must sign in.
-A new-user email must also contain the code without a link. Dashboard emails must
-retain a working link and code; opening a link then entering that same code must
-show the safe used/expired/incorrect explanation in iOS/CLI. Request another email
-to recover. Never record live codes, message bodies, links or sessions.
+Postflight with separate fresh emails: current TestFlight email must contain
+the numeric code, and entering it must sign in. Verify that new-user emails
+also contain the code. Dashboard emails must retain a working link and code.
+Run `armada login` to exercise the dashboard consent page. Keep live codes,
+message bodies, links and sessions out of the evidence.
 Rollback restores the two privately saved templates and previous URL settings,
 not an entire auth configuration.

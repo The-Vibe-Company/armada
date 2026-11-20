@@ -463,7 +463,12 @@ export async function createServerServices(env: Record<string, string | undefine
       : undefined;
   const logProviders = { boat: providers.resolve.bind(providers), modal: modal.storedProviderFor };
   const ordinaryLaunchReceipts = createOrdinaryLaunchReceipts(sql);
-  const deviceLogin = deviceLoginFromConfig(sql, config.dashboardUrl, env.SUPABASE_SERVICE_ROLE_KEY);
+  const deviceLogin = deviceLoginFromConfig(
+    sql,
+    config.dashboardUrl,
+    env.SUPABASE_SERVICE_ROLE_KEY,
+    env.ARMADA_CLI_CONSENT_KEY,
+  );
   const control: ConfiguredControlOptions = {
     ...(deviceLogin ? { deviceLogin } : {}),
     ordinaryLaunchReceipts,

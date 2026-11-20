@@ -312,6 +312,11 @@ waive deployed proof; local checks do not prove provider settings or credentials
 
 ### Release configuration names
 
+Before releasing CLI device login, provision a separate `ARMADA_CLI_CONSENT_KEY`
+in each environment, with the same value on its Railway server and Vercel
+dashboard. Set `SUPABASE_SERVICE_ROLE_KEY` on the Railway server only, from the
+Supabase project the environment already uses for sign-in.
+
 Names only; resolve each from its matching environment or authorized inherited
 scope. Never paste values into logs, argv, issues, dispatch inputs or repo files.
 

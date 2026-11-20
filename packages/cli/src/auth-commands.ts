@@ -2,7 +2,7 @@ import { hostname } from "node:os";
 import { createInterface } from "node:readline";
 import { AuthError, type AuthFetch } from "@armada/auth";
 import { publicAuthOperations } from "@armada/core/contract";
-import { createArmadaApiClient, DEFAULT_ARMADA_API_URL } from "./armada-api.ts";
+import { armadaApiUrl, createArmadaApiClient } from "./armada-api.ts";
 import type { Preferences } from "./preferences.ts";
 import { profileStores } from "./profiles.ts";
 import type { SessionStore } from "./session.ts";
@@ -60,7 +60,7 @@ function promptLine(question: string): Promise<string> {
 }
 
 export async function loginCommand(io: AuthIo, how: { url?: string | undefined; json?: boolean } = {}): Promise<void> {
-  const origin = how.url ?? io.env.ARMADA_URL ?? DEFAULT_ARMADA_API_URL;
+  const origin = armadaApiUrl(how.url ?? io.env.ARMADA_URL);
   const { authDeviceStart, authDevicePoll } = publicAuthOperations;
   const post = async (path: string, body: unknown) => {
     try {

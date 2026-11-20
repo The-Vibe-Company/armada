@@ -127,6 +127,7 @@ export function controlOptionsFromEnv(env: Record<string, string | undefined>): 
     sql,
     dashboardOrigin(env.ARMADA_DASHBOARD_URL, env.NODE_ENV === "development"),
     env.SUPABASE_SERVICE_ROLE_KEY,
+    env.ARMADA_CLI_CONSENT_KEY,
   );
   return {
     ...(deviceLogin ? { deviceLogin } : {}),
