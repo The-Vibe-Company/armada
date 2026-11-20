@@ -37,7 +37,7 @@ staging_armada() {
     "$break_glass_dir/node_modules/.bin/armada" --profile staging "$@"
 }
 staging_armada --version
-staging_armada login --url https://armada-mcp-staging.up.railway.app --provider github
+staging_armada login --url https://armada-mcp-staging.up.railway.app
 staging_armada org list
 staging_armada snapshot list --org "$staging_org" --provider modal
 ```

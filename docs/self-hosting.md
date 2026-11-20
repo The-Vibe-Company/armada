@@ -109,6 +109,8 @@ Required environment (the server refuses to start without it):
 | --- | --- |
 | `ARMADA_DATABASE_URL` | Privileged Postgres connection (the Supabase `postgres` role). The server's own queries carry the visibility rules. |
 | `SUPABASE_URL`, `SUPABASE_ANON_KEY` | The Supabase project used for sign-in. |
+| `SUPABASE_SERVICE_ROLE_KEY` | Server-only Supabase service-role JWT from the same project. Required for CLI device login. The dashboard uses its existing `ARMADA_MCP_URL` and user session, with no access to this key. |
+| `ARMADA_CLI_CONSENT_KEY` | 32 random bytes encoded as 64 lowercase hex characters, shared with the dashboard server. Required to sign and verify CLI login consent. |
 | `ARMADA_AUTH_SECRET` | At least 16 characters; seals the OAuth server's sign-in cookie. |
 | `ARMADA_PUBLIC_URL` | The origin clients reach. |
 | `ARMADA_ENCRYPTION_KEY` | 32 random bytes in base64 (`openssl rand -base64 32`). Seals every stored credential with AES-256-GCM. |
@@ -121,7 +123,7 @@ Optional:
 | `GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY` | A scoped installation token for snapshot checkouts. See [golden-create.md](golden-create.md#server-environment). |
 | `ARMADA_GITHUB_RUNTIME_ENABLED` | Managed GitHub broker/wrappers; default off. Only exact `true` enables it. See [github-runtime.md](github-runtime.md) for existing-worker limitations. |
 | `ARMADA_DASHBOARD_URL` | The dashboard origin, when it is not the production one. See [github-cli-relay.md](github-cli-relay.md). |
-| `ARMADA_AUTH_PROVIDERS` | Social login offered to CLI and MCP clients (`github,google`), only for providers enabled in Supabase. Empty: email only. |
+| `ARMADA_AUTH_PROVIDERS` | Social login offered to MCP clients (`github,google`), only for providers enabled in Supabase. Empty: email only. |
 | `ARMADA_BOAT_DEPLOYMENT_ID` | Nonsecret Boat inventory identifier containing the environment and Armada server identity, for example `staging-armada-eu`. Use the same value across replicas and redeploys of one installation, and distinct values for installations sharing a Boat account. New managed Boat launches carry its digest in the `armada.deployment` label. An unset value leaves launches untagged. |
 
 Organization admins connect Boat or Modal credentials through **Setup → Machines**
@@ -218,12 +220,13 @@ provider credentials still belong in Armada's encrypted store, not the CLI.
 | --- | --- | --- |
 | `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY` | build and runtime | The Supabase project. Required. |
 | `NEXT_PUBLIC_AUTH_PROVIDERS` | build and runtime | Social buttons to show, `github,google`. Empty: email sign-in only. |
+| `ARMADA_CLI_CONSENT_KEY` | runtime | Server-only secret matching Armada server. Required for CLI login consent. |
 | `ARMADA_MCP_URL` | runtime | The `armada-server` origin. Required in practice: without it the dashboard only lists what Supabase shows; it cannot launch, build snapshots, set up providers, read live logs, stop or message sandboxes, and `/.well-known/armada.json` answers 503. |
 | `ARMADA_ENCRYPTION_KEY` | build and runtime | The same key as the server. Without it the dashboard refuses to save a credential. |
 | `GITHUB_APP_CLIENT_ID`, `GITHUB_APP_CLIENT_SECRET`, `GITHUB_APP_SLUG`, `GITHUB_APP_ID` | runtime | **Connect GitHub** in **Your connections** ([github-app.md](github-app.md)). |
 | `STATS_TOKEN`, `ARMADA_DATABASE_URL` | runtime | Optional, server only: the bearer and privileged Postgres connection of `GET /api/stats`. Never exposed to the browser. |
 
-Add `<origin>/auth/callback` (production and previews) to the Supabase project's redirect URLs, and allow `http://127.0.0.1:**` for CLI login callbacks. On Vercel, set the project root to `apps/dashboard` (its `vercel.json` sets the framework and the Bun install and build).
+Add `<origin>/auth/callback` (production and previews) to the Supabase project's redirect URLs. On Vercel, set the project root to `apps/dashboard` (its `vercel.json` sets the framework and the Bun install and build).
 
 ```sh
 cp apps/dashboard/.env.example apps/dashboard/.env.local   # then fill it in

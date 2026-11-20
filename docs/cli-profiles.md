@@ -4,7 +4,7 @@ Keep a production login and a staging login without replacing either:
 
 ```sh
 # Existing unprofiled production login stays where it is.
-armada --profile staging login --url https://armada-mcp-staging.up.railway.app --email you@example.com
+armada --profile staging login --url https://armada-mcp-staging.up.railway.app
 armada --profile staging list
 armada list
 
