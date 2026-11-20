@@ -35,6 +35,9 @@ async function capture(args: string[], fetcher: (request: Request) => Promise<Re
       },
     },
     {
+      get localHost(): never {
+        throw new Error("Server host commands must avoid local daemon I/O");
+      },
       auth: {
         out: () => {},
         err: () => {},
@@ -274,7 +277,15 @@ test.each(["list", "show", "retention", "revoke", "status", "uninstall"])(
       return Response.json({});
     });
     expect(result.code).toBe(2);
-    expect(result.err).toContain(`Unknown host command '${verb}'`);
+    expect(result.err).toContain("Unknown host command.");
     expect(requests).toBe(0);
   },
 );
+
+test("host does not repeat an unexpected command argument in diagnostics", async () => {
+  const value = "a".repeat(64);
+  const result = await capture(["host", value], async () => Response.json({}));
+  expect(result.code).toBe(2);
+  expect(result.err).toContain("Unknown host command.");
+  expect(result.out + result.err).not.toContain(value);
+});

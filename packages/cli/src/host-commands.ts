@@ -91,8 +91,7 @@ export async function hostCommand(argv: readonly string[], auth: AuthIo): Promis
     limits: ["--cpus", "--memory", "--max-sandboxes", "--auto"],
     rm: [],
   };
-  if (!Object.hasOwn(options, operation))
-    return invalid(`Unknown host command '${operation}'. Run armada host --help.`);
+  if (!Object.hasOwn(options, operation)) return invalid("Unknown host command. Run armada host --help.");
   const args = parseArgs(rest, ["--cpus", "--memory", "--max-sandboxes"], ["--auto"]);
   const allowed = ["--org", "--json", ...options[operation]!];
   const count = args.positionals.length;
