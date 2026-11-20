@@ -88,7 +88,6 @@ export function createDockerNormalSend(
         )
       ).rows[0];
       if (!["ready", "running"].includes(row.status)) {
-        if (claim) throw new VaultError("unavailable", "Queued Docker wake requires generation handoff.");
         if (previous || !["stopped", "starting"].includes(row.status) || !wake)
           throw failure("conflict", "Docker sandbox must be running before send. Use a new request_id for a new turn.");
         if (row.status === "starting") {

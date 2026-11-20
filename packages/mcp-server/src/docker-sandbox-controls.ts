@@ -654,7 +654,7 @@ export function createDockerSandboxControls(
       await clock.wait(Math.min(250, deadline - clock.now()));
     }
   }
-  async function resume(caller: Caller, row: Row, requestId?: string) {
+  async function resume(caller: Caller, row: Row, requestId?: string, claim?: RuntimeTurnClaim) {
     if (!options.resume) throw failure("unavailable", "Docker sandbox resume is unavailable.");
     if (row.owner_id !== caller.userId) throw denied();
     const reclaimed = dockerWorkspaceReclaimedMessage(row.status_reason);
@@ -670,11 +670,18 @@ export function createDockerSandboxControls(
       throw new DockerHostUpgradeRequired();
     }
     const actor = { userId: caller.userId, orgId: row.org_id };
-    let requested = await options.resume.resume(actor, row.id, requestId);
+    const assertClaim = claim
+      ? async (tx?: Sql) => {
+          if (!(await claim.canDispatch(tx)))
+            throw failure("conflict", "Queued Docker turn lease is no longer current.");
+        }
+      : undefined;
+    let requested = await options.resume.resume(actor, row.id, requestId, claim);
     const deadline = clock.now() + (options.timeoutMs ?? 45_000);
     const runtime = createDockerRuntimeLifecycle(sql, key, { enabled: true });
     for (;;) {
-      if (requested.state === "claiming") requested = await options.resume.resume(actor, row.id, requestId);
+      await assertClaim?.();
+      if (requested.state === "claiming") requested = await options.resume.resume(actor, row.id, requestId, claim);
       // Host ACK is not runtime readiness.
       const state = (
         await sql.query<{ outcome: string | null; status_reason: string | null; lifecycle_generation: string }>(
@@ -692,12 +699,14 @@ export function createDockerSandboxControls(
             : "Docker resume failed.",
         );
       if (state?.outcome === "completed") {
-        const ready = await runtime.ready(actor, row.id, requestId, state.lifecycle_generation);
+        const ready = await runtime.ready(actor, row.id, requestId, state.lifecycle_generation, assertClaim);
         if (ready.state === "ready") {
-          await createDockerLaunchEnvironment(sql, key, clock)(caller, row.id);
-          await options.github?.prepareTurn(caller, row.id);
-          if (row.docker_snapshot_id) await options.prepareSnapshotGitHub?.(caller, row.id);
-          await options.prepareMcp?.(caller, row.id);
+          if (!claim) {
+            await createDockerLaunchEnvironment(sql, key, clock)(caller, row.id);
+            await options.github?.prepareTurn(caller, row.id);
+            if (row.docker_snapshot_id) await options.prepareSnapshotGitHub?.(caller, row.id);
+            await options.prepareMcp?.(caller, row.id);
+          }
           return { id: row.id, status: "ready" as const };
         }
       }
@@ -822,7 +831,7 @@ export function createDockerSandboxControls(
       caller: Caller,
       name: string,
       args: Record<string, unknown>,
-      claim?: Pick<RuntimeTurnClaim, "canDispatch">,
+      claim?: RuntimeTurnClaim,
     ): Promise<{ handled: false } | { handled: true; result: object }> {
       if (
         ![
@@ -882,7 +891,7 @@ export function createDockerSandboxControls(
                 args,
                 row,
                 async () => {
-                  await resume(caller, row, args.request_id as string | undefined);
+                  await resume(caller, row, args.request_id as string | undefined, claim);
                   return visible(caller, row.id);
                 },
                 undefined,
