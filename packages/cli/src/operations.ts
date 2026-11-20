@@ -1,6 +1,7 @@
 import { AuthError } from "@armada/auth";
 import { GoldenError, HARNESSES } from "@armada/core";
 import type { ListInput, ListResult } from "@armada/core/contract";
+import { sandboxListInput } from "@armada/core/contract/sandbox";
 import { invalidAgentMessage } from "./agent-validation.ts";
 import { acceptedOptions, flag, parseArgs, single, uuid } from "./args.ts";
 import { ArmadaApiError, type ArmadaCommandClient, createArmadaApiClient } from "./armada-api.ts";
@@ -18,7 +19,8 @@ import { sandboxListText } from "./sandbox-list.ts";
 
 export async function operation(
   command:
-    | Exclude<keyof ArmadaCommandClient["sandboxes"], "launch" | "logs" | "send" | "steer">
+    | Exclude<keyof ArmadaCommandClient["sandboxes"], "launch" | "list" | "logs" | "send" | "steer">
+    | "ls"
     | "detail"
     | "rm"
     | "mcp",
@@ -33,10 +35,10 @@ export async function operation(
     argv,
     command === "report"
       ? ["--reason", "--pr-number", "--pr-url", "--head-sha"]
-      : command === "list"
-        ? ["--status", "--harness", "--golden", "--owner", "--page", "--limit"]
+      : command === "ls"
+        ? ["--status", "--ref", "--harness", "--golden", "--owner", "--page", "--limit"]
         : [],
-    command === "list"
+    command === "ls"
       ? ["--page-info"]
       : command === "rm"
         ? ["--yes"]
@@ -52,7 +54,7 @@ export async function operation(
     command === "report" && args.positionals.length === 1 && ["ready", "blocked"].includes(args.positionals[0] ?? "");
   const [id, ...rest] = implicitWithPayload || implicitReport ? [undefined, ...args.positionals] : args.positionals;
   const options: Record<string, readonly string[]> = {
-    list: ["--status", "--agent", "--harness", "--golden", "--owner", "--page", "--limit", "--page-info"],
+    ls: ["--status", "--ref", "--agent", "--harness", "--golden", "--owner", "--page", "--limit", "--page-info"],
     status: ["--live", "--prompt-id", "--setup"],
     detail: ["--prompt-id"],
     recovery: [],
@@ -123,7 +125,7 @@ export async function operation(
     if (!Number.isSafeInteger(seconds) || seconds < minimum || seconds > 600)
       throw new GoldenError("invalid_config", `--timeout must be ${minimum}–600 seconds.`);
   }
-  if (command === "list") Object.assign(body, sandboxListFilters(args));
+  if (command === "ls") Object.assign(body, sandboxListFilters(args));
   if (command === "extend") {
     if (org !== undefined) uuid(org, "--org");
     const ttl = single(args, "--ttl");
@@ -154,9 +156,8 @@ export async function operation(
   } else if (command === "exec") {
     if (!rest.length) throw new GoldenError("invalid_config", "Provide the command after the id.");
     body.command = rest.join(" ");
-  } else if ((command === "list" && id) || rest.length)
-    throw new GoldenError("invalid_config", "Unexpected arguments.");
-  if (command !== "list") {
+  } else if ((command === "ls" && id) || rest.length) throw new GoldenError("invalid_config", "Unexpected arguments.");
+  if (command !== "ls") {
     const resolved = await resolveId(id);
     if (command === "extend") uuid(resolved, "sandbox id");
     body.id = resolved;
@@ -174,7 +175,10 @@ export async function operation(
         ? undefined
         : AbortSignal.timeout((seconds + 15) * 1_000);
   const request = client().then((client) =>
-    client.sandboxes[command === "detail" ? "status" : command](body, signal ? { signal } : undefined),
+    client.sandboxes[command === "detail" ? "status" : command === "ls" ? "list" : command](
+      body,
+      signal ? { signal } : undefined,
+    ),
   );
   const result = await request.catch((error: unknown) => {
     if (
@@ -187,7 +191,7 @@ export async function operation(
       throw new ArmadaApiError(
         error.serverCode,
         error.status,
-        `${error.message} Stop may already have been accepted. Run armada list --json to check state before retrying.`,
+        `${error.message} Stop may already have been accepted. Run armada ls --json to check state before retrying.`,
         error.details,
         1,
       );
@@ -207,7 +211,7 @@ export async function operation(
   if (command === "advice" && !flag(args, "--json")) {
     const { advice } = result as import("@armada/core").ResourceAdviceResponse;
     auth.out(`${resourceAdviceText(advice) ?? `No resource recommendation (${advice.reason}); defaults unchanged.`}\n`);
-  } else if (command === "list" && !flag(args, "--page-info")) {
+  } else if (command === "ls" && !flag(args, "--page-info")) {
     const page = result as { sandboxes?: unknown };
     if (!Array.isArray(page?.sandboxes))
       throw new GoldenError("invalid_config", "Armada returned an invalid sandbox page.");
@@ -230,21 +234,13 @@ export async function operation(
 }
 
 function sandboxListFilters(args: ReturnType<typeof parseArgs>): Record<string, unknown> {
-  const allowed = new Set([
-    "--status",
-    "--agent",
-    "--harness",
-    "--golden",
-    "--owner",
-    "--page",
-    "--limit",
-    "--org",
-    "--json",
-    "--page-info",
-  ]);
-  for (const key of args.options.keys())
-    if (!allowed.has(key)) throw new GoldenError("invalid_config", `Unsupported sandbox list option '${key}'.`);
   const body: Record<string, unknown> = {};
+  const ref = single(args, "--ref");
+  if (ref !== undefined) {
+    const parsed = sandboxListInput.shape.externalRef.safeParse(ref);
+    if (!parsed.success) throw new GoldenError("invalid_config", `--ref: ${parsed.error.issues[0]?.message}`);
+    body.externalRef = parsed.data;
+  }
   const status = single(args, "--status");
   if (status !== undefined) {
     if (!["starting", "ready", "running", "stopping", "stopped", "failed", "deleted"].includes(status))

@@ -32,4 +32,4 @@ launch policy, so the row remained starting. No migration or fence bypass is
 needed.
 
 A lost launch HTTP response (including 502) now says the outcome is unknown and
-asks the caller to run `armada list` before retrying.
+asks the caller to run `armada ls` before retrying.

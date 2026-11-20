@@ -477,7 +477,7 @@ describe("armada org and armada creds against the control API", () => {
       const stan = cli(STAN);
       await stan.run(["org", "create", "SandboxScope"]);
       options.providers = { resolve: async () => fakeProvider() };
-      const listed = await stan.run(["list", "--json"]);
+      const listed = await stan.run(["ls", "--json"]);
       expect(listed.code).toBe(0);
       expect(JSON.parse(listed.out)).toEqual({ sandboxes: [] });
       const missing = await stan.run(["status", "33333333-3333-4333-8333-333333333333"]);

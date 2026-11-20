@@ -15,7 +15,7 @@ Collects one bounded sample and considers up to the last 10 comparable sessions.
 Missing or partial evidence can produce no recommendation; do not treat unknowns as measured headroom.
 This never resizes a running machine or changes defaults; recommendations concern future launches.
 Human output summarizes supported advice or the no-recommendation reason.
-Use --json to inspect the full evidence response. Use a sandbox ID from armada list.
+Use --json to inspect the full evidence response. Use a sandbox ID from armada ls.
 Example: armada advice SANDBOX_UUID --org ORG_UUID --json
 `,
 });

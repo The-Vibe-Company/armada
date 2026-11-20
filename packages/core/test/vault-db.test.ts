@@ -350,6 +350,31 @@ describe("credentials", () => {
   });
 });
 
+test("singleton credentials can be replaced with the provider-only index", async () => {
+  const db = database();
+  await db.exec("begin");
+  try {
+    await db.exec(`
+      drop index public.credentials_provider_singleton;
+      create unique index credentials_provider_singleton on public.credentials(scope,owner_id,kind)
+      where kind in ('boat','modal','skillpack');
+    `);
+    await withVault(async ({ store, people }) => {
+      const credential = { scope: "user", org: undefined, kind: "boat" } as const;
+      await setCredential(store, KEY, people.stan, { ...credential, value: "first" });
+      await setCredential(store, KEY, people.stan, { ...credential, value: "second" });
+      const { rows } = await db.query<{ value_enc: Uint8Array }>(
+        "select value_enc from public.credentials where owner_id = $1 and kind = 'boat'",
+        [people.stan],
+      );
+      expect(rows).toHaveLength(1);
+      expect(await decryptSecret(new Uint8Array(rows[0]!.value_enc), KEY)).toBe("second");
+    }, db);
+  } finally {
+    await db.exec("rollback");
+  }
+});
+
 describe("Skillpack registry credentials", () => {
   test("tokens stay encrypted and user-over-org, without entering or changing model defaults", async () => {
     await withVault(async ({ store, db, people }) => {

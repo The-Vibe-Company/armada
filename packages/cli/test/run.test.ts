@@ -59,7 +59,7 @@ describe("run", () => {
 
   test.each([
     "new",
-    "list",
+    "ls",
     "detail",
     "recovery",
     "status",
@@ -107,6 +107,7 @@ describe("run", () => {
     };
     for (const [args, command, checkHelp] of [
       [["frobnicate"], "frobnicate"],
+      [["list"], "list", true],
       [["send"], "send", true],
       [["steer"], "steer", true],
       [["snapshot", "frobnicate", "--org", "org_placeholder"], "snapshot frobnicate"],

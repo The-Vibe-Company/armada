@@ -28,7 +28,7 @@ Quick start / common examples:
   armada status --setup
   armada host add --name my-workstation
   armada new
-  armada list
+  armada ls
   armada status SANDBOX_ID
   armada prompt SANDBOX_ID "Continue the task"
   armada events SANDBOX_ID --tail 20
@@ -45,7 +45,7 @@ ${sandboxUsage("setup")}
                                            Public GitHub Armada tool-knowledge skill; no login. See skill --help.
 ${sandboxUsage("snapshots")}
 ${sandboxUsage("new")}
-${sandboxUsage("list")}
+${sandboxUsage("ls")}
 ${sandboxUsage("mcp-bindings")}
 ${sandboxUsage("advice")}
 ${sandboxUsage("bind-credential")}

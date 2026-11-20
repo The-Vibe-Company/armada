@@ -4,6 +4,7 @@ import {
   HOST_CAPABILITIES,
   isFinalPromptStatus,
   isSandboxProvider,
+  type MachineIdentity,
   type OutputFailureReason,
   type Provider,
   ProviderError,
@@ -22,6 +23,17 @@ import { SANDBOX_VISIBLE } from "./sandbox-visibility.ts";
 import { INTERRUPTED_LAUNCH_REASON } from "./turns.ts";
 import { deferTransactionWake, eventFeedWakeKey, runtimeWakes } from "./wake-bus.ts";
 import { preserveBeforeStop, purgeWorkRecovery, recordStopDispatch } from "./work-preservation.ts";
+
+export async function bindModalLaunchMachine(tx: Sql, machine: MachineIdentity) {
+  const { rows } = await tx.query(
+    `update public.sandboxes set provider_sandbox_id=$3
+     where id=$1 and lifecycle_generation=$2 and provider='modal' and runtime_transport='dialout'
+       and status='starting' and stop_requested_at is null and deleted_at is null
+       and provider_sandbox_id is null returning id`,
+    [machine.sandboxId, machine.generation, machine.machineId],
+  );
+  return rows.length === 1;
+}
 
 export type StopFence = [
   providerId: string | null,

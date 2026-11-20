@@ -7,7 +7,7 @@ export type UsageGroup =
   | "host"
   | "docker-launch"
   | "new"
-  | "list"
+  | "ls"
   | "advice"
   | "sandbox"
   | "setup"

@@ -5,12 +5,12 @@ Keep a production login and a staging login without replacing either:
 ```sh
 # Existing unprofiled production login stays where it is.
 armada --profile staging login --url https://armada-mcp-staging.up.railway.app
-armada --profile staging list
-armada list
+armada --profile staging ls
+armada ls
 
 # Equivalent for a staging-only shell; a flag overrides this variable.
 export ARMADA_PROFILE=staging
-armada list
+armada ls
 armada logout  # clears only staging's session
 unset ARMADA_PROFILE
 ```

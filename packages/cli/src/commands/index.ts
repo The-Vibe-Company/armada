@@ -11,9 +11,9 @@ import extend from "./extend.ts";
 import github from "./github.ts";
 import host from "./host.ts";
 import interrupt from "./interrupt.ts";
-import list from "./list.ts";
 import login from "./login.ts";
 import logout from "./logout.ts";
+import ls from "./ls.ts";
 import newSandbox from "./new.ts";
 import org from "./org.ts";
 import prompt from "./prompt.ts";
@@ -31,7 +31,7 @@ import wait from "./wait.ts";
 
 export const commands: readonly Command[] = [
   newSandbox,
-  list,
+  ls,
   advice,
   rm,
   extend,
