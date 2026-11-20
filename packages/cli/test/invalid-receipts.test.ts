@@ -6,7 +6,7 @@ const id = "11111111-1111-4111-8111-111111111111";
 const key = "22222222-2222-4222-8222-222222222222";
 const commands = [
   ["stop", id],
-  ["send", id, "hello", "--request-id", key],
+  ["prompt", id, "hello", "--request-id", key],
   ["exec", id, "--", "pwd"],
   ["wait", id],
   ["status", id],
@@ -70,7 +70,7 @@ test("invalid success receipts fail operationally before output, without replayi
       expect(stdout).toBe("");
       expect(stderr).toContain('"code":"unavailable"');
       expect(stderr).toContain("before retrying");
-      if (command[0] === "send") expect(stderr).toContain(key);
+      if (command[0] === "prompt") expect(stderr).toContain(key);
       expect(calls).toBe(1);
     }
   }

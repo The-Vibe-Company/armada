@@ -39,7 +39,7 @@ All methods accept a final `{ signal, timeoutMs }` request option. The per-call 
 
 `ArmadaError` exposes a typed `code`, HTTP `status`, optional original `serverCode`, `outcomeUnknown`, and `retryAfterSeconds` when the server asked for a delay. Recognized server codes come from the operation contract and shared API failures. Codes with a dedicated help message use the core’s safe text. Unknown codes are preserved separately; untrusted server messages and details never enter errors. A transport failure (including a connection that fails or times out while a successful response body is being read) is `transport_error`; a successful JSON endpoint response that is not a JSON object is `unknown_response`. A transport failure or server failure during a mutation can mean the operation was accepted: inspect status/receipts before retrying.
 
-Automatic retries default to zero. Set `readRetries` (maximum 3) to replay only read-only status, wait, logs, list and outputs after HTTP 429/502/503/504. The client performs no retries when the server asks for a delay (a `Retry-After` header, or `retryAfterSeconds` in the failure body such as a provider rate limit). The caller owns delayed scheduling: wait at least `error.retryAfterSeconds` before trying again. A draining server refuses with HTTP 503 before dispatching anything: that error has code `unavailable` and `outcomeUnknown: false`, so a mutation can be sent again after the delay. Transport failures and mutations are never automatically retried. A request's timeout and abort signal cover all attempts.
+For individual JSON requests, automatic retries default to zero. Set `readRetries` (maximum 3) to replay only read-only status, wait, logs, list and outputs after HTTP 429/502/503/504. For these requests, the client performs no retries when the server asks for a delay (a `Retry-After` header, or `retryAfterSeconds` in the failure body such as a provider rate limit). The caller owns delayed scheduling: wait at least `error.retryAfterSeconds` before trying again. A draining server refuses with HTTP 503 before dispatching anything: that error has code `unavailable` and `outcomeUnknown: false`, so a mutation can be sent again after the delay. These requests never retry transport failures or mutations automatically. A request's timeout and abort signal cover all attempts.
 
 `list({ status, externalRef, page, limit })` returns a page of sandbox metadata and a `nextPage` when more results are available. Use `steer({ id, text, request_id })` and `interrupt({ id, request_id })` on the current turn. Use `exec({ id, command, cwd, timeout_seconds, request_id })` to run a command. Inspect its `exitCode`, `timedOut` and `truncated` fields. For runtime operations, keep the same request ID and input if replaying an uncertain result.
 
@@ -66,3 +66,14 @@ The checked-in [OpenAPI 3.1 description](../packages/mcp-server/openapi.json) pr
 `Armada.logs({ id })` pages sandbox history by ID. The REST and MCP logs operations share an output that includes `queuedPrompt` for a prompt the Docker runtime has yet to admit. Status and wait expose the same condition as `prompt.state: "queued"`. The SDK types request bodies and responses from the operation schemas. In particular, `logs.settled` is optional.
 
 Run `bun scripts/generate-openapi.ts` after contract changes. The generator reads the operation schemas and uses the HTTP field names for launch and logs. The drift test compares the checked-in artifact with the generated document.
+
+### Stream sandbox event references
+
+Use the direct Armada server URL and pass a sandbox UUID to `client.events.stream({ sandbox, cursor }, { signal })`.
+The async iterator replays retained references when you omit `cursor`. It reconnects after a disconnect and resumes
+after the last yielded ID. Keep IDs as strings and save the last processed ID if you need to resume in a new process.
+Call `abort()` on the signal's controller to stop following. Request timeouts apply to each connection.
+
+`SandboxEvent` distinguishes transition references from runtime event references. Use
+`reduceSandboxEvent(state, event)` to retain the latest reference of each kind and the cursor for a single sandbox.
+Use the status and logs methods to retrieve content for the references.

@@ -296,7 +296,7 @@ It simulates cache expiry, not the actual passage of eight hours at GitHub.
    beforehand: its shell waits for a marker file in the checkout or a short,
    bounded delay, then runs remote Git and records only its numeric result.
    Release the marker through the provider's authorized out-of-band command
-   console, or use the predetermined delay; do not invoke Armada send/exec between
+   console, or use the predetermined delay; do not invoke Armada prompt/exec between
    the SQL commit and the native remote operation. Otherwise refresh may happen
    during preparation rather than credential acquisition and the experiment does
    not prove in-harness renewal. Record the successful remote exit status.
@@ -313,7 +313,7 @@ It simulates cache expiry, not the actual passage of eight hours at GitHub.
 
    Require one row, all true, successful remote Git, unchanged boot/native identity
    and conversation. Repeat exec reads and a native turn with
-   `armada send "$ID" '<read-only Git prompt>' --org "$ORG" --json`,
+   `armada prompt "$ID" '<read-only Git prompt>' --org "$ORG" --json`,
    then wait for its specific prompt. Record numeric results and harness survival.
    A timeout/uncertain refresh is failure: do not restore old ciphertext or retry
    the consumed refresh. Follow the ordinary reconnect procedure for this smoke

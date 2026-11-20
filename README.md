@@ -39,7 +39,7 @@ For your own compute, [register a Docker host and choose fresh launch or a host-
 1. **Snapshot**: build once from your repositories (`armada snapshot new`).
 2. **Launch**: pick an agent, the model, the effort and the provider (`armada new`).
 3. **Sandbox**: a fresh, isolated fork where `git` and `gh` act as you.
-4. **Drive**: follow, steer, stop and resume (`armada events -f`, `armada send`).
+4. **Drive**: follow, steer, stop and resume (`armada events -f`, `armada prompt`).
 
 The dashboard, the `armada` CLI and Armada's MCP server all call the same Armada server, so a sandbox launched from one is visible and controllable from the others, under the same permissions.
 
@@ -132,11 +132,11 @@ armada new web --provider boat --agent claude --model claude-opus-5-5 --reasonin
 
 ```sh
 armada events SANDBOX_ID -f
-armada steer SANDBOX_ID "Keep the public API unchanged"
-armada send SANDBOX_ID "Now add a regression test" --reasoning-effort xhigh   # this turn only
+armada prompt --steer SANDBOX_ID "Keep the public API unchanged"
+armada prompt SANDBOX_ID "Now add a regression test" --reasoning-effort xhigh   # this turn only
 armada extend SANDBOX_ID --ttl 270m              # extend the 4h launch to 4h30m from now
 armada stop SANDBOX_ID                     # normally retains disk/conversation; Modal checkpoint failure does not
-armada send SANDBOX_ID "Push the branch"   # resumes only if the stopped sandbox was retained
+armada prompt SANDBOX_ID "Push the branch"   # resumes only if the stopped sandbox was retained
 ```
 
 Extend an accessible running or idle sandbox as its owner or an org admin. The new deadline must be later than the current one and within server/provider limits. Boat resets its hard timer; Modal extensions must fit before the existing physical deadline minus a five-minute stop margin, without replacing the machine. Modal launch headroom is server-configured; see [sandbox lifetime limits](docs/sandbox-expiry-investigation.md#initial-delivery-scope).
@@ -221,7 +221,7 @@ ID in `.armada/sandbox` in the current directory. Successful launches record
 their sandbox ID in that file. A UUID prefix must match exactly one visible
 sandbox in the selected organization scope. For commands that take text, use
 `--` to mark where the payload starts when you omit the ID, as in
-`armada send -- Review the diff`.
+`armada prompt -- Review the diff`.
 
 Sandbox commands default to JSON when stdout is redirected or piped. On a
 terminal, pass `--json` for machine output. A failed command in machine mode

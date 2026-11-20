@@ -162,7 +162,7 @@ or orchestration are provided.
 ## 3. Drive a turn without busy polling
 
 ```sh
-armada send SANDBOX "Continue with the next agreed task"
+armada prompt SANDBOX "Continue with the next agreed task"
 armada wait SANDBOX --timeout 120 --json
 armada events SANDBOX --tail 50 --json
 armada status SANDBOX --json
@@ -171,7 +171,7 @@ armada status SANDBOX --json
 Send starts a new turn in the sandbox's conversation. Launch another sandbox
 for a separate conversation. The dashboard transcript shows sandbox history
 and its composer targets the sandbox automatically. Steer redirects an active turn:
-`armada steer SANDBOX "Keep the public API unchanged"`. Use
+`armada prompt --steer SANDBOX "Keep the public API unchanged"`. Use
 `armada interrupt SANDBOX` to request interruption, then inspect status before
 sending replacement work. Do not treat steer as a guaranteed new turn or send
 as a safe interruption mechanism. Capture returned prompt/turn identifiers.
@@ -221,7 +221,7 @@ Send and runtime resume select the conversation from the sandbox ID. Launch anot
 sandbox for a separate conversation.
 
 Read [failure and recovery](references/recovery.md) before recovering stopped
-machines or unpushed work. One authorized armada send to a retained stopped
+machines or unpushed work. One authorized armada prompt to a retained stopped
 sandbox resumes it and continues its conversation, subject to current credential
 and access gates. This starts a new agent turn. For a standalone Docker restart,
 use the owner REST route `POST /api/v1/sandbox/resume` with `id` and a

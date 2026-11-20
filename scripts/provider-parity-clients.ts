@@ -2,6 +2,7 @@ import { createControlClient } from "../apps/dashboard/src/lib/control.ts";
 import { createGateway, GatewayError, sandboxGateway } from "../apps/dashboard/src/lib/gateway.ts";
 import { AuthError } from "../packages/auth/src/index.ts";
 import { ArmadaApiError, createArmadaApiClient } from "../packages/cli/src/armada-api.ts";
+import prompt from "../packages/cli/src/commands/prompt.ts";
 import { operation } from "../packages/cli/src/operations.ts";
 
 export type ProofClient = "dashboard" | "cli";
@@ -113,7 +114,10 @@ export async function createParityClients(
     fail,
     async command(argv: string[]) {
       output = "";
-      const result = await operation(action, argv, auth, async () => fail(`client_${action}_file_read`));
+      const result =
+        action === "send"
+          ? await prompt.run(argv, { io: auth, auth, deps: {} })
+          : await operation(action, argv, auth, async () => fail(`client_${action}_file_read`));
       if (result !== 0) fail(`invalid_client_${action}_receipt`);
       try {
         return JSON.parse(output) as unknown;
