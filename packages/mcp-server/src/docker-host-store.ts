@@ -1527,7 +1527,6 @@ export function createDockerHostStore(sql: Sql, key: string) {
         deny();
 
       let admission: Awaited<ReturnType<typeof lockSandboxAdmission>> | undefined;
-      let requestId: string | undefined;
       const target = await handoffGeneration({
         async lockPrerequisites(tx) {
           admission = await lockSandboxAdmission(tx, actor, sandboxId, "restore");
@@ -1569,7 +1568,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
             predecessor,
           };
           const starting = await sandbox(tx, sandboxId, host, row.docker_installation_id);
-          const result = await enqueueRestore(
+          await enqueueRestore(
             tx,
             starting,
             restore,
@@ -1582,20 +1581,25 @@ export function createDockerHostStore(sql: Sql, key: string) {
             false,
             job.id,
           );
-          requestId = result.requestId;
         },
       });
-      return { generation: Number(target), requestId: requestId ?? deny() };
+      return Number(target);
     },
-    attachMachineRestore(
-      actor: Actor,
-      claim: Pick<RunnerJob, "id" | "sandbox_id" | "generation" | "lease_epoch">,
-      requestId: string,
-    ) {
+    attachMachineRestore(actor: Actor, claim: Pick<RunnerJob, "id" | "sandbox_id" | "generation" | "lease_epoch">) {
       return transaction(async (tx) => {
         const { host, row } = await lockSandboxAdmission(tx, actor, claim.sandbox_id ?? deny(), "restore");
-        id(requestId);
-        if (String(row.lifecycle_generation) !== claim.generation) deny();
+        const generation = Number(claim.generation);
+        if (
+          !Number.isSafeInteger(generation) ||
+          generation < 1 ||
+          String(row.lifecycle_generation) !== claim.generation
+        )
+          deny();
+        const bindings = createDockerMachineGenerationBindings(tx, {
+          hostId: host.id,
+          installationId: row.docker_installation_id,
+        });
+        const requestId = (await bindings.lookup({ sandboxId: row.id, generation })) ?? deny();
         const receipt = (
           await tx.query<StoredJob>(
             `select * from public.docker_host_jobs
@@ -1626,7 +1630,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
         if (!placement) deny();
         return {
           sandboxId: row.id,
-          generation: Number(claim.generation),
+          generation,
           machineId: receipt.result_machine_id,
         } satisfies MachineIdentity;
       });
