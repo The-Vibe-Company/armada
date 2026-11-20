@@ -3,11 +3,19 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
-type Step = { id?: string; name?: string; run?: string; env?: Record<string, string>; with?: Record<string, string> };
+type Step = {
+  id?: string;
+  name?: string;
+  run?: string;
+  env?: Record<string, string>;
+  with?: Record<string, string>;
+  "continue-on-error"?: boolean;
+};
 type Job = {
   steps: Step[];
   needs?: string | string[];
   environment?: string;
+  permissions?: Record<string, string>;
   outputs?: Record<string, string>;
   env?: Record<string, string>;
 };
@@ -135,6 +143,25 @@ test("production approval gates deployment after finalization accepts work or re
   expect(approval?.environment).toBe("production-deploy");
   expect(approval?.needs).toEqual(["release-metadata", "finalize-release"]);
   expect(workflow.jobs.production?.needs).toContain("production-approval");
+});
+
+test("the publishing token can write version PR labels through the reusable workflow", () => {
+  const caller = Bun.YAML.parse(
+    readFileSync(resolve(import.meta.dir, "../../.github/workflows/release.yml"), "utf8"),
+  ) as { jobs: Record<string, Job> };
+
+  expect(caller.jobs["release-pipeline"]?.permissions?.["pull-requests"]).toBe("write");
+  expect(workflow.jobs["finalize-release"]?.permissions?.["pull-requests"]).toBe("write");
+});
+
+test("production approval requires publication verification even if PR labelling fails", () => {
+  const steps = workflow.jobs["finalize-release"]?.steps ?? [];
+  const verify = steps.findIndex((step) => step.name === "Verify the published release and tag");
+  const reconcile = steps.findIndex((step) => step.id === "reconcile");
+  expect(verify).toBeGreaterThanOrEqual(0);
+  expect(reconcile).toBeGreaterThan(verify);
+  expect(steps[verify]?.["continue-on-error"]).not.toBe(true);
+  expect(steps[reconcile]?.["continue-on-error"]).toBe(true);
 });
 
 test("binary and publish jobs use the validated release version for npm artifacts", () => {

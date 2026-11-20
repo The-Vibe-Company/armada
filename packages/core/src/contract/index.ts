@@ -4,6 +4,7 @@ import { createdInboundTrigger, createInboundTriggerBody, createInboundTriggerQu
 import { launchInput } from "./launch.ts";
 import { launchEnvelope } from "./launch-response.ts";
 import { memberOperations } from "./members.ts";
+import { organizationOperations } from "./organizations.ts";
 import { githubCallbackOperations, publicAuthOperations } from "./public-auth.ts";
 import { githubOperations, goldenOperations, launchTemplateOperation } from "./resources.ts";
 import { sandboxOperations } from "./sandbox.ts";
@@ -28,6 +29,7 @@ export {
 } from "./launch.ts";
 export { type LaunchEnvelope, launchEnvelope, templateLaunchResponse } from "./launch-response.ts";
 export { memberOperations } from "./members.ts";
+export { ORG_PROVIDER_CREDENTIAL_MAX_LENGTH, organizationOperations, orgProvider } from "./organizations.ts";
 export { githubCallbackOperations, PUBLIC_CONTROL_ROUTES, publicAuthOperations, signInMethod } from "./public-auth.ts";
 export { githubOperations, goldenOperations, launchTemplateOperation } from "./resources.ts";
 export {
@@ -141,6 +143,7 @@ export const operations = {
   ...tokenOperations,
   ...accountOperations,
   ...memberOperations,
+  ...organizationOperations,
   ...skillDefaultOperations,
   ...skillpackOperations,
   launchTemplate: launchTemplateOperation,
