@@ -391,7 +391,6 @@ export async function publishOwnerStop(
     expectedGeneration: stop.generation,
     fromStates: [stop.fromState],
     toState: stop.toState,
-    // The reconciler uses this persisted journal identity to recover retained stops across deploys.
     actor:
       stop.code === "owner_stop_settled" ? "lifecycle_runner" : stop.code === "runtime_retained_stop" ? "api" : "owner",
     code: stop.code,

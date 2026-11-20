@@ -788,10 +788,13 @@ export function createSqlData(
           return;
         }
         if (patch.status === "deleted") throw new DataError("Sandbox deletion requires a confirmed receipt.");
-        const stopStatus = patch.ownerStop ? patch.status : undefined;
+        const stopStatus =
+          patch.ownerStop && (patch.status === "stopping" || patch.status === "stopped" || patch.status === "failed")
+            ? patch.status
+            : undefined;
         if (
           patch.ownerStop &&
-          ((stopStatus !== "stopping" && stopStatus !== "stopped" && stopStatus !== "failed") ||
+          (!stopStatus ||
             patch.expectedGeneration === undefined ||
             !patch.activityToken ||
             Boolean(patch.advanceGeneration) === Boolean(patch.finishActivity))
