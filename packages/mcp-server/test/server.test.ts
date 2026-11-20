@@ -12,7 +12,7 @@ import { captureGitHubAuditLogs } from "../../../scripts/test-support/github-aud
 import helperManifest from "../../core/helper/manifest.json";
 import { handleControlRequest } from "../src/control.ts";
 import { createSqlData } from "../src/data.ts";
-import { createSandboxLifecycle } from "../src/sandbox-lifecycle.ts";
+import { createSandboxLifecycle, recordRuntimeStartupFailure } from "../src/sandbox-lifecycle.ts";
 import { readStatus } from "../src/turns.ts";
 import { encryptedRecoveryExec } from "./fixtures/recovery-exec.ts";
 import { migratedDatabase } from "./migrated-database.ts";
@@ -558,10 +558,23 @@ describe("tools", () => {
         check (status_reason is null or status_reason='launch_failed')`);
       boat.provider.prompt = async () => {
         if (scenario === "superseded") await db.exec("update sandboxes set status='stopping' where status='starting'");
-        if (scenario === "reported")
-          await db.exec(
-            "update sandboxes set status='failed', status_reason='Startup already reported a failure' where status='starting'",
-          );
+        if (scenario === "reported") {
+          await bunLikeSql(db).transaction!(async (tx) => {
+            const {
+              rows: [launch],
+            } = await tx.query<{ id: string; generation: string }>(
+              "select id, lifecycle_generation::text as generation from sandboxes where status='starting'",
+            );
+            if (!launch) throw new Error("Missing starting launch");
+            await recordRuntimeStartupFailure(
+              tx,
+              launch.id,
+              launch.generation,
+              "bootstrap_failed",
+              "Startup already reported a failure",
+            );
+          });
+        }
         throw new Error("Initial prompt submission failed.");
       };
 
@@ -599,7 +612,9 @@ describe("tools", () => {
       expect(journal.rows).toEqual(
         scenario === "applied"
           ? [{ from_status: "starting", actor: "lifecycle_runner", code: "launch_failed", generation: 2 }]
-          : [],
+          : scenario === "reported"
+            ? [{ from_status: "starting", actor: "lifecycle_runner", code: "bootstrap_failed", generation: 1 }]
+            : [],
       );
     },
   );
