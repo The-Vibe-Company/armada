@@ -86,7 +86,7 @@ export async function lookupModalCompute(
 
 export async function terminateModalCompute(
   sandbox: Sandbox,
-  { wait = true, signal }: { wait?: boolean; signal?: AbortSignal } = {},
+  { wait = true, signal }: { wait?: boolean; signal?: AbortSignal | undefined } = {},
 ) {
   signal?.throwIfAborted();
   const exitCode = await sandbox.poll();
