@@ -338,6 +338,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
 
   async function readStoredJob(row: StoredJob, expectedGeneration?: Sandbox["lifecycle_generation"]) {
     let runnerJobId: string | undefined;
+    let lifecycleGeneration: string | undefined;
     const plaintext = await decryptSecret(row.input_enc, key).catch((error: unknown) => {
       if (row.bound_operation === "restore" && error instanceof DOMException && error.name === "OperationError") deny();
       throw error;
@@ -362,13 +363,15 @@ export function createDockerHostStore(sql: Sql, key: string) {
         runnerJobId = stored.runnerJobId;
       }
       if (stored.bound !== 1) deny();
-      if (
-        fenced &&
-        (typeof stored.lifecycleGeneration !== "string" ||
+      if (fenced) {
+        if (
+          typeof stored.lifecycleGeneration !== "string" ||
           !/^[1-9][0-9]*$/.test(stored.lifecycleGeneration) ||
-          (expectedGeneration !== undefined && stored.lifecycleGeneration !== String(expectedGeneration)))
-      )
-        deny();
+          (expectedGeneration !== undefined && stored.lifecycleGeneration !== String(expectedGeneration))
+        )
+          deny();
+        lifecycleGeneration = stored.lifecycleGeneration;
+      }
       stored = stored.job;
     }
     if (!stored || typeof stored !== "object" || Array.isArray(stored)) deny();
@@ -392,7 +395,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
         job.build.ownerId !== row.bound_actor_id)
     )
       deny();
-    return { job, runnerJobId };
+    return { job, runnerJobId, lifecycleGeneration };
   }
   async function sandbox(tx: Sql, sandboxId: string, host: Host, installationId: string) {
     const row = (await tx.query<Sandbox>(`select * from public.sandboxes where id=$1 for update`, [sandboxId])).rows[0];
@@ -582,6 +585,10 @@ export function createDockerHostStore(sql: Sql, key: string) {
     )
       deny();
     await state(tx, logical, "restore");
+    await requireRestoreBindings(tx, logical, job);
+  }
+
+  async function requireRestoreBindings(tx: Sql, logical: Sandbox, job: RestoreJob) {
     const bindings = await tx.query(
       `select 1 from public.docker_machine_bindings target join public.docker_machine_bindings source
          on source.sandbox_id=target.sandbox_id and source.host_id=target.host_id
@@ -1968,12 +1975,27 @@ export function createDockerHostStore(sql: Sql, key: string) {
               result.requestId,
             ])
           ).rows[0] ?? deny();
-        if (job.bound_operation !== "create" && job.bound_operation !== "bootstrap" && job.bound_operation !== "resume")
-          deny();
-        const logical = await boundMachine(tx, job, host, installationId);
-        // Only the authenticated host's observed physical stop is evidence. SQL's
-        // clock may differ from the frozen host deadline and cannot prove exit.
-        if (logical.status === "deleted" || (await supersededLifecycle(tx, job, true))) return;
+        let logical: Sandbox;
+        if (job.bound_operation === "restore") {
+          logical = await sandbox(tx, job.bound_sandbox_id ?? deny(), host, installationId);
+          const { job: restore, lifecycleGeneration } = await readStoredJob(job);
+          if (restore.operation !== "restore" || restore.request.generation !== job.request_id) deny();
+          if (lifecycleGeneration !== String(logical.lifecycle_generation)) return;
+          if (logical.docker_generation !== restore.predecessor.request.generation) deny();
+          await requireRestoreBindings(tx, logical, restore);
+          if (logical.status !== "starting" && logical.status !== "stopping") return;
+        } else {
+          if (
+            job.bound_operation !== "create" &&
+            job.bound_operation !== "bootstrap" &&
+            job.bound_operation !== "resume"
+          )
+            deny();
+          logical = await boundMachine(tx, job, host, installationId);
+          if (logical.status === "deleted" || (await supersededLifecycle(tx, job, true))) return;
+        }
+        // The authenticated host's observed physical stop supplies the evidence.
+        // The server clock and the runner's dispatch deadline cannot prove exit.
         const transition = await transitionSandbox(tx, {
           sandboxId: logical.id,
           expectedGeneration: logical.lifecycle_generation,
