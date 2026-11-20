@@ -450,7 +450,7 @@ async function main(dialout = false) {
               ...antigravity,
               root: config.root,
               cwd: config.cwd,
-              registerSecrets: (values) => journal.registerSecrets(values),
+              journal,
             }),
           }
         : {}),
