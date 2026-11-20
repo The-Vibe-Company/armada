@@ -1004,7 +1004,18 @@ test.each(["before issuance", "during issuance"] as const)(
   },
 );
 
-test.each(["selection", "pre-abort", "timeout", "bootstrap", "replacement", "lifecycle", "stop"] as const)(
+const startupFailures = [
+  "selection",
+  "pre-abort",
+  "timeout",
+  "bootstrap",
+  "replacement",
+  "lifecycle",
+  "stop",
+  "claim loss",
+] as const;
+
+test.each(startupFailures)(
   "startup never publishes readiness after %s and never repeats host bootstrap",
   async (scenario) => {
     const { createRuntimeStartup } = await import("../src/runtime-startup.ts");
@@ -1015,6 +1026,7 @@ test.each(["selection", "pre-abort", "timeout", "bootstrap", "replacement", "lif
     const abort = new AbortController();
     if (scenario === "pre-abort") abort.abort();
     let epoch = "";
+    let current = true;
     const start = createRuntimeStartup(
       f.authority,
       {
@@ -1025,6 +1037,7 @@ test.each(["selection", "pre-abort", "timeout", "bootstrap", "replacement", "lif
             epoch = (await f.authority.enrol(input.enrolmentToken)).epoch;
         },
         async health() {
+          if (scenario === "claim loss") current = false;
           if (scenario === "replacement") await f.enrol();
           if (scenario === "stop") await f.db.query("update sandboxes set stop_requested_at=now() where id=$1", [f.id]);
           return { runtime: "armada", epoch };
@@ -1049,6 +1062,9 @@ test.each(["selection", "pre-abort", "timeout", "bootstrap", "replacement", "lif
       cacheDir: "/cache",
       artifact: { sha256: "a".repeat(64), bytes: 10 },
       configuration: { selectedHarness: scenario === "selection" ? "unknown" : "codex" },
+      async assertClaim() {
+        if (!current) throw Error("Dispatch claim expired.");
+      },
       signal: abort.signal,
       readinessTimeoutMs: 1000,
     });

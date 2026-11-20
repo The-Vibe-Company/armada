@@ -60,7 +60,12 @@ export function createRuntimeLaunch(options: RuntimeLaunchOptions, provider: "bo
     const agent = runtimeAgentFor(commands, actor.userId, sandbox, defaults, plan.configuration.cwd);
     const ready = await createRuntimeStartup(authority, {
       bootstrap: request.bootstrap(),
-      health: (admission) => agent.health(admission, restoreCheckpoint),
+      health: (admission, epoch) =>
+        agent.health(
+          admission,
+          restoreCheckpoint,
+          input.assertDispatch ? { expectedEpoch: epoch, assertClaim: input.assertDispatch } : undefined,
+        ),
     })({
       ownerId: actor.userId,
       sandboxId: sandbox.id,
@@ -72,7 +77,7 @@ export function createRuntimeLaunch(options: RuntimeLaunchOptions, provider: "bo
       ...(input.assertDispatch ? { assertClaim: input.assertDispatch } : {}),
       signal,
     });
-    await environment.deliver(provider, actor, sandbox.id, ready.epoch, signal);
+    await environment.deliver(provider, actor, sandbox.id, ready.epoch, signal, input.assertDispatch);
     return {
       ...runtimeWorkspace(input, agent, ready.epoch, options.github),
       installScopedReference: (request) =>
