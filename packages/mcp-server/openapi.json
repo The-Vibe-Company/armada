@@ -1366,7 +1366,7 @@
         "x-armada-direct-server": true,
         "security": [
           {
-            "serviceToken": []
+            "personalSession": []
           }
         ],
         "requestBody": {
@@ -1483,7 +1483,7 @@
         "x-armada-direct-server": true,
         "security": [
           {
-            "serviceToken": []
+            "personalSession": []
           }
         ],
         "requestBody": {
@@ -14712,6 +14712,11 @@
       "serviceToken": {
         "type": "http",
         "scheme": "bearer"
+      },
+      "personalSession": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "The access token of a personal Supabase login session."
       },
       "viewerGrant": {
         "type": "http",
