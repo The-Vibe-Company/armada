@@ -46,7 +46,7 @@ Detached/background writers outside the harness are not frozen. The collector
 uses private mode-0700 temporary storage and bounded chunk reads to support the
 Modal runtime's 64 KiB stdout cap. A sandbox-local janitor attempts removal after
 120 seconds; a stop before then can retain these temporary files on the provider's
-retained disk until resume. They never enter a golden. No cleanup exec is submitted
+retained disk until resume. They never enter a snapshot. No cleanup exec is submitted
 after stop. Modal recovery reads refuse stopped compute rather than resuming it.
 
 OpenSSL is also required in the sandbox image. Recovery bytes are encrypted
@@ -60,7 +60,7 @@ ephemeral private key and password never enter command arguments or logs.
 ## Incremental recovery (manifest version 2)
 
 Capture skips hidden directories (including agent/tool caches) and node_modules.
-Golden repositories live in nonhidden directories under the sandbox home.
+Repositories from the launch snapshot live in nonhidden directories under the sandbox home.
 Version 2 bundles include HEAD, local branches and tags, excluding objects already
 reachable from remote-tracking refs. This keeps published history outside the
 2 MiB limit. No network access is used during capture.
@@ -82,7 +82,7 @@ never command output, repository paths, archive content or exception messages.
 
 ### Real sandbox validation (#759)
 
-On the five-repository Boat golden fork, Python 3.12.3, OpenSSL 3.0.13 and
+On the five-repository Boat snapshot fork, Python 3.12.3, OpenSSL 3.0.13 and
 Git 2.43.0 were present. The original collector returned capture_failed with one
 local commit. Full bundles measured 15.6 MB (Armada) through 219.9 MB (website),
 well above the 2 MiB cap. Recursive discovery also included a hidden agent
