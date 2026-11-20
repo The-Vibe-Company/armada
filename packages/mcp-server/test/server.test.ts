@@ -1788,8 +1788,8 @@ describe("tools", () => {
     },
   );
 
-  test.each(["stopped", "callback", "stale callback", "rollback"] as const)(
-    "native resume admission journals the current activity only (%s)",
+  test.each(["stopped", "callback", "stale callback", "rollback", "stale receipt", "receipt rollback"] as const)(
+    "native resume journals the current activity only (%s)",
     async (scenario) => {
       const server = await start();
       const { boat, client, db, people, token } = server;
@@ -1806,14 +1806,24 @@ describe("tools", () => {
           await db.query("update sandboxes set lifecycle_generation=lifecycle_generation+1 where id=$1", [id]);
         if (!stopped) await request.onResumeStage?.("accepted");
         dispatched = true;
-        return prompt(request);
+        const receipt = await prompt(request);
+        if (scenario === "stale receipt")
+          await db.query("update sandboxes set lifecycle_generation=lifecycle_generation+1 where id=$1", [id]);
+        if (scenario === "receipt rollback")
+          await db.exec(
+            "alter table sandboxes add constraint reject_native_prompt check (task_prompt_id is null) not valid",
+          );
+        return receipt;
       };
       const sent = await call(mcp, "send", { id, prompt: "continue" }).finally(async () => {
         if (scenario === "rollback") await db.exec("alter table sandboxes drop constraint reject_native_start");
+        if (scenario === "receipt rollback")
+          await db.exec("alter table sandboxes drop constraint reject_native_prompt");
       });
 
       const refused = scenario === "stale callback" || scenario === "rollback";
-      expect(Boolean(sent.isError)).toBe(refused);
+      const receiptRefused = scenario === "stale receipt" || scenario === "receipt rollback";
+      expect(Boolean(sent.isError)).toBe(refused || receiptRefused);
       expect(dispatched).toBe(!refused);
       if (scenario === "rollback") {
         const { rows } = await db.query(
@@ -1835,6 +1845,27 @@ describe("tools", () => {
       };
       expect(rows).toEqual(refused ? [] : [admission]);
       if (scenario === "stale callback") expect(sent.text).toContain("error code: sandbox_not_ready");
+      if (dispatched) {
+        const { rows: receipts } = await db.query(
+          `select actor,code,generation::int from sandbox_transitions
+           where sandbox_id=$1 and from_status='starting' and to_status='running'`,
+          [id],
+        );
+        expect(receipts).toEqual(
+          receiptRefused ? [] : [{ actor: "native_turn", code: "native_send_accepted", generation: 2 }],
+        );
+        const {
+          rows: [settled],
+        } = await db.query("select status, task_prompt_id, activity_lease_id from sandboxes where id=$1", [id]);
+        if (receiptRefused) {
+          expect(sent.text).toContain("error code: outcome_unknown");
+          expect(settled.status).toBe("starting");
+          expect(settled.task_prompt_id).toBeNull();
+          expect(settled.activity_lease_id).not.toBeNull();
+        } else {
+          expect(settled).toEqual({ status: "running", task_prompt_id: sent.data.promptId, activity_lease_id: null });
+        }
+      }
     },
   );
 

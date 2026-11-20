@@ -259,13 +259,16 @@ export function configureTools(
         const conversationIds = appendConversation(found.conversationIds, receipt.conversationId);
         return {
           patch: {
-            status: "running",
+            nativeSendReceipt: {
+              fromState: activationOpened ? "starting" : found.status,
+              placement: found.providerSandboxId,
+            },
             taskPromptId: receipt.promptId,
             statusReason: null,
             conversationIds,
             stoppedAt: null,
             rearmDeadline: receipt.resumed === true && found.statusReason !== "idle_paused",
-          },
+          } satisfies ServerSandboxPatch,
           result: {
             id: found.id,
             promptId: receipt.promptId,
