@@ -133,10 +133,11 @@ function fixture(
           Mounts: mounts,
           State: { Status: "created", Running: false },
         });
-      } else if (action === "start" || action === "stop") {
+      } else if (action === "start" || action === "stop" || action === "update") {
         const container = store.get(last) ?? [...containers.values()].find((container) => container.Id === last);
         if (!container) return { exitCode: 1, stdout: "missing" };
-        container.State = { Status: action === "start" ? "running" : "exited", Running: action === "start" };
+        if (action === "update") container.resourcesUpdated = true;
+        else container.State = { Status: action === "start" ? "running" : "exited", Running: action === "start" };
       } else if (action === "rm") {
         if (
           kind === "volume" &&
@@ -146,7 +147,7 @@ function fixture(
         const name =
           kind === "container" ? ([...containers].find(([, container]) => container.Id === last)?.[0] ?? last) : last;
         if (!retainRemoved) store.delete(name);
-      } else if (action !== "exec" && action !== "update") throw new Error("Unexpected fake Docker operation");
+      } else if (action !== "exec") throw new Error("Unexpected fake Docker operation");
       return { exitCode: 0, stdout: "" };
     },
   };
@@ -185,21 +186,25 @@ function fixture(
 }
 
 describe("Docker machine executor", () => {
-  test("allocation cannot start a different container that takes the verified name", async () => {
-    const f = fixture(undefined, {
-      dir: "/state/artifact-cache",
-      async ensure() {
-        const entry = f.containers.entries().next().value;
-        if (entry) {
-          const [name, container] = entry;
-          f.containers.set(name, { ...container, Id: "f".repeat(64) });
+  test.each(["update", "start"])(
+    "allocation cannot %s a different container that takes the verified name",
+    async (action) => {
+      const f = fixture();
+      const run = f.cli.run;
+      f.cli.run = async (argv, stdin, options) => {
+        if (argv[0] === "container" && argv[1] === action) {
+          const [name, container] = [...f.containers.entries()][0]!;
+          f.containers.set(name, { ...container, Id: "f".repeat(64), resourcesUpdated: false });
         }
-        return true;
-      },
-    });
-    await expect(f.executor.create(request)).rejects.toMatchObject({ code: "docker_failed" });
-    expect([...f.containers.values()][0]?.State.Running).toBe(false);
-  });
+        return run(argv, stdin, options);
+      };
+      await expect(f.executor.create(request)).rejects.toMatchObject({ code: "docker_failed" });
+      expect([...f.containers.values()][0]).toMatchObject({
+        resourcesUpdated: false,
+        State: { Running: false },
+      });
+    },
+  );
 
   test("restore retries an incomplete copy into a separate incarnation and adopts a created target", async () => {
     let free = 0;
