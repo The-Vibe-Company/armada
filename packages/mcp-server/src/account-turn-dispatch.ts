@@ -35,6 +35,17 @@ export const COMPLETED_RUNTIME_WAKE = `(s.provider in ('boat','modal') and ${RUN
       and r.phase='complete' and r.receipt is not null and e.runtime_hash is not null
       and e.lifecycle_generation=s.lifecycle_generation
   ))`;
+export const ENROLLED_PENDING_RUNTIME_WAKE = `(
+  ((s.provider='boat' and s.boat_runtime) or (s.provider='modal' and s.runtime_transport='dialout'))
+  and s.status in ('starting','ready','running') and s.activity_lease_id=q.request_id
+  and q.dispatch_generation in (s.lifecycle_generation, s.lifecycle_generation - 1)
+  and exists(
+    select 1 from public.runtime_resumes r
+    join public.runtime_enrolments e on e.sandbox_id=r.sandbox_id and e.epoch=r.target_epoch
+    where r.sandbox_id=s.id and r.request_id=q.request_id
+      and r.phase='dispatched' and r.receipt is null and e.runtime_hash is not null
+      and e.lifecycle_generation=s.lifecycle_generation
+  ))`;
 export const TURN_RECOVERY_ELIGIBLE = `(q.dispatch_until<=now() and q.dispatch_generation is not null
   and ((${RUNTIME_LANE} and ${RUNTIME_REQUEST_EVIDENCE})
     or (s.lifecycle_generation=q.dispatch_generation and s.activity_lease_id is null
@@ -212,7 +223,8 @@ export async function admitAccountTurn(sql: Sql, candidate: AdmissionEntry, clai
       if (claim && recovering) {
         const { rows } = await tx.query(
           `select q.request_id from public.account_turn_queue q join public.sandboxes s on s.id=q.sandbox_id
-           where q.sandbox_id=$1 and q.request_id=$2 and (${TURN_RECOVERY_ELIGIBLE} or ${COMPLETED_RUNTIME_WAKE})`,
+           where q.sandbox_id=$1 and q.request_id=$2
+             and (${TURN_RECOVERY_ELIGIBLE} or ${COMPLETED_RUNTIME_WAKE} or ${ENROLLED_PENDING_RUNTIME_WAKE})`,
           [candidate.sandbox_id, candidate.request_id],
         );
         if (!rows.length) return null;

@@ -179,7 +179,8 @@ test.each([
   ["unfinished runtime follow-up", 3, "command", "-infinity", true, false],
   ["older-epoch runtime follow-up", 3, "command", "-infinity", true, false],
   ["published runtime resume", 3, "resume", "infinity", true, false],
-  ["unfinished runtime resume", 3, "resume", "-infinity", true, false],
+  ["unfinished enrolled runtime resume", 3, "resume", "infinity", true, false],
+  ["unfinished unenrolled runtime resume", 3, "resume", "infinity", true, false],
   ["older-epoch runtime resume", 3, "resume", "infinity", true, false],
   ["unrelated runtime resume", 3, "resume", "-infinity", true, false],
   ["runtime legacy window still open", 2, null, "infinity", true, false],
@@ -221,8 +222,12 @@ test.each([
   await db.query(`update sandboxes set lifecycle_generation=$2, activity_lease_id=$3, activity_until=$4 where id=$1`, [
     sandboxId,
     scenario === "runtime request advanced after claim" ? 2 : generation,
-    activity === "request" ? requestId : activity === "other" ? crypto.randomUUID() : null,
-    activity === "request" || activity === "other" ? "infinity" : null,
+    activity === "request" || scenario.startsWith("unfinished")
+      ? requestId
+      : activity === "other"
+        ? crypto.randomUUID()
+        : null,
+    activity === "request" || activity === "other" || scenario.startsWith("unfinished") ? "infinity" : null,
   ]);
   await db.query("insert into account_agent_reservations (sandbox_id, account_id) values ($1, $2)", [
     sandboxId,
@@ -243,11 +248,16 @@ test.each([
     );
   }
   if (activity === "resume") {
-    const finished = scenario !== "unfinished runtime resume";
+    const finished = !scenario.startsWith("unfinished");
     await db.query(
       `insert into runtime_enrolments (sandbox_id,lifecycle_generation,epoch,runtime_hash)
-       values ($1,$2,$3,repeat('a',64))`,
-      [sandboxId, generation, scenario === "older-epoch runtime resume" ? 3 : 2],
+       values ($1,$2,$3,case when $4 then repeat('a',64) end)`,
+      [
+        sandboxId,
+        generation,
+        scenario === "older-epoch runtime resume" ? 3 : 2,
+        scenario !== "unfinished unenrolled runtime resume",
+      ],
     );
     await db.query(
       `insert into runtime_resumes (sandbox_id,request_id,source_epoch,target_epoch,watermark,request_hash,
@@ -317,6 +327,7 @@ test.each([
     reset ||
     scenario === "published runtime follow-up" ||
     scenario === "published runtime resume" ||
+    scenario === "unfinished enrolled runtime resume" ||
     scenario === "runtime request advanced generation" ||
     scenario === "runtime request already at dispatch generation" ||
     scenario === "runtime request advanced after claim" ||

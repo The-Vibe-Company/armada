@@ -726,12 +726,17 @@ describe.each(["boat", "modal"] as const)("queued runtime wake admission (%s)", 
       const successor = crypto.randomUUID();
       const retry = (await store.claim("turn_dispatch", successor, 30, 1))!;
       expect(retry.id).toBe(id);
-      await expect(
-        send(f.caller, request, {
-          canDispatch: async (tx) => (await store.inspect(retry, successor, tx)) === "dispatch",
-          handoffGeneration: () => Promise.reject(Error("An enrolled wake cannot advance generation again.")),
-        }),
-      ).resolves.toMatchObject({ resumed: true, requestId: request.request_id });
+      const successorClaim = {
+        job: retry,
+        canDispatch: async (tx?: Sql) => (await store.inspect(retry, successor, tx)) === "dispatch",
+        handoffGeneration: () => Promise.reject(Error("An enrolled wake cannot advance generation again.")),
+      };
+      const admission = await admitClaimedAccountTurn(f.sql, successorClaim);
+      expect(admission?.entry.request_id).toBe(request.request_id);
+      await expect(send(f.caller, request, successorClaim)).resolves.toMatchObject({
+        resumed: true,
+        requestId: request.request_id,
+      });
       expect(preparations).toBe(1);
       expect(f.starts).toHaveLength(2);
       if (scoped) expect(await acknowledgedScopedGrant(f.sql, f.row.id)).toBe(true);
