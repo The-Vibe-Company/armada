@@ -1287,6 +1287,20 @@ test("common-runtime Modal capture refuses a stale incarnation before touching p
   expect(f.sdkCommands).toHaveLength(afterFork);
 });
 
+test("Modal delete keeps ownership when physical lookup returns a different machine", async () => {
+  const f = fixture(scope, fixtureSql, undefined, undefined, true);
+  const worker = await runningFork(f);
+  const lookup = f.client.sandboxes.fromId;
+  f.client.sandboxes.fromId = async (id) => ({ ...(await lookup(id)), sandboxId: "sb_other" }) as Sandbox;
+  const before = f.log.length;
+
+  await expect(f.provider.delete({ sandboxId: worker.id })).rejects.toMatchObject({ code: "conflict" });
+  expect(f.log.slice(before)).not.toContain("terminate");
+  const row = await f.store.get(worker.id);
+  expect(row.phase).toBe("deleting");
+  expect(row.deletePhysicalExitGeneration).toBeUndefined();
+});
+
 test("retained enrolled Modal stop snapshots only after quiescence and resumes its exact checkpoint without tunnel or history purge", async () => {
   const f = fixture(scope, fixtureSql, undefined, undefined, true);
   const worker = await runningFork(f);
