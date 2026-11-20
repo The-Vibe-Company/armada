@@ -37,6 +37,7 @@ function fixture(enabled = true) {
     lists: 0,
     logReads: 0,
     lateLogs: false,
+    lateStop: false,
     noTools: false,
     denied: false,
     content: false,
@@ -47,6 +48,7 @@ function fixture(enabled = true) {
     notReady: false,
     logsFail: false,
     logsTimeout: false,
+    logsExhaustBudget: false,
     waitRunning: false,
     waitReplies: [] as Obj[],
     logsIncomplete: false,
@@ -191,10 +193,23 @@ function fixture(enabled = true) {
         expect(body.maxBytes).toBe(1_048_576);
         expect(body.limit).toBe(500);
         if (state.logsFail) throw Object.assign(new Error("secret-error-do-not-print"), { status: 400 });
-        if (state.logsTimeout && timeoutMs !== undefined)
-          throw Object.assign(new Error("request_failed"), { transportTimeoutMs: timeoutMs });
+        if (timeoutMs !== undefined) {
+          if (state.logsExhaustBudget && state.logReads === 2) clock += 8_925;
+          if (state.logsTimeout || (state.logsExhaustBudget && state.logReads === 3)) {
+            if (state.logsExhaustBudget) clock += timeoutMs;
+            throw Object.assign(new Error("request_failed"), { transportTimeoutMs: timeoutMs });
+          }
+        }
+        const events =
+          state.lateStop && state.logReads === 1
+            ? state.events.map((event) => ({
+                ...event,
+                tools: state.tools.map((tool) => (tool.name === "stop" ? { ...tool, result: undefined } : tool)),
+              }))
+            : state.events;
         return {
-          events: state.lateLogs && state.logReads === 1 ? [] : state.events,
+          events:
+            state.lateLogs && (state.logReads === 1 || (state.logsExhaustBudget && state.logReads === 2)) ? [] : events,
           hasMore: state.logsIncomplete,
           cursor: state.logsIncomplete ? `cursor-${state.logReads}` : null,
         } as T;
@@ -264,6 +279,25 @@ describe("ordinary scoped Armada smoke", () => {
     expect(f.stopped).toEqual([child]);
   });
 
+  test("waits for a late stop result in the finished parent turn without replaying it", async () => {
+    const f = fixture();
+    f.state.lateStop = true;
+    await run(f);
+    expect(f.state.sends).toBe(1);
+    expect(f.state.logReads).toBe(2);
+  });
+
+  test("reports the missing receipt when a log read exhausts the observation window", async () => {
+    const f = fixture();
+    f.state.lateLogs = true;
+    f.state.logsExhaustBudget = true;
+    await expect(run(f)).rejects.toThrow("scoped_launch_unproven");
+    expect(f.state.sends).toBe(1);
+    expect(f.output).toContainEqual(
+      expect.objectContaining({ step: "scoped_logs_diagnostic", transportTimeoutMs: 75 }),
+    );
+  });
+
   test("identifies a transport timeout while waiting for scoped launch evidence", async () => {
     const f = fixture();
     f.state.lateLogs = true;
@@ -272,7 +306,7 @@ describe("ordinary scoped Armada smoke", () => {
     expect(f.output).toContainEqual(
       expect.objectContaining({
         step: "scoped_logs_diagnostic",
-        phase: "launch_evidence",
+        phase: "tool_evidence",
         status: null,
         transportTimeoutMs: 10_000,
       }),

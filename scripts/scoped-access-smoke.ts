@@ -170,7 +170,7 @@ export function createScopedProbe(item: ScopedProbeCase, enabled: boolean, io: S
     }
     return fail("scoped_incomplete_snapshot");
   }
-  async function logs(id: string, phase: "initial_evidence" | "launch_evidence" | "cleanup", until?: number) {
+  async function logs(id: string, phase: "initial_evidence" | "tool_evidence" | "cleanup", until?: number) {
     // Re-read from the start: providers can complete a tool in an existing event.
     let cursor: string | undefined;
     const cursors = new Set<string>();
@@ -407,20 +407,34 @@ export function createScopedProbe(item: ScopedProbeCase, enabled: boolean, io: S
         evidenceUnknown = false;
         adopt();
         let tools = calls(true);
-        const hasLaunchResult = (seen: Call[]) =>
-          seen.some(
-            (call) =>
-              call.name === "launch" &&
-              call.input.idempotencyKey === launchKey &&
-              (call.error || Object.keys(call.result).length > 0),
-          );
-        if (enabled && !hasLaunchResult(tools)) {
+        const hasResult = (call: Call) => call.error || call.denied || Object.keys(call.result).length > 0;
+        const evidenceReady = (seen: Call[]) => {
+          if (seen.some((call) => childTools.includes(call.name) && (call.error || call.denied))) return true;
+          // A completed mutation refusal ends the scripted sequence. Missing results
+          // can still arrive after the parent turn's terminal state is visible.
+          if (
+            seen.some(
+              (call) => call.name !== "read" && childTools.includes(call.name) && hasResult(call) && !successful(call),
+            )
+          )
+            return true;
+          return childTools.every((name) => seen.some((call) => call.name === name && hasResult(call)));
+        };
+        if (enabled && !evidenceReady(tools)) {
           const until = Math.min(io.deadline, io.now() + 10_000);
           const updated = await observeSmokeLaunch(until, io, async () => {
-            await logs(id, "launch_evidence", until);
+            try {
+              await logs(id, "tool_evidence", until);
+            } catch (error) {
+              // Keep the last complete snapshot for the step-specific failure if
+              // a read uses the rest of the observation window.
+              if (typeof row(error).transportTimeoutMs === "number" && io.now() >= until) return;
+              throw error;
+            }
             adopt();
             const seen = calls(true);
-            return hasLaunchResult(seen) ? seen : undefined;
+            if (io.now() <= until) tools = seen;
+            return evidenceReady(seen) ? seen : undefined;
           });
           if (updated) tools = updated;
         }
