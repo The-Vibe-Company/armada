@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { createMemoryAuthStore } from "@armada/auth";
 import type { Provider } from "@armada/core";
@@ -20,7 +20,7 @@ import { createRuntimeMcp } from "../src/runtime-mcp.ts";
 import { createRuntimeResume } from "../src/runtime-resume.ts";
 import { createRuntimeSelfFinish } from "../src/sandbox-finish.ts";
 import { rowOnlyDatabase } from "./row-only-database.ts";
-import { configureRuntimeFixture, runtimeFixture } from "./runtime.fixture.ts";
+import { configureRuntimeFixture, runtimeFixture, scopedRuntimeFixture } from "./runtime.fixture.ts";
 import { ENCRYPTION_KEY } from "./support.ts";
 
 const sharedDatabase = rowOnlyDatabase();
@@ -56,6 +56,7 @@ async function fixture(provider: "boat" | "modal" = "boat", commandGrantExpiresA
     const bearer = `eyJhbGciOiJIUzI1NiJ9.${btoa(JSON.stringify({ sub: f.people.owner })).replace(/=+$/, "")}.sig`;
     return {
       f,
+      close: f.close,
       c,
       secret,
       service,
@@ -152,18 +153,9 @@ test("native lease renewal leaves an epoch-bound runtime gateway lease active", 
 });
 
 describe.each(["boat", "modal"] as const)("enrolled runtime remote MCP (%s)", (provider) => {
-  let current: Awaited<ReturnType<typeof fixture>> | undefined;
-  beforeAll(async () => {
-    current = await fixture(provider);
-  }, 20_000);
-  afterAll(async () => {
-    const x = current;
-    current = undefined;
-    await x?.f.close();
-  });
+  const prepared = scopedRuntimeFixture(() => fixture(provider), { timeout: 20_000 });
   test("authenticated setup reaches the real Runner and real MCP gateway; only scoped leases reach the driver", async () => {
-    const x = current;
-    if (!x) throw new Error("Runtime fixture is not open");
+    const x = await prepared();
     const { f } = x;
     expect(
       (await x.api("sandbox/mcp-preflight-v1", { runtimeVersion: 1, org: f.people.org, connections: [x.c.id] })).status,
@@ -441,20 +433,18 @@ test("old runtime health cannot receive newly enabled MCP capabilities", async (
 });
 
 describe("automatic MCP authority updates", () => {
-  let current: Awaited<ReturnType<typeof fixture>> | undefined;
-  beforeAll(async () => {
-    const x = await fixture();
-    current = x;
-    await x.send(x.f.caller, x.f.input());
-  }, 20_000);
-  afterAll(async () => {
-    const x = current;
-    current = undefined;
-    await x?.f.close();
-  });
+  const prepared = scopedRuntimeFixture(
+    async () => {
+      const x = await fixture();
+      return configureRuntimeFixture(x.f, async () => {
+        await x.send(x.f.caller, x.f.input());
+        return x;
+      });
+    },
+    { timeout: 20_000 },
+  );
   test("ordinary turns adopt reconnected grants and clear deleted bindings without a setup API", async () => {
-    const x = current;
-    if (!x) throw new Error("Runtime fixture is not open");
+    const x = await prepared();
     const { f } = x,
       old = x.configuration();
     await f.db.query("update mcp_grants set generation=generation+1 where connection_id=$1", [x.c.id]);

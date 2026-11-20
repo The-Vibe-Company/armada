@@ -1,7 +1,7 @@
 # Dashboard design notes
 
 The signed-in dashboard (`apps/dashboard/src/app/(app)`) is a work tool: a person picks an organization,
-checks what is running or failed, launches an agent from a golden, and occasionally manages goldens,
+checks what is running or failed, launches an agent from a snapshot, and occasionally manages snapshots,
 connections, keys and members. These notes keep later changes consistent with that job.
 
 Resource create and add flows use `CreateDialog` through
@@ -19,7 +19,8 @@ and use Ctrl-C to stop both processes. The dashboard unit tests use
 
 - **Scope first.** The current organization and the person's role in it sit at the top of the navigation,
   above every page. Nothing on a page should leave doubt about which org it shows.
-- **One primary action per page.** Sandboxes: launch (it leads to the goldens). Goldens: launch from a golden.
+- **One primary action per page.** On Sandboxes, **Launch a sandbox** opens the starting-point picker.
+  Under **Launch from**, **Snapshots** lists snapshots and their launch actions.
   Detail: send a message or stop. Everything else is a secondary (outline or ghost) button.
 - **Activity before reference.** Lists lead with the identifier and its state; supporting facts are muted and
   collapse on narrow screens. On a sandbox, the logs are the main column and the facts sit beside them.

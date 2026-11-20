@@ -39,7 +39,6 @@ const sharedDatabase = rowOnlyDatabase();
 async function fixture(
   harness: "codex" | "claude" = "codex",
   provider: "boat" | "modal" = "modal",
-  idle = false,
   entry: "explicit" | "ordinary" | "default" = "explicit",
   deliverSecrets = false,
 ) {
@@ -185,17 +184,16 @@ async function fixture(
           servers: {},
         });
         starts.push(Object.fromEntries(Object.entries(selectedEnv).filter(([key]) => key === "APP_REGION")));
-        if (idle || deliverSecrets)
-          active = await authority.enrol(
-            (await authority.issue({ sandboxId: sandbox.id, ownerId: actor.userId, configuration: plan.configuration }))
-              .enrolmentToken,
-          );
+        active = await authority.enrol(
+          (await authority.issue({ sandboxId: sandbox.id, ownerId: actor.userId, configuration: plan.configuration }))
+            .enrolmentToken,
+        );
         if (deliverSecrets) {
           if (JSON.stringify(plan.configuration).includes("APP_TOKEN")) throw Error("Secret entered bootstrap");
-          await environment.deliver(provider, actor, sandbox.id, active?.epoch);
+          await environment.deliver(provider, actor, sandbox.id, active.epoch);
         }
         return {
-          epoch: active?.epoch ?? "7",
+          epoch: active.epoch,
           async prepareWorkspace() {
             return { status: "not_connected" as const };
           },
@@ -300,7 +298,7 @@ async function fixture(
 
 for (const entry of ["explicit", "default"] as const)
   test(`${entry} Modal template freezes variables and original runtime receipt across claim replay`, async () => {
-    const f = await fixture("claude", "modal", false, entry);
+    const f = await fixture("claude", "modal", entry);
     const discovery = await f.api({}, "launch/options");
     expect(await discovery.json()).toMatchObject({
       modalRuntime: { variablesVersion: 1, defaultPath: entry === "default" ? "runtime" : "native" },
@@ -320,7 +318,9 @@ for (const entry of ["explicit", "default"] as const)
       if (entry === "explicit") publishedResponse("sandbox/launch").parse(launched);
       const sandboxId = entry === "explicit" ? launched.sandbox.id : launched.id;
       const manifest = entry === "explicit" ? launched.sandbox.templateManifest : launched.manifest;
-      expect(launched).toMatchObject({ runtime: { kind: "armada", epoch: "7" } });
+      const active = f.active();
+      if (!active) throw Error("Expected enrolled launch runtime");
+      expect(launched).toMatchObject({ runtime: { kind: "armada", epoch: active.epoch } });
       if (entry === "explicit") {
         expect(launched).toMatchObject({
           sandbox: { id: sandboxId, provider: "modal", externalRef: "pinned:variable-proof" },
@@ -492,7 +492,7 @@ function fakeBoatRuntimeSink(f: Awaited<ReturnType<typeof fixture>>, acknowledge
 test.each(["modal", "boat"] as const)(
   "%s delivers a short raw binding only through the encrypted runtime command and preserves its receipt",
   async (provider) => {
-    const f = await fixture("codex", provider, false, "explicit", true);
+    const f = await fixture("codex", provider, "explicit", true);
     const canary = `v${crypto.randomUUID().slice(0, 6)}`;
     const secret = (
       await f.db.query<{ id: string }>(
@@ -621,7 +621,7 @@ test.each([
   ["default", "secret_unavailable"],
   ["boat", "secret_version_changed"],
 ] as const)("%s launch returns the vault conflict after allocation and on replay", async (path, reason) => {
-  const f = await fixture("codex", path === "boat" ? "boat" : "modal", false, path === "boat" ? "default" : path, true);
+  const f = await fixture("codex", path === "boat" ? "boat" : "modal", path === "boat" ? "default" : path, true);
   const secret = (
     await f.db.query<{ id: string }>(
       "insert into application_secrets(org_id,owner_id,scope,name,value_enc) values($1,$2,'personal','APP_TOKEN',$3) returning id",
@@ -795,7 +795,7 @@ test.each([
 });
 
 test("promptless Modal template freezes its manifest and replays the empty launch without inference", async () => {
-  const f = await fixture("claude", "modal", true);
+  const f = await fixture("claude", "modal");
   const template = await f.create();
   const { prompt: _prompt, ...request } = f.request(template.id);
   const send = f.options.runtimeSend;
@@ -875,7 +875,7 @@ for (const harness of ["codex", "claude"] as const)
   });
 
 test("ordinary completed native template replay stays native after coordinator default selection", async () => {
-  const f = await fixture("codex", "modal", false, "ordinary");
+  const f = await fixture("codex", "modal", "ordinary");
   const template = await f.create({ ...f.definition, variables: [] });
   const request = f.request(template.id);
   const first = await f.api(request);

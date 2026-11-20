@@ -159,32 +159,28 @@ test("a competing accepted turn invalidates an older finished probe before admis
   }
 });
 
-test("a generation change after the prompt probe refuses admission even if the task and epoch match", async () => {
+test("a newly enrolled generation after the prompt probe refuses admission even if the task matches", async () => {
   const f = await fixture(await sharedDatabase());
   try {
     const store = createSqlData(f.sql)(f.caller).sandboxes;
     const before = (await store.get(f.row.id))!;
     const generation = before.lifecycleGeneration!;
     const taskPromptId = before.taskPromptId!;
-    f.race(async () => {
-      const activityToken = crypto.randomUUID();
-      await store.update(f.row.id, {
-        status: "running",
-        expectedGeneration: generation,
-        advanceGeneration: true,
-        clearTaskOutcome: true,
-        activityToken,
-      });
-      await store.update(f.row.id, {
-        expectedGeneration: generation + 1,
-        finishActivity: true,
-        taskPromptId,
-        activityToken,
-      });
+    const send = createRuntimeFollowup(f.sql, ENCRYPTION_KEY, {
+      ...f.bridge,
+      async call(ownerId, command, options) {
+        const reply = await f.bridge.call(ownerId, command, options);
+        if (command.op === "getPrompt") {
+          await f.db.query("update sandboxes set lifecycle_generation=lifecycle_generation+1 where id=$1", [f.row.id]);
+          const ticket = await f.authority.issue({ sandboxId: f.row.id, ownerId, configuration: {} });
+          await f.authority.enrol(ticket.enrolmentToken);
+        }
+        return reply;
+      },
     });
-    await expect(f.send(f.caller, f.input())).rejects.toThrow("Runtime admission changed");
+    await expect(send(f.caller, f.input())).rejects.toThrow("Runtime admission changed");
     expect(await store.get(f.row.id)).toMatchObject({
-      lifecycleGeneration: generation + 2,
+      lifecycleGeneration: generation + 1,
       taskPromptId,
     });
     expect(f.starts).toHaveLength(1);

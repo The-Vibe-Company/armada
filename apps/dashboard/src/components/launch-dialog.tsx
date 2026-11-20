@@ -46,7 +46,7 @@ export type LaunchConnections = { connections: McpConnection[] } | { unavailable
  * The golden's machine size policy (`@armada/core` contract version 1), `null` when none is set. Absent while the
  * server cannot take a size for this launch: the dialog then shows no size and launches as before.
  */
-export type LaunchSizing = { policy: MachineSizePolicy | null };
+type LaunchSizing = { policy: MachineSizePolicy | null };
 
 export type LaunchProps = {
   golden: string;

@@ -164,6 +164,92 @@ test.each(["boat", "modal"] as const)(
   },
 );
 
+test("an accepted initial launch prompt publishes under the enrolled generation", async () => {
+  const f = await fixture("modal");
+  const activityToken = crypto.randomUUID();
+  await f.db.query(
+    `update sandboxes set status='starting',activity_lease_id=$2,
+     activity_until=now()+interval '1 minute' where id=$1`,
+    [f.id, activityToken],
+  );
+  const ticket = await f.issue();
+  const session = await f.service().enrol(ticket.enrolmentToken);
+  const expectedGeneration = Number(ticket.lifecycleGeneration);
+  const store = createSqlData(f.sql)({
+    userId: f.people.owner,
+    orgs: [{ orgId: f.people.org, role: "member" }],
+    via: "service",
+  }).sandboxes;
+  const patch = {
+    status: "running",
+    taskPromptId: "first-prompt",
+    conversationIds: ["conversation"],
+    finishActivity: true,
+    activityToken,
+    expectedGeneration,
+  } satisfies Parameters<typeof store.update>[1];
+
+  await expect(store.update(f.id, { ...patch, activityToken: crypto.randomUUID() })).rejects.toThrow();
+  await f.db.query(
+    `with account as (
+       insert into credentials(scope,owner_id,kind,value_enc) values('user',$2,'openai',$3) returning id
+     )
+     insert into account_agent_reservations(sandbox_id,account_id) select $1,id from account`,
+    [f.id, f.people.owner, new Uint8Array([1])],
+  );
+  const lease = () => f.db.query("select activity_lease_id from sandboxes where id=$1", [f.id]);
+  const reservations = () =>
+    f.db.query("select account_id from account_agent_reservations where sandbox_id=$1", [f.id]);
+  const publish = () => store.update(f.id, patch);
+  await f.db.exec(`alter table sandboxes add constraint test_running_publication
+    check (status <> 'running' or activity_lease_id is not null) not valid`);
+  try {
+    await expect(publish()).rejects.toThrow("test_running_publication");
+  } finally {
+    await f.db.exec("alter table sandboxes drop constraint test_running_publication");
+  }
+  expect(await store.get(f.id)).toMatchObject({ status: "starting", taskPromptId: null, conversationIds: [] });
+
+  await f.db.query("insert into public.runtime_idle_turns(sandbox_id,prompt_id,settled) values($1,$2,true)", [
+    f.id,
+    patch.taskPromptId,
+  ]);
+  const journal = async () =>
+    (
+      await f.db.query(
+        "select to_status,actor,generation::text from sandbox_transitions where sandbox_id=$1 order by id",
+        [f.id],
+      )
+    ).rows;
+  await f.db.exec(
+    "alter table sandbox_transitions add constraint test_reject_settlement check (code <> 'runtime_turn_settled') not valid",
+  );
+  try {
+    await expect(publish()).rejects.toThrow("test_reject_settlement");
+    expect(await store.get(f.id)).toMatchObject({ status: "starting", taskPromptId: null, conversationIds: [] });
+    expect((await lease()).rows).toEqual([{ activity_lease_id: activityToken }]);
+    expect((await reservations()).rows).toHaveLength(1);
+    expect(await journal()).toEqual([]);
+  } finally {
+    await f.db.exec("alter table sandbox_transitions drop constraint test_reject_settlement");
+  }
+
+  await publish();
+  expect(await store.get(f.id)).toMatchObject({
+    status: "ready",
+    lifecycleGeneration: expectedGeneration,
+    taskPromptId: "first-prompt",
+    conversationIds: ["conversation"],
+  });
+  expect((await lease()).rows).toEqual([{ activity_lease_id: null }]);
+  expect((await reservations()).rows).toEqual([]);
+  expect(await journal()).toEqual([
+    { to_status: "running", actor: "runtime_enrolment", generation: ticket.lifecycleGeneration },
+    { to_status: "ready", actor: "runtime_turn", generation: ticket.lifecycleGeneration },
+  ]);
+  expect((await f.request("session", session.runtimeToken, session.epoch)).status).toBe(200);
+});
+
 test("runtime readiness rechecks the activity deadline after locking the enrolled runtime", async () => {
   const f = await fixture();
   const activityToken = crypto.randomUUID();
@@ -373,11 +459,9 @@ test("runtime bootstrap SQL is service-only and private routes reject ambient/ma
   expect(mutation).toBe(false);
 });
 
-// The happy-path owner is control.test.ts's real launch completion. These are
-// lookalike completions which must NOT turn the exception into a fencing bypass.
-test("initial handoff exception refuses expired leases, generation jumps, missing prompt and concurrent stop", async () => {
+test("launch-shaped publication cannot carry runtime authority to another generation", async () => {
   const f = await fixture();
-  for (const change of ["expired", "jump", "missing-prompt", "stop"]) {
+  for (const change of ["ordinary", "expired", "jump", "missing-prompt", "stop"]) {
     await f.db.query(
       "update sandboxes set status='starting',stop_requested_at=null,activity_lease_id=$2,activity_until=now()+interval '2 minutes',task_prompt_id=null where id=$1",
       [f.id, crypto.randomUUID()],

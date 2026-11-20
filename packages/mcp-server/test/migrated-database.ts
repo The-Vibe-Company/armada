@@ -4,33 +4,10 @@ export { openMigratedDatabase as migratedDatabase } from "../../../scripts/test-
 
 import { afterAll, beforeAll } from "bun:test";
 import { openMigratedDatabase } from "../../../scripts/test-support/migrated-database.ts";
-
-export function databaseFixture<T extends { close(): Promise<void> }>(open: () => Promise<T>) {
-  let pending: Promise<T> | undefined;
-  let ready: T | undefined;
-  return {
-    async setup() {
-      const opening = open();
-      pending = opening;
-      const database = await opening;
-      if (pending === opening) ready = database;
-    },
-    get() {
-      if (!ready) throw new Error("Database fixture is not open");
-      return ready;
-    },
-    async close() {
-      const opening = pending;
-      pending = undefined;
-      ready = undefined;
-      const database = await opening?.catch(() => undefined);
-      await database?.close();
-    },
-  };
-}
+import { closeableFixture } from "./closeable.fixture.ts";
 
 export function useMigratedDatabase() {
-  const fixture = databaseFixture(openMigratedDatabase);
+  const fixture = closeableFixture(openMigratedDatabase);
   beforeAll(fixture.setup);
   afterAll(fixture.close);
   return fixture.get;

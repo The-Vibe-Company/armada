@@ -60,14 +60,11 @@ test("the host publishes the deployment's verified artifacts read-only by digest
       expect(new Uint8Array(await readFile(target))).toEqual(bytes);
       expect((await lstat(target)).mode & 0o777).toBe(0o444);
     }
-    // The second, queued run re-reads only the small set: nothing is re-downloaded.
     expect(f.urls.filter((url) => url.includes("/artifacts/"))).toHaveLength(2);
-    // A vanished directory is recreated by ensure() and its entries republished.
     await rm(f.sharedDir, { recursive: true });
     expect(await f.shared.ensure()).toBe(true);
     await f.warm(runtime);
     expect((await readdir(f.sharedDir)).sort()).toEqual([sha(codex), sha(claude)].sort());
-    // Same runtime, new harness archive: published, and the previous set is kept, not refetched later.
     f.serve({ runtime: { sha256: runtime, bytes: 1 }, artifacts: [pin(codex), pin(claudeNext)] });
     await f.warm(runtime);
     expect((await readdir(f.sharedDir)).sort()).toEqual([sha(codex), sha(claude), sha(claudeNext)].sort());

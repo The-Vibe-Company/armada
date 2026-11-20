@@ -281,7 +281,7 @@ function ReadAt({ at, report, now, lead }: { at: string | null; report: string; 
  * An account's allowance windows. Each window says what share is left, what was used, and when it resets. A
  * stale report keeps its numbers but says how old they are; nothing reported is said in words, never as zero.
  */
-export function UsagePanel({
+function UsagePanel({
   usage,
   account,
   now,

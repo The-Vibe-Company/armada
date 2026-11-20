@@ -48,12 +48,17 @@ async function signingKey(encryptionKey: string | undefined) {
 }
 
 async function create(sql: Sql, org: string, actor: Caller, request: Request, encryptionKey: string | undefined) {
+  const { maxBodyBytes, oversizedBodyStatus } = createInboundTrigger.input;
   let body: Record<string, unknown>;
   try {
-    body = await readBody(request, 4096);
+    body = await readBody(request, maxBodyBytes);
   } catch (error) {
     if (error instanceof BodyTooLargeError || error instanceof VaultError)
-      return fail(400, "invalid_request", "Supply a JSON trigger configuration of at most 4096 bytes.");
+      return fail(
+        oversizedBodyStatus,
+        "invalid_request",
+        `Supply a JSON trigger configuration of at most ${maxBodyBytes} bytes.`,
+      );
     throw error;
   }
   const parsed = createInboundTrigger.input.body.safeParse(body);

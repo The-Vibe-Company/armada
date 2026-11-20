@@ -2,8 +2,11 @@ import { CONTROL_BODY_MAX_BYTES } from "@armada/core";
 import {
   accountOperations,
   controlRouteKey,
+  operations,
   PUBLIC_CONTROL_ROUTES,
+  sandboxCheckOperations,
   skillDefaultOperations,
+  streamSandboxEvents,
   tokenOperations,
 } from "@armada/core/contract";
 
@@ -23,9 +26,18 @@ export const PARAMETERIZED_CONTROL_ROUTES = [
 
 /** POST routes the public endpoint forwards with a bearer. */
 export const PRIVATE_POST_PATHS: ReadonlySet<string> = new Set([
-  "golden/adopt",
-  "github/runtime-status",
-  "sandbox/resume",
+  ...Object.values(operations)
+    .filter(
+      (operation) =>
+        operation.audience !== "admin" &&
+        operation.route.method === "POST" &&
+        !("directServer" in operation) &&
+        !("anonymous" in operation),
+    )
+    .map(({ route }) => controlRouteKey(route)),
+  ...Object.values({ ...accountOperations, ...sandboxCheckOperations, ...skillDefaultOperations, ...tokenOperations })
+    .filter((operation) => operation.audience === "admin" && operation.route.method === "POST")
+    .map(({ route }) => controlRouteKey(route)),
   "skillpack/connection",
   "creds/accounts/models",
   "creds/defaults/set",
@@ -36,7 +48,6 @@ export const PRIVATE_POST_PATHS: ReadonlySet<string> = new Set([
   "templates/get",
   "templates/publish",
   "templates/delete",
-  "templates/launch",
   "routines/create",
   "routines/list",
   "routines/get",
@@ -60,14 +71,10 @@ export const PRIVATE_POST_PATHS: ReadonlySet<string> = new Set([
   "secrets/upload",
   "secrets/commit",
   "github/status",
-  "github/refresh",
   "github/connect",
   "github/reconnect",
   "github/disconnect",
   "github/install",
-  ...Object.values({ ...accountOperations, ...skillDefaultOperations, ...tokenOperations })
-    .filter(({ route }) => route.method === "POST")
-    .map(({ route }) => controlRouteKey(route)),
   "org/invitations/create",
   "org/invitations/list",
   "org/invitations/resend",
@@ -93,8 +100,6 @@ export const PRIVATE_POST_PATHS: ReadonlySet<string> = new Set([
   "creds/accounts/remove",
   "creds/accounts/usage",
   "creds/accounts/auth-capabilities",
-  "golden/list",
-  "golden/capabilities",
   "golden/size-policy",
   "golden/create",
   "golden/build/status",
@@ -116,22 +121,6 @@ export const PRIVATE_POST_PATHS: ReadonlySet<string> = new Set([
   "docker/snapshots/create",
   "docker/snapshots/rebuild",
   "docker/hosts/revoke",
-  "launch/options",
-  "sandbox/launch",
-  "sandbox/bind-credential",
-  "sandbox/list",
-  "sandbox/status",
-  "sandbox/recovery",
-  "sandbox/report",
-  "sandbox/advice",
-  "sandbox/send",
-  "sandbox/test-model-connection",
-  "sandbox/stop",
-  "sandbox/extend",
-  "sandbox/wait",
-  "sandbox/exec",
-  "sandbox/steer",
-  "sandbox/interrupt",
   "golden/visibility",
   "mcp/list",
   "mcp/catalog",
@@ -145,7 +134,6 @@ export const PRIVATE_POST_PATHS: ReadonlySet<string> = new Set([
   "mcp/revoke",
   "mcp/delete",
   "mcp/oauth/callback",
-  "logs/read",
 ]);
 
 type ControlVerb = "GET" | "POST" | "DELETE";
@@ -198,11 +186,22 @@ async function boundedBody(request: Request, maxBytes: number): Promise<ArrayBuf
   return length ? bytes.buffer : null;
 }
 
+type UpstreamFetch = (input: URL, init: RequestInit) => Promise<Response>;
+
 /** Server-side, same-origin forwarding to the configured Armada control API. */
-export async function forwardControl(
+export function forwardControl(request: Request, path: readonly string[], fetchImpl: UpstreamFetch = fetch) {
+  return forwardRequest(request, path, fetchImpl);
+}
+
+export function forwardDashboardEventStream(request: Request, viewerToken: string, fetchImpl: UpstreamFetch = fetch) {
+  return forwardRequest(request, [controlRouteKey(streamSandboxEvents.route)], fetchImpl, viewerToken);
+}
+
+async function forwardRequest(
   request: Request,
   path: readonly string[],
-  fetchImpl: (input: URL, init: RequestInit) => Promise<Response> = fetch,
+  fetchImpl: UpstreamFetch,
+  viewerToken?: string,
 ): Promise<Response> {
   const upstream = controlOrigin(process.env.ARMADA_MCP_URL);
   if (!upstream) return fail(503, "Armada API is not configured.");
@@ -211,12 +210,20 @@ export async function forwardControl(
   const method: ControlVerb = request.method;
   const sandboxOutputs = method === "GET" ? sandboxOutputsPath(request.url) : null;
   const relative = sandboxOutputs ?? path.join("/");
-  const downloadHeaders = new Headers();
+  const eventStream =
+    viewerToken &&
+    method === streamSandboxEvents.route.method &&
+    relative === controlRouteKey(streamSandboxEvents.route);
+  const forwardedHeaders = new Headers();
   if (sandboxOutputs && !sandboxOutputs.endsWith("/outputs")) {
     for (const name of ["range", "if-range"]) {
       const value = request.headers.get(name);
-      if (value) downloadHeaders.set(name, value);
+      if (value) forwardedHeaders.set(name, value);
     }
+  }
+  if (eventStream) {
+    const cursor = request.headers.get("last-event-id");
+    if (cursor) forwardedHeaders.set("last-event-id", cursor);
   }
   const sandboxDeletion =
     method === "DELETE" && path.length === 2 && path[0] === "sandboxes" && SANDBOX_ID.test(path[1] ?? "");
@@ -224,9 +231,15 @@ export async function forwardControl(
     ? (PUBLIC_CONTROL_ROUTES[relative] ?? [])
     : [];
   const isPublic = publicMethods.includes(method);
-  if (!sandboxOutputs && !sandboxDeletion && !isPublic && !(method === "POST" && PRIVATE_POST_PATHS.has(relative)))
+  if (
+    !eventStream &&
+    !sandboxOutputs &&
+    !sandboxDeletion &&
+    !isPublic &&
+    !(method === "POST" && PRIVATE_POST_PATHS.has(relative))
+  )
     return fail(404, "Not found.");
-  const authorization = request.headers.get("authorization");
+  const authorization = eventStream ? `Bearer ${viewerToken}` : request.headers.get("authorization");
   if (!isPublic && !authorization) return fail(401, "Unauthorized.");
   let body: ArrayBuffer | null = null;
   try {
@@ -245,10 +258,10 @@ export async function forwardControl(
     response = await fetchImpl(target, {
       method,
       headers: {
-        ...Object.fromEntries(downloadHeaders),
+        ...Object.fromEntries(forwardedHeaders),
         ...(authorization ? { authorization } : {}),
         ...(method === "POST" ? { "content-type": request.headers.get("content-type") ?? "application/json" } : {}),
-        accept: "application/json",
+        accept: eventStream ? streamSandboxEvents.outputMediaType : "application/json",
       },
       ...(body ? { body } : {}),
       redirect: isPublic ? "manual" : "error",
@@ -298,7 +311,8 @@ export async function forwardControl(
     const length = response.headers.get("content-length");
     if (length && !response.headers.has("content-encoding")) headers.set("content-length", length);
   }
-  headers.set("cache-control", sandboxOutputs ? "private, no-store" : "no-store");
+  if (eventStream && response.headers.get("x-accel-buffering") === "no") headers.set("x-accel-buffering", "no");
+  headers.set("cache-control", sandboxOutputs || eventStream ? "private, no-store" : "no-store");
   return new Response(response.body, { status: response.status, headers });
 }
 

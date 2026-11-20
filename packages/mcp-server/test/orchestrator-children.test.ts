@@ -334,64 +334,91 @@ test("own children support independent target receipts while unrelated children 
   }
 });
 
-test("revocation between reservation and dispatch cancels queued allocation", async () => {
-  const { close, sql, id, authority, token, selection } = await fixture();
-  try {
-    let admissions = 0,
-      allocations = 0;
-    const children = createSandboxChildren(
-      sql,
-      {
-        async admit(secret, request, reserve) {
-          if (++admissions === 2) await authority.revoke(id);
-          return authority.admit(secret, request, reserve);
+test.each(["launch", "message"] as const)(
+  "revocation before dispatch records the failed %s admission",
+  async (action) => {
+    const { close, db, sql, id, p, parent, golden, authority, token, selection } = await fixture();
+    try {
+      let childId: string | undefined;
+      if (action === "message") {
+        const child = await createSqlSandboxStore(sql).insert({
+          id: crypto.randomUUID(),
+          provider: parent.provider,
+          providerSandboxId: "child-dispatch-admission",
+          goldenId: golden.id,
+          orgId: p.org,
+          ownerId: p.owner,
+          harness: "codex",
+          model: selection.model,
+          reasoningEffort: "high",
+          status: "ready",
+          visibility: "private",
+        });
+        childId = child.id;
+        await db.query(
+          "insert into orchestrator_children(sandbox_id,orchestrator_id,org_id,owner_id) values($1,$2,$3,$4)",
+          [childId, id, p.org, p.owner],
+        );
+      }
+      let admissions = 0;
+      let dispatches = 0;
+      const children = createSandboxChildren(
+        sql,
+        {
+          async admit(secret, request, reserve) {
+            if (++admissions === 2) await authority.revoke(id);
+            return authority.admit(secret, request, reserve);
+          },
         },
-      },
-      {
-        async launch() {
-          allocations++;
-          throw Error("allocation must not start");
+        {
+          async launch() {
+            dispatches++;
+            throw Error("allocation must not start");
+          },
+          async message() {
+            dispatches++;
+            throw Error("message must not start");
+          },
+          async stop() {
+            throw Error("unexpected");
+          },
+          async read() {
+            throw Error("unexpected");
+          },
+          async reconcile(op) {
+            return { operationId: op.id, sandboxId: op.sandboxId, state: "unknown" };
+          },
         },
-        async message() {
-          throw Error("unexpected");
+      );
+      const lines: string[] = [];
+      let receipt: Awaited<ReturnType<typeof children.launch>> | undefined;
+      const response = await observeRequest(
+        async () => {
+          receipt = childId
+            ? await children.message(token, "queued-revoke", childId, "synthetic child prompt")
+            : await children.launch(token, "queued-revoke", selection);
+          return new Response();
         },
-        async stop() {
-          throw Error("unexpected");
-        },
-        async read() {
-          throw Error("unexpected");
-        },
-        async reconcile(op) {
-          return { operationId: op.id, sandboxId: op.sandboxId, state: "unknown" };
-        },
-      },
-    );
-    const lines: string[] = [];
-    let receipt: Awaited<ReturnType<typeof children.launch>> | undefined;
-    const response = await observeRequest(
-      async () => {
-        receipt = await children.launch(token, "queued-revoke", selection);
-        return new Response();
-      },
-      (line) => lines.push(line),
-    );
-    expect(allocations).toBe(0);
-    if (!receipt) throw Error("Missing child receipt.");
-    expect(receipt.state).toBe("failed");
-    expect(lines.map((line) => JSON.parse(line))).toContainEqual(
-      expect.objectContaining({
-        event: "operator_failure",
-        phase: "scoped.child_launch.dispatch_admission",
-        errorClass: "DelegatedAuthorityDenied",
-        sandboxId: receipt.sandboxId,
-        operationId: receipt.id,
-        requestId: response?.headers.get("x-request-id"),
-      }),
-    );
-  } finally {
-    await close();
-  }
-});
+        (line) => lines.push(line),
+      );
+      expect(dispatches).toBe(0);
+      if (!receipt) throw Error("Missing child receipt.");
+      expect(receipt.state).toBe("failed");
+      expect(lines.map((line) => JSON.parse(line))).toContainEqual(
+        expect.objectContaining({
+          event: "operator_failure",
+          phase: `scoped.child_${action}.dispatch_admission`,
+          errorClass: "DelegatedAuthorityDenied",
+          sandboxId: receipt.sandboxId,
+          operationId: receipt.id,
+          requestId: response?.headers.get("x-request-id"),
+        }),
+      );
+    } finally {
+      await close();
+    }
+  },
+);
 
 test("revocation after snapshot admission releases a child allocation that never reached the provider", async () => {
   const { close, db, sql, id, authority, token, selection } = await fixture();

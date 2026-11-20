@@ -46,6 +46,7 @@ function fixture(enabled = true) {
     sendUnknown: false,
     notReady: false,
     logsFail: false,
+    logsTimeout: false,
     waitRunning: false,
     waitReplies: [] as Obj[],
     logsIncomplete: false,
@@ -76,7 +77,7 @@ function fixture(enabled = true) {
       clock += ms;
     },
     deadline: Number.POSITIVE_INFINITY,
-    async request<T>(path: string, input: object): Promise<T> {
+    async request<T>(path: string, input: object, timeoutMs?: number): Promise<T> {
       const body = input as Obj;
       requests.push({ path, body });
       expect(body.org).toBe(item.org);
@@ -190,6 +191,8 @@ function fixture(enabled = true) {
         expect(body.maxBytes).toBe(1_048_576);
         expect(body.limit).toBe(500);
         if (state.logsFail) throw Object.assign(new Error("secret-error-do-not-print"), { status: 400 });
+        if (state.logsTimeout && timeoutMs !== undefined)
+          throw Object.assign(new Error("request_failed"), { transportTimeoutMs: timeoutMs });
         return {
           events: state.lateLogs && state.logReads === 1 ? [] : state.events,
           hasMore: state.logsIncomplete,
@@ -259,6 +262,21 @@ describe("ordinary scoped Armada smoke", () => {
     expect(f.state.logReads).toBe(2);
     expect(await f.probe.cleanup(parent, true)).toBe(true);
     expect(f.stopped).toEqual([child]);
+  });
+
+  test("identifies a transport timeout while waiting for scoped launch evidence", async () => {
+    const f = fixture();
+    f.state.lateLogs = true;
+    f.state.logsTimeout = true;
+    await expect(run(f)).rejects.toThrow("request_failed");
+    expect(f.output).toContainEqual(
+      expect.objectContaining({
+        step: "scoped_logs_diagnostic",
+        phase: "launch_evidence",
+        status: null,
+        transportTimeoutMs: 10_000,
+      }),
+    );
   });
 
   test.each(["noTools", "denied"] as const)(
@@ -757,12 +775,14 @@ describe("ordinary scoped Armada smoke", () => {
       step: "scoped_logs_diagnostic",
       provider: "boat",
       route: "logs/read",
+      phase: "initial_evidence",
       page: 0,
       cursorPresent: false,
       coalesce: true,
       limit: 500,
       maxBytes: 1_048_576,
       status: 400,
+      transportTimeoutMs: null,
     });
     expect(g.output.at(-1)).toMatchObject({ unknownEvidence: true, unattributedSandboxIds: [child] });
     expect(JSON.stringify(g.output)).not.toContain("secret-error");

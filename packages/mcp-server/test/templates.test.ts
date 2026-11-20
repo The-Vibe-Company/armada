@@ -11,7 +11,6 @@ import {
   goldenForLaunch,
   installSkill,
   type LaunchTemplate,
-  launchSandbox,
   PrivateSkillError,
   ProviderError,
   type Sql,
@@ -868,11 +867,12 @@ test("later readable preparation survives variable edits, template tombstones an
 test("ordinary prompt admission performs no additional template queries or provider bootstrap", async () => {
   const f = await fixture();
   try {
-    const launched = await launchSandbox(
-      f.provider,
-      f.runtime.stores,
-      { userId: f.people.owner, orgId: f.people.org, role: "member" },
-      { golden: "shared", provider: "boat", harness: "codex", connections: [] },
+    const ordinarySandboxId = crypto.randomUUID();
+    const providerSandboxId = `bx_ordinary_${ordinarySandboxId}`;
+    await f.db.query(
+      `insert into sandboxes(id,golden_id,org_id,owner_id,provider,provider_sandbox_id,harness,status)
+       values($1,$2,$3,$4,'boat',$5,'codex','running')`,
+      [ordinarySandboxId, f.goldenId, f.people.org, f.people.owner, providerSandboxId],
     );
     const options = {
       sql: f.sql,
@@ -884,10 +884,10 @@ test("ordinary prompt admission performs no additional template queries or provi
     const withTemplates = createMcpLifecycle({ ...options, prepareReadableVariables: f.service.prepare });
     const actor = { userId: f.people.owner, orgId: f.people.org };
     f.queries.length = 0;
-    await ordinary.beforePrompt(f.provider, launched.sandbox.providerSandboxId, actor);
+    expect(await ordinary.beforePrompt(f.provider, providerSandboxId, actor)).toBe(ordinarySandboxId);
     const baseline = f.queries.length;
     f.queries.length = 0;
-    await withTemplates.beforePrompt(f.provider, launched.sandbox.providerSandboxId, actor);
+    expect(await withTemplates.beforePrompt(f.provider, providerSandboxId, actor)).toBe(ordinarySandboxId);
     expect(f.queries).toHaveLength(baseline);
     expect(f.configured).toHaveLength(0);
     // A fresh read sees a newly admitted template; there is no negative process cache.

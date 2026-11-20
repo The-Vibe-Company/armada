@@ -8,6 +8,8 @@ import {
   type Sql,
 } from "@armada/core";
 import { decryptSecret, encryptSecret, OutputCollectionError } from "@armada/core/server";
+import { DockerMachineError } from "../../core/src/docker-machine.ts";
+import { type Api, type Executor, type State, type Store, tick } from "../../docker-host/src/daemon.ts";
 import { admitDockerDisk, DockerHostDraining } from "../src/docker-capacity.ts";
 import { createDockerHostRoutes } from "../src/docker-host-routes.ts";
 import { createDockerHostStore, DockerHostDenied } from "../src/docker-host-store.ts";
@@ -350,7 +352,7 @@ test("frozen machine expiry survives mailbox delivery and cannot change under an
 
 async function boundFixture(
   registered?: Awaited<ReturnType<typeof fixture>>,
-  placement?: { sandboxId: string; generation: string; expiresAt: number },
+  placement?: { sandboxId: string; generation: string; expiresAt: number; image?: string; snapshotId?: string },
 ) {
   const db = database();
   const host = registered ?? (await fixture());
@@ -358,8 +360,8 @@ async function boundFixture(
     generation = placement?.generation ?? randomUUID();
   await db.query(
     `insert into public.sandboxes(id,org_id,owner_id,provider,provider_sandbox_id,harness,status,
-      docker_host_id,docker_installation_id,docker_generation,docker_image,expires_at,effective_ttl_seconds)
-     values($1,$2,$3,'docker',$4,'codex','starting',$5,$6,$7,$8,coalesce($9::timestamptz,now()+interval '1 hour'),3600)`,
+      docker_host_id,docker_installation_id,docker_generation,docker_image,expires_at,effective_ttl_seconds,docker_snapshot_id)
+     values($1,$2,$3,'docker',$4,'codex','starting',$5,$6,$7,$8,coalesce($9::timestamptz,now()+interval '1 hour'),3600,$10)`,
     [
       sandboxId,
       host.actor.orgId,
@@ -368,8 +370,9 @@ async function boundFixture(
       host.hostId,
       host.installationId,
       generation,
-      `example/worker@sha256:${"a".repeat(64)}`,
+      placement?.image ?? job().request.image,
       placement ? new Date(placement.expiresAt) : null,
+      placement?.snapshotId ?? null,
     ],
   );
   const owner = { ...host.actor, userId: host.memberId };
@@ -377,21 +380,57 @@ async function boundFixture(
   return { ...host, sandboxId, generation, owner, create };
 }
 
-async function restoreFixture() {
-  const host = await fixture();
+async function prepareRestore(registered?: Awaited<ReturnType<typeof fixture>>, useSnapshot = false) {
+  const host = registered ?? (await fixture());
   const db = database();
   const bindings = createDockerMachineBindings(sql, { ...host, deploymentId: randomUUID() });
   const sandboxId = randomUUID();
   const predecessor = await bindings.bind({ sandboxId, generation: 1 });
   const generation = await bindings.bind({ sandboxId, generation: 2 });
   const expiresAt = Date.UTC(2099, 0, 1);
-  const a = await boundFixture(host, { sandboxId, generation: predecessor, expiresAt });
+  const snapshot = useSnapshot
+    ? { id: randomUUID(), ownerId: host.memberId, visibility: "private" as const }
+    : undefined;
+  const image = snapshot ? `sha256:${"c".repeat(64)}` : job().request.image;
+  if (snapshot) {
+    await store.poll(host.hostToken, host.installationId);
+    await db.query(
+      `insert into public.docker_snapshots(id,org_id,owner_id,host_id,installation_id,name,visibility,config,
+       request_hash,actor_epoch,issuer_epoch,generation,base_image,status,image_id,build_expires_at)
+       values($1,$2,$3,$4,$5,'restore-source','private','{}'::jsonb,$6,1,1,$7,$8,'ready',$9,now()+interval '1 hour')`,
+      [
+        snapshot.id,
+        host.actor.orgId,
+        snapshot.ownerId,
+        host.hostId,
+        host.installationId,
+        "b".repeat(64),
+        randomUUID(),
+        job().request.image,
+        image,
+      ],
+    );
+  }
+  const a = await boundFixture(host, {
+    sandboxId,
+    generation: predecessor,
+    expiresAt,
+    image,
+    ...(snapshot && { snapshotId: snapshot.id }),
+  });
   await store.enqueueSandbox(a.owner, a.sandboxId, a.create);
   await store.complete(a.hostToken, a.installationId, { requestId: a.create.requestId, outcome: "completed" });
   await db.query("update sandboxes set lifecycle_generation=2 where id=$1", [sandboxId]);
-  const request = { ...job().request, sandboxId: a.sandboxId, generation, expiresAt, ttlSeconds: 3600 };
+  const request = {
+    sandboxId: a.sandboxId,
+    generation,
+    image,
+    expiresAt,
+    ttlSeconds: 3600,
+    ...(snapshot && { snapshot }),
+  };
   const restore = {
-    requestId: randomUUID(),
+    requestId: generation,
     operation: "restore" as const,
     request,
     predecessor: { request: { ...request, generation: predecessor }, machineId: "a".repeat(64) },
@@ -413,8 +452,7 @@ async function restoreFixture() {
       ],
     );
   await putIntent(cleanupId, "stop", { bound: 1, job: cleanup });
-  const { requestId, ...payload } = restore;
-  await putIntent(requestId, "restore", { bound: 1, job: payload, lifecycleGeneration: "2" });
+  const selection = { ...restore, lifecycleGeneration: 2 };
   const poll = (running: string[] = [], supportsRestore = true, hostStore = store) =>
     hostStore.poll(
       a.hostToken,
@@ -430,8 +468,69 @@ async function restoreFixture() {
       false,
       supportsRestore,
     );
-  return { ...a, restore, cleanupId, poll };
+  return { ...a, restore, selection, cleanupId, poll, putIntent };
 }
+
+async function restoreFixture() {
+  const a = await prepareRestore();
+  await store.enqueueSandbox(a.owner, a.sandboxId, a.selection);
+  return a;
+}
+
+test("restore enqueue rolls back on interruption and freezes one intent per target generation", async () => {
+  const a = await prepareRestore();
+  const { selection } = a;
+  const enqueue = (intent = selection, mailbox = store) => mailbox.enqueueSandbox(a.owner, a.sandboxId, intent);
+  const { faultingStore, failure } = failDockerJobCommit(selection.requestId, null);
+  await expect(enqueue(selection, faultingStore)).rejects.toMatchObject({ cause: failure });
+  const retry = { ...selection, predecessor: { ...selection.predecessor, machineId: "b".repeat(64) } };
+  await expect(enqueue(retry)).resolves.toEqual({ requestId: retry.requestId });
+  await expect(enqueue(retry)).resolves.toEqual({ requestId: retry.requestId });
+  await expect(a.poll()).resolves.toEqual({ ...a.restore, predecessor: retry.predecessor });
+  await store.complete(a.hostToken, a.installationId, { requestId: retry.requestId, outcome: "completed" });
+  await denied(enqueue(selection));
+  await denied(enqueue({ ...retry, requestId: randomUUID() }));
+});
+
+test("restore enqueue refuses stale generations, unbound targets and altered predecessor inputs", async () => {
+  const a = await prepareRestore();
+  const { selection } = a;
+  const unbound = randomUUID();
+  for (const intent of [
+    { ...selection, lifecycleGeneration: 1 },
+    { ...selection, requestId: unbound, request: { ...selection.request, generation: unbound } },
+    {
+      ...selection,
+      predecessor: { ...selection.predecessor, request: { ...selection.predecessor.request, ttlSeconds: 123 } },
+    },
+  ]) {
+    await denied(store.enqueueSandbox(a.owner, a.sandboxId, intent));
+  }
+  await expect(a.poll([a.cleanupId])).resolves.toBeNull();
+});
+
+test("malformed retired restore history does not prevent a new restore", async () => {
+  const a = await prepareRestore();
+  const retired = randomUUID();
+  await a.putIntent(retired, "restore", { bound: 1, job: {}, lifecycleGeneration: "1" });
+  await database().query("update docker_host_jobs set outcome='failed',completed_at=now() where request_id=$1", [
+    retired,
+  ]);
+  await store.enqueueSandbox(a.owner, a.sandboxId, a.selection);
+  await expect(a.poll()).resolves.toEqual(a.restore);
+});
+
+test("restore enqueue preserves the frozen host-local snapshot binding", async () => {
+  const a = await prepareRestore(undefined, true);
+  const snapshot = a.restore.request.snapshot!;
+  const changed = {
+    ...a.selection,
+    request: { ...a.selection.request, snapshot: { ...snapshot, visibility: "org" as const } },
+  };
+  await denied(store.enqueueSandbox(a.owner, a.sandboxId, changed));
+  await store.enqueueSandbox(a.owner, a.sandboxId, a.selection);
+  await expect(a.poll()).resolves.toEqual(a.restore);
+});
 
 test("restore work is gated and stays eligible behind an excluded predecessor cleanup", async () => {
   const a = await restoreFixture();
@@ -472,6 +571,91 @@ test("restore work is gated and stays eligible behind an excluded predecessor cl
     })),
   });
   expect(await a.poll([a.restore.requestId])).toBeNull();
+});
+
+test("the daemon recovers pending restores and drains unrelated work with a full poll exclusion budget", async () => {
+  const host = await fixture();
+  const pairs: Awaited<ReturnType<typeof restoreFixture>>[] = [];
+  for (let index = 0; index < 13; index++) {
+    const pair = await prepareRestore(host);
+    const { requestId, ...job } = pair.restore;
+    await pair.putIntent(requestId, "restore", { bound: 1, job, lifecycleGeneration: "2" });
+    pairs.push(pair);
+  }
+
+  let state: State = {
+    server: "https://armada.example",
+    installationId: host.installationId,
+    hostId: host.hostId,
+    hostToken: host.hostToken,
+    receipts: [],
+  };
+  const ledger: Store = {
+    async load() {
+      return structuredClone(state);
+    },
+    async save(next) {
+      state = structuredClone(next);
+    },
+  };
+  const completed: string[] = [];
+  let lastExclusions: string[] | undefined;
+  const api: Api = {
+    async register() {
+      throw new Error("Unexpected registration");
+    },
+    async poll(_state, options) {
+      lastExclusions = options?.running;
+      return { job: await pairs[0]!.poll(lastExclusions), held: true };
+    },
+    async result(_state, receipt) {
+      if (!receipt.outcome) throw new Error("Missing terminal outcome");
+      await store.complete(host.hostToken, host.installationId, {
+        requestId: receipt.requestId,
+        outcome: receipt.outcome,
+      });
+      if (receipt.outcome === "completed") completed.push(receipt.requestId);
+    },
+  };
+  const attempted = new Set<string>();
+  const executor: Executor = {
+    async create() {},
+    async stop() {},
+    async delete() {},
+    async stopIfExpired() {},
+    async restore({ generation }) {
+      if (!attempted.has(generation)) {
+        attempted.add(generation);
+        throw new DockerMachineError("docker_failed");
+      }
+    },
+  };
+  const now = () => Date.UTC(2026, 0, 1);
+  const deferRestores = new Set<string>();
+  for (const { restore } of pairs) {
+    await expect(tick(ledger, api, executor, false, now, { waitSeconds: 20, deferRestores })).rejects.toThrow(
+      DockerMachineError,
+    );
+    deferRestores.add(restore.requestId);
+  }
+  expect(new Set(state.receipts.map(({ requestId }) => requestId))).toEqual(deferRestores);
+  expect(state.receipts.every(({ outcome }) => !outcome)).toBe(true);
+
+  const live = [job(), job(), job()];
+  for (const active of live) await store.enqueue(host.actor, host.hostId, active);
+  const running = new Set(live.map(({ requestId }) => requestId));
+  const restoreConflicts = new Map(pairs.map(({ cleanupId, restore }) => [cleanupId, restore.requestId]));
+  const unrelated = job();
+  await store.enqueue(host.actor, host.hostId, unrelated);
+  const drain = () => tick(ledger, api, executor, false, now, { waitSeconds: 20, running, restoreConflicts });
+
+  expect(await drain()).toBe("worked");
+  expect(lastExclusions).toEqual([...running, ...restoreConflicts.keys()]);
+  expect(lastExclusions).toHaveLength(16);
+  expect(completed).toEqual([unrelated.requestId]);
+  for (let index = 0; index < pairs.length * 2; index++) expect(await drain()).toBe("worked");
+  const expected = [unrelated.requestId, ...pairs.flatMap(({ restore, cleanupId }) => [restore.requestId, cleanupId])];
+  expect(completed).toEqual(expected);
 });
 
 test("unbound enqueue cannot bypass restore admission", async () => {

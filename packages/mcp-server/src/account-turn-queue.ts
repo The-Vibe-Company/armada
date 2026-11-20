@@ -11,16 +11,16 @@ import {
 } from "@armada/core/server";
 import { admitAccountCapacity } from "./account-capacity.ts";
 import {
+  DISPATCH_ABANDONED,
   DISPATCHING_TURN_CANCELLED,
   type DispatchTurn,
   dispatchAccountTurn,
-  NATIVE_DISPATCH_ABANDONED,
   NATIVE_DISPATCH_UNCERTAIN,
   QUEUED_DISPATCH_EVIDENCE,
   QUEUED_TURN_CANCELLED,
   RUNTIME_LANE,
   RUNTIME_REQUEST_EVIDENCE,
-  resetAbandonedNativeTurn,
+  resetAbandonedTurn,
   UNCERTAIN_DISPATCH_MESSAGE,
 } from "./account-turn-dispatch.ts";
 import type { Caller } from "./caller.ts";
@@ -462,11 +462,11 @@ export function createAccountTurnQueue(sql: Sql, key: string) {
               const abandoned = await tx.query(
                 `select s.id from public.sandboxes s
                  join public.account_turn_queue q on q.sandbox_id=s.id and q.request_id=$2
-                 where s.id=$1 and ${NATIVE_DISPATCH_ABANDONED} for update of s`,
+                 where s.id=$1 and not coalesce(${RUNTIME_LANE},false) and ${DISPATCH_ABANDONED} for update of s`,
                 [candidate.sandbox_id, candidate.request_id],
               );
               if (abandoned.rows.length) {
-                await resetAbandonedNativeTurn(tx, candidate.sandbox_id, candidate.request_id);
+                await resetAbandonedTurn(tx, candidate.sandbox_id, candidate.request_id);
                 return null;
               }
             }

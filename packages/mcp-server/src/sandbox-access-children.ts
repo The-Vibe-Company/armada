@@ -1,7 +1,16 @@
 import { createHash } from "node:crypto";
 import { MAX_SANDBOX_EXTENSION_TTL_SECONDS } from "@armada/core";
-import { type Harness, type LaunchRequest, parseMachineSize, type Sql, validateSkillPins } from "@armada/core/server";
+import {
+  DelegatedAuthorityDenied,
+  failureDiagnostic,
+  type Harness,
+  type LaunchRequest,
+  parseMachineSize,
+  type Sql,
+  validateSkillPins,
+} from "@armada/core/server";
 import type { ChildAuthority } from "./child-authority.ts";
+import { recordOperatorDiagnostic } from "./request-observability.ts";
 import { ChildLaunchNotAllocated } from "./sandbox-access-child-launch.ts";
 import { trackedOperations } from "./tracked-operations.ts";
 
@@ -238,8 +247,18 @@ export function createSandboxChildren(sql: Sql, authority: ChildAuthority, execu
             ).rows[0],
         );
       } catch (error) {
-        if (input.action === "launch")
+        if (input.action === "launch") {
           new ChildLaunchNotAllocated("preallocation_rejected", "dispatch_admission", error).record(receipt);
+        } else {
+          const diagnostic = failureDiagnostic(error);
+          recordOperatorDiagnostic(
+            `scoped.child_${input.action}.dispatch_admission`,
+            error instanceof DelegatedAuthorityDenied
+              ? { ...diagnostic, errorClass: "DelegatedAuthorityDenied" }
+              : diagnostic,
+            { sandboxId: receipt.sandboxId, operationId: receipt.id, code: "child_dispatch_not_admitted" },
+          );
+        }
         // No executor was invoked. Failed fresh admission is confirmed non-allocation,
         // distinct from an unknown provider outcome after dispatch.
         await sql.query(
