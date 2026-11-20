@@ -97,7 +97,7 @@ export async function prepareLaunch(argv: readonly string[], auth: AuthIo): Prom
     const { goldens } = await control<{ goldens: GoldenRecord[] }>(auth, "golden/list", { org });
     const golden = await choose(
       `${org}/${provider}/golden`,
-      "Snapshot (create one with armada snapshot create)",
+      "Snapshot (create one with armada snapshot new)",
       goldens.filter((g) => g.provider === provider).map((g) => ({ value: g.name, label: g.name })),
     );
     result.unshift(golden);

@@ -1777,10 +1777,12 @@ test("CLI removal uses authorized API and returns only the retained-artifact rec
       ],
     );
     const id = result.rows[0]!.id;
-    const removed = await stan.run(["golden", "remove", id, "--org", org.id, "--json"]);
+    const removed = await stan.run(["snapshot", "rm", id, "--org", org.id, "--json"]);
     expect(removed).toMatchObject({ code: 0 });
     expect(JSON.parse(removed.out)).toEqual({ id, removedAt: expect.any(String), artifacts: "retained" });
-    expect((await stan.run(["golden", "list", "--json"])).out).not.toContain("remove-me");
+    const listed = await stan.run(["snapshot", "ls", "--org", org.id, "--json"]);
+    expect(listed.code).toBe(0);
+    expect(listed.out).not.toContain("remove-me");
     const unauthenticated = await handleControlRequest(
       new Request("http://armada.test/api/v1/golden/remove", {
         method: "POST",

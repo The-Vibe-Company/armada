@@ -49,7 +49,7 @@ describe("run", () => {
       },
     });
     expect(code).toBe(0);
-    expect(out).toContain("armada snapshot create");
+    expect(out).toContain("armada snapshot new");
     expect(out).toContain("armada launch <snapshot> --agent claude|codex");
     expect(out).toContain("armada login");
     expect(out).toContain("armada token create");
@@ -109,8 +109,22 @@ describe("run", () => {
     for (const [args, command, checkHelp] of [
       [["frobnicate"], "frobnicate"],
       [["snapshot", "frobnicate", "--org", "org_placeholder"], "snapshot frobnicate"],
-      [["snapshot", "connect", "web", "--provider", "boat"], "snapshot connect", true],
-      [["golden", "snapshot", "web", "--provider", "docker"], "snapshot snapshot", true],
+      ...[
+        "create",
+        "list",
+        "get",
+        "remove",
+        "visibility",
+        "capabilities",
+        "size-policy",
+        "build-status",
+        "build-find",
+        "build-cancel",
+        "retirement",
+        "connect",
+        "snapshot",
+      ].map((verb) => [["snapshot", verb], `snapshot ${verb}`, true] as const),
+      [["golden", "snapshot", "web", "--provider", "docker"], "golden", true],
     ] as const) {
       for (const json of [false, true]) {
         const diagnostic = `unknown command '${command}'`;
@@ -144,7 +158,7 @@ test("bare discovery families succeed without profile, account or input I/O", as
   const forbidden = () => {
     throw new Error("Usage attempted external I/O");
   };
-  for (const command of ["snapshot", "golden", "host", "template", "routine", "vars", "secrets"]) {
+  for (const command of ["host", "template", "routine", "vars", "secrets"]) {
     const result = await capture(["--profile", "new-user", command], {
       env: {},
       fetch: Object.assign(forbidden, { preconnect: forbidden }),
@@ -160,26 +174,4 @@ test("bare discovery families succeed without profile, account or input I/O", as
     expect(result.out).toContain(`Example: armada ${family}`);
     expect(result.out).not.toContain("Quick start / common examples:");
   }
-});
-
-test.each(["snapshot", "golden"])("%s help works before login and documents snapshots", async (command) => {
-  let out = "";
-  let err = "";
-  expect(
-    await run(
-      [command, "--help"],
-      {
-        out: (text) => {
-          out += text;
-        },
-        err: (text) => {
-          err += text;
-        },
-      },
-      { env: {} },
-    ),
-  ).toBe(0);
-  expect(out).toContain("armada snapshot create");
-  expect(out).not.toContain("armada golden ");
-  expect(err).toBe("");
 });

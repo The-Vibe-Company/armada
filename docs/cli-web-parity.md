@@ -15,12 +15,12 @@ Commands below start with `armada`. Select an organization with `org use NAME|UU
 | Modal credentials | Separate token ID and token-secret fields, stored together | `creds set modal --file /secure/modal-token.json`; canonical JSON uses `token_id` and `token_secret` |
 | Service tokens | Token management | `token create/ls/revoke`; optional organization scope |
 | GitHub connection | Connect, reconnect, disconnect and installation settings | `github status/connect/reconnect/disconnect/install/manage`; browser flow waits for its own completion |
-| Snapshot list and identity | Separate Boat/Modal rows under private/shared sections | `snapshot list [--provider boat\|modal] [--json]`; JSON includes safe `id` and `orgId` |
-| Snapshot capacity | Per-provider server-reported capacity | `snapshot capabilities [--provider boat\|modal] [--org UUID] [--json]`; null means unknown/unbounded, not zero |
-| Build / rebuild snapshots | Provider selection on create; rebuild keeps the stored provider, name and visibility | `snapshot create NAME --repo URL[@BRANCH]`; update with `--add-repo URL` or `--replace --config FILE` (see examples below) |
-| Durable build progress | Admission receipt, bounded status polling and recovery after reload | `snapshot build-status JOB_ID`, or `snapshot build-status --idempotency-key KEY --org ORG` |
+| Snapshot list and identity | Separate Boat/Modal rows under private/shared sections | `snapshot ls [--provider boat\|modal] [--json]`; JSON includes safe `id` and `orgId` |
+| Snapshot capacity | Per-provider server-reported capacity | `armada api golden/capabilities`; null means unknown/unbounded, not zero |
+| Build / rebuild snapshots | Provider selection on create; rebuild keeps the stored provider, name and visibility | `snapshot new NAME --repo URL[@BRANCH]`; update with `--add-repo URL` or `--replace --config FILE` (see examples below) |
+| Durable build progress | Admission receipt, bounded status polling and recovery after reload | `snapshot show --build JOB_ID`, or `snapshot show --idempotency-key KEY --org ORG_UUID` |
 | Snapshot builds | Build/rebuild workflow | Use `snapshot update` for Boat/Modal or `snapshot rebuild` for Docker |
-| Snapshot visibility | Owner/admin visibility controls | `snapshot visibility UUID --visibility private\|org` |
+| Snapshot visibility | Owner/admin visibility controls | `armada api golden/visibility` |
 | Launch | Snapshot, agent, model, effort, TTL and MCP connections | `launch PRIVATE_SNAPSHOT --provider boat --agent claude\|codex\|opencode [PROMPT] --model ID --reasoning-effort LEVEL --ttl 4h --connections UUID,UUID`. Ordinary cloud launches inherit snapshot visibility. |
 | Repository context | Select a configured repository directory for a Boat or Modal snapshot | `launch ... --repo DIR` or `--repo owner/repo`; persisted initial working directory, including idle launches |
 | Sandbox list | Authorized filters and pages | `list --status STATUS --agent HARNESS --golden UUID --owner UUID\|me --page N --limit N [--json] [--page-info]` |
@@ -65,7 +65,7 @@ configuration and requires explicit `--replace`. Use `--add-repo` to append
 without losing existing repositories and init commands:
 
 ```sh
-armada snapshot create web --provider modal --repo https://github.com/acme/web.git
+armada snapshot new web --provider modal --repo https://github.com/acme/web.git
 armada snapshot update web --provider modal --add-repo https://github.com/acme/api.git
 armada snapshot update web --provider modal --replace --config snapshot.json
 ```
@@ -77,7 +77,7 @@ a new operation. Docker host-local snapshots use their separate
 
 
 
-Boat and Modal builds use durable server jobs. Create/update returns an admission receipt; closing the browser or ending the CLI's polling does not cancel the job. The CLI polls for up to `--timeout` seconds (default 60, maximum 600); `--timeout 0` returns after admission. Keep the job ID and admission key to recover an uncertain answer instead of starting another build. The dashboard records each form's job/key separately by organization or snapshot ID.
+Boat and Modal builds use durable server jobs. Create/update returns an admission receipt; closing the browser or ending the CLI's polling does not cancel the job. The CLI returns after admission by default. With `--wait`, it polls for up to `--timeout` seconds (default 60, maximum 600). Keep the job ID and admission key to recover an uncertain answer instead of starting another build. The dashboard records each form's job/key separately by organization or snapshot ID.
 
 A snapshot's provider is immutable. Same-name Boat and Modal snapshots are distinct; an ambiguous CLI selection requires `--provider`. Rebuild reads the stored target and preserves ownership/visibility. Unconfigured providers fail explicitly; Modal never falls back to Boat. A reported capacity is metadata, not a guarantee that a build will be admitted.
 

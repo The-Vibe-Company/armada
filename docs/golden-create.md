@@ -14,10 +14,10 @@ Before updating, save the complete desired repository and initialization
 configuration in the local `snapshot.json` file.
 
 ```sh
-armada snapshot create web --repo https://github.com/acme/web --provider boat --org ORG_UUID \
-  --idempotency-key CREATE_KEY --timeout 60
+armada snapshot new web --repo https://github.com/acme/web --provider boat --org ORG_UUID \
+  --idempotency-key CREATE_KEY --wait --timeout 60
 armada snapshot update web --replace --config snapshot.json --provider boat --org ORG_UUID \
-  --idempotency-key UPDATE_KEY --timeout 60
+  --idempotency-key UPDATE_KEY --wait --timeout 60
 ```
 
 - Create/update accept repeated `--repo <url>[@branch]` or `--config <file>`. Repeated
@@ -32,22 +32,17 @@ armada snapshot update web --replace --config snapshot.json --provider boat --or
   between providers; Modal's workspace/environment/App binding is immutable. Boat compatibility
   IDs are not Modal IDs.
 - Save an idempotency key **before submission** (16–128 letters, digits, underscores or hyphens).
-  The CLI generates and prints one to stderr if omitted. It prints the admitted job ID, then
-  polls. `--timeout` is a local wait in seconds, 0–600 (default 60), not the build deadline;
-  `0` returns after admission. Acceptance or a successful exit after local waiting is **not
-  publication**. Only `state: succeeded` establishes completion.
-- When the job succeeds during the wait, the CLI prints the completed result (with `--json`,
-  the result object, not just a receipt). If still pending, it can print the current status (`--json` prints the job object),
-  or exit with a polling-stopped error and recovery guidance when its local deadline expires.
-  Very short waits such as `--timeout 1` can expire during the fixed two-second polling interval;
-  use `0` for admission-only output. Disconnecting does not cancel or resubmit the build.
+  The CLI generates and prints one to stderr if omitted. It returns after admission by default.
+  Pass `--wait` to poll for up to `--timeout` seconds (1–600, default 60).
+  A successful exit can still mean the job is pending. Use `snapshot show --build JOB_UUID`
+  to confirm publication (`state: succeeded`). Disconnecting leaves the admitted build running.
 
 Recover with the returned build UUID (`JOB_UUID`) or the key saved for that
 request (`SAVED_KEY`).
 
 ```sh
-armada snapshot build-status JOB_UUID --json
-armada snapshot build-status --idempotency-key SAVED_KEY --org ORG_UUID --json
+armada snapshot show --build JOB_UUID --json
+armada snapshot show --idempotency-key SAVED_KEY --org ORG_UUID --json
 ```
 
 If admission's response is lost, recover by the saved key first. The same requester/org/key

@@ -22,15 +22,15 @@ The dashboard uses short admission/status actions,
 records the job ID in its URL, and polls sequentially for a bounded local window,
 then offers manual refresh.
 
-CLI create/update print the admission key and job ID, then poll short requests.
---timeout 0..600 is the local wait only (default 60s), not worker execution.
+CLI new/update print the admission key and job ID. With `--wait`, they poll short requests.
+`--timeout` bounds the local wait to 1–600 seconds (default 60).
 Each request has a 10-second AbortSignal; timeout:false disables Bun's independent
 idle timer. Poll failures never resubmit builds. Resume with the returned build
 UUID (`JOB_UUID`) or the saved admission key (`SAVED_KEY`) and organization UUID
 (`ORG_UUID`).
 
-    armada snapshot build-status JOB_UUID
-    armada snapshot build-status --idempotency-key SAVED_KEY --org ORG_UUID
+    armada snapshot show --build JOB_UUID
+    armada snapshot show --idempotency-key SAVED_KEY --org ORG_UUID
 
 ## Worker and atomic publication
 
@@ -144,8 +144,8 @@ For staging incident **aa2f54f7**, after migrations/server rollout:
    `ORG_UUID` with the staging organization UUID. Use the original config
    file in place of `same-config.json`.
 
-       armada snapshot build-status JOB_UUID --json
-       armada snapshot create smoke-boat --provider boat --org ORG_UUID --config same-config.json --timeout 600
+       armada snapshot show --build JOB_UUID --json
+       armada snapshot new smoke-boat --provider boat --org ORG_UUID --config same-config.json --wait --timeout 600
 
    Expect the old job failed with failureReason=provider_payment_required
    (build-status exits 1 for terminal failure). Retry with a fresh admission key;

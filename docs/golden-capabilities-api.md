@@ -35,7 +35,7 @@ its limits.
 ## CLI
 
 ```sh
-armada snapshot capabilities --provider modal --org ORG_UUID --json
+armada api golden/capabilities '{"provider":"modal","org":"ORG_UUID"}'
 ```
 
 The user-facing CLI calls these same `golden`-named API routes. Do not rename

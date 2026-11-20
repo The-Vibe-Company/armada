@@ -35,7 +35,7 @@ test.each([
   const calls: { path: string; body: unknown }[] = [];
   let errors = "";
   const code = await run(
-    ["golden", "remove", "web", ...flags],
+    ["snapshot", "rm", "web", ...flags],
     {
       out: () => {},
       err: (s) => {
@@ -71,7 +71,7 @@ test.each([
   } else {
     expect(code).toBe(1);
     expect(calls).toHaveLength(1);
-    expect(errors).toContain("snapshot list --json");
+    expect(errors).toContain("snapshot ls --json");
     expect(errors).toContain("Nothing was removed");
   }
 });

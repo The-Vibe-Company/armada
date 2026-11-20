@@ -656,7 +656,7 @@ export async function assertGoldenBackendBinding(
     throw new GoldenError(
       "conflict",
       slot.job_id
-        ? `Another build of this golden is still running or awaiting recovery (started ${slot.started_at}). Check armada golden build-status ${slot.job_id}; wait for completion or ask an administrator to investigate recovery.`
+        ? `Another build of this golden is still running or awaiting recovery (started ${slot.started_at}). Check armada snapshot show --build ${slot.job_id}; wait for completion or ask an administrator to investigate recovery.`
         : "This golden has a build reservation with no durable job. Ask an administrator to reconcile the reservation before retrying; no new build was started.",
     );
 }

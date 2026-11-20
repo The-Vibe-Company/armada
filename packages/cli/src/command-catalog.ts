@@ -50,7 +50,6 @@ ${sandboxUsage("mcp-bindings")}
 ${sandboxUsage("advice")}
 ${sandboxUsage("bind-credential")}
 ${sandboxUsage("sandbox")}
-${sandboxUsage("snapshot-admin")}
 ${sandboxUsage("mcp")}
 ${sandboxUsage("session")}
 ${sandboxUsage("org")}

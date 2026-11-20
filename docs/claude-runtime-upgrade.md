@@ -60,7 +60,7 @@ with its organization UUID, and use the returned build job UUID for `JOB_UUID`.
 armada snapshot update "SNAPSHOT_NAME" --provider boat --org ORG_UUID --replace --config snapshot.json
 armada snapshot update "SNAPSHOT_NAME" --provider modal --org ORG_UUID --replace --config snapshot.json
 # Add --setup "path/to/original-setup.sh" when the original build used one.
-armada snapshot build-status JOB_UUID
+armada snapshot show --build JOB_UUID
 ```
 
 Run only the command for each provider actually hosting that snapshot. Boat and
