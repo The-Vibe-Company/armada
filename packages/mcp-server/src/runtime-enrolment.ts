@@ -371,27 +371,30 @@ export function createRuntimeEnrolments(sql: Sql, encryptionKey: string, options
       return work(tx, { sandboxId: sandbox.id, epoch: row.epoch }, sandbox.lifecycle_generation);
     });
   }
-  async function confirmDockerRestore(tx: Sql, scope: RuntimeSessionScope, generation: string, health: unknown) {
-    if (!runtimeHealthMatches(health, scope.epoch)) return;
+  async function dockerRestoreMatches(tx: Sql, scope: RuntimeSessionScope, health: unknown) {
+    if (!runtimeHealthMatches(health, scope.epoch)) return false;
     const {
       rows: [checkpoint],
     } = await tx.query<{ epoch: string; watermark: string; conversation_ids: string[] }>(
       `select c.epoch::text,c.watermark::text,s.conversation_ids
        from public.sandboxes s join public.runtime_checkpoints c on c.sandbox_id=s.id
-       where s.id=$1 and s.provider='docker' and s.status='starting' and s.lifecycle_generation=$2
-       and c.epoch=$3::bigint-1 and c.watermark is not null`,
-      [scope.sandboxId, generation, scope.epoch],
+       where s.id=$1 and s.provider='docker'
+       and c.epoch=$2::bigint-1 and c.watermark is not null`,
+      [scope.sandboxId, scope.epoch],
     );
-    if (
-      checkpoint &&
-      (checkpoint.conversation_ids.length !== 1 ||
-        !runtimeHealthMatches(health, scope.epoch, {
-          epoch: checkpoint.epoch,
-          watermark: Number(checkpoint.watermark),
-          conversationId: checkpoint.conversation_ids[0] as string,
-        }))
-    )
-      return;
+    if (!checkpoint) return true;
+    return (
+      checkpoint.conversation_ids.length === 1 &&
+      runtimeHealthMatches(health, scope.epoch, {
+        epoch: checkpoint.epoch,
+        watermark: Number(checkpoint.watermark),
+        conversationId: checkpoint.conversation_ids[0] as string,
+      })
+    );
+  }
+
+  async function confirmDockerRestore(tx: Sql, scope: RuntimeSessionScope, generation: string, health: unknown) {
+    if (!(await dockerRestoreMatches(tx, scope, health))) return;
     if (!(await publishDockerRuntimeReadiness(tx, scope.sandboxId, generation, "retained")))
       throw new RuntimeEnrolmentDenied();
   }
@@ -450,5 +453,15 @@ export function createRuntimeEnrolments(sql: Sql, encryptionKey: string, options
       return runtimeHttpFailure(error instanceof RuntimeEnrolmentDenied ? 401 : 503);
     }
   };
-  return { issue, enrol, withBootstrap, withSession, withOwner, confirmDockerRestore, lockSourceMembers, route };
+  return {
+    issue,
+    enrol,
+    withBootstrap,
+    withSession,
+    withOwner,
+    dockerRestoreMatches,
+    confirmDockerRestore,
+    lockSourceMembers,
+    route,
+  };
 }

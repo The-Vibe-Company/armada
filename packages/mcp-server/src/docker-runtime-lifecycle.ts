@@ -6,7 +6,6 @@ import { createSqlData } from "./data.ts";
 import { createDockerSandboxService } from "./docker-sandbox-service.ts";
 import { createRuntimeCommands, readDockerPromptReceipt, readRuntimeCommandSuccess } from "./runtime-commands.ts";
 import { createRuntimeEnrolments, scopedRuntimeSql } from "./runtime-enrolment.ts";
-import { runtimeHealthMatches } from "./runtime-health.ts";
 
 type Actor = { userId: string; orgId: string };
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
@@ -130,15 +129,34 @@ export function createDockerRuntimeLifecycle(sql: Sql, key: string, options: { e
       return admitted(
         actor,
         sandboxId,
-        async (_tx, authority, sandbox, epoch) => {
-          const id = `docker_ready_${requestId}`;
+        async (tx, authority, sandbox, epoch) => {
+          const probeId = `docker_ready_${requestId}`;
+          const {
+            rows: [latest],
+          } = await tx.query<{ request_id: string; sequence: string }>(
+            `select request_id,sequence::text from public.runtime_commands
+             where sandbox_id=$1 and epoch=$2 and (request_id=$3 or starts_with(request_id,$3 || '_'))
+             order by sequence desc limit 1`,
+            [sandboxId, epoch, probeId],
+          );
           const commands = createRuntimeCommands(authority, key);
-          const queued = await commands.enqueue(actor.userId, { version: 1, requestId: id, sandboxId, op: "health" });
-          const response = await commands.result(actor.userId, sandboxId, id, queued.epoch);
+          const enqueue = (id: string) =>
+            commands.enqueue(actor.userId, { version: 1, requestId: id, sandboxId, op: "health" }, epoch);
+          if (!latest) {
+            await enqueue(probeId);
+            return { state: "pending" as const };
+          }
+          const id = latest.request_id;
+          const response = await commands.result(actor.userId, sandboxId, id, epoch);
           if (response.state === "pending") return { state: "pending" as const };
           if (response.state !== "finished") deny();
           const health = readRuntimeCommandSuccess(response.reply, epoch, id);
-          if (!runtimeHealthMatches(health, epoch) || !["ready", "running"].includes(sandbox.status)) deny();
+          if (!(await authority.dockerRestoreMatches(tx, { sandboxId, epoch }, health))) deny();
+          if (sandbox.status === "starting") {
+            await enqueue(`${probeId}_${latest.sequence}`);
+            return { state: "pending" as const };
+          }
+          if (!["ready", "running"].includes(sandbox.status)) deny();
           return { state: "ready" as const, epoch };
         },
         true,
