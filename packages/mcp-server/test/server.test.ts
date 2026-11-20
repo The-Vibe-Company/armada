@@ -84,6 +84,21 @@ function expectNoSecret(text: string) {
   for (const secret of allSecrets) expect(text).not.toContain(secret);
 }
 
+async function logsFixture() {
+  const { db, boat, people, client, token } = await start();
+  const machine = await boat.provider.fork({ from: "shared" });
+  const id = crypto.randomUUID();
+  await db.query(
+    `insert into sandboxes(id,golden_id,org_id,owner_id,provider,provider_sandbox_id,harness,status)
+     select $1,id,org_id,$2,'boat',$3,'claude','running'
+     from goldens where org_id=$4 and name='shared'`,
+    [id, people.member, machine.id, people.org],
+  );
+  await boat.provider.prompt({ sandboxId: machine.id, harness: "claude", text: "go" });
+  const mcp = await client(await token(people.member));
+  return { id, mcp, events: boat.sandbox(machine.id).events };
+}
+
 /** The dashboard's way in: plain JSON-RPC posts, one tool call each, with the person's bearer. */
 function rpc(handler: TestServer["handler"], bearer: string) {
   let next = 1;
@@ -1180,33 +1195,24 @@ describe("tools", () => {
   });
 
   test("logs pass the cursor through and keep one body per event id, the newest", async () => {
-    const { token, client, people, boat } = await start();
-    const mcp = await client(await token(people.member));
-    const launched = await call(mcp, "launch", { provider: "boat", golden: "shared", harness: "claude", prompt: "go" });
-    const events = boat.sandbox("bx_1").events;
+    const { id, mcp, events } = await logsFixture();
     events.push({ id: "ev_msg", at: 2, kind: "message", text: "Wor", partial: true, tools: [] });
     events.push({ id: "ev_msg", at: 2, kind: "message", text: "Working", partial: false, tools: [] });
-    const first = await call(mcp, "logs", { id: launchSandboxId(launched.data) });
+    const first = await call(mcp, "logs", { id });
     expect((first.data.events as { id: string; text: string }[]).map((event) => [event.id, event.text])).toEqual([
-      [
-        "ev_prompt_1",
-        "go\n\nSave any deliverable files directly in /home/user/outputs. Create that directory if needed.",
-      ],
+      ["ev_prompt_1", "go"],
       ["ev_msg", "Working"],
     ]);
     expect(first.data).toMatchObject({ cursor: "3", hasMore: false });
     const next = await call(mcp, "logs", {
-      id: launchSandboxId(launched.data),
+      id,
       since_cursor: first.data.cursor,
     });
     expect(next.data).toMatchObject({ events: [], cursor: "3" });
   });
 
   test("logs reads every page only when all is requested and advances the cursor", async () => {
-    const { token, client, people, boat } = await start();
-    const mcp = await client(await token(people.member));
-    const launched = await call(mcp, "launch", { provider: "boat", golden: "shared", harness: "claude", prompt: "go" });
-    const events = boat.sandbox("bx_1").events;
+    const { id, mcp, events } = await logsFixture();
     for (let index = 0; index < 205; index += 1) {
       events.push({
         id: `ev_${index}`,
@@ -1217,10 +1223,10 @@ describe("tools", () => {
         tools: [],
       });
     }
-    const first = await call(mcp, "logs", { id: launchSandboxId(launched.data) });
+    const first = await call(mcp, "logs", { id });
     expect(first.data.events).toHaveLength(100);
     expect(first.data).toMatchObject({ cursor: "100", hasMore: true });
-    const all = await call(mcp, "logs", { id: launchSandboxId(launched.data), all: true });
+    const all = await call(mcp, "logs", { id, all: true });
     expect(all.data.events).toHaveLength(206);
     expect(all.data).toMatchObject({ cursor: "206", hasMore: false });
   });
