@@ -370,6 +370,51 @@ retries collection for a specific retired snapshot. Server events remain readabl
 Control tables are server-only/RLS-enabled. Secure golden org-admin authorization
 remains upstream, in addition to live membership/owner/binding checks here.
 
+### Provider options and recovery contracts
+
+- Allocation inventory tags are stable and server-owned. Use the trusted
+  staging-only host allocation option for enrolled runtimes. It freezes routing on the
+  machine and skips starting the tunnel listener. The server owns runtime health.
+  Explicit resource selections remain immutable across physical restores. New
+  managed reservations record ownership at allocation. Older rows without that
+  evidence remain unknown.
+- The history-only provider reads server-owned history for `get`, `events`, and
+  `getPrompt` without reaching the live App or runner. Admission and lifecycle
+  decisions require the live provider. Unknown-create adoption requires verified
+  ownership and the persisted source authority, with no credential fallback.
+- A lost response after runner boot can be reconciled against the same physical
+  incarnation. Keep the single-attempt lock when boot is uncertain and preserve
+  admission and session state on that incarnation.
+- Workspace size capture runs a fixed collector in the physical container for
+  either runner path. It reads live compute without taking the lifecycle lease
+  or starting a stopped workspace. The caller's pre-stop deadline bounds the
+  whole wait. If stop wins the race, keep the previous measurement.
+- Before creating a native fork reference, reread the snapshot under the source
+  lease. Runtime forks pin a live handle under a row lock. Once an unreferenced
+  tombstone is marked collecting, remote deletion can run outside the source
+  lease. Only the holder of its expiring dispatch claim can issue that deletion.
+  Release the claim on failure for immediate retry and purge only the matching
+  source and physical Image record after success. Cleanup of other sources'
+  retired images defaults to a detached task after delete, outside the delete
+  receipt and server activity lease.
+- Keep an unpublished builder while any saving, published, or tombstoned Image
+  records it as source. Once the rollback artifact is confirmed collected, a
+  builder parked at checkpoint can be deleted if its snapshot history has no
+  other retention reason. Once deletion is committed, snapshot history alone
+  does not block finishing it. Resume interrupted deletion through the same delete
+  path and recheck ownership and retention after remote observation. Resume
+  refuses deleting machines. Recovery itself leaves Image collection to the
+  artifact owner. On stop, retain the trusted common checkpoint for the exact
+  incarnation, and confirm the incarnation is absent before removing its
+  recovery images.
+- Core validates repository membership and existence against the golden. The
+  provider accepts only valid checkout paths and installs no executable
+  wrappers for them. Renewing a running machine never allocates or restores
+  compute. For private exec, the runtime checks the environment allowlist again.
+  Validate runner wire version and request ID, translate structured errors, and
+  keep MCP payloads, credentials, and raw SDK or runner errors out of receipts
+  and public diagnostics.
+
 ### Authorized golden master restore / NULL canonical master (#546)
 
 `restoreGoldenMaster({snapshotId,sandboxId?}): Promise<SandboxInfo>` is a public
@@ -585,6 +630,12 @@ and unrelated resources are outside this tool's ownership. Future live tests
 must create a new fixture. This change was validated with injected adapters only;
 real operator validation remains a separate authorized action.
 
+The opt-in SSH probe generates a local ephemeral private key, keeps its contents
+out of Armada output, and removes it in `finally`. Use the current trusted core
+golden baseline and keep that script out of logs. Send SSH provisioning exactly
+one Ed25519 public key without client-controlled options. Provision only on
+running machines, outside image builds.
+
 Supply HTTPS ingress first. Never save private input in argv/history/repository/
 Image layers. Rebuild the current runtime artifact before live conformance.
 
@@ -606,8 +657,8 @@ For server-owned golden rows only, Provider.exec verifies scope/authority/curren
 active admission and holds the lease through a one-command public Sandbox.exec root
 supervisor. Command text is private stdin (never argv); HOME/PATH are explicit public
 values and no model/provider/GitHub exec credentials are supplied. Synchronous timeouts
-are 1–600 seconds (default60), stdout/stderr are drained concurrently and retained at
-64KiB each, actual exit status and timeout/truncation flags are returned. Detached
+are 1–600 seconds (default60). Drain stdout and stderr concurrently while writing
+stdin and waiting for the process to avoid backpressure. Retain up to 64KiB each, actual exit status and timeout/truncation flags are returned. Detached
 requests fail closed. A sealed golden is not implicitly restored/unsealed. Workers
 never take this path and retain normal runtime process/journal/outbox behavior.
 The NNP OS fixture now runs the actual production scanner through this root SDK

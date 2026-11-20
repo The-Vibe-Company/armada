@@ -51,34 +51,21 @@ export type ModalPromptPhase =
   | "modal_sandbox_create"
   | `modal_boot_${"binding" | "runtime" | "baseline" | "fresh" | "start" | "health" | "active_publication"}`;
 export interface ModalProviderOptions extends ModalConnection {
-  /** Stable, server-owned inventory tag for allocation. */
   deploymentId?: string;
-  /** Trusted staging opt-in: allocate host only, never start the tunnel listener. */
   commonRuntime?: true;
   measure?<T>(phase: ModalPromptPhase, work: () => Promise<T>): Promise<T>;
-  /** Server-owned history projection only. No live App/runner calls in get/events/getPrompt.
-   * Never use this provider for admission or lifecycle decisions. */
   storedReads?: boolean;
-  /** Scheduler for lifecycle admission backoff; defaults to the Bun timer. */
   admissionSleep?(milliseconds: number): Promise<void>;
-  /** Scheduler for deletion image-cleanup retries; defaults to the Bun timer. */
   cleanupSleep?(milliseconds: number): Promise<void>;
-  /** Runs the best-effort collection of other sources' retired images after a delete. Defaults to
-   * a detached task, so neither the delete receipt nor the server's activity lease waits on it. */
   detachCollection?(work: () => Promise<void>): void;
   scope: Scope;
-  /** Trusted immutable source credential selection; never a requested access visibility. */
   managementAuthority?: ModalManagementProvenance;
-  /** Lookup hint only. Actual App ID must match the binding on every operation. */
   appName: string;
   store: ModalStore;
-  /** Trusted authorized snapshot scope, distinct from target machine scope for org->private forks. */
   source?: { scope: Scope; store: ModalStore };
   runner: RunnerTransport;
   distribution: RunnerDistribution;
   ssh?: SshPreparation;
-  /** Trusted server lifecycle hook. Runs after ready/restore OUTSIDE the store lease; may call
-   * get/configureMcp. Failure prevents native submission; incarnation is fenced on reacquisition. */
   resumeRefused?(provider: ModalProvider, sandboxId: string): Promise<void>;
   beforeResume?(provider: ModalProvider, sandboxId: string): Promise<void>;
   beforePrompt?(provider: ModalProvider, sandboxId: string): Promise<void>;
@@ -99,7 +86,6 @@ export interface ModalProvider extends Provider {
     context: NonNullable<Parameters<Provider["exec"]>[0]["preservationContext"]>;
     onWorkAtRisk?: () => void;
   }): Promise<WorkPreservation>;
-  /** Trusted server only: common checkpoint has been durably sealed and ACKed. */
   stopRuntime(input: {
     sandboxId: string;
     physicalGeneration: string;
@@ -130,7 +116,6 @@ export interface ModalProvider extends Provider {
     key: string;
   }): Promise<{ sshEndpoint: string; hostKey: string; username?: "user" | "root" }>;
 }
-/** Both scopes are assembled by the authenticated server, never by runner/request JSON. */
 export function assertSourceTargetScopes(source: Scope, target: Scope): void {
   if (
     source.orgId !== target.orgId ||
@@ -253,7 +238,6 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
       throw refusal("forbidden", "Golden builder target does not match this provider connection.");
   }
   function assertRecoveryBuilder(row: Machine, ownerId: string) {
-    // No legacy/user-first authority fallback for adoption of an unknown create.
     if (
       !row.golden ||
       row.launchUserId !== ownerId ||
@@ -267,14 +251,8 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
     assertMachineSource(row);
   }
   async function retainBuilder(row: Machine, collected?: string): Promise<boolean> {
-    // Images still recorded with it as source (published, saving or tombstoned) always retain it.
     if ((await store.images(row.info.id)).length > 0) return true;
-    // A deleting or deleted machine's deletion is already committed: its compute is going or gone
-    // and the delete itself removes its recovery images. Its snapshot history alone must not strand
-    // a job whose rolled-back artifact was collected, nor an interrupted delete.
     if (row.phase === "deleting" || row.phase === "deleted") return false;
-    // The job confirmed this builder's only snapshot was never published and is now collected: a
-    // builder parked after that snapshot (`checkpoint`) has no other reason to be retained.
     const onlyCollected =
       !!collected &&
       row.phase === "checkpoint" &&
@@ -297,20 +275,12 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
     signal?.throwIfAborted();
     await bound();
     signal?.throwIfAborted();
-    // Observation, not lifecycle: like exec and getPrompt it reads the row without the
-    // exclusive lifecycle lease, so a periodic sample never makes a concurrent stop, prompt or
-    // the pre-stop final capture fail with lifecycle_lease_busy. A stop racing this read only
-    // makes the exec fail; the caller keeps its previous snapshot.
     const row = await store.get(sandboxId);
     signal?.throwIfAborted();
     assertMachineSource(row);
-    // Live compute only: a stopped Modal workspace is a recovery image, readable only by
-    // starting compute, which this read never does. Armada stops capture first instead.
     if (row.golden || row.phase !== "active" || !row.physicalId) return null;
     const sb = await physical(row, signal);
     signal?.throwIfAborted();
-    // Fixed collector on the physical container, not the runner: it works for native and
-    // enrolled (dial-out) runtimes alike and never carries caller input.
     const child = await sb.exec(["/usr/bin/env", "-i", "PATH=/usr/local/bin:/usr/bin:/bin", "/bin/sh", "-c", command], {
       mode: "text",
       env: {},
@@ -321,10 +291,8 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
     });
     signal?.throwIfAborted();
     const output = child.stdout.readText();
-    // Awaited below; never an unhandled rejection if closing stdin fails first.
     output.catch(() => {});
     await child.stdin.close();
-    // The caller's budget (the shared pre-stop deadline) bounds the wait, not only the exec timeout.
     signal?.throwIfAborted();
     const [status, stdout] = await abortable(Promise.all([child.wait(), output]), signal);
     return read(status, stdout);
@@ -424,15 +392,11 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
           if (["reserved", "creating", "booting"].includes(row.phase)) {
             if (!same || row.goldenRestore?.generation !== row.generation)
               throw refusal("conflict", "Another golden restore is in progress.");
-            // A committed boot may have lost its last SQL/HTTP response. Reconcile without starting a
-            // second runner or resetting admission/session state on that same physical machine.
             if (row.phase === "booting" && row.physicalId) {
               let health: { generation: string; ready: boolean; pid?: unknown } | undefined;
               try {
                 health = await runner.call(row, "health", {});
-              } catch {
-                /* Unknown boot remains protected by the single-runner lock. */
-              }
+              } catch {}
               if (health?.generation === String(row.generation) && health.ready) {
                 if (row.processBaseline?.admissionState === "pending")
                   await sealBaselineBeforeAdmission(await physical(row), row, save, health.pid);
@@ -448,8 +412,6 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
           if (row.phase !== "restoring") {
             if (!["deleted", "stopped"].includes(row.phase) && !(row.phase === "checkpoint" && row.quiesced))
               throw refusal("conflict", "Uncertain golden checkpoint retained; restore cannot discard that source.");
-            // Re-read under the source lease: a snapshot retired since the read above may already be
-            // claimed for physical collection, and a tombstone must never gain a reference.
             if ((await source.store.image(snapshotId)).imageId !== snapshot.imageId)
               throw refusal("conflict", "Golden snapshot changed during restore admission.");
             const latestBase = row.snapshotImages?.at(-1)?.name ?? row.goldenRestore?.snapshotId;
@@ -498,8 +460,6 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
       }
     },
     async prepareNativeHarnessCwd({ sandboxId, harness, cwd }) {
-      // Repository membership/existence is validated by trusted core against the golden. Here reject
-      // malformed path data, not shell-escape it or install executable wrappers in a user runner.
       if (
         !(HARNESSES as readonly string[]).includes(harness) ||
         typeof cwd !== "string" ||
@@ -524,7 +484,6 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
       configuration: import("@armada/core").GitHubRuntimeConfiguration | null;
     }) {
       return admit(sandboxId, async (row) => {
-        // Renewal must never restore or allocate a stopped machine.
         if (
           row.golden ||
           !row.physicalId ||
@@ -581,7 +540,6 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
         const result = await runner.call<{ revision?: unknown }>(active, "configureMcp", { configuration });
         if (!result || result.revision !== configuration.revision)
           throw refusal("unavailable", "Runner did not acknowledge the requested MCP revision.");
-        // Do not persist or echo servers, auth or arbitrary fields returned by the runner.
         return { revision: configuration.revision };
       });
     },
@@ -653,9 +611,6 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
         if (await retainBuilder(row, request.collected))
           throw refusal("conflict", "Builder has retained snapshot or recovery proof; source retained.");
         if (row.phase === "deleted") return;
-        // An interrupted deletion (the builder's own cleanup or an earlier disposal) is resumed
-        // through the same delete path, which also removes any recovery images. Every resume
-        // path refuses a deleting record, so its retention cannot change after this lease.
         if (row.phase === "deleting") {
           resume = true;
           return;
@@ -664,7 +619,6 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
           const reconciled = await namedOwned(row);
           if (row.physicalId && row.physicalId !== reconciled.sandboxId)
             throw refusal("conflict", "Named builder differs from recorded physical identity; source retained.");
-          // Recheck after remote observation, before any destructive operation.
           if (await retainBuilder(row, request.collected))
             throw refusal("conflict", "Builder retention changed; source retained.");
           row.physicalId = reconciled.sandboxId;
@@ -680,7 +634,6 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
           if ((await sb.poll()) === null)
             throw refusal("unavailable", "Builder termination remains uncertain; reservation retained.");
         }
-        // Recovery never collects any image: artifact retention has an independent owner.
         row.phase = "deleted";
         await save(row);
       });
@@ -704,7 +657,6 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
       });
     },
   };
-  // Normalize all public failures, without leaking SDK request/token diagnostics.
   return Object.fromEntries(
     Object.entries(provider).map(([key, value]) => [
       key,

@@ -2,10 +2,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ModalProvider } from "./provider.ts";
-/** Explicit real-network conformance only. Same ephemeral-file lifecycle as main's secure SSH
- * executor: private key generated locally, never read/printed by Armada, deleted in finally. */
 export interface GoldenSshRecipe {
-  /** Actual trusted core goldenScript/baseline source. Never log it or pass credentials in argv. */
   script: string;
   githubToken?: string;
   timeoutMs?: number;
