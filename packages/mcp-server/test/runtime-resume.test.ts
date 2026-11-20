@@ -257,11 +257,16 @@ describe.each([
       (
         await f.db.query(
           `select actor,code,generation::text from sandbox_transitions
-           where sandbox_id=$1 and from_status='starting' and to_status='running'`,
+           where sandbox_id=$1 and ((from_status='stopped' and to_status='starting')
+             or (from_status='starting' and to_status='running'))
+           order by (from_status='stopped') desc`,
           [f.row.id],
         )
       ).rows,
-    ).toEqual([{ actor: "runtime_enrolment", code: "runtime_enrolled", generation: String(row.lifecycleGeneration) }]);
+    ).toEqual([
+      { actor: "resume_admission", code: "runtime_resume_admitted", generation: String(row.lifecycleGeneration) },
+      { actor: "runtime_enrolment", code: "runtime_enrolled", generation: String(row.lifecycleGeneration) },
+    ]);
     expect(row.expiresAt).toBe(before?.expiresAt);
     expect(row.stoppedAt).toBeNull();
     expect(row.taskPromptId).toBe(result.promptId);
@@ -273,6 +278,69 @@ describe.each([
     await expect(send(f.caller, { ...request, prompt: "different" })).rejects.toMatchObject({ code: "conflict" });
     expect(activations).toBe(1);
   });
+});
+
+describe("runtime resume admission rollback", () => {
+  const fixture = scopedRuntimeFixture(() => stopped(), { perTest: true });
+
+  test.each(["generation conflict", "transition", "launch stage", "reread", "pre-commit"])(
+    "leaves the retained stop intact after %s",
+    async (fault) => {
+      const f = await fixture();
+      const request = input(f.row.id);
+      const rollback = Error("Injected admission rollback");
+      const read = async () =>
+        (
+          await f.db.query(
+            `select status, lifecycle_generation::text, activity_lease_id, stopped_at::text,
+            (select count(*)::int from public.runtime_resumes where sandbox_id=s.id) as intents,
+            (select count(*)::int from public.sandbox_transitions where sandbox_id=s.id and to_status='starting') as edges
+           from public.sandboxes s where id=$1`,
+            [f.row.id],
+          )
+        ).rows;
+      const before = await read();
+      let prepared = false;
+      const admissionSql: typeof f.sql = {
+        ...f.sql,
+        transaction: (work) =>
+          f.sql.transaction!(async (tx) => {
+            let stageUpdated = false;
+            const result = await work({
+              ...tx,
+              query(statement, params) {
+                if (stageUpdated && fault === "reread") throw rollback;
+                if (statement.includes("from public.sandbox_transition(")) {
+                  if (fault === "transition") throw rollback;
+                  if (fault === "generation conflict") {
+                    return tx.query(statement, [params![0], Number(params![1]) + 1, ...params!.slice(2)]);
+                  }
+                }
+                if (statement.startsWith("update public.sandbox_launch_stages")) {
+                  if (fault === "launch stage") throw rollback;
+                  stageUpdated = true;
+                }
+                return tx.query(statement, params);
+              },
+            });
+            if (fault === "pre-commit") throw rollback;
+            return result;
+          }),
+      };
+      const resume = createRuntimeResume(admissionSql, ENCRYPTION_KEY, f.bridge, async () => {
+        prepared = true;
+        throw Error("Unexpected placement preparation");
+      });
+      const attempt = resume(f.caller, request);
+      if (fault === "generation conflict") {
+        await expect(attempt).rejects.toMatchObject({ code: "conflict" });
+      } else {
+        await expect(attempt).rejects.toThrow(rollback.message);
+      }
+      expect(prepared).toBe(false);
+      expect(await read()).toEqual(before);
+    },
+  );
 });
 
 test("an already enrolled uncertain resume reconciles on a fresh server without another activation or ticket", async () => {
@@ -1022,7 +1090,9 @@ test.each(boatResumeRecoveryCases)(
       let handoffRolledBack = false;
       const faultSql = bunLikeSql(f.db, (statement) => {
         if (
-          (condition === "transition fault" && statement.includes("from public.sandbox_transition(")) ||
+          (condition === "transition fault" &&
+            canIssueTicket &&
+            statement.includes("from public.sandbox_transition(")) ||
           (condition === "phase fault" && statement.startsWith("update public.runtime_resumes set phase=$3"))
         ) {
           handoffRolledBack = true;
