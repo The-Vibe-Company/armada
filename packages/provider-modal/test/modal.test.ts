@@ -91,8 +91,8 @@ const {
 beforeAll(setup);
 afterAll(close);
 const prepared = new Map<string, Promise<string>>();
-function createFixtureSql(getDatabase: typeof getDb): Sql {
-  return {
+function createFixtureSql(getDatabase: typeof getDb) {
+  const sql: Sql = {
     transaction: (work) => getDatabase().transaction(work),
     async query<T>(statement: string, params: unknown[] = []) {
       const db = getDatabase();
@@ -119,6 +119,7 @@ function createFixtureSql(getDatabase: typeof getDb): Sql {
       return { rows: result!.rows as T[] };
     },
   };
+  return sql;
 }
 const fixtureSql = createFixtureSql(getDb);
 function fixture(
