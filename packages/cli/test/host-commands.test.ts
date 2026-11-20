@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import type { LocalHostIo } from "../src/local-host.ts";
 import { run } from "../src/run.ts";
 import { memorySessionStore } from "../src/session.ts";
 
@@ -35,9 +36,11 @@ async function capture(args: string[], fetcher: (request: Request) => Promise<Re
       },
     },
     {
-      get localHost(): never {
-        throw new Error("Server host commands must avoid local daemon I/O");
-      },
+      localHost: new Proxy({} as LocalHostIo, {
+        get() {
+          throw new Error("Server host commands must avoid local daemon I/O");
+        },
+      }),
       auth: {
         out: () => {},
         err: () => {},
