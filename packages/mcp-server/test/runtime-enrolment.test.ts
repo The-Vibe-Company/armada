@@ -293,46 +293,50 @@ test("an accepted initial launch prompt publishes under the enrolled generation"
   expect((await f.request("session", session.runtimeToken, session.epoch)).status).toBe(200);
 });
 
-test("runtime readiness rechecks the activity deadline after locking the enrolled runtime", async () => {
-  const f = await fixture();
-  const activityToken = crypto.randomUUID();
-  await f.db.query(
-    `update sandboxes set status='starting',activity_lease_id=$2,
+test.each(["ready", "failed"] as const)(
+  "runtime %s publication rechecks the activity deadline after locking the enrolled runtime",
+  async (status) => {
+    const f = await fixture();
+    const activityToken = crypto.randomUUID();
+    await f.db.query(
+      `update sandboxes set status='starting',activity_lease_id=$2,
       activity_until=now()+interval '1 minute' where id=$1`,
-    [f.id, activityToken],
-  );
-  const ticket = await f.issue();
-  const session = await f.service().enrol(ticket.enrolmentToken);
-  const sql: Sql = {
-    ...f.sql,
-    transaction: (work) =>
-      f.sql.transaction!((tx) =>
-        work({
-          async query<T>(statement: string, params?: unknown[]) {
-            const result = await tx.query<T>(statement, params);
-            if (statement.includes("runtime_hash is not null for update"))
-              await tx.query("update sandboxes set activity_until=clock_timestamp() where id=$1", [f.id]);
-            return result;
-          },
-        }),
-      ),
-  };
-  const store = createSqlData(sql)({
-    userId: f.people.owner,
-    orgs: [{ orgId: f.people.org, role: "member" }],
-    via: "service",
-  }).sandboxes;
-  await expect(
-    store.update(f.id, {
-      status: "ready",
-      finishActivity: true,
-      activityToken,
-      expectedGeneration: Number(ticket.lifecycleGeneration),
-      expectedRuntimeEpoch: session.epoch,
-    }),
-  ).rejects.toThrow("Runtime readiness publication is stale.");
-  expect(await store.get(f.id)).toMatchObject({ status: "starting" });
-});
+      [f.id, activityToken],
+    );
+    const ticket = await f.issue();
+    const session = await f.service().enrol(ticket.enrolmentToken);
+    const sql: Sql = {
+      ...f.sql,
+      transaction: (work) =>
+        f.sql.transaction!((tx) =>
+          work({
+            async query<T>(statement: string, params?: unknown[]) {
+              const result = await tx.query<T>(statement, params);
+              if (statement.includes("runtime_hash is not null for update"))
+                await tx.query("update sandboxes set activity_until=clock_timestamp() where id=$1", [f.id]);
+              return result;
+            },
+          }),
+        ),
+    };
+    const store = createSqlData(sql)({
+      userId: f.people.owner,
+      orgs: [{ orgId: f.people.org, role: "member" }],
+      via: "service",
+    }).sandboxes;
+    await expect(
+      store.update(f.id, {
+        status,
+        ...(status === "failed" ? { statusReason: "Prompt rejected" } : {}),
+        finishActivity: true,
+        activityToken,
+        expectedGeneration: Number(ticket.lifecycleGeneration),
+        expectedRuntimeEpoch: session.epoch,
+      }),
+    ).rejects.toBeInstanceOf(CoreLaunchSettlementConflict);
+    expect(await store.get(f.id)).toMatchObject({ status: "starting" });
+  },
+);
 
 test("replacement ticket issue atomically fences a scoped parent's old bearer", async () => {
   const f = await fixture("modal");
