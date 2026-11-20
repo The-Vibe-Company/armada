@@ -1,6 +1,7 @@
 import { GoldenError, type Provider } from "@armada/core";
-import { flag, oneName, parseArgs, single } from "../args.ts";
+import { flag, parseArgs, single } from "../args.ts";
 import { createArmadaApiClient } from "../armada-api.ts";
+import { resolveSandboxId } from "../current-sandbox.ts";
 import type { Command } from "./command.ts";
 
 const FOLLOW_DELAY_MS = 1_000;
@@ -30,7 +31,7 @@ const logs: Command["run"] = async (argv, { io, deps, auth }) => {
     throw new GoldenError("invalid_config", "--tail cannot be combined with --all or --since.");
   const org = single(args, "--org");
   let firstTail = tail !== undefined;
-  const id = oneName(args.positionals);
+  if (args.positionals.length > 1) throw new GoldenError("invalid_config", "Pass at most one sandbox ID.");
   const all = flag(args, "--all");
   const follow = flag(args, "--follow");
   const client = await createArmadaApiClient({
@@ -39,6 +40,7 @@ const logs: Command["run"] = async (argv, { io, deps, auth }) => {
     session: auth.session,
     ...(auth.timeoutMs === undefined ? {} : { timeoutMs: auth.timeoutMs }),
   });
+  const id = await resolveSandboxId(args.positionals[0], auth.env, deps.sandboxFile, org, client.sandboxes.list);
   let settled = false;
   let cursor: string | null = single(args, "--since") ?? null;
 
@@ -123,6 +125,7 @@ Examples:
 
 For other commands and authentication settings: armada --help.
 `,
+  automaticJson: true,
   validateProfileForHelp: true,
   run: logs,
 } satisfies Command;

@@ -14,11 +14,17 @@ import { requireLaunchAgent } from "./agent-validation.ts";
 import { type Args, flag, single, values } from "./args.ts";
 import { ArmadaApiError, createArmadaApiClient } from "./armada-api.ts";
 import type { AuthIo } from "./auth-commands.ts";
+import { type CurrentSandboxFile, rememberSandbox } from "./current-sandbox.ts";
 import { resolveHost, resolveHostOrganization } from "./host-commands.ts";
 import { parseTtl } from "./operations.ts";
 
 const uuid = /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i;
-export async function launchDocker(args: Args, io: Pick<AuthIo, "out" | "err">, auth: AuthIo): Promise<number> {
+export async function launchDocker(
+  args: Args,
+  io: Pick<AuthIo, "out" | "err">,
+  auth: AuthIo,
+  sandboxFile?: CurrentSandboxFile,
+): Promise<number> {
   const allowed = new Set([
     "--repo",
     "--variable",
@@ -165,6 +171,7 @@ export async function launchDocker(args: Args, io: Pick<AuthIo, "out" | "err">, 
         "invalid_config",
         "Docker launch outcome unknown: server did not confirm the requested logical sandbox.",
       );
+    if (result.sandbox.status !== "failed") await rememberSandbox(result.sandbox.id, sandboxFile, io);
     if (flag(args, "--json")) io.out(`${JSON.stringify(result, null, 2)}\n`);
     else
       io.out(

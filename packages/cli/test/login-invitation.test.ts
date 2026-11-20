@@ -98,7 +98,11 @@ for (const json of [false, true]) {
     expect(state.output()).toMatchObject({ invitations: 0, logins: 0, out: "" });
     if (json)
       expect(JSON.parse(state.output().err)).toEqual({
-        error: { code: "unauthorized", message: "You are not signed in. Run armada login." },
+        error: {
+          code: "unauthorized",
+          message: "You are not signed in. Run armada login.",
+          hint: "Next step: run armada login.",
+        },
       });
     else expect(state.output().err).toContain("Run armada login.");
     expect(state.output().err).not.toContain("private provider diagnostic");

@@ -14,8 +14,9 @@ Example: armada --profile staging login --url https://staging.example.com
 
 Exit codes: 0 success; 1 server/operation failure; 2 invalid usage or missing configuration; 3 authentication failure.
 Scripts: check exit status before consuming stdout; failed operations may have partial output.
-Common typed errors with --json use {error:{code,message}} on stderr, not stdout.
-Progress/warnings can also use stderr; do not assume the entire stream is one JSON document.
+Sandbox commands use JSON when stdout is redirected or when you pass --json.
+In machine mode, the final stderr line on failure is {error:{code,message,hint}}.
+Progress and warnings can appear earlier on stderr.
 See command --help for supported JSON output; keep captured values/tokens out of shared logs.
 
 Quick start / common examples:
@@ -118,7 +119,7 @@ Usage:
   armada detail|recovery|stop|interrupt <sandbox-id> [--org UUID] [--json]
   armada wait <sandbox-id> [--timeout <seconds>] [--org UUID] [--json]
                                            Timeout is 0–600 seconds, default 60.
-  armada report <sandbox-id> ready|blocked --prompt-id ID [--reason TEXT] [--pr-number N] [--pr-url URL] [--head-sha SHA]
+  armada report [sandbox-id] ready|blocked --prompt-id ID [--reason TEXT] [--pr-number N] [--pr-url URL] [--head-sha SHA]
   armada send|steer|exec <sandbox-id> <text-or-command> [--model ID] [--reasoning-effort LEVEL]
                                            send accepts --request-id UUID to reuse an uncertain runtime instruction.
                                            Full-account follow-up sends can queue FIFO; queued is not completed.
@@ -213,6 +214,8 @@ Environment:
   ARMADA_TOKEN                             API token for non-interactive authentication. Takes precedence over
                                            a saved login session.
   ARMADA_URL                               Armada API server (default: https://armada.thevibecompany.co).
+  ARMADA_SANDBOX                           Current sandbox UUID or unique prefix. A sandbox argument overrides it;
+                                           otherwise the CLI falls back to .armada/sandbox in the current directory.
 "
 `;
 
@@ -380,7 +383,7 @@ Example: armada wait SANDBOX_UUID --timeout 60 --org ORG_UUID --json
 `;
 
 exports[`armada report help preserves its output 1`] = `
-"Usage: armada report <sandbox-id> ready|blocked --prompt-id <id> [--org UUID] [--json]
+"Usage: armada report [sandbox-id] ready|blocked --prompt-id <id> [--org UUID] [--json]
   ready: [--pr-number <N>] [--pr-url <URL>] [--head-sha <SHA>]
   blocked: --reason <text>
 Report an explicit outcome for the latest finished turn after Armada login.

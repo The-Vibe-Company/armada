@@ -107,6 +107,7 @@ test("token-only golden create prints an actionable API conflict and exits nonze
       code: "conflict",
       message:
         "Snapshot capacity or binding is unavailable or busy. Use an existing snapshot you can access, retry after any active build finishes, or ask an administrator to check the binding.",
+      hint: null,
     },
   });
   expect(errorOutput).not.toContain(token);
