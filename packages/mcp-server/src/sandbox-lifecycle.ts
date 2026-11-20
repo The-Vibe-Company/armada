@@ -184,6 +184,7 @@ interface SandboxTransition {
     | "runtime_resume"
     | "runtime_observation"
     | "runtime_turn"
+    | "native_turn"
     | "owner"
     | "api"
     | "finish"
