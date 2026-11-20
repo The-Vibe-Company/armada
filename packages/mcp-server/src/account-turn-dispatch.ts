@@ -3,7 +3,7 @@ import { sandboxOperations } from "@armada/core/contract";
 import { decryptSecret, encryptSecret, failureDiagnostic, type Sql, VaultError } from "@armada/core/server";
 import { admitAccountCapacity } from "./account-capacity.ts";
 import type { Caller } from "./caller.ts";
-import type { Job } from "./jobs/runner.ts";
+import type { Job, JobKind } from "./jobs/runner.ts";
 import { continueRequest, recordOperatorDiagnostic } from "./request-observability.ts";
 import type { RuntimeFollowupInput } from "./runtime-followup.ts";
 import type { RuntimeTurnClaim } from "./runtime-resume.ts";
@@ -147,8 +147,8 @@ type TurnClaim = { job: Job; canDispatch(tx?: Sql): Promise<boolean> };
 
 class TurnAdmissionLeaseLost extends Error {}
 
-export async function admitClaimedAccountTurn(sql: Sql, claim: TurnClaim) {
-  const { kind, sandbox_id, payload } = claim.job;
+function turnJobRequest(job: Job) {
+  const { kind, sandbox_id, payload } = job;
   if (
     kind !== "turn_dispatch" ||
     !sandbox_id ||
@@ -158,11 +158,16 @@ export async function admitClaimedAccountTurn(sql: Sql, claim: TurnClaim) {
     typeof payload.requestId !== "string"
   )
     throw new Error("Turn job is missing its sandbox or request ID.");
+  return { sandboxId: sandbox_id, requestId: payload.requestId };
+}
+
+export async function admitClaimedAccountTurn(sql: Sql, claim: TurnClaim) {
+  const { sandboxId, requestId } = turnJobRequest(claim.job);
   const {
     rows: [candidate],
   } = await sql.query<AdmissionEntry>(
     "select * from public.account_turn_queue where sandbox_id=$1 and request_id=$2 and state in ('queued','dispatching')",
-    [sandbox_id, payload.requestId],
+    [sandboxId, requestId],
   );
   return candidate ? admitAccountTurn(sql, candidate, claim) : null;
 }
@@ -293,6 +298,29 @@ export async function admitAccountTurn(sql: Sql, candidate: AdmissionEntry, clai
 }
 
 export type DispatchTurn = (caller: Caller, input: RuntimeFollowupInput, claim?: RuntimeTurnClaim) => Promise<unknown>;
+
+export function createTurnDispatchJob(sql: Sql, key: string, dispatch: DispatchTurn, now = Date.now) {
+  return {
+    concurrency: 32,
+    async run(job, context) {
+      const { sandboxId, requestId } = turnJobRequest(job);
+      if (!(await context.canDispatch()))
+        return { status: "fail", reason: "dispatch_budget_expired", unattempted: true };
+      const claim = { job, canDispatch: context.canDispatch, handoffGeneration: context.handoffGeneration };
+      const admitted = await admitClaimedAccountTurn(sql, claim);
+      if (admitted) await dispatchAccountTurn(sql, key, admitted.entry, admitted.caller, dispatch, claim);
+      const {
+        rows: [receipt],
+      } = await sql.query<{ state: string }>(
+        "select state from public.account_turn_queue where sandbox_id=$1 and request_id=$2",
+        [sandboxId, requestId],
+      );
+      if (!receipt || receipt.state === "admitted" || receipt.state === "failed") return { status: "done" };
+      const after = new Date(now() + 1_000);
+      return admitted ? { status: "retry", after } : { status: "retry", after, unattempted: true };
+    },
+  } satisfies JobKind;
+}
 
 class TurnSettlementLeaseLost extends Error {}
 
