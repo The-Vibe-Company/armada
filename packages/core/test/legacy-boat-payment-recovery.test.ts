@@ -2,28 +2,28 @@ import { afterAll, beforeAll, expect, test } from "bun:test";
 import { readdirSync } from "node:fs";
 import { join } from "node:path";
 import { migrationsDir, openDatabase } from "../../../scripts/db/apply.ts";
+import { closeableFixture } from "../../mcp-server/test/closeable.fixture.ts";
 
 const migration = "20261110220100_legacy_boat_payment_recovery.sql";
-let connection: Awaited<ReturnType<typeof openDatabase>> | undefined;
-
-beforeAll(async () => {
+const fixture = closeableFixture(async () => {
   const db = await openDatabase();
-  connection = db;
-  await db.exec(await Bun.file(join(migrationsDir, "../../scripts/db/supabase-prereq.sql")).text());
-  for (const file of readdirSync(migrationsDir)
-    .filter((f) => f.endsWith(".sql") && f < migration)
-    .sort())
-    await db.exec(await Bun.file(join(migrationsDir, file)).text());
+  try {
+    await db.exec(await Bun.file(join(migrationsDir, "../../scripts/db/supabase-prereq.sql")).text());
+    for (const file of readdirSync(migrationsDir)
+      .filter((f) => f.endsWith(".sql") && f < migration)
+      .sort())
+      await db.exec(await Bun.file(join(migrationsDir, file)).text());
+    return db;
+  } catch (error) {
+    await db.close();
+    throw error;
+  }
 });
-afterAll(async () => {
-  const db = connection;
-  connection = undefined;
-  await db?.close();
-});
+beforeAll(fixture.setup);
+afterAll(fixture.close);
 
 test("only a service-role operator can recover captured legacy refusals; new ambiguous jobs retain capacity", async () => {
-  const db = connection;
-  if (!db) throw new Error("Missing legacy recovery schema fixture");
+  const db = fixture.get();
   const owner = crypto.randomUUID(),
     org = crypto.randomUUID();
   await db.query("insert into auth.users(id) values($1)", [owner]);
