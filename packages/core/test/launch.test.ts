@@ -32,6 +32,7 @@ import {
   toHarnessCredentials,
 } from "../src/index.ts";
 import { prepareLaunchWorkspace } from "../src/launch.ts";
+import { CoreLaunchSettlementConflict } from "../src/sandbox.ts";
 import { catalogLock, catalogReference } from "./support/skillpack-catalog.ts";
 
 const ORG = "11111111-1111-4111-8111-111111111111";
@@ -60,11 +61,14 @@ const owner: GoldenActor = { userId: OWNER, orgId: ORG, role: "member" };
 const other: GoldenActor = { userId: OTHER, orgId: ORG, role: "member" };
 
 describe("launch", () => {
+  const boatModes = ["prompted", "idle"] as const;
+  const modalModes = [...boatModes, "private", "stale epoch", "lost prompt epoch", "unknown settlement"] as const;
   for (const provider of ["boat", "modal"] as const)
-    test.each(provider === "modal" ? (["prompted", "idle", "private"] as const) : (["prompted", "idle"] as const))(
+    test.each([...(provider === "modal" ? modalModes : boatModes)])(
       `${provider} runtime default prepares workspace before publication/inference (%s)`,
       async (mode) => {
-        const prompted = mode === "prompted";
+        const promptFailed = mode === "lost prompt epoch" || mode === "unknown settlement";
+        const prompted = mode === "prompted" || promptFailed;
         const visibility = mode === "private" ? "private" : "org";
         const readyOrder = ["bind", "start", "workspace", "mcp", ...(mode === "private" ? [] : ["admit"])];
         const source = golden("org");
@@ -108,7 +112,25 @@ describe("launch", () => {
             return { ...(await resolve(...args)), binding: { credentialId: OWNER, credentialVersion: 1 } };
           },
         };
-        const result = await launchSandbox(
+        const store = world.stores.sandboxes;
+        const settlements: SandboxPatch[] = [];
+        world.stores.sandboxes = {
+          ...store,
+          activityOwnership: true,
+          async update(id, patch) {
+            if (patch.finishActivity) {
+              settlements.push(patch);
+              if (
+                (mode === "stale epoch" && patch.status === "ready") ||
+                (mode === "lost prompt epoch" && patch.status === "failed")
+              )
+                throw new CoreLaunchSettlementConflict();
+              if (mode === "unknown settlement" && patch.status === "failed") throw Error("Transaction disconnected.");
+            }
+            await store.update(id, patch);
+          },
+        };
+        const launched = launchSandbox(
           native,
           world.stores,
           owner,
@@ -179,6 +201,7 @@ describe("launch", () => {
                     },
                     async prompt() {
                       expect(order).toEqual(readyOrder);
+                      if (promptFailed) throw Error("Runtime prompt did not complete.");
                       return { promptId: "runtime", conversationId: "conversation", status: "queued" };
                     },
                   };
@@ -187,6 +210,20 @@ describe("launch", () => {
             } satisfies NonNullable<LaunchOptions["boatRuntimeDefault"]>,
           },
         );
+        if (mode === "stale epoch" || promptFailed) {
+          await expect(launched).rejects.toThrow(
+            mode === "unknown settlement"
+              ? "Runtime launch failure settlement could not be confirmed."
+              : "Core launch settlement is stale.",
+          );
+          expect(settlements).toMatchObject([
+            { status: mode === "stale epoch" ? "ready" : "failed", expectedRuntimeEpoch: "1" },
+          ]);
+          expect(world.stopped).toEqual([]);
+          return;
+        }
+        const result = await launched;
+        expect(settlements).toMatchObject([{ expectedRuntimeEpoch: "1" }]);
         expect(result.runtime).toEqual({ kind: "armada", epoch: "1" });
         expect(result.sandbox.provider).toBe(provider);
         expect(world.rows.get(result.sandbox.id)?.visibility).toBe(visibility);

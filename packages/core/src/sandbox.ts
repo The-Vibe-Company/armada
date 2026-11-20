@@ -94,6 +94,7 @@ export interface SandboxPatch {
   taskPromptId?: string;
   renewLifecycle?: boolean;
   expectedGeneration?: number;
+  expectedRuntimeEpoch?: string;
   /** Refuse a durable send that stop already cancelled, at activity admission. */
   queueRequestId?: string;
   advanceGeneration?: boolean;
@@ -215,8 +216,8 @@ const COLUMNS = `runtime_transport,boat_runtime,skills, preservation_note, task_
 
 /** Turn and pricing evidence is service-role-only; caller-role stores must not gain these ports. */
 export class CoreLaunchSettlementConflict extends Error {
-  constructor() {
-    super("Core launch settlement is stale.");
+  constructor(message = "Core launch settlement is stale.") {
+    super(message);
   }
 }
 

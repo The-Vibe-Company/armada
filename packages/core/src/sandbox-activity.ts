@@ -1,4 +1,4 @@
-import type { SandboxPatch, SandboxRecord, SandboxStore } from "./sandbox.ts";
+import { CoreLaunchSettlementConflict, type SandboxPatch, type SandboxRecord, type SandboxStore } from "./sandbox.ts";
 
 /** Separate activity ownership from observation leases. Completion advances the generation,
  * invalidating every observation sampled before provider admission completed. */
@@ -50,10 +50,16 @@ export async function sandboxActivity<T>(
     await store.update(sandbox.id, { ...patch, finishActivity: true, activityToken: token, ...expected });
     return result;
   } catch (error) {
-    if (options.failurePatch)
-      await store
-        .update(sandbox.id, { ...options.failurePatch(error), finishActivity: true, activityToken: token, ...expected })
-        .catch(() => {});
+    if (!(error instanceof CoreLaunchSettlementConflict) && options.failurePatch) {
+      const failure = options.failurePatch(error);
+      try {
+        await store.update(sandbox.id, { ...failure, finishActivity: true, activityToken: token, ...expected });
+      } catch (settlementError) {
+        if (settlementError instanceof CoreLaunchSettlementConflict) throw settlementError;
+        if (failure.expectedRuntimeEpoch)
+          throw new CoreLaunchSettlementConflict("Runtime launch failure settlement could not be confirmed.");
+      }
+    }
     throw error;
   } finally {
     clearTimeout(deadline);
