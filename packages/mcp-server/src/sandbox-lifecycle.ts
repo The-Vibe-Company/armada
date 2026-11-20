@@ -689,9 +689,6 @@ export async function finishLaunchFailure(
      where s.id=$3 and ${SANDBOX_VISIBLE} and (s.status='starting' or (s.status='failed' and s.stopped_at is null))
        and s.provider in ('boat','modal') and s.deleted_at is null and s.stop_requested_at is null
        and s.lifecycle_generation=$4 and s.activity_lease_id=$5
-       and (s.boat_runtime or s.runtime_transport is not null
-         or (s.activity_until>clock_timestamp()
-           and (s.reconcile_lease_until is null or s.reconcile_lease_until<=clock_timestamp())))
      returning s.lifecycle_generation::text as generation, s.status`,
     [...scope, sandboxId, generation, activityToken],
   );

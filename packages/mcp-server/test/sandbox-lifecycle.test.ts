@@ -113,7 +113,7 @@ test("private Docker reservations remain untouched while the generic lifecycle r
   expect(await readHistory(people.admin)).toEqual([]);
 });
 
-test.each(["accepted", "superseded", "expired lease", "reconciliation lease", "journal failure"] as const)(
+test.each(["accepted", "superseded", "stop intent", "journal failure"] as const)(
   "promptless native launch settlement (%s)",
   async (scenario) => {
     const { db, people } = await sharedDatabase();
@@ -127,17 +127,11 @@ test.each(["accepted", "superseded", "expired lease", "reconciliation lease", "j
       rows: [launch],
     } = await db.query<{ id: string }>(
       `insert into sandboxes (provider, provider_sandbox_id, golden_id, org_id, owner_id, harness, status,
-       lifecycle_generation, activity_lease_id, activity_until, reconcile_lease, reconcile_lease_until)
-     select 'boat', 'fixture', id, org_id, $1, 'claude', $3::sandbox_status, 1, $2, now()+$4::interval,
-       case when $5 then gen_random_uuid() end, case when $5 then now()+interval '1 minute' end
+       lifecycle_generation, activity_lease_id, activity_until, stop_requested_at)
+     select 'boat', 'fixture', id, org_id, $1, 'claude', $3::sandbox_status, 1, $2, now()+interval '1 minute',
+       case when $4 then now() end
      from goldens where name='shared' returning id`,
-      [
-        people.owner,
-        activityToken,
-        scenario === "superseded" ? "stopping" : "starting",
-        scenario === "expired lease" ? "-1 minute" : "1 minute",
-        scenario === "reconciliation lease",
-      ],
+      [people.owner, activityToken, scenario === "superseded" ? "stopping" : "starting", scenario === "stop intent"],
     );
     if (!launch) throw Error("missing launch");
     const accepted = scenario === "accepted";
@@ -154,11 +148,6 @@ test.each(["accepted", "superseded", "expired lease", "reconciliation lease", "j
         await expect(finish).rejects.toThrow(
           scenario === "journal failure" ? "reject_native_ready" : "publication is stale",
         );
-      if (scenario === "expired lease" || scenario === "reconciliation lease") {
-        await expect(
-          store.update(launch.id, { ...patch, status: "failed", statusReason: "readiness refused" }),
-        ).rejects.toThrow("Launch failure publication is stale");
-      }
       const row = await db.query(
         "select status, lifecycle_generation::int as generation, activity_lease_id from sandboxes",
       );
