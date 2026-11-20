@@ -6,7 +6,7 @@ fields serve that. Docker has its own [receipt lifecycle](#docker-launches).
 
 | Surface | Exactly-once field | External reference |
 | --- | --- | --- |
-| `POST /api/v1/sandbox/launch` from a Boat or Modal golden | `idempotencyKey`, 16–128 characters | `externalRef` |
+| `POST /api/v1/sandbox/launch` from a Boat or Modal snapshot | `idempotencyKey`, 16–128 characters | `externalRef` |
 | `POST /api/v1/sandbox/launch` from a pinned Modal template | `idempotencyKey`, 16–128 characters (required) | `externalRef` |
 | `POST /api/v1/sandbox/launch` for Docker | `idempotencyKey`, 16–128 characters (required) | `externalRef` |
 | MCP `launch` | `idempotencyKey`, 16–128 characters | `externalRef` |
@@ -64,8 +64,8 @@ as an `idempotencyKey` creates a separate reservation.
 Select the organization by name or UUID. You can omit it when you belong to a
 single organization or use an org-scoped token. For a scoped token, an explicit
 organization must be its UUID. In the CLI, pass `--agent` for Docker launches
-as you would for golden launches. A `hostId` selects a Docker host. A
-`snapshotId` selects a Docker snapshot and its host.
+as you would when launching from a Boat or Modal snapshot. A `hostId`
+selects a Docker host. A `snapshotId` selects a Docker snapshot and its host.
 
 The launch call returns once Armada admits the launch, normally with
 `sandbox.status: "starting"` and null `promptId` and `conversationId`. A worker starts
@@ -117,10 +117,11 @@ After deployment, sending the same key with the new fields can return
 up the sandbox by `externalRef` and escalate to an operator if needed. Keep the
 original key throughout reconciliation.
 
-Before deploying the shared schema for explicit runtime golden REST launches,
-reconcile outstanding requests whose bodies it now rejects. For example, the
-previous explicit Modal golden schema accepted `null` for `org`, `model`, or
-`reasoningEffort`. After deployment those bodies return `invalid` before
+Before deploying the shared schema for explicit REST launches from a snapshot
+with the Armada runtime, reconcile outstanding requests whose bodies it now
+rejects. For example, the previous schema for explicit Modal runtime launches
+from a snapshot accepted `null` for `org`, `model`, or `reasoningEffort`.
+After deployment those bodies return `invalid` before
 receipt lookup. Omitting the null fields can change the request fingerprint and
 return `conflict` with the original receipt UUID. Keep the original key, look
 up that UUID or the sandbox's `externalRef`, and escalate unresolved launches
