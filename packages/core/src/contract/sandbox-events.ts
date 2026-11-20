@@ -11,6 +11,7 @@ const cursor = position
 export const streamSandboxEvents = {
   name: "streamSandboxEvents",
   directServer: true,
+  scopedAuth: ["serviceToken", "viewerGrant", "epochGrant"],
   route: { method: "GET", path: "/api/v1/events" },
   input: {
     body: z.undefined(),

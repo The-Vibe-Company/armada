@@ -17,7 +17,6 @@ test("registered command routes preserve their HTTP methods and names", () => {
       "GET /auth/methods",
       "GET /events",
       "GET /github/oauth/callback",
-      "GET /viewer/events",
       "POST /account/logout",
       "POST /account/status",
       "POST /auth/email/start",

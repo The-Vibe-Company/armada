@@ -184,6 +184,10 @@ read the history for the entire sandbox. For longer event inspection use
 drains available pages. Keep output bounded with tail for routine diagnostics.
 Preserve returned cursors/identifiers in reports; do not fabricate a cursor flag.
 
+For a viewer grant, subscribe to `GET /api/v1/events?sandbox=<UUID>` with
+the viewer bearer. Resume with the last processed SSE ID in `Last-Event-ID`.
+Fetch message content with `POST /api/v1/viewer/logs` and its separate log cursor.
+
 ## 4. Preserve work and manage lifetime
 
 Use `armada extend SANDBOX --ttl 1h --json` before expiry if more time is

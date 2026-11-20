@@ -59,7 +59,6 @@ export const viewerRoutes = defineRoutes("viewer", {
   ...viewerRoute("logs"),
   ...viewerRoute("status"),
   ...viewerRoute("send"),
-  ...viewerRoute("events"),
 });
 
 /** Viewer grants are never principals for ordinary control routes. */
@@ -116,10 +115,7 @@ async function viewerControl(
     if (!action) return fail(403);
     const operation = sandboxViewerOperations[action];
     if (request.method !== operation.route.method) return fail(405);
-    const body =
-      action === "events"
-        ? { cursor: url.searchParams.get("cursor") ?? request.headers.get("last-event-id") }
-        : await readBody(request, "maxBodyBytes" in operation.input ? operation.input.maxBodyBytes : undefined);
+    const body = await readBody(request, "maxBodyBytes" in operation.input ? operation.input.maxBodyBytes : undefined);
     const invoke = async (route: string, fields: Record<string, unknown>) => {
       if (grant.expires <= now()) return fail(401);
       const caller = await authenticatedControlCaller(
@@ -148,72 +144,11 @@ async function viewerControl(
       });
     }
     // The schemas select only viewer fields. The grant supplies the sandbox ID.
-    const input = (
-      action === "events" ? sandboxViewerOperations.events.input.query : sandboxViewerOperations[action].input.body
-    ).safeParse(body);
+    const input = operation.input.body.safeParse(body);
     if (!input.success) return fail(400);
-    const { cursor } = input.data;
-    const page = (next: typeof cursor) =>
-      invoke("logs/read", { ...(next ? { cursor: next } : {}), limit: 100, maxBytes: 65536 });
-    if (action === "logs") return page(cursor);
     if (action === "status") return invoke("sandbox/status", {});
-    // Preflight authorization before committing streaming headers.
-    let pending: Response | null = await page(cursor);
-    if (!pending.ok) return pending;
-    let next = cursor;
-    let cancelled = false;
-    const encoder = new TextEncoder();
-    const stream = new ReadableStream<Uint8Array>(
-      {
-        async pull(controller) {
-          try {
-            if (cancelled || request.signal.aborted || grant.expires <= now()) {
-              controller.close();
-              return;
-            }
-            const response = pending ?? (await page(next));
-            pending = null;
-            if (!response.ok) {
-              controller.enqueue(encoder.encode("event: access-ended\ndata: {}\n\n"));
-              controller.close();
-              return;
-            }
-            const data = (await response.json()) as { cursor?: string; hasMore?: boolean };
-            if (cancelled || request.signal.aborted) {
-              controller.close();
-              return;
-            }
-            if (typeof data.cursor === "string") next = data.cursor;
-            // Cursor lives in JSON: no untrusted provider cursor can inject SSE fields.
-            controller.enqueue(encoder.encode(`event: page\ndata: ${JSON.stringify(data)}\n\n`));
-            if (!data.hasMore)
-              await new Promise<void>((resolve) => {
-                const done = () => {
-                  clearTimeout(timer);
-                  request.signal.removeEventListener("abort", done);
-                  resolve();
-                };
-                const timer = setTimeout(done, 1000);
-                request.signal.addEventListener("abort", done, { once: true });
-              });
-          } catch {
-            if (!cancelled) controller.close();
-          }
-        },
-        cancel() {
-          cancelled = true;
-          pending = null;
-        },
-      },
-      { highWaterMark: 0 },
-    );
-    return new Response(stream, {
-      headers: {
-        "content-type": sandboxViewerOperations.events.outputMediaType,
-        "cache-control": "no-store",
-        "x-accel-buffering": "no",
-      },
-    });
+    const { cursor } = input.data;
+    return invoke("logs/read", { ...(cursor ? { cursor } : {}), limit: 100, maxBytes: 65536 });
   } catch {
     return fail(503);
   }

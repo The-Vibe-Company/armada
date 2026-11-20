@@ -5,7 +5,6 @@ import published from "../openapi.json";
 import { type ControlOptions, handleControlRequest } from "../src/control.ts";
 import { controlRoutes } from "../src/modules.ts";
 import { rejectUnroutedViewerRequest } from "../src/viewer-control.ts";
-import { publishedGetResponse } from "./published-response.ts";
 
 async function fixture(status: "ready" | "deleted" = "ready") {
   let time = new Date("2026-11-17T12:00:00Z");
@@ -133,40 +132,11 @@ test("viewer rejects expiry, tampering and revoked issuing tokens", async () => 
   expect(f.calls).toHaveLength(0);
 });
 
-test("stream resumes bounded pages on demand and rechecks access between pages", async () => {
-  const f = await fixture();
-  const stream = await f.api("viewer/events?cursor=resume_cursor", f.grant.token);
-  expect(f.calls[0]!.body.cursor).toBe("resume_cursor");
-  expect(f.calls).toHaveLength(1);
-  const reader = stream!.body!.getReader();
-  const first = await reader.read();
-  const [event, data] = new TextDecoder().decode(first.value).trimEnd().split("\n");
-  expect(
-    sandboxViewerOperations.events.output.parse({
-      event: event?.slice("event: ".length),
-      data: JSON.parse(data!.slice("data: ".length)),
-    }),
-  ).toMatchObject({ event: "page", data: { cursor: "opaque_cursor" } });
-  expect(f.calls).toHaveLength(1);
-  f.hide();
-  expect(new TextDecoder().decode((await reader.read()).value)).toContain("access-ended");
-  expect(f.calls[1]!.body).toEqual({ id: f.id, cursor: "opaque_cursor", limit: 100, maxBytes: 65536 });
-  expect((await reader.read()).done).toBe(true);
-});
-
 test("mint refuses invisible sandboxes and non-service bearers", async () => {
   const f = await fixture();
   f.hide();
   expect((await f.api("sandbox/viewer-token", f.token, { id: f.id }))!.status).toBe(403);
   expect((await f.api("sandbox/viewer-token", "invalid_bearer", { id: f.id }))!.status).toBe(403);
-});
-
-test("stream does not deliver its prefetched page after grant expiry", async () => {
-  const f = await fixture();
-  const stream = await f.api("viewer/events", f.grant.token);
-  f.expire();
-  const reader = stream!.body!.getReader();
-  expect((await reader.read()).done).toBe(true);
 });
 
 test("viewer polling preserves large provider continuation cursors through control HTTP", async () => {
@@ -205,7 +175,6 @@ test("viewer routes preserve access-denied responses for invalid operation input
     ["logs", "viewer/logs", f.grant.token, { cursor: 42 }],
     ["status", "viewer/status", f.grant.token, { cursor: "bad\n" }],
     ["send", "viewer/send", f.grant.token, { message: " \t " }],
-    ["events", "viewer/events?cursor=bad%0D", f.grant.token, undefined],
   ] as const) {
     const response = await f.api(path, bearer, body);
     expect(response?.status).toBe(400);
@@ -222,25 +191,6 @@ test("viewer send forwards a structured sandbox refusal", async () => {
   expect(response?.status).toBe(409);
   expect(sandboxViewerOperations.send.errorOutput.parse(await response!.json())).toMatchObject({
     error: { code: "sandbox_terminal" },
-  });
-});
-
-test("the published viewer stream 503 accepts a viewer access denial", async () => {
-  const f = await fixture();
-  const response = await handleControlRequest(
-    new Request("https://example.test/api/v1/viewer/events", {
-      headers: { authorization: `Bearer ${f.grant.token}` },
-    }),
-    {
-      ...f.options,
-      now: () => {
-        throw new Error("clock unavailable");
-      },
-    },
-  );
-  expect(response?.status).toBe(503);
-  expect(publishedGetResponse("viewer/events", "503").parse(await response!.json())).toEqual({
-    error: "viewer_access_denied",
   });
 });
 
@@ -272,7 +222,8 @@ test("viewer POSTs refuse oversized bodies at their published limits before disp
   }
 });
 
-test("the event feed binds a viewer to its grant's sandbox and rechecks the issuer", async () => {
+test("the published event feed admits a viewer only for its grant's sandbox and a valid issuer", async () => {
+  expect(published.paths["/api/v1/events"].get.security).toContainEqual({ viewerGrant: [] });
   const f = await fixture();
   f.options.eventFeed = {
     owner: () => async () => [],

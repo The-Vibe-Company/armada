@@ -805,7 +805,7 @@
     "packages/mcp-server/src/tracked-operations.ts": 1,
     "packages/mcp-server/src/turn-pricing.ts": 6,
     "packages/mcp-server/src/turns.ts": 42,
-    "packages/mcp-server/src/viewer-control.ts": 5,
+    "packages/mcp-server/src/viewer-control.ts": 3,
     "packages/mcp-server/src/wake-bus.ts": 3,
     "packages/mcp-server/src/work-preservation.ts": 17,
     "packages/mcp-server/test/application-vault.test.ts": 3,
