@@ -29,11 +29,22 @@ async function fixture(
   parentState: "ready" | "running" = "running",
   accountKind: "anthropic" | "codex_auth" = "anthropic",
   provider: "boat" | "modal" = "boat",
+  abortAfterTransition?: (code: unknown) => boolean,
 ) {
   const { db, people: p } = await sharedDatabase();
   const sql: Sql = {
     query: (q, v) => db.query(q, v),
-    transaction: (work) => db.transaction((tx) => work({ query: (q, v) => tx.query(q, v) })),
+    transaction: (work) =>
+      db.transaction((tx) =>
+        work({
+          async query<T>(statement: string, params?: unknown[]) {
+            const result = await tx.query<T>(statement, params);
+            if (statement.includes("from public.sandbox_transition(") && abortAfterTransition?.(params?.[5]))
+              throw Error("Synthetic transaction failure after journaling stop");
+            return result;
+          },
+        }),
+      ),
   };
   const golden =
     provider === "modal"
@@ -1062,12 +1073,20 @@ test("registered failed child with confirmed stopped compute releases explicit c
   }
 });
 
-test.each(["checkpoint", "handler", "both"])("scoped Modal stop replay after loss of %s response", async (loss) => {
+const stopRecoveryCases = ["checkpoint", "handler", "both", "recovery rollback"];
+
+test.each(stopRecoveryCases)("scoped Modal stop recovery after %s", async (loss) => {
   const loseStopReply = loss === "both";
+  const abortRecovery = loss === "recovery rollback";
   const suspendFirstStop = loss !== "checkpoint";
   const checkpointWritten = Promise.withResolvers<void>();
   const releaseCheckpoint = Promise.withResolvers<void>();
-  const { close, sql, p, id, token, selection } = await fixture("running", "anthropic", "modal");
+  let recoveryAborts = 0;
+  const { close, sql, p, id, token, selection } = await fixture("running", "anthropic", "modal", (code) => {
+    if (!abortRecovery || code !== "runtime_retained_stop") return false;
+    recoveryAborts++;
+    return true;
+  });
   try {
     const fake = fakeBoat();
     let checkpointRequest: string | undefined;
@@ -1219,7 +1238,7 @@ test.each(["checkpoint", "handler", "both"])("scoped Modal stop replay after los
       (
         await sql.query(
           `select c.orchestrator_id,c.owner_id,c.org_id,s.task_prompt_id from orchestrator_children c
-           join sandboxes s on s.id=c.sandbox_id where c.sandbox_id=$1`,
+         join sandboxes s on s.id=c.sandbox_id where c.sandbox_id=$1`,
           [receipt.sandboxId],
         )
       ).rows,
@@ -1244,17 +1263,41 @@ test.each(["checkpoint", "handler", "both"])("scoped Modal stop replay after los
         stopped = await services.childWorker.stop(token, "stop", receipt.sandboxId);
         expect(stopped.id).toBe(first.id);
       }
-      expect(stopped.state).toBe(loseStopReply ? "uncertain" : "succeeded");
+      expect(stopped.state).toBe(abortRecovery ? "pending" : loseStopReply ? "uncertain" : "succeeded");
     } finally {
       releaseCheckpoint.resolve();
       await firstStop;
     }
     expect(checkpointRequest).toBe(stopped.id);
-    expect(await services.childWorker.stop(token, "stop", receipt.sandboxId)).toEqual(stopped);
+    if (abortRecovery) {
+      expect(recoveryAborts).toBe(1);
+      expect(
+        (await sql.query("select activity_lease_id, stop_requested_at from sandboxes where id=$1", [receipt.sandboxId]))
+          .rows,
+      ).toEqual([{ activity_lease_id: null, stop_requested_at: null }]);
+    } else {
+      expect(await services.childWorker.stop(token, "stop", receipt.sandboxId)).toEqual(stopped);
+    }
     expect(checkpointCalls).toBe(2);
-    expect(fake.stops).toHaveLength(1);
+    expect(fake.stops).toHaveLength(abortRecovery ? 0 : 1);
+    expect(
+      (
+        await sql.query(
+          `select actor,code,to_status from sandbox_transitions
+         where sandbox_id=$1 and to_status in ('stopping','stopped') order by id`,
+          [receipt.sandboxId],
+        )
+      ).rows,
+    ).toEqual(
+      abortRecovery
+        ? []
+        : [
+            { actor: "api", code: "runtime_retained_stop", to_status: "stopping" },
+            ...(loseStopReply ? [] : [{ actor: "lifecycle_runner", code: "owner_stop_settled", to_status: "stopped" }]),
+          ],
+    );
     await expect(services.childWorker.read(token, receipt.sandboxId)).resolves.toMatchObject({
-      status: loseStopReply ? "stopping" : "stopped",
+      status: abortRecovery ? "running" : loseStopReply ? "stopping" : "stopped",
     });
   } finally {
     await close();
@@ -1354,25 +1397,45 @@ test.each(["golden lookup failure", "placement refusal", "parent revocation duri
 
 // Real delegated stop and SQL fences: a completed stop must remain live-readable.
 test("managed child stop clears its epoch only after physical confirmation", async () => {
-  const { close, db, sql, p, id, token, golden } = await fixture();
+  let scenario: "confirmed" | "pending" | "stale" | "failed exit" | "admission abort" | "settlement abort";
+  const { close, db, sql, p, id, token, golden } = await fixture(
+    "running",
+    "anthropic",
+    "boat",
+    (code) =>
+      (scenario === "admission abort" && code === "owner_stop_admitted") ||
+      (scenario === "settlement abort" && code === "owner_stop_settled"),
+  );
   try {
     const fake = fakeBoat();
-    let pending = false;
+    let childId: string;
     const provider = {
       ...fake.provider,
+      async get(id: string) {
+        const info = await fake.provider.get(id);
+        return scenario === "failed exit" && info.state === "stopped"
+          ? { ...info, retainedSnapshot: "pending" as const }
+          : info;
+      },
       stop: async (request: { sandboxId: string }) => {
-        if (!pending) await fake.provider.stop(request);
+        if (scenario !== "pending") await fake.provider.stop(request);
       },
     };
     const services = createSandboxAccessServices({
       sql,
-      providers: { resolve: async () => provider },
+      providers: {
+        async resolve() {
+          if (scenario === "stale")
+            await db.query("update sandboxes set lifecycle_generation=lifecycle_generation+1 where id=$1", [childId]);
+          return provider;
+        },
+      },
       credentials: launchCredentials(createSqlVaultStore(sql), ENCRYPTION_KEY),
       connections: undefined,
       encryptionKey: ENCRYPTION_KEY,
       scopedMcpUrl: "https://armada.example/mcp",
     });
-    for (pending of [false, true]) {
+    for (scenario of ["confirmed", "pending", "stale", "failed exit", "admission abort", "settlement abort"] as const) {
       const physical = await fake.provider.fork({
         from: "test",
         name: "child",
@@ -1388,23 +1451,72 @@ test("managed child stop clears its epoch only after physical confirmation", asy
         orgId: p.org,
         ownerId: p.owner,
         harness: "codex",
-        status: "ready",
+        status: scenario === "failed exit" ? "failed" : "ready",
         model: "m",
         reasoningEffort: "high",
       });
       await db.query("insert into orchestrator_children values($1,$2,$3,$4)", [child.id, id, p.org, p.owner]);
-      await services.childWorker.stop(token, crypto.randomUUID(), child.id);
+      childId = child.id;
+      const calls = fake.stops.length;
+      const receipt = await services.childWorker.stop(token, crypto.randomUUID(), child.id);
       const store = createSqlData(sql)({
         via: "service",
         userId: p.owner,
         orgs: [{ orgId: p.org, role: "member" }],
       }).sandboxes;
       const saved = await store.get(child.id);
+      const journal = await db.query(
+        "select actor,code,to_status,generation::int from sandbox_transitions where sandbox_id=$1 order by id",
+        [child.id],
+      );
+      const [{ activity_lease_id: lease } = {}] = (
+        await db.query<{ activity_lease_id: string | null }>("select activity_lease_id from sandboxes where id=$1", [
+          child.id,
+        ])
+      ).rows;
+      if (scenario === "stale" || scenario === "admission abort") {
+        expect(receipt.state).toBe("uncertain");
+        expect(fake.stops).toHaveLength(calls);
+        expect(saved).toMatchObject({
+          status: "ready",
+          lifecycleGeneration: scenario === "stale" ? 2 : 1,
+          stopRequestedAt: null,
+        });
+        expect(lease).toBeNull();
+        expect(journal.rows).toEqual([]);
+        continue;
+      }
+      if (scenario === "failed exit") {
+        expect(receipt.state).toBe("succeeded");
+        const stoppedAt = saved?.stoppedAt;
+        expect(stoppedAt).toEqual(expect.any(String));
+        expect(saved).toMatchObject({ status: "failed", stopRequestedAt: null });
+        expect(journal.rows).toEqual([]);
+        await services.childWorker.stop(token, crypto.randomUUID(), child.id);
+        expect(fake.stops).toHaveLength(calls + 1);
+        expect((await store.get(child.id))?.stoppedAt).toBe(stoppedAt);
+        continue;
+      }
+      const pending = scenario !== "confirmed";
+      if (scenario === "settlement abort") {
+        expect(receipt.state).toBe("uncertain");
+        expect(fake.stops).toHaveLength(calls + 1);
+        expect(saved?.lifecycleGeneration).toBe(2);
+        expect(lease).toEqual(expect.any(String));
+      }
+      expect(journal.rows).toEqual([
+        { actor: "owner", code: "owner_stop_admitted", to_status: "stopping", generation: 2 },
+        ...(pending
+          ? []
+          : [{ actor: "lifecycle_runner", code: "owner_stop_settled", to_status: "stopped", generation: 3 }]),
+      ]);
       expect(saved?.status).toBe(pending ? "stopping" : "stopped");
       expect(Boolean(saved?.stopRequestedAt)).toBe(pending);
       expect(saved?.stoppedAt !== null).toBe(!pending);
-      const report = await readStatus(provider, store, saved!, { now: new Date() });
-      expect(report.providerState).toBe(pending ? null : "archived");
+      if (scenario !== "settlement abort") {
+        const report = await readStatus(provider, store, saved!, { now: new Date() });
+        expect(report.providerState).toBe(pending ? null : "archived");
+      }
     }
   } finally {
     await close();
