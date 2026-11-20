@@ -282,8 +282,11 @@ export function createJobsStore(sql: Sql, encryptionKey?: string) {
           const checkpoint = await withJobLease(sql, job, async (tx) => {
             const { rows } = await tx.query<{
               checkpoint: { key: string; entry: Awaited<ReturnType<ModalMachineJournal["read"]>> } | null;
-            }>("select outcome->'modal_machine' as checkpoint from public.jobs where id=$1", [job.id]);
-            return rows[0]!.checkpoint;
+            }>(
+              "select outcome->'modal_machine' as checkpoint from public.jobs where id=$1 and lease_until > clock_timestamp()",
+              [job.id],
+            );
+            return rows[0]?.checkpoint;
           });
           if (checkpoint === undefined) throw new Error("Modal launch claim is no longer current.");
           if (checkpoint && checkpoint.key !== key) throw new Error("Modal launch journal key changed.");
@@ -479,5 +482,8 @@ export function createJobsStore(sql: Sql, encryptionKey?: string) {
       }
       return complete(sql, job.generation);
     },
-  } satisfies JobStore & { enqueue: (...args: never[]) => Promise<string> };
+  } satisfies JobStore & {
+    enqueue: (...args: never[]) => Promise<string>;
+    modalLaunchJournal: (job: Job) => ModalMachineJournal;
+  };
 }
