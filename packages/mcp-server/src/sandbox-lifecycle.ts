@@ -644,17 +644,16 @@ export async function recordObservedProviderState(
     );
     if (!eligible.rows.length) return { kind: "conflict" } satisfies SandboxTransitionResult;
     const path = providerRunPlacement === undefined ? "runtime" : "native";
+    const providerActor = toState === "stopped" ? "runtime_observation" : "lifecycle_runner";
+    const providerCode = toState === "failed" ? "failure" : "stopped";
+    const turnCode = toState === "running" ? "native_turn_running" : "native_turn_settled";
     const result = await transitionSandbox(tx, {
       sandboxId,
       expectedGeneration: generation,
       fromStates: [fromState],
       toState,
-      actor: nativeTurn ? "native_turn" : toState === "stopped" ? "runtime_observation" : "lifecycle_runner",
-      code: nativeTurn
-        ? toState === "running"
-          ? "native_turn_running"
-          : "native_turn_settled"
-        : `${path}_provider_${toState === "failed" ? "failure" : "stopped"}`,
+      actor: nativeTurn ? "native_turn" : providerActor,
+      code: nativeTurn ? turnCode : `${path}_provider_${providerCode}`,
       effects: [],
       ...(toState === "stopped" || nativeTurn
         ? { settlement: { lease: null, statusReason: reason, stopRequestedAt: null, stoppedAt } }
