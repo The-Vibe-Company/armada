@@ -2047,12 +2047,11 @@ export function createDockerHostStore(sql: Sql, key: string) {
           if (logical.status === "deleted") return;
           const attached = logical.docker_generation === restore.request.generation;
           const sameGeneration = lifecycleGeneration === String(logical.lifecycle_generation);
-          // Stop admission can advance the lifecycle without replacing the attached container.
-          const stoppingAttached =
+          const attachedAtNextStopGeneration =
             attached &&
             logical.status === "stopping" &&
             BigInt(logical.lifecycle_generation) === BigInt(lifecycleGeneration) + 1n;
-          if (!sameGeneration && !stoppingAttached) return;
+          if (!sameGeneration && !attachedAtNextStopGeneration) return;
           await requireRestoreBindings(tx, logical, restore, lifecycleGeneration);
           if (attached) {
             if (job.outcome !== "completed" || job.cancelled_at) deny();
