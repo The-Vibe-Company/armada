@@ -532,24 +532,37 @@ test("runner restore admission commits the transition, binding and mailbox inten
       jobStore.handoffGeneration(claimed, owner, steps),
     );
 
-  const failure = new Error("Interrupted after the final runner write.");
-  const interrupted = createJobsStore(
-    {
-      ...sql,
-      transaction: (work) =>
-        sql.transaction!(async (tx) => {
-          await work(tx);
-          throw failure;
-        }),
-    },
-    key,
-  );
-  await expect(handoff(interrupted)).rejects.toBe(failure);
-  expect(await snapshot()).toEqual([
-    { status: "stopped", lifecycle_generation: "2", docker_generation: generation, job_generation: "2", intents: 0 },
-  ]);
-  expect(await bindings.lookup({ sandboxId, generation: 3 })).toBeUndefined();
-  expect((await store.list(a.actor))[0]?.running).toBe(0);
+  const writes = [
+    "select applied, generation::text from public.sandbox_transition",
+    "insert into public.docker_machine_bindings",
+    "insert into public.docker_host_jobs",
+    "update public.jobs j set generation",
+  ];
+  for (const write of writes) {
+    const failure = new Error(`Interrupted after ${write}`);
+    const interrupted = createJobsStore(
+      {
+        ...sql,
+        transaction: (work) =>
+          sql.transaction!((tx) =>
+            work({
+              async query<T>(statement: string, params?: unknown[]) {
+                const result = await tx.query<T>(statement, params);
+                if (statement.trimStart().startsWith(write)) throw failure;
+                return result;
+              },
+            }),
+          ),
+      },
+      key,
+    );
+    await expect(handoff(interrupted)).rejects.toBe(failure);
+    expect(await snapshot()).toEqual([
+      { status: "stopped", lifecycle_generation: "2", docker_generation: generation, job_generation: "2", intents: 0 },
+    ]);
+    expect(await bindings.lookup({ sandboxId, generation: 3 })).toBeUndefined();
+    expect((await store.list(a.actor))[0]?.running).toBe(0);
+  }
 
   const result = await handoff(jobs);
   expect(result.generation).toBe(3);
