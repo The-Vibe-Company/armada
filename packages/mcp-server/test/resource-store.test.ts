@@ -1,10 +1,10 @@
-import { afterAll, beforeAll, expect, test } from "bun:test";
+import { expect, test } from "bun:test";
 import { machineCapacity, type ProviderResourceObservation, type Sql } from "@armada/core";
 import type { Caller } from "../src/caller.ts";
 import { createJobsStore } from "../src/jobs/store.ts";
 import { createResourceStore, pruneResourceObservations } from "../src/resource-store.ts";
 import { retentionMaintenanceJob, seedRetentionMaintenance } from "../src/retention-maintenance.ts";
-import { migratedDatabase } from "./migrated-database.ts";
+import { useMigratedDatabase } from "./migrated-database.ts";
 
 // Synthetic protocol/counter inputs only; these are not measured provider usage.
 const now = new Date("2026-11-09T12:00:00Z");
@@ -17,23 +17,11 @@ const machineSize = {
   repositoryDir: "web",
   capacity: machineCapacity("boat", "medium"),
 };
-let connection: Awaited<ReturnType<typeof migratedDatabase>> | undefined;
-function database() {
-  if (!connection) throw new Error("Database fixture is not open");
-  return connection;
-}
+const database = useMigratedDatabase();
 const sql: Sql = {
   query: (query, params) => database().query(query, params),
   transaction: (work) => database().transaction((tx) => work({ query: (query, params) => tx.query(query, params) })),
 };
-beforeAll(async () => {
-  connection = await migratedDatabase();
-});
-afterAll(async () => {
-  const db = connection;
-  connection = undefined;
-  await db?.close();
-});
 async function fixture() {
   const db = database();
   const org = crypto.randomUUID(),

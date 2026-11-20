@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, expect, test } from "bun:test";
+import { expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
 import type { AgentEvent, Sql } from "@armada/core";
 import { createSqlVaultStore, encryptSecret } from "@armada/core/server";
@@ -13,13 +13,9 @@ import { createRuntimeCommands } from "../src/runtime-commands.ts";
 import { createRuntimeEnrolments } from "../src/runtime-enrolment.ts";
 import { createRuntimeEvents } from "../src/runtime-events.ts";
 import { createSandboxAccountChange } from "../src/sandbox-account-change.ts";
-import { migratedDatabase } from "./migrated-database.ts";
+import { useMigratedDatabase } from "./migrated-database.ts";
 
-let connection: Awaited<ReturnType<typeof migratedDatabase>> | undefined;
-function database() {
-  if (!connection) throw new Error("Database fixture is not open");
-  return connection;
-}
+const database = useMigratedDatabase();
 const sql: Sql = {
   query: (q, v) => database().query(q, v),
   transaction: (work) => database().transaction((tx) => work({ query: (q, v) => tx.query(q, v) })),
@@ -43,14 +39,6 @@ const bootstrap = createDockerBootstrapService(sql, key, {
     harnesses: { codex: { files: [{ path: "bin/codex" }] } },
   },
   credentials: launchCredentials(createSqlVaultStore(sql), key),
-});
-beforeAll(async () => {
-  connection = await migratedDatabase();
-});
-afterAll(async () => {
-  const db = connection;
-  connection = undefined;
-  await db?.close();
 });
 async function fixture() {
   const db = database();

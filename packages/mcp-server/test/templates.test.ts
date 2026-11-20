@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, expect, spyOn, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import { createSqlAuthStore } from "@armada/auth";
 import {
   createApplicationVault,
@@ -23,25 +23,15 @@ import { AUTH_HEADER, type Driver, Journal, Runner } from "../../agent-runtime/s
 import { type ControlOptions, handleControlRequest } from "../src/control.ts";
 import { createSqlData } from "../src/data.ts";
 import { createMcpLifecycle } from "../src/mcp-lifecycle.ts";
-import { migratedDatabase } from "./migrated-database.ts";
+import { useMigratedDatabase } from "./migrated-database.ts";
 import { publishedResponse } from "./published-response.ts";
 import { ENCRYPTION_KEY, fakeBoat, seedDatabase } from "./support.ts";
 
-let database: Awaited<ReturnType<typeof migratedDatabase>> | undefined;
-
-beforeAll(async () => {
-  database = await migratedDatabase();
-});
-
-afterAll(async () => {
-  const db = database;
-  database = undefined;
-  await db?.close();
-});
+const getDatabase = useMigratedDatabase();
 
 // Primary contract owner: real migrations + service-role authorization/admission, fake physical provider only.
 async function fixture() {
-  if (!database) throw new Error("Template database is not open");
+  const database = getDatabase();
   await resetMigratedDatabaseRows(
     database,
     `

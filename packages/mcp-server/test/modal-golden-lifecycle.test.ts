@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, expect, test } from "bun:test";
+import { expect, test } from "bun:test";
 import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -20,19 +20,11 @@ import {
 } from "@armada/provider-modal";
 import type { Image, ModalClient, Sandbox } from "modal";
 import { captureGitHubAuditLogs } from "../../../scripts/test-support/github-audit.ts";
-import { openMigratedDatabase } from "../../../scripts/test-support/migrated-database.ts";
 import { goldenHelperReport } from "../../core/test/support/golden-helper.ts";
+import { useMigratedDatabase } from "./migrated-database.ts";
 import { ENCRYPTION_KEY } from "./support.ts";
 
-let connection: Awaited<ReturnType<typeof openMigratedDatabase>> | undefined;
-beforeAll(async () => {
-  connection = await openMigratedDatabase();
-});
-afterAll(async () => {
-  const db = connection;
-  connection = undefined;
-  await db?.close();
-});
+const database = useMigratedDatabase();
 
 // This fixture models remote exec; shell execution is not the snapshot-byte contract.
 async function revisionCommand(directory: string, command: string) {
@@ -42,8 +34,7 @@ async function revisionCommand(directory: string, command: string) {
 }
 
 test("secure Modal golden publishes a NULL master, restores from its own image, and snapshots again", async () => {
-  const db = connection;
-  if (!db) throw new Error("Missing Modal golden schema fixture");
+  const db = database();
   const people = { org: crypto.randomUUID(), admin: crypto.randomUUID(), owner: crypto.randomUUID() };
   const files = await mkdtemp(join(tmpdir(), "armada-golden-images-"));
   try {

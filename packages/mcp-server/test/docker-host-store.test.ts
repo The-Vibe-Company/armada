@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, expect, test } from "bun:test";
+import { expect, test } from "bun:test";
 import { createHash, randomUUID } from "node:crypto";
 import {
   DOCKER_HOST_PROTOCOL,
@@ -15,28 +15,16 @@ import { createDockerMachineBindings } from "../src/docker-machine-bindings.ts";
 import { SNAPSHOT_COLUMNS } from "../src/docker-snapshot-data.ts";
 import { createSandboxAccessServices } from "../src/sandbox-access-services.ts";
 import { createFinishedDockerCleanup, requestSandboxFinish, selfFinishToken } from "../src/sandbox-finish.ts";
-import { migratedDatabase } from "./migrated-database.ts";
+import { useMigratedDatabase } from "./migrated-database.ts";
 import { publishedResponse } from "./published-response.ts";
 
-let connection: Awaited<ReturnType<typeof migratedDatabase>> | undefined;
-function database() {
-  if (!connection) throw new Error("Database fixture is not open");
-  return connection;
-}
+const database = useMigratedDatabase();
 const sql: Sql = {
   query: (query, params) => database().query(query, params),
   transaction: (work) => database().transaction((tx) => work({ query: (query, params) => tx.query(query, params) })),
 };
 const key = Buffer.alloc(32, 7).toString("base64");
 const store = createDockerHostStore(sql, key);
-beforeAll(async () => {
-  connection = await migratedDatabase();
-});
-afterAll(async () => {
-  const db = connection;
-  connection = undefined;
-  await db?.close();
-});
 async function fixture() {
   const db = database();
   const userId = randomUUID(),
