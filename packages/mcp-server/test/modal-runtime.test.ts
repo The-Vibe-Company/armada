@@ -21,7 +21,7 @@ afterAll(async () => {
   );
 });
 
-// SQL is the owner of immutable routing, epoch handoff and stopped archive authority.
+// SQL is the owner of immutable routing and stopped archive authority.
 // This protects Modal admission (previously Boat/Docker only), not provider inference.
 test("Modal OpenCode dial-out persists routing and retains enrolled authority through launch but not stop", async () => {
   const fixture = await prepared;
@@ -70,7 +70,7 @@ test("Modal OpenCode dial-out persists routing and retains enrolled authority th
     (await authority.issue({ sandboxId: row.id, ownerId: people.owner, configuration: {} })).enrolmentToken,
   );
   await db.query(
-    "update sandboxes set status='running',lifecycle_generation=lifecycle_generation+1,activity_lease_id=null,activity_until=null,task_prompt_id='p' where id=$1",
+    "update sandboxes set status='running',activity_lease_id=null,activity_until=null,task_prompt_id='p' where id=$1",
     [row.id],
   );
   await authority.withSession(active.runtimeToken, active.epoch, async () => true);

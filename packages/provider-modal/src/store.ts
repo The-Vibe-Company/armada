@@ -30,8 +30,6 @@ function revive(row: Machine): Machine {
     if (row.info[key]) row.info[key] = new Date(row.info[key]);
   return row;
 }
-/** Requires a server connection and authenticated caller. Every SQL query includes scope; every
- * controller entry rechecks live org membership (including private owner), not cached authorization. */
 export function createSqlModalStore(sql: Sql, scope: Scope): ModalStore {
   const key = scopeKey(scope);
   async function authorize(db = sql) {
@@ -128,7 +126,6 @@ export function createSqlModalStore(sql: Sql, scope: Scope): ModalStore {
     async lease(id, work) {
       await get(id);
       const token = randomUUID();
-      // 15 minute bound, renewable on every phase commit. A lost lease cannot commit later results.
       const claim = await sql.query(
         `update public.modal_machines set lease_id=$3,lease_until=now()+interval '15 minutes' where scope=$1 and id=$2 and (lease_until is null or lease_until<now()) returning id`,
         [key, id, token],
@@ -208,8 +205,6 @@ export function createSqlModalStore(sql: Sql, scope: Scope): ModalStore {
     },
     async purgeImage(name, sourceId, imageId) {
       await authorize();
-      // Conditional on the exact claimed artifact: a stale collector finishing late never erases
-      // a later tombstone that reused the name for another source or image.
       await sql.query(
         `delete from public.modal_images where scope=$1 and name=$2 and source_id=$3 and record->>'imageId'=$4 and record->>'deleted'='true'`,
         [key, name, sourceId, imageId],
@@ -224,7 +219,6 @@ export function createSqlModalStore(sql: Sql, scope: Scope): ModalStore {
     },
     async takeImage(name, sourceId, imageId, token) {
       await authorize();
-      // Five minutes bounds one image deletion; a crashed holder's claim is then recoverable.
       const result = await sql.query(
         `update public.modal_images set record=record||jsonb_build_object('collectToken',$5::text,'collectUntil',extract(epoch from now()+interval '5 minutes'))
          where scope=$1 and name=$2 and source_id=$3 and record->>'imageId'=$4 and record->>'deleted'='true' and record->>'collecting'='true'
@@ -259,8 +253,6 @@ export function createSqlModalStore(sql: Sql, scope: Scope): ModalStore {
     },
     async imageReferenced(imageId) {
       await authorize();
-      // Authorization limits what this store may delete; references protect the
-      // immutable physical ID across all bindings/tenant scopes, without exposing them.
       const result = await sql.query(
         `select 1 where exists(select 1 from public.modal_images i where i.record->>'imageId'=$1 and (i.record->>'deleted') is distinct from 'true')
         or exists(select 1 from public.modal_machines m where m.record->>'phase' is distinct from 'deleted' and (
@@ -292,8 +284,6 @@ export function createSqlModalStore(sql: Sql, scope: Scope): ModalStore {
     },
   };
 }
-/** Only called after verifying an expiring, sandbox+generation scoped ingest grant. No caller DB
- * credentials or provider tokens are ever sent to a runner. Ack follows transaction commit. */
 export async function appendModalEvents(
   sql: Sql,
   scope: Scope,
@@ -332,7 +322,7 @@ export async function appendModalEvents(
     for (const item of [...events].sort((a, b) => a.sequence - b.sequence)) {
       if (!Number.isSafeInteger(item.sequence) || item.sequence < 1)
         throw refusal("invalid_request", "Invalid producer sequence.");
-      if (item.sequence > ack + 1) break; // Never publish an event beyond a producer gap.
+      if (item.sequence > ack + 1) break;
       const inserted = await db.query(
         `insert into public.modal_events(scope,sandbox_id,generation,producer_sequence,event) values($1,$2,$3,$4,$5::jsonb)
          on conflict(scope,sandbox_id,generation,producer_sequence) do update set event=excluded.event

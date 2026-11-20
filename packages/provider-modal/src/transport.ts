@@ -48,8 +48,6 @@ const errors: Record<string, ProviderErrorCode> = {
   unsupported_fast_model: "invalid_request",
   invalid_effort: "invalid_request",
 };
-/** Real protocol1 supports string errors on 409 without an envelope; successful responses must match
- * request identity. Error details are allowlisted, never copied into public diagnostics. */
 export function createRunnerTransport(
   access: (row: Machine) => Promise<RunnerAccess>,
   fetcher: typeof fetch = fetch,
@@ -88,8 +86,6 @@ export function createRunnerTransport(
       if (identified && (envelope.version !== 1 || envelope.requestId !== requestId))
         throw refusal("unavailable", "Runner response identity mismatch.");
       if (envelope.error) {
-        // Existing protocol1 handlers use a bare safe error on HTTP409; successful/enveloped
-        // responses (including enveloped errors) must identify this exact request/version.
         if (!identified && response.status !== 409) throw refusal("unavailable", "Runner response identity mismatch.");
         const name = typeof envelope.error === "string" ? envelope.error : envelope.error.code;
         throw new ProviderError({
