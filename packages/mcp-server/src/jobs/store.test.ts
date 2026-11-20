@@ -166,6 +166,7 @@ test.each([
   ["native legacy window still open", 2, "request", "infinity", false, false],
   ["runtime request started", 2, "request", "-infinity", true, false],
   ["runtime request advanced generation", 3, "request", "-infinity", true, false],
+  ["runtime request already at dispatch generation", 3, "request", "-infinity", true, false],
   ["runtime request advanced after claim", 3, "request", "-infinity", true, false],
   ["runtime retarget interrupted before commit", 3, "request", "-infinity", true, false],
   ["runtime request advanced beyond dispatch generation", 4, "request", "-infinity", true, false],
@@ -200,7 +201,12 @@ test.each([
   await db.query(
     `update account_turn_queue set state='dispatching', dispatch_generation=$4, dispatch_until=$2,
        native_prompt_id=$3 where request_id=$1`,
-    [requestId, until, activity === "prompt" ? "prior-prompt" : null, scenario.startsWith("older job") ? 3 : 2],
+    [
+      requestId,
+      until,
+      activity === "prompt" ? "prior-prompt" : null,
+      scenario.startsWith("older job") || scenario === "runtime request already at dispatch generation" ? 3 : 2,
+    ],
   );
   await db.query(`update sandboxes set lifecycle_generation=$2, activity_lease_id=$3, activity_until=$4 where id=$1`, [
     sandboxId,
@@ -275,6 +281,7 @@ test.each([
   if (
     reset ||
     scenario === "runtime request advanced generation" ||
+    scenario === "runtime request already at dispatch generation" ||
     scenario === "runtime request advanced after claim" ||
     (interrupted && runtime)
   ) {
