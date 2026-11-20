@@ -233,14 +233,28 @@ Node manifest and apt policy in a real disposable Modal probe (terminated). Git,
 gh, sshd, Bun and both harnesses are installed with `/home/user/repos` writable by
 user. No named Modal Secret/account environment is inherited. The non-secret
 conformance App/name/environment binding is exported as MODAL_CONFORMANCE_APP;
-workspace metadata still comes from the trusted connection record.
+the AppID is authoritative and workspace metadata comes from the trusted connection record.
+
+For custom distribution inputs, pin a Debian base by OCI digest. The base must
+include apt, Node and npm, and its configured Debian snapshot repository must
+provide the exact apt versions in the lock. Image construction uses public build
+inputs and excludes bootstrap, authorization and session data.
 
 For the single CLI/server binary, import `loadEmbeddedRunnerArtifact` from
 `@armada/provider-modal/embedded` after the runtime build. Merge returned bytes/hash
 with MODAL_IMAGE_LOCK in artifact. Bun embeds main.js and its manifest as file
-assets: the compiled server needs no external runtime/workspace files. Native
-executables are installed only in Modal, not as host binaries. The compile smoke
-imports the actual composed factory and embedded artifact on all four targets.
+assets. Both loaders validate the portable bundle, while the disk loader also
+checks native resources. The compiled server needs no external runtime/workspace
+files. Native executables are installed only in Modal, not as host binaries.
+The compile smoke imports the actual composed factory and embedded artifact on
+all four targets.
+
+Saved golden images carry the runtime from their build date. Before private
+bootstrap, the direct Modal runner path refreshes the public runtime for
+first-generation forks and golden builder generations that have yet to complete
+fresh-state preparation. This includes builders reopened from a recovery image.
+Ordinary non-golden working checkpoint resumes in this path keep their saved
+runtime and native journal.
 
 ## Authorized VM build privilege and independent runner Bun
 
