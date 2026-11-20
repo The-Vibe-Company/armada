@@ -20,8 +20,6 @@ import {
 } from "../src/daemon.ts";
 import { fileStore, httpApi, observeRetainedStop, readDockerOutputArchive } from "../src/native.ts";
 
-const allocationIdentity = { machineId: "c".repeat(64) };
-
 function fail(): never {
   throw new Error("missing receipt");
 }
@@ -72,10 +70,7 @@ function fixture(
   };
   const executor: Executor = {
     startRuntime: run,
-    async create() {
-      await run();
-      return allocationIdentity;
-    },
+    create: run,
     stop: run,
     delete: run,
     async stopIfExpired(request) {
@@ -248,7 +243,6 @@ test("restore replays its frozen predecessor after a lost completion without aut
     expect(target).toEqual(restore.request);
     expect(predecessor.request).toEqual(job.request);
     copies.push(predecessor.machineId);
-    return allocationIdentity;
   };
   executor.startRuntime = async () => {
     throw new Error("Restore must not install the runtime");
@@ -292,7 +286,7 @@ test("an ambiguous Docker restore failure replays the same pending job", async (
   const run = () => tick(store, api, executor, false, () => 100_000);
   await expect(run()).rejects.toThrow("docker_failed");
   expect(acknowledgements).toEqual([]);
-  executor.restore = async () => allocationIdentity;
+  executor.restore = async () => {};
   await run();
   expect(acknowledgements).toEqual(["completed"]);
 });
@@ -325,7 +319,6 @@ test("an ambiguous restore defers only its own redelivery while the host takes o
     attempts++;
     if (attempts === 1) throw new DockerMachineError("docker_failed");
     dispatches.push("restore");
-    return allocationIdentity;
   };
   executor.stop = async () => {
     dispatches.push("stop");
@@ -429,7 +422,6 @@ test("local retention reclaims an expired pending restore target even while offl
   let stoppedTarget: string | undefined;
   executor.restore = async (target) => {
     stoppedTarget = target.generation;
-    return allocationIdentity;
   };
   executor.isStopped = async (target) => target.generation === stoppedTarget;
   const cleanup: string[] = [];
@@ -1236,7 +1228,7 @@ for (const [caller, options] of [
       result: async () => {},
     };
     const executor: Executor = {
-      create: async () => allocationIdentity,
+      create: async () => {},
       delete: async () => {},
       stop: async () => {
         stops++;
@@ -1424,7 +1416,6 @@ test("compaction preserves cleanup capacity, TTL facts and stored replay fences"
   const executor: Executor = {
     async create() {
       effects++;
-      return allocationIdentity;
     },
     async stop() {
       effects++;
@@ -1584,7 +1575,7 @@ test("durable retention cleans only stopped allocations after the deadline while
   let deletes = 0;
   let reports = 0;
   const executor: Executor = {
-    create: async () => allocationIdentity,
+    create: async () => {},
     stop: async () => {},
     delete: async () => {},
     stopIfExpired: async () => false,
@@ -1650,7 +1641,7 @@ test("physical resume cancels retention even when its RPC outcome was uncertain"
   let now = 10;
   let deletes = 0;
   const executor: Executor = {
-    create: async () => allocationIdentity,
+    create: async () => {},
     stop: async () => {},
     delete: async () => {},
     stopIfExpired: async () => false,
@@ -1681,7 +1672,7 @@ test("retention rotates failed deletions and runs local TTL before bounded offli
   const f = fixture();
   const order: string[] = [];
   const executor: Executor = {
-    create: async () => allocationIdentity,
+    create: async () => {},
     stop: async () => {},
     delete: async () => {},
     stopIfExpired: async (request) => {
@@ -2239,7 +2230,6 @@ test("the mailbox loop drains ready jobs without idling and runs another sandbox
         releaseFirst.resolve();
       }
       finished.add(request.sandboxId);
-      return allocationIdentity;
     },
     stop: async () => {},
     delete: async () => {},
@@ -2316,10 +2306,7 @@ test("runJobs admits the job a held poll returns once its sandbox's running job 
     },
   };
   const executor: Executor = {
-    async create() {
-      await held.promise;
-      return allocationIdentity;
-    },
+    create: async () => held.promise,
     stop: async () => {},
     delete: async () => {},
     stopIfExpired: async () => {},
@@ -2405,7 +2392,7 @@ test("a ledger that cannot be saved before a held poll never overwrites a comple
     ...f.executor,
     async create(request) {
       await gate.promise;
-      return f.executor.create(request);
+      await f.executor.create(request);
     },
   };
   let failNextSave = false;

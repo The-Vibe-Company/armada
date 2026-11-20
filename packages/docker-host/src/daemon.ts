@@ -8,11 +8,7 @@ import {
   parseDockerHostJob,
 } from "../../core/src/docker-host-job.ts";
 import type { DockerHostPollResponse } from "../../core/src/docker-host-wire.ts";
-import {
-  type createDockerMachineExecutor,
-  DockerMachineError,
-  type DockerMachineRequest,
-} from "../../core/src/docker-machine.ts";
+import { DockerMachineError, type DockerMachineRequest } from "../../core/src/docker-machine.ts";
 import type { DockerSandboxLimits } from "../../core/src/docker-resource-policy.ts";
 import {
   DockerSnapshotBaselineError,
@@ -108,11 +104,6 @@ export interface Api {
   claim?(state: State, requestId: string, accepted: boolean): Promise<void>;
   cleaned?(state: State, requestId: string, reason?: "retention_elapsed" | "disk_pressure"): Promise<void>;
 }
-type AllocationIdentity = Pick<
-  Awaited<ReturnType<ReturnType<typeof createDockerMachineExecutor>["create"]>>,
-  "machineId"
->;
-
 export interface Executor {
   diskFreeBytes?(): Promise<number | null>;
   cleanupImages?(): Promise<void>;
@@ -126,8 +117,8 @@ export interface Executor {
   restore?(
     request: DockerMachineRequest,
     predecessor: Extract<Job, { operation: "restore" }>["predecessor"],
-  ): Promise<AllocationIdentity>;
-  create(request: DockerMachineRequest): Promise<AllocationIdentity>;
+  ): Promise<unknown>;
+  create(request: DockerMachineRequest): Promise<unknown>;
   stop(request: DockerMachineRequest): Promise<unknown>;
   delete(request: DockerMachineRequest, target?: { scope: "physical-only"; machineId: string }): Promise<unknown>;
   stopIfExpired(request: DockerMachineRequest): Promise<unknown>;
@@ -894,11 +885,11 @@ async function admitLocked(
         await executor.startRuntime(receipt.request, job.bootstrap);
       } else if (receipt.operation === "restore") {
         if (job.operation !== "restore" || !executor.restore) throw Error("Restore unavailable");
-        const { machineId } = await executor.restore(receipt.request, job.predecessor);
-        receipt.machineId = machineId;
+        const machineId = allocationMachineId(await executor.restore(receipt.request, job.predecessor));
+        if (machineId !== undefined) receipt.machineId = machineId;
       } else if (receipt.operation === "create") {
-        const { machineId } = await executor.create(receipt.request);
-        receipt.machineId = machineId;
+        const machineId = allocationMachineId(await executor.create(receipt.request));
+        if (machineId !== undefined) receipt.machineId = machineId;
       } else if (receipt.operation === "deletePhysical") {
         if (job.operation !== "deletePhysical") throw Error("Changed host job");
         await executor.delete(receipt.request, { scope: "physical-only", machineId: job.machineId });
@@ -1110,6 +1101,12 @@ async function admitLocked(
       }
     },
   };
+}
+
+function allocationMachineId(result: unknown): string | undefined {
+  if (result === null || typeof result !== "object" || !("machineId" in result)) return undefined;
+  const { machineId } = result;
+  return typeof machineId === "string" && /^[a-f0-9]{64}$/.test(machineId) ? machineId : undefined;
 }
 
 function isUncertainDockerFailure(error: unknown) {
