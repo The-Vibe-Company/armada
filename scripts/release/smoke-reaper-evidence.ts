@@ -68,8 +68,6 @@ export function checkReaperEvidence(jsonl: string, now: number) {
     }
   }
   if (Math.max(volume.current, volume.previous) >= reaperLogLimit) problems.add("log_limit_reached");
-  // Coverage can recover on the next sweep. Overdue machines and unusable logs
-  // must fail immediately, before a subsequent query can lose that evidence.
   const canWait = problems.size === 0 && machineIds.modal.size === 0 && machineIds.docker.size === 0;
   if (
     Number.isFinite(discoveryFailure) &&
