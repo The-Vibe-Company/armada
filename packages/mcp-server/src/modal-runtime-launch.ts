@@ -19,7 +19,6 @@ export function modalRuntimeLaunch(
       const resumeGeneration = input.restoreCheckpoint ? sandbox.lifecycleGeneration : undefined;
       return startRuntime({
         input,
-        ...(resumeGeneration === undefined ? {} : { expectedGeneration: resumeGeneration }),
         configure: () =>
           runtimeConfigurationWithVariables(
             options.sql,
