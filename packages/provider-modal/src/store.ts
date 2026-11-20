@@ -62,13 +62,13 @@ export function createSqlModalStore(sql: Sql, scope: Scope): ModalStore {
         throw refusal("forbidden", "Stored builder identity does not match its reservation.");
       return revive(row.record);
     },
-    async reserve(requestKey, machine, runtimeSourceId) {
+    async reserve(requestKey, machine, sourceId) {
       const reserve = async (db: Sql) => {
         await authorize(db);
         const { sourceImage, managementAuthority } = machine;
-        if (machine.commonRuntime && sourceImage) {
-          if (!runtimeSourceId || !managementAuthority)
-            throw refusal("forbidden", "Runtime reservation requires a verified source.");
+        if (sourceImage) {
+          if (!sourceId || !managementAuthority)
+            throw refusal("forbidden", "Snapshot reservation requires a verified source.");
           const orgKey = scopeKey({ ...scope, visibility: "org" });
           if (sourceImage.scopeKey !== key && !(scope.visibility === "private" && sourceImage.scopeKey === orgKey))
             throw refusal("forbidden", "Snapshot source is outside this reservation scope.");
@@ -81,7 +81,7 @@ export function createSqlModalStore(sql: Sql, scope: Scope): ModalStore {
             !image ||
             image.deleted ||
             image.info.status !== "ready" ||
-            image.sourceId !== runtimeSourceId ||
+            image.sourceId !== sourceId ||
             image.imageId !== sourceImage.imageId
           )
             throw refusal("not_found", "Modal snapshot is no longer available.");
@@ -100,9 +100,8 @@ export function createSqlModalStore(sql: Sql, scope: Scope): ModalStore {
         if (!row) throw refusal("conflict", "Launch reservation failed.");
         return revive(row.record);
       };
-      if (!machine.commonRuntime || !machine.sourceImage) return reserve(sql);
-      if (!sql.transaction)
-        throw refusal("unavailable", "Runtime snapshot reservation requires a database transaction.");
+      if (!machine.sourceImage) return reserve(sql);
+      if (!sql.transaction) throw refusal("unavailable", "Snapshot reservation requires a database transaction.");
       return sql.transaction(reserve);
     },
     get,
