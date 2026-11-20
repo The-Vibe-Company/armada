@@ -4,7 +4,7 @@ import { createGoldenRuntimeEnvironment } from "./golden-runtime-environment.ts"
 import { runtimeAgentFor } from "./runtime-agent.ts";
 import { createRuntimeCommands } from "./runtime-commands.ts";
 import type { runtimeConfiguration } from "./runtime-configuration.ts";
-import { createRuntimeEnrolments } from "./runtime-enrolment.ts";
+import { createRuntimeEnrolments, type RuntimeTicketGuard } from "./runtime-enrolment.ts";
 import type { RuntimeGitHub } from "./runtime-github.ts";
 import { createRuntimeStartup } from "./runtime-startup.ts";
 import { runtimeWorkspace } from "./runtime-workspace.ts";
@@ -12,6 +12,7 @@ import { runtimeWorkspace } from "./runtime-workspace.ts";
 type LaunchPolicy = NonNullable<LaunchOptions["runtime"]>;
 type LaunchInput = Parameters<LaunchPolicy["start"]>[0] & {
   assertDispatch?: (tx?: Sql) => Promise<void>;
+  ticketGuard?: RuntimeTicketGuard;
 };
 export type RuntimeLaunchPolicy = Omit<LaunchPolicy, "start"> & {
   start(input: LaunchInput): ReturnType<LaunchPolicy["start"]>;
@@ -75,6 +76,7 @@ export function createRuntimeLaunch(options: RuntimeLaunchOptions, provider: "bo
       ...(sandbox.lifecycleGeneration === undefined ? {} : { expectedGeneration: sandbox.lifecycleGeneration }),
       ...(commandGrantExpiresAt !== undefined ? { commandGrantExpiresAt } : {}),
       ...(input.assertDispatch ? { assertClaim: input.assertDispatch } : {}),
+      ...(input.ticketGuard ? { ticketGuard: input.ticketGuard } : {}),
       signal,
     });
     await environment.deliver(provider, actor, sandbox.id, ready.epoch, signal, input.assertDispatch);

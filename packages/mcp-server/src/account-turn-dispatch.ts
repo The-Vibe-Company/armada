@@ -46,6 +46,21 @@ export const ENROLLED_PENDING_RUNTIME_WAKE = `(
       and r.phase='dispatched' and r.receipt is null and e.runtime_hash is not null
       and e.lifecycle_generation=s.lifecycle_generation
   ))`;
+export const CONFIRMED_WAKE_WITHOUT_TICKET = `(
+  q.state='dispatching'
+  and ((s.provider='boat' and s.boat_runtime) or (s.provider='modal' and s.runtime_transport='dialout'))
+  and s.status='starting' and s.activity_lease_id=q.request_id and s.activity_until>clock_timestamp()
+  and s.lifecycle_generation=q.dispatch_generation+1
+  and s.stop_requested_at is null and s.deleted_at is null and s.expires_at>clock_timestamp()
+  and not s.application_secret_tainted
+  and (s.reconcile_lease_until is null or s.reconcile_lease_until<=clock_timestamp())
+  and exists(
+    select 1 from public.runtime_resumes r
+    join public.runtime_enrolments e on e.sandbox_id=r.sandbox_id and e.epoch=r.source_epoch
+    where r.sandbox_id=s.id and r.request_id=q.request_id and r.target_epoch=e.epoch+1
+      and r.phase='dispatched' and r.receipt is null and r.activated_at is not null
+      and e.runtime_hash is null and e.enrolment_hash is null and e.lifecycle_generation<s.lifecycle_generation
+  ))`;
 export const TURN_RECOVERY_ELIGIBLE = `(q.dispatch_until<=now() and q.dispatch_generation is not null
   and ((${RUNTIME_LANE} and ${RUNTIME_REQUEST_EVIDENCE})
     or (s.lifecycle_generation=q.dispatch_generation and s.activity_lease_id is null
@@ -224,7 +239,8 @@ export async function admitAccountTurn(sql: Sql, candidate: AdmissionEntry, clai
         const { rows } = await tx.query(
           `select q.request_id from public.account_turn_queue q join public.sandboxes s on s.id=q.sandbox_id
            where q.sandbox_id=$1 and q.request_id=$2
-             and (${TURN_RECOVERY_ELIGIBLE} or ${COMPLETED_RUNTIME_WAKE} or ${ENROLLED_PENDING_RUNTIME_WAKE})`,
+             and (${TURN_RECOVERY_ELIGIBLE} or ${COMPLETED_RUNTIME_WAKE} or ${ENROLLED_PENDING_RUNTIME_WAKE}
+               or ${CONFIRMED_WAKE_WITHOUT_TICKET})`,
           [candidate.sandbox_id, candidate.request_id],
         );
         if (!rows.length) return null;

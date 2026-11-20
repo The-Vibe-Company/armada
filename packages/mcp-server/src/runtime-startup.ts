@@ -2,7 +2,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { isHarness, ProviderError } from "@armada/core";
 import type { Sql } from "@armada/core/server";
 import { currentRequestId, recordOperatorFailure } from "./request-observability.ts";
-import { type createRuntimeEnrolments, RuntimeEnrolmentDenied } from "./runtime-enrolment.ts";
+import { type createRuntimeEnrolments, RuntimeEnrolmentDenied, type RuntimeTicketGuard } from "./runtime-enrolment.ts";
 import { logRuntimeStage } from "./runtime-progress.ts";
 
 interface BootstrapInput {
@@ -46,6 +46,7 @@ export function createRuntimeStartup(
     commandGrantExpiresAt?: number;
     expectedGeneration?: number;
     assertClaim?: (tx?: Sql) => Promise<void>;
+    ticketGuard?: RuntimeTicketGuard;
     signal?: AbortSignal;
     /** Readiness budget AFTER the bounded host bootstrap returns. */
     readinessTimeoutMs?: number;
@@ -93,6 +94,7 @@ export function createRuntimeStartup(
         expectedProviderSandboxId: providerSandboxId,
         configuration: input.configuration,
         ...(input.assertClaim ? { assertClaim: input.assertClaim } : {}),
+        ...(input.ticketGuard ? { ticketGuard: input.ticketGuard } : {}),
         ...(input.expectedGeneration === undefined ? {} : { expectedGeneration: input.expectedGeneration }),
         ...(input.commandGrantExpiresAt !== undefined ? { commandGrantExpiresAt: input.commandGrantExpiresAt } : {}),
       });

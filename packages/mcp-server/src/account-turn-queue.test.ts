@@ -45,15 +45,16 @@ beforeAll(async () => {
     create table mcp_actor_epochs(org_id uuid,user_id uuid,epoch bigint);
     create table sandboxes(id uuid primary key,harness text default 'codex',provider text,boat_runtime boolean,runtime_transport text,model text,reasoning_effort text,credential_id uuid,credential_version int,org_id uuid,owner_id uuid,
       conversation_ids text[],visibility text default 'private',status_reason text,preservation_note text,status text,deleted_at timestamptz,stopped_at timestamptz,stop_requested_at timestamptz,expires_at timestamptz,
-      activity_lease_id uuid,task_prompt_id text,lifecycle_generation bigint default 1,reconcile_lease_until timestamptz,
+      activity_lease_id uuid,activity_until timestamptz,task_prompt_id text,lifecycle_generation bigint default 1,reconcile_lease_until timestamptz,
+      application_secret_tainted boolean not null default false,
       docker_host_id uuid,docker_installation_id uuid,docker_generation uuid);
     create table runtime_commands(sandbox_id uuid,sequence bigint,request_id text);
-    create table runtime_enrolments(sandbox_id uuid,epoch bigint,runtime_hash text,lifecycle_generation bigint);
+    create table runtime_enrolments(sandbox_id uuid,epoch bigint,runtime_hash text,lifecycle_generation bigint,enrolment_hash text);
     create table runtime_checkpoints(sandbox_id uuid,epoch bigint,merge_stop boolean);
     create table docker_host_jobs(bound_sandbox_id uuid,position bigint,request_id uuid);
     create table docker_resume_claims(sandbox_id uuid,request_id uuid,actor_id uuid,host_id uuid,
       installation_id uuid,generation uuid,lifecycle_generation bigint,accepted boolean);
-    create table runtime_resumes(sandbox_id uuid,request_id uuid,target_epoch bigint,phase text,receipt jsonb);
+    create table runtime_resumes(sandbox_id uuid,request_id uuid,target_epoch bigint,phase text,receipt jsonb,source_epoch bigint,activated_at timestamptz);
     create table runtime_idle_turns(sandbox_id uuid,prompt_id text,settled boolean);
     create table account_agent_reservations(sandbox_id uuid primary key,account_id uuid);`);
   // Apply this migration against a minimal real schema: no hand-written queue store behavior.
