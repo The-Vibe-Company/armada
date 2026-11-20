@@ -32,7 +32,12 @@ import {
   withUsageTotals,
 } from "@armada/core";
 import type { Provider } from "@armada/core/server";
-import { assertGoldenBackendBinding, assertSqlGoldenMutation, beginSnapshotLaunch } from "@armada/core/server";
+import {
+  assertGoldenBackendBinding,
+  assertSqlGoldenMutation,
+  beginSnapshotLaunch,
+  CoreLaunchSettlementConflict,
+} from "@armada/core/server";
 import { beginGoldenOperation, reconcileGoldenOperations } from "../../core/src/golden-store.ts";
 import { recordNativeAccountExhaustion } from "./account-exhaustion.ts";
 import { publishAccountSpend, unmeasuredUsage } from "./account-spend.ts";
@@ -828,8 +833,10 @@ export function createSqlData(
           if (!sql.transaction || expectedGeneration === undefined || !activityToken || typeof reason !== "string")
             throw new DataError("Launch failure requires its activity generation, token and diagnostic.");
           const applied = await sql.transaction((tx) =>
-            finishLaunchFailure(tx, scope, id, expectedGeneration, activityToken, reason),
+            finishLaunchFailure(tx, scope, id, expectedGeneration, activityToken, reason, patch.expectedRuntimeEpoch),
           );
+          if (applied === "epoch_conflict")
+            throw new CoreLaunchSettlementConflict("Launch failure publication is stale.");
           if (!applied) throw new DataError("Launch failure publication is stale.", "sandbox_not_ready");
           return;
         }
@@ -873,9 +880,19 @@ export function createSqlData(
           if (!sql.transaction) throw new Error("Runtime readiness publication requires a transaction.");
           const { expectedGeneration, activityToken } = patch;
           const outcome = await sql.transaction((tx) =>
-            finishLaunchSuccess(tx, scope, id, expectedGeneration, activityToken, initialPrompt),
+            finishLaunchSuccess(
+              tx,
+              scope,
+              id,
+              expectedGeneration,
+              activityToken,
+              patch.expectedRuntimeEpoch,
+              initialPrompt,
+            ),
           );
           if (outcome === "applied") return;
+          if (outcome === "epoch_conflict")
+            throw new CoreLaunchSettlementConflict("Runtime readiness publication is stale.");
           if (outcome === "native_conflict")
             throw new DataError(
               initialPrompt

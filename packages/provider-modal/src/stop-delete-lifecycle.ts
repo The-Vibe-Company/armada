@@ -2,7 +2,13 @@ import type { Provider } from "@armada/core";
 import type { boundModalApp, modalConnection } from "./client.ts";
 import { lifecycleStep, ModalOperationError, modalError, refusal } from "./errors.ts";
 import type { createImageCollection } from "./image-collection.ts";
-import { lookupModalCompute, snapshotModalRecoveryImage, terminateModalCompute } from "./machine.ts";
+import {
+  deleteModalCompute,
+  deleteModalRecoveryImage,
+  lookupModalCompute,
+  snapshotModalRecoveryImage,
+  terminateModalCompute,
+} from "./machine.ts";
 import type { createPhysicalLifecycle } from "./physical-lifecycle.ts";
 import type { Machine, ModalResourceReceipt, ModalStore, RunnerDistribution, RunnerTransport } from "./ports.ts";
 
@@ -180,13 +186,10 @@ export function createStopDeleteLifecycle(deps: {
         }
         row.phase = "deleting";
         await save(row);
-        if (!exitConfirmed && row.physicalId) {
+        const physicalId = row.physicalId;
+        if (!exitConfirmed && physicalId) {
           await boundNotAbsence();
-          try {
-            await terminateModalCompute(await lookupModalCompute(client, row.physicalId));
-          } catch (error) {
-            if (modalError(error).code !== "not_found") throw error;
-          }
+          await deleteModalCompute(() => lookupModalCompute(client, physicalId));
           row.deletePhysicalExitGeneration = row.generation;
           await save(row);
         }
@@ -194,13 +197,7 @@ export function createStopDeleteLifecycle(deps: {
           ...(row.retainedRecoveryIds ?? []),
           ...(row.recoveryImageId ? [row.recoveryImageId] : []),
         ])) {
-          await cleanupStep(sandboxId, async () => {
-            try {
-              await client.images.delete(imageId);
-            } catch (error) {
-              if (modalError(error).code !== "not_found") throw error;
-            }
-          });
+          await cleanupStep(sandboxId, () => deleteModalRecoveryImage(client, imageId));
         }
         row.phase = "deleted";
         await save(row);

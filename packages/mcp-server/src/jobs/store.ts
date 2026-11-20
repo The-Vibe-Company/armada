@@ -129,7 +129,7 @@ export function createJobsStore(sql: Sql, encryptionKey?: string) {
           queued_with_evidence: boolean;
           native_uncertain: boolean;
           abandoned: boolean;
-          superseded_dispatch: boolean;
+          unrecoverable_dispatch: boolean;
         }>(
           `select s.lifecycle_generation::text as generation,
                   case when q.state = 'queued' then ${QUEUED_TURN_CANCELLED}
@@ -139,8 +139,14 @@ export function createJobsStore(sql: Sql, encryptionKey?: string) {
                     and ${NATIVE_DISPATCH_UNCERTAIN}) as native_uncertain,
                   (q.state = 'dispatching' and ${DISPATCH_ABANDONED}
                     and (s.lifecycle_generation = $3 or s.status in ('ready','running'))) as abandoned,
-                  (q.state = 'dispatching' and q.dispatch_generation < s.lifecycle_generation - 1)
-                    as superseded_dispatch
+                  (q.state = 'dispatching' and (q.dispatch_generation is null
+                    or q.dispatch_generation < s.lifecycle_generation - 1
+                    or (q.dispatch_generation = s.lifecycle_generation - 1
+                      and q.dispatch_until <= clock_timestamp()
+                      and s.provider in ('boat','modal') and ${RUNTIME_LANE}
+                      and s.status in ('ready','running')
+                      and s.activity_lease_id is distinct from q.request_id
+                      and not ${QUEUED_DISPATCH_EVIDENCE}))) as unrecoverable_dispatch
            from public.sandboxes s join public.account_turn_queue q on q.sandbox_id = s.id
            where s.id = $1 and q.request_id = $2`,
           [sandboxId, requestId, job.generation],
@@ -202,7 +208,7 @@ export function createJobsStore(sql: Sql, encryptionKey?: string) {
         if (
           retiring &&
           (await retireClaim(tx, job, owner, sandbox?.generation ?? null)) &&
-          sandbox?.superseded_dispatch
+          sandbox?.unrecoverable_dispatch
         )
           await failTurnReceipt(tx, sandboxId, requestId, true);
         return job;

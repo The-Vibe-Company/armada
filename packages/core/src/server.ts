@@ -87,6 +87,7 @@ export {
 } from "./routine-scheduler.ts";
 export { createRoutineService, type RoutineService } from "./routine-service.ts";
 export { runtimeBootstrapScript } from "./runtime-bootstrap.ts";
+export { CoreLaunchSettlementConflict } from "./sandbox.ts";
 export { sandboxActivity } from "./sandbox-activity.ts";
 export { readOutputArchive } from "./sandbox-output-archive.ts";
 export {

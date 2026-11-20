@@ -152,12 +152,46 @@ export async function terminateModalCompute(
   signal?.throwIfAborted();
 }
 
+export async function stopModalCompute(
+  sandbox: Sandbox,
+  options: NonNullable<Parameters<typeof terminateModalCompute>[1]> & {
+    checkpoint?: {
+      prepare(): Promise<void>;
+      recordIntent(): Promise<void>;
+      recordImage(imageId: string): Promise<void>;
+    };
+  },
+) {
+  const { checkpoint, signal } = options;
+  if (checkpoint) {
+    await checkpoint.prepare();
+    signal?.throwIfAborted();
+    await checkpoint.recordIntent();
+    await checkpoint.recordImage(await snapshotModalRecoveryImage(sandbox, signal));
+  }
+  await terminateModalCompute(sandbox, options);
+}
+
 async function optional<T>(operation: () => Promise<T>) {
   try {
     return await operation();
   } catch (error) {
     if (modalError(error).code !== "not_found") throw error;
   }
+}
+
+export async function deleteModalCompute(
+  lookup: () => Promise<Sandbox>,
+  options?: Parameters<typeof terminateModalCompute>[1],
+) {
+  await optional(async () => {
+    const sandbox = await lookup();
+    await terminateModalCompute(sandbox, options);
+  });
+}
+
+export async function deleteModalRecoveryImage(client: Pick<ModalClient, "images">, imageId: string) {
+  await optional(() => client.images.delete(imageId));
 }
 
 export function createModalMachine(options: ModalMachineOptions) {
@@ -283,16 +317,27 @@ export function createModalMachine(options: ModalMachineOptions) {
       if (entry.phase === "stopping") {
         await bound();
         const sb = await exact(request, request.signal);
-        if (request.retain && !entry.recoveryImageId) {
-          if (entry.snapshotDispatched) throw refusal("unavailable", "Modal snapshot outcome is uncertain.");
-          if ((await sb.poll()) !== null) throw conflict("Modal checkpoint source already exited.");
-          await prepareCheckpoint(request, sb);
-          request.signal?.throwIfAborted();
-          entry = await save(request, entry, { ...entry, snapshotDispatched: true });
-          const recoveryImageId = await snapshotModalRecoveryImage(sb, request.signal);
-          entry = await save(request, entry, { ...entry, recoveryImageId });
-        }
-        await terminateModalCompute(sb, { wait: false, signal: request.signal });
+        const needsSnapshot = request.retain && !entry.recoveryImageId;
+        if (needsSnapshot && entry.snapshotDispatched)
+          throw refusal("unavailable", "Modal snapshot outcome is uncertain.");
+        await stopModalCompute(sb, {
+          wait: false,
+          signal: request.signal,
+          ...(needsSnapshot && {
+            checkpoint: {
+              async prepare() {
+                if ((await sb.poll()) !== null) throw conflict("Modal checkpoint source already exited.");
+                await prepareCheckpoint(request, sb);
+              },
+              async recordIntent() {
+                entry = await save(request, entry, { ...entry, snapshotDispatched: true });
+              },
+              async recordImage(recoveryImageId) {
+                entry = await save(request, entry, { ...entry, recoveryImageId });
+              },
+            },
+          }),
+        });
         await save(request, entry, { ...entry, phase: "stopped" });
       }
       return entry.recoveryImageId ? retained(request, entry.recoveryImageId) : null;
@@ -327,12 +372,11 @@ export function createModalMachine(options: ModalMachineOptions) {
       if (entry.phase !== "deleting")
         entry = await save(request, entry, { ...entry, phase: "deleting", deleteScope: request.scope });
       await bound();
-      const sb = await optional(() => exact(request, request.signal));
-      if (sb) await optional(() => terminateModalCompute(sb, { wait: false, signal: request.signal }));
+      await deleteModalCompute(() => exact(request, request.signal), { wait: false, signal: request.signal });
       const image = entry.recoveryImageId;
       if (request.scope === "physical-and-retained" && image) {
         request.signal?.throwIfAborted();
-        await optional(() => client.images.delete(image));
+        await deleteModalRecoveryImage(client, image);
       }
       await save(request, entry, { ...entry, phase: "deleted" });
     },

@@ -12,6 +12,7 @@ import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import type { Route } from "./http.ts";
 import { createObservedMcpTransport } from "./observed-mcp-transport.ts";
+import { recordOperatorFailure } from "./request-observability.ts";
 import type { createSandboxChildren } from "./sandbox-access-children.ts";
 import { InvalidOrchestratorBody, readOrchestratorBody } from "./sandbox-access-http-body.ts";
 
@@ -138,9 +139,10 @@ export function createSandboxScopedGateway(
               const result = { result: await call(token, name, args) };
               return { structuredContent: result, content: [{ type: "text", text: JSON.stringify(result) }] };
             } catch (error) {
-              const code =
-                error instanceof DelegatedAuthorityDenied ? "scoped_authority_denied" : "scoped_operation_unavailable";
-              return { isError: true, content: [{ type: "text", text: code }] };
+              if (error instanceof DelegatedAuthorityDenied)
+                return { isError: true, content: [{ type: "text", text: "scoped_authority_denied" }] };
+              recordOperatorFailure(`scoped.mcp.${name}`, error);
+              return { isError: true, content: [{ type: "text", text: "scoped_operation_unavailable" }] };
             }
           },
         );
@@ -162,6 +164,7 @@ export function createSandboxScopedGateway(
         error instanceof z.ZodError
       )
         return fail(400, "invalid_scoped_request");
+      recordOperatorFailure(operation ? `scoped.rest.${suffix}` : "scoped.gateway", error);
       return fail(503, "scoped_operation_unavailable");
     }
   };

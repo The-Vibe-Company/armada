@@ -73,6 +73,7 @@ export function createRuntimeLaunch(options: RuntimeLaunchOptions, provider: "bo
       providerSandboxId: sandbox.providerSandboxId,
       serverUrl: server.origin,
       ...plan,
+      ...(input.onEnrolled ? { onEnrolled: input.onEnrolled } : {}),
       ...(sandbox.lifecycleGeneration === undefined ? {} : { expectedGeneration: sandbox.lifecycleGeneration }),
       ...(commandGrantExpiresAt !== undefined ? { commandGrantExpiresAt } : {}),
       ...(input.assertDispatch ? { assertClaim: input.assertDispatch } : {}),

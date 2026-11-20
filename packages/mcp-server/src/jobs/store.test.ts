@@ -66,10 +66,10 @@ async function turnFixture() {
     return request;
   };
   const retryAt = new Date("2100-01-01T00:00:01Z");
-  const runnerFor = (send: DispatchTurn, store = f.store) =>
+  const runnerFor = (send: DispatchTurn, store = f.store, dispatchSql = f.sql) =>
     createJobsRunner(
       store,
-      { turn_dispatch: createTurnDispatchJob(f.sql, key, send, () => retryAt.getTime() - 1_000) },
+      { turn_dispatch: createTurnDispatchJob(dispatchSql, key, send, () => retryAt.getTime() - 1_000) },
       () => {},
       () => () => {},
     );
@@ -85,6 +85,52 @@ async function turnFixture() {
     },
   };
 }
+
+function queueLockRefusalSql(f: Awaited<ReturnType<typeof fixture>>, phase: "admission" | "completion") {
+  return sqlOver({
+    unsafe: async (query, params) => (await f.db.query(query, params)).rows,
+    begin: (work) =>
+      f.db.transaction((tx) => {
+        let completing = false;
+        return work({
+          async unsafe(query, params) {
+            if (query.startsWith("select public.complete_job(")) completing = true;
+            if (query.startsWith("lock table public.account_turn_queue") && (phase === "admission" || completing))
+              throw Object.assign(new Error("Model repair holds the queue lock"), { code: "55P03" });
+            return (await tx.query(query, params)).rows;
+          },
+        });
+      }),
+  });
+}
+
+test("shared turn admission defers without spending an attempt during model repair", async () => {
+  const f = await turnFixture();
+  const id = await sandbox(f, true);
+  await f.accept(id);
+  const sent: string[] = [];
+  const send: DispatchTurn = async (_caller, input) => sent.push(input.id);
+  const runner = f.runnerFor(send, f.store, queueLockRefusalSql(f, "admission"));
+  expect(await runner.reconcileOne(signal)).toBe(true);
+  await runner.drain();
+  expect(sent).toEqual([]);
+  expect(
+    (
+      await f.db.query(
+        `select q.state as receipt, j.state as job, j.attempts,
+                exists(select 1 from account_agent_reservations r where r.sandbox_id=q.sandbox_id) as reserved
+         from account_turn_queue q join jobs j using (sandbox_id) where q.sandbox_id=$1`,
+        [id],
+      )
+    ).rows,
+  ).toEqual([{ receipt: "queued", job: "queued", attempts: 0, reserved: false }]);
+
+  await f.makeDue(id);
+  const successor = f.runnerFor(send);
+  expect(await successor.reconcileOne(signal)).toBe(true);
+  await successor.drain();
+  expect(sent).toEqual([id]);
+});
 
 test.each(["deadline", "attempts"] as const)(
   "the turn handler settles receipts after exhausting %s",
@@ -107,18 +153,21 @@ test.each(["deadline", "attempts"] as const)(
       await f.db.query("update jobs set deadline_at='-infinity' where sandbox_id=$1", [id]);
     }
     const sent: string[] = [];
-    const runner = f.runnerFor(async (_caller, input) => sent.push(input.id));
+    const send: DispatchTurn = async (_caller, input) => sent.push(input.id);
+    const runner = f.runnerFor(send);
     if (uncertain) {
-      await f.db.exec("alter table account_turn_queue add constraint reject_budget_failure check (state <> 'failed')");
-      try {
-        expect(await runner.reconcileOne(signal)).toBe(true);
-        await runner.drain();
-        expect((await f.db.query("select state from jobs where sandbox_id=$1", [id])).rows).toEqual([
-          { state: "leased" },
-        ]);
-      } finally {
-        await f.db.exec("alter table account_turn_queue drop constraint reject_budget_failure");
-      }
+      const repair = createJobsStore(queueLockRefusalSql(f, "completion"), btoa("\0".repeat(32)));
+      const contended = f.runnerFor(send, repair);
+      expect(await contended.reconcileOne(signal)).toBe(true);
+      await contended.drain();
+      expect(
+        (
+          await f.db.query(
+            "select j.state as job, q.state as receipt from jobs j join account_turn_queue q using (sandbox_id) where j.sandbox_id=$1",
+            [id],
+          )
+        ).rows,
+      ).toEqual([{ job: "leased", receipt: "dispatching" }]);
       await f.db.query("update jobs set lease_until='-infinity' where sandbox_id=$1", [id]);
     }
     expect(await runner.reconcileOne(signal)).toBe(true);
@@ -900,83 +949,91 @@ test.each([
   },
 );
 
-test.each(["confirmed stop", "superseded dispatch"] as const)(
-  "a failed receipt write rolls back retirement after %s",
-  async (scenario) => {
-    const f = await fixture();
-    const { db, people, store } = f;
-    const superseded = scenario === "superseded dispatch";
-    const sandboxId = await sandbox(f, superseded);
-    const requestId = crypto.randomUUID();
-    await seedTurn(f, sandboxId, requestId);
-    const id = await store.enqueue(
-      "turn_dispatch",
-      sandboxId,
-      2,
-      requestId,
-      { requestId },
-      {
-        orgId: people.org,
-        maxAttempts: 2,
-      },
+test.each([
+  "confirmed stop",
+  "superseded dispatch",
+  "missing dispatch generation",
+  "expired adjacent dispatch without evidence",
+  "expired adjacent dispatch with unrelated activity",
+] as const)("a failed receipt write rolls back retirement after %s", async (scenario) => {
+  const f = await fixture();
+  const { db, people, store } = f;
+  const uncertain = scenario !== "confirmed stop";
+  const sandboxId = await sandbox(f, uncertain);
+  const requestId = crypto.randomUUID();
+  await seedTurn(f, sandboxId, requestId);
+  const id = await store.enqueue(
+    "turn_dispatch",
+    sandboxId,
+    2,
+    requestId,
+    { requestId },
+    {
+      orgId: people.org,
+      maxAttempts: 2,
+    },
+  );
+  if (uncertain) {
+    const adjacent = scenario.startsWith("expired adjacent");
+    const activityId = scenario === "expired adjacent dispatch with unrelated activity" ? crypto.randomUUID() : null;
+    await db.query(
+      "update sandboxes set lifecycle_generation=$2, activity_lease_id=$3, activity_until=$4 where id=$1",
+      [sandboxId, adjacent ? 3 : 4, activityId, activityId ? "infinity" : null],
     );
-    if (superseded) {
-      await db.query("update sandboxes set lifecycle_generation=4 where id=$1", [sandboxId]);
+    await db.query(
+      "update account_turn_queue set state='dispatching', dispatch_generation=$2, dispatch_until=$3 where request_id=$1",
+      [requestId, scenario === "missing dispatch generation" ? null : 2, adjacent ? "-infinity" : "infinity"],
+    );
+    await db.query("insert into account_agent_reservations (sandbox_id, account_id) values ($1, $2)", [
+      sandboxId,
+      f.openaiCredentialId,
+    ]);
+  } else {
+    await db.query("update sandboxes set lifecycle_generation=3, status='stopped', stopped_at=now() where id=$1", [
+      sandboxId,
+    ]);
+  }
+  const claimAndRetire = async () => {
+    const owner = crypto.randomUUID();
+    const job = (await store.claim("turn_dispatch", owner, 30, 1))!;
+    if ((await store.inspect(job, owner)) === "stale") await store.retireStale(job, owner, "no_dispatch");
+  };
+  await db.exec("alter table account_turn_queue add constraint reject_failure check (state <> 'failed')");
+  try {
+    await expect(claimAndRetire()).rejects.toThrow("reject_failure");
+  } finally {
+    await db.exec("alter table account_turn_queue drop constraint reject_failure");
+  }
+  const states = async () =>
+    (
       await db.query(
-        "update account_turn_queue set state='dispatching', dispatch_generation=2, dispatch_until='infinity' where request_id=$1",
-        [requestId],
-      );
-      await db.query("insert into account_agent_reservations (sandbox_id, account_id) values ($1, $2)", [
-        sandboxId,
-        f.openaiCredentialId,
-      ]);
-    } else {
-      await db.query("update sandboxes set lifecycle_generation=3, status='stopped', stopped_at=now() where id=$1", [
-        sandboxId,
-      ]);
-    }
-    const claimAndRetire = async () => {
-      const owner = crypto.randomUUID();
-      const job = (await store.claim("turn_dispatch", owner, 30, 1))!;
-      if ((await store.inspect(job, owner)) === "stale") await store.retireStale(job, owner, "no_dispatch");
-    };
-    await db.exec("alter table account_turn_queue add constraint reject_failure check (state <> 'failed')");
-    try {
-      await expect(claimAndRetire()).rejects.toThrow("reject_failure");
-    } finally {
-      await db.exec("alter table account_turn_queue drop constraint reject_failure");
-    }
-    const states = async () =>
+        "select j.state as job, q.state as receipt from jobs j join account_turn_queue q on q.sandbox_id=j.sandbox_id where j.id=$1",
+        [id],
+      )
+    ).rows;
+  expect(await states()).toEqual([{ job: "leased", receipt: uncertain ? "dispatching" : "queued" }]);
+  await db.query("update jobs set lease_until='-infinity' where id=$1", [id]);
+  await claimAndRetire();
+  expect(await states()).toEqual([{ job: "failed", receipt: "failed" }]);
+  if (uncertain) {
+    expect(
       (
         await db.query(
-          "select j.state as job, q.state as receipt from jobs j join account_turn_queue q on q.sandbox_id=j.sandbox_id where j.id=$1",
-          [id],
-        )
-      ).rows;
-    expect(await states()).toEqual([{ job: "leased", receipt: superseded ? "dispatching" : "queued" }]);
-    await db.query("update jobs set lease_until='-infinity' where id=$1", [id]);
-    await claimAndRetire();
-    expect(await states()).toEqual([{ job: "failed", receipt: "failed" }]);
-    if (superseded) {
-      expect(
-        (
-          await db.query(
-            `select q.failure_reason, q.dispatch_until, exists(
+          `select q.failure_reason, q.dispatch_until, exists(
          select 1 from account_agent_reservations r where r.sandbox_id=q.sandbox_id
        ) as reserved from account_turn_queue q where q.request_id=$1`,
-            [requestId],
-          )
-        ).rows,
-      ).toEqual([
-        {
-          failure_reason: "Dispatch outcome uncertain; inspect sandbox history before resending.",
-          dispatch_until: null,
-          reserved: true,
-        },
-      ]);
-    }
-  },
-);
+          [requestId],
+        )
+      ).rows,
+    ).toEqual([
+      {
+        failure_reason: "Dispatch outcome uncertain; inspect sandbox history before resending.",
+        dispatch_until: null,
+        reserved: true,
+      },
+    ]);
+  }
+});
 
 test("transactional enqueue wakes after commit and replays the encrypted job by key", async () => {
   const { sql, people, store } = await fixture();
