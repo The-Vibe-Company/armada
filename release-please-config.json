@@ -67,6 +67,11 @@
           "type": "json",
           "path": "packages/mcp-server/openapi.json",
           "jsonpath": "$.info.version"
+        },
+        {
+          "type": "json",
+          "path": "packages/mcp-server/openapi-admin.json",
+          "jsonpath": "$.info.version"
         }
       ]
     }

@@ -148,12 +148,19 @@ const OUTPUT_OPERATIONS = {
   },
 };
 
-/** Project the integration API from the browser-safe operation table. */
-export function generateOpenApi(table: readonly OpenApiOperation[] = Object.values(operations)) {
+/** Project a REST document from the browser-safe operation table. */
+export function generateOpenApi({
+  projection = "integration",
+  table = Object.values(operations),
+}: {
+  projection?: "integration" | "admin";
+  table?: readonly OpenApiOperation[];
+} = {}) {
+  const admin = projection === "admin";
   const paths: Record<string, Record<string, unknown>> = {};
   const ids = new Set<string>();
   for (const operation of table) {
-    if (operation.audience === "admin") continue;
+    if ((operation.audience === "admin") !== admin) continue;
     const method = operation.route.method.toLowerCase();
     const route = controlRouteKey(operation.route);
     paths[operation.route.path] ??= {};
@@ -292,7 +299,8 @@ export function generateOpenApi(table: readonly OpenApiOperation[] = Object.valu
           : {}),
         ...(request &&
           !viewerControl &&
-          !operation.scopedAuth && {
+          !operation.scopedAuth &&
+          !(operation.directServer && oversizedStatus === 400) && {
             "413": {
               description: `The serialized request body exceeds ${CONTROL_BODY_MAX_BYTES} bytes. Nothing was dispatched.`,
               content: { "application/json": { schema: { $ref: "#/components/schemas/Failure" } } },
@@ -321,7 +329,7 @@ export function generateOpenApi(table: readonly OpenApiOperation[] = Object.valu
               },
         },
         default: {
-          description: "Public API failure",
+          description: admin ? "Administrative API failure" : "Public API failure",
           content: operation.errorOutput
             ? outputFailure(operation.errorOutput)
             : { "application/json": { schema: { $ref: "#/components/schemas/Failure" } } },
@@ -337,15 +345,23 @@ export function generateOpenApi(table: readonly OpenApiOperation[] = Object.valu
   return {
     openapi: "3.1.0",
     info: {
-      title: "Armada shared control API",
+      title: admin ? "Armada administrative control API" : "Armada shared control API",
       version: VERSION,
-      description:
-        "Generated integration REST contracts. Includes SDK operations, launch discovery (launch/options, golden/list) and shared-tool routes. sandbox/launch accepts golden, Docker and explicit pinned Modal template launches. Administrative and provider-specific extensions are outside this description. Files use sandbox/exec while compute runs; declared output snapshots are listed and downloaded with GET sandboxes/{id}/outputs, also after stop. This description does not assert provider availability.",
+      description: admin
+        ? "Generated dashboard administration REST contracts. Each operation enforces its own caller, role and resource access requirements."
+        : "Generated integration REST contracts. Includes SDK operations, launch discovery (launch/options, golden/list) and shared-tool routes. sandbox/launch accepts golden, Docker and explicit pinned Modal template launches. Administrative and provider-specific extensions are outside this description. Files use sandbox/exec while compute runs; declared output snapshots are listed and downloaded with GET sandboxes/{id}/outputs, also after stop. This description does not assert provider availability.",
     },
     paths,
     components: {
       securitySchemes: {
         serviceToken: { type: "http", scheme: "bearer" },
+        ...(admin && {
+          personalSession: {
+            type: "http",
+            scheme: "bearer",
+            description: "The access token of a personal Supabase login session.",
+          },
+        }),
         viewerGrant: { type: "http", scheme: "bearer", description: "A short-lived sandbox viewer grant." },
         epochGrant: {
           type: "http",
