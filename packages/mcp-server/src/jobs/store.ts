@@ -459,7 +459,6 @@ export function createJobsStore(sql: Sql, encryptionKey?: string) {
       const outcome = result.outcome === undefined ? null : JSON.stringify(result.outcome);
       const refundAttempt = result.status === "retry" && result.unattempted;
       const complete = async (db: Sql, generation: string | null) => {
-        // A handler result must preserve the launch evidence needed for takeover or cleanup.
         const { rows } = await db.query<{ completed: boolean }>(
           `select public.complete_job($1,$2,$3,$4,$5,
              case when $5 = 'failed' then jsonb_build_object('reason', $8::text, 'evidence', evidence)
