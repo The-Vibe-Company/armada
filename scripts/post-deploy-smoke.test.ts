@@ -330,6 +330,38 @@ test("waits for readiness and retries only rejected sends with bounded injected 
   expect(fake.receipts()).toContainEqual({ case: 0, step: "send", pass: true });
 });
 
+test.each(["late response", "transport timeout"])(
+  "readiness failure preserves status evidence: %s",
+  async (failure) => {
+    const fake = fixture((call) => {
+      if (call.path !== "sandbox/status" || fake.calls.some((entry) => entry.path === "sandbox/stop")) return;
+      fake.advance(deadlines.ready + 1);
+      if (failure === "transport timeout") throw new DOMException("private readiness detail", "TimeoutError");
+      return json({ status: "ready", providerState: "active", statusReason: "private readiness detail" });
+    });
+
+    expect(await postDeploySmoke(env, [], fake.io)).toBe(false);
+    expect(fake.receipts()).toContainEqual({
+      case: 0,
+      step: "ready",
+      pass: false,
+      code: "poll_limit_exceeded",
+    });
+    expect(fake.receipts()).toContainEqual({
+      case: 0,
+      step: "readiness_diagnostic",
+      readinessStep: "ready",
+      code: "poll_limit_exceeded",
+      ...(failure === "transport timeout"
+        ? { transportTimeoutMs: deadlines.ready }
+        : { statusResponse: { status: "ready", providerState: "active", statusReason: "string" } }),
+    });
+    expect(fake.calls.some((call) => call.path === "sandbox/send")).toBe(false);
+    expect(fake.receipts().at(-1)).toEqual({ case: 0, step: "cleanup_sandbox", pass: true });
+    expect(fake.lines.join("\n")).not.toContain("private readiness detail");
+  },
+);
+
 test("bounds readiness and send rejection polling and still cleans up", async () => {
   for (const phase of ["ready", "send"] as const) {
     const fake = fixture((call) => {
