@@ -1,5 +1,5 @@
 import { AuthError } from "@armada/auth";
-import { tokenOperations } from "@armada/core/contract";
+import { tokenOperations } from "@armada/core/contract/tokens";
 import { createArmadaApiClient } from "../armada-api.ts";
 import { parseAuth, rejectUnknown } from "./auth-args.ts";
 import type { Command } from "./command.ts";

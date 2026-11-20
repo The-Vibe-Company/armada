@@ -117,7 +117,7 @@ test("declining the invitation leaves the command unexecuted", async () => {
 
 test("an invalid environment token is never replaced by interactive login", async () => {
   const state = fixture();
-  state.auth.env.ARMADA_TOKEN = "invalid-environment-token";
+  state.auth.env.ARMADA_TOKEN = `armada_sk_${"a".repeat(43)}`;
   expect(await state.run(["whoami"])).toBe(3);
   expect(state.output()).toMatchObject({
     invitations: 0,

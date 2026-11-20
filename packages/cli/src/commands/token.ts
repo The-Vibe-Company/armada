@@ -1,14 +1,15 @@
 import { AuthError } from "@armada/auth";
-import { serviceTokenExpiry, tokenOperations } from "@armada/core/contract";
+import { serviceTokenExpiry, tokenOperations } from "@armada/core/contract/tokens";
 import { createArmadaApiClient } from "../armada-api.ts";
 import { parseAuth, rejectUnknown } from "./auth-args.ts";
 import type { Command } from "./command.ts";
+import whoami from "./whoami.ts";
 
 const createUsage = "armada token create --name <name> [--org <org>] [--expires 30d|90d|1y|never] [--json]";
 const listUsage = "armada token ls [--json]";
 const revokeUsage = "armada token revoke <id> [--json]";
 
-export default {
+const token = {
   name: "token",
   summary: "Manage API keys",
   usage: { session: `  ${createUsage}\n  ${listUsage}\n  ${revokeUsage}` },
@@ -85,3 +86,5 @@ Revoke an API key by its ID from armada token ls.
     }
   },
 } satisfies Command;
+
+export const tokenCommands = [token, whoami] satisfies readonly Command[];
