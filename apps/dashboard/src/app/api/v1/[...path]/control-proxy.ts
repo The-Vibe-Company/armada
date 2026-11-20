@@ -2,7 +2,9 @@ import { CONTROL_BODY_MAX_BYTES } from "@armada/core";
 import {
   accountOperations,
   controlRouteKey,
+  operations,
   PUBLIC_CONTROL_ROUTES,
+  sandboxCheckOperations,
   skillDefaultOperations,
   tokenOperations,
 } from "@armada/core/contract";
@@ -23,9 +25,18 @@ export const PARAMETERIZED_CONTROL_ROUTES = [
 
 /** POST routes the public endpoint forwards with a bearer. */
 export const PRIVATE_POST_PATHS: ReadonlySet<string> = new Set([
-  "golden/adopt",
-  "github/runtime-status",
-  "sandbox/resume",
+  ...Object.values(operations)
+    .filter(
+      (operation) =>
+        operation.audience !== "admin" &&
+        operation.route.method === "POST" &&
+        !("directServer" in operation) &&
+        !("anonymous" in operation),
+    )
+    .map(({ route }) => controlRouteKey(route)),
+  ...Object.values({ ...accountOperations, ...sandboxCheckOperations, ...skillDefaultOperations, ...tokenOperations })
+    .filter((operation) => operation.audience === "admin" && operation.route.method === "POST")
+    .map(({ route }) => controlRouteKey(route)),
   "skillpack/connection",
   "creds/accounts/models",
   "creds/defaults/set",
@@ -36,7 +47,6 @@ export const PRIVATE_POST_PATHS: ReadonlySet<string> = new Set([
   "templates/get",
   "templates/publish",
   "templates/delete",
-  "templates/launch",
   "routines/create",
   "routines/list",
   "routines/get",
@@ -60,14 +70,10 @@ export const PRIVATE_POST_PATHS: ReadonlySet<string> = new Set([
   "secrets/upload",
   "secrets/commit",
   "github/status",
-  "github/refresh",
   "github/connect",
   "github/reconnect",
   "github/disconnect",
   "github/install",
-  ...Object.values({ ...accountOperations, ...skillDefaultOperations, ...tokenOperations })
-    .filter(({ route }) => route.method === "POST")
-    .map(({ route }) => controlRouteKey(route)),
   "org/invitations/create",
   "org/invitations/list",
   "org/invitations/resend",
@@ -93,8 +99,6 @@ export const PRIVATE_POST_PATHS: ReadonlySet<string> = new Set([
   "creds/accounts/remove",
   "creds/accounts/usage",
   "creds/accounts/auth-capabilities",
-  "golden/list",
-  "golden/capabilities",
   "golden/size-policy",
   "golden/create",
   "golden/build/status",
@@ -116,22 +120,6 @@ export const PRIVATE_POST_PATHS: ReadonlySet<string> = new Set([
   "docker/snapshots/create",
   "docker/snapshots/rebuild",
   "docker/hosts/revoke",
-  "launch/options",
-  "sandbox/launch",
-  "sandbox/bind-credential",
-  "sandbox/list",
-  "sandbox/status",
-  "sandbox/recovery",
-  "sandbox/report",
-  "sandbox/advice",
-  "sandbox/send",
-  "sandbox/test-model-connection",
-  "sandbox/stop",
-  "sandbox/extend",
-  "sandbox/wait",
-  "sandbox/exec",
-  "sandbox/steer",
-  "sandbox/interrupt",
   "golden/visibility",
   "mcp/list",
   "mcp/catalog",
@@ -145,7 +133,6 @@ export const PRIVATE_POST_PATHS: ReadonlySet<string> = new Set([
   "mcp/revoke",
   "mcp/delete",
   "mcp/oauth/callback",
-  "logs/read",
 ]);
 
 type ControlVerb = "GET" | "POST" | "DELETE";
