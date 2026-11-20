@@ -2520,7 +2520,6 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     });
     expect(receipt.status).toBe("queued");
     expect(preparedFromComposition).toBe(true);
-    expect((await provider.list()).items.map((x) => x.id)).toContain(launched.id);
     await expect(f.store.get(launched.id)).rejects.toMatchObject({ code: "not_found" });
     const otherScope = { ...scope, userId: "00000000-0000-0000-0000-000000000004" };
     const other = await createComposedModalProvider({
@@ -2540,7 +2539,6 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
         cwd: "/home/user/repos/private",
       }),
     ).rejects.toMatchObject({ code: "not_found" });
-    expect((await other.provider.list()).items.some((x) => x.id === launched.id)).toBe(false);
     other.close();
     await expect(createSqlModalStore(getDb(), otherScope).get(launched.id)).rejects.toMatchObject({
       code: "not_found",

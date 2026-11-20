@@ -334,41 +334,6 @@ describe("sandboxes", () => {
     expect(boat.requests.map(({ method }) => method)).toEqual(["GET", "GET", "PATCH", "GET"]);
   });
 
-  test("list filters by labels and states and pages with boat's cursor", async () => {
-    const boat = fakeBoat(
-      {
-        body: {
-          ok: true,
-          type: "sandbox.list",
-          sandboxes: [sandbox({ state: "idle" })],
-          pageInfo: { nextCursor: "next-1", hasMore: true, limit: 2 },
-        },
-      },
-      {
-        body: {
-          ok: true,
-          type: "sandbox.list",
-          sandboxes: [],
-          pageInfo: { nextCursor: null, hasMore: false, limit: 2 },
-        },
-      },
-    );
-    const first = await boat.provider.list({
-      labels: { armada: "1", owner: "u1" },
-      states: ["ready", "running"],
-      limit: 2,
-    });
-    expect(first.cursor).toBe("next-1");
-    expect(first.items[0]).toMatchObject({ id: ID, state: "ready" });
-    const last = await boat.provider.list({ cursor: first.cursor as string });
-    expect(last).toEqual({ items: [], cursor: null });
-    const query = boat.requests[0]?.query;
-    expect(query?.getAll("label")).toEqual(["armada=1", "owner=u1"]);
-    expect(query?.get("state")).toBe("ready,idle,running");
-    expect(query?.get("limit")).toBe("2");
-    expect(boat.requests[1]?.query.get("cursor")).toBe("next-1");
-  });
-
   test("stop and delete use their endpoints, and delete confirms with the exact sandbox id", async () => {
     const boat = fakeBoat(
       { status: 202, body: { ok: true, type: "sandbox.stopping", id: ID, status: "stopping" } },

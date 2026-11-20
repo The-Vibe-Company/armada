@@ -8,7 +8,6 @@ import type {
   ExecResult,
   ForkRequest,
   InterruptRequest,
-  ListRequest,
   Page,
   PrepareNativeHarnessCwdRequest,
   PromptReceipt,
@@ -670,21 +669,6 @@ export function createBoatProvider(options: BoatProviderOptions): BoatProvider &
         lastHarness,
         lastModel,
       }));
-    },
-
-    async list(request: ListRequest = {}): Promise<Page<SandboxInfo>> {
-      const states = request.states?.flatMap((state) => BOAT_STATES[state]);
-      const labels = Object.entries(request.labels ?? {}).map(([key, value]) => `${key}=${value}`);
-      const response = await call(() =>
-        api.sandboxes({
-          sort: "desc",
-          ...(request.limit ? { limit: request.limit } : {}),
-          ...(request.cursor ? { cursor: request.cursor } : {}),
-          ...(states?.length ? { state: states.join(",") } : {}),
-          ...(labels.length ? { label: labels } : {}),
-        }),
-      );
-      return page((response.sandboxes ?? []).map(sandboxInfo), response.pageInfo);
     },
 
     async listSandboxInventory({ cursor, signal } = {}) {
