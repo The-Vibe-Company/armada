@@ -459,7 +459,6 @@ describe("queued runtime wake admission", () => {
         await f.db.query("update jobs set lease_until='-infinity' where id=$1", [id]);
         const accepted = await f.bridge.result(f.caller.userId, f.row.id, `resume_${request.request_id}`, "2");
         expect(accepted.state).toBe("finished");
-        // Exercise resume publication directly. Queue admission has its own recovery window.
         const successor = crypto.randomUUID();
         const retry = (await store.claim("turn_dispatch", successor, 30, 1))!;
         expect(retry.id).toBe(id);
