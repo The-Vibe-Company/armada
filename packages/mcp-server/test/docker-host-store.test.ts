@@ -391,7 +391,13 @@ async function machineCreateFixture(
   const sandboxId = randomUUID();
   const bindings = createDockerMachineBindings(sql, { ...host, deploymentId: randomUUID() });
   const generation = await bindings.bind({ sandboxId, generation: 1 });
-  const a = await boundFixture(host, { sandboxId, generation, expiresAt: Date.UTC(2099, 0, 1), image, snapshotId });
+  const a = await boundFixture(host, {
+    sandboxId,
+    generation,
+    expiresAt: Date.UTC(2099, 0, 1),
+    image,
+    ...(snapshotId === undefined ? {} : { snapshotId }),
+  });
   const request = {
     sandboxId,
     generation: 1,
