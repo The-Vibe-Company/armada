@@ -326,7 +326,7 @@ test.each([
   }
 });
 
-test.each(["current", "pending", "other request", "other epoch", "old issuer"] as const)(
+test.each(["current", "pending", "other request", "other epoch", "old issuer", "revoked host"] as const)(
   "a Docker prompt response can retarget a stale turn only with current replay evidence (%s)",
   async (evidence) => {
     const f = await fixture();
@@ -390,6 +390,8 @@ test.each(["current", "pending", "other request", "other epoch", "old issuer"] a
         evidence !== "pending",
       ],
     );
+
+    if (evidence === "revoked host") await db.query("update docker_hosts set revoked_at=now() where id=$1", [hostId]);
 
     const owner = crypto.randomUUID();
     const claim = await store.claim("turn_dispatch", owner, 30, 1);
