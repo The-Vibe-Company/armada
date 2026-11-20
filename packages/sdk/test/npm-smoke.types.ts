@@ -1,6 +1,5 @@
 import {
   Armada,
-  type DockerSendInput,
   type FailureCode,
   type GoldenLaunchInput,
   type LaunchResult,
@@ -8,6 +7,8 @@ import {
 } from "@the-vibe-company/armada-sdk";
 
 const code: FailureCode = "outcome_unknown";
+export type ContractFailureCode = Assert<Equal<Extract<FailureCode, "provider_mismatch">, "provider_mismatch">>;
+export type UnknownCodesExcluded = Assert<Equal<Extract<"arbitrary_failure", FailureCode>, never>>;
 
 const client = new Armada({ token: code });
 const boat = () => client.launch({ provider: "boat", golden: "worker", harness: "codex" });
@@ -32,6 +33,11 @@ const docker = () =>
     idempotencyKey: "saved-launch-key-0001",
   });
 
+const invalidBoatRuntime = () =>
+  // @ts-expect-error A launch with runtimeVersion requires the complete explicit runtime variant.
+  client.launch({ provider: "boat", golden: "worker", harness: "codex", runtimeVersion: 1 });
+void invalidBoatRuntime;
+
 type Equal<A, B> = (<T>() => T extends A ? 1 : 2) extends <T>() => T extends B ? 1 : 2 ? true : false;
 type Assert<T extends true> = T;
 
@@ -39,9 +45,7 @@ export type LogsInputContract = Assert<
   Equal<Extract<"conversationId" | "conversation_id", keyof Parameters<Armada["logs"]>[0]>, never>
 >;
 
-export type SendInputContract = Assert<
-  Equal<Extract<"conversationId" | "conversation_id", keyof SendInput | keyof DockerSendInput>, never>
->;
+export type SendInputContract = Assert<Equal<Extract<"conversationId" | "conversation_id", keyof SendInput>, never>>;
 
 export type BoatReceiptContract = Assert<Equal<Awaited<ReturnType<typeof boat>>, LaunchResult>>;
 export type PinnedModalReceiptContract = Assert<Equal<Awaited<ReturnType<typeof pinnedModal>>, LaunchResult>>;
