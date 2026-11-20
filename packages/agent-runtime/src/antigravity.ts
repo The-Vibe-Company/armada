@@ -125,7 +125,6 @@ export class AntigravityDriver implements Driver {
       cwd: options.cwd,
       args: ["acp", "--gemini-dir", home, "--app-data-dir", appDataDir],
       env,
-      acceptV2WithV1Shape: true,
       authMethodId: credential.method === "google" ? "oauth-personal" : "gemini-api-key",
       authenticationRequiredLine: "Open the following link to authenticate the ACP server: ",
       modelSelection: "config-option",

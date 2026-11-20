@@ -51,8 +51,8 @@ for await (const line of lines) {
         break;
       }
       reply({
-        protocolVersion: profile || process.env.BAD_ACP ? 2 : 1,
-        ...(process.env.BAD_ACP === "malformed" ? { capabilities: [] } : { agentCapabilities: { loadSession: true } }),
+        protocolVersion: process.env.BAD_ACP ? 2 : 1,
+        agentCapabilities: { loadSession: true },
         authMethods,
       });
       break;
@@ -61,7 +61,7 @@ for await (const line of lines) {
       if (!profile || authenticated || m.params.methodId !== method) throw Error("wrong_authentication");
       authenticated = true;
       if (process.env.GEMINI_API_KEY === "refuse-fixture-key") {
-        send({ id: m.id, error: { code: 429, message: process.env.GEMINI_API_KEY } });
+        send({ id: m.id, error: { code: -32000, message: process.env.GEMINI_API_KEY } });
       } else if (process.env.GEMINI_API_KEY === "banner-fixture-key") {
         process.stdout.write(
           "Open the following link to authenticate the ACP server: https://accounts.google.com/o/oauth2/v2/auth?state=fragment\n",
@@ -71,6 +71,10 @@ for await (const line of lines) {
     }
     case "session/new":
       if (profile && !authenticated) throw Error("missing_authentication");
+      if (profile && process.env.GEMINI_API_KEY === "missing-session-auth-key") {
+        send({ id: m.id, error: { code: -32000, message: "Authentication required" } });
+        break;
+      }
       checkPinnedMcp(m.params.mcpServers);
       if (process.env.EXPECT_PINNED_MCP) sessionId = "new-session";
       reply({ sessionId, ...(profile ? { configOptions } : {}) });

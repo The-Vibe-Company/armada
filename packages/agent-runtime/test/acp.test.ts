@@ -266,36 +266,15 @@ function antigravityFixture(credential: ConstructorParameters<typeof Antigravity
 
 const antigravityTest = test.skipIf(process.platform !== "linux");
 
-antigravityTest(
-  "Antigravity accepts the ACP v1-shaped version 2 response, authenticates and selects a loaded model",
-  async () => {
-    const f = antigravityFixture({ method: "gemini-api-key", apiKey: "fixture-gemini-value" });
-    try {
-      await expect(
-        f.driver().start({ ...f.context("explicit", "fixture/model"), sessionId: "session-1" }).done,
-      ).resolves.toBe("finished");
-    } finally {
-      f.clean();
-    }
-  },
-);
-
-test("ACP refuses a version 2 response without the v1 shape even when opted in", async () => {
-  const driver = new AcpDriver({
-    executable: process.execPath,
-    args: ["run", `${import.meta.dir}/fixtures/acp.ts`],
-    cwd: "/tmp",
-    env: { BAD_ACP: "malformed" },
-    acceptV2WithV1Shape: true,
-  });
-  await expect(
-    driver.start({
-      request: { sandboxId: "s", harness: "opencode", text: "no" },
-      signal: new AbortController().signal,
-      emit: () => {},
-      session: () => {},
-    }).done,
-  ).rejects.toThrow("invalid_harness_protocol");
+antigravityTest("Antigravity authenticates and selects a loaded ACP v1 model", async () => {
+  const f = antigravityFixture({ method: "gemini-api-key", apiKey: "fixture-gemini-value" });
+  try {
+    await expect(
+      f.driver().start({ ...f.context("explicit", "fixture/model"), sessionId: "session-1" }).done,
+    ).resolves.toBe("finished");
+  } finally {
+    f.clean();
+  }
 });
 
 antigravityTest("Antigravity refuses an unlisted model before sending a prompt", async () => {
@@ -309,13 +288,17 @@ antigravityTest("Antigravity refuses an unlisted model before sending a prompt",
   }
 });
 
-for (const apiKey of ["refuse-fixture-key", "banner-fixture-key"]) {
+for (const [apiKey, phase] of [
+  ["refuse-fixture-key", "authentication"],
+  ["banner-fixture-key", "authentication"],
+  ["missing-session-auth-key", "session_start"],
+] as const) {
   antigravityTest(`Antigravity safely reports authentication failure for ${apiKey}`, async () => {
     const f = antigravityFixture({ method: "gemini-api-key", apiKey });
     try {
       await expect(f.driver().start(f.context("never-prompt")).done).rejects.toMatchObject({
         message: "authentication_failed",
-        reason: "authentication_failed:authentication",
+        reason: `authentication_failed:${phase}`,
       });
     } finally {
       f.clean();

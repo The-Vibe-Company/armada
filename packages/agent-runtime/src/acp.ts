@@ -9,17 +9,6 @@ type ObjectValue = Record<string, unknown>;
 const object = (value: unknown): value is ObjectValue =>
   value !== null && typeof value === "object" && !Array.isArray(value);
 
-function hasV1InitializeShape(result: ObjectValue) {
-  return (
-    object(result.agentCapabilities) &&
-    typeof result.agentCapabilities.loadSession === "boolean" &&
-    Array.isArray(result.authMethods) &&
-    result.authMethods.every(
-      (method) => object(method) && typeof method.id === "string" && typeof method.name === "string",
-    )
-  );
-}
-
 function availableModel(configOptions: unknown, model: string) {
   if (!Array.isArray(configOptions)) return false;
   const option = configOptions.find((value) => object(value) && value.id === "model" && value.type === "select");
@@ -49,7 +38,6 @@ export class AcpDriver implements Driver {
       env: Record<string, string>;
       args?: string[];
       observation?: AcpObservation;
-      acceptV2WithV1Shape?: boolean;
       authMethodId?: string;
       authenticationRequiredLine?: string;
       modelSelection?: "config-option";
@@ -285,11 +273,7 @@ export class AcpDriver implements Driver {
         clientCapabilities: {},
         clientInfo: { name: "armada", version: VERSION },
       });
-      if (
-        initialized.protocolVersion !== 1 &&
-        !(this.options.acceptV2WithV1Shape && initialized.protocolVersion === 2 && hasV1InitializeShape(initialized))
-      )
-        throw new HarnessError("invalid_harness_protocol");
+      if (initialized.protocolVersion !== 1) throw new HarnessError("invalid_harness_protocol");
       if (this.options.authMethodId) await rpc("authenticate", { methodId: this.options.authMethodId });
       const mcpServers = Object.entries(c.mcp?.servers ?? {}).map(([name, server]) =>
         server.type === "stdio"
