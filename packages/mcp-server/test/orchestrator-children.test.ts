@@ -15,6 +15,7 @@ import { launchCredentials } from "../src/launch-credentials.ts";
 import { createNativeWebhookPrompts } from "../src/native-webhook-prompts.ts";
 import { observeRequest } from "../src/request-observability.ts";
 import { createRuntimeEnrolments } from "../src/runtime-enrolment.ts";
+import { RuntimeFollowupConflict } from "../src/runtime-followup.ts";
 import { createRuntimeProvider } from "../src/runtime-provider.ts";
 import { launchSandboxChild } from "../src/sandbox-access-child-launch.ts";
 import { createSandboxChildren, type SandboxChildExecutor } from "../src/sandbox-access-children.ts";
@@ -451,7 +452,7 @@ test("an uncertain scoped message records a correlated operator diagnostic", asy
     await db.query("insert into orchestrator_children values($1,$2,$3,$4)", [child.id, id, p.org, p.owner]);
     const children = createSandboxChildren(sql, authority, {
       async message() {
-        throw Object.assign(new Error("private provider response"), { code: "ECONNRESET" });
+        throw new RuntimeFollowupConflict("runtime_reconciliation_active", "private provider response");
       },
       async launch() {
         throw Error("unexpected");
@@ -481,10 +482,25 @@ test("an uncertain scoped message records a correlated operator diagnostic", asy
         event: "operator_failure",
         phase: "scoped.child_message.execution",
         code: "child_outcome_unconfirmed",
-        message: "ECONNRESET",
+        causeCode: "runtime_reconciliation_active",
         sandboxId: child.id,
         operationId: receipt?.id,
         requestId: response?.headers.get("x-request-id"),
+      }),
+    );
+    await observeRequest(
+      async () => {
+        expect(await children.message(token, "message-outcome", child.id, "synthetic child prompt")).toEqual(receipt);
+        return new Response();
+      },
+      (line) => lines.push(line),
+    );
+    expect(lines.map((line) => JSON.parse(line))).toContainEqual(
+      expect.objectContaining({
+        phase: "scoped.child_message.receipt",
+        causeCode: "prior_uncertain_receipt",
+        sandboxId: child.id,
+        operationId: receipt?.id,
       }),
     );
     expect(lines.join("\n")).not.toContain("private provider response");

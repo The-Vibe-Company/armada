@@ -332,6 +332,20 @@ test("a competing accepted turn invalidates an older finished probe before admis
   }
 });
 
+test("an active lifecycle reconciliation reports a closed cause before runtime prompt dispatch", async () => {
+  const f = await fixture(await sharedDatabase());
+  try {
+    await f.db.query("update sandboxes set reconcile_lease_until='infinity' where id=$1", [f.row.id]);
+    await expect(f.send(f.caller, f.input())).rejects.toMatchObject({
+      code: "conflict",
+      reason: "runtime_reconciliation_active",
+    });
+    expect(f.starts).toHaveLength(1);
+  } finally {
+    await f.close();
+  }
+});
+
 test("a newly enrolled generation after the prompt probe refuses admission even if the task matches", async () => {
   const f = await fixture(await sharedDatabase());
   try {
