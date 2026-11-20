@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, expect, test } from "bun:test";
+import { expect, test } from "bun:test";
 import { createHash, randomUUID } from "node:crypto";
 import {
   DOCKER_HOST_PROTOCOL,
@@ -15,28 +15,16 @@ import { createDockerMachineBindings } from "../src/docker-machine-bindings.ts";
 import { SNAPSHOT_COLUMNS } from "../src/docker-snapshot-data.ts";
 import { createSandboxAccessServices } from "../src/sandbox-access-services.ts";
 import { createFinishedDockerCleanup, requestSandboxFinish, selfFinishToken } from "../src/sandbox-finish.ts";
-import { migratedDatabase } from "./migrated-database.ts";
+import { useMigratedDatabase } from "./migrated-database.ts";
 import { publishedResponse } from "./published-response.ts";
 
-let connection: Awaited<ReturnType<typeof migratedDatabase>> | undefined;
-function database() {
-  if (!connection) throw new Error("Database fixture is not open");
-  return connection;
-}
+const database = useMigratedDatabase();
 const sql: Sql = {
   query: (query, params) => database().query(query, params),
   transaction: (work) => database().transaction((tx) => work({ query: (query, params) => tx.query(query, params) })),
 };
 const key = Buffer.alloc(32, 7).toString("base64");
 const store = createDockerHostStore(sql, key);
-beforeAll(async () => {
-  connection = await migratedDatabase();
-});
-afterAll(async () => {
-  const db = connection;
-  connection = undefined;
-  await db?.close();
-});
 async function fixture() {
   const db = database();
   const userId = randomUUID(),
@@ -520,14 +508,62 @@ test("restore dispatch cancels stale intent and reconciles a late physical recei
   expect(await lifecycle(a.sandboxId)).toMatchObject({ status: "starting" });
 });
 
-test("predecessor receipts cannot retire the logical generation reserved for the restore", async () => {
+test.each(["pending", "completed"] as const)(
+  "predecessor receipts cannot retire a %s restore's target",
+  async (phase) => {
+    const a = await restoreFixture();
+    expect(await a.poll()).toEqual(a.restore);
+    if (phase === "completed")
+      await store.complete(a.hostToken, a.installationId, { requestId: a.restore.requestId, outcome: "completed" });
+    await store.expired(a.hostToken, a.installationId, { requestId: a.create.requestId });
+    await store.cleaned(a.hostToken, a.installationId, { requestId: a.cleanupId });
+    expect(await lifecycle(a.sandboxId)).toMatchObject({ status: "starting", lifecycle_generation: "2" });
+    if (phase === "pending") expect(await a.poll()).toEqual(a.restore);
+
+    await database().query("update sandboxes set status='stopping' where id=$1", [a.sandboxId]);
+    await store.complete(a.hostToken, a.installationId, { requestId: a.cleanupId, outcome: "completed" });
+    expect(await lifecycle(a.sandboxId)).toMatchObject({ status: "stopping", lifecycle_generation: "2" });
+    const receipt = await database().query("select outcome from docker_host_jobs where request_id=$1", [a.cleanupId]);
+    expect(receipt.rows).toEqual([{ outcome: "completed" }]);
+  },
+);
+
+test("an older restore cannot fence a predecessor receipt for a generation with no restore intent", async () => {
   const a = await restoreFixture();
-  await store.expired(a.hostToken, a.installationId, { requestId: a.create.requestId });
+  await database().query("update sandboxes set lifecycle_generation=3 where id=$1", [a.sandboxId]);
+  expect(await a.poll([a.cleanupId])).toBeNull();
+
+  const bindings = createDockerMachineBindings(sql, { ...a, deploymentId: randomUUID() });
+  await bindings.bind({ sandboxId: a.sandboxId, generation: 3 });
   await store.cleaned(a.hostToken, a.installationId, { requestId: a.cleanupId });
-  await store.complete(a.hostToken, a.installationId, { requestId: a.cleanupId, outcome: "completed" });
-  expect(await lifecycle(a.sandboxId)).toMatchObject({ status: "starting", lifecycle_generation: "2" });
-  expect(await a.poll()).toEqual(a.restore);
+
+  expect(await lifecycle(a.sandboxId)).toMatchObject({ status: "deleted", lifecycle_generation: "4" });
 });
+
+test.each(["target", "predecessor", "ciphertext"] as const)(
+  "a restore with a mismatched %s cannot block a predecessor cleanup receipt",
+  async (mismatch) => {
+    const a = await restoreFixture();
+    const { requestId, ...job } = a.restore;
+    const generation = randomUUID();
+    const intent = {
+      ...job,
+      request: mismatch === "target" ? { ...job.request, generation } : job.request,
+      predecessor:
+        mismatch === "predecessor"
+          ? { ...job.predecessor, request: { ...job.predecessor.request, generation } }
+          : job.predecessor,
+    };
+    const input =
+      mismatch === "ciphertext"
+        ? new Uint8Array(32)
+        : await encryptSecret(JSON.stringify({ bound: 1, job: intent, lifecycleGeneration: "2" }), key);
+    await database().query("update docker_host_jobs set input_enc=$2 where request_id=$1", [requestId, input]);
+
+    await store.cleaned(a.hostToken, a.installationId, { requestId: a.cleanupId });
+    expect(await lifecycle(a.sandboxId)).toMatchObject({ status: "deleted", lifecycle_generation: "3" });
+  },
+);
 
 test("a malformed restore intent does not hide unrelated work", async () => {
   const a = await restoreFixture();

@@ -5,6 +5,7 @@ import {
   operations as contractOperations,
   controlRouteKey,
   PUBLIC_CONTROL_ROUTES,
+  skillDefaultOperations,
   tokenOperations,
 } from "@armada/core/contract";
 import {
@@ -114,7 +115,7 @@ test("proxy-generated failures match the published failure schema and decode to 
 const fillParameters = (template: string) =>
   template.replace("{id}", "11111111-1111-4111-8111-111111111111").replace("{name}", "memo%20v2.pdf");
 
-test("published OpenAPI and account session operations follow their proxy routing", async () => {
+test("published OpenAPI and migrated admin operations follow their proxy routing", async () => {
   const published = (await import("../openapi.json")).default as {
     paths: Record<string, Record<string, { "x-armada-direct-server"?: boolean }>>;
   };
@@ -129,7 +130,7 @@ test("published OpenAPI and account session operations follow their proxy routin
       })),
     );
     expect(operations.length).toBeGreaterThan(0);
-    for (const { route } of Object.values(accountOperations)) {
+    for (const { route } of Object.values({ ...accountOperations, ...skillDefaultOperations })) {
       expect(published.paths[route.path]?.[route.method.toLowerCase()]).toBeUndefined();
       operations.push({ path: route.path, verb: route.method, direct: false });
     }

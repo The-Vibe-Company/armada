@@ -1,3 +1,4 @@
+import { controlRouteKey, skillDefaultOperations } from "@armada/core/contract";
 import { VaultError } from "@armada/core/server";
 import { type ControlRouteContext, defineRoutes } from "./routes.ts";
 
@@ -8,7 +9,9 @@ function command(operation: string) {
   };
 }
 
+const { readSkillDefaults: read, setSkillDefaults: set } = skillDefaultOperations;
+
 export const skillDefaultsRoutes = defineRoutes("skill-defaults-control", {
-  "skills/defaults/get": command("get"),
-  "skills/defaults/set": command("set"),
+  [controlRouteKey(read.route)]: { methods: [read.route.method], handler: command("get") },
+  [controlRouteKey(set.route)]: { methods: [set.route.method], handler: command("set") },
 });

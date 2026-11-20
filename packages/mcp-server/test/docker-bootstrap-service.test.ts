@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, expect, mock, test } from "bun:test";
+import { expect, mock, test } from "bun:test";
 import { createHash, randomUUID } from "node:crypto";
 import {
   DOCKER_HOST_PROTOCOL,
@@ -23,13 +23,9 @@ import { createRuntimeCheckpoint } from "../src/runtime-checkpoint.ts";
 import { createRuntimeCommands } from "../src/runtime-commands.ts";
 import { createRuntimeEnrolments } from "../src/runtime-enrolment.ts";
 import { createRuntimeIdle } from "../src/runtime-idle.ts";
-import { migratedDatabase } from "./migrated-database.ts";
+import { useMigratedDatabase } from "./migrated-database.ts";
 
-let connection: Awaited<ReturnType<typeof migratedDatabase>> | undefined;
-function database() {
-  if (!connection) throw new Error("Database fixture is not open");
-  return connection;
-}
+const database = useMigratedDatabase();
 const sql: Sql = {
   query: (q, v) => database().query(q, v),
   transaction: (work) => database().transaction((tx) => work({ query: (q, v) => tx.query(q, v) })),
@@ -54,14 +50,6 @@ const options = {
 const service = createDockerBootstrapService(sql, key, options);
 const hosts = createDockerHostStore(sql, key);
 const reservations = createDockerSandboxService(sql, key, { enabled: true });
-beforeAll(async () => {
-  connection = await migratedDatabase();
-});
-afterAll(async () => {
-  const db = connection;
-  connection = undefined;
-  await db?.close();
-});
 async function admittedResume(f: Awaited<ReturnType<typeof fixture>>, requestId: string) {
   const requested = await service.resume(f.actor, f.sandbox.id, requestId);
   if (requested.state === "claiming") {

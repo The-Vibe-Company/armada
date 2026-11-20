@@ -1,5 +1,11 @@
 import { CONTROL_BODY_MAX_BYTES } from "@armada/core";
-import { accountOperations, controlRouteKey, PUBLIC_CONTROL_ROUTES, tokenOperations } from "@armada/core/contract";
+import {
+  accountOperations,
+  controlRouteKey,
+  PUBLIC_CONTROL_ROUTES,
+  skillDefaultOperations,
+  tokenOperations,
+} from "@armada/core/contract";
 
 const CONTROL_PREFIX = "/api/v1/";
 const MAX_BODY_BYTES = CONTROL_BODY_MAX_BYTES;
@@ -25,8 +31,6 @@ export const PRIVATE_POST_PATHS: ReadonlySet<string> = new Set([
   "creds/defaults/set",
   "skillpack/catalog",
   "skillpack/versions",
-  "skills/defaults/get",
-  "skills/defaults/set",
   "templates/create",
   "templates/list",
   "templates/get",
@@ -61,7 +65,7 @@ export const PRIVATE_POST_PATHS: ReadonlySet<string> = new Set([
   "github/reconnect",
   "github/disconnect",
   "github/install",
-  ...Object.values({ ...accountOperations, ...tokenOperations })
+  ...Object.values({ ...accountOperations, ...skillDefaultOperations, ...tokenOperations })
     .filter(({ route }) => route.method === "POST")
     .map(({ route }) => controlRouteKey(route)),
   "org/invitations/create",
