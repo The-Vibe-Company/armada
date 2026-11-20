@@ -607,6 +607,64 @@ test("runner restore admission commits the transition, binding and mailbox inten
   });
 });
 
+test("the current runner attaches only a completed Docker restore and can recover an interrupted handoff", async () => {
+  const a = await restoreFixture();
+  const db = database();
+  const {
+    rows: [claim],
+  } = await db.query<Job>(
+    `update jobs set state='leased',lease_owner=$2,lease_epoch=2,lease_until='infinity',attempts=2
+     where id=$1 returning id,sandbox_id,generation::text,lease_epoch::text`,
+    [a.selection.runnerJobId, randomUUID()],
+  );
+  if (!claim) throw new Error("Missing fixture runner claim.");
+  const requestId = a.restore.requestId;
+  const placement = `armada-${a.installationId}-${a.hostId}-${a.sandboxId}-${requestId}`;
+  const current = async () =>
+    (
+      await db.query(
+        "select status, lifecycle_generation::text, docker_generation, provider_sandbox_id from sandboxes where id=$1",
+        [a.sandboxId],
+      )
+    ).rows[0];
+  const predecessor = await current();
+  await expect(store.attachMachineRestore(a.owner, claim, requestId)).rejects.toBeInstanceOf(DockerHostDenied);
+  await store.complete(a.hostToken, a.installationId, { requestId, outcome: "completed" });
+  await expect(store.attachMachineRestore(a.owner, { ...claim, lease_epoch: "1" }, requestId)).rejects.toBeInstanceOf(
+    DockerHostDenied,
+  );
+  await expect(store.attachMachineRestore(a.owner, { ...claim, generation: "1" }, requestId)).rejects.toBeInstanceOf(
+    DockerHostDenied,
+  );
+
+  await store.complete(a.hostToken, a.installationId, { requestId: a.cleanupId, outcome: "completed" });
+  const { faultingStore, failure } = interruptDockerCommit(async (tx) => {
+    const result = await tx.query("select 1 from sandboxes where id=$1 and docker_generation=$2", [
+      a.sandboxId,
+      requestId,
+    ]);
+    return result.rows.length > 0;
+  });
+  await expect(faultingStore.attachMachineRestore(a.owner, claim, requestId)).rejects.toMatchObject({ cause: failure });
+  expect(await current()).toEqual(predecessor);
+  expect(await store.attachMachineRestore(a.owner, claim, requestId)).toBe(placement);
+  await expect(store.attachMachineRestore(a.owner, claim, requestId)).resolves.toBe(placement);
+  expect(await current()).toEqual({
+    status: "starting",
+    lifecycle_generation: claim.generation,
+    docker_generation: requestId,
+    provider_sandbox_id: placement,
+  });
+
+  const stopId = randomUUID();
+  await store.enqueueSandbox(a.owner, a.sandboxId, { operation: "stop", requestId: stopId });
+  await expect(a.poll()).resolves.toEqual({
+    operation: "stop",
+    requestId: stopId,
+    request: a.restore.request,
+  });
+});
+
 test("restore enqueue rolls back on interruption and freezes one intent per target generation", async () => {
   const a = await prepareRestore();
   const { selection } = a;

@@ -11,6 +11,7 @@ import {
 } from "@armada/core/server";
 import type { ModalProvider } from "@armada/provider-modal";
 import { releaseAccountCapacity } from "./account-capacity.ts";
+import type { Job } from "./jobs/runner.ts";
 import { mergedWorkProof } from "./merged-work.ts";
 import { nativeIdleDue, nativeQuiescent } from "./native-idle.ts";
 import { SANDBOX_VISIBLE } from "./sandbox-visibility.ts";
@@ -20,6 +21,49 @@ import { preserveBeforeStop, purgeWorkRecovery, recordStopDispatch } from "./wor
 
 export const UNENROLLED_RESUME_STOP = "runtime_resume_unenrolled";
 const OPERATOR_CLEANUP_PREFIX = "Operator cleanup required:";
+
+export async function attachDockerRestorePlacement(
+  tx: Sql,
+  claim: Pick<Job, "id" | "sandbox_id" | "generation" | "lease_epoch">,
+  placement: { hostId: string; installationId: string; predecessor: string; replacement: string },
+) {
+  const { hostId, installationId, predecessor, replacement } = placement;
+  const providerSandboxId = `armada-${installationId}-${hostId}-${claim.sandbox_id}-${replacement}`;
+  const { rows } = await tx.query<{ provider_sandbox_id: string }>(
+    `with locked_runner as materialized (
+       select j.lease_until,j.deadline_at from public.jobs j join public.sandboxes s on s.id=j.sandbox_id
+       where j.id=$1 and j.sandbox_id=$2 and j.generation=$3 and j.lease_epoch=$4
+         and j.org_id=s.org_id and j.kind='turn_dispatch' and j.state='leased' and j.attempts <= j.max_attempts
+       for update of j
+     ), eligible as materialized (
+       select s.id,s.docker_generation,s.provider_sandbox_id from public.sandboxes s cross join locked_runner j
+       where s.id=$2 and s.lifecycle_generation=$3 and s.provider='docker'
+         and s.docker_host_id=$5 and s.docker_installation_id=$6 and s.docker_generation in ($7,$8)
+         and s.status='starting' and s.stop_requested_at is null and s.deleted_at is null
+         and s.expires_at > clock_timestamp()
+         and j.lease_until > clock_timestamp() and j.deadline_at > clock_timestamp()
+     ), attached as (
+       update public.sandboxes s set docker_generation=$8,provider_sandbox_id=$9
+       from eligible e where s.id=e.id and e.docker_generation=$7
+       returning s.provider_sandbox_id
+     )
+     select provider_sandbox_id from attached
+     union all
+     select provider_sandbox_id from eligible where docker_generation=$8`,
+    [
+      claim.id,
+      claim.sandbox_id,
+      claim.generation,
+      claim.lease_epoch,
+      hostId,
+      installationId,
+      predecessor,
+      replacement,
+      providerSandboxId,
+    ],
+  );
+  return rows[0]?.provider_sandbox_id;
+}
 
 interface SandboxTransitionEffect {
   kind: "resume" | "turn_dispatch" | "stop" | "output_publication" | "webhook" | "metadata_retirement";
