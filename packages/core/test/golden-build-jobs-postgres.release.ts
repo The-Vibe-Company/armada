@@ -102,10 +102,10 @@ test("PostgreSQL serializes durable admission and fences a crashed claim across 
     await b.unsafe("update jobs set lease_until='-infinity' where id=$1", [one.jobId]);
     await dispatchGoldenBuild(sqlB, jobsB);
     expect((await jobsB.status(owner, one.jobId)).state).toBe("failed");
+    expect((await b.unsafe("select 1 from golden_backend_slots where org_id=$1", [org])).length).toBe(0);
     resume();
     await running;
     expect(resolutions).toBe(1); // No automatic provider/build replay after the lease expired.
-    expect((await a.unsafe("select 1 from golden_backend_slots where org_id=$1", [org])).length).toBe(0);
     expect((await a.unsafe("select 1 from goldens where org_id=$1", [org])).length).toBe(0);
     const grants = await a.unsafe(
       "select has_table_privilege('authenticated','public.golden_build_jobs','select,insert,update,delete') as allowed",
