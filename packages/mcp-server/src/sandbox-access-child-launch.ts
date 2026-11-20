@@ -39,7 +39,6 @@ export class ChildLaunchNotAllocated extends Error {
       error instanceof ProviderError
         ? error.code
         : this.reason;
-    // Provider codes can carry upstream text. Preserve only these known Modal fork refusals.
     if (
       this.reason === "provider_refused" &&
       this.guard === "provider_fork" &&
