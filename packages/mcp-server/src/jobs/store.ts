@@ -1,4 +1,5 @@
 import { decryptSecret, encryptSecret, type Sql, toBytea } from "@armada/core/server";
+import type { ModalMachineJournal } from "@armada/provider-modal";
 import {
   COMPLETED_RUNTIME_WAKE,
   CONFIRMED_WAKE_WITHOUT_TICKET,
@@ -66,8 +67,9 @@ export async function withJobLease<T>(sql: Sql, job: Job, write: (tx: Sql) => Pr
     );
     if (!sandboxes.length) return;
     const { rows: jobs } = await tx.query(
-      "select id from public.jobs where id=$1 and lease_epoch=$2 and lease_until > clock_timestamp() for update",
-      [job.id, job.lease_epoch],
+      `select id from public.jobs where id=$1 and lease_epoch=$2 and lease_until > clock_timestamp()
+       and sandbox_id=$3 and generation=$4 and kind=$5 for update`,
+      [job.id, job.lease_epoch, job.sandbox_id, job.generation, job.kind],
     );
     if (jobs.length) return write(tx);
   });
@@ -271,6 +273,40 @@ export function createJobsStore(sql: Sql, encryptionKey?: string) {
   }
 
   return {
+    modalLaunchJournal(job: Job) {
+      if (job.kind !== "launch" || !job.sandbox_id || !job.generation) {
+        throw new Error("Modal machine journal requires a launch claim.");
+      }
+      return {
+        async read(key) {
+          const checkpoint = await withJobLease(sql, job, async (tx) => {
+            const { rows } = await tx.query<{
+              checkpoint: { key: string; entry: Awaited<ReturnType<ModalMachineJournal["read"]>> } | null;
+            }>("select outcome->'modal_machine' as checkpoint from public.jobs where id=$1", [job.id]);
+            return rows[0]!.checkpoint;
+          });
+          if (checkpoint === undefined) throw new Error("Modal launch claim is no longer current.");
+          if (checkpoint && checkpoint.key !== key) throw new Error("Modal launch journal key changed.");
+          return checkpoint?.entry;
+        },
+        async compareAndSet(key, revision, next) {
+          if (next.revision !== (revision ?? 0) + 1) return false;
+          return (
+            (await withJobLease(sql, job, async (tx) => {
+              const { rows } = await tx.query(
+                `update public.jobs set outcome=jsonb_set(coalesce(outcome, '{}'::jsonb), '{modal_machine}', $2::jsonb)
+                 where id=$1 and lease_until > clock_timestamp()
+                   and (outcome->'modal_machine' is null or outcome->'modal_machine'->>'key' = $3)
+                   and (outcome->'modal_machine'->'entry'->>'revision')::integer is not distinct from $4::integer
+                 returning id`,
+                [job.id, JSON.stringify({ key, entry: next }), key, revision ?? null],
+              );
+              return rows.length > 0;
+            })) ?? false
+          );
+        },
+      } satisfies ModalMachineJournal;
+    },
     async enqueue(
       kind: string,
       sandboxId: string | null,

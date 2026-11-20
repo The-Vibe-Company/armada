@@ -49,6 +49,40 @@ async function seedTurn(f: Awaited<ReturnType<typeof fixture>>, sandboxId: strin
   );
 }
 
+test("a replacement launch claimant reads Modal create intent and fences the previous writer", async () => {
+  const f = await fixture();
+  const id = await sandbox(f);
+  const encryptionKey = btoa("\0".repeat(32));
+  const jobId = await f.store.enqueue("launch", id, 2, id, null, {
+    orgId: f.people.org,
+    maxAttempts: 3,
+    deadline: new Date("2100-01-01T00:00:00Z"),
+    request: { ownerId: f.people.owner, digest: "fixture" },
+  });
+  const owner = crypto.randomUUID();
+  const first = (await f.store.claim("launch", owner, 30, 1))!;
+  const journal = f.store.modalLaunchJournal(first);
+  const intent = { operation: "create", phase: "creating", revision: 1, intent: "fixture" } as const;
+  const receipt = { ...intent, phase: "allocated", revision: 2, machineId: "machine" } as const;
+  expect(await journal.read("machine-key")).toBeUndefined();
+  expect(await journal.compareAndSet("machine-key", undefined, intent)).toBe(true);
+  await f.db.query("update jobs set lease_until='-infinity' where id=$1", [jobId]);
+
+  const restarted = createJobsStore(f.sql, encryptionKey);
+  const successor = (await restarted.claim("launch", crypto.randomUUID(), 30, 1))!;
+  const resumed = restarted.modalLaunchJournal(successor);
+  expect(await resumed.read("machine-key")).toEqual(intent);
+  await expect(journal.read("machine-key")).rejects.toThrow("claim is no longer current");
+  expect(await journal.compareAndSet("machine-key", 1, receipt)).toBe(false);
+  expect(await resumed.compareAndSet("different-key", 1, receipt)).toBe(false);
+  expect(await resumed.compareAndSet("machine-key", 1, receipt)).toBe(true);
+  expect(await resumed.compareAndSet("machine-key", 1, { ...receipt, machineId: "other" })).toBe(false);
+  expect(await resumed.read("machine-key")).toEqual(receipt);
+  await f.db.query("update sandboxes set lifecycle_generation=3 where id=$1", [id]);
+  await expect(resumed.read("machine-key")).rejects.toThrow("claim is no longer current");
+  expect(await resumed.compareAndSet("machine-key", 2, { ...receipt, revision: 3 })).toBe(false);
+});
+
 async function turnFixture() {
   const f = await fixture();
   const key = btoa("\0".repeat(32));
