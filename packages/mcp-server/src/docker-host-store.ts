@@ -592,7 +592,12 @@ export function createDockerHostStore(sql: Sql, key: string) {
     await requireRestoreBindings(tx, logical, job);
   }
 
-  async function requireRestoreBindings(tx: Sql, logical: Sandbox, job: RestoreJob) {
+  async function requireRestoreBindings(
+    tx: Sql,
+    logical: Sandbox,
+    job: RestoreJob,
+    targetGeneration = logical.lifecycle_generation,
+  ) {
     const bindings = await tx.query(
       `select 1 from public.docker_machine_bindings target join public.docker_machine_bindings source
          on source.sandbox_id=target.sandbox_id and source.host_id=target.host_id
@@ -603,7 +608,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
         logical.id,
         logical.docker_host_id,
         logical.docker_installation_id,
-        logical.lifecycle_generation,
+        targetGeneration,
         job.request.generation,
         job.predecessor.request.generation,
       ],
@@ -2037,10 +2042,19 @@ export function createDockerHostStore(sql: Sql, key: string) {
         if (job.bound_operation === "restore") {
           logical = await sandbox(tx, job.bound_sandbox_id ?? deny(), host, installationId);
           const { job: restore, lifecycleGeneration } = await readStoredJob(job);
-          if (restore.operation !== "restore" || restore.request.generation !== job.request_id) deny();
-          if (logical.status === "deleted" || lifecycleGeneration !== String(logical.lifecycle_generation)) return;
-          await requireRestoreBindings(tx, logical, restore);
-          if (logical.docker_generation === restore.request.generation) {
+          if (restore.operation !== "restore" || restore.request.generation !== job.request_id || !lifecycleGeneration)
+            deny();
+          if (logical.status === "deleted") return;
+          const attached = logical.docker_generation === restore.request.generation;
+          const sameGeneration = lifecycleGeneration === String(logical.lifecycle_generation);
+          // Stop admission can advance the lifecycle without replacing the attached container.
+          const stoppingAttached =
+            attached &&
+            logical.status === "stopping" &&
+            BigInt(logical.lifecycle_generation) === BigInt(lifecycleGeneration) + 1n;
+          if (!sameGeneration && !stoppingAttached) return;
+          await requireRestoreBindings(tx, logical, restore, lifecycleGeneration);
+          if (attached) {
             if (job.outcome !== "completed" || job.cancelled_at) deny();
           } else {
             if (logical.docker_generation !== restore.predecessor.request.generation) deny();
