@@ -679,13 +679,19 @@ test("an expired restore runner prevents redelivery but permits a late physical 
     },
   );
 
+  expect(await store.pendingStartsForHost(a.hostToken, a.installationId, true)).toEqual([]);
   expect(await a.poll([a.cleanupId])).toBeNull();
   const result = { requestId: a.restore.requestId, outcome: "completed" as const };
+  const receipt = async () =>
+    (
+      await database().query(
+        "select outcome, cancelled_at is not null as cancelled from docker_host_jobs where request_id=$1",
+        [result.requestId],
+      )
+    ).rows;
+  expect(await receipt()).toEqual([{ outcome: "failed", cancelled: true }]);
   await store.complete(a.hostToken, a.installationId, result);
-  const receipt = await database().query("select outcome, cancelled_at from docker_host_jobs where request_id=$1", [
-    result.requestId,
-  ]);
-  expect(receipt.rows).toEqual([{ outcome: "completed", cancelled_at: null }]);
+  expect(await receipt()).toEqual([{ outcome: "completed", cancelled: false }]);
 });
 
 test("restore work is gated and stays eligible behind an excluded predecessor cleanup", async () => {

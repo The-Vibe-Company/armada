@@ -603,9 +603,12 @@ export function createDockerHostStore(sql: Sql, key: string) {
   async function requireRestoreRunner(tx: Sql, runnerJobId: unknown, logical: Sandbox) {
     id(runnerJobId);
     const { rows } = await tx.query(
-      `select 1 from public.jobs where id=$1 and org_id=$2 and sandbox_id=$3 and generation=$4
-       and kind='turn_dispatch' and state in ('queued','leased') and attempts <= max_attempts
-       and deadline_at > clock_timestamp() for update`,
+      `with locked_runner as materialized (
+         select deadline_at from public.jobs where id=$1 and org_id=$2 and sandbox_id=$3 and generation=$4
+         and kind='turn_dispatch' and state in ('queued','leased') and attempts <= max_attempts
+         for update
+       )
+       select 1 from locked_runner where deadline_at > clock_timestamp()`,
       [runnerJobId, logical.org_id, logical.id, logical.lifecycle_generation],
     );
     if (!rows.length) deny();
