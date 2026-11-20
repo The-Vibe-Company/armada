@@ -355,6 +355,13 @@ export function generateOpenApi({
     components: {
       securitySchemes: {
         serviceToken: { type: "http", scheme: "bearer" },
+        ...(admin && {
+          personalSession: {
+            type: "http",
+            scheme: "bearer",
+            description: "The access token of a personal Supabase login session.",
+          },
+        }),
         viewerGrant: { type: "http", scheme: "bearer", description: "A short-lived sandbox viewer grant." },
         epochGrant: {
           type: "http",

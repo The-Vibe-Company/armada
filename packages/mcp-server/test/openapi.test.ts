@@ -286,6 +286,21 @@ test("the administrative document describes direct trigger creation and its one-
   expect(trigger.responses).not.toHaveProperty("413");
 });
 
+test("the published trigger UUID schemas accept uppercase input", () => {
+  const trigger = adminPublished.paths["/api/v1/triggers"].post;
+  const org = trigger.parameters.find(({ name }) => name === "org")!;
+  const { templateId } = trigger.requestBody.content["application/json"].schema.properties;
+  const uppercase = "ABCDEF12-0000-4000-8000-00000000000A";
+  for (const schema of [org.schema, templateId]) {
+    expect(z.fromJSONSchema(schema).safeParse(uppercase).success).toBe(true);
+  }
+});
+
+test("the administrative logout document requires a personal session", () => {
+  expect(adminPublished.paths["/api/v1/account/logout"].post.security).toEqual([{ personalSession: [] }]);
+  expect(adminPublished.components.securitySchemes.personalSession).toMatchObject({ type: "http", scheme: "bearer" });
+});
+
 test("scoped REST advertises the grants, idempotency headers and body refusal used on the server", () => {
   const prefix = "/api/v1/orchestrator-tools";
   for (const [method, needsKey] of [

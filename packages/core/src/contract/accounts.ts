@@ -29,6 +29,7 @@ export const accountOperations = {
     readOnly: false,
     destructive: true,
     description: "Sign out the current personal login session.",
+    scopedAuth: ["personalSession"],
     input: { body: z.undefined() },
     output: z.strictObject({ ok: z.literal(true) }),
     successHeaders,
