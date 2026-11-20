@@ -50,7 +50,7 @@ begin
             and target.machine_generation = old.lifecycle_generation
             and target.daemon_generation = new.docker_generation and source.daemon_generation = old.docker_generation
         ) then
-        raise exception 'Docker placement must match a completed restore' using errcode = '23514';
+        raise exception 'sandbox identity is immutable' using errcode = '23514';
       end if;
     end if;
     if tg_op = 'INSERT' then
