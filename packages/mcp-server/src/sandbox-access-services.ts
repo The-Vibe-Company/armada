@@ -287,9 +287,19 @@ export function createSandboxAccessServices(input: {
       // Clear the previous report under the same fence as ordinary send, so publishing
       // the new prompt identity cannot re-announce the earlier turn's outcome.
       await sandboxActivity(
-        scoped,
+        {
+          ...scoped,
+          update(id, patch) {
+            return scoped.update(
+              id,
+              patch.advanceGeneration
+                ? { ...patch, nativeChildSend: { fromState: saved.status, placement: saved.providerSandboxId } }
+                : patch,
+            );
+          },
+        },
         saved,
-        { status: "running", stopRequested: false, clearTaskOutcome: true },
+        { statusReason: null, stopRequested: false, clearTaskOutcome: true },
         async (signal) => {
           const receipt = await provider.prompt({
             sandboxId: saved.providerSandboxId,
@@ -312,7 +322,7 @@ export function createSandboxAccessServices(input: {
           return {
             result: undefined,
             patch: {
-              status: "running",
+              statusReason: null,
               taskPromptId: receipt.promptId,
               rearmDeadline: true,
               conversationIds: [...new Set([...saved.conversationIds, receipt.conversationId])],

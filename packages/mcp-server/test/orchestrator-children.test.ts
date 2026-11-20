@@ -40,7 +40,7 @@ async function fixture(
           async query<T>(statement: string, params?: unknown[]) {
             const result = await tx.query<T>(statement, params);
             if (statement.includes("from public.sandbox_transition(") && abortAfterTransition?.(params?.[5]))
-              throw Error("Synthetic transaction failure after journaling stop");
+              throw Error("Synthetic transaction failure after journaling a transition");
             return result;
           },
         }),
@@ -1525,19 +1525,39 @@ test("managed child stop clears its epoch only after physical confirmation", asy
 
 // Scoped child messages share ordinary send's native receipt registration, so the
 // shared settlement boundary admits the turn to Langfuse export.
-test("scoped child message settles through the native receipt worker into Langfuse export", async () => {
-  const { close, db, sql, p, id, token, golden } = await fixture();
+test.each(["accepted", "stale", "abort"] as const)("native child send (%s)", async (scenario) => {
+  const { close, db, sql, p, id, token, golden } = await fixture(
+    "running",
+    "anthropic",
+    "boat",
+    (code) => scenario === "abort" && code === "native_child_send_admitted",
+  );
   try {
     const fake = fakeBoat();
+    const credentials = launchCredentials(createSqlVaultStore(sql), ENCRYPTION_KEY);
     const services = createSandboxAccessServices({
       sql,
       providers: { resolve: async () => fake.provider },
-      credentials: launchCredentials(createSqlVaultStore(sql), ENCRYPTION_KEY),
+      credentials:
+        scenario !== "stale"
+          ? credentials
+          : {
+              ...credentials,
+              async assertTurn(_actor, sandboxId) {
+                await db.query("update sandboxes set status='running' where id=$1", [sandboxId]);
+              },
+            },
       connections: undefined,
       encryptionKey: ENCRYPTION_KEY,
       scopedMcpUrl: "https://armada.example/mcp",
     });
-    const physical = await fake.provider.fork({ from: "test", name: "child", ttlSeconds: 3600, env: {}, noEnv: true });
+    const physical = await fake.provider.fork({
+      from: "test",
+      name: "child",
+      ttlSeconds: 3600,
+      env: {},
+      noEnv: true,
+    });
     const child = await createSqlSandboxStore(sql).insert({
       id: crypto.randomUUID(),
       provider: "boat",
@@ -1564,7 +1584,45 @@ test("scoped child message settles through the native receipt worker into Langfu
       "insert into outbound_webhook_endpoints(org_id,url,secret_enc) values($1,'https://receiver.example/events',$2)",
       [p.org, new Uint8Array([1])],
     );
-    expect((await services.childWorker.message(token, "idle-child", child.id, "follow up")).state).toBe("succeeded");
+    const receipt = await services.childWorker.message(token, "idle-child", child.id, "follow up");
+    if (scenario !== "accepted") {
+      expect(receipt.state).not.toBe("succeeded");
+      expect(fake.prompts).toHaveLength(0);
+      expect(
+        (
+          await db.query(
+            "select status,lifecycle_generation::int,activity_lease_id,task_prompt_id from sandboxes where id=$1",
+            [child.id],
+          )
+        ).rows,
+      ).toEqual([
+        {
+          status: scenario === "stale" ? "running" : "ready",
+          lifecycle_generation: 1,
+          activity_lease_id: null,
+          task_prompt_id: "prior",
+        },
+      ]);
+      expect((await db.query("select 1 from sandbox_transitions where sandbox_id=$1", [child.id])).rows).toEqual([]);
+      return;
+    }
+    expect(receipt.state).toBe("succeeded");
+    expect(
+      (
+        await db.query(
+          "select actor,code,from_status,to_status,generation::int from sandbox_transitions where sandbox_id=$1",
+          [child.id],
+        )
+      ).rows,
+    ).toEqual([
+      {
+        actor: "native_turn",
+        code: "native_child_send_admitted",
+        from_status: "ready",
+        to_status: "running",
+        generation: 2,
+      },
+    ]);
     expect(
       (
         await db.query<{ type: string }>(
