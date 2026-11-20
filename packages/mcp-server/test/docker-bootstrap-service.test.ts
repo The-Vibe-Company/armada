@@ -533,9 +533,14 @@ test.each(["codex", "claude", "opencode"] as const)(
   },
 );
 
-test("a revoked runtime checkpoint cannot admit a Docker idle stop", async () => {
+test.each(["replacement ticket", "issuer role change"])("Docker idle-stop proof is invalid after %s", async (cause) => {
   const db = database();
   const f = await fixture();
+  if (cause === "issuer role change")
+    await db.query("update public.members set role='admin' where org_id=$1 and user_id=$2", [
+      f.actor.orgId,
+      f.actor.userId,
+    ]);
   const authority = createRuntimeEnrolments(sql, key, { allowDockerIssue: true });
   const issue = () => authority.issue({ ownerId: f.actor.userId, sandboxId: f.sandbox.id, configuration: {} });
   const session = await authority.enrol((await issue()).enrolmentToken);
@@ -545,7 +550,12 @@ test("a revoked runtime checkpoint cannot admit a Docker idle stop", async () =>
      values($1,$2,$3,0,now())`,
     [f.sandbox.id, session.epoch, requestId],
   );
-  await issue();
+  if (cause === "replacement ticket") await issue();
+  else
+    await db.query("update public.members set role='member' where org_id=$1 and user_id=$2", [
+      f.admin.orgId,
+      f.admin.userId,
+    ]);
   await expect(
     hosts.enqueueSandbox(f.actor, f.sandbox.id, { requestId, operation: "stop", idleCheckpointRequest: requestId }),
   ).rejects.toThrow();
