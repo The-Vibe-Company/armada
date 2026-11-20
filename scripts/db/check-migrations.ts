@@ -53,11 +53,8 @@ function* sqlStatements(sql: string) {
       continue;
     }
     if (token === ";") {
-      // Each SQL-standard body statement ends with a semicolon. A bare END
-      // at that boundary closes the body, while END inside an expression does not.
-      if (tokens.length === 1 && tokens[0] === "end") {
-        tokens = routineHeaders.pop() ?? tokens;
-      }
+      const closesRoutineBody = routineHeaders.length > 0 && tokens.length === 1 && tokens[0] === "end";
+      if (closesRoutineBody) tokens = routineHeaders.pop()!;
       if (routineHeaders.length === 0 && tokens.length) yield { tokens, startsAt };
       tokens = [];
       expressionDepth = 0;
@@ -77,7 +74,6 @@ function* sqlStatements(sql: string) {
       }
     }
   }
-  // EOF can terminate a routine definition without a final semicolon.
   const lastStatement = routineHeaders[0] ?? tokens;
   if (lastStatement.length) yield { tokens: lastStatement, startsAt };
 }
