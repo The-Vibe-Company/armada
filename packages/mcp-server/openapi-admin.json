@@ -761,7 +761,8 @@
                   },
                   "email": {
                     "type": "string",
-                    "description": "Email address of an existing Armada account. Surrounding whitespace is ignored."
+                    "description": "Email address of an existing Armada account. Surrounding whitespace is ignored.",
+                    "pattern": "^\\s*[^\\s@]+@[^\\s@]+\\.[^\\s@]+\\s*$"
                   },
                   "role": {
                     "anyOf": [
@@ -924,7 +925,8 @@
                   },
                   "email": {
                     "type": "string",
-                    "description": "Email address of an existing Armada account. Surrounding whitespace is ignored."
+                    "description": "Email address of an existing Armada account. Surrounding whitespace is ignored.",
+                    "pattern": "^\\s*[^\\s@]+@[^\\s@]+\\.[^\\s@]+\\s*$"
                   },
                   "role": {
                     "type": "string",
@@ -1054,7 +1056,8 @@
                   },
                   "email": {
                     "type": "string",
-                    "description": "Email address of an existing Armada account. Surrounding whitespace is ignored."
+                    "description": "Email address of an existing Armada account. Surrounding whitespace is ignored.",
+                    "pattern": "^\\s*[^\\s@]+@[^\\s@]+\\.[^\\s@]+\\s*$"
                   }
                 },
                 "required": [

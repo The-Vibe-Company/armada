@@ -2,9 +2,14 @@ import { z } from "zod";
 import type { Operation } from "./index.ts";
 
 const org = z.string({ error: "org must be text." }).nullish();
+// The vault checks syntax after resolving the caller's organization and role.
+export const memberEmailPattern = /^\s*[^\s@]+@[^\s@]+\.[^\s@]+\s*$/;
 const email = z
   .string({ error: (issue) => (issue.input == null ? "email is required." : "email must be text.") })
-  .describe("Email address of an existing Armada account. Surrounding whitespace is ignored.");
+  .meta({
+    description: "Email address of an existing Armada account. Surrounding whitespace is ignored.",
+    pattern: memberEmailPattern.source,
+  });
 
 const role = z.enum(["admin", "member"], {
   error: (issue) =>
