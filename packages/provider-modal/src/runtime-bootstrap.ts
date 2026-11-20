@@ -8,7 +8,7 @@ export type RuntimeTicket = {
   enrolmentToken: string;
 };
 
-export function validateRuntimeTicket(ticket: RuntimeTicket): string {
+export function validateRuntimeTicket(ticket: RuntimeTicket) {
   const server = new URL(ticket.serverUrl);
   if (
     server.protocol !== "https:" ||
@@ -32,7 +32,7 @@ export async function dispatchRuntimeBootstrap(
   serverUrl: string,
   enrolmentToken: string,
   failureMessage: string,
-): Promise<void> {
+) {
   try {
     const child = await sandbox.exec(["/usr/bin/env", "-i", "PATH=/usr/local/bin:/usr/bin:/bin", ...command], {
       env: {},
