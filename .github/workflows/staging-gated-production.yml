@@ -168,7 +168,7 @@ jobs:
           evidence="$RUNNER_TEMP/reaper-evidence.jsonl"
           fail_preflight() {
             jq -cn --arg phase "$1" --argjson status "$2" \
-              '{step:"smoke_reaper_evidence",pass:false,code:"reaper_preflight_failed",phase:$phase,exitStatus:$status}' \
+              '{step:"smoke_reaper_evidence",pass:false,code:("reaper_" + $phase + "_failed"),phase:$phase,exitStatus:$status}' \
               | tee "$evidence"
             exit 1
           }
@@ -195,7 +195,8 @@ jobs:
               || fail_preflight previous_log_decode "$?"
           fi
           printf '%s\n' "$current_logs" "$previous_logs" \
-            | env -i PATH="$PATH" bun .release-tools/scripts/release/smoke-reaper-evidence.ts | tee "$evidence"
+            | env -i PATH="$PATH" bun .release-tools/scripts/release/smoke-reaper-evidence.ts \
+            | jq -c 'if .pass then . else . + {code:"reaper_evidence_rejected"} end' | tee "$evidence"
       # Stamp the checked-out SHA in ordinary wakeup evidence. GitHub run metadata
       # can describe an older main tip than the source resolved under the lock.
       - name: Migrate then deploy pinned server and dashboard${{ github.event_name == 'workflow_run' && inputs.source_sha == '' && format(' ({0})', env.RELEASE_SHA) || '' }}
@@ -251,7 +252,7 @@ jobs:
             if [[ -s "$RUNNER_TEMP/reaper-evidence.jsonl" ]]; then
               cp "$RUNNER_TEMP/reaper-evidence.jsonl" "$RUNNER_TEMP/armada-smoke.jsonl"
             else
-              printf '%s\n' '{"step":"smoke_reaper_evidence","pass":false,"code":"reaper_preflight_failed","phase":"evidence_runner"}' > "$RUNNER_TEMP/armada-smoke.jsonl"
+              printf '%s\n' '{"step":"smoke_reaper_evidence","pass":false,"code":"reaper_evidence_runner_failed"}' > "$RUNNER_TEMP/armada-smoke.jsonl"
             fi
             : > "$RUNNER_TEMP/dashboard-smoke.jsonl"
             exit 1
