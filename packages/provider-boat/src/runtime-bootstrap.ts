@@ -46,8 +46,6 @@ export function boatRuntimeBootstrapScript(
   artifact: { sha256: string; bytes: number },
   cacheDir: string,
 ): string {
-  // Older Boat distributions can publish a Node package without global fetch.
-  // Pin the bootstrap download independently of whatever the golden's OS ships.
   const nodeVersion = "22.22.2";
   return `set +x
 umask 077
