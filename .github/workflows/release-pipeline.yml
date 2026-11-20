@@ -645,7 +645,8 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 24
-      - name: Install pinned deployment clients and validate candidate server configuration
+      - uses: ./.github/actions/setup-bun
+      - name: Install pinned deployment clients and validate candidate configuration
         run: |
           set -euo pipefail
           npm install --global @railway/cli@5.71.0 vercel@65.14.0
@@ -659,10 +660,6 @@ jobs:
             echo "::error::Could not validate production server configuration; migrations were not started."
             exit 1
           fi
-      - uses: ./.github/actions/setup-bun
-      - name: Check CLI device login configuration
-        run: |
-          set -o pipefail
           if ! timeout 30s railway variable list --json --project "$RAILWAY_PROJECT_ID" \
               --environment "$RAILWAY_ENVIRONMENT_ID" --service "$RAILWAY_SERVICE_ID" 2>/dev/null \
               | bun .release-tools/scripts/release/device-login-configuration.ts; then
