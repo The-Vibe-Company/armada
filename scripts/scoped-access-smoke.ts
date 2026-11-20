@@ -410,8 +410,6 @@ export function createScopedProbe(item: ScopedProbeCase, enabled: boolean, io: S
         const hasResult = (call: Call) => call.error || call.denied || Object.keys(call.result).length > 0;
         const evidenceReady = (seen: Call[]) => {
           if (seen.some((call) => childTools.includes(call.name) && (call.error || call.denied))) return true;
-          // A completed mutation refusal ends the scripted sequence. Missing results
-          // can still arrive after the parent turn's terminal state is visible.
           if (
             seen.some(
               (call) => call.name !== "read" && childTools.includes(call.name) && hasResult(call) && !successful(call),
@@ -426,8 +424,6 @@ export function createScopedProbe(item: ScopedProbeCase, enabled: boolean, io: S
             try {
               await logs(id, "tool_evidence", until);
             } catch (error) {
-              // Keep the last complete snapshot for the step-specific failure if
-              // a read uses the rest of the observation window.
               if (typeof row(error).transportTimeoutMs === "number" && io.now() >= until) return;
               throw error;
             }
