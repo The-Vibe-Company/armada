@@ -15,7 +15,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Provider } from "@armada/core/server";
-import { nativeCwdCommand, nativeCwdInstallScript } from "../src/native-cwd.ts";
+import { installNativeCwdWrapper, nativeCwdCommand, nativeCwdInstallScript } from "../src/native-cwd.ts";
 import { admitNativeUsage, bindNativeUsage, collectNativeUsage } from "../src/native-usage.ts";
 
 /** Exercise the production privilege boundary without elevating owned temporary fixtures. */
@@ -63,6 +63,57 @@ function installProtocolFixture(path: string, root: string, cwd?: string) {
   writeFileSync(path, `#!/bin/sh\n${nativeCwdCommand(path, "codex", cwd)}\n`, { mode: 0o755 });
   return { status: 0 };
 }
+
+test.skipIf(process.platform !== "linux").each([
+  { description: "installs a missing system Python before publishing", localPython: false },
+  { description: "uses a working administrator Python without running APT", localPython: true },
+])("Boat Codex $description", async ({ localPython }) => {
+  const root = mkdtempSync(join(tmpdir(), "armada-boat-interpreters-"));
+  try {
+    const path = join(root, "codex");
+    const original = join(root, "native");
+    const ready = join(root, "python-ready");
+    const bin = join(root, "fixture-bin");
+    mkdirSync(bin);
+    const python = join(bin, "python3");
+    const apt = join(root, "apt-get");
+    const id = join(root, "id");
+    writeFileSync(original, "#!/bin/sh\nexit 0", { mode: 0o755 });
+    symlinkSync(original, path);
+    writeFileSync(python, `#!/bin/sh\ntest -f '${ready}'`, { mode: 0o755 });
+    writeFileSync(id, `#!/bin/sh\nprintf ${localPython ? 1000 : 0}`, { mode: 0o755 });
+    if (localPython) writeFileSync(ready, "");
+    writeFileSync(
+      apt,
+      `#!/bin/sh
+case "$3" in
+  update) exit 0 ;;
+  install) [ "$7" = python3 ] && [ -L '${path}' ] && [ ! -e '${path}.armada-original' ] && : > '${ready}' ;;
+  *) exit 2 ;;
+esac
+`,
+      { mode: 0o755 },
+    );
+    await installNativeCwdWrapper(
+      async ({ command }) => {
+        const isolated = command
+          .replaceAll("/usr/local/bin/codex", path)
+          .replaceAll("/usr/local/bin/python3", localPython ? python : join(root, "no-local-python"))
+          .replaceAll("/usr/bin/python3", localPython ? join(root, "no-system-python") : python)
+          .replaceAll("/usr/bin/apt-get", localPython ? "/nonexistent/apt-get" : apt)
+          .replaceAll("/usr/bin/sudo", "/nonexistent/sudo")
+          .replaceAll("/usr/bin/id", id);
+        expect(installFixture(root, isolated).status).toBe(0);
+      },
+      "sandbox",
+      "codex",
+    );
+    expect(existsSync(ready)).toBe(true);
+    expect(realpathSync(path)).toBe(`${path}.armada-wrapper`);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
 
 for (const harness of ["codex", "claude"] as const) {
   test.skipIf(process.platform !== "linux")(
@@ -180,10 +231,13 @@ sys.exit(23)
       body: { ok: true, type: "command.finished", success: true, exitCode: 0, stdout: "", stderr: "", timedOut: false },
     });
     await boat.provider.prepareNativeHarnessCwd?.({ sandboxId: "bx_test", harness: "codex", cwd });
-    // Linux runs exactly the SDK-serialized VM installer with only the bin path relocated.
+    // Exercise the SDK-serialized installer against the local harness without allowing host APT access.
     // macOS owns only the generated protocol command; the Linux installer has its own tests.
     const body = boat.requests[0]?.body as { command: string };
-    const command = body.command.replaceAll("/usr/local/bin/codex", path);
+    const command = body.command
+      .replaceAll("/usr/local/bin/codex", path)
+      .replaceAll("/usr/bin/apt-get", "/nonexistent/apt-get")
+      .replaceAll("/usr/bin/sudo", "/nonexistent/sudo");
     expect(
       process.platform === "linux"
         ? installFixture(base, command).status
