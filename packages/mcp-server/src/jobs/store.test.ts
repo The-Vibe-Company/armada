@@ -86,6 +86,67 @@ async function turnFixture() {
   };
 }
 
+test.each(["deadline", "attempts"] as const)(
+  "the turn handler settles receipts after exhausting %s",
+  async (budget) => {
+    const f = await turnFixture();
+    const id = await sandbox(f, true);
+    const request = await f.accept(id);
+    const uncertain = budget === "attempts";
+    if (uncertain) {
+      await f.db.query(
+        "update account_turn_queue set state='dispatching', dispatch_generation=2, dispatch_until='infinity' where sandbox_id=$1",
+        [id],
+      );
+      await f.db.query("insert into account_agent_reservations(sandbox_id,account_id) values($1,$2)", [
+        id,
+        f.openaiCredentialId,
+      ]);
+      await f.db.query("update jobs set attempts=max_attempts where sandbox_id=$1", [id]);
+    } else {
+      await f.db.query("update jobs set deadline_at='-infinity' where sandbox_id=$1", [id]);
+    }
+    const sent: string[] = [];
+    const runner = f.runnerFor(async (_caller, input) => sent.push(input.id));
+    if (uncertain) {
+      await f.db.exec("alter table account_turn_queue add constraint reject_budget_failure check (state <> 'failed')");
+      try {
+        expect(await runner.reconcileOne(signal)).toBe(true);
+        await runner.drain();
+        expect((await f.db.query("select state from jobs where sandbox_id=$1", [id])).rows).toEqual([
+          { state: "leased" },
+        ]);
+      } finally {
+        await f.db.exec("alter table account_turn_queue drop constraint reject_budget_failure");
+      }
+      await f.db.query("update jobs set lease_until='-infinity' where sandbox_id=$1", [id]);
+    }
+    expect(await runner.reconcileOne(signal)).toBe(true);
+    await runner.drain();
+    expect(sent).toEqual([]);
+    expect(
+      (
+        await f.db.query(
+          `select j.state as job, q.state as receipt, q.failure_reason,
+           exists(select 1 from account_agent_reservations r where r.sandbox_id=q.sandbox_id) as reserved
+         from jobs j join account_turn_queue q on q.sandbox_id=j.sandbox_id
+         where j.sandbox_id=$1 and q.request_id=$2`,
+          [id, request],
+        )
+      ).rows,
+    ).toEqual([
+      {
+        job: "failed",
+        receipt: "failed",
+        failure_reason: uncertain
+          ? "Dispatch outcome uncertain; inspect sandbox history before resending."
+          : "Queued prompt could not start before its dispatch budget expired.",
+        reserved: uncertain,
+      },
+    ]);
+  },
+);
+
 test("the turn handler waits for FIFO and capacity without spending its dispatch budget", async () => {
   const f = await turnFixture();
   const occupied = await sandbox(f);
