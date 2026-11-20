@@ -397,23 +397,14 @@ test.each(["accepted", "already running", "stale state", "expired lease"] as con
     const id = crypto.randomUUID();
     const activityToken = crypto.randomUUID();
     const generation = 1;
-    const expired = scenario === "expired lease";
-    const running = scenario === "already running" || expired;
+    const deadline = scenario === "expired lease" ? "-infinity" : "infinity";
+    const running = scenario === "already running" || scenario === "expired lease";
     const status = running ? "running" : scenario === "stale state" ? "failed" : "ready";
     await db.query(
       `insert into sandboxes(id,provider,provider_sandbox_id,golden_id,org_id,owner_id,harness,status,
         activity_lease_id,activity_until,lifecycle_generation)
        values ($1,'boat','placement',$2,$3,$4,'codex',$5,$6,$7,$8)`,
-      [
-        id,
-        sharedGoldenId,
-        people.org,
-        people.owner,
-        status,
-        activityToken,
-        expired ? "-infinity" : "infinity",
-        generation,
-      ],
+      [id, sharedGoldenId, people.org, people.owner, status, activityToken, deadline, generation],
     );
     const store = createSqlData(db)({
       userId: people.owner,
