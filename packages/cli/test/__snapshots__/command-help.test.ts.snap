@@ -51,11 +51,14 @@ Usage:
   armada skill install (--project <directory> | --global) --yes [--revision <commit>]
                                            Public GitHub Armada tool-knowledge skill; no login. See skill --help.
   armada snapshot ls [--provider boat|modal|docker] [--org ORG] [--json]
-  armada snapshot new NAME (--config FILE | --repo URL ... [--init CMD ...]) [--provider boat|modal|docker] [--org ORG] [--idempotency-key KEY] [--provider boat|modal] [--org ORG] [--wait [--timeout SECONDS]]
-  armada snapshot update NAME (--add-repo URL ... | --replace (--config FILE | --repo URL ...)) [--wait [--timeout SECONDS]]
-  armada snapshot rebuild UUID --provider docker --org UUID [--request-id UUID]
-  armada snapshot rm NAME|UUID [--provider boat|modal] [--org ORG]
-  armada snapshot show NAME|UUID [--provider boat|modal|docker] [--org ORG]
+  armada snapshot new NAME (--config FILE | --repo URL ... [--init CMD ...]) [--wait [--timeout SECONDS]] [--provider boat|modal|docker] [--org ORG] [--private] [--json]
+    [--setup FILE] [--idempotency-key KEY] [--host UUID|NAME] [--request-id UUID]
+  armada snapshot update NAME (--add-repo URL ... | --replace (--config FILE | --repo URL ...)) [--wait [--timeout SECONDS]] [--provider boat|modal] [--org ORG] [--init CMD] [--setup FILE] [--idempotency-key KEY] [--json]
+  armada snapshot rebuild UUID --provider docker --org UUID [--request-id UUID] [--json]
+  armada snapshot rm NAME|UUID [--provider boat|modal] [--org ORG] [--json]
+  armada snapshot show NAME|UUID [--provider boat|modal|docker] [--org ORG] [--json]
+  armada snapshot show --build JOB_ID [--org ORG] [--json]
+  armada snapshot show --idempotency-key KEY --org ORG [--json]
   armada launch <snapshot> --agent claude|codex|opencode ["prompt"] [--model <id>] [--reasoning-effort <level>]
                                            [--armada-access [--credential-id <id>] [--max-active-children <1..100>]]
                 --provider boat|modal [--repo <configured-dir|owner/repo>] [--ttl 4h] [--json]
@@ -482,16 +485,19 @@ exports[`armada snapshot help preserves its output 1`] = `
 "Usage: armada snapshot <ls|new|update|rebuild|rm|show> [arguments]
 Manage provider-scoped snapshots. Use a verb with --help for its options.
   armada snapshot ls [--provider boat|modal|docker] [--org ORG] [--json]
-  armada snapshot new NAME (--config FILE | --repo URL ... [--init CMD ...]) [--provider boat|modal|docker] [--org ORG] [--idempotency-key KEY] [--provider boat|modal] [--org ORG] [--wait [--timeout SECONDS]]
-  armada snapshot update NAME (--add-repo URL ... | --replace (--config FILE | --repo URL ...)) [--wait [--timeout SECONDS]]
-  armada snapshot rebuild UUID --provider docker --org UUID [--request-id UUID]
-  armada snapshot rm NAME|UUID [--provider boat|modal] [--org ORG]
-  armada snapshot show NAME|UUID [--provider boat|modal|docker] [--org ORG]
+  armada snapshot new NAME (--config FILE | --repo URL ... [--init CMD ...]) [--wait [--timeout SECONDS]] [--provider boat|modal|docker] [--org ORG] [--private] [--json]
+    [--setup FILE] [--idempotency-key KEY] [--host UUID|NAME] [--request-id UUID]
+  armada snapshot update NAME (--add-repo URL ... | --replace (--config FILE | --repo URL ...)) [--wait [--timeout SECONDS]] [--provider boat|modal] [--org ORG] [--init CMD] [--setup FILE] [--idempotency-key KEY] [--json]
+  armada snapshot rebuild UUID --provider docker --org UUID [--request-id UUID] [--json]
+  armada snapshot rm NAME|UUID [--provider boat|modal] [--org ORG] [--json]
+  armada snapshot show NAME|UUID [--provider boat|modal|docker] [--org ORG] [--json]
+  armada snapshot show --build JOB_ID [--org ORG] [--json]
+  armada snapshot show --idempotency-key KEY --org ORG [--json]
 "
 `;
 
 exports[`armada snapshot new help preserves its output 1`] = `
-"Usage: armada snapshot new NAME (--config FILE | --repo URL ... [--init CMD ...]) [--provider boat|modal|docker] [--org ORG] [--idempotency-key KEY] [--provider boat|modal] [--org ORG] [--wait [--timeout SECONDS]]
+"Usage: armada snapshot new NAME (--config FILE | --repo URL ... [--init CMD ...]) [--wait [--timeout SECONDS]]
 Boat/Modal options: --provider boat|modal, --org ORG, --private, --setup FILE, --idempotency-key KEY.
 Docker options: --provider docker --host UUID|NAME --org UUID [--private] [--request-id UUID].
 --wait observes the admitted build for up to --timeout seconds (default 60, max 600).
