@@ -1,13 +1,5 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
-import {
-  createSqlMcpRegistry,
-  createSqlSandboxStore,
-  DelegatedAuthority,
-  encryptSecret,
-  type Provider,
-  type Sql,
-} from "@armada/core/server";
-import { createMcpLifecycle } from "../src/mcp-lifecycle.ts";
+import { createSqlSandboxStore, DelegatedAuthority, encryptSecret, type Provider, type Sql } from "@armada/core/server";
 import { createSandboxChildren } from "../src/sandbox-access-children.ts";
 import { createSandboxAccessServices } from "../src/sandbox-access-services.ts";
 import { createSandboxArmadaAccess } from "../src/sandbox-armada-access.ts";
@@ -180,17 +172,17 @@ test("ordinary sandbox opt-in bounds child admission and scrubs authority before
     "update sandboxes set status='stopped',stopped_at=now(),conversation_ids=array['remembered-conversation'],lifecycle_generation=lifecycle_generation+1 where id=$1",
     [saved.id],
   );
-  // The provider activates first; the real MCP lifecycle publishes stopped -> ready
-  // before delegated access is installed, just like the native pre-prompt hook.
   fake.sandbox(info.id).info.state = "ready";
-  provider.configureMcp = async () => {};
-  const mcp = createMcpLifecycle({
-    sql,
-    registry: createSqlMcpRegistry(sql, ENCRYPTION_KEY),
-    encryptionKey: ENCRYPTION_KEY,
-    origin: PUBLIC_URL,
+  await expect(access.beforePrompt(provider, info.id)).rejects.toThrow("denied");
+  expect((await db.query("select status from sandboxes where id=$1", [saved.id])).rows[0]).toEqual({
+    status: "stopped",
   });
-  await mcp.beforePrompt(provider, info.id, { userId: people.owner, orgId: people.org });
+  expect(
+    (await db.query("select id from sandbox_transitions where sandbox_id=$1 and actor='armada_access'", [saved.id]))
+      .rows,
+  ).toEqual([]);
+  // The retained wake is admitted by the lifecycle path before native preparation.
+  await db.query("update sandboxes set status='starting',stopped_at=null where id=$1", [saved.id]);
   await expect(access.beforePrompt(provider, info.id)).resolves.toBeUndefined();
   await db.query("update sandboxes set status='running',lifecycle_generation=lifecycle_generation+1 where id=$1", [
     saved.id,
