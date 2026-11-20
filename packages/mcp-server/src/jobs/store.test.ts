@@ -86,26 +86,31 @@ async function turnFixture() {
   };
 }
 
+function queueLockRefusalSql(f: Awaited<ReturnType<typeof fixture>>, phase: "admission" | "completion") {
+  return sqlOver({
+    unsafe: async (query, params) => (await f.db.query(query, params)).rows,
+    begin: (work) =>
+      f.db.transaction((tx) => {
+        let completing = false;
+        return work({
+          async unsafe(query, params) {
+            if (query.startsWith("select public.complete_job(")) completing = true;
+            if (query.startsWith("lock table public.account_turn_queue") && (phase === "admission" || completing))
+              throw Object.assign(new Error("Model repair holds the queue lock"), { code: "55P03" });
+            return (await tx.query(query, params)).rows;
+          },
+        });
+      }),
+  });
+}
+
 test("shared turn admission defers without spending an attempt during model repair", async () => {
   const f = await turnFixture();
   const id = await sandbox(f, true);
   await f.accept(id);
-  const modelRepairSql = sqlOver({
-    unsafe: async (query, params) => (await f.db.query(query, params)).rows,
-    begin: (work) =>
-      f.db.transaction((tx) =>
-        work({
-          async unsafe(query, params) {
-            if (query.startsWith("lock table public.account_turn_queue"))
-              throw Object.assign(new Error("Model repair holds the queue lock"), { code: "55P03" });
-            return (await tx.query(query, params)).rows;
-          },
-        }),
-      ),
-  });
   const sent: string[] = [];
   const send: DispatchTurn = async (_caller, input) => sent.push(input.id);
-  const runner = f.runnerFor(send, f.store, modelRepairSql);
+  const runner = f.runnerFor(send, f.store, queueLockRefusalSql(f, "admission"));
   expect(await runner.reconcileOne(signal)).toBe(true);
   await runner.drain();
   expect(sent).toEqual([]);
@@ -148,18 +153,21 @@ test.each(["deadline", "attempts"] as const)(
       await f.db.query("update jobs set deadline_at='-infinity' where sandbox_id=$1", [id]);
     }
     const sent: string[] = [];
-    const runner = f.runnerFor(async (_caller, input) => sent.push(input.id));
+    const send: DispatchTurn = async (_caller, input) => sent.push(input.id);
+    const runner = f.runnerFor(send);
     if (uncertain) {
-      await f.db.exec("alter table account_turn_queue add constraint reject_budget_failure check (state <> 'failed')");
-      try {
-        expect(await runner.reconcileOne(signal)).toBe(true);
-        await runner.drain();
-        expect((await f.db.query("select state from jobs where sandbox_id=$1", [id])).rows).toEqual([
-          { state: "leased" },
-        ]);
-      } finally {
-        await f.db.exec("alter table account_turn_queue drop constraint reject_budget_failure");
-      }
+      const repair = createJobsStore(queueLockRefusalSql(f, "completion"), btoa("\0".repeat(32)));
+      const contended = f.runnerFor(send, repair);
+      expect(await contended.reconcileOne(signal)).toBe(true);
+      await contended.drain();
+      expect(
+        (
+          await f.db.query(
+            "select j.state as job, q.state as receipt from jobs j join account_turn_queue q using (sandbox_id) where j.sandbox_id=$1",
+            [id],
+          )
+        ).rows,
+      ).toEqual([{ job: "leased", receipt: "dispatching" }]);
       await f.db.query("update jobs set lease_until='-infinity' where sandbox_id=$1", [id]);
     }
     expect(await runner.reconcileOne(signal)).toBe(true);
