@@ -3407,9 +3407,37 @@ test("a queued snapshot build interrupted by a drain persists the uninstall reas
 test("old or unreported Docker daemons get an actionable resume refusal before any job is queued", async () => {
   const db = database();
   const f = await fixture();
-  await f.service().launch(f.caller, f.body);
-  const controls = createDockerSandboxControls(sql, key, { clock: f.clock, resume: bootstrap });
-  await controls.invoke(f.caller, "stop", { id: f.body.requestId, request_id: randomUUID() });
+  const { requestId, credentialId, harness } = f.body;
+  const generation = randomUUID();
+  await db.query(
+    `insert into public.sandboxes(
+       id,org_id,owner_id,access_owner_id,provider,provider_sandbox_id,harness,visibility,status,
+       docker_host_id,docker_installation_id,docker_generation,docker_image,credential_id,credential_version,
+       expires_at,stopped_at
+     ) values($1,$2,$3,$3,'docker',$4,$5,'private','stopped',$6,$7,$8,$9,$10,2,now()+interval '1 hour',now())`,
+    [
+      requestId,
+      f.actor.orgId,
+      f.actor.userId,
+      `armada-${f.installationId}-${f.hostId}-${requestId}-${generation}`,
+      harness,
+      f.hostId,
+      f.installationId,
+      generation,
+      officialImage,
+      credentialId,
+    ],
+  );
+  let resumeCalls = 0;
+  const controls = createDockerSandboxControls(sql, key, {
+    clock: f.clock,
+    resume: {
+      async resume(...args) {
+        resumeCalls++;
+        return bootstrap.resume(...args);
+      },
+    },
+  });
   const before = await counts(f);
   for (const protocol of [null, DOCKER_HOST_PROTOCOL + 1]) {
     await db.query("update docker_hosts set daemon_protocol=$2 where id=$1", [f.hostId, protocol]);
@@ -3417,8 +3445,12 @@ test("old or unreported Docker daemons get an actionable resume refusal before a
       code: "docker_host_upgrade_required",
       message: expect.stringContaining("Upgrade the Docker host daemon"),
     });
+    expect(resumeCalls).toBe(0);
     expect(await counts(f)).toEqual(before);
-    expect((await createDockerSandboxService(sql, key).get(f.actor, f.body.requestId)).status).toBe("stopped");
+    expect((await db.query("select 1 from public.docker_resume_claims where sandbox_id=$1", [requestId])).rows).toEqual(
+      [],
+    );
+    expect((await createDockerSandboxService(sql, key).get(f.actor, requestId)).status).toBe("stopped");
   }
 });
 
