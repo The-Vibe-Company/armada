@@ -431,6 +431,66 @@ test.each(["launch", "message"] as const)(
   },
 );
 
+test("an uncertain scoped message records a correlated operator diagnostic", async () => {
+  const { close, db, sql, id, p, parent, golden, authority, token, selection } = await fixture();
+  try {
+    const child = await createSqlSandboxStore(sql).insert({
+      id: crypto.randomUUID(),
+      provider: parent.provider,
+      providerSandboxId: "child-message-outcome",
+      goldenId: golden.id,
+      orgId: p.org,
+      ownerId: p.owner,
+      harness: "codex",
+      model: selection.model,
+      reasoningEffort: "high",
+      status: "ready",
+    });
+    await db.query("insert into orchestrator_children values($1,$2,$3,$4)", [child.id, id, p.org, p.owner]);
+    const children = createSandboxChildren(sql, authority, {
+      async message() {
+        throw Object.assign(new Error("private provider response"), { code: "ECONNRESET" });
+      },
+      async launch() {
+        throw Error("unexpected");
+      },
+      async stop() {
+        throw Error("unexpected");
+      },
+      async read() {
+        throw Error("unexpected");
+      },
+      async reconcile(op) {
+        return { operationId: op.id, sandboxId: op.sandboxId, state: "unknown" };
+      },
+    });
+    const lines: string[] = [];
+    let receipt: Awaited<ReturnType<typeof children.message>> | undefined;
+    const response = await observeRequest(
+      async () => {
+        receipt = await children.message(token, "message-outcome", child.id, "synthetic child prompt");
+        return new Response();
+      },
+      (line) => lines.push(line),
+    );
+    expect(receipt?.state).toBe("uncertain");
+    expect(lines.map((line) => JSON.parse(line))).toContainEqual(
+      expect.objectContaining({
+        event: "operator_failure",
+        phase: "scoped.child_message.execution",
+        code: "child_outcome_unconfirmed",
+        message: "ECONNRESET",
+        sandboxId: child.id,
+        operationId: receipt?.id,
+        requestId: response?.headers.get("x-request-id"),
+      }),
+    );
+    expect(lines.join("\n")).not.toContain("private provider response");
+  } finally {
+    await close();
+  }
+});
+
 test("revocation after snapshot admission releases a child allocation that never reached the provider", async () => {
   const { close, db, sql, id, authority, token, selection } = await fixture();
   try {

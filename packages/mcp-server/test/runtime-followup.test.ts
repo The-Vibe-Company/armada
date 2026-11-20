@@ -1,5 +1,5 @@
 import { describe, expect, jest, test } from "bun:test";
-import type { Sql } from "@armada/core/server";
+import { failureDiagnostic, type Sql } from "@armada/core/server";
 import { createSqlData } from "../src/data.ts";
 import { createJobsStore } from "../src/jobs/store.ts";
 import { createRuntimeFollowup } from "../src/runtime-followup.ts";
@@ -104,6 +104,23 @@ test("uncertain send reconciles the same durable identity/lease; changed input a
     await f.db.query("update sandboxes set stop_requested_at=now() where id=$1", [f.row.id]);
     await expect(f.send(f.caller, f.input())).rejects.toMatchObject({ code: "conflict" });
     expect(f.starts).toHaveLength(2);
+  } finally {
+    await f.close();
+  }
+});
+
+test("runtime follow-up preserves the operator cause behind an uncertain send", async () => {
+  const f = await fixture(await sharedDatabase(), "modal", "codex");
+  try {
+    const send = createRuntimeFollowup(f.sql, ENCRYPTION_KEY, f.bridge, async () => {
+      throw Object.assign(new Error("private transport response"), { code: "ECONNRESET" });
+    });
+    const error = await send(f.caller, f.input()).catch((error: unknown) => error);
+    expect(error).toMatchObject({
+      code: "conflict",
+      message: "Runtime send outcome is uncertain; reuse the original request_id and identical input.",
+    });
+    expect(failureDiagnostic(error).message).toBe("ECONNRESET");
   } finally {
     await f.close();
   }

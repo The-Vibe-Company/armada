@@ -311,7 +311,7 @@ function fixture(
   };
   const cleanupDelays: number[] = [];
   const detached: (() => Promise<void>)[] = [];
-  const { provider, captureRuntimeWork } = createModalProvider({
+  const { provider, captureRuntimeWork, readResourceReceipts } = createModalProvider({
     admissionSleep,
     cleanupSleep: async (milliseconds) => {
       cleanupDelays.push(milliseconds);
@@ -354,6 +354,7 @@ function fixture(
   });
   return {
     captureRuntimeWork,
+    readResourceReceipts,
     async seedMachine(template: Machine) {
       const id = crypto.randomUUID();
       const physicalName = `fixture-${id}`;
@@ -2958,7 +2959,7 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     expect(receipt.imageId).toBe(sourceImage);
     expect(receipt.sourceImage).toMatchObject({ name, imageId: sourceImage });
     expect((await f.store.get(receipt.sandboxId)).phase).toBe("booting");
-    const exported = JSON.parse(JSON.stringify(await f.provider.resourceReceipts()));
+    const exported = JSON.parse(JSON.stringify(await f.readResourceReceipts()));
     expect(exported).toContainEqual(
       expect.objectContaining({ sandboxId: builder.id, snapshotImages: [{ name, imageId: sourceImage }] }),
     );
@@ -3002,7 +3003,7 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     expect(receipt.snapshotImages[0]?.imageId).toStartWith("im_");
     expect(receipt.phase).toBe("snapshot");
     expect(f.log).not.toContain("terminate");
-    const persisted = await f.provider.resourceReceipts();
+    const persisted = await f.readResourceReceipts();
     const merged = mergeModalResourceReceipts([receipt, ...persisted]);
     expect(merged.find((x) => x.sandboxId === builder.id)?.snapshotImages).toEqual(receipt.snapshotImages);
   });
