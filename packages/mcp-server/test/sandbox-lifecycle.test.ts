@@ -384,6 +384,40 @@ for (const outcome of [
         await db.query("update sandboxes set reconcile_lease_until=now()-interval '1 second' where id=$1", [id]);
       }
     }
+    if (outcome === "expired") {
+      const before = await readStopIntent();
+      for (const boundary of ["lease renewal", "commit"]) {
+        let injected = false;
+        const faultingSql: Sql = {
+          query: sql.query,
+          transaction: (work) =>
+            db.transaction(async (tx) => {
+              let admitted = false;
+              const result = await work({
+                query: (statement, args) => {
+                  if (statement.includes("public.sandbox_transition(")) admitted = true;
+                  if (admitted && boundary === "lease renewal" && statement.includes("interval '2 minutes'")) {
+                    injected = true;
+                    throw new Error("injected stop lease renewal failure");
+                  }
+                  return tx.query(statement, args);
+                },
+              });
+              if (admitted && boundary === "commit") {
+                injected = true;
+                throw new Error("injected stop admission commit failure");
+              }
+              return result;
+            }),
+        };
+        await createSandboxLifecycle(faultingSql, async () => provider).reconcileOne();
+        expect(injected).toBe(true);
+        expect(await readStopIntent()).toEqual(before);
+        expect((await db.query("select id from sandbox_transitions where sandbox_id=$1", [id])).rows).toEqual([]);
+        expect(requests.some((request) => request.startsWith("POST"))).toBe(false);
+        await db.query("update sandboxes set reconcile_after=now()-interval '1 second' where id=$1", [id]);
+      }
+    }
     await worker.reconcileOne();
     const row = (
       await db.query<{
@@ -418,7 +452,7 @@ for (const outcome of [
     expect(row.effective_ttl_seconds).toBe(60);
     expect(row.requested_ttl_seconds).toBe(60);
     if (outcome === "external-stop") expect(row.provider_stop_retained).toBe(true);
-    if (outcome === "snapshot-owner-removed")
+    if (outcome === "snapshot-owner-removed" || outcome === "stale")
       expect((await db.query("select id from sandbox_transitions where sandbox_id=$1", [id])).rows).toEqual([]);
     if (waitingForRetention) {
       if (!before) throw Error("Missing sandbox before retention settlement");
@@ -951,6 +985,17 @@ test.each(["active", "terminate", "booting"] as const)("expired Modal stop from 
       return { status: "clean" };
     },
     stop: async () => {
+      if (phase === "active")
+        expect(
+          (
+            await db.query(
+              "select actor,code,generation,from_status,to_status from sandbox_transitions where sandbox_id=$1",
+              [id],
+            )
+          ).rows,
+        ).toEqual([
+          { actor: "reconciler", code: "expired", generation: 1, from_status: "running", to_status: "stopping" },
+        ]);
       expect(
         (
           await db.query(

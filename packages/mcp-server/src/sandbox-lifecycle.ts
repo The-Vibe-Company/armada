@@ -1137,25 +1137,65 @@ export function createSandboxLifecycle(
             idleStop)
         ) {
           signal?.throwIfAborted();
-          const owned = await sql.query<{ id: string }>(
-            `update public.sandboxes
-            set reconcile_lease_until=now()+interval '2 minutes',
-              stop_requested_at=coalesce(stop_requested_at,clock_timestamp()),
-              stop_generation=case when stop_requested_at is null then stop_generation+1 else stop_generation end,
-              status=case when status in ('starting','failed') then status else 'stopping'::public.sandbox_status end,
-              transition_context=jsonb_build_object('actor','reconciler','code',
+          const owned = await sql.transaction!(async (tx) => {
+            const {
+              rows: [current],
+            } = await tx.query<{
+              status: SandboxStatus;
+              code: string;
+              status_reason: string | null;
+              stop_requested_at: string;
+              stopped_at: string | null;
+            }>(
+              `select status, stopped_at::text, coalesce(stop_requested_at,clock_timestamp())::text as stop_requested_at,
                 case when $4 and status_reason is distinct from 'work_merged' then 'expired'
                   when $5 and ($6 or status_reason='work_merged') then 'work_merged'
-                  when $5 then 'idle_paused' else 'stop_requested' end),
-              status_reason=case when $4 and status not in ('starting','failed') and status_reason is distinct from 'work_merged' then 'expired' when $5 then case when $6 or status_reason='work_merged' then 'work_merged' else 'idle_paused' end else status_reason end
-            where id=$1::uuid and reconcile_lease=$2::uuid and lifecycle_generation=$3
-              and reconcile_lease_until>now() and (activity_until is null or activity_until<now())
-              and (not $6 or (activity_lease_id is null and stop_requested_at is null and expires_at>now()
-                and ${mergedWorkProof("sandboxes")}))
-              and exists(select 1 from public.members m where m.org_id=sandboxes.org_id and m.user_id=sandboxes.owner_id) returning id`,
-            [row.id, token, row.lifecycle_generation, expired, idleStop, workMerged && idleStop],
-          );
-          if (!owned.rows[0]) return true;
+                  when $5 then 'idle_paused' else 'stop_requested' end as code,
+                case when $4 and status not in ('starting','failed') and status_reason is distinct from 'work_merged' then 'expired'
+                  when $5 then case when $6 or status_reason='work_merged' then 'work_merged' else 'idle_paused' end
+                  else status_reason end as status_reason
+              from public.sandboxes
+              where id=$1::uuid and reconcile_lease=$2::uuid and lifecycle_generation=$3
+                and reconcile_lease_until>clock_timestamp() and (activity_until is null or activity_until<now())
+                and (not $6 or (activity_lease_id is null and stop_requested_at is null and expires_at>now()
+                  and ${mergedWorkProof("sandboxes")}))
+                and exists(select 1 from public.members m where m.org_id=sandboxes.org_id and m.user_id=sandboxes.owner_id)
+              for update`,
+              [row.id, token, row.lifecycle_generation, expired, idleStop, workMerged && idleStop],
+            );
+            if (!current) return false;
+            if (current.status === "ready" || current.status === "running") {
+              const result = await transitionSandbox(tx, {
+                sandboxId: row.id,
+                expectedGeneration: row.lifecycle_generation,
+                fromStates: [current.status],
+                toState: "stopping",
+                actor: "reconciler",
+                code: current.code,
+                effects: [],
+                settlement: {
+                  lease: token,
+                  statusReason: current.status_reason,
+                  stopRequestedAt: current.stop_requested_at,
+                  stoppedAt: current.stopped_at,
+                },
+              });
+              if (result.kind === "conflict") return false;
+              await tx.query(
+                "update public.sandboxes set reconcile_lease_until=now()+interval '2 minutes' where id=$1",
+                [row.id],
+              );
+            } else {
+              await tx.query(
+                `update public.sandboxes set reconcile_lease_until=now()+interval '2 minutes',
+                  stop_generation=case when stop_requested_at is null then stop_generation+1 else stop_generation end,
+                  stop_requested_at=$2::timestamptz,status_reason=$3 where id=$1`,
+                [row.id, current.stop_requested_at, current.status_reason],
+              );
+            }
+            return true;
+          });
+          if (!owned) return true;
           signal?.throwIfAborted();
           // These durable phases already fence native admission. Active-only
           // observation or recapture would prevent the owning reconciler from retrying.
