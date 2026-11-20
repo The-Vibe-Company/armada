@@ -5,11 +5,20 @@ Supabase configuration, or database access is needed on the terminal.
 
 ## Admin management
 
+Set `ORG_NAME` to the organization's exact name and replace
+`recipient@example.invalid` with the invitee's verified email address.
+
 ```sh
-armada org invitations create recipient@example.invalid --role member --org Team
-armada org invitations list --org Team --json
-armada org invitations resend <invitation-id> --org Team
-armada org invitations revoke <invitation-id> --org Team
+armada org invitations create recipient@example.invalid --role member --org "$ORG_NAME"
+armada org invitations list --org "$ORG_NAME" --json
+```
+
+Set `INVITATION_UUID` to the `id` of a pending invitation from the list.
+Run the action you need.
+
+```sh
+armada org invitations resend "$INVITATION_UUID" --org "$ORG_NAME"
+armada org invitations revoke "$INVITATION_UUID" --org "$ORG_NAME"
 ```
 
 `--role` defaults to `member`; `admin` is also supported. `--org` accepts a name
