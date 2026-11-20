@@ -169,7 +169,7 @@ export async function logoutCommand(io: AuthIo, json = false): Promise<void> {
   io.out(json ? '{"authenticated":false}\n' : "Logged out.\n");
 }
 
-function openBrowser(url: string): void {
+function openBrowser(url: string) {
   const command = process.platform === "darwin" ? "open" : process.platform === "win32" ? "rundll32.exe" : "xdg-open";
   const args = process.platform === "win32" ? ["url.dll,FileProtocolHandler", url] : [url];
   Bun.spawn([command, ...args], { stdin: "ignore", stdout: "ignore", stderr: "ignore" });
