@@ -102,10 +102,10 @@ test.each(
     ["add", "openai", "--api-version", "v1"],
     ["add", "claude-oauth", "--name", "Subscription", "--base-url", "https://example.com"],
     ["add", "openai", "--base-url", "https://example.com"],
-    ["list", "--base-url", "https://example.com"],
+    ["ls", "--base-url", "https://example.com"],
     ["add", "openai", "--name", "Foundry", "--base-url", "https://user:password@example.com"],
     [
-      "set",
+      "add",
       "openai",
       "--name",
       "Foundry",
@@ -263,7 +263,7 @@ test.each(
     ["add", "openai", "--name", "Foundry", "--base-url", "https://example.com", "--endpoint-auth", "bearer"],
     ["add", "anthropic", "--name", "Gateway", "--base-url", "https://example.com", "--api-version", "v1"],
     ["add", "anthropic", "--name", "Gateway", "--base-url", "https://example.com", "--endpoint-auth", "oauth"],
-    ["list", "--endpoint-auth", "bearer"],
+    ["ls", "--endpoint-auth", "bearer"],
   ].map((args) => ({
     args: args.includes("openai") && args.includes("--base-url") ? [...args, "--models", "owner-deployment"] : args,
   })),
