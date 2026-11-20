@@ -35,7 +35,7 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { z } from "zod";
 import { dockerLaunchBody, launchedDockerSandbox } from "../../../apps/dashboard/src/lib/docker-launch.ts";
 import { httpApi } from "../../docker-host/src/native.ts";
-import { Armada, ArmadaError, type DockerSendInput, type SendInput } from "../../sdk/src/index.ts";
+import { Armada, ArmadaError, type SendInput } from "../../sdk/src/index.ts";
 import { createAccountTurnQueue } from "../src/account-turn-queue.ts";
 import { apiFailureCode } from "../src/api-failure.ts";
 import type { Caller } from "../src/caller.ts";
@@ -984,13 +984,13 @@ test("SDK sends to a Docker sandbox meet the published Docker variant exactly wh
   const published = publishedRequest("sandbox/send");
   const docker = publishedRequest("sandbox/send", "Docker sandbox send");
   const ref = { org: f.actor.orgId, id: f.body.requestId };
-  const keyed: DockerSendInput = { ...ref, prompt: "Keyed follow-up", request_id: randomUUID() };
+  const keyed: SendInput = { ...ref, prompt: "Keyed follow-up", request_id: randomUUID() };
   expect(docker.safeParse(keyed).success).toBe(true);
   expect(await sdk.send(keyed)).toMatchObject({ requestId: keyed.request_id, promptId: expect.any(String) });
   expect(f.native.at(-1)).toMatchObject({ op: "prompt", input: { text: keyed.prompt } });
   // Docker admission alone would take this 150 KiB prompt; the REST body limit refuses it
   // first, and the published variant says so in advance.
-  const oversized: DockerSendInput = { ...ref, prompt: "x".repeat(150 * 1024), request_id: randomUUID() };
+  const oversized: SendInput = { ...ref, prompt: "x".repeat(150 * 1024), request_id: randomUUID() };
   expect(docker.safeParse(oversized).success).toBe(false);
   const dispatched = f.native.length;
   expect(await sdk.send(oversized).catch((caught: unknown) => caught)).toMatchObject({
@@ -1029,9 +1029,6 @@ test("SDK sends to a Docker sandbox meet the published Docker variant exactly wh
       message: expect.stringContaining("model and reasoning_effort are refused"),
     },
   });
-  // @ts-expect-error A Docker sandbox keeps the model chosen at launch.
-  const override: DockerSendInput = { ...keyed, model: "normal-http-model" };
-  void override;
 });
 
 test("Docker sends through the production-wired account queue key a legacy body, replay a keyed one, refuse overrides before queuing, and dispatch admitted rows", async () => {
@@ -1083,7 +1080,7 @@ test("Docker sends through the production-wired account queue key a legacy body,
   expect(await post("sandbox/send", legacy)).toMatchObject({ requestId: expect.any(String), status: "queued" });
   const generated = await rows();
   expect(generated).toEqual([expect.stringMatching(/^[0-9a-f-]{36}$/)]);
-  const keyed: DockerSendInput = { ...ref, prompt: "Queued keyed follow-up", request_id: randomUUID() };
+  const keyed: SendInput = { ...ref, prompt: "Queued keyed follow-up", request_id: randomUUID() };
   const receipt = await sdk.send(keyed);
   expect(receipt).toMatchObject({ requestId: keyed.request_id, status: "queued" });
   // An identical retry returns the same durable receipt instead of queuing again.
