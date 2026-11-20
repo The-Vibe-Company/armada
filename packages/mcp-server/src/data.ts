@@ -806,8 +806,7 @@ export function createSqlData(
             patch.expectedGeneration === undefined ||
             reason === undefined ||
             (patch.status !== "failed" && patch.status !== "stopped") ||
-            (patch.status === "stopped" && !patch.stoppedAt) ||
-            (patch.providerObservation.providerRunPlacement !== undefined && patch.status !== "stopped")
+            (patch.status === "stopped" && !patch.stoppedAt)
           )
             throw new DataError("Provider observation publication requires generation and state evidence.");
           const result = await recordObservedProviderState(sql, scope, {
