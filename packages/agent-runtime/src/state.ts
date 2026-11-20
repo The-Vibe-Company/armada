@@ -1,7 +1,6 @@
 import { createHash } from "node:crypto";
 import { lstat, mkdir, open, readdir, readFile, rename, rm } from "node:fs/promises";
 import { join, relative } from "node:path";
-import { HARNESSES } from "@armada/core";
 import { checkpointIdentity, checkpointIdentityKey, sameCheckpointIdentity } from "./identity.ts";
 import type { CheckpointIdentity } from "./protocol.ts";
 /** One sanitizer for returned output, WAL rows and the only allowlisted native session files. */
@@ -88,6 +87,8 @@ export function createRedactor(values: readonly string[]): Redactor {
   };
   return Object.assign(redact, { register });
 }
+const HARNESSES = ["claude", "codex", "opencode"] as const;
+
 /** Persist only native transcripts, never entire harness homes, indexes, logs, auth or config. */
 export class HarnessState {
   constructor(

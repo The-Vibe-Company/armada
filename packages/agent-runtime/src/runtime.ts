@@ -34,6 +34,12 @@ import { type EventSelection, executeWithReceipt } from "./request-receipts.ts";
 import { sampleVmResources } from "./resource-sampler.ts";
 import { installRuntimeSkills, skillInstallResult } from "./skills.ts";
 import { executeWorkspace, validateWorkspaceExec } from "./workspace-exec.ts";
+
+function driverFailureReason(error: unknown, fallback: string) {
+  if (error instanceof HarnessError) return error.reason;
+  return error instanceof RequestRefused ? error.message : fallback;
+}
+
 export class Runner {
   private execChildren = new ChildOwner();
   private execReleases = new Set<Promise<void>>();
@@ -736,7 +742,7 @@ export class Runner {
             this.journal.transition(
               p,
               stopped ? "interrupted" : "failed",
-              stopped ? undefined : error instanceof HarnessError ? error.reason : "harness_failed",
+              stopped ? undefined : driverFailureReason(error, "harness_failed"),
             );
           },
         )
@@ -754,15 +760,7 @@ export class Runner {
         error instanceof HarnessError ? error.reason : undefined,
       );
       // Keep a definite start refusal's own code instead of flattening it into a generic failure.
-      this.journal.transition(
-        p,
-        "failed",
-        error instanceof HarnessError
-          ? error.reason
-          : error instanceof RequestRefused
-            ? error.message
-            : "harness_start_failed",
-      );
+      this.journal.transition(p, "failed", driverFailureReason(error, "harness_start_failed"));
     }
   }
   startOutboxDelivery(): void {
