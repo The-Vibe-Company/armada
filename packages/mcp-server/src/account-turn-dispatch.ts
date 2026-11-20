@@ -20,7 +20,9 @@ export const NATIVE_DISPATCH_UNCERTAIN = `(not coalesce(${RUNTIME_LANE},false)
 export const DISPATCH_ABANDONED = `(q.dispatch_until <= clock_timestamp()
   and s.stop_requested_at is null and s.deleted_at is null and s.expires_at > clock_timestamp()
   and (s.status in ('ready','running') or (s.status='stopped' and s.lifecycle_generation=q.queued_generation
-    and not coalesce(${RUNTIME_LANE},false)))
+    and not (s.provider='docker' and exists(
+      select 1 from public.docker_resume_claims c where c.sandbox_id=s.id and c.request_id=q.request_id
+    ))))
   and s.lifecycle_generation=q.dispatch_generation
   and s.activity_lease_id is null and not ${QUEUED_DISPATCH_EVIDENCE})`;
 export const UNCERTAIN_DISPATCH_MESSAGE = "Dispatch outcome uncertain; inspect sandbox history before resending.";
