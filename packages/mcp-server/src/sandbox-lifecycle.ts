@@ -645,12 +645,9 @@ export async function recordObservedProviderState(
       fromStates: [fromState],
       toState,
       actor: toState === "stopped" ? "runtime_observation" : "lifecycle_runner",
-      code:
-        toState === "failed"
-          ? "runtime_provider_failure"
-          : providerRunPlacement === undefined
-            ? "runtime_provider_stopped"
-            : "native_provider_stopped",
+      code: `${providerRunPlacement === undefined ? "runtime" : "native"}_provider_${
+        toState === "failed" ? "failure" : "stopped"
+      }`,
       effects: [],
       ...(toState === "stopped"
         ? { settlement: { lease: null, statusReason: reason, stopRequestedAt: null, stoppedAt } }

@@ -126,12 +126,15 @@ test.each([
 });
 
 test.each([
-  { outcome: "applied", confirmed: true },
-  { outcome: "applied", confirmed: false },
-  { outcome: "stale", confirmed: true },
-  { outcome: "rollback", confirmed: true },
-  { outcome: "release_failed", confirmed: true },
-] as const)("runtime physical failure ($outcome, exit confirmed=$confirmed)", async ({ outcome, confirmed }) => {
+  { runtime: true, outcome: "applied", confirmed: true },
+  { runtime: true, outcome: "applied", confirmed: false },
+  { runtime: true, outcome: "stale", confirmed: true },
+  { runtime: true, outcome: "rollback", confirmed: true },
+  { runtime: true, outcome: "release_failed", confirmed: true },
+  { runtime: false, outcome: "applied", confirmed: true },
+  { runtime: false, outcome: "applied", confirmed: false },
+  { runtime: false, outcome: "stale", confirmed: true },
+] as const)("provider failure ($runtime, $outcome, $confirmed)", async ({ runtime, outcome, confirmed }) => {
   const { db, people, sharedGoldenId, openaiCredentialId } = await failureDatabase();
   const boat = fakeBoat();
   const machine = await boat.provider.fork({ from: "snapshot" });
@@ -139,8 +142,8 @@ test.each([
   const now = new Date("2026-01-01T00:00:00Z");
   await db.query(
     `insert into sandboxes(id,provider,provider_sandbox_id,golden_id,org_id,owner_id,harness,status,boat_runtime)
-     values ($1,'boat',$2,$3,$4,$5,'codex','ready',true)`,
-    [id, machine.id, sharedGoldenId, people.org, people.owner],
+     values ($1,'boat',$2,$3,$4,$5,'codex','ready',$6)`,
+    [id, machine.id, sharedGoldenId, people.org, people.owner, runtime],
   );
   const store = createSqlData(db)({
     userId: people.owner,
@@ -148,7 +151,7 @@ test.each([
     via: "service",
   }).sandboxes;
   const sandbox = (await store.get(id))!;
-  const diagnostic = confirmed ? "Provider reported a runtime failure. ".repeat(100) : "";
+  const diagnostic = confirmed ? "Provider reported a failure. ".repeat(100) : "";
   await db.query(
     `insert into account_turn_queue(sandbox_id,request_id,account_id,owner_id,org_id,actor_epoch,credential_version,
       input_hash,input_enc,conversation_id,state,dispatch_generation)
@@ -193,7 +196,7 @@ test.each([
           from_status: "ready",
           to_status: "failed",
           actor: "lifecycle_runner",
-          code: "runtime_provider_failure",
+          code: runtime ? "runtime_provider_failure" : "native_provider_failure",
           generation: sandbox.lifecycleGeneration,
         },
       ]);
