@@ -44,6 +44,7 @@ import {
   completeSandboxDeletion,
   expireAfterExtension,
   finishEnrolledRuntimeLaunch,
+  publishNativeChildSend,
   publishOwnerStop,
   recordNativeRetentionRefusal,
   recordObservedProviderState,
@@ -67,6 +68,7 @@ export interface ServerSandboxPatch extends SandboxPatch {
   deleteCompleted?: true;
   expireAfterExtension?: true;
   nativeRetentionRefusal?: string;
+  nativeChildSend?: { fromState: SandboxStatus; placement: string };
   ownerStop?: true;
   onlyIfIdle?: boolean;
   retainedRuntimeStop?: string;
@@ -856,6 +858,10 @@ export function createSqlData(
           if (outcome === "conflict")
             throw new DataError("Runtime readiness publication is stale.", "sandbox_not_ready");
         }
+        const childSend = patch.nativeChildSend;
+        const childSendToken = patch.activityToken;
+        if (childSend && (!patch.advanceGeneration || patch.expectedGeneration === undefined || !childSendToken))
+          throw new DataError("Native child send requires its activity admission fence.");
         const sets: string[] = [];
         const params: unknown[] = [...scope, id];
         const set = (column: string, value: unknown, cast: string) => {
@@ -919,6 +925,12 @@ export function createSqlData(
         if (patch.turnActivity !== undefined)
           fence += " and s.status in ('ready','running') and s.stop_requested_at is null and s.deleted_at is null";
         if (patch.turnActivity === "claim") fence += " and s.activity_lease_id is null";
+        if (childSend) {
+          params.push(childSend.fromState, childSend.placement);
+          fence += ` and s.status=$${params.length - 1}::public.sandbox_status and s.provider_sandbox_id=$${params.length}
+            and s.provider in ('boat','modal') and not s.boat_runtime
+            and s.runtime_transport is null and s.deleted_at is null and s.status<>'deleted'`;
+        }
         if (patch.modalRuntimeExtensionTarget !== undefined) {
           if (extensionDeadlineParam === undefined || patch.expectedGeneration === undefined)
             throw new DataError("Modal runtime extension requires a verified deadline and lifecycle generation.");
@@ -1011,10 +1023,11 @@ export function createSqlData(
         // changed while this statement waited on its lock is rechecked at its newest version,
         // so then the CAS may refuse a holder that this snapshot predates.
         const observeRefusal = !!patch.deleteRequested && admission && !wrapped;
-        const returning = stopStatus === undefined ? "id" : "id, status, generation";
+        const publishTransition = stopStatus !== undefined || childSend !== undefined;
+        const returning = publishTransition ? "id, status, generation" : "id";
         const update = `update public.sandboxes s set ${sets.join(", ")} from public.goldens g
            where s.id = $3 and g.id = s.golden_id and ${SANDBOX_VISIBLE}
-             and (${ownsActivity && patch.expectedGeneration !== undefined ? "true" : `${observationFence} and (s.activity_until is null or s.activity_until < now())`}) ${fence} returning ${stopStatus === undefined ? "s.id" : "s.id, s.status, s.lifecycle_generation::text as generation"}`;
+             and (${ownsActivity && patch.expectedGeneration !== undefined ? "true" : `${observationFence} and (s.activity_until is null or s.activity_until < now())`}) ${fence} returning ${publishTransition ? "s.id, s.status, s.lifecycle_generation::text as generation" : "s.id"}`;
         const applyUpdate = (connection: Sql) =>
           connection.query<{
             id: string | null;
@@ -1064,6 +1077,17 @@ export function createSqlData(
               });
             }
             return updated;
+          });
+        } else if (childSend && childSendToken) {
+          if (!sql.transaction) throw new Error("Native child send admission requires a transaction.");
+          result = await sql.transaction(async (tx) => {
+            const admitted = await applyUpdate(tx);
+            const row = admitted.rows[0];
+            if (row?.id && childSend.fromState !== "running") {
+              if (!row.generation) throw new Error("Native child send admission did not return its generation.");
+              await publishNativeChildSend(tx, id, childSend.fromState, row.generation, childSendToken);
+            }
+            return admitted;
           });
         } else if (
           patch.taskPromptId &&

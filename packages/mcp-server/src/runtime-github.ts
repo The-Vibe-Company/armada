@@ -256,7 +256,12 @@ export function createRuntimeGitHub(options: {
       return empty;
     }
   }
-  async function prepare(caller: Caller, id: string, resolved?: Awaited<ReturnType<typeof resolveGitHubAccess>>) {
+  async function prepare(
+    caller: Caller,
+    id: string,
+    resolved?: Awaited<ReturnType<typeof resolveGitHubAccess>>,
+    assertClaim?: (tx: Sql) => Promise<void>,
+  ) {
     const s = await owner(caller, id);
     if (!options.github.app) return denied();
     if (!(await options.github.store.getGitHubConnection(s.ownerId))) throw new RuntimeGitHubConnectionError();
@@ -268,6 +273,7 @@ export function createRuntimeGitHub(options: {
     const issuedCap = await authority.withOwner(id, s.ownerId, async (tx, scope) => {
       const now = await current(tx, id);
       if (!same(now.binding, before.binding) || now.binding.epoch !== scope.epoch) return denied();
+      await assertClaim?.(tx);
       const revision =
         (await tx.query<{ revision: string }>("select nextval('public.runtime_github_revision_seq')::text as revision"))
           .rows[0]?.revision ?? denied();
@@ -281,6 +287,7 @@ export function createRuntimeGitHub(options: {
         [id, scope.epoch, revision, hash(capability), JSON.stringify(now.binding), expiresAt],
       );
       await issued(tx, now.binding, capability);
+      await assertClaim?.(tx);
       return { revision, capability, epoch: scope.epoch, expiresAt: expiresAt.getTime() };
     });
     const history = (
@@ -315,6 +322,7 @@ export function createRuntimeGitHub(options: {
           identity: { name: identity.name, email: identity.email },
         },
         `github_${issuedCap.epoch}_${issuedCap.revision}`,
+        assertClaim,
       );
     } catch {
       // Never attach the underlying runtime reply or any credential-bearing configuration.
@@ -324,9 +332,11 @@ export function createRuntimeGitHub(options: {
       const now = await current(tx, id),
         cap = await read(tx, hash(issuedCap.capability));
       if (scope.epoch !== issuedCap.epoch || !same(now.binding, cap.binding)) return denied();
+      await assertClaim?.(tx);
       await tx.query("update runtime_github_capabilities set delivered_at=now() where hash=$1", [
         hash(issuedCap.capability),
       ]);
+      await assertClaim?.(tx);
     });
     return {
       id,
@@ -336,7 +346,7 @@ export function createRuntimeGitHub(options: {
       revision: issuedCap.revision,
     };
   }
-  async function prepareTurn(caller: Caller, id: string) {
+  async function prepareTurn(caller: Caller, id: string, assertClaim?: (tx: Sql) => Promise<void>) {
     const launch = (
       await sql.query<{ request_enc: Uint8Array<ArrayBuffer> }>(
         `select d.request_enc from public.docker_launch_requests d join public.sandboxes s on s.id=d.sandbox_id
@@ -346,7 +356,7 @@ export function createRuntimeGitHub(options: {
     ).rows[0];
     if (!launch) return;
     const manifest = JSON.parse(await decryptSecret(launch.request_enc, key));
-    if (manifest.request?.repos) await prepare(caller, id);
+    if (manifest.request?.repos) await prepare(caller, id, undefined, assertClaim);
   }
   const route: Route = async (request) => {
     if (new URL(request.url).pathname !== path) return null;
@@ -397,7 +407,7 @@ export function createRuntimeGitHub(options: {
       return new Response(null, { status: 403, headers });
     }
   };
-  async function prepareLaunch(caller: Caller, id: string) {
+  async function prepareLaunch(caller: Caller, id: string, assertClaim?: (tx: Sql) => Promise<void>) {
     const s = await owner(caller, id);
     const access = await resolveGitHubAccess({ ...options.github, caller: "managed_runtime" }, s.ownerId);
     if (access.status !== "connected")
@@ -405,7 +415,7 @@ export function createRuntimeGitHub(options: {
         status: access.status,
         message: access.status === "not_connected" ? GITHUB_CALLER_NOT_CONNECTED : access.message,
       };
-    const result = await prepare(caller, id, access);
+    const result = await prepare(caller, id, access, assertClaim);
     return {
       status: result.status,
       login: result.login,
