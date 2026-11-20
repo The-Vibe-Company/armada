@@ -5,6 +5,7 @@ import { redactKnownTokens } from "../src/index.ts";
 const recognized = [
   ...["ghu", "ghr", "ghs", "gho", "ghp"].map((prefix) => `${prefix}_${"A".repeat(36)}`),
   `github_pat_${"A".repeat(82)}`,
+  `armada_sk_${"aB0_-".repeat(8)}abc`,
   `armada_gw_${"aB0_-".repeat(8)}`,
   `cmp_pat_${"a1".repeat(24)}`,
 ];

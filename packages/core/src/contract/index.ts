@@ -63,7 +63,7 @@ export {
 
 export { skillDefaultOperations } from "./skill-defaults.ts";
 export { skillpackOperations, skillpackVersionInputs } from "./skillpack.ts";
-export { tokenOperations } from "./tokens.ts";
+export { serviceTokenExpiry, tokenOperations } from "./tokens.ts";
 
 export interface Operation<Input extends z.ZodType, Output extends z.ZodType | undefined = undefined> {
   readonly name: string;

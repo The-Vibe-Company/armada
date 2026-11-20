@@ -9,7 +9,7 @@
     "/api/v1/token/list": {
       "post": {
         "operationId": "token_list",
-        "description": "List the caller's service tokens in their current scope, without token values or hashes.",
+        "description": "List the caller's service tokens with a personal login, without token values or hashes.",
         "security": [
           {
             "serviceToken": []
@@ -55,6 +55,18 @@
                               "string",
                               "null"
                             ]
+                          },
+                          "expiresAt": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "lastUsedAt": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
                           }
                         },
                         "required": [
@@ -62,7 +74,9 @@
                           "label",
                           "orgName",
                           "createdAt",
-                          "revokedAt"
+                          "revokedAt",
+                          "expiresAt",
+                          "lastUsedAt"
                         ],
                         "additionalProperties": false
                       }
@@ -136,27 +150,30 @@
                 "type": "object",
                 "properties": {
                   "org": {
-                    "description": "Organization UUID or name. Required for scoped callers unless orgName is supplied.",
-                    "type": [
-                      "string",
-                      "null"
-                    ]
-                  },
-                  "orgName": {
-                    "description": "Organization name or UUID. If both selectors are supplied, they must match.",
-                    "type": [
-                      "string",
-                      "null"
-                    ]
+                    "description": "Organization UUID or name.",
+                    "type": "string",
+                    "minLength": 1
                   },
                   "label": {
-                    "description": "Defaults to default when missing, null, or empty. A supplied label is trimmed and must then contain 1–80 characters and no ASCII control characters.",
-                    "type": [
-                      "string",
-                      "null"
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 80
+                  },
+                  "expires": {
+                    "default": "30d",
+                    "type": "string",
+                    "enum": [
+                      "30d",
+                      "90d",
+                      "1y",
+                      "never"
                     ]
                   }
-                }
+                },
+                "required": [
+                  "label"
+                ],
+                "additionalProperties": false
               }
             }
           }
@@ -188,6 +205,12 @@
                     "orgName": {
                       "type": "string"
                     },
+                    "expiresAt": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
                     "token": {
                       "type": "string"
                     }
@@ -196,6 +219,7 @@
                     "id",
                     "label",
                     "orgName",
+                    "expiresAt",
                     "token"
                   ],
                   "additionalProperties": false
@@ -209,6 +233,130 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Failure"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Temporarily unavailable: a structured failure, or the bare refusal sent before dispatch while the server drains. Honor Retry-After when present.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/Failure"
+                    },
+                    {
+                      "$ref": "#/components/schemas/DrainRefusal"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Administrative API failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Failure"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/token/whoami": {
+      "post": {
+        "operationId": "token_whoami",
+        "description": "Identify the current personal login or API key.",
+        "security": [
+          {
+            "serviceToken": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "$schema": "http://json-schema.org/draft-07/schema#",
+                  "type": "string",
+                  "const": "no-store"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$schema": "http://json-schema.org/draft-07/schema#",
+                  "oneOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "userId": {
+                          "type": "string"
+                        },
+                        "auth": {
+                          "type": "string",
+                          "const": "login"
+                        }
+                      },
+                      "required": [
+                        "userId",
+                        "auth"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "userId": {
+                          "type": "string"
+                        },
+                        "auth": {
+                          "type": "string",
+                          "const": "key"
+                        },
+                        "key": {
+                          "type": "object",
+                          "properties": {
+                            "name": {
+                              "type": "string"
+                            },
+                            "expiresAt": {
+                              "type": [
+                                "string",
+                                "null"
+                              ]
+                            }
+                          },
+                          "required": [
+                            "name",
+                            "expiresAt"
+                          ],
+                          "additionalProperties": false
+                        }
+                      },
+                      "required": [
+                        "userId",
+                        "auth",
+                        "key"
+                      ],
+                      "additionalProperties": false
+                    }
+                  ]
                 }
               }
             }

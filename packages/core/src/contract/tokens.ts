@@ -7,10 +7,13 @@ const tokenSummary = z.strictObject({
   orgName: z.string(),
   createdAt: z.string(),
   revokedAt: z.string().nullable(),
+  expiresAt: z.string().nullable(),
+  lastUsedAt: z.string().nullable(),
 });
 
 const noStore = { "Cache-Control": z.literal("no-store") };
-const optionalText = (field: string) => z.string({ error: `${field} must be text.` }).nullish();
+export const serviceTokenExpiry = z.enum(["30d", "90d", "1y", "never"]);
+const keyIdentity = z.strictObject({ name: z.string(), expiresAt: z.string().nullable() });
 
 export const tokenOperations = {
   listServiceTokens: {
@@ -19,11 +22,11 @@ export const tokenOperations = {
     audience: "admin",
     readOnly: true,
     destructive: false,
-    description: "List the caller's service tokens in their current scope, without token values or hashes.",
+    description: "List the caller's service tokens with a personal login, without token values or hashes.",
     input: { body: z.undefined() },
     output: z.strictObject({ tokens: z.array(tokenSummary) }),
     successHeaders: noStore,
-    errors: ["unauthorized", "dependency_unavailable"],
+    errors: ["unauthorized", "forbidden", "dependency_unavailable"],
   },
   createServiceToken: {
     name: "createServiceToken",
@@ -34,21 +37,30 @@ export const tokenOperations = {
     description:
       "Create a service token for an organization in the caller's scope. The token value is returned only once.",
     input: {
-      body: z.object({
-        org: optionalText("org").describe(
-          "Organization UUID or name. Required for scoped callers unless orgName is supplied.",
-        ),
-        orgName: optionalText("orgName").describe(
-          "Organization name or UUID. If both selectors are supplied, they must match.",
-        ),
-        label: optionalText("label").describe(
-          "Defaults to default when missing, null, or empty. A supplied label is trimmed and must then contain 1–80 characters and no ASCII control characters.",
-        ),
+      body: z.strictObject({
+        org: z.string().trim().min(1).optional().describe("Organization UUID or name."),
+        label: z.string().trim().min(1).max(80),
+        expires: serviceTokenExpiry.default("30d"),
       }),
     },
-    output: tokenSummary.pick({ id: true, label: true, orgName: true }).extend({ token: z.string() }),
+    output: tokenSummary.pick({ id: true, label: true, orgName: true, expiresAt: true }).extend({ token: z.string() }),
     successHeaders: noStore,
     errors: ["invalid", "unauthorized", "forbidden", "dependency_unavailable"],
+  },
+  whoami: {
+    name: "whoami",
+    route: { method: "POST", path: "/api/v1/token/whoami" },
+    audience: "admin",
+    readOnly: true,
+    destructive: false,
+    description: "Identify the current personal login or API key.",
+    input: { body: z.undefined() },
+    output: z.discriminatedUnion("auth", [
+      z.strictObject({ userId: z.string(), auth: z.literal("login") }),
+      z.strictObject({ userId: z.string(), auth: z.literal("key"), key: keyIdentity }),
+    ]),
+    successHeaders: noStore,
+    errors: ["unauthorized", "forbidden", "dependency_unavailable"],
   },
   revokeServiceToken: {
     name: "revokeServiceToken",

@@ -31,6 +31,7 @@ import stop from "./stop.ts";
 import template from "./template.ts";
 import token from "./token.ts";
 import wait from "./wait.ts";
+import whoami from "./whoami.ts";
 
 export const commands: readonly Command[] = [
   launch,
@@ -54,6 +55,7 @@ export const commands: readonly Command[] = [
   login,
   logout,
   token,
+  whoami,
   account,
   api,
   org,

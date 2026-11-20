@@ -1,73 +1,87 @@
 import { AuthError } from "@armada/auth";
-import { tokenCreate, tokenList, tokenRevoke } from "../auth-commands.ts";
+import { serviceTokenExpiry, tokenOperations } from "@armada/core/contract";
+import { createArmadaApiClient } from "../armada-api.ts";
 import { parseAuth, rejectUnknown } from "./auth-args.ts";
 import type { Command } from "./command.ts";
 
+const createUsage = "armada token create --name <name> [--org <org>] [--expires 30d|90d|1y|never] [--json]";
+const listUsage = "armada token ls [--json]";
+const revokeUsage = "armada token revoke <id> [--json]";
+
 export default {
   name: "token",
-  summary: "Manage service tokens",
-  usage: {
-    session: `  armada token create [--org <name>] [--label <label>]
-  armada token list
-  armada token revoke <id>`,
-  },
-  help: `Usage: armada token <command> [arguments]
-Manage Armada service tokens for authenticated scripts, not model/provider keys.
-Use leaf --help/-h for exact flags and server authorization requirements.
-  create  Create a token; stdout contains the secret even with --json.
-  list    List metadata, IDs and revocation state, never secret values.
-  revoke  Revoke using the token ID from list, not the secret value.
-Store new tokens securely when printed; Armada stores only their hashes.
-Never commit tokens or send creation output to public logs.
-Supply ARMADA_TOKEN through a secure environment, never command arguments.
-Help does not create, list or revoke tokens.
-Example: armada token list --json
-Example: armada token create --help
+  summary: "Manage API keys",
+  usage: { session: `  ${createUsage}\n  ${listUsage}\n  ${revokeUsage}` },
+  help: `Usage: armada token <create|ls|revoke>
+Manage API keys with a personal login. Use a subcommand's --help for details.
 `,
   subcommandHelp: {
-    "token create": `Usage: armada token create [--org <name>] [--label <label>] [--json]
-Create a service token with authenticated access and server authorization.
-An explicit --org overrides a saved organization selection.
-Warning: stdout contains the new secret, including with --json. Store it securely now;
-Armada stores only its hash. Never commit it or send output to public logs.
-Supply the token to scripts using ARMADA_TOKEN through a secure environment, not arguments.
-Example: armada token create --org my-team --label automation
+    "token create": `Usage: ${createUsage}
+Create an API key with a personal login. Expiry defaults to 30 days.
+Stdout contains the key once, including with --json. Store it securely.
 `,
-    "token list": `Usage: armada token list [--json]
-List service-token metadata with authenticated access and server authorization.
-Output includes IDs and revocation state, not token values. Use an ID with token revoke.
-Example: armada token list --json
+    "token ls": `Usage: ${listUsage}
+List API key metadata. Use the key ID to revoke it.
 `,
-    "token revoke": `Usage: armada token revoke <id> [--json]
-Revoke a service token with authenticated access and server authorization.
-Use its ID from armada token list --json, never the secret token value.
-Example: armada token revoke TOKEN_UUID
+    "token revoke": `Usage: ${revokeUsage}
+Revoke an API key by its ID from armada token ls.
 `,
   },
   helpWhenBare: true,
   useSelectedOrg: (argv) => argv[0] === "create",
   async run(argv, { auth }) {
-    const parsed = parseAuth(argv);
-    const sub = parsed.position[0];
-    const extra = parsed.position[1];
+    const {
+      position: [sub, id, extra],
+      flags,
+    } = parseAuth(argv);
+    if (auth.env.ARMADA_TOKEN)
+      throw new AuthError("Unset ARMADA_TOKEN and use a personal login to manage API keys.", "usage");
+    const json = flags.has("json");
     switch (sub) {
-      case "create":
-        rejectUnknown(parsed.flags, ["org", "label", "json"]);
-        if (extra !== undefined) throw new AuthError("Run armada token create --org <name> --label <label>.", "usage");
-        await tokenCreate(auth, parsed.flags.get("org"), parsed.flags.get("label"), parsed.flags.has("json"));
+      case "create": {
+        rejectUnknown(flags, ["name", "org", "expires", "json"]);
+        const label = flags.get("name")?.trim();
+        if (!label || id !== undefined) throw new AuthError(`Usage: ${createUsage}`, "usage");
+        const expiry = serviceTokenExpiry.safeParse(flags.get("expires") ?? "30d");
+        if (!expiry.success) throw new AuthError("Use --expires 30d, 90d, 1y, or never.", "usage");
+        const api = await createArmadaApiClient(auth);
+        const created = tokenOperations.createServiceToken.output.parse(
+          await api.token("create", {
+            org: flags.get("org"),
+            label,
+            expires: expiry.data,
+          }),
+        );
+        auth.out(json ? `${JSON.stringify(created)}\n` : `${created.token}\n`);
         return 0;
-      case "list":
-        rejectUnknown(parsed.flags, ["json"]);
-        if (extra !== undefined) throw new AuthError("Run armada token list.", "usage");
-        await tokenList(auth, parsed.flags.has("json"));
+      }
+      case "ls": {
+        rejectUnknown(flags, ["json"]);
+        if (id !== undefined) throw new AuthError(`Usage: ${listUsage}`, "usage");
+        const api = await createArmadaApiClient(auth);
+        const result = tokenOperations.listServiceTokens.output.parse(await api.token("list"));
+        if (json) auth.out(`${JSON.stringify(result)}\n`);
+        else if (!result.tokens.length) auth.out("No API keys.\n");
+        else {
+          auth.out("ID  NAME  ORGANIZATION  CREATED  LAST USED  EXPIRES  REVOKED\n");
+          for (const key of result.tokens) {
+            auth.out(
+              `${key.id}  ${key.label}  ${key.orgName}  ${key.createdAt}  ${key.lastUsedAt ?? "Never"}  ${key.expiresAt ?? "Never"}  ${key.revokedAt ?? "No"}\n`,
+            );
+          }
+        }
         return 0;
-      case "revoke":
-        rejectUnknown(parsed.flags, ["json"]);
-        if (!extra || parsed.position.length > 2) throw new AuthError("Run armada token revoke <id>.", "usage");
-        await tokenRevoke(auth, extra, parsed.flags.has("json"));
+      }
+      case "revoke": {
+        rejectUnknown(flags, ["json"]);
+        if (!id || extra !== undefined) throw new AuthError(`Usage: ${revokeUsage}`, "usage");
+        const api = await createArmadaApiClient(auth);
+        await api.token("revoke", { id });
+        auth.out(json ? '{"ok":true}\n' : `Revoked ${id}.\n`);
         return 0;
+      }
       default:
-        throw new AuthError("Run armada token create, list, or revoke.", "usage");
+        throw new AuthError("Run armada token create, ls, or revoke.", "usage");
     }
   },
 } satisfies Command;
