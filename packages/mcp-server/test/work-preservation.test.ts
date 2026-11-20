@@ -4,13 +4,12 @@ import { decryptSecret, encryptSecret, ProviderError } from "@armada/core/server
 import { createSqlData } from "../src/data.ts";
 import { createRuntimeProvider, type RuntimeWorkProvider } from "../src/runtime-provider.ts";
 import { preserveBeforeStop, readWorkRecovery } from "../src/work-preservation.ts";
+import { closeableFixture } from "./closeable.fixture.ts";
 import { encryptedRecoveryExec } from "./fixtures/recovery-exec.ts";
 import { migratedDatabase } from "./migrated-database.ts";
 import { bunLikeSql, ENCRYPTION_KEY, fakeBoat, seedDatabase } from "./support.ts";
 
-let fixture: (Awaited<ReturnType<typeof seedDatabase>> & { modalGoldenId: string }) | undefined;
-
-beforeAll(async () => {
+const fixture = closeableFixture(async () => {
   const db = await migratedDatabase();
   try {
     await db.exec("set search_path=public");
@@ -25,23 +24,16 @@ beforeAll(async () => {
       )
     ).rows[0];
     if (!modalGolden) throw new Error("Missing Modal golden fixture");
-    fixture = { ...seeded, modalGoldenId: modalGolden.id };
+    return { ...seeded, modalGoldenId: modalGolden.id, close: () => db.close() };
   } catch (error) {
     await db.close();
     throw error;
   }
 });
 
-afterAll(async () => {
-  const db = fixture?.db;
-  fixture = undefined;
-  await db?.close();
-});
-
-function sharedDatabase() {
-  if (!fixture) throw new Error("Work preservation fixture is not open");
-  return fixture;
-}
+beforeAll(fixture.setup);
+afterAll(fixture.close);
+const sharedDatabase = fixture.get;
 
 // Primary owner for encrypted persistence and recovery authorization. Collector behavior
 // (including actual Git reconstruction) belongs to core's work-preservation test.
