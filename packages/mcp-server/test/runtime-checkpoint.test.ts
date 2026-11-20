@@ -180,7 +180,7 @@ test.each(["acknowledged", "refused", "reply lost", "epoch replaced", "cancelled
   },
 );
 
-test.each(["reservation", "command", "acknowledgement"] as const)(
+test.each(["reservation", "command", "acknowledgement", "revocation", "scrub"] as const)(
   "queued scoped access rolls back %s on claim loss and can be restored by a successor",
   async (point) => {
     const { db, people, sql, account, row, enrolments, active } = await enrolledCheckpointTarget();
@@ -191,6 +191,7 @@ test.each(["reservation", "command", "acknowledgement"] as const)(
     );
     const commands = createRuntimeCommands(enrolments, ENCRYPTION_KEY);
     let installedToken = "";
+    let refuseInstall = point === "revocation" || point === "scrub";
     const access = createSandboxArmadaAccess({
       sql,
       encryptionKey: ENCRYPTION_KEY,
@@ -202,10 +203,10 @@ test.each(["reservation", "command", "acknowledgement"] as const)(
           await commands.enqueue(owner, command, options?.expectedEpoch, options?.assertClaim);
           installedToken = command.token;
           return {
-            status: 200,
+            status: refuseInstall ? 503 : 200,
             epoch: active.epoch,
             requestId: command.requestId,
-            body: { version: 1, requestId: command.requestId, result: { acknowledged: true } },
+            body: { version: 1, requestId: command.requestId, result: { acknowledged: !refuseInstall } },
           };
         },
       },
@@ -230,7 +231,8 @@ test.each(["reservation", "command", "acknowledgement"] as const)(
         lost ||= (await tx.query(write, [row.id])).rows.length > 0;
         if (lost) throw Error("Test dispatch claim expired");
       }),
-    ).rejects.toThrow("Test dispatch claim expired");
+    ).rejects.toThrow(point === "scrub" ? "denied" : "Test dispatch claim expired");
+    expect(lost).toBe(true);
     expect((await db.query(write, [row.id])).rows).toHaveLength(0);
 
     const authority = new DelegatedAuthority(sql, async () => {});
@@ -247,6 +249,7 @@ test.each(["reservation", "command", "acknowledgement"] as const)(
         async (_tx, principal) => principal.ownerId,
       );
     if (point === "acknowledgement") await expect(admit()).rejects.toThrow("denied");
+    refuseInstall = false;
     await restore(async () => {});
     await expect(admit()).resolves.toBe(people.owner);
   },
