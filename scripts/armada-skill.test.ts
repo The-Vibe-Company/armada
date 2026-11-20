@@ -82,7 +82,7 @@ test("published Armada skill commands and flags match the live CLI usage contrac
   const contract: Command[] = [];
   for (const prefix of [
     [],
-    ...["add", "import", "login", "ls"].map((action) => ["account", action]),
+    ...["ls", "add", "login", "import", "default", "limits", "rm", "test"].map((action) => ["account", action]),
     ["template"],
     ...["create", "list", "get", "publish", "delete", "launch"].map((action) => ["template", action]),
     ["routine"],
