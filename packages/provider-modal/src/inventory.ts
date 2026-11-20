@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import type { ModalBinding, ProviderInventoryMachine } from "@armada/core";
+import type { Machine } from "@armada/core/server";
 import type { App, ModalClient } from "modal";
 import { abortable, boundModalApp } from "./client.ts";
 import { modalError, refusal } from "./errors.ts";
@@ -12,19 +13,19 @@ export function modalDeploymentId(environment: string, publicUrl: string) {
     .digest("hex");
 }
 
-export function createModalInventory(
-  client: ModalClient,
+export function createModalMachineInventory(
+  client: Pick<ModalClient, "apps" | "cpClient">,
   appName: string,
   binding: ModalBinding,
-  deploymentId: string,
+  deploymentId: string | null,
 ) {
   return {
     listInventory: (signal?: AbortSignal) =>
       listModalInventory(client, () => boundModalApp(client, appName, binding), deploymentId, signal),
-  };
+  } satisfies Required<Pick<Machine, "listInventory">>;
 }
 
-export async function* listModalInventory(
+async function* listModalInventory(
   client: Pick<ModalClient, "cpClient">,
   bound: () => Promise<App>,
   deploymentId: string | null,

@@ -2,7 +2,8 @@ import { expect, test } from "bun:test";
 import { ProviderError, type ProviderInventoryMachine } from "@armada/core";
 import { type ModalClient, NotFoundError } from "modal";
 import {
-  createModalInventory,
+  createModalMachine,
+  createModalMachineInventory,
   createModalProvider,
   type Machine,
   type ModalProviderOptions,
@@ -45,7 +46,7 @@ function client(sdk: Partial<ModalClient>) {
 }
 
 function inventory(sandboxListV2: List) {
-  return createModalInventory(
+  return createModalMachineInventory(
     client({ cpClient: { sandboxListV2 } as ModalClient["cpClient"] }),
     "bound",
     binding,
@@ -121,6 +122,35 @@ test("Modal inventory paginates the bound App and yields only exact deployment m
     { machineId: "sb_without_generation", sandboxId: "modal_orphan", deploymentId, createdAt: new Date(40_000) },
   ]);
   expect(pages.size).toBe(0);
+});
+
+test("Modal Machine inventory preserves incomplete and raw incarnation evidence", async () => {
+  const sandboxListV2: List = async ({ beforeTimestamp }) => ({
+    sandboxes:
+      beforeTimestamp === undefined
+        ? [
+            listed("sb_missing", 50, { armada_deployment: deploymentId, armada_sandbox: "modal_orphan" }),
+            listed("sb_raw", 49, { ...tags, armada_generation: "03" }),
+          ]
+        : [],
+  });
+  const unexpected = async () => {
+    throw new Error("Inventory must not use the lifecycle journal or dispatch mutations");
+  };
+  const machine = createModalMachine({
+    client: client({ cpClient: { sandboxListV2 } as ModalClient["cpClient"] }),
+    appName: "bound",
+    binding,
+    deploymentId,
+    journal: { read: unexpected, compareAndSet: unexpected },
+    resolveRuntimeTicket: unexpected,
+    prepareCheckpoint: unexpected,
+  });
+
+  expect(await Array.fromAsync(machine.listInventory())).toEqual([
+    { machineId: "sb_missing", sandboxId: "modal_orphan", deploymentId, createdAt: new Date(50_000) },
+    { machineId: "sb_raw", sandboxId: "modal_owned", generation: "03", deploymentId, createdAt: new Date(49_000) },
+  ]);
 });
 
 test("Modal inventory surfaces a later page failure as a retryable provider error", async () => {
