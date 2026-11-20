@@ -1519,9 +1519,10 @@ describe("tools", () => {
         const accepted = scenario === "accepted";
         expect(Boolean(result.isError)).toBe(!accepted);
         if (!accepted) expect(result.text).toContain("error code: outcome_unknown");
-        const { rows: receipts } = await db.query("select prompt_id from native_webhook_prompts where sandbox_id=$1", [
-          id,
-        ]);
+        const { rows: receipts } = await db.query<{ prompt_id: string }>(
+          "select prompt_id from native_webhook_prompts where sandbox_id=$1",
+          [id],
+        );
         expect(receipts).toEqual([{ prompt_id: expect.any(String) }]);
         const { rows: sandboxes } = await db.query(
           "select status, task_prompt_id, activity_lease_id from sandboxes where id=$1",
