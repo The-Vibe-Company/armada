@@ -62,6 +62,18 @@ function identity(id: MachineIncarnation, machineId: string) {
   return { sandboxId: id.sandboxId, generation: id.generation, machineId } satisfies MachineIdentity;
 }
 
+export async function observeModalCompute(
+  machine: MachineIdentity,
+  sandbox: Pick<Sandbox, "sandboxId" | "poll">,
+  signal?: AbortSignal,
+) {
+  signal?.throwIfAborted();
+  if (sandbox.sandboxId !== machine.machineId) throw conflict("Modal observation returned a different machine.");
+  const phase = (await sandbox.poll()) === null ? "running" : "stopped";
+  signal?.throwIfAborted();
+  return { kind: "present", machine, phase } as const;
+}
+
 async function optional<T>(operation: () => Promise<T>) {
   try {
     return await operation();
@@ -263,18 +275,16 @@ export function createModalMachine(options: ModalMachineOptions) {
           : await named(request);
         if (!sb) return { kind: entry || request.machineId ? "unknown" : "absent" };
         if (request.machineId && request.machineId !== sb.sandboxId) return { kind: "unknown" };
-        const machine = identity(request, sb.sandboxId);
-        const running = (await sb.poll()) === null;
-        if (!running && entry?.phase === "stopped") {
+        const machine = identity(request, entry?.machineId ?? sb.sandboxId);
+        const observation = await observeModalCompute(machine, sb, request.signal);
+        if (observation.phase === "stopped" && entry?.phase === "stopped") {
           const recovery = entry.recoveryImageId ? retained(request, entry.recoveryImageId) : null;
-          return { kind: "present", machine, phase: "stopped", receipt: { operation: "stop", retained: recovery } };
+          return { ...observation, receipt: { operation: "stop", retained: recovery } };
         }
         const stopping = entry?.phase === "stopping" || entry?.phase === "deleting";
-        const phase = running ? (stopping ? "stopping" : "running") : "stopped";
         return {
-          kind: "present",
-          machine,
-          phase,
+          ...observation,
+          phase: stopping && observation.phase === "running" ? "stopping" : observation.phase,
           ...(entry && { receipt: { operation: entry.operation, machine } }),
         };
       } catch {
