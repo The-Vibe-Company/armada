@@ -184,8 +184,8 @@ export function createSqlModalStore(sql: Sql, scope: Scope): ModalStore {
         if (!image || image.deleted) return;
         if (image.imageId) {
           const references = await tx.query(
-            `select 1 from public.modal_machines where record->>'commonRuntime'='true'
-             and record->>'phase' is distinct from 'deleted' and record->'sourceImage' @> $1::jsonb limit 1`,
+            `select 1 from public.modal_machines
+             where record->>'phase' is distinct from 'deleted' and record->'sourceImage' @> $1::jsonb limit 1`,
             [JSON.stringify({ scopeKey: key, name, imageId: image.imageId })],
           );
           if (references.rows.length)
@@ -193,7 +193,7 @@ export function createSqlModalStore(sql: Sql, scope: Scope): ModalStore {
               provider: "modal",
               code: "conflict",
               providerCode: "snapshot_source_busy",
-              message: "A runtime sandbox references this snapshot. Delete that sandbox before retiring the snapshot.",
+              message: "A sandbox references this snapshot. Delete that sandbox before retiring the snapshot.",
               retryable: true,
             });
         }

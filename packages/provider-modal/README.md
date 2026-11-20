@@ -361,12 +361,14 @@ reports successful stop. TTL >24h is rejected, not clamped. Exited machines with
 a current verified checkpoint report failure, not fictional disk recovery.
 
 Goldens are immutable/provider-bound, use ttlMs:null and contain no managed model
-credentials/sessions/bootstrap/host keys. Named snapshot deletion records a durable
-tombstone first; source leases protect concurrent private/org fork reservations.
-Images remain while any non-deleted fork references their lineage, including after
-restore changes its current working Image. Last-fork deletion performs GC across
-those references, with idempotent Image deletion/tombstone purge. `collectRetiredSnapshot(name)`
-retries collection for a specific retired snapshot. Server events remain readable after deletion.
+credentials/sessions/bootstrap/host keys. Named snapshot deletion refuses while a
+non-deleted fork references the exact saved image, including across private and
+organization scopes. Enrolled admission pins the image in a short reservation
+transaction. Native admission still holds the source lease through boot.
+Retirement records a durable tombstone before physical collection. Collection
+preserves referenced artifacts, including historical tombstones and images shared
+by multiple handles. `collectRetiredSnapshot(name)` retries collection for a
+specific retired snapshot. Server events remain readable after deletion.
 Control tables are server-only/RLS-enabled. Secure golden org-admin authorization
 remains upstream, in addition to live membership/owner/binding checks here.
 

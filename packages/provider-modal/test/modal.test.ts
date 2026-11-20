@@ -1082,6 +1082,13 @@ async function savedGolden(f: ReturnType<typeof fixture>) {
   return { builder, name };
 }
 
+async function seedHistoricalSnapshotTombstone(name: string) {
+  await getDb().query(
+    `update public.modal_images set record=jsonb_set(record,'{deleted}','true') where scope=$1 and name=$2`,
+    [scopeKey(scope), name],
+  );
+}
+
 test("overlapping forks refuse source contention definitively before allocating", async () => {
   const f = fixture();
   const { name } = await savedGolden(f);
@@ -1156,8 +1163,11 @@ test("enrolled Modal fork refuses a snapshot retired before reservation", async 
   expect(fork.creates).toBe(0);
 });
 
-test("snapshot retirement refuses a live enrolled Modal fork reference", async () => {
-  const f = fixture(scope, fixtureSql, undefined, undefined, true);
+test.each([
+  ["native", undefined],
+  ["enrolled", true],
+] as const)("snapshot retirement refuses a live %s Modal fork reference", async (_path, commonRuntime) => {
+  const f = fixture(scope, fixtureSql, undefined, undefined, commonRuntime);
   const { name } = await savedGolden(f);
   const child = await f.provider.fork({ from: name });
   const error = await f.provider.deleteSnapshot(name).catch((failure: unknown) => failure);
@@ -1865,11 +1875,11 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     expect(f.creates).toBe(creates);
     expect((await get(row.id)).phase).toBe("stopped");
   });
-  test("snapshot deletion leaves already reserved forks usable", async () => {
+  test("historically retired snapshots leave existing forks usable", async () => {
     const f = fixture();
     const { builder, name } = await savedGolden(f);
     const fork = await f.provider.fork({ from: name });
-    await f.provider.deleteSnapshot(name);
+    await seedHistoricalSnapshotTombstone(name);
     expect(f.log).not.toContain("delete-image");
     await expect(f.provider.getSnapshot(name)).rejects.toMatchObject({ code: "not_found" });
     expect((await f.provider.get(fork.id)).state).toBe("ready");
@@ -1884,7 +1894,7 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     const { builder, name } = await savedGolden(f);
     const first = await f.provider.fork({ from: name });
     const second = await f.provider.fork({ from: name });
-    await f.provider.deleteSnapshot(name);
+    await seedHistoricalSnapshotTombstone(name);
     await f.provider.delete({ sandboxId: first.id });
     const lease = f.store.lease.bind(f.store);
     const leased: string[] = [];
@@ -1904,7 +1914,7 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     const f = fixture();
     const { builder, name } = await savedGolden(f);
     const fork = await f.provider.fork({ from: name });
-    await f.provider.deleteSnapshot(name);
+    await seedHistoricalSnapshotTombstone(name);
     await f.provider.stop({ sandboxId: fork.id });
     expect(await f.store.tombstoneSources()).toContain(builder.id);
     const terminations = f.log.filter((x) => x === "terminate").length;
@@ -1936,7 +1946,7 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     });
     await f.provider.deleteSnapshot(broken);
     const fork = await f.provider.fork({ from: first });
-    await f.provider.deleteSnapshot(first);
+    await seedHistoricalSnapshotTombstone(first);
     await f.provider.delete({ sandboxId: fork.id });
     expect(await f.store.tombstoneSources()).toEqual(expect.arrayContaining([a.id, b.id]));
     expect(await f.provider.collectRetiredSnapshot(first)).toBe("collected");
@@ -1993,7 +2003,7 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     await f.provider.restoreGoldenMaster({ snapshotId: restore });
     await f.provider.snapshot({ sandboxId: builder.id, name: second });
     const fork = await f.provider.fork({ from: first });
-    await f.provider.deleteSnapshot(first);
+    await seedHistoricalSnapshotTombstone(first);
     await f.runDetached();
     const entered = Promise.withResolvers<void>();
     const release = Promise.withResolvers<void>();
@@ -2106,7 +2116,7 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     await f.provider.stop({ sandboxId: child.id });
     const recovery = (await f.store.get(child.id)).recoveryImageId;
     expect(recovery).toBeDefined();
-    await f.provider.deleteSnapshot(name);
+    await seedHistoricalSnapshotTombstone(name);
     expect(f.log).not.toContain("delete-image");
     await f.store.purgeImage(name, saved.sourceId, saved.imageId!);
     expect(await f.store.imageReferenced(saved.imageId!)).toBe(true);
@@ -2570,11 +2580,11 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
         servers: { personal: { type: "http", headers: { Authorization: "synthetic-personal-mcp" } } },
       },
     });
-    await f.provider.deleteSnapshot(snapshot);
+    await expect(f.provider.deleteSnapshot(snapshot)).rejects.toMatchObject({ providerCode: "snapshot_source_busy" });
     expect(f.log).not.toContain("delete-image");
     await provider.delete({ sandboxId: launched.id });
-    expect(f.log).not.toContain("delete-image");
     for (const work of detached.splice(0)) await work();
+    await f.provider.deleteSnapshot(snapshot);
     expect(f.log.filter((x) => x === "delete-image")).toHaveLength(1);
     close();
     const { resolveManagementCredentials: _resolver, ...operatorConfiguration } = configuration;
@@ -2689,7 +2699,7 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
       "synthetic-fallback-secret",
     );
     let calls = f.log.filter((x) => x === "delete-image").length;
-    await provider.deleteSnapshot(snapshot);
+    await seedHistoricalSnapshotTombstone(snapshot);
     expect(f.log.filter((x) => x === "delete-image")).toHaveLength(calls);
     await settleDetachedModalCollections();
     calls = f.log.filter((x) => x === "delete-image").length;
