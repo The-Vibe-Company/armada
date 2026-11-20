@@ -220,14 +220,22 @@ test.each([true, false])(
   },
 );
 
-test("offline existing host wait ends at 60 seconds without consuming a replacement token", async () => {
+test("offline named host points to its own daemon and service after the check-in wait", async () => {
   const m = machine();
+  const server = "https://production.example";
+  const instance = createHash("sha256").update(server).digest("hex");
+  const namedBinary = `${binary}@${instance}`;
   m.existing({ ...registered, connected: false });
-  const result = await m.capture();
+  m.files.set(namedBinary, { directory: false, file: true, symlink: false });
+  m.native.listInstances = async () => [`armada-docker-host@${instance}`];
+  m.native.readServer = async (path) => (path.includes("@") ? server : "https://armada.example");
+  const result = await m.capture(["host", "install", "--server", server]);
   expect(result.code).toBe(1);
   expect(result.elapsed).toBe(60_000);
   expect(result.inputReads).toBe(1);
   expect(result.err).toContain("registration preserved");
+  expect(result.err).toContain(`'${namedBinary}' status --instance ${instance}`);
+  expect(result.err).toContain(`journalctl --user -u armada-docker-host@${instance}.service`);
 });
 
 test.each([

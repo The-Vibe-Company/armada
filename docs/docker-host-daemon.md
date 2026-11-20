@@ -1283,7 +1283,7 @@ the policy delta, preserving their original stopped age.
 ### Disk visibility and launch floor
 
 Hosts report unprivileged available bytes on the Docker data filesystem at each
-check-in. `armada host ls` and the Machines → Docker hosts panel show that observation
+check-in. `armada host ls HOST` and the Machines → Docker hosts panel show that observation
 and the default **10 GB** floor (10,000,000,000 bytes). An unavailable observation
 is shown as unknown, never as zero or invented free space. Reports are as fresh
 as the host's last check-in, not a reservation or a guarantee of launch success.

@@ -1,8 +1,8 @@
 import { createHash, randomUUID } from "node:crypto";
 import { lstat, mkdir, readdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { dirname, join, parse } from "node:path";
-import { GoldenError } from "@armada/core";
+import { basename, dirname, join, parse } from "node:path";
+import { GoldenError, shellQuote } from "@armada/core";
 import { hostInstallClient } from "@armada/sdk/host-install";
 import { parseArgs, single } from "./args.ts";
 import type { Io } from "./run.ts";
@@ -133,11 +133,15 @@ const instanceArgs = (binary: string): string[] => {
   const match = /armada-docker-host@([a-f0-9]{64})(?:\.|$)/.exec(binary);
   return match ? ["--instance", match[1] as string] : [];
 };
+function statusCommand(binary: string): string {
+  return [shellQuote(binary), "status", ...instanceArgs(binary)].join(" ");
+}
+
 async function status(native: LocalHostIo, binary: string, timeoutMs = 30_000): Promise<Status> {
   const result = await native.execute(binary, ["status", ...instanceArgs(binary)], undefined, timeoutMs);
   if (result.code !== 0)
     return failed(
-      "Cannot read Docker host status; registration and the new token are preserved. Run armada-docker-host status to diagnose it.",
+      `Cannot read Docker host status. Registration and the new token are preserved. Run ${statusCommand(binary)} to diagnose it.`,
     );
   let value: unknown;
   try {
@@ -197,7 +201,7 @@ async function connected(native: LocalHostIo, binary: string, io: Io): Promise<n
     waited += delay;
   }
   io.err(
-    "Docker host is still offline; registration preserved. Check armada-docker-host status and journalctl --user -u armada-docker-host.service; do not repeat registration.\n",
+    `Docker host is still offline. Registration preserved. Check ${statusCommand(binary)} and journalctl --user -u ${basename(binary)}.service. Do not repeat registration.\n`,
   );
   return 1;
 }
@@ -278,7 +282,7 @@ export async function localHostCommand(argv: readonly string[], io: Io, native: 
     const legacyInstall = installations.find((i) => i.name === legacy);
     if (legacyInstall?.current.registered && !legacyInstall.server)
       return failed(
-        "The existing Docker host origin cannot be read; the new token was not consumed. Run armada-docker-host status to inspect the existing instance before retrying.",
+        `The existing Docker host origin cannot be read. The new token was not consumed. Run ${statusCommand(join(native.home, ".local/bin", legacy))} before retrying.`,
       );
     const name =
       matched?.name ??
@@ -303,7 +307,7 @@ export async function localHostCommand(argv: readonly string[], io: Io, native: 
           ).code !== 0
         )
           return failed(
-            `Could not upgrade this Docker host; registration and token preserved. Run the installed daemon status before retrying.`,
+            `Could not upgrade this Docker host; registration and token preserved. Run ${statusCommand(binary)} before retrying.`,
           );
       } finally {
         await native.remove(temporary);
@@ -378,7 +382,7 @@ export async function localHostCommand(argv: readonly string[], io: Io, native: 
         .code !== 0
     )
       return failed(
-        "Docker host installation did not complete. Run armada-docker-host status and inspect systemd/Docker access; do not blindly repeat registration.",
+        `Docker host installation did not complete. Run ${statusCommand(binary)} and inspect systemd/Docker access before retrying.`,
       );
     io.out("Waiting up to 60 seconds for the Docker host to connect…\n");
     return connected(native, binary, io);
@@ -392,7 +396,7 @@ export async function localHostCommand(argv: readonly string[], io: Io, native: 
       throw error;
     }
     return failed(
-      "Docker host command failed; private state and credentials were not printed. Check Docker/systemd access and armada-docker-host status before retrying registration.",
+      "Docker host command failed; private state and credentials were not printed. Check Docker/systemd access and the installed daemon before retrying registration.",
     );
   }
 }
