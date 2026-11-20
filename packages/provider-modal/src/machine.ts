@@ -311,7 +311,7 @@ esac`;
     sb,
     () => ["sh", "-c", lockAndExec, "sh", lock, "node", "-e", script],
     serverUrl,
-    ticket.enrolmentToken,
+    ticket,
     "Enrolled Modal bootstrap failed; reconcile the runtime binding.",
   );
 }

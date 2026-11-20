@@ -30,7 +30,7 @@ export async function dispatchRuntimeBootstrap(
   sandbox: Sandbox,
   command: () => string[],
   serverUrl: string,
-  enrolmentToken: string,
+  ticket: Pick<RuntimeTicket, "enrolmentToken">,
   failureMessage: string,
 ) {
   try {
@@ -42,7 +42,7 @@ export async function dispatchRuntimeBootstrap(
       stdout: "ignore",
       stderr: "ignore",
     });
-    await child.stdin.writeText(JSON.stringify({ serverUrl, enrolmentToken }));
+    await child.stdin.writeText(JSON.stringify({ serverUrl, enrolmentToken: ticket.enrolmentToken }));
     await child.stdin.close();
     if ((await child.wait()) === 0) return;
   } catch {

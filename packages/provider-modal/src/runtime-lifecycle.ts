@@ -61,7 +61,7 @@ export function createRuntimeLifecycle({
             runtimeBootstrapScript(serverUrl, input.artifact, input.cacheDir, SHARED_ARTIFACT_CACHE_PATH),
           ],
           serverUrl,
-          input.enrolmentToken,
+          input,
           "Enrolled Modal bootstrap failed; spawn outcome must be reconciled.",
         );
       });
