@@ -136,6 +136,14 @@ function normalizeTool(tool: unknown): ToolCall[] {
   return [call];
 }
 
+export function conversationReadDirection(
+  sandbox: { provider: string | null; runtime_transport: string | null; boat_runtime: boolean },
+  source: "history" | "follow",
+) {
+  const retained = sandbox.provider === "docker" || sandbox.runtime_transport === "dialout" || sandbox.boat_runtime;
+  return source === "history" && retained ? "backward" : "forward";
+}
+
 /** One upstream page after `initialCursor`; the caller follows historical continuations. */
 export async function readLogPages(
   logs: (id: string, cursor?: string | null) => Promise<unknown>,

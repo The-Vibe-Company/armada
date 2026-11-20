@@ -39,7 +39,6 @@
     "apps/dashboard/src/app/actions/skillpack-key.ts": 2,
     "apps/dashboard/src/app/actions/templates.ts": 11,
     "apps/dashboard/src/app/actions/variables.ts": 5,
-    "apps/dashboard/src/app/api/sandboxes/[id]/events/route.ts": 3,
     "apps/dashboard/src/app/api/v1/[...path]/control-proxy.ts": 9,
     "apps/dashboard/src/app/auth/callback/route.ts": 1,
     "apps/dashboard/src/app/auth/mcp/callback/route.ts": 3,
