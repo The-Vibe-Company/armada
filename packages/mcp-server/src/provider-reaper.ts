@@ -1,4 +1,4 @@
-import type { Provider, ProviderInventoryMachine, SandboxPlacementProviderId, SandboxStatus } from "@armada/core";
+import type { ProviderInventoryMachine, SandboxPlacementProviderId, SandboxStatus } from "@armada/core";
 import type { ServerLifecycleLane } from "./server-workers.ts";
 
 const UNKNOWN_GRACE_MS = 15 * 60_000;
@@ -22,7 +22,7 @@ export interface ProviderReaperSource {
   deploymentId: string;
   /** The source bounds each listing page, ownership lookup and delete call. The full sweep
    * may take longer than the ordinary worker tick and is cancelled on shutdown. */
-  inventory: Required<Pick<Provider, "listInventory">>;
+  inventory: { listInventory(signal?: AbortSignal): AsyncIterable<ProviderInventoryMachine> };
   /** Check authoritative ownership by tagged sandbox and physical identity in this source.
    * Ambiguous ownership is unresolved. Errors must never be translated to absence. */
   lookupOwnership(machine: ProviderInventoryMachine, signal: AbortSignal): Promise<Ownership>;
