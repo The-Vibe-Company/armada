@@ -266,11 +266,10 @@ export async function runtimeFixture(
   });
   const first = idle ? undefined : await agent.prompt({ sandboxId: providerSandboxId, harness, text: "initial" });
   if (first)
-    await createSqlData(sql)(caller).sandboxes.update(row.id, {
-      status: "running",
-      taskPromptId: first.promptId,
-      conversationIds: [first.conversationId],
-    });
+    await db.query(
+      "update sandboxes set status='running',task_prompt_id=$2,conversation_ids=array[$3]::text[] where id=$1",
+      [row.id, first.promptId, first.conversationId],
+    );
   await runner.flushOutbox();
   const send = createRuntimeFollowup(sql, ENCRYPTION_KEY, bridge);
   const context: ToolContext = {

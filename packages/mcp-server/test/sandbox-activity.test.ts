@@ -78,11 +78,10 @@ test("send completion fences an old stopped SDK observation captured after admis
       model: "claude-sonnet-5",
       reasoningEffort: "high",
     });
-    await scoped.sandboxes.update(id, {
-      status: "stopped",
-      statusReason: "idle_paused",
-      stoppedAt: new Date().toISOString(),
-    });
+    await server.db.query(
+      "update sandboxes set status='stopped',status_reason='idle_paused',stopped_at=now() where id=$1",
+      [id],
+    );
     const token = await server.token(server.people.owner);
     send = handleControlRequest(
       new Request(PUBLIC_URL + "/api/v1/sandbox/send", {

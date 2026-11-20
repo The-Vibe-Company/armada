@@ -789,15 +789,25 @@ test("replicas lease one observation and resume admission fences old writes whil
     // The gap alone would accept a renewal backdated as a whole; bound the
     // deadline with database clock samples taken around the renewal.
     expectDeadlineWithin(renewed.expires_ms, beforeRenewal, afterRenewal, 90);
-    await expect(data.sandboxes.update(id, { status: "stopped", expectedGeneration: 1 })).rejects.toThrow();
+    await expect(
+      data.sandboxes.update(id, {
+        status: "running",
+        stoppedAt: null,
+        finishActivity: true,
+        expectedGeneration: 2,
+        activityToken,
+      }),
+    ).rejects.toThrow("Sandbox status changes require a lifecycle transition.");
+    await expect(
+      data.sandboxes.update(id, { finishActivity: true, activityToken, expectedGeneration: 1 }),
+    ).rejects.toMatchObject({ code: "sandbox_not_ready" });
     await data.sandboxes.update(id, {
-      status: "running",
-      stoppedAt: null,
       finishActivity: true,
       activityToken,
       expectedGeneration: 2,
     });
     const row = await data.sandboxes.get(id);
+    expect(row?.status).toBe("stopped");
     expect(row?.lifecycleGeneration).toBe(3);
     expect(row?.effectiveTtlSeconds).toBe(90);
     expect(row?.requestedTtlSeconds).toBe(90);
@@ -811,7 +821,6 @@ test("replicas lease one observation and resume admission fences old writes whil
       ).rows,
     ).toEqual([
       { from_status: "running", to_status: "stopped", actor: "reconciler", code: "provider_stopped", generation: 1 },
-      { from_status: "stopped", to_status: "running", actor: "api", code: "sandbox_running", generation: 3 },
     ]);
   } finally {
     gate.resolve();

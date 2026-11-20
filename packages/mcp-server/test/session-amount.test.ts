@@ -186,11 +186,10 @@ test.each([
       expect((await store.get(launched.sandbox.id))?.usage?.cost).toEqual(cost);
       expect((await store.list({ limit: 10 })).rows[0]?.usage?.cost).toEqual(cost);
       // A closed stored read may not need a native provider, fresh credentials or current prices.
-      await store.update(launched.sandbox.id, {
-        status: "failed",
-        statusReason: "closed fixture",
-        stoppedAt: new Date().toISOString(),
-      });
+      await db.query(
+        "update sandboxes set status='failed',status_reason='closed fixture',stopped_at=now() where id=$1",
+        [launched.sandbox.id],
+      );
       const token = await activeServer.token(p.owner);
       const response = await activeServer.handler(
         new Request(`${PUBLIC_URL}/api/v1/sandbox/status`, {

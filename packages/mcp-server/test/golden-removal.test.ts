@@ -49,14 +49,14 @@ describe("golden removal authority", () => {
       reasoningEffort: "medium",
       repositoryDir: "web",
     });
-    await member.sandboxes.update(child.id, { status: "stopped", stoppedAt: new Date().toISOString() });
+    await db.query("update sandboxes set status='stopped',stopped_at=now() where id=$1", [child.id]);
     const removed = await admin.removeGolden!(shared.id);
     expect(removed.artifacts).toBe("retained");
     expect(await admin.removeGolden!(shared.id)).toEqual(removed);
     expect(await member.goldens.findByName(people.org, "shared")).toEqual([]);
     expect((await member.sandboxes.get(child.id))?.providerSandboxId).toBe("bx_retained");
-    await member.sandboxes.update(child.id, { status: "running", stoppedAt: null });
-    expect((await member.sandboxes.get(child.id))?.status).toBe("running");
+    await member.sandboxes.update(child.id, { effectiveTtlSeconds: 300 });
+    expect((await member.sandboxes.get(child.id))?.effectiveTtlSeconds).toBe(300);
     const retained = await db.query("select provider_snapshot_id,owner_id from goldens where id=$1", [shared.id]);
     expect(retained.rows[0]).toEqual({ provider_snapshot_id: shared.providerSnapshotId, owner_id: shared.ownerId });
     expect((await db.query("select golden_id from golden_backend_slots")).rows).toEqual([{ golden_id: shared.id }]);
