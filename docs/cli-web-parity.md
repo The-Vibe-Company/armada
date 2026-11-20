@@ -4,7 +4,7 @@ The CLI and dashboard use the same Armada authorization and provider contracts. 
 
 ## Feature matrix
 
-Commands below start with `armada`. Select an organization with `login --org NAME\|UUID`, or pass `--org` for one request.
+Commands below start with `armada`. Select an organization with `login --org NAME|UUID`, or pass `--org` for one request.
 
 | Feature | Dashboard | CLI |
 |---|---|---|
