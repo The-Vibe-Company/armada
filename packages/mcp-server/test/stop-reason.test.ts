@@ -147,9 +147,18 @@ test.each([
     const from = outcome === "stopped_source" ? "stopped" : "ready";
     const applied = outcome === "applied" || outcome === "stopped_source";
     await db.query(
-      `insert into sandboxes(id,provider,provider_sandbox_id,golden_id,org_id,owner_id,harness,status,boat_runtime)
-     values ($1,'boat',$2,$3,$4,$5,'codex',$7,$6)`,
-      [id, machine.id, sharedGoldenId, people.org, people.owner, runtime, from],
+      `insert into sandboxes(id,provider,provider_sandbox_id,golden_id,org_id,owner_id,harness,status,boat_runtime,stopped_at)
+     values ($1,'boat',$2,$3,$4,$5,'codex',$7,$6,$8)`,
+      [
+        id,
+        machine.id,
+        sharedGoldenId,
+        people.org,
+        people.owner,
+        runtime,
+        from,
+        from === "stopped" ? "2025-12-31" : null,
+      ],
     );
     const store = createSqlData(db)({
       userId: people.owner,
