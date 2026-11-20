@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Run pinned OCR delegation on macOS/Linux; bootstrap without Node or LLM config."""
-# Modified by Armada: read-only setup diagnostics for armada doctor.
+# Modified by Armada: read-only setup diagnostics for OCR.
 from __future__ import annotations
 
 import hashlib

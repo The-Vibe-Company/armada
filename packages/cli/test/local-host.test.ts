@@ -303,5 +303,5 @@ test("unknown existing origin refuses before reading or exchanging the token", a
   const result = await m.capture();
   expect(result.code).toBe(1);
   expect(m.requests).toEqual([]);
-  expect(result.err).not.toContain("run armada doctor");
+  expect(result.err).not.toContain("run armada status --setup");
 });
