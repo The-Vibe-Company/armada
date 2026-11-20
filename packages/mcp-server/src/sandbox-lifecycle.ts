@@ -283,6 +283,7 @@ export async function finishLaunchSuccess(
   sandboxId: string,
   generation: number,
   activityToken: string,
+  runtimeEpoch: string | undefined,
   prompt?: { promptId: string; conversationIds: string[] },
 ) {
   const {
@@ -320,12 +321,13 @@ export async function finishLaunchSuccess(
     return result.kind === "applied" ? "applied" : "native_conflict";
   }
   if (!sandbox?.owned || !sandbox.enrolled_path) return "conflict";
+  if (!runtimeEpoch) return "epoch_conflict";
   const live = await tx.query(
     `select 1 from public.runtime_enrolments where sandbox_id=$1 and lifecycle_generation=$2
-      and runtime_hash is not null for update`,
-    [sandboxId, generation],
+      and epoch=$3 and runtime_hash is not null for update`,
+    [sandboxId, generation, runtimeEpoch],
   );
-  if (!live.rows.length) return "conflict";
+  if (!live.rows.length) return "epoch_conflict";
   const eligible = await tx.query(
     `select s.id from public.sandboxes s where s.id=$3 and ${SANDBOX_VISIBLE}
       and s.status='starting' and s.lifecycle_generation=$5

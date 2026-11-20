@@ -32,6 +32,7 @@ import {
   toHarnessCredentials,
 } from "../src/index.ts";
 import { prepareLaunchWorkspace } from "../src/launch.ts";
+import { CoreLaunchSettlementConflict } from "../src/sandbox.ts";
 import { catalogLock, catalogReference } from "./support/skillpack-catalog.ts";
 
 const ORG = "11111111-1111-4111-8111-111111111111";
@@ -61,155 +62,177 @@ const other: GoldenActor = { userId: OTHER, orgId: ORG, role: "member" };
 
 describe("launch", () => {
   for (const provider of ["boat", "modal"] as const)
-    test.each(provider === "modal" ? (["prompted", "idle", "private"] as const) : (["prompted", "idle"] as const))(
-      `${provider} runtime default prepares workspace before publication/inference (%s)`,
-      async (mode) => {
-        const prompted = mode === "prompted";
-        const visibility = mode === "private" ? "private" : "org";
-        const readyOrder = ["bind", "start", "workspace", "mcp", ...(mode === "private" ? [] : ["admit"])];
-        const source = golden("org");
-        const world = setup({
-            golden: {
-              ...source,
-              provider,
-              ...(provider === "modal"
-                ? {
-                    providerSandboxId: "modal-builder",
-                    providerSnapshotId: "modal-image",
-                    modal: { workspace: "ws", environment: "main", appId: "app" },
-                  }
-                : {}),
+    test.each(
+      provider === "modal"
+        ? (["prompted", "idle", "private", "stale epoch"] as const)
+        : (["prompted", "idle"] as const),
+    )(`${provider} runtime default prepares workspace before publication/inference (%s)`, async (mode) => {
+      const prompted = mode === "prompted";
+      const visibility = mode === "private" ? "private" : "org";
+      const readyOrder = ["bind", "start", "workspace", "mcp", ...(mode === "private" ? [] : ["admit"])];
+      const source = golden("org");
+      const world = setup({
+          golden: {
+            ...source,
+            provider,
+            ...(provider === "modal"
+              ? {
+                  providerSandboxId: "modal-builder",
+                  providerSnapshotId: "modal-image",
+                  modal: { workspace: "ws", environment: "main", appId: "app" },
+                }
+              : {}),
+          },
+        }),
+        order: string[] = [],
+        commands: string[] = [];
+      const childId = provider === "modal" ? "modal-child" : "bx_1";
+      const compute: Provider = {
+        ...world.provider,
+        id: provider,
+        async fork(request) {
+          return { ...(await world.provider.fork(request)), id: childId };
+        },
+        async get(id, options) {
+          return { ...(await world.provider.get(id, options)), id: childId };
+        },
+      };
+      const native: Provider = {
+        ...world.provider,
+        id: provider,
+        async fork() {
+          throw Error("Native fork must not run under the default");
+        },
+      };
+      const resolve = world.stores.credentials.resolve.bind(world.stores.credentials);
+      const credentials = {
+        ...world.stores.credentials,
+        async resolve(...args: Parameters<typeof resolve>) {
+          return { ...(await resolve(...args)), binding: { credentialId: OWNER, credentialVersion: 1 } };
+        },
+      };
+      const store = world.stores.sandboxes;
+      const settlements: SandboxPatch[] = [];
+      world.stores.sandboxes = {
+        ...store,
+        activityOwnership: true,
+        async update(id, patch) {
+          if (patch.finishActivity) {
+            settlements.push(patch);
+            if (mode === "stale epoch" && patch.status === "ready") throw new CoreLaunchSettlementConflict();
+          }
+          await store.update(id, patch);
+        },
+      };
+      const launched = launchSandbox(
+        native,
+        world.stores,
+        owner,
+        { golden: "web", harness: "codex", ...(prompted ? { prompt: "ordinary request" } : {}) },
+        {
+          ...(mode === "private"
+            ? { privateVisibility: true }
+            : {
+                beforeStart: async () => {
+                  order.push("admit");
+                },
+              }),
+          [provider === "boat" ? "boatRuntimeDefault" : "modalRuntimeDefault"]: {
+            provider: async () => compute,
+            credentials,
+            connections: {
+              async validate(_actor, _ids, scope) {
+                expect(scope).toBe(visibility);
+              },
+              async bind() {
+                order.push("bind");
+              },
+              async prepare() {
+                order.push("mcp");
+              },
             },
-          }),
-          order: string[] = [],
-          commands: string[] = [];
-        const childId = provider === "modal" ? "modal-child" : "bx_1";
-        const compute: Provider = {
-          ...world.provider,
-          id: provider,
-          async fork(request) {
-            return { ...(await world.provider.fork(request)), id: childId };
-          },
-          async get(id, options) {
-            return { ...(await world.provider.get(id, options)), id: childId };
-          },
-        };
-        const native: Provider = {
-          ...world.provider,
-          id: provider,
-          async fork() {
-            throw Error("Native fork must not run under the default");
-          },
-        };
-        const resolve = world.stores.credentials.resolve.bind(world.stores.credentials);
-        const credentials = {
-          ...world.stores.credentials,
-          async resolve(...args: Parameters<typeof resolve>) {
-            return { ...(await resolve(...args)), binding: { credentialId: OWNER, credentialVersion: 1 } };
-          },
-        };
-        const result = await launchSandbox(
-          native,
-          world.stores,
-          owner,
-          { golden: "web", harness: "codex", ...(prompted ? { prompt: "ordinary request" } : {}) },
-          {
-            ...(mode === "private"
-              ? { privateVisibility: true }
-              : {
-                  beforeStart: async () => {
-                    order.push("admit");
+            policy: {
+              async start() {
+                order.push("start");
+                return {
+                  epoch: "1",
+                  async prepareWorkspace(g, onStage, _sleep) {
+                    order.push("workspace");
+                    let retry = false;
+                    await prepareLaunchWorkspace(
+                      {
+                        id: provider,
+                        exec: async () => {
+                          throw Error("No native exec");
+                        },
+                      },
+                      "bx_1",
+                      "logical",
+                      g,
+                      [],
+                      onStage,
+                      async (ms) => {
+                        expect(ms).toBe(1000);
+                        retry = true;
+                      },
+                      async (req, step) => {
+                        commands.push(`${step.phase}:${step.index}:${step.attempt}:${req.cwd}:${req.command}`);
+                        return {
+                          detached: false as const,
+                          timedOut: false,
+                          truncated: false,
+                          exitCode: step.phase === "repository" && step.index === 0 && step.attempt === 0 ? 128 : 0,
+                          stdout: "",
+                          stderr:
+                            step.phase === "repository" && step.index === 0 && step.attempt === 0
+                              ? "detected dubious ownership in repository"
+                              : "",
+                        };
+                      },
+                    );
+                    expect(retry).toBe(true);
+                    return { status: "not_connected" };
                   },
-                }),
-            [provider === "boat" ? "boatRuntimeDefault" : "modalRuntimeDefault"]: {
-              provider: async () => compute,
-              credentials,
-              connections: {
-                async validate(_actor, _ids, scope) {
-                  expect(scope).toBe(visibility);
-                },
-                async bind() {
-                  order.push("bind");
-                },
-                async prepare() {
-                  order.push("mcp");
-                },
+                  async prompt() {
+                    expect(order).toEqual(readyOrder);
+                    return { promptId: "runtime", conversationId: "conversation", status: "queued" };
+                  },
+                };
               },
-              policy: {
-                async start() {
-                  order.push("start");
-                  return {
-                    epoch: "1",
-                    async prepareWorkspace(g, onStage, _sleep) {
-                      order.push("workspace");
-                      let retry = false;
-                      await prepareLaunchWorkspace(
-                        {
-                          id: provider,
-                          exec: async () => {
-                            throw Error("No native exec");
-                          },
-                        },
-                        "bx_1",
-                        "logical",
-                        g,
-                        [],
-                        onStage,
-                        async (ms) => {
-                          expect(ms).toBe(1000);
-                          retry = true;
-                        },
-                        async (req, step) => {
-                          commands.push(`${step.phase}:${step.index}:${step.attempt}:${req.cwd}:${req.command}`);
-                          return {
-                            detached: false as const,
-                            timedOut: false,
-                            truncated: false,
-                            exitCode: step.phase === "repository" && step.index === 0 && step.attempt === 0 ? 128 : 0,
-                            stdout: "",
-                            stderr:
-                              step.phase === "repository" && step.index === 0 && step.attempt === 0
-                                ? "detected dubious ownership in repository"
-                                : "",
-                          };
-                        },
-                      );
-                      expect(retry).toBe(true);
-                      return { status: "not_connected" };
-                    },
-                    async prompt() {
-                      expect(order).toEqual(readyOrder);
-                      return { promptId: "runtime", conversationId: "conversation", status: "queued" };
-                    },
-                  };
-                },
-              },
-            } satisfies NonNullable<LaunchOptions["boatRuntimeDefault"]>,
-          },
-        );
-        expect(result.runtime).toEqual({ kind: "armada", epoch: "1" });
-        expect(result.sandbox.provider).toBe(provider);
-        expect(world.rows.get(result.sandbox.id)?.visibility).toBe(visibility);
-        expect(result.golden.visibility).toBe("org");
-        expect(result.sandbox.providerSandboxId).toBe(childId);
-        expect(result.sandbox.runtimeTransport).toBe(provider === "modal" ? "dialout" : undefined);
-        expect(result.sandbox.boatRuntime).toBe(provider === "boat" ? true : undefined);
-        expect(order).toEqual(readyOrder);
-        if (!prompted) {
-          expect(result.sandbox.status).toBe("ready");
-          expect(result.sandbox.conversationIds).toEqual([]);
-          expect(result.promptId).toBeUndefined();
-        }
-        expect(commands).toHaveLength(4);
-        expect(commands[0]).toContain("repository:0:0:/home/user/web:");
-        expect(commands[1]).toContain("repository:0:1:");
-        expect(commands[2]).toContain("repository:1:0:/home/user/api:");
-        expect(commands[3]).toContain("init:0:0:/home/user:");
-        expect(world.execs).toHaveLength(0);
-        expect(world.prompts).toHaveLength(0);
-        expect(world.forks[0]?.env).toEqual({});
-      },
-    );
+            },
+          } satisfies NonNullable<LaunchOptions["boatRuntimeDefault"]>,
+        },
+      );
+      if (mode === "stale epoch") {
+        await expect(launched).rejects.toThrow("Core launch settlement is stale.");
+        expect(settlements.map((patch) => patch.status)).toEqual(["ready"]);
+        expect(world.stopped).toEqual([]);
+        return;
+      }
+      const result = await launched;
+      expect(settlements).toMatchObject([{ expectedRuntimeEpoch: "1" }]);
+      expect(result.runtime).toEqual({ kind: "armada", epoch: "1" });
+      expect(result.sandbox.provider).toBe(provider);
+      expect(world.rows.get(result.sandbox.id)?.visibility).toBe(visibility);
+      expect(result.golden.visibility).toBe("org");
+      expect(result.sandbox.providerSandboxId).toBe(childId);
+      expect(result.sandbox.runtimeTransport).toBe(provider === "modal" ? "dialout" : undefined);
+      expect(result.sandbox.boatRuntime).toBe(provider === "boat" ? true : undefined);
+      expect(order).toEqual(readyOrder);
+      if (!prompted) {
+        expect(result.sandbox.status).toBe("ready");
+        expect(result.sandbox.conversationIds).toEqual([]);
+        expect(result.promptId).toBeUndefined();
+      }
+      expect(commands).toHaveLength(4);
+      expect(commands[0]).toContain("repository:0:0:/home/user/web:");
+      expect(commands[1]).toContain("repository:0:1:");
+      expect(commands[2]).toContain("repository:1:0:/home/user/api:");
+      expect(commands[3]).toContain("init:0:0:/home/user:");
+      expect(world.execs).toHaveLength(0);
+      expect(world.prompts).toHaveLength(0);
+      expect(world.forks[0]?.env).toEqual({});
+    });
   test.each(["startup", "account", "provider"] as const)(
     "Modal default refuses %s without native fallback",
     async (failure) => {

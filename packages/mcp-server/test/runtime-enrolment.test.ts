@@ -133,20 +133,30 @@ test.each(["boat", "modal"] as const)(
 
     await expect(store.update(f.id, patch)).rejects.toThrow("Runtime readiness publication is stale.");
     const session = await f.service().enrol(ticket.enrolmentToken);
-    await expect(store.update(f.id, { ...patch, expectedGeneration: expectedGeneration + 1 })).rejects.toThrow();
+    const prepared = { ...patch, expectedRuntimeEpoch: session.epoch };
+    await expect(store.update(f.id, { ...prepared, expectedGeneration: expectedGeneration + 1 })).rejects.toThrow();
     expect(await journal()).toEqual([]);
 
     await f.db.exec(`alter table sandboxes add constraint test_readiness_lease_release
       check (status <> 'ready' or activity_lease_id is not null) not valid`);
     try {
-      await expect(store.update(f.id, patch)).rejects.toThrow("test_readiness_lease_release");
+      await expect(store.update(f.id, prepared)).rejects.toThrow("test_readiness_lease_release");
     } finally {
       await f.db.exec("alter table sandboxes drop constraint test_readiness_lease_release");
     }
     expect(await journal()).toEqual([]);
     expect(await store.get(f.id)).toMatchObject({ status: "starting", lifecycleGeneration: expectedGeneration });
 
-    await store.update(f.id, patch);
+    const replacementTicket = await f.issue();
+    const replacement = await f.service().enrol(replacementTicket.enrolmentToken);
+    expect(replacementTicket.lifecycleGeneration).toBe(ticket.lifecycleGeneration);
+    const stale = { ...patch, expectedRuntimeEpoch: session.epoch };
+    await expect(store.update(f.id, stale)).rejects.toThrow("Runtime readiness publication is stale.");
+    expect(await journal()).toEqual([]);
+    expect(await store.get(f.id)).toMatchObject({ status: "starting", lifecycleGeneration: expectedGeneration });
+
+    const current = { ...patch, expectedRuntimeEpoch: replacement.epoch };
+    await store.update(f.id, current);
     expect(await store.get(f.id)).toMatchObject({ status: "ready", lifecycleGeneration: expectedGeneration });
     expect(
       (await f.db.query("select activity_lease_id,activity_until from sandboxes where id=$1", [f.id])).rows,
@@ -160,7 +170,7 @@ test.each(["boat", "modal"] as const)(
         generation: ticket.lifecycleGeneration,
       },
     ]);
-    expect((await f.request("session", session.runtimeToken, session.epoch)).status).toBe(200);
+    expect((await f.request("session", replacement.runtimeToken, replacement.epoch)).status).toBe(200);
   },
 );
 
@@ -187,6 +197,7 @@ test("an accepted initial launch prompt publishes under the enrolled generation"
     finishActivity: true,
     activityToken,
     expectedGeneration,
+    expectedRuntimeEpoch: session.epoch,
   } satisfies Parameters<typeof store.update>[1];
 
   await expect(store.update(f.id, { ...patch, activityToken: crypto.randomUUID() })).rejects.toThrow();
@@ -259,7 +270,7 @@ test("runtime readiness rechecks the activity deadline after locking the enrolle
     [f.id, activityToken],
   );
   const ticket = await f.issue();
-  await f.service().enrol(ticket.enrolmentToken);
+  const session = await f.service().enrol(ticket.enrolmentToken);
   const sql: Sql = {
     ...f.sql,
     transaction: (work) =>
@@ -285,6 +296,7 @@ test("runtime readiness rechecks the activity deadline after locking the enrolle
       finishActivity: true,
       activityToken,
       expectedGeneration: Number(ticket.lifecycleGeneration),
+      expectedRuntimeEpoch: session.epoch,
     }),
   ).rejects.toThrow("Runtime readiness publication is stale.");
   expect(await store.get(f.id)).toMatchObject({ status: "starting" });

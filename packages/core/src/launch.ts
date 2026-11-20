@@ -731,10 +731,11 @@ export async function launchSandbox(
       // Every harness and path is ready for a prompt here; a launch prompt's dispatch is not launch time.
       await mark("harness_ready");
       timing.mark("ready_stage_record");
+      const runtimeFence = provenance ? { expectedRuntimeEpoch: provenance.epoch } : {};
       if (prompt === undefined) {
         signal.throwIfAborted();
         return {
-          patch: { status: "ready" as const },
+          patch: { status: "ready" as const, ...runtimeFence },
           result: finish(
             record,
             golden,
@@ -779,6 +780,7 @@ export async function launchSandbox(
           status: "running" as const,
           conversationIds: [receipt.conversationId],
           taskPromptId: receipt.promptId,
+          ...runtimeFence,
         },
         result: finish(
           record,

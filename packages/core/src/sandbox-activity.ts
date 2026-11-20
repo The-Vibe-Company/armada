@@ -1,4 +1,4 @@
-import type { SandboxPatch, SandboxRecord, SandboxStore } from "./sandbox.ts";
+import { CoreLaunchSettlementConflict, type SandboxPatch, type SandboxRecord, type SandboxStore } from "./sandbox.ts";
 
 /** Separate activity ownership from observation leases. Completion advances the generation,
  * invalidating every observation sampled before provider admission completed. */
@@ -50,7 +50,7 @@ export async function sandboxActivity<T>(
     await store.update(sandbox.id, { ...patch, finishActivity: true, activityToken: token, ...expected });
     return result;
   } catch (error) {
-    if (options.failurePatch)
+    if (!(error instanceof CoreLaunchSettlementConflict) && options.failurePatch)
       await store
         .update(sandbox.id, { ...options.failurePatch(error), finishActivity: true, activityToken: token, ...expected })
         .catch(() => {});
