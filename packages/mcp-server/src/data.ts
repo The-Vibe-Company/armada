@@ -72,7 +72,8 @@ export interface ServerSandboxPatch extends SandboxPatch {
   nativeResumeAdmission?: string;
   nativeSendAdmission?: ServerSandboxPatch["nativeChildSend"];
   nativeChildSend?: { fromState: SandboxStatus; placement: string };
-  nativeTurnReceipt?: { fromState: SandboxStatus; placement: string; kind: "send" | "steer" };
+  nativeSendReceipt?: { fromState: SandboxStatus; placement: string };
+  nativeSteerReceipt?: { fromState: SandboxStatus; placement: string };
   ownerStop?: true;
   onlyIfIdle?: boolean;
   retainedRuntimeStop?: string;
@@ -870,7 +871,7 @@ export function createSqlData(
             Boolean(patch.advanceGeneration) === Boolean(patch.renewActivity))
         )
           throw new DataError("Native resume requires its activity generation, token and phase.");
-        const nativeReceipt = patch.nativeTurnReceipt;
+        const nativeReceipt = patch.nativeSendReceipt ?? patch.nativeSteerReceipt;
         const receiptGeneration = patch.expectedGeneration;
         const receiptToken = patch.activityToken;
         if (nativeReceipt && (!patch.finishActivity || receiptGeneration === undefined || !receiptToken))
@@ -939,7 +940,7 @@ export function createSqlData(
         if (reason !== undefined && stopAdmissionReason === undefined) set("status_reason", reason, "::text");
         if (sets.length === 0) return;
         let fence = "";
-        if (nativeReceipt?.kind === "steer") fence += " and s.activity_until>clock_timestamp()";
+        if (patch.nativeSteerReceipt) fence += " and s.activity_until>clock_timestamp()";
         if (patch.turnActivity !== undefined)
           fence += " and s.status in ('ready','running') and s.stop_requested_at is null and s.deleted_at is null";
         if (patch.turnActivity === "claim") fence += " and s.activity_lease_id is null";
@@ -1124,7 +1125,8 @@ export function createSqlData(
                 and s.lifecycle_generation=$4 and s.activity_lease_id=$5::uuid
                 and s.status=$6::public.sandbox_status and s.provider_sandbox_id=$7
                 and s.provider in ('boat','modal') and not s.boat_runtime and s.runtime_transport is null
-                and s.deleted_at is null and s.status<>'deleted' and s.stop_requested_at is null for update`,
+                and s.deleted_at is null and s.status<>'deleted' and s.stop_requested_at is null
+                for update`,
               [...scope, id, receiptGeneration, receiptToken, nativeReceipt.fromState, nativeReceipt.placement],
             );
             if (!locked.rows.length) return { rows: [] };
@@ -1135,7 +1137,7 @@ export function createSqlData(
                 nativeReceipt.fromState,
                 String(receiptGeneration),
                 receiptToken,
-                nativeReceipt.kind === "send" ? "native_send_accepted" : "native_steer_accepted",
+                patch.nativeSendReceipt ? "native_send_accepted" : "native_steer_accepted",
               );
             const published = await applyUpdate(tx);
             if (!published.rows[0]?.id) throw new DataError("Native turn publication is stale.", "sandbox_not_ready");

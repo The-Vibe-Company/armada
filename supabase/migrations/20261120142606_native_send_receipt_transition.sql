@@ -1,4 +1,4 @@
--- Journal ordinary native send acceptance under the existing send activity.
+-- Journal native send receipt publication under the existing send activity.
 begin;
 create or replace function public.sandbox_transition(
   p_id uuid,
@@ -228,6 +228,7 @@ begin
     allowed_actors := array[p_actor];
     allowed_effects := array[]::text[];
   end if;
+
   -- Native sends already own the generation and perform resume inline.
   if native_resume then
     if p_actor is distinct from 'native_turn' or p_to_state is distinct from 'starting'
@@ -255,7 +256,7 @@ begin
       or sandbox.status not in ('starting', 'ready', 'stopping', 'stopped', 'failed')
       or sandbox.deleted_at is not null or sandbox.stop_requested_at is not null
       or sandbox.activity_lease_id is distinct from p_activity_lease
-      -- An accepted send can settle after expiry if its lease token and generation still match.
+      -- A late send receipt may fence a pre-publication observation by advancing the generation.
       or (p_code <> 'native_send_accepted' and (sandbox.activity_until > clock_timestamp()) is not true) then
       return query select false, null::bigint;
       return;
@@ -305,6 +306,7 @@ begin
   if p_actor = 'runtime_observation' and p_stopped_at is null then
     raise exception 'provider exit observation requires an exit timestamp' using errcode = '22023';
   end if;
+
   -- Docker resume enqueues its host mailbox job in the admission transaction.
   if docker_resume and jsonb_array_length(p_effects) <> 0 then
     raise exception 'Docker resume uses the host mailbox' using errcode = '22023';
@@ -370,6 +372,7 @@ begin
     and jsonb_array_length(p_effects) <> 1 then
     raise exception 'sandbox transition requires one lifecycle job' using errcode = '22023';
   end if;
+
   -- Reconciliation records proven exit on failed rows before deletion.
   if sandbox.status = 'failed' and p_to_state = 'deleted' and sandbox.stopped_at is null and not docker_cleanup then
     raise exception 'failed sandbox exit is unconfirmed' using errcode = '22023';
@@ -429,7 +432,8 @@ begin
         else s.stop_requested_at
       end end,
       stopped_at = case
-        when leased_native_turn and p_code <> 'native_send_accepted' then s.stopped_at
+        when p_code = 'native_send_accepted' then null
+        when leased_native_turn then s.stopped_at
         when native_retention_refusal then null
         when docker_expiry or docker_cleanup then coalesce(s.stopped_at, now())
         when p_actor in ('reconciler', 'runtime_observation', 'native_turn') then p_stopped_at else case p_to_state
@@ -472,8 +476,10 @@ begin
     )
     on conflict (idem_key) do nothing;
   end loop;
+
   -- #2796 appends the event_log reference here, in this transaction.
   return query select true, sandbox.lifecycle_generation;
 end
 $$;
+
 commit;

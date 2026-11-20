@@ -413,11 +413,7 @@ test.each(["accepted", "already running", "stale state", "expired lease"] as con
     }).sandboxes;
     const completed = scenario === "accepted" || scenario === "already running";
     const publication = store.update(id, {
-      nativeTurnReceipt: {
-        fromState: status === "running" ? "running" : "ready",
-        placement: "placement",
-        kind: "steer",
-      },
+      nativeSteerReceipt: { fromState: status === "running" ? "running" : "ready", placement: "placement" },
       taskPromptId: "accepted",
       conversationIds: ["conversation"],
       finishActivity: true,

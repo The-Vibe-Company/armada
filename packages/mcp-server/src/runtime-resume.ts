@@ -311,6 +311,7 @@ export function createRuntimeResume(
         await authority.withOwner(found.id, caller.userId, async (tx, scope) => {
           if (scope.epoch !== admitted.op.target_epoch || !receipt || patch.expectedGeneration === undefined)
             throw new VaultError("conflict", "Resume epoch changed before publication.");
+          await assertClaim(tx);
           await publishRuntimeWake(
             tx,
             id,
@@ -325,6 +326,7 @@ export function createRuntimeResume(
             [found.id, requestId, JSON.stringify(receipt)],
           );
           if (!saved.rows.length) throw new VaultError("conflict", "Resume publication changed.");
+          await assertClaim(tx);
         });
       },
     };

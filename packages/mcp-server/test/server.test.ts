@@ -1498,62 +1498,26 @@ describe("tools", () => {
     }
   });
 
-  test.each(["rollback", "stale admission", "stale state", "accepted"] as const)(
-    "native send receipt publication (%s)",
-    async (scenario) => {
-      const server = await start();
-      const { boat, client, db, people, token } = server;
-      const { id } = await seedRunningSandbox(server);
-      await db.query("update sandboxes set status='ready' where id=$1", [id]);
-      const mcp = await client(await token(people.member));
-      const staleAdmission = scenario === "stale admission";
-      const get = boat.provider.get;
-      boat.provider.get = async (placement) => {
-        if (staleAdmission) await db.query("update sandboxes set status='failed' where id=$1", [id]);
-        return get(placement);
-      };
-      const prompt = boat.provider.prompt;
-      boat.provider.prompt = async (request) => {
-        const receipt = await prompt(request);
-        if (scenario === "stale state") await db.query("update sandboxes set status='failed' where id=$1", [id]);
-        return receipt;
-      };
-      if (scenario === "rollback")
-        await db.exec("alter table sandboxes add constraint reject_send_prompt check (task_prompt_id is null)");
-      try {
-        const result = await call(mcp, "send", { id, prompt: "continue" });
-        const accepted = scenario === "accepted";
-        expect(Boolean(result.isError)).toBe(!accepted);
-        if (!accepted)
-          expect(result.text).toContain(
-            staleAdmission ? "error code: sandbox_not_ready" : "error code: outcome_unknown",
-          );
-        const { rows: receipts } = await db.query<{ prompt_id: string }>(
-          "select prompt_id from native_webhook_prompts where sandbox_id=$1",
-          [id],
-        );
-        expect(receipts).toEqual(staleAdmission ? [] : [{ prompt_id: expect.any(String) }]);
-        const { rows: sandboxes } = await db.query(
-          "select status, task_prompt_id, activity_lease_id from sandboxes where id=$1",
-          [id],
-        );
-        expect(sandboxes).toEqual([
-          {
-            status: accepted ? "running" : scenario.startsWith("stale") ? "failed" : "ready",
-            task_prompt_id: accepted ? receipts[0]?.prompt_id : null,
-            activity_lease_id: accepted || staleAdmission ? null : expect.any(String),
-          },
-        ]);
-        const { rows } = await db.query(
-          "select code from sandbox_transitions where sandbox_id=$1 and to_status='running'",
-          [id],
-        );
-        expect(rows).toEqual(accepted ? [{ code: "native_send_accepted" }] : []);
-      } finally {
-        if (scenario === "rollback") await db.exec("alter table sandboxes drop constraint reject_send_prompt");
-      }
-    },
-  );
+  test("native send refuses a same-generation state change before dispatch", async () => {
+    const server = await start();
+    const { boat, client, db, people, token } = server;
+    const { id } = await seedRunningSandbox(server);
+    await db.query("update sandboxes set status='ready' where id=$1", [id]);
+    const mcp = await client(await token(people.member));
+    const get = boat.provider.get;
+    boat.provider.get = async (placement) => {
+      await db.query("update sandboxes set status='failed' where id=$1", [id]);
+      return get(placement);
+    };
+    const prompt = spyOn(boat.provider, "prompt");
+    const result = await call(mcp, "send", { id, prompt: "continue" });
+    expect(result.isError).toBe(true);
+    expect(result.text).toContain("error code: sandbox_not_ready");
+    expect(prompt).not.toHaveBeenCalled();
+    expect((await db.query("select status, activity_lease_id from sandboxes where id=$1", [id])).rows).toEqual([
+      { status: "failed", activity_lease_id: null },
+    ]);
+  });
 
   test("exec redacts the agent's credentials from the output", async () => {
     const { token, client, people, boat } = await start();
@@ -1845,32 +1809,43 @@ describe("tools", () => {
     },
   );
 
-  test.each(["stopped", "callback", "stale callback", "rollback"] as const)(
-    "native resume admission journals the current activity only (%s)",
+  test.each(["stopped", "callback", "stale cb", "rollback", "stale ack", "bad ack", "live"] as const)(
+    "native resume journals the current activity only (%s)",
     async (scenario) => {
       const server = await start();
       const { boat, client, db, people, token } = server;
       const { id, machine } = await seedRunningSandbox(server);
       const stopped = scenario === "stopped" || scenario === "rollback";
       if (stopped) await boat.provider.stop({ sandboxId: machine.id });
+      const liveProvider = scenario === "live";
+      if (liveProvider) await db.query("update sandboxes set status='stopped', stopped_at=now() where id=$1", [id]);
       if (scenario === "rollback")
         await db.exec("alter table sandboxes add constraint reject_native_start check (status <> 'starting')");
       const mcp = await client(await token(people.member));
       const prompt = boat.provider.prompt;
       let dispatched = false;
       boat.provider.prompt = async (request) => {
-        if (scenario === "stale callback")
+        if (scenario === "stale cb")
           await db.query("update sandboxes set lifecycle_generation=lifecycle_generation+1 where id=$1", [id]);
-        if (!stopped) await request.onResumeStage?.("accepted");
+        if (!stopped && !liveProvider) await request.onResumeStage?.("accepted");
         dispatched = true;
-        return prompt(request);
+        const receipt = await prompt(request);
+        if (scenario === "stale ack")
+          await db.query("update sandboxes set lifecycle_generation=lifecycle_generation+1 where id=$1", [id]);
+        if (scenario === "bad ack")
+          await db.exec(
+            "alter table sandboxes add constraint reject_native_prompt check (task_prompt_id is null) not valid",
+          );
+        return receipt;
       };
       const sent = await call(mcp, "send", { id, prompt: "continue" }).finally(async () => {
         if (scenario === "rollback") await db.exec("alter table sandboxes drop constraint reject_native_start");
+        if (scenario === "bad ack") await db.exec("alter table sandboxes drop constraint reject_native_prompt");
       });
 
-      const refused = scenario === "stale callback" || scenario === "rollback";
-      expect(Boolean(sent.isError)).toBe(refused);
+      const refused = scenario === "stale cb" || scenario === "rollback";
+      const receiptRefused = scenario === "stale ack" || scenario === "bad ack";
+      expect(Boolean(sent.isError)).toBe(refused || receiptRefused);
       expect(dispatched).toBe(!refused);
       if (scenario === "rollback") {
         const { rows } = await db.query(
@@ -1890,8 +1865,35 @@ describe("tools", () => {
         code: "native_resume_admitted",
         generation: 2,
       };
-      expect(rows).toEqual(refused ? [] : [admission]);
-      if (scenario === "stale callback") expect(sent.text).toContain("error code: sandbox_not_ready");
+      expect(rows).toEqual(refused || liveProvider ? [] : [admission]);
+      if (scenario === "stale cb") expect(sent.text).toContain("error code: sandbox_not_ready");
+      if (dispatched) {
+        const { rows: receipts } = await db.query(
+          `select actor,code,generation::int from sandbox_transitions
+           where sandbox_id=$1 and from_status=$2 and to_status='running'`,
+          [id, liveProvider ? "stopped" : "starting"],
+        );
+        expect(receipts).toEqual(
+          receiptRefused ? [] : [{ actor: "native_turn", code: "native_send_accepted", generation: 2 }],
+        );
+        const {
+          rows: [settled],
+        } = await db.query<{ status: string; task_prompt_id: string | null; activity_lease_id: string | null }>(
+          "select status, task_prompt_id, activity_lease_id from sandboxes where id=$1",
+          [id],
+        );
+        if (!settled) throw new Error("Missing sandbox receipt state.");
+        if (receiptRefused) {
+          expect(sent.text).toContain("error code: outcome_unknown");
+          expect(settled.status).toBe("starting");
+          expect(settled.task_prompt_id).toBeNull();
+          expect(settled.activity_lease_id).not.toBeNull();
+        } else {
+          expect(settled.status).toBe("running");
+          expect(sent.data.promptId).toBe(settled.task_prompt_id);
+          expect(settled.activity_lease_id).toBeNull();
+        }
+      }
     },
   );
 
