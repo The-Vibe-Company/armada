@@ -83,7 +83,6 @@ function unpack(value: unknown, depth = 0): ToolOutput {
       ...(failureCode && { failureCode, ...(uuid(requestId) && { requestId }) }),
     };
   }
-  // Codex's app-server MCP result retains the text content but can omit MCP's isError flag.
   const failureCode =
     value === "scoped_authority_denied" || value === "scoped_operation_unavailable" ? value : undefined;
   return {
