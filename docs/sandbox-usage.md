@@ -115,7 +115,7 @@ After normal runtime rollout, run on a Modal snapshot:
 armada new MODAL_SNAPSHOT --provider modal --agent claude "Reply OK"
 armada wait SANDBOX_UUID
 armada status SANDBOX_UUID --json
-armada send SANDBOX_UUID "Reply OK again"
+armada prompt SANDBOX_UUID "Reply OK again"
 armada wait SANDBOX_UUID
 armada events SANDBOX_UUID
 armada status SANDBOX_UUID --json

@@ -22,7 +22,7 @@ export function sandboxFailure(path: string, status: number, serverCode: unknown
     conflict: `The sandbox state conflicts with this operation. ${inspect} Wait for any start/stop operation to settle before retrying.`,
     sandbox_not_ready: `The sandbox is not ready for this operation. ${inspect} Wait until it is ready before sending another request.`,
     no_running_turn:
-      "No turn is running. Check armada status ID; use armada send ID TEXT to start a turn instead of steer.",
+      "No turn is running. Check armada status ID; use armada prompt ID TEXT to start a turn without --steer.",
     unsupported: `This operation is not supported by the selected sandbox provider or harness. ${inspect}`,
     credential_refused:
       "The selected account cannot be used. Check that it is active, accessible, and supports this agent and current model with armada creds list.",

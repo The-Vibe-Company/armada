@@ -28,7 +28,7 @@ Quick start / common examples:
   armada new
   armada list
   armada status SANDBOX_ID
-  armada send SANDBOX_ID "Continue the task"
+  armada prompt SANDBOX_ID "Continue the task"
   armada events SANDBOX_ID --tail 20
   armada stop SANDBOX_ID
   eval "$(armada completion bash)"
@@ -88,9 +88,8 @@ Usage:
   armada wait <sandbox-id> [--timeout <seconds>] [--org UUID] [--json]
                                            Timeout is 0–600 seconds, default 60.
   armada report [sandbox-id] ready|blocked --prompt-id ID [--reason TEXT] [--pr-number N] [--pr-url URL] [--head-sha SHA]
-  armada send|steer <sandbox-id> <text> [--model ID] [--reasoning-effort LEVEL]
-                                           send accepts --request-id UUID to reuse an uncertain runtime instruction.
-                                           Full-account follow-up sends can queue FIFO; queued is not completed.
+  armada prompt [--steer] <sandbox-id> <text>
+                                           Start a turn or redirect a running turn
   armada exec [sandbox-id] [--cwd PATH] [--timeout SECONDS] [--org UUID] [--json] -- COMMAND
                                            Run a shell command
   armada events [sandbox-id] [-f] [--tail N] [--org UUID] [--json]
@@ -374,28 +373,15 @@ Example: armada report SANDBOX_UUID ready --prompt-id PROMPT_ID --pr-number 123
 "
 `;
 
-exports[`armada send help preserves its output 1`] = `
-"Usage: armada send <sandbox-id> <text> [--model <id>] [--reasoning-effort <level>]
-  [--request-id UUID] [--org UUID] [--json]
-Send a new instruction after Armada login and server authorization.
-Use steer to redirect a running turn. Retained stopped sandboxes can wake on send.
-Native model/effort overrides apply to this turn only; runtime model/effort remain launch-pinned.
+exports[`armada prompt help preserves its output 1`] = `
+"Usage: armada prompt [--steer] [--org UUID] [--json] [sandbox-id] [--] <text>
+A new prompt automatically resumes a retained stopped sandbox. Use --steer to redirect a running turn.
+Omit the ID and put the text after -- to use the current sandbox.
+New turns accept --request-id UUID, --model ID and --reasoning-effort LEVEL.
+Runtime model and effort remain launch-pinned. Full-account prompts can queue FIFO.
 For uncertain runtime delivery, reuse the request ID with identical input.
-Native providers do not deduplicate by request ID; inspect state before retrying.
-Output is JSON; human mode also reports acceptance progress on stderr.
-Put options before -- when the literal text contains option-like words.
-Example: armada send SANDBOX_UUID --org ORG_UUID -- "Review the changes"
-"
-`;
-
-exports[`armada steer help preserves its output 1`] = `
-"Usage: armada steer <sandbox-id> <text> [--org UUID] [--json]
-Redirect a currently running turn after Armada login and server authorization.
-Refused when no turn is running; use send for a new turn.
-Delivery may join the turn natively or interrupt/restart the same conversation;
-inspect the returned delivery field. Output is JSON even without --json.
-Put options before -- to pass literal option-like text.
-Example: armada steer SANDBOX_UUID --org ORG_UUID -- "Focus on the failing test"
+Native providers do not deduplicate by request ID. Inspect state before retrying.
+Example: armada prompt SANDBOX_UUID --steer -- "Focus on the failing test"
 "
 `;
 

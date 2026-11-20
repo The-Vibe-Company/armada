@@ -324,7 +324,7 @@ armada new first-modal --org my-team --provider modal --agent codex \
 `armada new` asks the server to resolve credentials and fork the snapshot. It prints the sandbox id
 (`--json` prints the full record). Use that ID for `armada status <sandbox-id>`,
 `armada events <sandbox-id>` and, when finished, `armada stop <sandbox-id>` to stop charges.
-Omit the prompt to leave the sandbox waiting for your first `armada send` instead. Optional `--repo` selects one repository already recorded in the
+Omit the prompt to leave the sandbox waiting for your first `armada prompt` instead. Optional `--repo` selects one repository already recorded in the
 snapshot, by `owner/repo` or by its configured directory, and starts the agent there: the
 agent's real initial working directory, set after the pulls and init and before its first prompt,
 also for an idle launch. It is a starting directory, not confinement: the agent can still reach the

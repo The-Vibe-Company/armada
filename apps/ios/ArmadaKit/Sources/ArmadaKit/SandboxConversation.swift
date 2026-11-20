@@ -99,7 +99,7 @@ public struct SandboxEventPage: Decodable, Sendable {
     public let hasMore: Bool
 }
 
-/// The server's acceptance of a prompt: `POST /api/v1/sandbox/send` (`armada send`).
+/// The server's acceptance of a prompt: `POST /api/v1/sandbox/send` (`armada prompt`).
 public struct SandboxPromptReceipt: Decodable, Sendable, Equatable {
     public let id: String
     public let promptId: String

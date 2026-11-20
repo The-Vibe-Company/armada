@@ -25,7 +25,7 @@ not establish a successful agent outcome.
   checkpoint_failed_disk_not_retained means the disk was not retained and cannot
   resume. Do not promise recovery from that stopped machine.
 - Retained stopped sandbox: with authorization, send one instruction, for example
-  armada send SANDBOX "Inspect retained work, commit and push it, then report the SHA".
+  armada prompt SANDBOX "Inspect retained work, commit and push it, then report the SHA".
   This resumes the machine and continues the latest conversation by default; it
   starts a new turn and may incur cost. Current membership/access and model-account
   validity/version are checked; resume re-resolves current credentials, including
