@@ -418,6 +418,48 @@ async function fixture(
     github,
     service,
     mcp,
+    async seedRunningSandbox() {
+      const generation = randomUUID();
+      await db.query(
+        `insert into public.sandboxes(
+           id,org_id,owner_id,access_owner_id,provider,provider_sandbox_id,harness,visibility,status,
+           docker_host_id,docker_installation_id,docker_generation,docker_image,credential_id,credential_version,
+           expires_at,conversation_ids,task_prompt_id
+         ) values($1,$2,$3,$3,'docker',$4,$5,'private','running',$6,$7,$8,$9,$10,2,
+           now()+interval '1 hour',$11,$12)`,
+        [
+          body.requestId,
+          orgId,
+          userId,
+          `armada-${installationId}-${host.hostId}-${body.requestId}-${generation}`,
+          body.harness,
+          host.hostId,
+          installationId,
+          generation,
+          officialImage,
+          credentialId,
+          [receipt.conversationId],
+          receipt.promptId,
+        ],
+      );
+      // Send admission still verifies the completed create and bootstrap against the current actor epoch.
+      await db.query(
+        `insert into public.docker_host_jobs(
+           request_id,host_id,input_enc,outcome,completed_at,bound_sandbox_id,bound_actor_id,
+           bound_actor_epoch,bound_operation
+         )
+         select gen_random_uuid(),$1,$2,'completed',now(),$3,e.user_id,e.epoch,operation
+         from public.mcp_actor_epochs e cross join (values ('create'),('bootstrap')) as phases(operation)
+         where e.org_id=$4 and e.user_id=$5`,
+        [host.hostId, await encryptSecret("{}", key), body.requestId, orgId, userId],
+      );
+      const ticket = await createRuntimeEnrolments(sql, key, { allowDockerIssue: true }).issue({
+        sandboxId: body.requestId,
+        ownerId: userId,
+        configuration: {},
+      });
+      session = await authority.enrol(ticket.enrolmentToken);
+    },
     async resume(controls: ReturnType<typeof createDockerSandboxControls>) {
       pollResumeClaims = true;
       try {
@@ -934,8 +976,7 @@ function restControl(f: Awaited<ReturnType<typeof fixture>>, overrides: Partial<
 
 test("SDK sends to a Docker sandbox meet the published Docker variant exactly when Docker admission accepts them", async () => {
   const f = await fixture();
-  // A running sandbox: the keyed send is admitted natively, so no queued work outlives this test.
-  await f.service().launch(f.caller, f.body);
+  await f.seedRunningSandbox();
   const controls = createDockerSandboxControls(sql, key, {
     clock: f.clock,
     send: createDockerNormalSend(sql, key, { enabled: true, clock: f.clock }),
@@ -1005,7 +1046,7 @@ test("SDK sends to a Docker sandbox meet the published Docker variant exactly wh
 
 test("Docker sends through the production-wired account queue key a legacy body, replay a keyed one, refuse overrides before queuing, and dispatch admitted rows", async () => {
   const f = await fixture();
-  await f.service().launch(f.caller, f.body);
+  await f.seedRunningSandbox();
   // Wired as serve.ts does: REST sends reach the account queue first, and the queue
   // dispatches through the same route without itself, with Docker in dispatch mode.
   const accountTurns = createAccountTurnQueue(sql, key);
@@ -1859,7 +1900,7 @@ test("startup failure terminalizes its accepted queued prompt with the real star
 
 test("send refreshes the first conversation when its ready row predates launch receipt publication", async () => {
   const f = await fixture();
-  await f.service().launch(f.caller, f.body);
+  await f.seedRunningSandbox();
   const sender = createDockerNormalSend(sql, key, { enabled: true, clock: f.clock });
   const stale = {
     id: f.body.requestId,
