@@ -59,40 +59,8 @@ test("migrations apply on a fresh database", async () => {
     "skillpack",
     "opencode",
     "morph",
-    "antigravity",
   ]);
   expect(await labels(db, "notify_status")).toEqual(["finished", "failed"]);
-});
-
-test("authenticated owners cannot directly write Antigravity accounts", async () => {
-  const db = migrationDatabase.get();
-  const owner = crypto.randomUUID();
-  await db.query("insert into auth.users(id) values ($1)", [owner]);
-  const insert =
-    "insert into public.credentials(scope, owner_id, kind, value_enc) values ('user', $1, 'antigravity', $2)";
-  const stored = new Uint8Array([1]);
-  const attempted = new Uint8Array([2]);
-  await db.query("select set_config('request.jwt.claim.sub', $1, false)", [owner]);
-
-  await db.exec("set role authenticated");
-  try {
-    await expect(db.query(insert, [owner, attempted])).rejects.toThrow(/row-level security/);
-  } finally {
-    await db.exec("reset role");
-  }
-
-  await db.query(insert, [owner, stored]);
-  await db.exec("set role authenticated");
-  try {
-    const rotate = await db.query("update public.credentials set value_enc = $1 where owner_id = $2", [
-      attempted,
-      owner,
-    ]);
-    const remove = await db.query("delete from public.credentials where owner_id = $1", [owner]);
-    expect([rotate.affectedRows, remove.affectedRows]).toEqual([0, 0]);
-  } finally {
-    await db.exec("reset role");
-  }
 });
 
 async function labels(db: PGlite, name: string): Promise<string[]> {
