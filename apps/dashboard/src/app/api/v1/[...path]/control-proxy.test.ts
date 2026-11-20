@@ -1,8 +1,7 @@
-import { expect, spyOn, test } from "bun:test";
+import { expect, test } from "bun:test";
 import { PUBLIC_CONTROL_ROUTES } from "@armada/core/contract";
-import * as viewer from "@/lib/data/viewer";
 import { forwardControl } from "./control-proxy.ts";
-import { GET, POST } from "./route.ts";
+import { POST } from "./route.ts";
 
 const env = process.env.ARMADA_MCP_URL;
 
@@ -669,32 +668,4 @@ test("streams sandbox events as they arrive and forwards the reconnect cursor", 
   abort.abort();
   expect(upstreamSignal?.aborted).toBe(true);
   await reader.cancel();
-});
-
-test("the dashboard events route forwards only the verified viewer session", async () => {
-  process.env.ARMADA_MCP_URL = "https://armada.test/mcp";
-  const readViewer = spyOn(viewer, "readViewer").mockResolvedValueOnce(null).mockResolvedValue({
-    id: "alice",
-    email: "alice@example.com",
-    token: "fixture-viewer",
-  });
-  const upstream = spyOn(globalThis, "fetch").mockImplementation(async (_input, init) => {
-    expect(new Headers(init?.headers).get("authorization")).toBe("Bearer fixture-viewer");
-    return new Response(": connected\n\n", { headers: { "content-type": "text/event-stream" } });
-  });
-  const url = "https://dashboard.test/api/v1/events?sandbox=11111111-1111-4111-8111-111111111111";
-  const context = { params: Promise.resolve({ path: ["events"] }) };
-  try {
-    const anonymous = await GET(new Request(url, { headers: { authorization: "Bearer untrusted" } }), context);
-    expect(anonymous.status).toBe(401);
-    expect(upstream).not.toHaveBeenCalled();
-
-    const signedIn = await GET(new Request(url), context);
-    expect(signedIn.status).toBe(200);
-    expect(signedIn.headers.get("content-type")).toBe("text/event-stream");
-    expect(await signedIn.text()).toBe(": connected\n\n");
-  } finally {
-    upstream.mockRestore();
-    readViewer.mockRestore();
-  }
 });

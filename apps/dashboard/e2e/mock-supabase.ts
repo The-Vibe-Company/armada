@@ -11,7 +11,7 @@ import {
   ROUTINE_REASON_HELP,
   resolveMachineSize,
 } from "@armada/core";
-import { createInboundTrigger, type LaunchEnvelope } from "@armada/core/contract";
+import { createInboundTrigger, type LaunchEnvelope, streamSandboxEvents } from "@armada/core/contract";
 import { largeSandboxExpiry } from "./fixture-expiry";
 
 /**
@@ -3106,6 +3106,15 @@ const server = Bun.serve({
     if (langfuse) return langfuseControl(request, langfuse, body);
     const triggerPath = url.pathname.match(/^\/api\/v1\/triggers(?:\/([^/]+)\/(deliveries|rotate|disable))?$/);
     if (triggerPath) return inboundTriggers(request, url, triggerPath, body);
+    if (url.pathname === streamSandboxEvents.route.path && request.method === streamSandboxEvents.route.method) {
+      const caller = viewer(request);
+      const sandbox = state.sandboxes.find((row) => row.id === url.searchParams.get("sandbox"));
+      if (!caller || !sandbox || !canOpenSandbox(sandbox, caller))
+        return controlFail(403, "forbidden", "Sandbox events are not available to this caller.");
+      return new Response(": connected\n\n", {
+        headers: { "content-type": streamSandboxEvents.outputMediaType, "cache-control": "no-store" },
+      });
+    }
     if (url.pathname.startsWith("/api/v1/")) {
       const route = url.pathname.slice("/api/v1/".length);
       if (route === "docker/hosts/list" && body.org === LARGE) {
