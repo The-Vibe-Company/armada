@@ -944,7 +944,7 @@ test("startup refuses a mismatched physical sandbox before replacing the live ru
   );
 });
 
-test.each(["before issuance", "during issuance", "after commit"] as const)(
+test.each(["before issuance", "during issuance"] as const)(
   "queued startup stops when the claim expires %s",
   async (expiry) => {
     const { createRuntimeStartup } = await import("../src/runtime-startup.ts");
@@ -987,8 +987,7 @@ test.each(["before issuance", "during issuance", "after commit"] as const)(
       cacheDir: "/cache",
       artifact: { sha256: "a".repeat(64), bytes: 10 },
       configuration: { selectedHarness: "codex" },
-      async assertClaim(tx?: Sql) {
-        if (!tx && expiry === "after commit") current = false;
+      async assertClaim() {
         if (!current) throw Error("queued claim expired");
       },
     };

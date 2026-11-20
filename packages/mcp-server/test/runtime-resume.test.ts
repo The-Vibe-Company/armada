@@ -382,6 +382,7 @@ describe.each(["boat", "modal"] as const)("queued runtime wake admission (%s)", 
     "unenrolled failure",
     "unenrolled claim loss",
     "restore admission loss",
+    "ticket commit loss",
     "heartbeat loss",
     "ambiguous deferral claim loss",
     "stale",
@@ -395,8 +396,9 @@ describe.each(["boat", "modal"] as const)("queued runtime wake admission (%s)", 
       ? scenario === "scoped grant loss" ||
         scenario === "unenrolled failure" ||
         scenario === "unenrolled claim loss" ||
-        scenario === "restore admission loss"
-      : scenario !== "scoped grant loss" && scenario !== "restore admission loss",
+        scenario === "restore admission loss" ||
+        scenario === "ticket commit loss"
+      : scenario !== "scoped grant loss" && scenario !== "restore admission loss" && scenario !== "ticket commit loss",
   );
   test.each(cases)("fences queued wake admission and publication (%s)", async (scenario) => {
     const scoped = scenario === "scoped grant loss";
@@ -447,26 +449,52 @@ describe.each(["boat", "modal"] as const)("queued runtime wake admission (%s)", 
     let heartbeatLost = false;
     let replacementEpoch: string | undefined;
     let restores = 0;
+    let bootstraps = 0;
+    const hasTicket = async () =>
+      Boolean(
+        (
+          await f.db.query("select 1 from runtime_enrolments where sandbox_id=$1 and enrolment_hash is not null", [
+            f.row.id,
+          ])
+        ).rows.length,
+      );
     const modalPlacement = modalRuntimeResume({
       sql: f.sql,
       vault: createSqlVaultStore(f.sql),
       key: ENCRYPTION_KEY,
       hostFor: async () =>
         ({
+          id: "modal",
+          async stop() {},
           async get() {
-            await f.db.query("update jobs set lease_until='-infinity' where id=$1", [id]);
+            if (restores)
+              return { state: "ready", providerState: "active", expiresAt: new Date(Date.now() + 86_400_000) };
+            if (scenario === "restore admission loss")
+              await f.db.query("update jobs set lease_until='-infinity' where id=$1", [id]);
             return { state: "stopped" };
           },
           async resumeRuntime() {
             restores++;
           },
+          async startRuntime() {
+            bootstraps++;
+            throw Error("Fixture ends at bootstrap invocation");
+          },
         }) as unknown as Awaited<ReturnType<Parameters<typeof modalRuntimeResume>[0]["hostFor"]>>,
-      policy: {
-        async start({ activate, signal }) {
-          await activate!(signal!);
-          throw Error("Fixture ends after provider restore");
+      policy: modalRuntimeLaunch({
+        sql: f.sql,
+        encryptionKey: ENCRYPTION_KEY,
+        serverUrl: PUBLIC_URL,
+        architecture: "x64",
+        manifest: {
+          protocol: 1,
+          platform: "linux",
+          architecture: "x64",
+          libc: "glibc",
+          runtime: { sha256: "a".repeat(64), bytes: 3 },
+          harnesses: { codex: { files: [{ path: "bin/codex" }] } },
         },
-      },
+      }),
     });
     const prepare: NonNullable<Parameters<typeof createRuntimeResume>[3]> = async (_caller, sandbox) => {
       preparations++;
@@ -476,7 +504,8 @@ describe.each(["boat", "modal"] as const)("queued runtime wake admission (%s)", 
         generation: String(before + 1),
         intent: true,
       });
-      if (scenario === "restore admission loss") return modalPlacement(f.caller, sandbox);
+      if (scenario === "restore admission loss" || scenario === "ticket commit loss")
+        return modalPlacement(f.caller, sandbox);
       return {
         async start(_signal, restore, confirmActivation) {
           if (heartbeat) {
@@ -542,6 +571,8 @@ describe.each(["boat", "modal"] as const)("queued runtime wake admission (%s)", 
       ).rows[0];
     const claim = {
       async canDispatch(tx?: Parameters<typeof store.inspect>[2]) {
+        if (!tx && scenario === "ticket commit loss" && (await hasTicket()))
+          await f.db.query("update jobs set lease_until='-infinity' where id=$1", [id]);
         if (tx && ambiguous) {
           const { rows } = await tx.query<{ activity_until: string }>(
             "select activity_until::text from sandboxes where id=$1",
@@ -608,6 +639,12 @@ describe.each(["boat", "modal"] as const)("queued runtime wake admission (%s)", 
       await expect(attempt()).rejects.toMatchObject({ code: "conflict" });
       expect(preparations).toBe(1);
       expect(restores).toBe(0);
+      expect(await read()).toMatchObject({ status: "starting", intent: true });
+    } else if (scenario === "ticket commit loss") {
+      await expect(attempt()).rejects.toMatchObject({ code: "conflict" });
+      expect(restores).toBe(1);
+      expect(bootstraps).toBe(0);
+      expect(await hasTicket()).toBe(true);
       expect(await read()).toMatchObject({ status: "starting", intent: true });
     } else if (heartbeat) {
       jest.useFakeTimers();
