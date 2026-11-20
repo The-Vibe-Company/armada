@@ -24,7 +24,7 @@ import { INTERRUPTED_LAUNCH_REASON } from "./turns.ts";
 import { deferTransactionWake, eventFeedWakeKey, runtimeWakes } from "./wake-bus.ts";
 import { preserveBeforeStop, purgeWorkRecovery, recordStopDispatch } from "./work-preservation.ts";
 
-export async function bindModalLaunchMachine(tx: Sql, machine: MachineIdentity): Promise<boolean> {
+export async function bindModalLaunchMachine(tx: Sql, machine: MachineIdentity) {
   const { rows } = await tx.query(
     `update public.sandboxes set provider_sandbox_id=$3
      where id=$1 and lifecycle_generation=$2 and provider='modal' and runtime_transport='dialout'

@@ -18,7 +18,7 @@ export async function dispatchModalLaunch(
   job: Job,
   context: DispatchContext,
   plan: ModalLaunchPlan,
-): Promise<"bootstrapped" | "reconcile"> {
+) {
   const sandboxId = job.sandbox_id;
   const generation = Number(job.generation);
   if (job.kind !== "launch" || !sandboxId || !Number.isSafeInteger(generation) || generation < 1)
@@ -46,7 +46,7 @@ export async function dispatchModalLaunch(
   if (!current) {
     signal.throwIfAborted();
     await machine.observe(incarnation);
-    return "reconcile";
+    return "reconcile" as const;
   }
 
   let allocated: MachineIdentity;
@@ -54,7 +54,7 @@ export async function dispatchModalLaunch(
     allocated = { sandboxId, generation, machineId: current.provider_sandbox_id };
   } else {
     const observed = job.attempts > 1 ? await machine.observe(incarnation) : undefined;
-    if (observed && !(await target())) return "reconcile";
+    if (observed && !(await target())) return "reconcile" as const;
     signal.throwIfAborted();
     allocated = await machine.create({ ...plan.allocation, ...incarnation });
     if (
@@ -67,12 +67,12 @@ export async function dispatchModalLaunch(
       if (!(await canDispatch(tx))) return false;
       return bindModalLaunchMachine(tx, allocated);
     });
-    if (!bound) return "reconcile";
+    if (!bound) return "reconcile" as const;
   }
 
   const readyToBootstrap = await target();
-  if (readyToBootstrap?.provider_sandbox_id !== allocated.machineId) return "reconcile";
+  if (readyToBootstrap?.provider_sandbox_id !== allocated.machineId) return "reconcile" as const;
   signal.throwIfAborted();
   await machine.bootstrap({ ...allocated, signal, bindingRef: plan.bindingRef });
-  return "bootstrapped";
+  return "bootstrapped" as const;
 }
