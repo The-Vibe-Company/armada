@@ -40,7 +40,7 @@ describe("events", () => {
     expect(
       applyChatPage(first, { events: [message("b", "truncated")], cursor: "1", hasMore: true }, "forward"),
     ).toBeNull();
-    expect(first.cursor).toBe("1");
+    expect(first).toMatchObject({ cursor: "1", events: [message("a", "one")] });
     const resumed = applyChatPage(first, { events: [message("b", "two")], cursor: "2", hasMore: false }, "forward");
     expect(resumed).toMatchObject({ cursor: "2", events: [message("a", "one"), message("b", "two")] });
   });
