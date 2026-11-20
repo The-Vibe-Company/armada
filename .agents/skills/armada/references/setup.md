@@ -2,10 +2,10 @@
 
 ## GitHub and model access
 
-Use `armada github status` and, with the human present,
-`armada github connect` or `armada github reconnect`. Installation access and
+Use `armada account ls github` and, with the human present,
+`armada account login github` to authorize or reauthorize. Installation access and
 user authorization are distinct: ensure the App can access the requested repo.
-`armada github refresh SANDBOX` refreshes sandbox GitHub access after connection
+`armada api github/refresh '{"id":"SANDBOX"}'` refreshes sandbox GitHub access after connection
 repair; it is not a model-account refresh or a way around repository permissions.
 
 Inspect `armada creds list`. Model credentials resolve personal over org defaults;

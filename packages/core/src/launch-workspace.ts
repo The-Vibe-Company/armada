@@ -141,7 +141,7 @@ async function run(
     )
       throw new LaunchError(
         "no_credentials",
-        `Repository ${repository.dir} needs a GitHub connection with read access. Run armada github connect, grant your account and the Armada GitHub App access, then launch again.`,
+        `Repository ${repository.dir} needs a GitHub connection with read access. Run armada account login github, grant your account and the Armada GitHub App access, then launch again.`,
       );
     if (
       isFetchFailure(result) &&

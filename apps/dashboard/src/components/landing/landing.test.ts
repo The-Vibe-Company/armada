@@ -71,7 +71,7 @@ describe("what the landing says", () => {
     expect(SETUP[0]?.command).toBe(INSTALL);
     const launch = (await landingTranscript()).find((entry) => entry.command.startsWith("armada new "));
     expect(launch?.output).toContain("launch token expires at 2026-11-09T17:30:00.000Z (~480 minutes remaining)");
-    expect(launch?.output).toContain("armada github refresh");
+    expect(launch?.output).toContain("armada api github/refresh");
   });
 
   test("replays the session the CLI's own code prints (bun apps/dashboard/scripts/landing-transcript.ts)", async () => {

@@ -79,7 +79,6 @@ describe("run", () => {
     "token",
     "org",
     "account",
-    "github",
     "creds",
   ])("%s help needs no login or server request", async (command) => {
     const { code, out, err } = await capture([command, "--help"]);
@@ -107,6 +106,7 @@ describe("run", () => {
     };
     for (const [args, command, checkHelp] of [
       [["frobnicate"], "frobnicate"],
+      [["--profile", "unconfigured", "github", "connect"], "github"],
       [["list"], "list", true],
       [["send"], "send", true],
       [["steer"], "steer", true],

@@ -14,7 +14,6 @@ export type UsageGroup =
   | "session"
   | "account"
   | "automation"
-  | "github"
   | "vault"
   | "mcp"
   | "mcp-bindings"

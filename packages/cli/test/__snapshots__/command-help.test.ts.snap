@@ -113,10 +113,8 @@ Usage:
   armada org setup [--org <name>]          Show organization provider setup status
   armada org connect boat|modal [--org <name>] [--file <path>]
                                            Connect an org provider using hidden input, stdin or a file
-  armada account status|logout              Account identity / revoke current login session
-  armada github status|connect|reconnect|disconnect|install|manage [installation-id]
-  armada github refresh <sandbox>
-                                           Browser authorization waits for real completion; --no-browser prints URL
+  armada account ls|add|login|rm github      GitHub connection and installation
+  armada account status|logout               Armada identity / revoke current login session
   armada org invitations create <email> [--role admin|member] [--org <name|UUID>] [--json]
   armada org invitations list [--org <name|UUID>] [--json]
   armada org invitations resend|revoke <id> [--org <name|UUID>] [--json]

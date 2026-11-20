@@ -129,7 +129,7 @@ No credential material is logged. Historical events before this instrumentation
 cannot be reconstructed.
 
 Static copies have no guaranteed usable lifetime after another client's rotation.
-Push work frequently. Use `armada github refresh SANDBOX_UUID` for legacy Boat repair;
+Push work frequently. Use `armada api github/refresh '{"id":"SANDBOX_UUID"}'` for legacy Boat repair;
 reconnect only for revoked or uncertain grants. Automatic credential-helper
 refresh (#908) is the durable remedy, not weakening the refresh fence.
 
@@ -141,7 +141,7 @@ bearer is allowed to use an existing linked connection; it is not a separate
 organization GitHub identity. The selected model credential and Docker host owner
 do not supply this access.
 
-`armada github status` is an account-management endpoint and rejects service
+`armada account ls github` is an account-management endpoint and rejects service
 bearers **before checking the connection**. Its “Sign in as a person” response
 therefore does not prove that the service token's user lacks GitHub access. Sign
 in as the same token-owning user to manage/connect GitHub. Merely switching bearer
