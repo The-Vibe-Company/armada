@@ -20,7 +20,7 @@ const fence = "j.id = $1 and j.lease_owner = $2 and j.lease_epoch = $3 and j.lea
 const claimIdentity = (job: Job, owner: string) => [job.id, owner, job.lease_epoch];
 const claimKey = (job: Job, owner: string) => [...claimIdentity(job, owner), job.generation];
 
-const CURRENT_DOCKER_PROMPT_RESPONSE = `(s.provider = 'docker' and exists(
+const CURRENT_DOCKER_PROMPT_COMMAND = `(s.provider = 'docker' and exists(
   select 1 from public.runtime_commands c
   join public.runtime_enrolments e on e.sandbox_id = c.sandbox_id and e.epoch = c.epoch
   join public.docker_hosts h on h.id = s.docker_host_id and h.org_id = s.org_id
@@ -28,7 +28,7 @@ const CURRENT_DOCKER_PROMPT_RESPONSE = `(s.provider = 'docker' and exists(
   join public.members m on m.org_id = h.org_id and m.user_id = h.owner_id
   join public.mcp_actor_epochs a on a.org_id = m.org_id and a.user_id = m.user_id
   where c.sandbox_id = s.id and c.request_id = 'docker_prompt_' || q.request_id::text
-    and c.result_enc is not null and e.runtime_hash is not null
+    and e.runtime_hash is not null
     and e.lifecycle_generation = s.lifecycle_generation
     and e.docker_issuer_fence = h.owner_id::text || ':' || a.epoch::text
     and h.hash is not null and h.registration_hash is null and h.revoked_at is null
@@ -177,7 +177,7 @@ export function createJobsStore(sql: Sql, encryptionKey?: string) {
                    and (s.activity_lease_id = q.request_id
                      or (s.activity_lease_id is null and ${CURRENT_DOCKER_RESUME_JOB})
                      or (s.activity_lease_id is null and s.status in ('ready','running')
-                       and (${CURRENT_DOCKER_PROMPT_RESPONSE} or (s.provider in ('boat','modal') and (exists(
+                       and (${CURRENT_DOCKER_PROMPT_COMMAND} or (s.provider in ('boat','modal') and (exists(
                          select 1 from public.runtime_commands c
                          join public.runtime_enrolments e on e.sandbox_id = c.sandbox_id and e.epoch = c.epoch
                          where c.sandbox_id = s.id and c.request_id = 'follow_' || q.request_id::text
