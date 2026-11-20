@@ -1229,7 +1229,34 @@ test.each(refusalOrders)(
           order === "previous server ACK" ? "completed" : "failed",
         ]);
         expect(await hosts.mayHaveWork(f.hostToken, f.installationId, false, [], true)).toBe(true);
-        await hosts.poll(f.hostToken, f.installationId);
+        if (order === "previous server failed ACK") {
+          let checkedActorLock = false;
+          const observedSql: Sql = {
+            query: sql.query,
+            transaction: (work) =>
+              sql.transaction!((tx) =>
+                work({
+                  query: async (statement, values) => {
+                    if (statement.includes("insert into public.docker_host_jobs")) {
+                      // Inspect the distinct resume actor's lock inside the retained-stop transaction.
+                      const membership = await tx.query<{ locked: boolean }>(
+                        `select xmax = pg_current_xact_id()::text::xid as locked
+                         from public.members where org_id=$1 and user_id=$2`,
+                        [f.actor.orgId, f.actor.userId],
+                      );
+                      expect(membership.rows[0]?.locked).toBe(true);
+                      checkedActorLock = true;
+                    }
+                    return tx.query(statement, values);
+                  },
+                }),
+              ),
+          };
+          await createDockerHostStore(observedSql, key).poll(f.hostToken, f.installationId);
+          expect(checkedActorLock).toBe(true);
+        } else {
+          await hosts.poll(f.hostToken, f.installationId);
+        }
       } else {
         if (order === "ACK transaction rollback") {
           const failingSql: Sql = {
