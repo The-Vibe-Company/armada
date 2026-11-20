@@ -20,6 +20,7 @@ import { createGoldenBuildJob } from "../../mcp-server/src/golden-worker.ts";
 import { createJobsRunner } from "../../mcp-server/src/jobs/runner.ts";
 import { createJobsStore } from "../../mcp-server/src/jobs/store.ts";
 import { createSandboxLifecycle } from "../../mcp-server/src/sandbox-lifecycle.ts";
+import { closeableFixture } from "../../mcp-server/test/closeable.fixture.ts";
 import {
   appendModalEvents,
   type ComposedModalOptions,
@@ -38,10 +39,8 @@ import {
   scopeKey,
   settleDetachedModalCollections,
 } from "../src/index.ts";
-
 import { captureProcessBaseline } from "../src/process-scope.ts";
 
-let db: Awaited<ReturnType<typeof openMigratedDatabase>>;
 let workerSnapshot: string;
 let goldenTemplate: Machine;
 let checkpointedGoldenTemplate: Machine;
@@ -53,36 +52,46 @@ const scope: Scope = {
   visibility: "private",
   binding: { workspace: "label-only", environment: "main", appId: "ap_pinned" },
 };
-beforeAll(async () => {
-  db = await openMigratedDatabase();
-  await db.exec(`
-    set plan_cache_mode = force_generic_plan;
-    insert into auth.users(id) values
-      ('${scope.userId}'), ('00000000-0000-0000-0000-000000000004');
-    insert into orgs(id,name) values ('${scope.orgId}','modal');
-    insert into members(org_id,user_id,role) values
-      ('${scope.orgId}','${scope.userId}','admin'),
-      ('${scope.orgId}','00000000-0000-0000-0000-000000000004','member');
-  `);
-  // Worker lifecycle cases need a saved image. Golden lifecycle cases create their own.
-  const { provider, store } = fixture();
-  const builder = await provider.createGolden({});
-  goldenTemplate = await store.get(builder.id);
-  workerSnapshot = crypto.randomUUID();
-  await provider.snapshot({ sandboxId: builder.id, name: workerSnapshot });
-  checkpointedGoldenTemplate = await store.get(builder.id);
-  imageTemplate = await store.image(workerSnapshot);
-  const worker = await provider.fork({ from: workerSnapshot });
-  workerTemplate = await store.get(worker.id);
-  await db.query("delete from public.modal_machines where id=$1", [worker.id]);
+const {
+  setup,
+  close,
+  get: getDb,
+} = closeableFixture(async () => {
+  const db = await openMigratedDatabase();
+  try {
+    await db.exec(`
+      set plan_cache_mode = force_generic_plan;
+      insert into auth.users(id) values
+        ('${scope.userId}'), ('00000000-0000-0000-0000-000000000004');
+      insert into orgs(id,name) values ('${scope.orgId}','modal');
+      insert into members(org_id,user_id,role) values
+        ('${scope.orgId}','${scope.userId}','admin'),
+        ('${scope.orgId}','00000000-0000-0000-0000-000000000004','member');
+    `);
+    // Worker lifecycle cases need a saved image. Golden lifecycle cases create their own.
+    const { provider, store } = fixture(scope, db);
+    const builder = await provider.createGolden({});
+    goldenTemplate = await store.get(builder.id);
+    workerSnapshot = crypto.randomUUID();
+    await provider.snapshot({ sandboxId: builder.id, name: workerSnapshot });
+    checkpointedGoldenTemplate = await store.get(builder.id);
+    imageTemplate = await store.image(workerSnapshot);
+    const worker = await provider.fork({ from: workerSnapshot });
+    workerTemplate = await store.get(worker.id);
+    await db.query("delete from public.modal_machines where id=$1", [worker.id]);
+    return db;
+  } catch (error) {
+    await db.close();
+    throw error;
+  }
 });
-afterAll(async () => {
-  await db.close();
-});
+beforeAll(setup);
+afterAll(close);
 const prepared = new Map<string, Promise<string>>();
 const fixtureSql: Sql = {
-  transaction: (work) => db.transaction(work),
+  transaction: (work) => getDb().transaction(work),
   async query<T>(statement: string, params: unknown[] = []) {
+    const db = getDb();
     if (
       !params.length ||
       params.some((value) => value !== null && typeof value !== "string" && typeof value !== "number")
@@ -438,7 +447,7 @@ function fixture(
   };
 }
 async function seedHistory(sandboxId: string, events: AgentEvent[]) {
-  await db.query(
+  await getDb().query(
     `insert into public.modal_events(scope,sandbox_id,generation,producer_sequence,event)
      select $1,$2,'1',sequence,event
      from jsonb_array_elements($3::jsonb) with ordinality as history(event,sequence)`,
@@ -470,9 +479,9 @@ test("stored composition reads ingested turns without any live SDK, runner or li
   const tracedSql: Sql = {
     query: (text, params) => {
       queries++;
-      return db.query(text, params);
+      return getDb().query(text, params);
     },
-    transaction: (work) => db.transaction!(work),
+    transaction: (work) => getDb().transaction!(work),
   };
   f.client.apps.fromName = async () => {
     throw new Error("No live App lookup on stored reads");
@@ -514,18 +523,18 @@ test("stored composition reads ingested turns without any live SDK, runner or li
     await f.store.lease(row.id, async () => {
       expect((await stored.provider.events({ sandboxId: row.id })).events[0]).toEqual(history[0]);
     });
-    await db.query("update members set role='admin' where org_id=$1 and user_id=$2", [
+    await getDb().query("update members set role='admin' where org_id=$1 and user_id=$2", [
       scope.orgId,
       "00000000-0000-0000-0000-000000000004",
     ]);
-    await db.query("delete from members where org_id=$1 and user_id=$2", [scope.orgId, scope.userId]);
+    await getDb().query("delete from members where org_id=$1 and user_id=$2", [scope.orgId, scope.userId]);
     await expect(stored.provider.events({ sandboxId: row.id })).rejects.toMatchObject({ code: "forbidden" });
   } finally {
-    await db.query("insert into members(org_id,user_id,role) values($1,$2,'admin') on conflict do nothing", [
+    await getDb().query("insert into members(org_id,user_id,role) values($1,$2,'admin') on conflict do nothing", [
       scope.orgId,
       scope.userId,
     ]);
-    await db.query("update members set role='member' where org_id=$1 and user_id=$2", [
+    await getDb().query("update members set role='member' where org_id=$1 and user_id=$2", [
       scope.orgId,
       "00000000-0000-0000-0000-000000000004",
     ]);
@@ -566,7 +575,7 @@ test("detail verifies the App once per read and still rejects a changed binding"
 });
 
 async function goldenBuildGitHub(key: string): Promise<typeof fetch> {
-  await db.query(
+  await getDb().query(
     "insert into github_connections(user_id,github_id,login,refresh_token_enc,access_token_enc,access_expires_at) values($1,77,'builder',$2,$3,now()+interval '8 hours') on conflict (user_id) do update set refresh_token_enc=excluded.refresh_token_enc,access_token_enc=excluded.access_token_enc,access_expires_at=excluded.access_expires_at",
     [scope.userId, await encryptSecret("fixture-refresh", key), await encryptSecret("fixture-access", key)],
   );
@@ -588,7 +597,7 @@ function goldenBuildRunner(builds: GoldenBuildJobs, receiptId: string) {
   async function tick() {
     const errors: string[] = [];
     const runner = createJobsRunner(
-      createJobsStore(db),
+      createJobsStore(getDb()),
       {
         golden_build: createGoldenBuildJob(
           builds,
@@ -607,7 +616,7 @@ function goldenBuildRunner(builds: GoldenBuildJobs, receiptId: string) {
 
   async function retry() {
     now += 60_000;
-    const { rows } = await db.query(
+    const { rows } = await getDb().query(
       "update public.jobs set run_after='-infinity' where id=$1 and state='queued' and run_after=$2 returning id",
       [receiptId, new Date(now)],
     );
@@ -616,7 +625,7 @@ function goldenBuildRunner(builds: GoldenBuildJobs, receiptId: string) {
   }
 
   async function expectDone() {
-    const { rows } = await db.query("select state from public.jobs where id=$1", [receiptId]);
+    const { rows } = await getDb().query("select state from public.jobs where id=$1", [receiptId]);
     expect(rows).toEqual([{ state: "done" }]);
     expect(await tick()).toBe(false);
   }
@@ -644,11 +653,11 @@ test("a failed Modal builder image records safe diagnostics and frees capacity w
     throw new Error("Fixture image build unexpectedly completed");
   });
   const jobs = new GoldenBuildJobs({
-    sql: db,
+    sql: getDb(),
     encryptionKey: key,
     service: {
       github: {
-        store: createSqlVaultStore(db),
+        store: createSqlVaultStore(getDb()),
         encryptionKey: key,
         app: { clientId: "fixture", clientSecret: "fixture" },
         fetch: githubFetch,
@@ -678,7 +687,9 @@ test("a failed Modal builder image records safe diagnostics and frees capacity w
     expect(JSON.stringify(log.mock.calls)).not.toContain(privateDetail);
     expect(sdkCreate).not.toHaveBeenCalled();
     expect(await f.store.findByRequestKey(job.jobId)).toMatchObject({ phase: "deleted" });
-    expect((await db.query("select id from golden_backend_slots where org_id=$1", [scope.orgId])).rows).toEqual([]);
+    expect((await getDb().query("select id from golden_backend_slots where org_id=$1", [scope.orgId])).rows).toEqual(
+      [],
+    );
   } finally {
     log.mockRestore();
   }
@@ -691,12 +702,12 @@ test("durable golden recovery persists an interrupted Modal builder before exact
   const actor = { userId: scope.userId, orgId: scope.orgId, role: "admin" as const };
   let concurrentAfterPersist: (() => Promise<void>) | undefined;
   const recoverySql: Sql = {
-    query: db.query.bind(db),
+    query: getDb().query.bind(getDb()),
     transaction: async (work) => {
-      const result = await db.transaction(work);
+      const result = await getDb().transaction(work);
       const run = concurrentAfterPersist;
       if (run) {
-        const persisted = await db.query<{ builder_id: string | null }>(
+        const persisted = await getDb().query<{ builder_id: string | null }>(
           "select builder_id from golden_build_jobs where id=$1",
           [job.jobId],
         );
@@ -713,7 +724,7 @@ test("durable golden recovery persists an interrupted Modal builder before exact
     encryptionKey: key,
     service: {
       github: {
-        store: createSqlVaultStore(db),
+        store: createSqlVaultStore(getDb()),
         encryptionKey: key,
         app: { clientId: "fixture", clientSecret: "fixture" },
         fetch: githubFetch,
@@ -734,7 +745,7 @@ test("durable golden recovery persists an interrupted Modal builder before exact
   );
   const { tick, retry, expectDone } = goldenBuildRunner(jobs, job.jobId);
   const fence = crypto.randomUUID();
-  await db.query(
+  await getDb().query(
     "update golden_build_jobs set state='recovery_required',phase='builder',error_code='build_failed',fence=$2 where id=$1",
     [job.jobId, fence],
   );
@@ -766,7 +777,7 @@ test("durable golden recovery persists an interrupted Modal builder before exact
   }
   const row = async () =>
     (
-      await db.query<{ builder_id: string | null; state: string; fence: string }>(
+      await getDb().query<{ builder_id: string | null; state: string; fence: string }>(
         "select builder_id,state,fence from golden_build_jobs where id=$1",
         [job.jobId],
       )
@@ -784,41 +795,41 @@ test("durable golden recovery persists an interrupted Modal builder before exact
     { ...originalRecord, managementAuthority: { credentialScope: "org", credentialOwnerId: scope.orgId } },
     { ...originalRecord, launchUserId: "00000000-0000-0000-0000-000000000004" },
   ]) {
-    await db.query("update modal_machines set record=$2::jsonb where id=$1", [
+    await getDb().query("update modal_machines set record=$2::jsonb where id=$1", [
       reserved.info.id,
       JSON.stringify(corrupt),
     ]);
     await expect(f.provider.findGoldenBuilder(request)).rejects.toMatchObject({ code: "forbidden" });
   }
-  await db.query("update modal_machines set record=$2::jsonb where id=$1", [
+  await getDb().query("update modal_machines set record=$2::jsonb where id=$1", [
     reserved.info.id,
     JSON.stringify(originalRecord),
   ]);
-  await db.query("update modal_machines set owner_id=$2 where id=$1", [
+  await getDb().query("update modal_machines set owner_id=$2 where id=$1", [
     reserved.info.id,
     "00000000-0000-0000-0000-000000000004",
   ]);
   expect(await f.provider.findGoldenBuilder(request)).toBeNull();
-  await db.query("update modal_machines set owner_id=$2 where id=$1", [reserved.info.id, scope.userId]);
+  await getDb().query("update modal_machines set owner_id=$2 where id=$1", [reserved.info.id, scope.userId]);
   const discover = f.provider.findGoldenBuilder;
   f.provider.findGoldenBuilder = async (req) => {
     const found = await discover(req);
-    await db.query("update golden_build_jobs set fence=$2 where id=$1", [job.jobId, crypto.randomUUID()]);
+    await getDb().query("update golden_build_jobs set fence=$2 where id=$1", [job.jobId, crypto.randomUUID()]);
     return found;
   };
   expect(await tick()).toBe(true);
   expect((await row()).builder_id).toBeNull();
   expect(f.log).not.toContain("terminate");
-  await db.query("update golden_build_jobs set fence=$2 where id=$1", [job.jobId, fence]);
+  await getDb().query("update golden_build_jobs set fence=$2 where id=$1", [job.jobId, fence]);
   f.provider.findGoldenBuilder = discover;
   for (const phase of ["snapshot", "persist"]) {
-    await db.query("update golden_build_jobs set phase=$2 where id=$1", [job.jobId, phase]);
+    await getDb().query("update golden_build_jobs set phase=$2 where id=$1", [job.jobId, phase]);
     await retry();
     expect((await row()).builder_id).toBeNull();
     expect(f.log).not.toContain("terminate");
   }
-  await db.query("update golden_build_jobs set phase='builder' where id=$1", [job.jobId]);
-  await db.query("update modal_machines set record=$2::jsonb where id=$1", [
+  await getDb().query("update golden_build_jobs set phase='builder' where id=$1", [job.jobId]);
+  await getDb().query("update modal_machines set record=$2::jsonb where id=$1", [
     reserved.info.id,
     JSON.stringify({ ...originalRecord, snapshotImages: [{ name: "retained-proof", imageId: "im_proof" }] }),
   ]);
@@ -839,17 +850,19 @@ test("durable golden recovery persists an interrupted Modal builder before exact
   expect(await row()).toMatchObject({ builder_id: reserved.info.id, state: "recovery_required" });
   expect(f.log).not.toContain("terminate");
   expect(f.log).not.toContain("delete-image");
-  await db.query(
+  await getDb().query(
     "update modal_machines set record=$2::jsonb,lease_id=$3,lease_until=now()+interval '15 minutes' where id=$1",
     [reserved.info.id, JSON.stringify(originalRecord), crypto.randomUUID()],
   );
   await retry();
   expect((await row()).state).toBe("recovery_required");
   expect(f.log).not.toContain("terminate");
-  await db.query("update modal_machines set lease_until=now()-interval '1 second' where id=$1", [reserved.info.id]);
+  await getDb().query("update modal_machines set lease_until=now()-interval '1 second' where id=$1", [
+    reserved.info.id,
+  ]);
   f.provider.findGoldenBuilder = async (req) => {
     const found = await discover(req);
-    await db.query("update modal_machines set record=$2::jsonb where id=$1", [
+    await getDb().query("update modal_machines set record=$2::jsonb where id=$1", [
       reserved.info.id,
       JSON.stringify({ ...originalRecord, recoveryImageId: "im_late_proof" }),
     ]);
@@ -860,7 +873,7 @@ test("durable golden recovery persists an interrupted Modal builder before exact
   expect(f.log).not.toContain("terminate");
   expect(f.log).not.toContain("delete-image");
   f.provider.findGoldenBuilder = discover;
-  await db.query("update modal_machines set record=$2::jsonb where id=$1", [
+  await getDb().query("update modal_machines set record=$2::jsonb where id=$1", [
     reserved.info.id,
     JSON.stringify(originalRecord),
   ]);
@@ -880,7 +893,7 @@ test("durable golden recovery persists an interrupted Modal builder before exact
     environment: "main",
     includeTerminated: true,
   });
-  await db.query("update modal_machines set record=$2::jsonb where id=$1", [
+  await getDb().query("update modal_machines set record=$2::jsonb where id=$1", [
     reserved.info.id,
     JSON.stringify({ ...originalRecord, physicalId: known.sandboxId }),
   ]);
@@ -928,7 +941,7 @@ test.each(["interrupted", "abandoned"] as const)(
   async (mode) => {
     const f = fixture();
     const key = Buffer.alloc(32, 62).toString("base64");
-    await db.query(
+    await getDb().query(
       "insert into github_connections(user_id,github_id,login,refresh_token_enc,access_token_enc,access_expires_at) values($1,77,'builder',$2,$3,now()+interval '8 hours') on conflict (user_id) do update set refresh_token_enc=excluded.refresh_token_enc,access_token_enc=excluded.access_token_enc,access_expires_at=excluded.access_expires_at",
       [scope.userId, await encryptSecret("fixture-refresh", key), await encryptSecret("fixture-access", key)],
     );
@@ -941,11 +954,11 @@ test.each(["interrupted", "abandoned"] as const)(
       throw new Error("Unexpected fixture GitHub route");
     }) as typeof fetch;
     const jobs = new GoldenBuildJobs({
-      sql: db,
+      sql: getDb(),
       encryptionKey: key,
       service: {
         github: {
-          store: createSqlVaultStore(db),
+          store: createSqlVaultStore(getDb()),
           encryptionKey: key,
           app: { clientId: "fixture", clientSecret: "fixture" },
           fetch: githubFetch,
@@ -995,12 +1008,12 @@ test.each(["interrupted", "abandoned"] as const)(
       await expect(f.provider.delete({ sandboxId: builder.id })).rejects.toBeDefined();
     }
     expect((await f.store.get(builder.id)).phase).toBe(parked);
-    await db.query(
+    await getDb().query(
       "update golden_build_jobs set state='recovery_required',phase='persist',error_code='build_failed',fence=$2,builder_id=$3,snapshot=$4 where id=$1",
       [job.jobId, crypto.randomUUID(), builder.id, artifact],
     );
     const state = async () =>
-      (await db.query<{ state: string }>("select state from golden_build_jobs where id=$1", [job.jobId])).rows[0]
+      (await getDb().query<{ state: string }>("select state from golden_build_jobs where id=$1", [job.jobId])).rows[0]
         ?.state;
     expect(await tick()).toBe(true);
     expect(await state()).toBe("recovery_required");
@@ -1133,7 +1146,7 @@ test("enrolled Modal fork refuses a snapshot retired before reservation", async 
       query: fixtureSql.query,
       async transaction(work) {
         await source.provider.deleteSnapshot(name);
-        return db.transaction(work);
+        return getDb().transaction(work);
       },
     },
     undefined,
@@ -1162,7 +1175,7 @@ test("snapshot retirement refuses a live enrolled Modal fork reference", async (
 });
 
 test("enrolled Modal forks mount the environment artifact cache read-only", async () => {
-  const f = fixture(scope, db, undefined, undefined, true);
+  const f = fixture(scope, getDb(), undefined, undefined, true);
   const volume = new Volume("vo_public_artifacts");
   f.setArtifactVolume(volume);
   await runningFork(f);
@@ -1215,7 +1228,7 @@ test("enrolled Modal host forks never start or call the tunnel and stop without 
 });
 
 test("common-runtime Modal capture quiesces the active incarnation and runs the Git policy as the workspace user", async () => {
-  const f = fixture(scope, db, undefined, undefined, true);
+  const f = fixture(scope, getDb(), undefined, undefined, true);
   f.distribution.captureProcessBaseline = captureProcessBaseline;
   const worker = await runningFork(f);
   const afterFork = f.log.length;
@@ -1233,7 +1246,7 @@ test("common-runtime Modal capture quiesces the active incarnation and runs the 
 });
 
 test("common-runtime Modal capture refuses a stale incarnation before touching physical compute", async () => {
-  const f = fixture(scope, db, undefined, undefined, true);
+  const f = fixture(scope, getDb(), undefined, undefined, true);
   const worker = await runningFork(f);
   const afterFork = f.sdkCommands.length;
 
@@ -1583,7 +1596,7 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
             crash = false;
             throw Error("injected durable commit loss");
           }
-          return db.query<T>(statement, params);
+          return getDb().query<T>(statement, params);
         },
       };
       const f = fixture(scope, sql);
@@ -1722,7 +1735,7 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     const row = await activeWorker(f);
     const statuses = ["queued", "running", "finished", "failed", "interrupted"] as const;
     await appendModalEvents(
-      db,
+      getDb(),
       scope,
       row.id,
       "1",
@@ -1768,11 +1781,11 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     const row = await activeWorker(f);
     const eventCount = 13;
     const pageSize = 5;
-    const maximum = await db.query<{ cursor: string }>(
+    const maximum = await getDb().query<{ cursor: string }>(
       "select coalesce(max(cursor),0)::text as cursor from public.modal_events",
     );
     const start = 10 ** String(Number(maximum.rows[0]?.cursor ?? 0) + eventCount).length - 4;
-    await db.query("select setval('public.modal_events_cursor_seq', $1, false)", [start]);
+    await getDb().query("select setval('public.modal_events_cursor_seq', $1, false)", [start]);
     const events: AgentEvent[] = Array.from({ length: eventCount }, (_, i) => ({
       id: `ordered-${i}`,
       // Deliberately not time/UUID ordered: the durable cursor is authoritative.
@@ -2072,7 +2085,7 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     await expect(f.provider.collectRetiredSnapshot(name)).resolves.toBe("pending");
     expect(calls).toBe(1);
     const expire = () =>
-      db.query(
+      getDb().query(
         `update public.modal_images set record=jsonb_set(record,'{collectUntil}','0') where record->>'imageId'=$1`,
         [imageId],
       );
@@ -2157,7 +2170,7 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     const original = await f.store.image(name);
     expect(original.imageId).toBeDefined();
     expect(original.managementAuthority).toBeDefined();
-    await db.query("update modal_images set record=record-'imageId'-'managementAuthority' where name=$1", [name]);
+    await getDb().query("update modal_images set record=record-'imageId'-'managementAuthority' where name=$1", [name]);
     const info = await f.provider.getSnapshot(name);
     expect(info.artifactId).toBeUndefined();
     expect(info.managementAuthority).toBeUndefined();
@@ -2167,9 +2180,9 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     "saved-handle collection protects shared physical recovery references across tenant scopes (%s)",
     async (mode) => {
       const otherOrg = crypto.randomUUID();
-      await db.query("insert into orgs(id,name) values($1,$2)", [otherOrg, "shared-ref-" + otherOrg]);
+      await getDb().query("insert into orgs(id,name) values($1,$2)", [otherOrg, "shared-ref-" + otherOrg]);
       const otherUser = "00000000-0000-0000-0000-000000000004";
-      await db.query("insert into members(org_id,user_id,role) values($1,$2,'admin')", [otherOrg, otherUser]);
+      await getDb().query("insert into members(org_id,user_id,role) values($1,$2,'admin')", [otherOrg, otherUser]);
       const other = fixture({ ...scope, orgId: otherOrg, userId: otherUser });
       const seed = await other.provider.createGolden({});
       const seedName = crypto.randomUUID();
@@ -2228,7 +2241,7 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     const f = fixture();
     const row = await f.seedMachine(goldenTemplate);
     const handler = createModalIngestHandler({
-      sql: db,
+      sql: getDb(),
       verifyGrant: async () => ({
         scope,
         claims: { sandboxId: row.id, generation: "1", expiresAt: Date.now() + 60000 },
@@ -2298,7 +2311,7 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
       generation: "1",
       expiresAt: Date.now() + 60000,
     };
-    const handler = createModalIngestHandler({ sql: db, verifyGrant: async () => ({ scope, claims: grant }) });
+    const handler = createModalIngestHandler({ sql: getDb(), verifyGrant: async () => ({ scope, claims: grant }) });
     const journal = new Journal(":memory:", (s) => s);
     const driver: Driver = {
       start() {
@@ -2416,7 +2429,7 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
       tools: [],
     });
     await appendModalEvents(
-      db,
+      getDb(),
       scope,
       row.id,
       "1",
@@ -2444,7 +2457,7 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
       ),
     ).toBe("1234");
     expect(older.hasMore).toBe(false);
-    await appendModalEvents(db, scope, row.id, "1", [{ sequence: 5, event: event(5) }]);
+    await appendModalEvents(getDb(), scope, row.id, "1", [{ sequence: 5, event: event(5) }]);
     const follow = await f.provider.events({ sandboxId: row.id, cursor: tail.cursor! });
     expect(follow.events.map((e) => e.id)).toEqual(["history-5"]);
   });
@@ -2452,15 +2465,15 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     const f = fixture();
     const row = await f.seedMachine(goldenTemplate);
     const event = { id: "event", at: 1, kind: "other" as const, type: "test", data: {} };
-    expect(await appendModalEvents(db, scope, row.id, "1", [{ sequence: 2, event }])).toBe(0);
+    expect(await appendModalEvents(getDb(), scope, row.id, "1", [{ sequence: 2, event }])).toBe(0);
     expect(
-      await appendModalEvents(db, scope, row.id, "1", [
+      await appendModalEvents(getDb(), scope, row.id, "1", [
         { sequence: 1, event },
         { sequence: 2, event },
       ]),
     ).toBe(2);
     expect((await f.provider.events({ sandboxId: row.id })).events).toHaveLength(2);
-    await expect(appendModalEvents(db, scope, row.id, "0", [{ sequence: 3, event }])).rejects.toMatchObject({
+    await expect(appendModalEvents(getDb(), scope, row.id, "0", [{ sequence: 3, event }])).rejects.toMatchObject({
       code: "forbidden",
     });
   });
@@ -2473,7 +2486,7 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
       await save(current);
     });
     const event = { id: "restored", at: 1, kind: "other" as const, type: "test", data: {} };
-    expect(await appendModalEvents(db, scope, row.id, "2", [{ sequence: 43, event }])).toBe(43);
+    expect(await appendModalEvents(getDb(), scope, row.id, "2", [{ sequence: 43, event }])).toBe(43);
     expect(await f.store.watermark(row.id, 2)).toBe(43);
     expect((await f.provider.events({ sandboxId: row.id })).events).toHaveLength(1);
   });
@@ -2529,7 +2542,7 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     };
     const { provider, close } = await createComposedModalProvider(configuration);
     const launched = await provider.fork({ from: snapshot, name: "private-personal-MCP" });
-    const privateStore = createSqlModalStore(db, scope);
+    const privateStore = createSqlModalStore(getDb(), scope);
     const machine = await privateStore.get(launched.id);
     expect(machine.sourceImage).toMatchObject({ name: snapshot });
     expect(machine.processBaseline).toMatchObject({ physicalId: machine.physicalId, generation: machine.generation });
@@ -2569,9 +2582,11 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     ).rejects.toMatchObject({ code: "not_found" });
     expect((await other.provider.list()).items.some((x) => x.id === launched.id)).toBe(false);
     other.close();
-    await expect(createSqlModalStore(db, otherScope).get(launched.id)).rejects.toMatchObject({ code: "not_found" });
-    expect((await createSqlModalStore(db, otherScope).list()).some((x) => x.info.id === launched.id)).toBe(false);
-    await expect(createSqlModalStore(db, scope).image(snapshot)).rejects.toMatchObject({ code: "not_found" });
+    await expect(createSqlModalStore(getDb(), otherScope).get(launched.id)).rejects.toMatchObject({
+      code: "not_found",
+    });
+    expect((await createSqlModalStore(getDb(), otherScope).list()).some((x) => x.info.id === launched.id)).toBe(false);
+    await expect(createSqlModalStore(getDb(), scope).image(snapshot)).rejects.toMatchObject({ code: "not_found" });
     const { resolveManagementCredentials: _resolveSource, ...operatorWithSource } = configuration;
     const wrongSource = await createComposedModalProvider({ ...operatorWithSource, sourceScope: scope });
     await expect(wrongSource.provider.get(launched.id)).rejects.toMatchObject({ code: "forbidden" });
@@ -2711,7 +2726,7 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
         managementAuthority: { credentialScope: "org", credentialOwnerId: otherScope.userId },
       }),
     ).rejects.toMatchObject({ code: "forbidden" });
-    expect(JSON.stringify((await db.query("select record from public.modal_machines")).rows)).not.toContain(
+    expect(JSON.stringify((await getDb().query("select record from public.modal_machines")).rows)).not.toContain(
       "synthetic-fallback-secret",
     );
     let calls = f.log.filter((x) => x === "delete-image").length;
@@ -2777,7 +2792,7 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
       execEnv: { GH_TOKEN: "synthetic-refreshed-github", GITHUB_TOKEN: "synthetic-refreshed-github" },
     });
     expect(calls).toBe(2);
-    expect(JSON.stringify((await db.query("select record from public.modal_machines")).rows)).not.toContain(
+    expect(JSON.stringify((await getDb().query("select record from public.modal_machines")).rows)).not.toContain(
       "synthetic-initial-github",
     );
     expect(JSON.stringify(row)).not.toContain("synthetic-refreshed-github");
@@ -2875,7 +2890,7 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
           fail = false;
           throw Error("lost active commit");
         }
-        return db.query<T>(statement, params);
+        return getDb().query<T>(statement, params);
       },
     };
     const f = fixture(scope, sql);
@@ -3008,7 +3023,7 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
           fail = false;
           throw Error("synthetic image reference commit failure");
         }
-        return db.query<T>(statement, params);
+        return getDb().query<T>(statement, params);
       },
     };
     const f = fixture(scope, sql);
@@ -3293,7 +3308,7 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
         f.provider.prepareNativeHarnessCwd({ sandboxId: row.id, harness: "claude", cwd }),
       ).rejects.toMatchObject({ code: "invalid_request" });
     expect((await f.store.get(row.id)).harnessCwds).toBeUndefined();
-    const other = createSqlModalStore(db, { ...scope, userId: "00000000-0000-0000-0000-000000000004" });
+    const other = createSqlModalStore(getDb(), { ...scope, userId: "00000000-0000-0000-0000-000000000004" });
     await expect(other.get(row.id)).rejects.toMatchObject({ code: "not_found" });
     f.onRpc(async (_row, op, input) => {
       if (op === "prompt")
@@ -3338,7 +3353,7 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     await expect(
       f.provider.configureGitHub({ sandboxId: row.id, configuration: { ...configuration, generation: "wrong" } }),
     ).rejects.toMatchObject({ code: "unauthorized" });
-    const persisted = JSON.stringify((await db.query("select record from public.modal_machines")).rows);
+    const persisted = JSON.stringify((await getDb().query("select record from public.modal_machines")).rows);
     expect(persisted).not.toContain(configuration.capability);
     expect(persisted).not.toContain(configuration.url);
     await f.provider.stop({ sandboxId: row.id });
@@ -3395,7 +3410,7 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     const receipts = await prompts;
     expect(new Set(receipts.map((x) => x.promptId)).size).toBe(2);
     expect(f.log.indexOf("configureMcp")).toBeLessThan(f.log.indexOf("prompt"));
-    const stored = JSON.stringify((await db.query("select record from public.modal_machines")).rows);
+    const stored = JSON.stringify((await getDb().query("select record from public.modal_machines")).rows);
     expect(stored).not.toContain(configuration.revision);
     expect(stored).not.toContain("synthetic-private-auth");
     expect(stored).not.toContain("private.example");
@@ -3518,20 +3533,20 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
   test("tenant and membership isolation; user roles cannot read control or event tables", async () => {
     const f = fixture();
     const row = await f.seedMachine(goldenTemplate);
-    const other = createSqlModalStore(db, { ...scope, binding: { ...scope.binding, appId: "ap_other" } });
+    const other = createSqlModalStore(getDb(), { ...scope, binding: { ...scope.binding, appId: "ap_other" } });
     await expect(other.get(row.id)).rejects.toMatchObject({ code: "not_found" });
-    const outsider = createSqlModalStore(db, { ...scope, userId: "00000000-0000-0000-0000-000000000003" });
+    const outsider = createSqlModalStore(getDb(), { ...scope, userId: "00000000-0000-0000-0000-000000000003" });
     await expect(outsider.list()).rejects.toMatchObject({ code: "forbidden" });
-    await db.exec("set role authenticated");
+    await getDb().exec("set role authenticated");
     try {
-      await expect(db.query("select * from modal_events")).rejects.toThrow("permission denied");
+      await expect(getDb().query("select * from modal_events")).rejects.toThrow("permission denied");
     } finally {
-      await db.exec("reset role");
+      await getDb().exec("reset role");
     }
   });
   test("expired and wrong-generation ingest grants never append", async () => {
     const handler = createModalIngestHandler({
-      sql: db,
+      sql: getDb(),
       verifyGrant: async () => ({
         scope,
         claims: { sandboxId: "expected", generation: "1", expiresAt: Date.now() + 1000 },
@@ -3581,12 +3596,12 @@ for (const mode of ["checkpoint", "hard_exit", "legacy_scrub_failure"])
     const machine = await activeWorker(f);
     const goldenId = crypto.randomUUID();
     const id = crypto.randomUUID();
-    await db.query(
+    await getDb().query(
       `insert into goldens(id,org_id,owner_id,name,visibility,provider,provider_snapshot_id,modal_workspace,modal_environment,modal_app_id,config)
     values($1::uuid,$2::uuid,$3::uuid,$1::text,'private','modal',$1::text,'label-only','main','ap_pinned','{"repos":[],"init":[]}'::jsonb)`,
       [goldenId, scope.orgId, scope.userId],
     );
-    await db.query(
+    await getDb().query(
       `insert into sandboxes(id,golden_id,org_id,owner_id,provider,provider_sandbox_id,harness,status,expires_at)
     values($1,$2,$3,$4,'modal',$5,'claude','running',now()-interval '1 second')`,
       [id, goldenId, scope.orgId, scope.userId, machine.id],
@@ -3609,7 +3624,7 @@ for (const mode of ["checkpoint", "hard_exit", "legacy_scrub_failure"])
         current.info.state = "stopping";
         await save(current);
       });
-      await db.query(
+      await getDb().query(
         "update sandboxes set status='stopping',preservation_note='unpushed work could not be preserved (missing_python3)' where id=$1",
         [id],
       );
@@ -3626,15 +3641,15 @@ for (const mode of ["checkpoint", "hard_exit", "legacy_scrub_failure"])
     await lifecycle.reconcileOne();
     if (mode === "legacy_scrub_failure") {
       expect(
-        (await db.query<{ status: string }>("select status from sandboxes where id=$1", [id])).rows[0]?.status,
+        (await getDb().query<{ status: string }>("select status from sandboxes where id=$1", [id])).rows[0]?.status,
       ).toBe("stopping");
-      await db.query("update sandboxes set reconcile_after=now()-interval '1 second' where id=$1", [id]);
+      await getDb().query("update sandboxes set reconcile_after=now()-interval '1 second' where id=$1", [id]);
       await lifecycle.reconcileOne();
       expect((await f.provider.get(machine.id)).stopNote).toBe("checkpoint_failed_disk_not_retained");
       expect(f.log.slice(baseline).filter((x) => x === "checkpoint")).toHaveLength(1);
     }
     const row = (
-      await db.query<{ status: string; stopped_at: Date | null; status_reason: string | null }>(
+      await getDb().query<{ status: string; stopped_at: Date | null; status_reason: string | null }>(
         "select status,stopped_at,status_reason from sandboxes where id=$1",
         [id],
       )
@@ -3649,7 +3664,7 @@ for (const mode of ["checkpoint", "hard_exit", "legacy_scrub_failure"])
       expect((await f.store.get(machine.id)).imageId).toBe(before.imageId);
       expect(f.log.slice(baseline)).not.toContain("checkpoint");
       expect(f.log.slice(baseline)).not.toContain("snapshot");
-      await db.query("update sandboxes set reconcile_after=now()-interval '1 second' where id=$1", [id]);
+      await getDb().query("update sandboxes set reconcile_after=now()-interval '1 second' where id=$1", [id]);
       expect(await lifecycle.reconcileOne()).toBe(false);
       expect(resolved).toBe(1);
     } else {
@@ -3945,7 +3960,7 @@ test.each(["runtime", "baseline", "fresh", "start", "active_publication"] as con
     if (stage === "fresh") f.distribution.prepareFreshMachine = fail;
     if (stage === "start") f.distribution.start = fail;
     if (stage === "active_publication")
-      await db.exec(`create function boot_publication_fault() returns trigger language plpgsql as $$ begin raise exception using errcode='40001',message='synthetic-private-sql'; end $$;
+      await getDb().exec(`create function boot_publication_fault() returns trigger language plpgsql as $$ begin raise exception using errcode='40001',message='synthetic-private-sql'; end $$;
     create trigger boot_publication_fault before update of record on modal_machines for each row when (new.record->>'phase'='active') execute function boot_publication_fault()`);
     try {
       let failure: unknown;
@@ -3968,7 +3983,9 @@ test.each(["runtime", "baseline", "fresh", "start", "active_publication"] as con
       expect(JSON.stringify(failure)).not.toContain("synthetic-private-sql");
     } finally {
       if (stage === "active_publication")
-        await db.exec("drop trigger boot_publication_fault on modal_machines; drop function boot_publication_fault()");
+        await getDb().exec(
+          "drop trigger boot_publication_fault on modal_machines; drop function boot_publication_fault()",
+        );
     }
   },
 );
@@ -4031,7 +4048,7 @@ test("unscoped Modal steer preserves no_running_turn and 409 at the control boun
       anonKey: "anon",
       fetch: async () => Response.json({ id: scope.userId }),
     },
-    store: createSqlVaultStore(db),
+    store: createSqlVaultStore(getDb()),
     encryptionKey: Buffer.alloc(32, 5).toString("base64"),
     data: () => ({ sandboxes: { get: async () => record, update: async () => {} } }),
     providers: { resolve: async () => f.provider },
@@ -4095,7 +4112,7 @@ test("Modal lifecycle refusals do not resume stopped steer or admit send during 
 });
 
 test("connection probe uses only the active runtime and validates its receipt without restoring stopped machines", async () => {
-  const f = fixture(scope, db);
+  const f = fixture(scope, getDb());
   const row = await activeWorker(f);
   const expected = { ok: false, status: 401, error: "provider_rejected", code: "invalid_api_key" } as const;
   let receipt: unknown = expected;
