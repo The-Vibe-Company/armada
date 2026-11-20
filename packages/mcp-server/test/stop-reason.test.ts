@@ -366,11 +366,19 @@ test.each([
   { from: "failed", to: "running", outcome: "applied" },
   { from: "failed", to: "running", outcome: "stale source" },
   { from: "failed", to: "ready", outcome: "confirmed exit" },
-] as const)("native availability $from -> $to ($outcome)", async ({ from, to, outcome }) => {
+  { from: "stopped", to: "starting", outcome: "applied" },
+  { from: "running", to: "stopping", outcome: "applied" },
+  { from: "ready", to: "starting", outcome: "stale source" },
+  { from: "failed", to: "stopping", outcome: "confirmed exit" },
+  { from: "ready", to: "stopping", outcome: "journal failure" },
+  { from: "stopped", to: "starting", outcome: "commit failure" },
+] as const)("native provider observation $from -> $to ($outcome)", async ({ from, to, outcome }) => {
   const { db, people, sharedGoldenId } = await failureDatabase();
   const boat = fakeBoat();
   const machine = await boat.provider.fork({ from: "snapshot" });
   const turn = await boat.provider.prompt({ sandboxId: machine.id, harness: "codex", text: "work" });
+  const phase = to === "starting" || to === "stopping";
+  if (phase) boat.sandbox(machine.id).info.state = to;
   if (to === "ready") boat.finish(machine.id, turn.promptId, "finished");
   const stoppedAt = "2026-01-01T00:00:00.000Z";
   const statusReason = from === "failed" ? "Previous provider failure" : null;
@@ -400,23 +408,31 @@ test.each([
   if (outcome === "stale source")
     await db.query("update sandboxes set status=$2,stopped_at=null,status_reason=null where id=$1", [id, staleState]);
   if (outcome === "confirmed exit") await db.query("update sandboxes set stopped_at=$2 where id=$1", [id, stoppedAt]);
-  if (outcome === "journal failure")
+  const commitFails = outcome === "commit failure";
+  const rollback = commitFails || outcome === "journal failure";
+  const rejected = commitFails ? "Observation commit rejected" : "Observation journal rejected";
+  if (rollback)
     await db.exec(`create function reject_availability_journal() returns trigger language plpgsql as $$
-      begin raise exception 'Availability journal rejected'; end $$;
-      create trigger reject_availability_journal before insert on sandbox_transitions
+      begin raise exception '${rejected}'; end $$;
+      ${
+        commitFails
+          ? "create constraint trigger reject_availability_journal after insert on sandbox_transitions deferrable initially deferred"
+          : "create trigger reject_availability_journal before insert on sandbox_transitions"
+      }
       for each row execute function reject_availability_journal();`);
 
   const applied = outcome === "applied";
   const status = applied ? to : outcome === "stale source" ? staleState : from;
   try {
     const observation = readStatus(boat.provider, store, sandbox, { now: new Date("2026-01-01") });
-    if (outcome === "journal failure") await expect(observation).rejects.toThrow("Availability journal rejected");
+    if (rollback) await expect(observation).rejects.toThrow(rejected);
     else expect(await observation).toMatchObject({ status });
     expect(await store.get(id)).toMatchObject({
       status,
       stoppedAt: status === "stopped" || outcome === "confirmed exit" ? stoppedAt : null,
       statusReason: applied || outcome === "stale source" ? null : statusReason,
       lifecycleGeneration: sandbox.lifecycleGeneration,
+      stopRequestedAt: null,
     });
     const { rows } = await db.query(
       "select from_status,to_status,actor,code,generation::int from sandbox_transitions where sandbox_id=$1",
@@ -428,15 +444,15 @@ test.each([
             {
               from_status: from,
               to_status: to,
-              actor: "native_turn",
-              code: "native_provider_available",
+              actor: phase ? "lifecycle_runner" : "native_turn",
+              code: phase ? "native_provider_phase" : "native_provider_available",
               generation: sandbox.lifecycleGeneration,
             },
           ]
         : [],
     );
   } finally {
-    if (outcome === "journal failure")
+    if (rollback)
       await db.exec(
         "drop trigger reject_availability_journal on sandbox_transitions; drop function reject_availability_journal()",
       );

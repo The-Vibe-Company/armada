@@ -695,7 +695,7 @@ export async function recordObservedProviderState(
     sandboxId: string;
     generation: number;
     fromState: SandboxStatus;
-    toState: "failed" | "stopped" | "ready" | "running";
+    toState: "failed" | "stopped" | "ready" | "running" | "starting" | "stopping";
     reason: string | null;
     stoppedAt: string | null;
     providerRunPlacement?: string;
@@ -711,11 +711,12 @@ export async function recordObservedProviderState(
     providerRunPlacement !== undefined && stoppedAt === null && fromState === "stopped" && toState === "failed";
   const nativeStop = !live && nativeExit && toState === "stopped";
   const nativeTurn = toState === "ready" || toState === "running";
+  const nativePhase = providerRunPlacement !== undefined && (toState === "starting" || toState === "stopping");
   const nativeAvailability =
     (fromState === "stopped" || fromState === "failed") && nativeTurn && providerRunPlacement !== undefined;
   if (
     fromState === "deleted" ||
-    (!live && !nativeStop && !nativeFailure && !nativeStoppedFailure && !nativeAvailability)
+    (!live && !nativeStop && !nativeFailure && !nativeStoppedFailure && !nativeAvailability && !nativePhase)
   )
     return { kind: "conflict" } satisfies SandboxTransitionResult;
   if (nativeTurn && providerRunPlacement === undefined)
@@ -750,9 +751,9 @@ export async function recordObservedProviderState(
       fromStates: [fromState],
       toState,
       actor: nativeTurn ? "native_turn" : providerActor,
-      code: nativeTurn ? turnCode : `${path}_provider_${providerCode}`,
+      code: nativePhase ? "native_provider_phase" : nativeTurn ? turnCode : `${path}_provider_${providerCode}`,
       effects: [],
-      ...(settlesExit || nativeTurn || nativeStoppedFailure
+      ...(settlesExit || nativeTurn || nativeStoppedFailure || nativePhase
         ? { settlement: { lease: null, statusReason: reason, stopRequestedAt: null, stoppedAt } }
         : {}),
     });
