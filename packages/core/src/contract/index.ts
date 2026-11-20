@@ -14,6 +14,7 @@ import { sandboxRestOperations } from "./sandbox-rest.ts";
 import { sandboxViewerOperations } from "./sandbox-viewer.ts";
 import { scopedRestOperations } from "./scoped.ts";
 import { skillDefaultOperations } from "./skill-defaults.ts";
+import { skillpackOperations } from "./skillpack.ts";
 import { tokenOperations } from "./tokens.ts";
 
 export { accountOperations } from "./accounts.ts";
@@ -57,6 +58,7 @@ export {
 } from "./scoped.ts";
 
 export { skillDefaultOperations } from "./skill-defaults.ts";
+export { skillpackOperations, skillpackVersionInputs } from "./skillpack.ts";
 export { tokenOperations } from "./tokens.ts";
 
 export interface Operation<Input extends z.ZodType, Output extends z.ZodType | undefined = undefined> {
@@ -66,6 +68,7 @@ export interface Operation<Input extends z.ZodType, Output extends z.ZodType | u
   readonly route: { readonly method: string; readonly path: `/api/v1/${string}` };
   readonly input: {
     readonly body: Input;
+    readonly bodyRequired?: false;
     readonly maxBodyBytes?: number;
     readonly oversizedBodyStatus?: 400;
     readonly query?: z.ZodType;
@@ -136,6 +139,7 @@ export const operations = {
   ...tokenOperations,
   ...accountOperations,
   ...skillDefaultOperations,
+  ...skillpackOperations,
   launchTemplate: launchTemplateOperation,
   createInboundTrigger,
   ...sandboxOperations,

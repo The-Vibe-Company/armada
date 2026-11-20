@@ -20,7 +20,7 @@ import {
   VaultError,
   type VaultStore,
 } from "@armada/core";
-import { launchEnvelope, sandboxCheckOperations } from "@armada/core/contract";
+import { launchEnvelope, sandboxCheckOperations, skillpackOperations } from "@armada/core/contract";
 import { createSkillDefaultsService, createSqlVaultStore, createTemplateService } from "@armada/core/server";
 import { appendModalEvents, createSqlModalStore, type Machine, type Scope, scopeKey } from "@armada/provider-modal";
 import type { PGlite } from "@electric-sql/pglite";
@@ -182,10 +182,7 @@ test("Skillpack connection reports only visible metadata and never advertises un
         options,
       );
     expect((await read())?.status).toBe(401);
-    const result = (await (await read(STAN))?.json()) as {
-      user: { kind: string }[];
-      orgs: { id: string; credentials: { kind: string }[] }[];
-    };
+    const result = skillpackOperations.readSkillpackConnection.output.parse(await (await read(STAN))?.json());
     expect(result).toMatchObject({ authorization: { available: false, reason: "delegated_key_flow_unavailable" } });
     expect(result.user.map((row: { kind: string }) => row.kind)).toEqual(["skillpack"]);
     expect(result.orgs.map((row: { id: string }) => row.id)).toEqual([org.id]);

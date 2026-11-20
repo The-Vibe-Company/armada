@@ -331,3 +331,24 @@ test("scoped REST advertises the grants, idempotency headers and body refusal us
   }
   expect(published.paths).not.toHaveProperty(`${prefix}/mcp`);
 });
+
+test("published Skillpack versions pairs each source with its reference and advertises both bearer schemes", () => {
+  const operation = adminPublished.paths["/api/v1/skillpack/versions"].post;
+  expect(operation.security).toEqual([{ serviceToken: [] }, { personalSession: [] }]);
+  expect(operation.responses["413"]).toBeDefined();
+  const input = z.fromJSONSchema(
+    operation.requestBody.content["application/json"].schema as Parameters<typeof z.fromJSONSchema>[0],
+  );
+  for (const [source, reference, accepted] of [
+    ["public", "team/notes", true],
+    ["private", "notes", true],
+    ["public", "notes", false],
+    ["private", "team/notes", false],
+    ["public", "team/armada-tools", false],
+    ["private", "", false],
+    ["private", "x".repeat(129), false],
+    ["public", `${"x".repeat(128)}/${"y".repeat(122)}`, false],
+  ] as const) {
+    expect(input.safeParse({ source, reference }).success).toBe(accepted);
+  }
+});

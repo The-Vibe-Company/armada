@@ -1,12 +1,9 @@
 import { expect, test } from "bun:test";
 import { CONTROL_BODY_MAX_BYTES } from "@armada/core";
 import {
-  accountOperations,
   operations as contractOperations,
   controlRouteKey,
   PUBLIC_CONTROL_ROUTES,
-  sandboxCheckOperations,
-  skillDefaultOperations,
   tokenOperations,
 } from "@armada/core/contract";
 import {
@@ -117,42 +114,37 @@ const fillParameters = (template: string) =>
   template.replace("{id}", "11111111-1111-4111-8111-111111111111").replace("{name}", "memo%20v2.pdf");
 
 test("published OpenAPI and migrated admin operations follow their proxy routing", async () => {
-  const published = (await import("../openapi.json")).default as {
-    paths: Record<string, Record<string, { "x-armada-direct-server"?: boolean }>>;
-  };
+  type PublishedPaths = Record<string, Record<string, { "x-armada-direct-server"?: boolean }>>;
+  const integration = (await import("../openapi.json")).default.paths as PublishedPaths;
+  const admin = (await import("../openapi-admin.json")).default.paths as PublishedPaths;
   const env = process.env.ARMADA_MCP_URL;
   process.env.ARMADA_MCP_URL = "https://armada.test/mcp";
   try {
-    const operations = Object.entries(published.paths).flatMap(([path, verbs]) =>
-      Object.entries(verbs).map(([verb, operation]) => ({
-        path,
-        verb: verb.toUpperCase(),
-        direct: operation["x-armada-direct-server"],
-      })),
+    const operations = [integration, admin].flatMap((paths) =>
+      Object.entries(paths).flatMap(([path, verbs]) =>
+        Object.entries(verbs).map(([verb, operation]) => ({
+          path,
+          verb: verb.toUpperCase(),
+          direct: operation["x-armada-direct-server"],
+        })),
+      ),
     );
     expect(operations.length).toBeGreaterThan(0);
-    for (const { audience, route } of Object.values({
-      ...accountOperations,
-      ...sandboxCheckOperations,
-      ...skillDefaultOperations,
-    })) {
-      if (audience !== "admin") continue;
-      expect(published.paths[route.path]?.[route.method.toLowerCase()]).toBeUndefined();
-      operations.push({ path: route.path, verb: route.method, direct: false });
-    }
     const blocked: string[] = [];
     for (const { path: template, verb, direct } of operations) {
       const path = fillParameters(template);
+      const query =
+        path === "/api/v1/skillpack/catalog" || path === "/api/v1/skillpack/versions" ? "?source=public" : "";
       const forwarded: string[] = [];
       const response = await forwardControl(
-        new Request(`https://dashboard.test${path}`, {
+        new Request(`https://dashboard.test${path}${query}`, {
           method: verb,
           headers: { authorization: "Bearer masked", "content-type": "application/json" },
           ...(verb === "POST" ? { body: "{}" } : {}),
         }),
         path.replace(/^\/api\/v1\//, "").split("/"),
         async (target) => {
-          forwarded.push(new URL(target).pathname);
+          forwarded.push(target.pathname + target.search);
           return Response.json({});
         },
       );
@@ -160,7 +152,7 @@ test("published OpenAPI and migrated admin operations follow their proxy routing
       if (
         response.status !== expectedStatus ||
         forwarded.length !== (direct ? 0 : 1) ||
-        (!direct && forwarded[0] !== path)
+        (!direct && forwarded[0] !== path + query)
       )
         blocked.push(`${verb} ${path}`);
     }
