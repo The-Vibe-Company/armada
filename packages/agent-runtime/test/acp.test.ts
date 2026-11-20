@@ -1,6 +1,9 @@
 import { expect, test } from "bun:test";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { RequestRefused } from "../src/errors.ts";
-import { AcpDriver, type DriverEvent } from "../src/index.ts";
+import { AcpDriver, AntigravityDriver, type DriverEvent } from "../src/index.ts";
 
 // The real stdio transport owns load replay, cancel-response races and multi-turn usage attribution.
 // The existing Runner tests cannot observe wire behavior inside a native harness process.
@@ -224,5 +227,167 @@ test("ACP refuses an unsupported reasoning effort before spawning the child", as
     ).toThrow(RequestRefused);
   } finally {
     await driver.close();
+  }
+});
+
+function antigravityFixture(credential: ConstructorParameters<typeof AntigravityDriver>[0]["credential"]) {
+  const root = mkdtempSync(join(tmpdir(), "antigravity-acp-"));
+  const executable = join(root, "fake-acy.ts");
+  writeFileSync(
+    executable,
+    `#!${process.execPath}\nimport ${JSON.stringify(`${import.meta.dir}/fixtures/acp.ts`)};\n`,
+    {
+      mode: 0o700,
+    },
+  );
+  const registered: string[] = [];
+  const events: DriverEvent[] = [];
+  return {
+    root,
+    registered,
+    events,
+    driver: () =>
+      new AntigravityDriver({
+        executable,
+        root,
+        cwd: root,
+        credential,
+        registerSecrets: (values) => registered.push(...values),
+      }),
+    context: (text: string, model?: string) => ({
+      request: { sandboxId: "s", harness: "opencode" as const, text, model },
+      signal: new AbortController().signal,
+      emit: (event: DriverEvent) => events.push(event),
+      session: () => {},
+    }),
+    clean: () => rmSync(root, { recursive: true, force: true }),
+  };
+}
+
+const antigravityTest = test.skipIf(process.platform !== "linux");
+
+antigravityTest(
+  "Antigravity accepts the ACP v1-shaped version 2 response, authenticates and selects a loaded model",
+  async () => {
+    const f = antigravityFixture({ method: "gemini-api-key", apiKey: "fixture-gemini-value" });
+    try {
+      await expect(
+        f.driver().start({ ...f.context("explicit", "fixture/model"), sessionId: "session-1" }).done,
+      ).resolves.toBe("finished");
+    } finally {
+      f.clean();
+    }
+  },
+);
+
+test("ACP refuses a version 2 response without the v1 shape even when opted in", async () => {
+  const driver = new AcpDriver({
+    executable: process.execPath,
+    args: ["run", `${import.meta.dir}/fixtures/acp.ts`],
+    cwd: "/tmp",
+    env: { BAD_ACP: "malformed" },
+    acceptV2WithV1Shape: true,
+  });
+  await expect(
+    driver.start({
+      request: { sandboxId: "s", harness: "opencode", text: "no" },
+      signal: new AbortController().signal,
+      emit: () => {},
+      session: () => {},
+    }).done,
+  ).rejects.toThrow("invalid_harness_protocol");
+});
+
+antigravityTest("Antigravity refuses an unlisted model before sending a prompt", async () => {
+  const f = antigravityFixture({ method: "gemini-api-key", apiKey: "fixture-gemini-value" });
+  try {
+    const done = f.driver().start(f.context("never-prompt", "unknown/model")).done;
+    await expect(done).rejects.toBeInstanceOf(RequestRefused);
+    await expect(done).rejects.toThrow("invalid_request");
+  } finally {
+    f.clean();
+  }
+});
+
+antigravityTest("Antigravity reports an authentication refusal without the native RPC text", async () => {
+  const f = antigravityFixture({ method: "gemini-api-key", apiKey: "refuse-fixture-key" });
+  try {
+    await expect(f.driver().start(f.context("never-prompt")).done).rejects.toMatchObject({
+      message: "authentication_failed",
+      reason: "authentication_failed:authentication",
+    });
+  } finally {
+    f.clean();
+  }
+});
+
+antigravityTest(
+  "Antigravity writes a private Google token file and redacts credentials echoed by the agent",
+  async () => {
+    const token = { access_token: "fixture-access-value", refresh_token: "fixture-refresh-value", expiry: 123 };
+    const f = antigravityFixture({ method: "google", token });
+    try {
+      await expect(f.driver().start(f.context("echo-token", "default")).done).resolves.toBe("finished");
+      const directory = join(f.root, "antigravity", "antigravity-acp");
+      const file = join(directory, "antigravity-oauth-token");
+      expect(statSync(directory).mode & 0o777).toBe(0o700);
+      expect(statSync(file).mode & 0o777).toBe(0o600);
+      expect(JSON.parse(readFileSync(file, "utf8"))).toEqual({ token });
+      expect(f.registered).toEqual([token.access_token, token.refresh_token]);
+      expect(f.events.some((event) => event.kind === "message" && event.text.includes("[REDACTED]"))).toBe(true);
+      for (const value of f.registered) expect(JSON.stringify(f.events)).not.toContain(value);
+    } finally {
+      f.clean();
+    }
+  },
+);
+
+antigravityTest("Antigravity refuses a symlinked Google token file", () => {
+  const f = antigravityFixture({ method: "google", token: { access_token: "fixture-access-value" } });
+  try {
+    const directory = join(f.root, "antigravity", "antigravity-acp");
+    mkdirSync(directory, { recursive: true, mode: 0o700 });
+    const target = join(f.root, "other");
+    writeFileSync(target, "unchanged");
+    symlinkSync(target, join(directory, "antigravity-oauth-token"));
+    expect(() => f.driver()).toThrow("harness_initialization_failed");
+    expect(readFileSync(target, "utf8")).toBe("unchanged");
+  } finally {
+    f.clean();
+  }
+});
+
+antigravityTest("Antigravity passes the Gemini key only in a private child environment", async () => {
+  const apiKey = "fixture-gemini-value";
+  const f = antigravityFixture({ method: "gemini-api-key", apiKey });
+  const ambient = [
+    "GOOGLE_FIXTURE",
+    "GCLOUD_PROJECT",
+    "CLOUDSDK_CORE_PROJECT",
+    "DISPLAY",
+    "WAYLAND_DISPLAY",
+    "BROWSER",
+    "AGY_ACP_UNKNOWN",
+    "SSH_CONNECTION",
+    "GEMINI_API_KEY",
+  ];
+  const previous = ambient.map((name) => process.env[name]);
+  try {
+    for (const name of ambient) process.env[name] = "ambient-fixture-value";
+    await expect(f.driver().start(f.context("environment", "default")).done).resolves.toBe("finished");
+    const event = f.events.find((value) => value.kind === "message" && !value.partial);
+    expect(event?.kind === "message" && JSON.parse(event.text)).toEqual({
+      argv: ["acp", "--gemini-dir", join(f.root, "antigravity"), "--app-data-dir", "antigravity-acp"],
+      key: true,
+      isolated: true,
+      privateEnvironment: true,
+    });
+    expect(f.registered).toEqual([apiKey]);
+  } finally {
+    for (const [index, name] of ambient.entries()) {
+      if (previous[index] === undefined) delete process.env[name];
+      else process.env[name] = previous[index];
+    }
+    f.clean();
   }
 });

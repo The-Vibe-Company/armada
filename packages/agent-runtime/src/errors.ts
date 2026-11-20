@@ -39,6 +39,8 @@ export class HarnessError extends Error {
 // Only structured discriminants are inspected. Native messages, data payloads and stderr
 // must never become public reasons, even when the upstream error is unrecognized.
 export function nativeHarnessError(error: unknown, method: string, protocol?: "acp"): HarnessError {
+  if (method === "authenticate") return new HarnessError("authentication_failed", "authentication");
+  const modelSelection = method === "session/set_model" || method === "session/set_config_option";
   const record = (value: unknown): Record<string, unknown> =>
     value !== null && typeof value === "object" ? (value as Record<string, unknown>) : {};
   const root = record(error);
@@ -67,11 +69,11 @@ export function nativeHarnessError(error: unknown, method: string, protocol?: "a
               ? "context_window_exceeded"
               : has("max_output_tokens")
                 ? "output_limit_exceeded"
-                : method === "account/login/start" || method === "authenticate"
+                : method === "account/login/start"
                   ? "authentication_failed"
                   : method === "thread/resume" || method === "session/load"
                     ? "session_restore_failed"
-                    : method === "session/set_model"
+                    : modelSelection
                       ? "model_selection_failed"
                       : method === "thread/start" || method === "session/new"
                         ? "session_start_failed"
@@ -81,11 +83,11 @@ export function nativeHarnessError(error: unknown, method: string, protocol?: "a
                             ? "harness_initialization_failed"
                             : "harness_failed";
   const phase: NativePhase | undefined =
-    method === "account/login/start" || method === "authenticate"
+    method === "account/login/start"
       ? "authentication"
       : method === "thread/resume" || method === "session/load"
         ? "session_restore"
-        : method === "session/set_model"
+        : modelSelection
           ? "model_selection"
           : method === "thread/start" || method === "session/new"
             ? "session_start"

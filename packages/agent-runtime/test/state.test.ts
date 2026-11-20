@@ -155,3 +155,19 @@ test("checkpoint transcript copies mask embedded short application values and pr
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("checkpoint leaves the Antigravity profile outside the saved native state", async () => {
+  const root = await mkdtemp(join(tmpdir(), "armada-state-"));
+  const state = new HarnessState(root, createRedactor([]));
+  try {
+    await state.restore();
+    const profile = join(root, "antigravity");
+    await mkdir(join(profile, "projects"), { recursive: true });
+    await writeFile(join(profile, "projects", "session.jsonl"), "{}\n");
+    await state.checkpoint();
+    await expect(access(join(root, "session-state", "antigravity"))).rejects.toMatchObject({ code: "ENOENT" });
+    expect(await readFile(join(profile, "projects", "session.jsonl"), "utf8")).toBe("{}\n");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});

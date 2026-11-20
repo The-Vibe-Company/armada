@@ -8,6 +8,31 @@ import type { Driver, DriverContext, DriverResumeContext, Turn } from "./protoco
 type ObjectValue = Record<string, unknown>;
 const object = (value: unknown): value is ObjectValue =>
   value !== null && typeof value === "object" && !Array.isArray(value);
+
+function hasV1InitializeShape(result: ObjectValue): boolean {
+  return (
+    object(result.agentCapabilities) &&
+    typeof result.agentCapabilities.loadSession === "boolean" &&
+    Array.isArray(result.authMethods) &&
+    result.authMethods.every(
+      (method) => object(method) && typeof method.id === "string" && typeof method.name === "string",
+    )
+  );
+}
+
+function availableModel(configOptions: unknown, model: string): boolean {
+  if (!Array.isArray(configOptions)) return false;
+  const option = configOptions.find((value) => object(value) && value.id === "model" && value.type === "select");
+  return (
+    Array.isArray(option?.options) &&
+    option.options.some(
+      (value: unknown) =>
+        object(value) &&
+        (value.value === model ||
+          (Array.isArray(value.options) && value.options.some((item) => object(item) && item.value === model))),
+    )
+  );
+}
 export interface AcpObservation {
   ready(sessionId: string): Promise<void>;
   failed: Promise<never>;
@@ -24,6 +49,9 @@ export class AcpDriver implements Driver {
       env: Record<string, string>;
       args?: string[];
       observation?: AcpObservation;
+      acceptV2WithV1Shape?: boolean;
+      authMethodId?: string;
+      modelSelection?: "config-option";
     },
   ) {}
   configureReadableVariables(variables: Record<string, string>): void {
@@ -247,7 +275,12 @@ export class AcpDriver implements Driver {
         clientCapabilities: {},
         clientInfo: { name: "armada", version: VERSION },
       });
-      if (initialized.protocolVersion !== 1) throw new HarnessError("invalid_harness_protocol");
+      if (
+        initialized.protocolVersion !== 1 &&
+        !(this.options.acceptV2WithV1Shape && initialized.protocolVersion === 2 && hasV1InitializeShape(initialized))
+      )
+        throw new HarnessError("invalid_harness_protocol");
+      if (this.options.authMethodId) await rpc("authenticate", { methodId: this.options.authMethodId });
       const mcpServers = Object.entries(c.mcp?.servers ?? {}).map(([name, server]) =>
         server.type === "stdio"
           ? {
@@ -263,19 +296,26 @@ export class AcpDriver implements Driver {
               headers: Object.entries(server.headers ?? {}).map(([name, value]) => ({ name, value })),
             },
       );
+      let session: ObjectValue;
       if (c.sessionId) {
         if (!object(initialized.agentCapabilities) || initialized.agentCapabilities.loadSession !== true)
           throw new HarnessError("invalid_harness_protocol");
         sessionId = c.sessionId;
-        await rpc("session/load", { sessionId, cwd, mcpServers });
+        session = await rpc("session/load", { sessionId, cwd, mcpServers });
       } else {
-        const created = await rpc("session/new", { cwd, mcpServers });
-        if (typeof created.sessionId !== "string" || !created.sessionId || created.sessionId.length > 256)
+        session = await rpc("session/new", { cwd, mcpServers });
+        if (typeof session.sessionId !== "string" || !session.sessionId || session.sessionId.length > 256)
           throw new HarnessError("invalid_harness_protocol");
-        sessionId = created.sessionId;
+        sessionId = session.sessionId;
+      }
+      const model = c.request.model;
+      if (!resumeOnly && model && this.options.modelSelection === "config-option" && model !== "default") {
+        if (!availableModel(session.configOptions, model)) throw new RequestRefused("invalid_request");
+        await rpc("session/set_config_option", { sessionId, configId: "model", value: model });
       }
       c.session(sessionId);
-      if (!resumeOnly && c.request.model) await rpc("session/set_model", { sessionId, modelId: c.request.model });
+      if (!resumeOnly && model && !this.options.modelSelection)
+        await rpc("session/set_model", { sessionId, modelId: model });
       if (!resumeOnly) await this.options.observation?.ready(sessionId);
       replay = false;
     })();

@@ -1,4 +1,5 @@
-import { existsSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { isDeepStrictEqual } from "node:util";
 
@@ -16,6 +17,22 @@ function checkPinnedMcp(servers: unknown) {
     throw Error("incorrect ACP stdio MCP configuration");
 }
 
+const profile = process.env.GEMINI_HOME;
+const authMethods = [
+  { id: "oauth-personal", name: "Google" },
+  { id: "gemini-api-key", name: "Gemini API key" },
+];
+const configOptions = [
+  {
+    id: "model",
+    name: "Model",
+    type: "select",
+    currentValue: "base",
+    options: [{ group: "available", name: "Available", options: [{ value: "fixture/model", name: "Fixture" }] }],
+  },
+];
+let authenticated = false;
+let selectedModel = false;
 let active: number | undefined;
 let sessionId = "session-1";
 const send = (value: object) => process.stdout.write(`${JSON.stringify({ jsonrpc: "2.0", ...value })}\n`);
@@ -33,14 +50,29 @@ for await (const line of lines) {
         send({ id: m.id, error: { code: -32603, message: "session initialization failed" } });
         break;
       }
-      reply({ protocolVersion: process.env.BAD_ACP ? 2 : 1, agentCapabilities: { loadSession: true } });
+      reply({
+        protocolVersion: profile || process.env.BAD_ACP ? 2 : 1,
+        ...(process.env.BAD_ACP === "malformed" ? { capabilities: [] } : { agentCapabilities: { loadSession: true } }),
+        authMethods,
+      });
       break;
+    case "authenticate": {
+      const method = process.env.GEMINI_API_KEY === undefined ? "oauth-personal" : "gemini-api-key";
+      if (!profile || authenticated || m.params.methodId !== method) throw Error("wrong_authentication");
+      authenticated = true;
+      if (process.env.GEMINI_API_KEY === "refuse-fixture-key") {
+        send({ id: m.id, error: { code: 429, message: process.env.GEMINI_API_KEY } });
+      } else reply({});
+      break;
+    }
     case "session/new":
+      if (profile && !authenticated) throw Error("missing_authentication");
       checkPinnedMcp(m.params.mcpServers);
       if (process.env.EXPECT_PINNED_MCP) sessionId = "new-session";
-      reply({ sessionId });
+      reply({ sessionId, ...(profile ? { configOptions } : {}) });
       break;
     case "session/load":
+      if (profile && !authenticated) throw Error("missing_authentication");
       checkPinnedMcp(m.params.mcpServers);
       send({
         method: "session/update",
@@ -49,14 +81,57 @@ for await (const line of lines) {
           update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "history" } },
         },
       });
-      reply({});
+      reply(profile ? { configOptions } : {});
+      break;
+    case "session/set_config_option":
+      if (
+        !profile ||
+        m.params.sessionId !== sessionId ||
+        m.params.configId !== "model" ||
+        m.params.value !== "fixture/model"
+      )
+        throw Error("wrong_model_config");
+      selectedModel = true;
+      reply({ configOptions });
       break;
     case "session/set_model":
       reply({});
       break;
     case "session/prompt": {
       if (m.params.sessionId !== sessionId) throw Error("wrong_session");
-      const text = m.params.prompt[0].text;
+      let text = m.params.prompt[0].text;
+      if (profile) {
+        if (text === "explicit" && !selectedModel) throw Error("missing_model_config");
+        if (text === "default" && selectedModel) throw Error("unexpected_model_config");
+        if (text === "never-prompt") throw Error("unexpected_prompt");
+        if (text === "environment")
+          text = JSON.stringify({
+            argv: process.argv.slice(2),
+            // Report booleans for wire checks without placing fixture credentials in argv or diagnostics.
+            key: process.env.GEMINI_API_KEY === "fixture-gemini-value",
+            isolated: ![
+              "GOOGLE_FIXTURE",
+              "GCLOUD_PROJECT",
+              "CLOUDSDK_CORE_PROJECT",
+              "DISPLAY",
+              "WAYLAND_DISPLAY",
+              "BROWSER",
+              "AGY_ACP_UNKNOWN",
+              "SSH_CONNECTION",
+            ].some((name) => process.env[name] !== undefined),
+            privateEnvironment:
+              !!process.env.TMPDIR &&
+              process.env.AGY_CLI_DISABLE_AUTO_UPDATE === "1" &&
+              process.env.AGY_ACP_FORCE_FILE_STORAGE === "1",
+          });
+        if (text === "echo-token") {
+          if (!process.env.SSH_CONNECTION || process.env.GEMINI_API_KEY !== undefined) throw Error("wrong_google_env");
+          const { token } = JSON.parse(
+            readFileSync(join(profile, "antigravity-acp", "antigravity-oauth-token"), "utf8"),
+          );
+          text = Object.values(token).join(" ");
+        }
+      }
       if (process.env.OPENCODE_THROTTLE_STATE) {
         const state = process.env.OPENCODE_THROTTLE_STATE;
         if (!existsSync(state)) {
