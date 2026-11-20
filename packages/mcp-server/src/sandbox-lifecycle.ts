@@ -361,7 +361,6 @@ async function finishPromptedNativeLaunch(
   );
   if (!receipt) return false;
   await publishNativeTurn(tx, sandboxId, "starting", receipt.generation, activityToken, "native_send_accepted");
-  // Publishing the prompt identity transfers reserved capacity in the same transaction.
   await tx.query(
     `update public.sandboxes set task_prompt_id=$2, conversation_ids=$3::text[],
        activity_lease_id=null, activity_until=null where id=$1`,
