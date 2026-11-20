@@ -1365,43 +1365,59 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
           return result;
         });
         const waitStep = phase ? `${phase}_wait` : "wait";
-        await step(waitStep, () =>
-          poll(
-            (timeoutMs) =>
-              sandbox<{
-                prompt?: { promptId?: unknown; state?: unknown } | null;
-                status?: unknown;
-                providerState?: unknown;
-                settled?: unknown;
-                timedOut?: unknown;
-              } | null>("wait", { id: sandboxId, prompt_id: turn.promptId, timeout_seconds: 0 }, timeoutMs),
-            (result) => {
-              const prompt = result?.prompt;
-              const state = prompt?.state;
-              const status = result?.status;
-              const matches = prompt?.promptId === turn.promptId;
-              if (matches && (state === "failed" || state === "interrupted")) fail("turn_failed");
-              if (matches && (state === "running" || state === "finished")) return state === "finished";
-              // Use fixed field names and closed values. A malformed body may contain arbitrary secrets.
-              throw new SmokeFailure("invalid_response", undefined, {
-                body: jsonShape(result),
-                status:
-                  typeof status === "string" && WAIT_SANDBOX_STATUSES.includes(status) ? status : jsonShape(status),
-                providerState: jsonShape(result?.providerState),
-                prompt: jsonShape(prompt),
-                promptId: jsonShape(prompt?.promptId),
-                promptIdMatches: matches,
-                state:
-                  state === "running" || state === "finished" || state === "failed" || state === "interrupted"
-                    ? state
-                    : jsonShape(state),
-                settled: typeof result?.settled === "boolean" ? result.settled : jsonShape(result?.settled),
-                timedOut: typeof result?.timedOut === "boolean" ? result.timedOut : jsonShape(result?.timedOut),
+        await step(waitStep, async () => {
+          let lastResponse: SmokeFailure["waitResponse"];
+          try {
+            await poll(
+              async (timeoutMs) => {
+                const result = await sandbox<{
+                  prompt?: { promptId?: unknown; state?: unknown } | null;
+                  status?: unknown;
+                  providerState?: unknown;
+                  settled?: unknown;
+                  timedOut?: unknown;
+                } | null>("wait", { id: sandboxId, prompt_id: turn.promptId, timeout_seconds: 0 }, timeoutMs);
+                const prompt = result?.prompt;
+                const state = prompt?.state;
+                const status = result?.status;
+                // Use fixed field names and closed values. A malformed body may contain arbitrary secrets.
+                lastResponse = {
+                  body: jsonShape(result),
+                  status:
+                    typeof status === "string" && WAIT_SANDBOX_STATUSES.includes(status) ? status : jsonShape(status),
+                  providerState: jsonShape(result?.providerState),
+                  prompt: jsonShape(prompt),
+                  promptId: jsonShape(prompt?.promptId),
+                  promptIdMatches: prompt?.promptId === turn.promptId,
+                  state:
+                    state === "running" || state === "finished" || state === "failed" || state === "interrupted"
+                      ? state
+                      : jsonShape(state),
+                  settled: typeof result?.settled === "boolean" ? result.settled : jsonShape(result?.settled),
+                  timedOut: typeof result?.timedOut === "boolean" ? result.timedOut : jsonShape(result?.timedOut),
+                };
+                return lastResponse;
+              },
+              (response) => {
+                const { state, promptIdMatches } = response;
+                if (promptIdMatches) {
+                  if (state === "failed" || state === "interrupted") fail("turn_failed");
+                  if (state === "running" || state === "finished") return state === "finished";
+                }
+                throw new SmokeFailure("invalid_response", undefined, response);
+              },
+              { step: waitStep },
+            );
+          } catch (error) {
+            if (error instanceof SmokeFailure && error.code === "poll_limit_exceeded") {
+              throw new SmokeFailure(error.code, error.status, {
+                ...lastResponse,
+                ...(error.transportTimeoutMs === undefined ? {} : { transportTimeoutMs: error.transportTimeoutMs }),
               });
-            },
-            { step: waitStep },
-          ),
-        );
+            }
+            throw error;
+          }
+        });
         const usageStep = phase ? `${phase}_usage` : second ? "usage_second" : "usage";
         await step(usageStep, () =>
           poll(
