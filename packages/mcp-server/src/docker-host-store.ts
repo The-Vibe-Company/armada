@@ -15,6 +15,7 @@ import {
   decryptSecret,
   encryptSecret,
   isSnapshotBaselineTool,
+  type Machine,
   type MachineIdentity,
   readOutputArchive,
   type SnapshotBaselineTool,
@@ -62,6 +63,7 @@ import { deferTransactionWake } from "./wake-bus.ts";
 type Actor = { userId: string; orgId: string };
 type Job = DockerHostJob;
 type RestoreJob = Extract<Job, { operation: "restore" }>;
+type MachineCreateResult = { kind: "pending" | "unknown" } | { kind: "completed"; machine: MachineIdentity };
 export const DOCKER_JOB_REQUEST_OUTCOME_SQL =
   "case when j.refused_resume_generation is not null then 'failed' else j.outcome end";
 const settledRefusedResumeSql = `
@@ -700,6 +702,22 @@ export function createDockerHostStore(sql: Sql, key: string) {
     deny();
   }
 
+  async function matchesMachineCreateGeneration(
+    tx: Sql,
+    row: Pick<
+      Sandbox,
+      "id" | "docker_host_id" | "docker_installation_id" | "docker_generation" | "lifecycle_generation"
+    >,
+    requestId: string,
+  ) {
+    if (requestId !== row.docker_generation) return true;
+    const bindings = createDockerMachineGenerationBindings(tx, {
+      hostId: row.docker_host_id,
+      installationId: row.docker_installation_id,
+    });
+    return (await bindings.lookup({ sandboxId: row.id, generation: Number(row.lifecycle_generation) })) === requestId;
+  }
+
   async function requireCurrentMachine(tx: Sql, logical: Sandbox, delivered: Job) {
     const frozen = await machine(tx, logical, "stop");
     if (input(delivered) !== input({ ...delivered, request: frozen })) deny();
@@ -773,6 +791,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
     if (operation === "resume")
       return failDockerResumeActivation(tx, row.id, row.lifecycle_generation, job.request_id, message);
     if (operation !== "create" && operation !== "bootstrap") return false;
+    if (operation === "create" && !(await matchesMachineCreateGeneration(tx, row, job.request_id))) return false;
     if (await supersededLifecycle(tx, job)) return false;
     return failDockerStartup(tx, row.id, row.lifecycle_generation, "docker_startup_failed", message);
   }
@@ -797,9 +816,16 @@ export function createDockerHostStore(sql: Sql, key: string) {
       [hostId, reason.snapshot],
     );
     const startups = await tx.query<
-      Pick<StoredJob, "request_id" | "position"> & { bound_sandbox_id: string; generation: string }
+      Pick<StoredJob, "request_id" | "position" | "bound_operation"> &
+        Pick<
+          Sandbox,
+          "id" | "docker_host_id" | "docker_installation_id" | "docker_generation" | "lifecycle_generation"
+        > & {
+          bound_sandbox_id: string;
+        }
     >(
-      `select j.request_id,j.position,j.bound_sandbox_id,s.lifecycle_generation::text as generation
+      `select j.request_id,j.position,j.bound_sandbox_id,j.bound_operation,s.id,s.docker_host_id,s.docker_installation_id,
+         s.docker_generation,s.lifecycle_generation::text
        from public.docker_host_jobs j
        join public.sandboxes s on s.id=j.bound_sandbox_id and s.docker_host_id=j.host_id
        where j.host_id=$1 and j.outcome is null
@@ -807,8 +833,19 @@ export function createDockerHostStore(sql: Sql, key: string) {
       [hostId],
     );
     for (const startup of startups.rows) {
+      if (
+        startup.bound_operation === "create" &&
+        !(await matchesMachineCreateGeneration(tx, startup, startup.request_id))
+      )
+        continue;
       if (await supersededLifecycle(tx, startup)) continue;
-      await failDockerStartup(tx, startup.bound_sandbox_id, startup.generation, "docker_host_retired", reason.sandbox);
+      await failDockerStartup(
+        tx,
+        startup.bound_sandbox_id,
+        startup.lifecycle_generation,
+        "docker_host_retired",
+        reason.sandbox,
+      );
     }
     await tx.query(
       `update public.docker_host_jobs set outcome='failed',completed_at=now(),cancelled_at=now()
@@ -1394,6 +1431,56 @@ export function createDockerHostStore(sql: Sql, key: string) {
         });
       });
     },
+    async submitMachineCreate(actor: Actor, request: Parameters<Machine["create"]>[0]) {
+      const { sandboxId, generation, source, computeTtlSeconds, signal } = request;
+      signal?.throwIfAborted();
+      return transaction<MachineCreateResult>(async (tx) => {
+        if (!Number.isSafeInteger(generation) || generation < 1 || request.size !== null) deny();
+        const { host, row } = await lockSandboxAdmission(tx, actor, sandboxId, "create");
+        if (
+          String(row.lifecycle_generation) !== String(generation) ||
+          !(await matchesMachineCreateGeneration(tx, row, row.docker_generation))
+        )
+          deny();
+        const epoch = await permission(tx, actor, row, "create");
+        const requestId = row.docker_generation;
+        const existing = (
+          await tx.query<StoredJob>(
+            `select * from public.docker_host_jobs where bound_sandbox_id=$1 and bound_operation='create'`,
+            [sandboxId],
+          )
+        ).rows[0];
+        if (existing && existing.request_id !== requestId) deny();
+        if (!existing) {
+          await refuseDraining(tx, host.id);
+          await state(tx, row, "create");
+        }
+        const allocation = await machine(tx, row, "create");
+        if (
+          allocation.ttlSeconds !== computeTtlSeconds ||
+          (allocation.snapshot
+            ? source.kind !== "snapshot" || source.ref !== allocation.snapshot.id
+            : source.kind !== "image" || source.ref !== allocation.image)
+        )
+          deny();
+        signal?.throwIfAborted();
+        await insert(
+          tx,
+          host.id,
+          { operation: "create", requestId, request: allocation },
+          {
+            bound_sandbox_id: sandboxId,
+            bound_actor_id: actor.userId,
+            bound_actor_epoch: epoch,
+            bound_operation: "create",
+          },
+        );
+        if (!existing || existing.outcome === null) return { kind: "pending" };
+        if (existing.cancelled_at !== null || existing.outcome !== "completed" || !existing.result_machine_id)
+          return { kind: "unknown" };
+        return { kind: "completed", machine: { sandboxId, generation, machineId: existing.result_machine_id } };
+      });
+    },
     async admitMachineRestore(
       actor: Actor,
       job: Pick<RunnerJob, "id" | "sandbox_id" | "generation">,
@@ -1916,7 +2003,10 @@ export function createDockerHostStore(sql: Sql, key: string) {
             const logical = generationFenced(row.bound_operation)
               ? await boundMachine(tx, row, host, installationId)
               : await currentOrSupersededMachine(tx, row, host, installationId);
-            if (!logical) {
+            if (
+              !logical ||
+              (row.bound_operation === "create" && !(await matchesMachineCreateGeneration(tx, logical, row.request_id)))
+            ) {
               supersededPlacement = true;
               deny();
             }
@@ -2001,7 +2091,13 @@ export function createDockerHostStore(sql: Sql, key: string) {
           await requireRestoreBindings(tx, logical, restore, lifecycleGeneration);
         } else {
           logical = await currentOrSupersededMachine(tx, job, host, installationId);
-          if (!logical) return;
+          if (
+            !logical ||
+            (job.bound_operation === "create" &&
+              ["starting", "ready", "running"].includes(logical.status) &&
+              !(await matchesMachineCreateGeneration(tx, logical, job.request_id)))
+          )
+            return;
         }
         // Status repeats across lifecycles; mailbox ordering identifies which
         // lifecycle owns this fact even after a later resume has stopped again.
@@ -2148,6 +2244,12 @@ export function createDockerHostStore(sql: Sql, key: string) {
             deny();
           logical = await currentOrSupersededMachine(tx, job, host, installationId);
           if (!logical) return;
+          if (
+            job.bound_operation === "create" &&
+            ["starting", "ready", "running"].includes(logical.status) &&
+            !(await matchesMachineCreateGeneration(tx, logical, job.request_id))
+          )
+            return;
           if (logical.status === "deleted" || (await supersededLifecycle(tx, job, true))) return;
         }
         // The authenticated host's observed physical stop supplies the evidence.
