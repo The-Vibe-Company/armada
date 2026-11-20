@@ -381,6 +381,7 @@ describe.each(["boat", "modal"] as const)("queued runtime wake admission (%s)", 
     "scoped grant loss",
     "unenrolled failure",
     "unenrolled claim loss",
+    "restore admission loss",
     "ambiguous deferral claim loss",
     "stale",
     "retarget failure",
@@ -390,8 +391,11 @@ describe.each(["boat", "modal"] as const)("queued runtime wake admission (%s)", 
 
   const cases = scenarios.filter((scenario) =>
     provider === "modal"
-      ? scenario === "scoped grant loss" || scenario === "unenrolled failure" || scenario === "unenrolled claim loss"
-      : scenario !== "scoped grant loss",
+      ? scenario === "scoped grant loss" ||
+        scenario === "unenrolled failure" ||
+        scenario === "unenrolled claim loss" ||
+        scenario === "restore admission loss"
+      : scenario !== "scoped grant loss" && scenario !== "restore admission loss",
   );
   test.each(cases)("fences queued wake admission and publication (%s)", async (scenario) => {
     const scoped = scenario === "scoped grant loss";
@@ -436,7 +440,29 @@ describe.each(["boat", "modal"] as const)("queued runtime wake admission (%s)", 
     let stops = 0;
     let activityUntil: string | undefined;
     let replacementEpoch: string | undefined;
-    const prepare: NonNullable<Parameters<typeof createRuntimeResume>[3]> = async () => {
+    let restores = 0;
+    const modalPlacement = modalRuntimeResume({
+      sql: f.sql,
+      vault: createSqlVaultStore(f.sql),
+      key: ENCRYPTION_KEY,
+      hostFor: async () =>
+        ({
+          async get() {
+            await f.db.query("update jobs set lease_until='-infinity' where id=$1", [id]);
+            return { state: "stopped" };
+          },
+          async resumeRuntime() {
+            restores++;
+          },
+        }) as unknown as Awaited<ReturnType<Parameters<typeof modalRuntimeResume>[0]["hostFor"]>>,
+      policy: {
+        async start({ activate, signal }) {
+          await activate!(signal!);
+          throw Error("Fixture ends after provider restore");
+        },
+      },
+    });
+    const prepare: NonNullable<Parameters<typeof createRuntimeResume>[3]> = async (_caller, sandbox) => {
       preparations++;
       expect(await read()).toEqual({
         status: "starting",
@@ -444,6 +470,7 @@ describe.each(["boat", "modal"] as const)("queued runtime wake admission (%s)", 
         generation: String(before + 1),
         intent: true,
       });
+      if (scenario === "restore admission loss") return modalPlacement(f.caller, sandbox);
       return {
         async start(_signal, restore, confirmActivation) {
           if (ambiguous) {
@@ -563,6 +590,11 @@ describe.each(["boat", "modal"] as const)("queued runtime wake admission (%s)", 
         replacementEpoch,
       ]);
       expect(rows).toHaveLength(0);
+    } else if (scenario === "restore admission loss") {
+      await expect(attempt()).rejects.toMatchObject({ code: "conflict" });
+      expect(preparations).toBe(1);
+      expect(restores).toBe(0);
+      expect(await read()).toMatchObject({ status: "starting", intent: true });
     } else if (unenrolled || ambiguous) {
       await expect(attempt()).rejects.toMatchObject({ code: "conflict" });
       const settled = scenario === "unenrolled failure";

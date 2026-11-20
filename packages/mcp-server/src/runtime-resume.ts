@@ -67,6 +67,7 @@ export interface RuntimeResumePlacement {
     signal: AbortSignal,
     restore: { epoch: string; watermark: number; conversationId: string | null },
     confirmActivation?: () => Promise<void>,
+    assertDispatch?: () => Promise<void>,
   ): Promise<{ epoch: string }>;
   /** Exact previously authorized compute identity; no activation/reissue on failure. */
   stop(): Promise<void>;
@@ -127,7 +128,7 @@ export function createRuntimeResume(
     const pricingContext = await store.captureUsagePricingContext?.(found.id);
     const lockAccount = (tx: Sql) =>
       lockRuntimeAccount(tx, caller, found, "Pinned runtime account is no longer authorized.");
-    const assertClaim = async (tx: Sql) => {
+    const assertClaim = async (tx?: Sql) => {
       if (claim && !(await claim.canDispatch(tx)))
         throw new VaultError("conflict", "Queued runtime turn lease is no longer current.");
     };
@@ -344,7 +345,7 @@ export function createRuntimeResume(
               )
                 throw new VaultError("conflict", "Resume activation authority changed.");
             };
-            const ready = await placement.start(signal, restore, confirmActivation);
+            const ready = await placement.start(signal, restore, confirmActivation, claim ? assertClaim : undefined);
             if (ready.epoch !== admitted.op.target_epoch) throw new VaultError("conflict", "Unexpected resume epoch.");
           }
           const commandGuard = claim ? assertClaim : undefined;
