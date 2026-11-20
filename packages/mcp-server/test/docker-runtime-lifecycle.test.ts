@@ -930,14 +930,20 @@ test("a queued Docker send resumes the exact host job and fences wake readiness"
     resume: bootstrap,
     send: createDockerNormalSend(sql, key, { enabled: true, dispatchQueued: true, clock }),
   });
-  let loseAtReadiness = true;
+  const healthId = `docker_health_${input.request_id}`;
+  const wakeHealth = (tx: Sql) =>
+    tx.query("select 1 from public.runtime_commands where sandbox_id=$1 and request_id=$2", [input.id, healthId]);
+  let loseAt: "health enqueue" | "readiness" | undefined = "health enqueue";
   const claim = {
     handoffGeneration: (handoff: Parameters<typeof store.handoffGeneration>[2]) =>
       store.handoffGeneration(job, owner, handoff),
     async canDispatch(tx?: Sql) {
-      if (tx && session && loseAtReadiness) {
-        const { rows } = await tx.query("select id from public.sandboxes where id=$1 and status='ready'", [input.id]);
-        if (rows.length) return false;
+      if (tx && session) {
+        if (loseAt === "health enqueue" && (await wakeHealth(tx)).rows.length) return false;
+        if (loseAt === "readiness") {
+          const { rows } = await tx.query("select id from public.sandboxes where id=$1 and status='ready'", [input.id]);
+          if (rows.length) return false;
+        }
       }
       return (await store.inspect(job, owner, tx)) === "dispatch";
     },
@@ -946,7 +952,14 @@ test("a queued Docker send resumes the exact host job and fences wake readiness"
     "Docker sandbox operation is unavailable",
   );
   expect((await reservations.get(f.actor, input.id)).status).toBe("starting");
-  loseAtReadiness = false;
+  expect((await wakeHealth(sql)).rows).toHaveLength(0);
+  loseAt = "readiness";
+  await expect(controls.invoke(caller, "send", input, claim)).rejects.toThrow(
+    "Docker sandbox operation is unavailable",
+  );
+  expect((await reservations.get(f.actor, input.id)).status).toBe("starting");
+  expect((await wakeHealth(sql)).rows).toHaveLength(1);
+  loseAt = undefined;
   await expect(controls.invoke(caller, "send", input, claim)).resolves.toMatchObject({
     handled: true,
     result: { requestId: input.request_id, promptId },
