@@ -74,7 +74,7 @@ export interface ServerSandboxPatch extends SandboxPatch {
   onlyIfIdle?: boolean;
   retainedRuntimeStop?: string;
   modalRuntimeExtensionTarget?: string;
-  providerObservation?: { fromState: "ready" | "running"; providerRunPlacement?: string };
+  providerObservation?: { fromState: SandboxStatus; providerRunPlacement?: string };
   turnActivity?: "claim" | "finish";
 }
 

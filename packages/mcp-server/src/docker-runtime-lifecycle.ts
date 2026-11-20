@@ -120,7 +120,13 @@ export function createDockerRuntimeLifecycle(sql: Sql, key: string, options: { e
     });
   }
   return {
-    ready(actor: Actor, sandboxId: string, requestId: string, expectedLifecycleGeneration?: string) {
+    ready(
+      actor: Actor,
+      sandboxId: string,
+      requestId: string,
+      expectedLifecycleGeneration?: string,
+      assertClaim?: (tx: Sql) => Promise<void>,
+    ) {
       if (!uuid.test(requestId)) return Promise.reject(new DockerRuntimeDenied());
       return admitted(
         actor,
@@ -167,6 +173,7 @@ export function createDockerRuntimeLifecycle(sql: Sql, key: string, options: { e
         true,
         false,
         expectedLifecycleGeneration,
+        assertClaim,
       );
     },
     prompt(
