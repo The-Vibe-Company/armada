@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import { createSqlAuthStore } from "@armada/auth";
+import { skillDefaultOperations } from "@armada/core/contract";
 import type { GoldenActor, Sql } from "@armada/core/server";
 import { createSqlVaultStore } from "@armada/core/server";
 import type { GoldenRow } from "../../core/src/golden-store.ts";
@@ -189,8 +190,15 @@ test("Skill-default REST operations validate requests and persist replacement pi
   const saved = await api("set", f.request("personal", ["team/tool@1.2.3"]));
   expect(saved?.status).toBe(200);
   expect(saved?.headers.get("cache-control")).toBe("no-store");
-  expect(await saved?.json()).toEqual({ skills: ["team/tool@1.2.3"] });
-  expect(await (await api("get", read))?.json()).toEqual({ skills: ["team/tool@1.2.3"] });
+  expect(skillDefaultOperations.setSkillDefaults.output.parse(await saved?.json())).toEqual({
+    skills: ["team/tool@1.2.3"],
+  });
+  const loaded = await api("get", read);
+  expect(loaded?.status).toBe(200);
+  expect(loaded?.headers.get("cache-control")).toBe("no-store");
+  expect(skillDefaultOperations.readSkillDefaults.output.parse(await loaded?.json())).toEqual({
+    skills: ["team/tool@1.2.3"],
+  });
   expect((await api("get", f.request("personal", [])))?.status).toBe(400);
   const cleared = await api("set", f.request("personal", []));
   expect(cleared?.status).toBe(200);
