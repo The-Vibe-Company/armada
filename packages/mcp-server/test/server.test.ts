@@ -1861,13 +1861,16 @@ describe("tools", () => {
           "select status, task_prompt_id, activity_lease_id from sandboxes where id=$1",
           [id],
         );
+        if (!settled) throw new Error("Missing sandbox receipt state.");
         if (receiptRefused) {
           expect(sent.text).toContain("error code: outcome_unknown");
           expect(settled.status).toBe("starting");
           expect(settled.task_prompt_id).toBeNull();
           expect(settled.activity_lease_id).not.toBeNull();
         } else {
-          expect(settled).toEqual({ status: "running", task_prompt_id: sent.data.promptId, activity_lease_id: null });
+          expect(settled.status).toBe("running");
+          expect(sent.data.promptId).toBe(settled.task_prompt_id);
+          expect(settled.activity_lease_id).toBeNull();
         }
       }
     },
