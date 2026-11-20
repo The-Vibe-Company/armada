@@ -349,6 +349,8 @@ test.each(["launch", "message"] as const)(
           orgId: p.org,
           ownerId: p.owner,
           harness: "claude",
+          model: selection.model,
+          reasoningEffort: undefined,
           status: "ready",
           visibility: "private",
         });
