@@ -69,10 +69,10 @@ test("completion covers every root help command and options in every shell", asy
 });
 
 test("usage and authentication failures give relevant recovery", async () => {
-  const usage = await invoke(["list", "--limit", "0"]);
+  const usage = await invoke(["ls", "--limit", "0"]);
   expect(usage.code).toBe(2);
-  expect(usage.err).toContain("armada list --help");
-  expect(usage.err).not.toContain("inspect armada list");
+  expect(usage.err).toContain("armada ls --help");
+  expect(usage.err).not.toContain("inspect armada ls");
   for (const args of [
     ["creds", "set", "bogus"],
     ["new", "starter", "--provider", "boat", "--agent", "codex", "--ttl", "bad"],
@@ -92,7 +92,7 @@ test("usage and authentication failures give relevant recovery", async () => {
 
 test("invalid agents list the catalog for list and Docker launch", async () => {
   for (const argv of [
-    ["list", "--agent", "bogus"],
+    ["ls", "--agent", "bogus"],
     ["new", "--provider", "docker", "--agent", "bogus"],
   ]) {
     const result = await invoke(argv);
@@ -139,6 +139,6 @@ test("token, deployment and uncertain launch errors retain appropriate recovery"
   expect(deployment.err).toContain("Ask an administrator");
   expect(deployment.err).not.toContain("armada status --setup");
   const launch = await invoke(["new", "web", "--provider", "boat", "--agent", "codex"], true);
-  expect(launch.err).toContain("Run armada list to check before retrying");
+  expect(launch.err).toContain("Run armada ls to check before retrying");
   expect(launch.err).not.toContain("armada status --setup");
 });

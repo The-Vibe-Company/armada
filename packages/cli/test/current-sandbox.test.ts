@@ -100,7 +100,7 @@ test("new saves the new sandbox ID in the invocation directory", async () => {
 
 test("non-TTY sandbox list uses JSON without an explicit flag", async () => {
   const cli = fixture(async () => Response.json({ sandboxes: [] }));
-  const result = await cli.run(["list"], { stdoutIsTTY: false });
+  const result = await cli.run(["ls"], { stdoutIsTTY: false });
   expect(result.exit).toBe(0);
   expect(JSON.parse(result.out)).toEqual({ sandboxes: [] });
 });

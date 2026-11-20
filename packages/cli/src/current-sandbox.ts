@@ -114,6 +114,6 @@ export async function resolveSandboxReference(
     page = result.nextPage;
   }
   const [match] = matches;
-  if (!match) throw new AuthError("No visible sandbox matches that UUID prefix. Run armada list.", "usage");
+  if (!match) throw new AuthError("No visible sandbox matches that UUID prefix. Run armada ls.", "usage");
   return match;
 }

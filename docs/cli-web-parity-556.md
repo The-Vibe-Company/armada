@@ -6,15 +6,17 @@ These are the sandbox list and JSON output contracts. See the [CLI/dashboard fea
 
 ```sh
 armada login --org my-org
-armada list --json
-armada list --status deleted --json
-armada list --agent codex --golden SNAPSHOT_UUID --owner me --page 2 --limit 25 --json --page-info
-armada list --harness claude --owner USER_UUID --org ORG_UUID --json
+armada ls --json
+armada ls --status deleted --json
+armada ls --ref job/42 --json
+armada ls --agent codex --golden SNAPSHOT_UUID --owner me --page 2 --limit 25 --json --page-info
+armada ls --harness claude --owner USER_UUID --org ORG_UUID --json
 ```
 
 | Option | Behavior |
 |---|---|
 | `--status STATUS` | One known sandbox status. Omitted status excludes deleted; use `--status deleted` explicitly. |
+| `--ref REF` | Match the exact external reference supplied at launch. Only matches sandboxes you own or administer. |
 | `--agent` / `--harness` | Aliases for one harness filter. Supplying both is rejected. |
 | `--golden UUID` | The flag retains its spelling; it takes a snapshot ID, not its name. Discover it with `snapshot ls --json`. |
 | `--owner UUID` / `--owner me` | Filter by user; the authenticated server resolves `me`. |
@@ -29,7 +31,7 @@ The list is newest first, with ID as a stable tie-breaker. Its total counts only
 
 ## Compatible JSON shapes
 
-`armada list --json` preserves the existing envelope:
+`armada ls --json` preserves the existing envelope:
 
 ```json
 {"sandboxes":[]}

@@ -54,7 +54,7 @@ test.each(
   const failure = JSON.parse(err).error;
   expect(failure.code).toBe("not_found");
   expect(failure.message).toContain("not found or not accessible");
-  expect(failure.message).toContain("armada list --json");
+  expect(failure.message).toContain("armada ls --json");
   expect(failure.message).not.toContain("Outcome unknown");
 });
 
@@ -79,7 +79,7 @@ test("human error guidance is stderr-only and does not retry a stop rejection", 
   const result = await capture(["stop", id], 409, "conflict");
   expect(result.exit).toBe(1);
   expect(result.err).toStartWith("armada: The sandbox state conflicts");
-  expect(result.err).toContain("armada list --json");
+  expect(result.err).toContain("armada ls --json");
   expect(result.err).not.toContain("Outcome unknown");
 });
 
@@ -89,7 +89,7 @@ test.each(["provider_unavailable", "dependency_unavailable", "outcome_unknown"])
     const result = await capture(["stop", id, "--json"], 503, code);
     expect(result.exit).toBe(1);
     expect(JSON.parse(result.err).error).toMatchObject({ code });
-    expect(JSON.parse(result.err).error.message).toContain("armada list --json");
+    expect(JSON.parse(result.err).error.message).toContain("armada ls --json");
   },
 );
 
@@ -108,7 +108,7 @@ test.each(["", canary])("binding refusal preserves only an exact fixed reason (s
     expect(failure.message).toContain("armada detail ID");
   } else {
     expect(failure.message).not.toContain(message);
-    expect(failure.message).toContain("armada list --json");
+    expect(failure.message).toContain("armada ls --json");
   }
 });
 

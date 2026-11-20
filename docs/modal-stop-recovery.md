@@ -28,6 +28,6 @@ after the lease expires, then check `armada status <full-sandbox-id>`.
 
 Reported rows to verify: production `3a21e24d-a035-4893-ad2c-ce256f622e16`,
 `250320dc-d28b-4bdc-9f27-1bdef3ceb619`; staging prefixes `a2af8c47`,
-`64a6353b`, `2fae4971` (resolve full IDs with `armada list`).
+`64a6353b`, `2fae4971` (resolve full IDs with `armada ls`).
 This patch does not assert these machines have already been reconciled.
 No production operations or deployments were performed during implementation.
