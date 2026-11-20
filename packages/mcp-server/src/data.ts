@@ -43,8 +43,8 @@ import { unsettledRuntimeCommands } from "./runtime-idle-evidence.ts";
 import {
   completeSandboxDeletion,
   expireAfterExtension,
-  finishEnrolledRuntimeLaunch,
   finishLaunchFailure,
+  finishLaunchSuccess,
   publishNativeResumeAdmission,
   publishNativeTurn,
   publishOwnerStop,
@@ -873,9 +873,11 @@ export function createSqlData(
           if (!sql.transaction) throw new Error("Runtime readiness publication requires a transaction.");
           const { expectedGeneration, activityToken } = patch;
           const outcome = await sql.transaction((tx) =>
-            finishEnrolledRuntimeLaunch(tx, scope, id, expectedGeneration, activityToken, initialPrompt),
+            finishLaunchSuccess(tx, scope, id, expectedGeneration, activityToken, initialPrompt),
           );
           if (outcome === "applied") return;
+          if (outcome === "native_conflict")
+            throw new DataError("Native launch prompt publication is stale.", "sandbox_not_ready");
           if (outcome === "conflict")
             throw new DataError("Runtime readiness publication is stale.", "sandbox_not_ready");
         }
