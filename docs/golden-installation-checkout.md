@@ -35,7 +35,7 @@ list in a separate status response does not identify the token used by an old bu
   before one credential-free baseline/init pass over all repositories.
 - Recheck the durable job fence before each SSH group/baseline. Revoke all issued
   tokens on success, checkout failure or partial mint failure. Never revoke the
-  caller's own token. No token enters script text, argv, fixture logs or the golden.
+  caller's own token. No token enters script text, argv, fixture logs or the snapshot.
 - Public/unassociated repositories, or deployments with no installation signing
   credentials, retain the caller-token path. That cached token must have at least
   one hour remaining (refresh otherwise); the challenge-safe helper still applies.
@@ -46,8 +46,8 @@ list in a separate status response does not identify the token used by an old bu
 
 | Path | Shared failure / effect of this PR |
 | --- | --- |
-| Boat golden create/update, including --add-repo | Shared GoldenCreateService and transient helper. Fixes both the helper challenge defect (stacked #1706) and multi-installation token selection; failed rebuild keeps the last-good golden. |
-| Modal golden create/update | Same GoldenCreateService/helper/token selection, so the same repair applies. Provider bindings and builder cleanup policy are unchanged. |
+| Boat snapshot create/update, including `--add-repo` | Shared GoldenCreateService and transient helper. Fixes both the helper challenge defect (stacked #1706) and multi-installation token selection; failed rebuild keeps the last-good snapshot. |
+| Modal snapshot create/update | Same GoldenCreateService/helper/token selection, so the same repair applies. Provider bindings and builder cleanup policy are unchanged. |
 | Docker host snapshots | Uses the same goldenCheckoutScript, so it receives #1706's challenge repair. Its server admission separately chooses one token and sends one BuildKit secret; mixed-installation caller fallback still exists there. This PR improves its shared authorizer's App-ID matching and read-only mint scope, but does not add a multi-token Docker wire/BuildKit transport. Do not claim per-installation Docker checkout is fixed or production-verified. |
 | Plain launch --repo | Selects a configured repository directory/owner-repo as working directory; it does not add or clone an arbitrary URL. Native initialization pulls configured repositories with a separate user credential setup/broker (gitSetupCommand), not this installation-selection or transient-helper path. It can have separate user-token authorization failures, but is not this clone-selection bug. Runtime/provider restrictions retain their own lifecycle. |
 
