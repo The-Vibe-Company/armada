@@ -318,7 +318,10 @@ export async function readStatus(
       nativeExit ||
       ((sandbox.status === "ready" || sandbox.status === "running") && (next === "stopped" || next === "failed")) ||
       (!runtime &&
-        (sandbox.status === "stopped" || sandbox.status === "ready" || sandbox.status === "running") &&
+        (sandbox.status === "stopped" ||
+          sandbox.status === "failed" ||
+          sandbox.status === "ready" ||
+          sandbox.status === "running") &&
         next !== sandbox.status &&
         (next === "ready" || next === "running"))
     )

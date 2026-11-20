@@ -709,7 +709,8 @@ export async function recordObservedProviderState(
     !live && nativeExit && toState === "failed" && (fromState === "failed" || fromState === "stopped");
   const nativeStop = !live && nativeExit && toState === "stopped";
   const nativeTurn = toState === "ready" || toState === "running";
-  const nativeAvailability = fromState === "stopped" && nativeTurn && providerRunPlacement !== undefined;
+  const nativeAvailability =
+    (fromState === "stopped" || fromState === "failed") && nativeTurn && providerRunPlacement !== undefined;
   if (fromState === "deleted" || (!live && !nativeStop && !nativeFailure && !nativeAvailability))
     return { kind: "conflict" } satisfies SandboxTransitionResult;
   if (nativeTurn && providerRunPlacement === undefined)
