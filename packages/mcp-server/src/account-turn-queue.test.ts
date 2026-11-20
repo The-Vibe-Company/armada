@@ -147,9 +147,10 @@ async function claimTurn(requestId: string) {
 }
 
 test("a later shared claim cannot bypass the first eligible account receipt", async () => {
-  const [first, later] = ids;
+  const first = ids[0]!;
+  const later = ids[1]!;
   const requestId = requests[0]!;
-  for (const id of [first!, later!]) await queue.accept(caller, { id, request_id: requestId, prompt: "next" });
+  for (const id of [first, later]) await queue.accept(caller, { id, request_id: requestId, prompt: "next" });
   await sql.query("update jobs set run_after='infinity' where sandbox_id=$1", [first]);
   const claim = await claimTurn(requestId);
   expect(claim.job.sandbox_id).toBe(later);
