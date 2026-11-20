@@ -160,7 +160,7 @@ test.each([
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         email: "alice@example.test",
-        code: "123456",
+        ...(route === "auth/email/verify" ? { code: "123456" } : {}),
         redirect_uri: "http://localhost:43123/callback",
         code_challenge: "a".repeat(43),
         state: "state_placeholder",

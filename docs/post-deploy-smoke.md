@@ -1854,24 +1854,14 @@ has not passed merely because the server-origin smoke passed.
 1. Unset `ARMADA_TOKEN`. In the shell where you run this journey, export
    `XDG_CONFIG_HOME` pointing to a new disposable directory and `ARMADA_URL`
    set to the staging dashboard origin.
-   Run `armada login` in a terminal. Discovery must offer the enabled methods
-   without errors. Anonymous `GET /api/v1/auth/methods` on that same origin must
-   return 200 JSON and no-store.
-2. With the staging test account, complete each enabled browser sign-in using
-   `armada login --provider github` or `armada login --provider google`. Confirm
-   that each loopback callback exchanges the code and saves a session. Run
-   `armada logout` between sign-ins.
-3. Complete email login, including code verification, then confirm that
-   `armada org list` succeeds with the saved staging session. Run
-   `armada logout` and remove the disposable configuration directory. Never
-   record codes, tokens or callback query strings in evidence.
-
-The discovery regression began in **v2.28.0**, which first shipped #1505
-(`fb2fc624`): the CLI began requesting auth/methods while the dashboard retained
-its POST-only public allowlist. The route audit also found the server's public
-GitHub account OAuth callback missing from the catch-all proxy; it now shares
-method admission and redirect forwarding with the other public routes. The
-separate dashboard `/github/callback` web flow remains intact.
+2. From a shell without a browser, run `armada login` and open its printed
+   link in a browser on another machine. Sign in with an enabled dashboard
+   method. Verify the host and short code shown at consent, authorize, and
+   confirm that the CLI reports the signed-in account.
+3. Verify that `armada org list` uses the saved session. Run `armada logout`,
+   start again with an existing dashboard session, deny the request, and
+   confirm that the CLI reports denial. Remove the disposable configuration
+   directory. Keep codes, tokens and approval links out of the evidence.
 
 The authenticated control audit also repaired missing `creds/accounts/models`,
 `creds/defaults/set` and `skillpack/connection` forwarding, plus `golden/adopt`,

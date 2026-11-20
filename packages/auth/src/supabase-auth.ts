@@ -137,6 +137,42 @@ export async function refreshSupabaseSession(options: {
   );
 }
 
+export async function createDeviceSession(
+  options: { fetch: AuthFetch; supabaseUrl: string; anonKey: string; adminKey: string; now: Date },
+  userId: string,
+) {
+  const adminHeaders = { apikey: options.adminKey, authorization: `Bearer ${options.adminKey}` };
+  const userResponse = await options.fetch(`${options.supabaseUrl}/auth/v1/admin/users/${userId}`, {
+    headers: adminHeaders,
+    redirect: "error",
+    signal: AbortSignal.timeout(10_000),
+  });
+  const user: unknown = userResponse.ok ? await userResponse.json() : null;
+  if (
+    !isRecord(user) ||
+    user.id !== userId ||
+    typeof user.email !== "string" ||
+    !user.email ||
+    !user.email_confirmed_at
+  )
+    throw new AuthError("The approving account is unavailable.", "unauthorized");
+
+  const linkResponse = await options.fetch(`${options.supabaseUrl}/auth/v1/admin/generate_link`, {
+    method: "POST",
+    headers: { ...adminHeaders, "content-type": "application/json" },
+    body: JSON.stringify({ type: "magiclink", email: user.email }),
+    redirect: "error",
+    signal: AbortSignal.timeout(10_000),
+  });
+  const link: unknown = linkResponse.ok ? await linkResponse.json() : null;
+  if (!isRecord(link) || link.id !== userId || typeof link.hashed_token !== "string")
+    throw new AuthError("Could not create the CLI session.", "unavailable");
+
+  const session = await requestSession(options, { type: "email", token_hash: link.hashed_token }, "/auth/v1/verify");
+  if (session.userId !== userId) throw new AuthError("The approving account changed.", "unauthorized");
+  return { ...session, email: user.email };
+}
+
 const INVALID_SESSION =
   "Sign-in could not finish because the sign-in service returned an invalid session. Try signing in again; if this continues, contact the server operator.";
 
@@ -151,6 +187,8 @@ async function requestSession(
       method: "POST",
       headers: { apikey: options.anonKey, "content-type": "application/json", accept: "application/json" },
       body: JSON.stringify(body),
+      redirect: "error",
+      signal: AbortSignal.timeout(10_000),
     });
   } catch {
     throw new AuthError(
@@ -183,7 +221,7 @@ async function requestSession(
   return sessionFrom(payload, options.supabaseUrl, options.now);
 }
 
-function sessionFrom(payload: unknown, supabaseUrl: string, now: Date): Session {
+function sessionFrom(payload: unknown, supabaseUrl: string, now: Date) {
   if (!isRecord(payload) || !isRecord(payload.user)) throw new AuthError(INVALID_SESSION, "unavailable");
   const { access_token: accessToken, refresh_token: refreshToken, expires_in: expiresIn } = payload;
   const userId = payload.user.id;
