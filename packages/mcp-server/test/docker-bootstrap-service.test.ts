@@ -533,6 +533,26 @@ test.each(["codex", "claude", "opencode"] as const)(
   },
 );
 
+test("a revoked runtime checkpoint cannot admit a Docker idle stop", async () => {
+  const db = database();
+  const f = await fixture();
+  const authority = createRuntimeEnrolments(sql, key, { allowDockerIssue: true });
+  const issue = () => authority.issue({ ownerId: f.actor.userId, sandboxId: f.sandbox.id, configuration: {} });
+  const session = await authority.enrol((await issue()).enrolmentToken);
+  const requestId = randomUUID();
+  await db.query(
+    `insert into public.runtime_checkpoints(sandbox_id,epoch,request_id,watermark,completed_at)
+     values($1,$2,$3,0,now())`,
+    [f.sandbox.id, session.epoch, requestId],
+  );
+  await issue();
+  await expect(
+    hosts.enqueueSandbox(f.actor, f.sandbox.id, { requestId, operation: "stop", idleCheckpointRequest: requestId }),
+  ).rejects.toThrow();
+  expect((await reservations.get(f.actor, f.sandbox.id)).status).toBe("ready");
+  expect(await hosts.poll(f.hostToken, f.installationId)).toBeNull();
+});
+
 test.each([false, true])("idle checkpoint fences Docker stop and retained restore (merge stop=%s)", async (merged) => {
   const db = database();
   const f = await fixture();

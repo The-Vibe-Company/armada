@@ -1713,7 +1713,8 @@ export function createDockerHostStore(sql: Sql, key: string) {
         if (!known && selection.operation === "stop" && selection.idleCheckpointRequest !== undefined) {
           id(selection.idleCheckpointRequest);
           const proof = await tx.query<{ work_merged: boolean }>(
-            `select p.merge_stop as work_merged from public.sandboxes s join public.runtime_enrolments r on r.sandbox_id=s.id
+            `select p.merge_stop as work_merged from public.sandboxes s join public.runtime_enrolments r
+             on r.sandbox_id=s.id and r.lifecycle_generation=s.lifecycle_generation and r.runtime_hash is not null
              join public.runtime_checkpoints p on p.sandbox_id=s.id and p.epoch=r.epoch
              where s.id=$1 and p.request_id=$2 and p.watermark is not null
              and p.watermark=(select coalesce(max(sequence),0) from public.runtime_events where sandbox_id=s.id)
