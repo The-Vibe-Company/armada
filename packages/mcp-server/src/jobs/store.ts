@@ -298,7 +298,7 @@ export function createJobsStore(sql: Sql, encryptionKey?: string) {
   }
 
   return {
-    modalLaunchJournal(job: Job) {
+    modalLaunchJournal(job: Job, canCreate?: (tx: Sql) => Promise<boolean>) {
       if (job.kind !== "launch" || !job.sandbox_id || !job.generation) {
         throw new Error("Modal machine journal requires a launch claim.");
       }
@@ -321,6 +321,8 @@ export function createJobsStore(sql: Sql, encryptionKey?: string) {
           if (next.revision !== (revision ?? 0) + 1) return false;
           return (
             (await withJobLease(sql, job, async (tx) => {
+              if (next.phase === "creating" && revision === undefined && canCreate && !(await canCreate(tx)))
+                return false;
               const { rows } = await tx.query(
                 `update public.jobs set outcome=jsonb_set(
                    case when outcome is null then '{}'::jsonb
@@ -520,6 +522,6 @@ export function createJobsStore(sql: Sql, encryptionKey?: string) {
     },
   } satisfies JobStore & {
     enqueue: (...args: never[]) => Promise<string>;
-    modalLaunchJournal: (job: Job) => ModalMachineJournal;
+    modalLaunchJournal: (job: Job, canCreate?: (tx: Sql) => Promise<boolean>) => ModalMachineJournal;
   };
 }
