@@ -354,11 +354,6 @@ test("singleton credentials can be replaced with the provider-only index", async
   const db = database();
   await db.exec("begin");
   try {
-    await db.exec(`
-      drop index public.credentials_provider_singleton;
-      create unique index credentials_provider_singleton on public.credentials(scope,owner_id,kind)
-      where kind in ('boat','modal','skillpack');
-    `);
     await withVault(async ({ store, people }) => {
       const credential = { scope: "user", org: undefined, kind: "boat" } as const;
       await setCredential(store, KEY, people.stan, { ...credential, value: "first" });
