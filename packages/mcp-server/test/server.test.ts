@@ -1783,7 +1783,9 @@ describe("tools", () => {
         return prompt(request);
       };
 
-      const sent = await call(mcp, "send", { id, prompt: "continue" });
+      const sent = await call(mcp, "send", { id, prompt: "continue" }).finally(async () => {
+        if (scenario === "rollback") await db.exec("alter table sandboxes drop constraint reject_native_start");
+      });
 
       const refused = scenario === "stale callback" || scenario === "rollback";
       expect(Boolean(sent.isError)).toBe(refused);
