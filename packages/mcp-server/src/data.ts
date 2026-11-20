@@ -883,9 +883,10 @@ export function createSqlData(
                 : "Native launch readiness publication is stale.",
               "sandbox_not_ready",
             );
-          if (outcome === "conflict")
-            throw new DataError("Runtime readiness publication is stale.", "sandbox_not_ready");
+          throw new DataError("Runtime readiness publication is stale.", "sandbox_not_ready");
         }
+        if (patch.status !== undefined && stopStatus === undefined)
+          throw new DataError("Sandbox status changes require a lifecycle transition.");
         const nativeResume = patch.nativeResumeAdmission;
         if (
           nativeResume !== undefined &&
@@ -948,11 +949,6 @@ export function createSqlData(
         }
         if (patch.clearTaskOutcome) sets.push("task_outcome = null", "task_prompt_id = null");
         if (patch.taskPromptId !== undefined) set("task_prompt_id", patch.taskPromptId, "::text");
-        if (patch.status !== undefined && !patch.ownerStop) {
-          set("status", patch.status, "::public.sandbox_status");
-          sets.push(`transition_context = case when s.provider in ('boat','modal')
-            then jsonb_build_object('actor','api','code','sandbox_' || ($${params.length}::public.sandbox_status)::text) end`);
-        }
         if (patch.conversationIds !== undefined) set("conversation_ids", patch.conversationIds, "::text[]");
         if (patch.stoppedAt !== undefined) set("stopped_at", patch.stoppedAt, "::timestamptz");
         if (patch.expiresAt !== undefined) set("expires_at", patch.expiresAt, "::timestamptz");
@@ -1197,7 +1193,7 @@ export function createSqlData(
         } else if (
           patch.taskPromptId &&
           patch.expectedGeneration !== undefined &&
-          (patch.status === "running" || patch.turnActivity === "finish") &&
+          patch.turnActivity === "finish" &&
           sql.transaction
         ) {
           const generation = patch.expectedGeneration + (patch.finishActivity ? 1 : 0);

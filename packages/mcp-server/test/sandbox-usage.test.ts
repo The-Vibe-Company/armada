@@ -226,12 +226,16 @@ test("real SQL runtime includes open and completed intervals and usage follows i
     pricing: null,
   });
   expect((await store(p.owner).list({ limit: 10 })).rows[0]?.usage?.computeSeconds).toBe(30);
+  const setState = (status: string, stoppedAt?: string | null) =>
+    stoppedAt === undefined
+      ? db.query("update sandboxes set status=$2 where id=$1", [id, status])
+      : db.query("update sandboxes set status=$2,stopped_at=$3 where id=$1", [id, status, stoppedAt]);
   // Stop's activity reservation clears stoppedAt even for an already stopped sandbox.
-  await store(p.owner).update(id, { status: "stopping", stoppedAt: null });
-  await store(p.owner).update(id, { status: "stopped", stoppedAt: "2026-01-01T00:02:00Z" });
+  await setState("stopping", null);
+  await setState("stopped", "2026-01-01T00:02:00Z");
   expect((await store(p.owner).get(id))?.usage?.computeSeconds).toBe(30);
   // ReadStatus can discover a provider-side resume without a known start boundary.
-  await store(p.owner).update(id, { status: "ready", stoppedAt: null });
+  await setState("ready", null);
   expect((await store(p.owner).get(id))?.usage?.computeSeconds).toBeNull();
   // Reset only the test's tracked interval to independently prove a missed-stop resume.
   await db.query(
@@ -239,11 +243,11 @@ test("real SQL runtime includes open and completed intervals and usage follows i
     [id],
   );
   // A missed physical stop cannot be silently included in a later resumed interval.
-  await store(p.owner).update(id, { status: "starting", stoppedAt: null });
-  await store(p.owner).update(id, { status: "running" });
-  await store(p.owner).update(id, { status: "starting", stoppedAt: null });
-  await store(p.owner).update(id, { status: "running" });
-  await store(p.owner).update(id, { status: "stopped", stoppedAt: "2026-01-01T00:03:00Z" });
+  await setState("starting", null);
+  await setState("running");
+  await setState("starting", null);
+  await setState("running");
+  await setState("stopped", "2026-01-01T00:03:00Z");
   expect((await store(p.owner).get(id))?.usage?.computeSeconds).toBeNull();
   expect((await store(p.member).list({ limit: 10 })).rows[0]?.usage).toBeNull();
   expect(await store(p.member).get(id)).toBeNull();

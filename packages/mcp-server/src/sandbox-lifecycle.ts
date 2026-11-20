@@ -318,8 +318,7 @@ export async function finishLaunchSuccess(
     });
     return result.kind === "applied" ? "applied" : "native_conflict";
   }
-  if (sandbox && !sandbox.enrolled_path) return "other_path";
-  if (!sandbox?.owned) return "conflict";
+  if (!sandbox?.owned || !sandbox.enrolled_path) return "conflict";
   const live = await tx.query(
     `select 1 from public.runtime_enrolments where sandbox_id=$1 and lifecycle_generation=$2
       and runtime_hash is not null for update`,

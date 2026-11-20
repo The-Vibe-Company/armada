@@ -273,7 +273,7 @@ test.each([
     expect(stopping.status).toBe("stopping");
     await expect(
       f.data.sandboxes.update(f.id, {
-        status: "starting",
+        nativeResumeAdmission: stopping.providerSandboxId,
         stopRequested: false,
         activityToken: crypto.randomUUID(),
         advanceGeneration: true,
@@ -313,12 +313,10 @@ test("Modal native idle needs current physical quiescence and a synchronized wat
 
 test("an expired native idle pause refuses wake before provider work", async () => {
   const f = await fixture();
-  await f.data.sandboxes.update(f.id, {
-    status: "stopped",
-    statusReason: "idle_paused",
-    stoppedAt: new Date(f.at).toISOString(),
-    expiresAt: new Date(f.at + 600_000).toISOString(),
-  });
+  await f.db.query(
+    "update sandboxes set status='stopped',status_reason='idle_paused',stopped_at=$2,expires_at=$3 where id=$1",
+    [f.id, new Date(f.at).toISOString(), new Date(f.at + 600_000).toISOString()],
+  );
   await expect(
     callSharedTool(
       {
@@ -346,11 +344,11 @@ test.each(["idle_paused", "work_merged"])(
   "a native %s stop still checkpointing refuses send before provider work",
   async (reason) => {
     const f = await fixture(`stopping-${reason}`);
-    await f.data.sandboxes.update(f.id, {
-      status: "stopping",
-      statusReason: reason,
-      expiresAt: new Date(f.at + 3_600_000).toISOString(),
-    });
+    await f.db.query("update sandboxes set status='stopping',status_reason=$2,expires_at=$3 where id=$1", [
+      f.id,
+      reason,
+      new Date(f.at + 3_600_000).toISOString(),
+    ]);
     await expect(
       callSharedTool(
         {

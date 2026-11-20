@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { type Provider, ProviderError, type Sql, VaultError } from "@armada/core";
 import { createBoatProvider } from "@armada/provider-boat";
 import { retainedSandbox, sandbox } from "../../provider-boat/test/support.ts";
-import { createSqlData } from "../src/data.ts";
+import { createSqlData, type ServerSandboxPatch } from "../src/data.ts";
 import { createDockerHostStore } from "../src/docker-host-store.ts";
 import { createDockerSandboxService } from "../src/docker-sandbox-service.ts";
 import { createRuntimeEnrolments } from "../src/runtime-enrolment.ts";
@@ -669,20 +669,26 @@ for (const observation of ["stopped", "expired", "unavailable"] as const) {
       // The production send-admission owner rearms the persisted policy, then the
       // real SDK resumes the stopped machine and admits its next native prompt.
       const beforeRearm = await databaseNowMs(sql);
-      await sandboxActivity(
-        store,
-        confirmed,
-        { renewLifecycle: true, status: "starting", stoppedAt: null },
-        async (signal) => {
-          const receipt = await provider.prompt({
-            sandboxId: confirmed.providerSandboxId,
-            harness: "claude",
-            text: "continue",
-            signal,
-          });
-          return { result: receipt, patch: { status: "running", stoppedAt: null } };
-        },
-      );
+      const admission = {
+        renewLifecycle: true,
+        stopRequested: false,
+        nativeResumeAdmission: confirmed.providerSandboxId,
+      } satisfies ServerSandboxPatch;
+      await sandboxActivity(store, confirmed, admission, async (signal) => {
+        const receipt = await provider.prompt({
+          sandboxId: confirmed.providerSandboxId,
+          harness: "claude",
+          text: "continue",
+          signal,
+        });
+        const patch = {
+          nativeSendReceipt: { fromState: "starting", placement: confirmed.providerSandboxId },
+          taskPromptId: receipt.promptId,
+          conversationIds: [receipt.conversationId],
+          stoppedAt: null,
+        } satisfies ServerSandboxPatch;
+        return { result: receipt, patch };
+      });
       const afterRearm = await databaseNowMs(sql);
       const resumed = await store.get(id);
       expect(resumed?.stoppedAt).toBeNull();
@@ -706,7 +712,7 @@ for (const observation of ["stopped", "expired", "unavailable"] as const) {
       const beforeObservation = methods.length;
       expect(await lifecycle.reconcileOne()).toBe(true);
       expect(resolutions).toBe(2);
-      expect(methods.slice(beforeObservation)).toEqual(["GET"]);
+      expect(methods.slice(beforeObservation)).toEqual(["GET", "GET"]);
       expect((await store.get(id))?.status).toBe("running");
     }
   });
@@ -789,15 +795,25 @@ test("replicas lease one observation and resume admission fences old writes whil
     // The gap alone would accept a renewal backdated as a whole; bound the
     // deadline with database clock samples taken around the renewal.
     expectDeadlineWithin(renewed.expires_ms, beforeRenewal, afterRenewal, 90);
-    await expect(data.sandboxes.update(id, { status: "stopped", expectedGeneration: 1 })).rejects.toThrow();
+    await expect(
+      data.sandboxes.update(id, {
+        status: "running",
+        stoppedAt: null,
+        finishActivity: true,
+        expectedGeneration: 2,
+        activityToken,
+      }),
+    ).rejects.toThrow("Sandbox status changes require a lifecycle transition.");
+    await expect(
+      data.sandboxes.update(id, { finishActivity: true, activityToken, expectedGeneration: 1 }),
+    ).rejects.toMatchObject({ code: "sandbox_not_ready" });
     await data.sandboxes.update(id, {
-      status: "running",
-      stoppedAt: null,
       finishActivity: true,
       activityToken,
       expectedGeneration: 2,
     });
     const row = await data.sandboxes.get(id);
+    expect(row?.status).toBe("stopped");
     expect(row?.lifecycleGeneration).toBe(3);
     expect(row?.effectiveTtlSeconds).toBe(90);
     expect(row?.requestedTtlSeconds).toBe(90);
@@ -811,7 +827,6 @@ test("replicas lease one observation and resume admission fences old writes whil
       ).rows,
     ).toEqual([
       { from_status: "running", to_status: "stopped", actor: "reconciler", code: "provider_stopped", generation: 1 },
-      { from_status: "stopped", to_status: "running", actor: "api", code: "sandbox_running", generation: 3 },
     ]);
   } finally {
     gate.resolve();
