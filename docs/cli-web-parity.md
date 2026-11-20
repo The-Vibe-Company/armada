@@ -13,7 +13,7 @@ Commands below start with `armada`. Select an organization with `org use NAME|UU
 | Organizations and members | Organization selection and admin management | `org create/list/use/current`, `org members list/add/remove/role` |
 | Personal and org credentials | Write-only model/hosting forms; org writes require admin | `creds list`, `creds set KIND`, `creds remove ACCOUNT_UUID`; legacy `creds rm KIND` only when unambiguous; values from stdin or `--file` |
 | Modal credentials | Separate token ID and token-secret fields, stored together | `creds set modal --file /secure/modal-token.json`; canonical JSON uses `token_id` and `token_secret` |
-| Service tokens | Token management | `token create/list/revoke`; optional organization scope |
+| Service tokens | Token management | `token create/ls/revoke`; optional organization scope |
 | GitHub connection | Connect, reconnect, disconnect and installation settings | `github status/connect/reconnect/disconnect/install/manage`; browser flow waits for its own completion |
 | Snapshot list and identity | Separate Boat/Modal rows under private/shared sections | `snapshot list [--provider boat\|modal] [--json]`; JSON includes safe `id` and `orgId` |
 | Snapshot capacity | Per-provider server-reported capacity | `snapshot capabilities [--provider boat\|modal] [--org UUID] [--json]`; null means unknown/unbounded, not zero |

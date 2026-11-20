@@ -200,11 +200,30 @@ export async function proveAuth(options: {
     error: "invalid_token",
   });
 
-  const created = await createServiceToken(options.store, { userId: USER_ID, label: "dave", now: options.now() });
+  const keyCreatedAt = options.now();
+  const expiry = new Date(keyCreatedAt.getTime() + 90_000);
+  const created = await createServiceToken(options.store, {
+    userId: USER_ID,
+    label: "dave",
+    now: keyCreatedAt,
+    expiresAt: expiry.toISOString(),
+  });
   secrets.push(created.token);
   expect(created.orgName).toBe("Example");
   expect((await authenticate(`Bearer ${created.token}`, options.store, options.now())).ok).toBe(true);
-  await revokeServiceToken(options.store, { userId: USER_ID, id: created.id, now: options.now() });
+  const bearer = `Bearer ${created.token}`;
+  const soon = new Date(keyCreatedAt.getTime() + 30_000);
+  const later = new Date(keyCreatedAt.getTime() + 60_000);
+  expect((await authenticate(bearer, options.store, soon)).ok).toBe(true);
+  expect(await options.store.listServiceTokens(USER_ID)).toMatchObject([
+    { id: created.id, expiresAt: expiry.toISOString(), lastUsedAt: keyCreatedAt.toISOString() },
+  ]);
+  expect((await authenticate(bearer, options.store, later)).ok).toBe(true);
+  expect((await authenticate(bearer, options.store, expiry)).ok).toBe(false);
+  expect(await options.store.listServiceTokens(USER_ID)).toMatchObject([
+    { id: created.id, expiresAt: expiry.toISOString(), lastUsedAt: later.toISOString() },
+  ]);
+  await revokeServiceToken(options.store, { userId: USER_ID, id: created.id, now: keyCreatedAt });
   expect(await authenticate(`Bearer ${created.token}`, options.store, options.now())).toEqual({
     ok: false,
     error: "invalid_token",

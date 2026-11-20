@@ -5383,6 +5383,8 @@ export type Database = {
           label: string;
           revoked_at: string | null;
           created_at: string;
+          expires_at: string | null;
+          last_used_at: string | null;
         };
         Insert: {
           id?: string;
@@ -5392,6 +5394,8 @@ export type Database = {
           label: string;
           revoked_at?: string | null;
           created_at?: string;
+          expires_at?: string | null;
+          last_used_at?: string | null;
         };
         Update: {
           id?: string;
@@ -5401,6 +5405,8 @@ export type Database = {
           label?: string;
           revoked_at?: string | null;
           created_at?: string;
+          expires_at?: string | null;
+          last_used_at?: string | null;
         };
         Relationships: [
           {

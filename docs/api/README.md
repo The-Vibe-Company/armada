@@ -12,7 +12,7 @@ Supabase sessions. For a backend integration, sign in with the CLI and create a
 revocable service token scoped to the intended organization:
 
 ```sh
-armada token create --org acme --label product-backend
+armada token create --org acme --name product-backend
 ```
 
 Store the token in your backend's secret store when it is printed. Armada

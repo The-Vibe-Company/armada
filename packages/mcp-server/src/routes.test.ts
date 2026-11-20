@@ -140,6 +140,7 @@ test("registered command routes preserve their HTTP methods and names", () => {
       "POST /token/create",
       "POST /token/list",
       "POST /token/revoke",
+      "POST /token/whoami",
       "POST /variables/delete",
       "POST /variables/list",
       "POST /variables/read",
