@@ -88,9 +88,9 @@ export async function installUserGitHubTools(input: {
   const git = await original(input.git),
     gh = await original(input.gh);
   await replace(join(input.root, "shell-env.sh"), githubShellEnvironmentScript(input.root), 0o600);
-  const commands = githubToolCommands(input.socket, git, gh);
+  const commands = githubToolCommands(input.socket, git, gh, process);
   for (const name of ["git", "gh"] as const) {
-    await replace(join(bin, name), `#!/bin/sh\nexec ${commands[name]} "$@"\n`, 0o700);
+    await replace(join(bin, name), `#!/bin/sh\n${commands[name]} "$@"\n`, 0o700);
   }
   for (const home of new Set(input.homes)) {
     const homeInfo = await lstat(home);
@@ -126,7 +126,7 @@ export async function installUserGitHubTools(input: {
   });
   if (!response.ok) throw Error("github_tools_denied");
   await replace(join(input.root, "..", "github-socket"), join(input.root, "redact.sock"), 0o600);
-  await replace(join(input.root, "..", "github-native-proxy"), `#!/bin/sh\nexec ${commands.native} "$@"\n`, 0o700);
+  await replace(join(input.root, "..", "github-native-proxy"), `#!/bin/sh\n${commands.native} "$@"\n`, 0o700);
 }
 
 /** Code and socket address only. Credential bytes arrive exclusively on owner-private IPC. */

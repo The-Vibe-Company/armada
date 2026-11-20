@@ -3,19 +3,26 @@ import { shellQuote } from "../../core/src/shell-quote.ts";
 
 type Mode = "git-run" | "git" | "gh" | "native";
 
-function githubClientCommand(mode: Mode, ...args: string[]) {
-  const entry = process.argv[1];
+export function githubToolCommands(
+  socket: string,
+  git: string,
+  gh: string,
+  runtime: Pick<NodeJS.Process, "argv" | "execPath">,
+) {
+  const entry = runtime.argv[1];
   if (!entry) throw Error("github_tools_denied");
-  const self = entry.startsWith("/$bunfs/") ? [process.execPath] : [process.execPath, entry];
-  return [...self, "github-client", mode, ...args].map(shellQuote).join(" ");
-}
-
-export function githubToolCommands(socket: string, git: string, gh: string) {
+  const self = entry.startsWith("/$bunfs/")
+    ? [runtime.execPath]
+    : [runtime.execPath, "--config=/dev/null", "--no-env-file", entry];
+  function command(mode: Mode, ...args: string[]) {
+    const invocation = [...self, "github-client", mode, ...args].map(shellQuote).join(" ");
+    return `unset BUN_BE_BUN BUN_OPTIONS NODE_OPTIONS BUN_CONFIG_VERBOSE_FETCH; exec ${invocation}`;
+  }
   return {
-    git: githubClientCommand("git-run", socket, git),
-    gh: githubClientCommand("gh", socket, gh, git),
-    credential: `!${githubClientCommand("git", socket)}`,
-    native: githubClientCommand("native", join(dirname(socket), "redact.sock")),
+    git: command("git-run", socket, git),
+    gh: command("gh", socket, gh, git),
+    credential: `!${command("git", socket)}`,
+    native: command("native", join(dirname(socket), "redact.sock")),
   };
 }
 
@@ -134,25 +141,65 @@ function ghRepository(args: string[], index: number, git: string, env: NodeJS.Pr
   return selected ? repository(selected) : undefined;
 }
 
-function superviseGit(git: string, args: string[], env: NodeJS.ProcessEnv) {
+function gitCommandIndex(args: readonly string[]) {
   let index = 0;
   while (args[index]?.startsWith("-")) {
     const arg = args[index++]!;
     if (arg === "--") break;
     if (["-C", "-c", "--git-dir", "--work-tree", "--namespace", "--config-env"].includes(arg)) index++;
   }
-  const command = args[index];
+  return index;
+}
+
+function splitGitAlias(value: string) {
+  const words: string[] = [];
+  let word = "";
+  let quote: "'" | '"' | undefined;
+  let started = false;
+  for (let i = 0; i < value.length; i++) {
+    const char = value[i]!;
+    if (char === quote) quote = undefined;
+    else if (!quote && (char === "'" || char === '"')) quote = char;
+    else if (char === "\\" && quote !== "'") {
+      const next = value[++i];
+      if (next === undefined) return undefined;
+      word += next;
+    } else if (!quote && /[ \t\r\n\v\f]/.test(char)) {
+      if (started) words.push(word);
+      word = "";
+      started = false;
+      continue;
+    } else word += char;
+    started = true;
+  }
+  if (quote) return undefined;
+  if (started) words.push(word);
+  return words;
+}
+
+function superviseGit(git: string, args: string[], env: NodeJS.ProcessEnv) {
+  const index = gitCommandIndex(args);
+  let command = args[index];
   if (!command) return false;
-  if (command === "credential") return true;
+  const prefix = args.slice(0, index);
   const builtins = Bun.spawnSync([git, "--list-cmds=builtins"], { env, stderr: "ignore" });
   if (!builtins.success) return true;
-  if (builtins.stdout.toString().split("\n").includes(command)) return false;
-  const alias = Bun.spawnSync([git, ...args.slice(0, index), "config", "--get", `alias.${command}`], {
-    env,
-    stdout: "ignore",
-    stderr: "ignore",
-  });
-  return alias.exitCode !== 1;
+  const names = new Set(builtins.stdout.toString().split("\n"));
+  for (let depth = 0; depth < 16; depth++) {
+    if (command === "credential") return true;
+    if (names.has(command)) return false;
+    const alias = Bun.spawnSync([git, ...prefix, "config", "--get", `alias.${command}`], { env, stderr: "ignore" });
+    if (!alias.success) return alias.exitCode !== 1;
+    const value = alias.stdout.toString().trim();
+    if (value.startsWith("!")) return true;
+    const words = splitGitAlias(value);
+    if (!words) return true;
+    const offset = gitCommandIndex(words);
+    command = words[offset];
+    if (!command) return true;
+    prefix.push(...words.slice(0, offset));
+  }
+  return true;
 }
 
 function post(socket: string, path: string, body: string | Buffer, headers?: Record<string, string>) {

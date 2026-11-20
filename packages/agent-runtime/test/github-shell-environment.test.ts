@@ -22,11 +22,19 @@ test("runtime GitHub shims and credential helper invoke Bun without a golden int
   const socket = "/home/user/managed tools/credentials.sock";
   const git = "/usr/bin/git";
   const gh = "/usr/bin/gh";
-  const self = [process.execPath, process.argv[1]!, "github-client"].map(shellQuote).join(" ");
-  expect(githubToolCommands(socket, git, gh)).toEqual({
-    git: `${self} 'git-run' ${shellQuote(socket)} '/usr/bin/git'`,
-    gh: `${self} 'gh' ${shellQuote(socket)} '/usr/bin/gh' '/usr/bin/git'`,
-    credential: `!${self} 'git' ${shellQuote(socket)}`,
-    native: `${self} 'native' '/home/user/managed tools/redact.sock'`,
-  });
+  const execPath = "/opt/armada/runtime executable";
+  const entry = "/opt/armada/main.js";
+  for (const [entrypoint, args] of [
+    ["/$bunfs/root/main", [execPath]],
+    [entry, [execPath, "--config=/dev/null", "--no-env-file", entry]],
+  ] as const) {
+    const invocation = [...args, "github-client"].map(shellQuote).join(" ");
+    const self = `unset BUN_BE_BUN BUN_OPTIONS NODE_OPTIONS BUN_CONFIG_VERBOSE_FETCH; exec ${invocation}`;
+    expect(githubToolCommands(socket, git, gh, { execPath, argv: [execPath, entrypoint] })).toEqual({
+      git: `${self} 'git-run' ${shellQuote(socket)} '/usr/bin/git'`,
+      gh: `${self} 'gh' ${shellQuote(socket)} '/usr/bin/gh' '/usr/bin/git'`,
+      credential: `!${self} 'git' ${shellQuote(socket)}`,
+      native: `${self} 'native' '/home/user/managed tools/redact.sock'`,
+    });
+  }
 });
