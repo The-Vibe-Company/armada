@@ -233,7 +233,7 @@ test("offline named host points to its own daemon and service after the check-in
   expect(result.code).toBe(1);
   expect(result.elapsed).toBe(60_000);
   expect(result.inputReads).toBe(1);
-  expect(result.err).toContain("registration preserved");
+  expect(result.err).toContain("Registration preserved");
   expect(result.err).toContain(`'${namedBinary}' status --instance ${instance}`);
   expect(result.err).toContain(`journalctl --user -u armada-docker-host@${instance}.service`);
 });
