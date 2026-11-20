@@ -1,5 +1,7 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, jest, test } from "bun:test";
+import type { Sql } from "@armada/core/server";
 import { createSqlData } from "../src/data.ts";
+import { createJobsStore } from "../src/jobs/store.ts";
 import { createRuntimeFollowup } from "../src/runtime-followup.ts";
 import { callSharedTool } from "../src/tool-api.ts";
 import { rowOnlyDatabase } from "./row-only-database.ts";
@@ -131,6 +133,132 @@ test("losing the shared lease during follow-up admission rolls back activity bef
     const { rows } = await f.sql.query("select activity_lease_id from public.sandboxes where id=$1", [request.id]);
     expect(rows).toEqual([{ activity_lease_id: null }]);
   } finally {
+    await f.close();
+  }
+});
+
+test.each(["command insert", "task publication"] as const)(
+  "losing the shared lease at %s rolls back the write and lets a successor finish the same follow-up",
+  async (point) => {
+    const f = await fixture(await sharedDatabase());
+    try {
+      const request = f.input();
+      const commandId = `follow_${request.request_id}`;
+      const generation = (await createSqlData(f.sql)(f.caller).sandboxes.get(f.row.id))!.lifecycleGeneration!;
+      const jobs = createJobsStore(f.sql, ENCRYPTION_KEY);
+      const id = await jobs.enqueue(
+        "turn_dispatch",
+        request.id,
+        generation,
+        request.request_id,
+        { requestId: request.request_id },
+        { orgId: f.row.orgId, maxAttempts: 2 },
+      );
+      await f.db.query(
+        `insert into public.account_turn_queue
+           (sandbox_id,request_id,account_id,owner_id,org_id,actor_epoch,credential_version,input_hash,input_enc,
+            conversation_id,queued_generation,state,dispatch_generation,dispatch_until)
+         select id,$2,credential_id,owner_id,org_id,1,credential_version,'fixture',''::bytea,$3,
+                lifecycle_generation,'dispatching',lifecycle_generation,'infinity'
+         from public.sandboxes where id=$1`,
+        [request.id, request.request_id, f.first.conversationId],
+      );
+      const owner = crypto.randomUUID();
+      const job = (await jobs.claim("turn_dispatch", owner, 30, 1))!;
+      expect(job.id).toBe(id);
+      const handoffGeneration = () => Promise.reject(Error("A running follow-up never advances generation."));
+      await expect(
+        f.send(f.caller, request, {
+          handoffGeneration,
+          async canDispatch(tx) {
+            if ((await jobs.inspect(job, owner, tx)) !== "dispatch") return false;
+            if (!tx) return true;
+            const { rows } =
+              point === "command insert"
+                ? await tx.query("select 1 from public.runtime_commands where sandbox_id=$1 and request_id=$2", [
+                    request.id,
+                    commandId,
+                  ])
+                : await tx.query(
+                    "select 1 from public.sandboxes where id=$1 and task_prompt_id is not null and task_prompt_id<>$2",
+                    [request.id, f.first.promptId],
+                  );
+            return rows.length === 0;
+          },
+        }),
+      ).rejects.toMatchObject({ code: "conflict" });
+      const accepted = point === "task publication";
+      expect(await f.bridge.result(f.caller.userId, request.id, commandId, f.active.epoch)).toMatchObject({
+        state: accepted ? "finished" : "missing",
+      });
+      expect(
+        (await f.sql.query("select task_prompt_id,activity_lease_id from public.sandboxes where id=$1", [request.id]))
+          .rows,
+      ).toEqual([{ task_prompt_id: null, activity_lease_id: request.request_id }]);
+      expect(f.starts).toHaveLength(accepted ? 2 : 1);
+      await f.db.query("update public.jobs set lease_until='-infinity' where id=$1", [id]);
+      const successor = crypto.randomUUID();
+      const retry = (await jobs.claim("turn_dispatch", successor, 30, 1))!;
+      expect(retry.id).toBe(id);
+      const receipt = await f.send(f.caller, request, {
+        handoffGeneration,
+        canDispatch: async (tx) => (await jobs.inspect(retry, successor, tx)) === "dispatch",
+      });
+      expect(await createSqlData(f.sql)(f.caller).sandboxes.get(request.id)).toMatchObject({
+        taskPromptId: receipt.promptId,
+        lifecycleGeneration: generation,
+      });
+      expect(f.starts).toHaveLength(2);
+    } finally {
+      await f.close();
+    }
+  },
+);
+
+test("losing the shared lease during the activity heartbeat rolls back the renewal", async () => {
+  const f = await fixture(await sharedDatabase());
+  const request = f.input();
+  const heartbeatSettled = Promise.withResolvers<void>();
+  let heartbeatStarted = false;
+  let lost = false;
+  const sql: Sql = {
+    ...f.sql,
+    transaction(work) {
+      const transaction = f.sql.transaction!(work);
+      return heartbeatStarted ? transaction.finally(() => heartbeatSettled.resolve()) : transaction;
+    },
+  };
+  const send = createRuntimeFollowup(sql, ENCRYPTION_KEY, f.bridge, async () => {
+    await f.sql.query("update public.sandboxes set activity_until='-infinity' where id=$1", [request.id]);
+    heartbeatStarted = true;
+    jest.advanceTimersByTime(30_000);
+    await heartbeatSettled.promise;
+    return undefined;
+  });
+  jest.useFakeTimers();
+  try {
+    await expect(
+      send(f.caller, request, {
+        async canDispatch(tx) {
+          if (!heartbeatStarted || !tx) return !lost;
+          const { rows } = await tx.query(
+            "select 1 from public.sandboxes where id=$1 and activity_until > '-infinity'::timestamptz",
+            [request.id],
+          );
+          lost ||= rows.length > 0;
+          return !lost;
+        },
+        handoffGeneration: () => Promise.reject(Error("A running follow-up never advances generation.")),
+      }),
+    ).rejects.toMatchObject({ code: "conflict" });
+    expect(lost).toBe(true);
+    const { rows } = await f.sql.query("select activity_until::text from public.sandboxes where id=$1", [request.id]);
+    expect(rows).toEqual([{ activity_until: "-infinity" }]);
+    expect(await f.bridge.result(f.caller.userId, request.id, `follow_${request.request_id}`)).toMatchObject({
+      state: "missing",
+    });
+  } finally {
+    jest.useRealTimers();
     await f.close();
   }
 });

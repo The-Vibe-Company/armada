@@ -149,6 +149,7 @@ export function createRuntimeCommands(
           throw new RuntimeCommandConflict();
         // An identical replay in the current epoch reconciles with the stored command: it adds no
         // work, so the checkpoint fence does not apply and the caller reads the stored reply.
+        await assertClaim?.(tx);
         return { epoch: scope.epoch, requestId: request.requestId, provider: scope.provider, fresh: false };
       }
       // Every fence below refuses new work before any row is written: a definite refusal.
