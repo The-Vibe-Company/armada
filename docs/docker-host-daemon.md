@@ -1582,11 +1582,11 @@ change does not alter their images or lifecycle.
 
 ## Docker host regression fixtures
 
-Daemon restart cases reload the file store between iterations and create
-compacted receipts through the production store. The persistence size test
-allows an oversized save to fail and checks that the previous state is still
-readable. Mailbox cases hold polls and releases with explicit gates so they can
-order completion, acknowledgement loss, and replay without timing delays.
+Daemon restart fixtures simulate a fresh iteration from saved state. Receipt
+compaction cases exercise the production compactor. The persistence size test
+checks that a successful oversized save is readable and a rejected save leaves
+the previous state readable. Mailbox cases use explicit gates to order poll
+responses, completion, acknowledgement loss, and replay without timing delays.
 
 The runtime install tests cover how the host invokes the shared installer.
 The launcher test substitutes a local executable for the installed runtime and
