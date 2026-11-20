@@ -214,6 +214,12 @@ const COLUMNS = `runtime_transport,boat_runtime,skills, preservation_note, task_
   conversation_ids, created_at, stopped_at, deleted_at, status_reason, model, reasoning_effort, machine_size, resource_project, visibility, repository_dir, expires_at, effective_ttl_seconds, requested_ttl_seconds, last_observed_at, lifecycle_error, lifecycle_generation, stop_requested_at, external_ref`;
 
 /** Turn and pricing evidence is service-role-only; caller-role stores must not gain these ports. */
+export class CoreLaunchSettlementConflict extends Error {
+  constructor() {
+    super("Core launch settlement is stale.");
+  }
+}
+
 export function createSqlSandboxStore(sql: Sql, options: { turnModels?: true } = {}): SandboxStore {
   return {
     ...(options.turnModels ? sqlTurnModelStore(sql) : {}),
@@ -292,7 +298,7 @@ export function createSqlSandboxStore(sql: Sql, options: { turnModels?: true } =
             patch.conversationIds ?? null,
           ],
         );
-        if (!result.rows[0]?.applied) throw new Error("Core launch settlement is stale.");
+        if (!result.rows[0]?.applied) throw new CoreLaunchSettlementConflict();
         return;
       }
       const sets: string[] = [];

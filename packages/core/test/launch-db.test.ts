@@ -117,13 +117,18 @@ describe("launch database", () => {
     },
   );
 
-  test.each(["ready", "running", "failed", "stale", "receipt rollback"] as const)(
+  test.each(["ready", "running", "failed", "stale", "same-generation restart", "receipt rollback"] as const)(
     "core SQL launch settles %s with its registered generation",
     async (outcome) => {
       const db = launchDatabase.get();
       const people = await fixture(db);
       const { provider } = fakeBoat();
+      const sandboxes = createSqlSandboxStore(db);
       const id = crypto.randomUUID();
+      const stopped: string[] = [];
+      provider.stop = async ({ sandboxId }) => {
+        stopped.push(sandboxId);
+      };
       if (outcome === "failed") {
         provider.get = async () => {
           throw new Error("Initialization failed");
@@ -151,7 +156,7 @@ describe("launch database", () => {
           provider,
           {
             goldens: createSqlGoldenStore(db),
-            sandboxes: createSqlSandboxStore(db),
+            sandboxes,
             credentials: {
               resolve: async () => ({
                 env: { CLAUDE_CODE_OAUTH_TOKEN: TOKEN },
@@ -166,6 +171,15 @@ describe("launch database", () => {
             newId: () => id,
             async onRegistered() {
               if (outcome === "stale") await db.query("update sandboxes set lifecycle_generation=2 where id=$1", [id]);
+              if (outcome === "same-generation restart") {
+                await sandboxes.update(id, { status: "ready", expectedGeneration: 1 });
+                const result = await db.query(
+                  `select applied from sandbox_transition($1,1,array['ready']::sandbox_status[],'starting',
+                    'lifecycle_runner','native_provider_phase','[]',null,null,null,null,null)`,
+                  [id],
+                );
+                expect(result.rows).toEqual([{ applied: true }]);
+              }
             },
           },
         );
@@ -173,14 +187,20 @@ describe("launch database", () => {
           expect((await launch).sandbox.status).toBe(outcome);
         } else {
           const message =
-            outcome === "stale"
+            outcome === "stale" || outcome === "same-generation restart"
               ? "settlement is stale"
               : outcome === "receipt rollback"
                 ? "injected receipt failure"
                 : "Initialization failed";
           await expect(launch).rejects.toThrow(message);
         }
-        const expectedStatus = outcome === "stale" ? "starting" : outcome === "receipt rollback" ? "failed" : outcome;
+        expect(stopped).toHaveLength(outcome === "failed" || outcome === "receipt rollback" ? 1 : 0);
+        const expectedStatus =
+          outcome === "stale" || outcome === "same-generation restart"
+            ? "starting"
+            : outcome === "receipt rollback"
+              ? "failed"
+              : outcome;
         expect(
           (await db.query("select status,task_prompt_id,conversation_ids from sandboxes where id=$1", [id])).rows,
         ).toEqual([
@@ -193,22 +213,39 @@ describe("launch database", () => {
         expect(
           (
             await db.query(
-              "select from_status,to_status,actor,code,generation::int from sandbox_transitions where sandbox_id=$1",
+              "select from_status,to_status,actor,code,generation::int from sandbox_transitions where sandbox_id=$1 order by id",
               [id],
             )
           ).rows,
         ).toEqual(
           outcome === "stale"
             ? []
-            : [
-                {
-                  from_status: "starting",
-                  to_status: expectedStatus,
-                  actor: outcome === "running" ? "native_turn" : "lifecycle_runner",
-                  code: "unleased_native_launch",
-                  generation: 1,
-                },
-              ],
+            : outcome === "same-generation restart"
+              ? [
+                  {
+                    from_status: "starting",
+                    to_status: "ready",
+                    actor: "lifecycle_runner",
+                    code: "unleased_native_launch",
+                    generation: 1,
+                  },
+                  {
+                    from_status: "ready",
+                    to_status: "starting",
+                    actor: "lifecycle_runner",
+                    code: "native_provider_phase",
+                    generation: 1,
+                  },
+                ]
+              : [
+                  {
+                    from_status: "starting",
+                    to_status: expectedStatus,
+                    actor: outcome === "running" ? "native_turn" : "lifecycle_runner",
+                    code: "unleased_native_launch",
+                    generation: 1,
+                  },
+                ],
         );
       } finally {
         if (outcome === "receipt rollback")

@@ -34,7 +34,7 @@ import { OPENCODE_CONNECTION_PROVIDER, OPENCODE_ENDPOINT_ENV, parseOpenCodeEndpo
 import { PrivateSkillError } from "./private-skill-error.ts";
 import { type Provider, ProviderError } from "./provider.ts";
 import { resolveRepositoryDir } from "./repository-context.ts";
-import { isExternalRef, type SandboxRecord, type SandboxStore } from "./sandbox.ts";
+import { CoreLaunchSettlementConflict, isExternalRef, type SandboxRecord, type SandboxStore } from "./sandbox.ts";
 import { sandboxActivity } from "./sandbox-activity.ts";
 import { DEFAULT_SANDBOX_EXTENSION_HEADROOM_SECONDS, SANDBOX_STOP_MARGIN_SECONDS } from "./sandbox-lifetime.ts";
 import { OUTPUT_DIRECTORY } from "./sandbox-output-limits.ts";
@@ -826,10 +826,14 @@ export async function launchSandbox(
       return reportTiming(completed.result);
     } catch (error) {
       const failure = withSandbox(error, record.id, secrets);
-      if (!activityLeaseId)
-        await quietly(() =>
-          stores.sandboxes.update(record.id, { status: "failed", statusReason: failure.message, ...expected }),
-        );
+      if (error instanceof CoreLaunchSettlementConflict) throw failure;
+      if (!activityLeaseId) {
+        try {
+          await stores.sandboxes.update(record.id, { status: "failed", statusReason: failure.message, ...expected });
+        } catch (settlementError) {
+          if (settlementError instanceof CoreLaunchSettlementConflict) throw failure;
+        }
+      }
       await quietly(() => provider.stop({ sandboxId: forked.id }));
       throw failure;
     }

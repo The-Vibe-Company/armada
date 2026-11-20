@@ -23,7 +23,9 @@ begin
       or sandbox.activity_lease_id is not null or sandbox.activity_until is not null
       or sandbox.reconcile_lease_until >= clock_timestamp()
       or sandbox.stop_requested_at is not null or sandbox.stopped_at is not null or sandbox.deleted_at is not null
-      or sandbox.task_prompt_id is not null or cardinality(sandbox.conversation_ids) <> 0 then
+      or sandbox.task_prompt_id is not null or cardinality(sandbox.conversation_ids) <> 0
+      or exists (select 1 from public.sandbox_transitions t where t.sandbox_id = p_id
+        and t.generation = p_expected_generation and t.from_status = 'starting') then
       return query select false, null::bigint;
       return;
     end if;
