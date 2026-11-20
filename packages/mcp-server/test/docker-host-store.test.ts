@@ -1113,6 +1113,41 @@ test("unbound enqueue cannot bypass restore admission", async () => {
   );
 });
 
+test("the authenticated allocation result route preserves the exact create ID across replay", async () => {
+  const a = await boundFixture();
+  await store.enqueueSandbox(a.owner, a.sandboxId, a.create);
+  const route = createDockerHostRoutes(store, async () => ({ ok: false }));
+  const machineId = "a".repeat(64);
+  const receipt = { installationId: a.installationId, requestId: a.create.requestId, outcome: "completed" };
+  const post = async (body: unknown) =>
+    (
+      await route(
+        new Request("https://armada.example/api/docker-host/results", {
+          method: "POST",
+          headers: {
+            authorization: `Bearer ${a.hostToken}`,
+            [DOCKER_HOST_PROTOCOL_HEADER]: String(DOCKER_HOST_PROTOCOL),
+          },
+          body: JSON.stringify(body),
+        }),
+      )
+    )?.status;
+  expect(await post({ ...receipt, machineId })).toBe(200);
+  expect(await post({ ...receipt, machineId: "short" })).toBe(400);
+  expect(await post({ ...receipt, outcome: "failed", machineId })).toBe(400);
+  expect(await post({ ...receipt, installationId: randomUUID(), machineId })).toBe(401);
+  expect(await post({ ...receipt, machineId })).toBe(200);
+  expect(await post(receipt)).toBe(200);
+  expect(await post({ ...receipt, machineId: "b".repeat(64) })).toBe(401);
+  expect(
+    (
+      await database().query("select outcome,result_machine_id from docker_host_jobs where request_id=$1", [
+        receipt.requestId,
+      ])
+    ).rows,
+  ).toEqual([{ outcome: "completed", result_machine_id: machineId }]);
+});
+
 test("restore dispatch cancels stale intent and reconciles a late physical receipt", async () => {
   const a = await restoreFixture();
   const db = database();
@@ -1121,13 +1156,20 @@ test("restore dispatch cancels stale intent and reconciles a late physical recei
   const { faultingStore, failure } = failDockerJobCommit(a.restore.requestId, "failed");
   await expect(a.poll([a.cleanupId], true, faultingStore)).rejects.toMatchObject({ cause: failure });
   expect(await a.poll([a.cleanupId])).toBeNull();
-  const result = { requestId: a.restore.requestId, outcome: "completed" as const };
+  const result = { requestId: a.restore.requestId, outcome: "completed" as const, machineId: "c".repeat(64) };
   const lostReceipt = failDockerJobCommit(result.requestId, result.outcome);
   await expect(lostReceipt.faultingStore.complete(a.hostToken, a.installationId, result)).rejects.toMatchObject({
     cause: lostReceipt.failure,
   });
+  expect(
+    (await db.query("select outcome,result_machine_id from docker_host_jobs where request_id=$1", [result.requestId]))
+      .rows,
+  ).toEqual([{ outcome: "failed", result_machine_id: null }]);
   await store.complete(a.hostToken, a.installationId, result);
   await store.complete(a.hostToken, a.installationId, result);
+  expect(
+    (await db.query("select result_machine_id from docker_host_jobs where request_id=$1", [result.requestId])).rows,
+  ).toEqual([{ result_machine_id: result.machineId }]);
   await store.expired(a.hostToken, a.installationId, { requestId: result.requestId });
   await denied(store.complete(a.hostToken, a.installationId, { ...result, outcome: "failed" }));
   expect(await store.pendingStartsForHost(a.hostToken, a.installationId, true)).toEqual([]);
