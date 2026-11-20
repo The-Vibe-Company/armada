@@ -106,7 +106,7 @@ describe("run", () => {
     };
     for (const [args, command, checkHelp] of [
       [["frobnicate"], "frobnicate"],
-      [["github", "connect"], "github"],
+      [["--profile", "unconfigured", "github", "connect"], "github"],
       [["send"], "send", true],
       [["steer"], "steer", true],
       [["snapshot", "frobnicate", "--org", "org_placeholder"], "snapshot frobnicate"],

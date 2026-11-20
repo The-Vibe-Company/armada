@@ -104,7 +104,11 @@ export async function run(argv: readonly string[], io: Io, deps: Deps = {}): Pro
     const selected = selectProfile(argv, deps.env ?? deps.auth?.env ?? process.env);
     argv = selected.args;
     deps = { ...deps, env: selected.env };
-    if (selected.env.ARMADA_PROFILE !== undefined) {
+    const command = argv[0];
+    if (
+      selected.env.ARMADA_PROFILE !== undefined &&
+      (command === undefined || command === "skill" || findCommand(command))
+    ) {
       const stores = profileStores(selected.env);
       const env: NodeJS.ProcessEnv = { ...selected.env };
       const discovery =
