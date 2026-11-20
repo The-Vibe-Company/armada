@@ -138,7 +138,7 @@ try {
                 controller.enqueue(new TextEncoder().encode("started"));
                 await streamed.promise;
                 assert.equal(
-                  pools.slice(0, 2).every((pool) => pool.closed === 0),
+                  pools.every((pool) => pool.closed === 0),
                   true,
                   "POST response retains SQL",
                 );
@@ -154,7 +154,7 @@ try {
         entered.resolve();
         await release.promise;
         assert.equal(
-          pools.slice(0, 2).every((pool) => pool.closed === 0),
+          pools.every((pool) => pool.closed === 0),
           true,
           "HTTP work retains SQL during drain",
         );
@@ -246,8 +246,6 @@ try {
     [
       [5, 1],
       [1, 1],
-      [4, 1],
-      [1, 1],
     ],
   );
   assert.equal(
@@ -266,7 +264,7 @@ try {
   assert.equal(intervals.mock.calls.length, 0, "Outdated schema must fail before workers start");
   assert.equal(repaired, false, "Outdated schema must fail before model repair");
   assert.deepEqual(
-    pools.slice(4).map((p) => p.closed),
+    pools.slice(2).map((p) => p.closed),
     [1, 1],
   );
   schemaVersion = REQUIRED_MIGRATION;
@@ -279,7 +277,7 @@ try {
   assert.equal(attempts > 1, true);
   assert.equal(intervals.mock.calls.length, 0);
   assert.deepEqual(
-    pools.slice(6).map((p) => p.closed),
+    pools.slice(4).map((p) => p.closed),
     [1, 1],
   );
   console.log("BOOT_RETRY_SERVE_AND_EXHAUSTION_VERIFIED");

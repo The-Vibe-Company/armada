@@ -19,7 +19,6 @@ import type { ServerModule } from "./server-registration.ts";
 import { createServerRoutineScheduler } from "./server-routines.ts";
 import type { ServerServices } from "./server-services.ts";
 import type { ServerLifecycleLane } from "./server-workers.ts";
-import { bunSql } from "./sql.ts";
 
 export function createWorkerServices(services: ServerServices) {
   const { sql, providers, idleDelayMs } = services;
@@ -196,19 +195,14 @@ export const runtimeModule: ServerModule = ({ mounts, workers, shutdown }) => {
   workers.isolated.set("steer-recovery", ({ nativePrompts }) => nativePrompts.steerRecovery);
   shutdown.stopSockets = ({ runtimeSockets }) => runtimeSockets.stop();
 };
-const modalArtifactWorker = ({ modal, modalArtifactCache, config, options }: ServerServices) => {
+const modalArtifactWorker = ({ modal, modalArtifactCache, options }: ServerServices) => {
   if (!modalArtifactCache) return undefined;
   return () => {
     const stop = new AbortController();
     const logError = options.logError ?? console.error;
-    const done = (async () => {
-      const sql = bunSql(config.databaseUrl, 4, 5_000);
-      try {
-        await modal.warmRegisteredArtifactCaches(modalArtifactCache, sql, stop.signal, logError);
-      } finally {
-        await sql.close();
-      }
-    })().catch(() => logError("Modal startup artifact warming failed while accessing the registry database."));
+    const done = modal
+      .warmRegisteredArtifactCaches(modalArtifactCache, stop.signal, logError)
+      .catch(() => logError("Modal startup artifact warming failed while accessing the registry database."));
     return { stop: () => stop.abort(), done };
   };
 };
