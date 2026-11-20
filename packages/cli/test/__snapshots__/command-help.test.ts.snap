@@ -119,7 +119,7 @@ Usage:
   armada detail|recovery|stop|interrupt <sandbox-id> [--org UUID] [--json]
   armada wait <sandbox-id> [--timeout <seconds>] [--org UUID] [--json]
                                            Timeout is 0–600 seconds, default 60.
-  armada report <sandbox-id> ready|blocked --prompt-id ID [--reason TEXT] [--pr-number N] [--pr-url URL] [--head-sha SHA]
+  armada report [sandbox-id] ready|blocked --prompt-id ID [--reason TEXT] [--pr-number N] [--pr-url URL] [--head-sha SHA]
   armada send|steer|exec <sandbox-id> <text-or-command> [--model ID] [--reasoning-effort LEVEL]
                                            send accepts --request-id UUID to reuse an uncertain runtime instruction.
                                            Full-account follow-up sends can queue FIFO; queued is not completed.
@@ -383,7 +383,7 @@ Example: armada wait SANDBOX_UUID --timeout 60 --org ORG_UUID --json
 `;
 
 exports[`armada report help preserves its output 1`] = `
-"Usage: armada report <sandbox-id> ready|blocked --prompt-id <id> [--org UUID] [--json]
+"Usage: armada report [sandbox-id] ready|blocked --prompt-id <id> [--org UUID] [--json]
   ready: [--pr-number <N>] [--pr-url <URL>] [--head-sha <SHA>]
   blocked: --reason <text>
 Report an explicit outcome for the latest finished turn after Armada login.
