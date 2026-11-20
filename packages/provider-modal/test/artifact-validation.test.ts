@@ -40,8 +40,6 @@ test("disk loader validates bytes, pins, architecture and native resources", asy
 });
 
 test("embedded portable loader rejects empty/unpinned artifacts without requiring native files or host architecture", async () => {
-  // Copy the real loader into a disposable package tree so file imports resolve fixture assets,
-  // never mutating the workspace artifact used by concurrent tests.
   const root = await mkdtemp(join(tmpdir(), "armada-embedded-"));
   try {
     const src = join(root, "packages/provider-modal/src");
@@ -54,7 +52,6 @@ test("embedded portable loader rejects empty/unpinned artifacts without requirin
     );
     const dist = join(root, "packages/agent-runtime/dist");
     const portable = { ...pinned, architecture: "not-the-host", artifact: "portable-bundle" };
-    // Keep file-import isolation, but exercise all loader outcomes in one process.
     await Bun.write(join(dist, "main.js"), "abc");
     await Bun.write(join(dist, "manifest.json"), JSON.stringify(portable));
     await Bun.write(

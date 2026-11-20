@@ -82,7 +82,7 @@
                       "golden": {
                         "type": "string",
                         "pattern": "\\S",
-                        "description": "The name returned by golden discovery."
+                        "description": "The Boat or Modal snapshot name returned by /api/v1/golden/list or armada snapshot list."
                       },
                       "prompt": {
                         "type": "string",
@@ -223,7 +223,7 @@
                       "golden": {
                         "type": "string",
                         "pattern": "\\S",
-                        "description": "The name returned by golden discovery."
+                        "description": "The Boat or Modal snapshot name returned by /api/v1/golden/list or armada snapshot list."
                       },
                       "prompt": {
                         "type": "string",
@@ -355,7 +355,7 @@
                       "golden": {
                         "type": "string",
                         "pattern": "\\S",
-                        "description": "The name returned by golden discovery."
+                        "description": "The Boat or Modal snapshot name returned by /api/v1/golden/list or armada snapshot list."
                       },
                       "prompt": {
                         "type": "string",
@@ -496,7 +496,7 @@
                       "golden": {
                         "type": "string",
                         "pattern": "\\S",
-                        "description": "The name returned by golden discovery."
+                        "description": "The Boat or Modal snapshot name returned by /api/v1/golden/list or armada snapshot list."
                       },
                       "prompt": {
                         "type": "string",
@@ -1066,7 +1066,7 @@
                           "type": "null"
                         }
                       ],
-                      "description": "Null for Docker launches, which have no golden."
+                      "description": "The selected Boat or Modal launch snapshot. Null for Docker launches."
                     },
                     "promptId": {
                       "type": [
@@ -2312,7 +2312,7 @@
     "/api/v1/golden/list": {
       "post": {
         "operationId": "golden_list",
-        "description": "List launch goldens visible to the caller. A golden without a providerSnapshotId cannot be launched yet.",
+        "description": "List Boat and Modal launch snapshots visible to the caller. A snapshot without a providerSnapshotId cannot be launched yet.",
         "security": [
           {
             "serviceToken": []
@@ -2398,11 +2398,11 @@
                                 "type": "null"
                               }
                             ],
-                            "description": "The developer baseline version the golden's snapshot was verified against; null when not recorded."
+                            "description": "The developer baseline version used to verify this snapshot. Null when unrecorded."
                           },
                           "baselineOutdated": {
                             "type": "boolean",
-                            "description": "True when the golden has a snapshot built against an older developer baseline than this server's."
+                            "description": "True when a provider snapshot exists and its developer baseline version is unrecorded or older than this server's."
                           },
                           "providerSandboxId": {
                             "type": [
@@ -2436,17 +2436,17 @@
                                 "type": "null"
                               }
                             ],
-                            "description": "The Modal workspace, environment and App id a Modal golden is pinned to."
+                            "description": "The Modal workspace, environment and App ID this snapshot is pinned to."
                           },
                           "boatSnapshotId": {
-                            "description": "The same as providerSnapshotId on a Boat golden or sandbox; null on any other provider.",
+                            "description": "The same as providerSnapshotId on a Boat snapshot or sandbox; null on any other provider.",
                             "type": [
                               "string",
                               "null"
                             ]
                           },
                           "boatSandboxId": {
-                            "description": "The same as providerSandboxId on a Boat golden or sandbox; null on any other provider.",
+                            "description": "The same as providerSandboxId on a Boat snapshot or sandbox; null on any other provider.",
                             "type": [
                               "string",
                               "null"
@@ -2501,7 +2501,7 @@
                             "items": {
                               "type": "string"
                             },
-                            "description": "Non-blocking findings from the golden's last build."
+                            "description": "Non-blocking findings from the snapshot's last build."
                           }
                         },
                         "required": [
@@ -2586,7 +2586,7 @@
     "/api/v1/golden/capabilities": {
       "post": {
         "operationId": "golden_capabilities",
-        "description": "Reads the selected provider adapter's golden capacity without creating an App or resource. Null is unknown or unbounded.",
+        "description": "Reads the selected Boat or Modal adapter's snapshot capacity without creating an App or resource. Null is unknown or unbounded.",
         "security": [
           {
             "serviceToken": []
@@ -2744,7 +2744,7 @@
     "/api/v1/golden/adopt": {
       "post": {
         "operationId": "golden_adopt",
-        "description": "Dry-run first: select an existing visible golden by id. Confirm with the returned receipt within ten minutes. Preserves all rows and ACLs.",
+        "description": "Dry-run first: select an existing visible Boat snapshot by ID. Confirm with the returned receipt within ten minutes. Preserves all rows and ACLs.",
         "security": [
           {
             "serviceToken": []
@@ -3372,7 +3372,7 @@
                         "message"
                       ],
                       "additionalProperties": false,
-                      "description": "Golden admission refused the launch before a request was recorded. Nothing was launched."
+                      "description": "Snapshot admission refused the launch before a request was recorded. Nothing was launched."
                     }
                   ],
                   "description": "A receipt has requestId; a pre-admission refusal has none."
@@ -4484,7 +4484,7 @@
                     ]
                   },
                   "golden": {
-                    "description": "Golden UUID, not a name.",
+                    "description": "Filter by Boat or Modal snapshot UUID.",
                     "type": "string",
                     "format": "uuid",
                     "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
@@ -8191,7 +8191,7 @@
     "/api/v1/sandbox/github-preflight-v1": {
       "post": {
         "operationId": "sandbox_github_preflight_v1",
-        "description": "Check that a golden allows the repository and the caller's GitHub connection can read it.",
+        "description": "Check that a Boat or Modal snapshot allows the repository and the caller's GitHub connection can read it.",
         "x-armada-direct-server": true,
         "security": [
           {
@@ -8974,7 +8974,7 @@
     "/api/v1/launch/options": {
       "post": {
         "operationId": "launch_options",
-        "description": "What a launch can ask for on this server: harnesses with their models and credential kinds, machine sizes, TTL limits, and each provider's launch sources and capabilities. Read it before offering launch choices.",
+        "description": "What a launch can ask for on this server: harnesses with their models and credential kinds, machine sizes, TTL limits, and each provider's launch sources and capabilities. The MCP launch tool accepts Boat and Modal snapshots. Read this catalog before offering launch choices.",
         "security": [
           {
             "serviceToken": []
@@ -9113,7 +9113,7 @@
                             "items": {
                               "type": "string"
                             },
-                            "description": "\"golden\" launches by golden name; \"image\" launches on a Docker host."
+                            "description": "\"golden\" uses a snapshot (by name on Boat or Modal, by ID on Docker); \"image\" launches directly on a Docker host."
                           },
                           "harnesses": {
                             "type": "array",

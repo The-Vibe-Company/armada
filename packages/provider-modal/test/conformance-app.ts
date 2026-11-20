@@ -1,4 +1,3 @@
-/** Opt-in tool boundary only. Never imported by the provider or Armada client. */
 import { mkdir, open } from "node:fs/promises";
 import { join } from "node:path";
 
@@ -28,7 +27,6 @@ export interface CleanupProof {
   imageCount: number;
 }
 
-/** Caller must retain this journal, including pending/ambiguous creations. Never retry creation. */
 export async function createOwnedApp(
   adapter: AppAdapter,
   environment: string,
@@ -59,7 +57,6 @@ export async function createOwnedApp(
   return receipt;
 }
 
-/** No name/prefix/age based adoption. Readback, never a successful stop exit, is terminal proof. */
 export async function finalizeOwnedApp(
   adapter: AppAdapter,
   receipt: AppReceipt,
@@ -95,7 +92,6 @@ export async function finalizeOwnedApp(
   receipt.finalization = "stopped";
 }
 
-/** Public Modal CLI 1.6.3. Inject execution in tests; never forward diagnostics or inherited env. */
 export function cliAppAdapter(
   tokenId: string,
   tokenSecret: string,
@@ -138,7 +134,6 @@ export function cliAppAdapter(
 }
 
 export async function appJournal(directory: string) {
-  // Exclusive directory: never overwrite a previous run's evidence.
   await mkdir(directory, { mode: 0o700 });
   let sequence = 0;
   return async (receipt: unknown) => {

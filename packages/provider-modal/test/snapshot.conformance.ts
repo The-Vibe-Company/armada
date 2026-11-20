@@ -23,9 +23,6 @@ import { type Machine, prepareFilesystemSnapshot, prepareFreshFilesystem } from 
     const sdk = {
       async exec(argv: string[]) {
         calls++;
-        // Cloud quiescence is the first public SDK boundary. The actual deletion command must still
-        // detect this deliberately open (unexpected legacy/root) journal FD, rather than trusting it.
-        // Inspect the actual holder's kernel FDs, not unrelated processes on the test host.
         if (calls % 3 !== 0)
           return { stdin: { writeText: async () => {}, close: async () => {} }, wait: async () => 0 };
         const process = Bun.spawn(
