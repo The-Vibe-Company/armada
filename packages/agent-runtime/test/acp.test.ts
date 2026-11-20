@@ -255,7 +255,7 @@ function antigravityFixture(credential: ConstructorParameters<typeof Antigravity
         registerSecrets: (values) => registered.push(...values),
       }),
     context: (text: string, model?: string) => ({
-      request: { sandboxId: "s", harness: "opencode" as const, text, model },
+      request: { sandboxId: "s", harness: "opencode" as const, text, ...(model === undefined ? {} : { model }) },
       signal: new AbortController().signal,
       emit: (event: DriverEvent) => events.push(event),
       session: () => {},
@@ -309,17 +309,19 @@ antigravityTest("Antigravity refuses an unlisted model before sending a prompt",
   }
 });
 
-antigravityTest("Antigravity reports an authentication refusal without the native RPC text", async () => {
-  const f = antigravityFixture({ method: "gemini-api-key", apiKey: "refuse-fixture-key" });
-  try {
-    await expect(f.driver().start(f.context("never-prompt")).done).rejects.toMatchObject({
-      message: "authentication_failed",
-      reason: "authentication_failed:authentication",
-    });
-  } finally {
-    f.clean();
-  }
-});
+for (const apiKey of ["refuse-fixture-key", "banner-fixture-key"]) {
+  antigravityTest(`Antigravity safely reports authentication failure for ${apiKey}`, async () => {
+    const f = antigravityFixture({ method: "gemini-api-key", apiKey });
+    try {
+      await expect(f.driver().start(f.context("never-prompt")).done).rejects.toMatchObject({
+        message: "authentication_failed",
+        reason: "authentication_failed:authentication",
+      });
+    } finally {
+      f.clean();
+    }
+  });
+}
 
 antigravityTest(
   "Antigravity writes a private Google token file and redacts credentials echoed by the agent",
@@ -334,8 +336,14 @@ antigravityTest(
       expect(statSync(file).mode & 0o777).toBe(0o600);
       expect(JSON.parse(readFileSync(file, "utf8"))).toEqual({ token });
       expect(f.registered).toEqual([token.access_token, token.refresh_token]);
-      expect(f.events.some((event) => event.kind === "message" && event.text.includes("[REDACTED]"))).toBe(true);
-      for (const value of f.registered) expect(JSON.stringify(f.events)).not.toContain(value);
+      expect(f.events.some((event) => event.kind === "message" && event.text.includes("***"))).toBe(true);
+      const streamed = f.events
+        .flatMap((event) => (event.kind === "message" && event.partial ? [event.text] : []))
+        .join("");
+      for (const value of f.registered) {
+        expect(JSON.stringify(f.events)).not.toContain(value);
+        expect(streamed).not.toContain(value);
+      }
     } finally {
       f.clean();
     }

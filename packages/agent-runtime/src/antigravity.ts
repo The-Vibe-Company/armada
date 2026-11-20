@@ -11,9 +11,10 @@ import {
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
+import { redactKnownTokens } from "@armada/core";
 import { AcpDriver } from "./acp.ts";
 import { HarnessError } from "./errors.ts";
-import type { Driver, DriverContext } from "./protocol.ts";
+import type { Driver, DriverContext, DriverEvent } from "./protocol.ts";
 import { createRedactor } from "./state.ts";
 
 type AntigravityCredential =
@@ -29,11 +30,11 @@ const caBundles = [
   "/etc/ssl/cert.pem",
 ];
 
-function secretLeaves(value: unknown): string[] {
+const secretLeaves: (value: unknown) => string[] = (value) => {
   if (typeof value === "string") return [value];
   if (value && typeof value === "object") return Object.values(value).flatMap(secretLeaves);
   return [];
-}
+};
 
 function withDirectory(path: string, create: boolean, use: (anchoredPath: string) => void) {
   if (create) {
@@ -67,9 +68,18 @@ function writeToken(directory: string, token: Record<string, unknown>) {
   }
 }
 
+function redactPayload(value: unknown, mask: (text: string) => string): unknown {
+  if (typeof value === "string") return mask(value);
+  if (Array.isArray(value)) return value.map((entry) => redactPayload(entry, mask));
+  if (value && typeof value === "object")
+    return Object.fromEntries(Object.entries(value).map(([key, entry]) => [mask(key), redactPayload(entry, mask)]));
+  return value;
+}
+
 export class AntigravityDriver implements Driver {
   private readonly acp: AcpDriver;
   private readonly redact: ReturnType<typeof createRedactor>;
+  private readonly secretForms: string[];
 
   constructor(options: {
     executable: string;
@@ -82,6 +92,9 @@ export class AntigravityDriver implements Driver {
     const secrets = credential.method === "google" ? secretLeaves(credential.token) : [credential.apiKey];
     options.registerSecrets(secrets);
     this.redact = createRedactor(secrets);
+    this.secretForms = secrets
+      .filter(Boolean)
+      .flatMap((value) => [value, encodeURIComponent(value), JSON.stringify(value).slice(1, -1)]);
     const home = join(root, "antigravity");
     const tmp = join(root, "antigravity-tmp");
     const env: Record<string, string> = {
@@ -114,15 +127,51 @@ export class AntigravityDriver implements Driver {
       env,
       acceptV2WithV1Shape: true,
       authMethodId: credential.method === "google" ? "oauth-personal" : "gemini-api-key",
+      authenticationRequiredLine: "Open the following link to authenticate the ACP server: ",
       modelSelection: "config-option",
     });
   }
 
   start(context: DriverContext) {
-    return this.acp.start({
-      ...context,
-      emit: (event) => context.emit(JSON.parse(this.redact(JSON.stringify(event)))),
-    });
+    let pending = "";
+    let messageId: string | undefined;
+    const mask = (text: string) => redactKnownTokens(text, this.secretForms);
+    const emit = (event: DriverEvent) => {
+      const safe: DriverEvent = JSON.parse(this.redact(JSON.stringify(event)));
+      if (safe.kind !== "message" || event.kind !== "message") {
+        context.emit(safe);
+        return;
+      }
+      if (event.partial) {
+        if (messageId !== event.messageId) pending = "";
+        messageId = event.messageId;
+        const text = mask(pending + event.text);
+        let held = 0;
+        for (const secret of this.secretForms) {
+          for (let size = Math.min(secret.length - 1, text.length); size > held; size--) {
+            if (!secret.startsWith(text.slice(-size))) continue;
+            held = size;
+            break;
+          }
+        }
+        const end = text.length - held;
+        pending = text.slice(end);
+        if (end) context.emit({ ...safe, text: text.slice(0, end) });
+        return;
+      }
+      context.emit({
+        ...safe,
+        text: mask(event.text),
+        tools: safe.tools.map((tool) => ({
+          ...tool,
+          id: mask(tool.id),
+          name: mask(tool.name),
+          ...(tool.input === undefined ? {} : { input: redactPayload(tool.input, mask) }),
+          ...(tool.result ? { result: { ...tool.result, output: redactPayload(tool.result.output, mask) } } : {}),
+        })),
+      });
+    };
+    return this.acp.start({ ...context, emit });
   }
 
   close() {

@@ -296,14 +296,20 @@ test("revoking a dial-out request kills its synchronous exec before returning", 
 });
 
 test("Runner preserves safe harness failures in synchronous start and asynchronous completion", async () => {
-  const { HarnessError } = await import("../src/errors.ts");
-  for (const synchronous of [true, false]) {
+  const { HarnessError, RequestRefused } = await import("../src/errors.ts");
+  const authentication = new HarnessError("authentication_failed", "session_restore");
+  for (const [synchronous, error] of [
+    [true, authentication],
+    [false, authentication],
+    [false, new RequestRefused("invalid_request")],
+  ] as const) {
+    const reason = error instanceof HarnessError ? error.reason : error.message;
     const journal = new Journal(":memory:", (text) => text);
     const driver: Driver = {
       start() {
-        if (synchronous) throw new HarnessError("authentication_failed", "session_restore");
+        if (synchronous) throw error;
         return {
-          done: Promise.reject(new HarnessError("authentication_failed", "session_restore")),
+          done: Promise.reject(error),
           async interrupt() {},
           async steer() {},
         };
@@ -325,13 +331,13 @@ test("Runner preserves safe harness failures in synchronous start and asynchrono
       expect(reports).toEqual([
         {
           stage: synchronous ? "harness_start_failed" : "harness_turn_failed",
-          error: expect.any(HarnessError),
+          error,
           requestId: expect.any(String),
-          reason: "authentication_failed:session_restore",
+          reason: error instanceof HarnessError ? reason : undefined,
         },
       ]);
       const events = await payload(await call(runner, { op: "events" }));
-      expect(JSON.stringify(events.result.events)).toContain('"reason":"authentication_failed:session_restore"');
+      expect(JSON.stringify(events.result.events)).toContain(`"reason":${JSON.stringify(reason)}`);
       expect(
         (await payload(await call(runner, { op: "getPrompt", promptId: reply.result.promptId }))).result.status,
       ).toBe("failed");

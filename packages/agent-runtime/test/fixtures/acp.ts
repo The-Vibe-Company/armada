@@ -62,6 +62,10 @@ for await (const line of lines) {
       authenticated = true;
       if (process.env.GEMINI_API_KEY === "refuse-fixture-key") {
         send({ id: m.id, error: { code: 429, message: process.env.GEMINI_API_KEY } });
+      } else if (process.env.GEMINI_API_KEY === "banner-fixture-key") {
+        process.stdout.write(
+          "Open the following link to authenticate the ACP server: https://accounts.google.com/o/oauth2/v2/auth?state=fragment\n",
+        );
       } else reply({});
       break;
     }
@@ -100,6 +104,7 @@ for await (const line of lines) {
     case "session/prompt": {
       if (m.params.sessionId !== sessionId) throw Error("wrong_session");
       let text = m.params.prompt[0].text;
+      const echo = text === "echo-token";
       if (profile) {
         if (text === "explicit" && !selectedModel) throw Error("missing_model_config");
         if (text === "default" && selectedModel) throw Error("unexpected_model_config");
@@ -107,7 +112,6 @@ for await (const line of lines) {
         if (text === "environment")
           text = JSON.stringify({
             argv: process.argv.slice(2),
-            // Report booleans for wire checks without placing fixture credentials in argv or diagnostics.
             key: process.env.GEMINI_API_KEY === "fixture-gemini-value",
             isolated: ![
               "GOOGLE_FIXTURE",
@@ -124,12 +128,23 @@ for await (const line of lines) {
               process.env.AGY_CLI_DISABLE_AUTO_UPDATE === "1" &&
               process.env.AGY_ACP_FORCE_FILE_STORAGE === "1",
           });
-        if (text === "echo-token") {
+        if (echo) {
           if (!process.env.SSH_CONNECTION || process.env.GEMINI_API_KEY !== undefined) throw Error("wrong_google_env");
           const { token } = JSON.parse(
             readFileSync(join(profile, "antigravity-acp", "antigravity-oauth-token"), "utf8"),
           );
           text = Object.values(token).join(" ");
+          send({
+            method: "session/update",
+            params: {
+              sessionId,
+              update: {
+                sessionUpdate: "tool_call",
+                toolCallId: "fixture-tool",
+                rawInput: { [token.access_token]: "echo" },
+              },
+            },
+          });
         }
       }
       if (process.env.OPENCODE_THROTTLE_STATE) {
@@ -156,7 +171,12 @@ for await (const line of lines) {
           update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "unrelated" } },
         },
       });
-      for (const fragment of text === "DOCKER_OK" ? ["D", "OCK", "ER", "_OK"] : [text])
+      const fragments = echo
+        ? [text.slice(0, 10), text.slice(10)]
+        : text === "DOCKER_OK"
+          ? ["D", "OCK", "ER", "_OK"]
+          : [text];
+      for (const fragment of fragments)
         send({
           method: "session/update",
           params: {

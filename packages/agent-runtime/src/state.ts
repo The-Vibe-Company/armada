@@ -87,7 +87,7 @@ export function createRedactor(values: readonly string[]): Redactor {
   };
   return Object.assign(redact, { register });
 }
-const CHECKPOINTED_HARNESSES = ["claude", "codex", "opencode"] as const;
+const HARNESSES = ["claude", "codex", "opencode"] as const;
 
 /** Persist only native transcripts, never entire harness homes, indexes, logs, auth or config. */
 export class HarnessState {
@@ -176,10 +176,10 @@ export class HarnessState {
         if (
           manifest ||
           (await this.hasNativeData([
-            ...CHECKPOINTED_HARNESSES,
+            ...HARNESSES,
             "session-state",
             "exec-transient",
-            ...CHECKPOINTED_HARNESSES.map((harness) => `${harness}.restore`),
+            ...HARNESSES.map((harness) => `${harness}.restore`),
             "session-state.next",
             "session-state.previous",
           ]))
@@ -197,9 +197,9 @@ export class HarnessState {
           if (manifest && Object.keys(manifest.files).length) throw Error("golden_native_history_not_empty");
           if (
             (await this.hasNativeData([
-              ...CHECKPOINTED_HARNESSES,
+              ...HARNESSES,
               "exec-transient",
-              ...CHECKPOINTED_HARNESSES.map((harness) => `${harness}.restore`),
+              ...HARNESSES.map((harness) => `${harness}.restore`),
               "session-state.next",
               "session-state.previous",
             ])) ||
@@ -211,7 +211,7 @@ export class HarnessState {
     }
     await mkdir(this.root, { recursive: true, mode: 0o700 });
     if (await this.exists(join(this.root, "session-state.previous"))) throw Error("checkpoint_state_ambiguous");
-    for (const harness of CHECKPOINTED_HARNESSES) {
+    for (const harness of HARNESSES) {
       const live = join(this.root, harness),
         saved = join(this.root, "session-state", harness),
         stage = join(this.root, `${harness}.restore`);
@@ -263,7 +263,7 @@ export class HarnessState {
           const [harness, ...parts] = rel.split("/");
           if (
             !harness ||
-            !(CHECKPOINTED_HARNESSES as readonly string[]).includes(harness) ||
+            !(HARNESSES as readonly string[]).includes(harness) ||
             !this.allowed(harness, parts.join("/"))
           )
             throw Error("checkpoint_saved_state_unexpected");
@@ -339,7 +339,7 @@ export class HarnessState {
   }
   private async seal(identity?: CheckpointIdentity) {
     const manifest = await this.verifySaved();
-    const live = await Promise.all(CHECKPOINTED_HARNESSES.map((h) => this.exists(join(this.root, h))));
+    const live = await Promise.all(HARNESSES.map((h) => this.exists(join(this.root, h))));
     if (!live.some(Boolean)) {
       if (manifest && (identity === undefined || sameCheckpointIdentity(manifest.identity, identity))) return;
       throw Error("checkpoint_state_ambiguous");
@@ -348,7 +348,7 @@ export class HarnessState {
     // A previous interrupted rename must not be erased by a retry.
     if (await this.exists(join(this.root, "session-state.previous"))) throw Error("checkpoint_state_ambiguous");
     await rm(stage, { recursive: true, force: true });
-    for (const [index, harness] of CHECKPOINTED_HARNESSES.entries()) {
+    for (const [index, harness] of HARNESSES.entries()) {
       if (!live[index] && (await this.exists(join(this.root, "session-state", harness)))) {
         if (
           Object.keys(await this.fingerprints(join(this.root, "session-state"))).some((p) =>
@@ -367,7 +367,7 @@ export class HarnessState {
       ((await this.exists(join(this.root, "session-state")))
         ? await this.fingerprints(join(this.root, "session-state"))
         : {});
-    for (const harness of CHECKPOINTED_HARNESSES)
+    for (const harness of HARNESSES)
       if (
         Object.keys(previousFiles).some((p) => p.startsWith(`${harness}/`)) &&
         !Object.keys(files).some((p) => p.startsWith(`${harness}/`))
@@ -392,9 +392,7 @@ export class HarnessState {
       await this.syncDirectory(this.root);
       await rm(previous, { recursive: true, force: true });
     }
-    await Promise.all(
-      CHECKPOINTED_HARNESSES.map((name) => rm(join(this.root, name), { recursive: true, force: true })),
-    );
+    await Promise.all(HARNESSES.map((name) => rm(join(this.root, name), { recursive: true, force: true })));
     await this.syncDirectory(this.root);
   }
 }

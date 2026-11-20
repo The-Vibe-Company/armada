@@ -9,7 +9,7 @@ type ObjectValue = Record<string, unknown>;
 const object = (value: unknown): value is ObjectValue =>
   value !== null && typeof value === "object" && !Array.isArray(value);
 
-function hasV1InitializeShape(result: ObjectValue): boolean {
+function hasV1InitializeShape(result: ObjectValue) {
   return (
     object(result.agentCapabilities) &&
     typeof result.agentCapabilities.loadSession === "boolean" &&
@@ -20,7 +20,7 @@ function hasV1InitializeShape(result: ObjectValue): boolean {
   );
 }
 
-function availableModel(configOptions: unknown, model: string): boolean {
+function availableModel(configOptions: unknown, model: string) {
   if (!Array.isArray(configOptions)) return false;
   const option = configOptions.find((value) => object(value) && value.id === "model" && value.type === "select");
   return (
@@ -51,6 +51,7 @@ export class AcpDriver implements Driver {
       observation?: AcpObservation;
       acceptV2WithV1Shape?: boolean;
       authMethodId?: string;
+      authenticationRequiredLine?: string;
       modelSelection?: "config-option";
     },
   ) {}
@@ -105,11 +106,11 @@ export class AcpDriver implements Driver {
         timer?: ReturnType<typeof setTimeout>;
       }
     >();
-    const failure = (code: "harness_process_lost" | "invalid_harness_protocol" = "harness_process_lost") => {
+    const failure = (error = new HarnessError("harness_process_lost")) => {
       stopped = true;
       for (const entry of pending.values()) {
         clearTimeout(entry.timer);
-        entry.reject(new HarnessError(code));
+        entry.reject(error);
       }
       pending.clear();
     };
@@ -141,7 +142,7 @@ export class AcpDriver implements Driver {
     child.stdout.on("data", (chunk: string) => {
       buffer += chunk;
       if (Buffer.byteLength(buffer) > 16 * 1024 * 1024) {
-        failure("invalid_harness_protocol");
+        failure(new HarnessError("invalid_harness_protocol"));
         child.kill("SIGKILL");
         return;
       }
@@ -151,6 +152,15 @@ export class AcpDriver implements Driver {
         const line = buffer.slice(0, end);
         buffer = buffer.slice(end + 1);
         if (!line.trim()) continue;
+        if (
+          this.options.authenticationRequiredLine &&
+          line.startsWith(this.options.authenticationRequiredLine) &&
+          [...pending.values()].some((entry) => entry.method === "authenticate")
+        ) {
+          failure(new HarnessError("authentication_failed", "authentication"));
+          child.kill("SIGKILL");
+          return;
+        }
         try {
           const m: unknown = JSON.parse(line);
           if (!object(m) || m.jsonrpc !== "2.0") throw Error();
@@ -226,7 +236,7 @@ export class AcpDriver implements Driver {
               });
           }
         } catch {
-          failure("invalid_harness_protocol");
+          failure(new HarnessError("invalid_harness_protocol"));
           child.kill("SIGKILL");
         }
       }
