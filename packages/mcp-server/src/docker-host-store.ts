@@ -2328,6 +2328,8 @@ export function createDockerHostStore(sql: Sql, key: string) {
             await startupFailed(tx, logical, job, result.reason);
           }
         }
+        // Persist terminal receipts below, but never replay old stop/delete
+        // effects onto a lifecycle admitted after that job.
         const staleCleanup =
           staleRestorePredecessor ||
           ((job.bound_operation === "stop" || job.bound_operation === "delete") &&
