@@ -65,9 +65,9 @@ test("login --org persists a validated UUID per server and scopes commands while
     h.auth.preferences = filePreferences(path);
     expect(await h.run(["login", "--org", "Team"])).toBe(0);
     h.auth.preferences = filePreferences(path);
-    expect(await h.run(["list"])).toBe(0);
+    expect(await h.run(["ls"])).toBe(0);
     expect(bodies.at(-1)).toEqual({ org });
-    expect(await h.run(["list", "--org", "override"])).toBe(0);
+    expect(await h.run(["ls", "--org", "override"])).toBe(0);
     expect(bodies.at(-1)).toEqual({ org: "override" });
     expect(await h.run(["org", "setup"])).toBe(0);
     expect(bodies.at(-1)).toEqual({ org });

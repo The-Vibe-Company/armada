@@ -15,7 +15,7 @@ server, GitHub, hosts and model accounts. Use --setup to inspect setup from a
 sandbox workspace. Setup reports metadata and exits 1 if a check fails.
 An explicit ID, ARMADA_SANDBOX or .armada/sandbox selects sandbox status.
 Default: recorded state, without a provider probe. --live reads provider/prompt details.
-Use a sandbox ID from armada list --json. Output is JSON even without --json.
+Use a sandbox ID from armada ls --json. Output is JSON even without --json.
 Recorded state is not proof of current provider readiness.
 Example: armada status --setup --org ORG_UUID --json
 Example: armada status SANDBOX_UUID --org ORG_UUID --json

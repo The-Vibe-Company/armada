@@ -168,7 +168,7 @@ signal.signal(signal.SIGTERM, interrupted)
 signal.signal(signal.SIGINT, interrupted)
 exit_code = 0
 try:
-    for command in [["--version"], ["--help"], ["list", "--org", org, "--json"],
+    for command in [["--version"], ["--help"], ["ls", "--org", org, "--json"],
                     ["golden", "list", "--org", org, "--json"]]:
         cli(command)
     goldens, _, _, _, _ = api("golden/list", {})

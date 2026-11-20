@@ -98,7 +98,7 @@ armada new GOLDEN --agent codex "Implement the agreed change; push the branch an
 
 Launch without a prompt creates an idle sandbox. Capture its returned sandbox
 ID from `sandbox.id` in `armada new --json` output immediately. If the
-terminal disconnects before you capture the ID, inspect `armada list --owner me --json` and detail to avoid paid
+terminal disconnects before you capture the ID, inspect `armada ls --owner me --json` and detail to avoid paid
 duplicates. Skill pins are repeatable, exact launch-time references, not floating
 latest versions. Private pins use bare slug@exact-version in the credential’s workspace; qualified
 org/slug@exact-version pins always use the anonymous public catalog, even when
@@ -106,6 +106,9 @@ a key exists. Private pins require a configured Skillpack credential and
 access to the package; do not put that credential in a golden or prompt. Check
 `armada detail SANDBOX --json` for recorded skill references/checksums. Do not
 claim a skill is active merely because its package exists locally.
+
+Use `armada ls --status running` to filter by state, or `armada ls --ref REF`
+to match an external reference supplied at launch.
 
 For a template, inspect `armada template get TEMPLATE --json`, then use:
 

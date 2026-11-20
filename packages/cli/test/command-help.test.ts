@@ -7,7 +7,7 @@ for (const command of [
   "api",
   "new",
   "events",
-  "list",
+  "ls",
   "advice",
   "rm",
   "extend",

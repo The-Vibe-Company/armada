@@ -582,7 +582,7 @@ example uses POSIX shell syntax and requires `jq`:
 umask 077
 work=$(mktemp -d) || exit 1
 trap 'rm -rf "$work"' EXIT HUP INT TERM
-if armada list --json >"$work/result.json" 2>"$work/diagnostics.log"; then
+if armada ls --json >"$work/result.json" 2>"$work/diagnostics.log"; then
   jq -r '.sandboxes[].id' "$work/result.json"
 else
   status=$?

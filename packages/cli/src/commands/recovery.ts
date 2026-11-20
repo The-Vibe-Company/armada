@@ -7,7 +7,7 @@ export default sandboxOperation({
   help: `Usage: armada recovery <sandbox-id> [--org UUID] [--json]
 Read sandbox work-recovery information after Armada login and server authorization.
 Output is JSON even without --json. This is not credential-account rebinding.
-Use a sandbox ID from armada list --json.
+Use a sandbox ID from armada ls --json.
 Example: armada recovery SANDBOX_UUID --org ORG_UUID --json
 `,
   useSelectedOrg: false,
