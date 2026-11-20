@@ -1130,11 +1130,11 @@ test("canonical Docker admission replays a scoped key and makes the external ref
 });
 
 const competingPromptRefusals = [
-  "conversation_busy",
-  "native_auth_writer_busy",
-  "native_auth_writer_busy (wire)",
+  ["conversation_busy", "conversation_busy", true],
+  ["native_auth_writer_busy (versioned)", "native_auth_writer_busy", true],
+  ["native_auth_writer_busy (wire)", "native_auth_writer_busy", false],
 ] as const;
-test.each(competingPromptRefusals)("normal HTTP launch remains readable through controls after %s", async (refusal) => {
+test.each(competingPromptRefusals)("Docker controls settle after %s", async (_caseName, refusal, versioned) => {
   const f = await fixture();
   const idempotencyKey = `docker:${f.body.requestId}`;
   f.body.requestId = dockerLaunchRequestId(key, f.actor.userId, f.actor.orgId, idempotencyKey);
@@ -1265,10 +1265,7 @@ test.each(competingPromptRefusals)("normal HTTP launch remains readable through 
       epoch: session.epoch,
       requestId,
       status: 409,
-      body:
-        refusal === "native_auth_writer_busy (wire)"
-          ? { error: "native_auth_writer_busy" }
-          : { version: 1, requestId, error: refusal },
+      body: versioned ? { version: 1, requestId, error: refusal } : { error: refusal },
     });
   const journal = await complete(events.slice(2), 3);
   expect(journal?.status).toBe(200);

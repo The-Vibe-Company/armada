@@ -1,5 +1,4 @@
-/** Definite refusals leave the preceding accepted Docker prompt authoritative. */
-export function isDockerPromptRefusal(status: unknown, body: unknown, requestId: string): boolean {
+export function isDockerPromptRefusal(status: unknown, body: unknown, requestId: string) {
   if (!body || typeof body !== "object" || Array.isArray(body)) return false;
   const reply = body as Record<string, unknown>;
   if (Object.hasOwn(reply, "result")) return false;
