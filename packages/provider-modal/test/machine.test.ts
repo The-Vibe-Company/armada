@@ -5,7 +5,7 @@ import { createModalMachine, type ModalMachineJournal, type ModalMachineOptions 
 
 type Entry = NonNullable<Awaited<ReturnType<ModalMachineJournal["read"]>>>;
 type SDK = ModalMachineOptions["client"];
-type CreateParams = NonNullable<Parameters<SDK["sandboxes"]["experimentalCreate"]>[2]>;
+type CreateParams = NonNullable<Parameters<SDK["sandboxes"]["create"]>[2]>;
 type Scope = Parameters<MachineConformanceFixture["adapter"]>[0];
 
 function fixture() {
@@ -90,7 +90,7 @@ function fixture() {
           },
         },
         sandboxes: {
-          async experimentalCreate(_app: unknown, image: { imageId: string }, params: CreateParams) {
+          async create(_app: unknown, image: { imageId: string }, params: CreateParams) {
             const created = allocations.size + 1;
             const machine = {
               id: `physical-${created}`,

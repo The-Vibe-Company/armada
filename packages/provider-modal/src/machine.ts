@@ -7,7 +7,7 @@ import {
   type MachineIncarnation,
   type RetainedMachine,
 } from "@armada/core/server";
-import type { ModalClient, Sandbox } from "modal";
+import type { App, Image, ModalClient, Sandbox, SandboxCreateParams } from "modal";
 import { boundModalApp } from "./client.ts";
 import { modalError, refusal } from "./errors.ts";
 import { createModalMachineInventory } from "./inventory.ts";
@@ -59,6 +59,35 @@ function retained(id: MachineIncarnation, ref: string) {
 
 function identity(id: MachineIncarnation, machineId: string) {
   return { sandboxId: id.sandboxId, generation: id.generation, machineId } satisfies MachineIdentity;
+}
+
+type AllocationOptions = Pick<Create, "size" | "computeTtlSeconds"> &
+  Pick<SandboxCreateParams, "runtime" | "volumes" | "unencryptedPorts"> & {
+    name: string;
+    tags: Record<string, string>;
+  };
+
+export function allocateModalCompute(
+  client: Pick<ModalClient, "sandboxes">,
+  app: App,
+  image: Image,
+  { size, computeTtlSeconds, ...options }: AllocationOptions,
+) {
+  const capacity = size === undefined ? null : machineCapacity("modal", size);
+  return client.sandboxes.create(app, image, {
+    ...options,
+    timeoutMs: computeTtlSeconds * 1000,
+    workdir: "/home/user",
+    ...(capacity && {
+      cpu: capacity.vcpus / 2,
+      cpuLimit: capacity.vcpus / 2,
+      memoryMiB: capacity.memoryMiB,
+      memoryLimitMiB: capacity.memoryMiB,
+    }),
+    secrets: [],
+    env: {},
+    includeOidcIdentityToken: false,
+  });
 }
 
 export async function observeModalCompute(
@@ -195,22 +224,15 @@ export function createModalMachine(options: ModalMachineOptions) {
     } else {
       await validateSource?.();
       const image = await client.images.fromId(source.ref);
-      const capacity = size ? machineCapacity("modal", size) : null;
       signal?.throwIfAborted();
       entry = await save(request, undefined, { operation, intent, phase: "creating" });
       signal?.throwIfAborted();
-      sandbox = await client.sandboxes.experimentalCreate(app, image, {
+      sandbox = await allocateModalCompute(client, app, image, {
         name: name(request),
         tags: tags(request),
         runtime: "vm",
-        timeoutMs: computeTtlSeconds * 1000,
-        workdir: "/home/user",
-        ...(capacity && {
-          cpu: capacity.vcpus / 2,
-          cpuLimit: capacity.vcpus / 2,
-          memoryMiB: capacity.memoryMiB,
-          memoryLimitMiB: capacity.memoryMiB,
-        }),
+        computeTtlSeconds,
+        ...(size === undefined ? {} : { size }),
       });
     }
     await save(request, entry, { ...entry, phase: "allocated", machineId: sandbox.sandboxId });

@@ -1,10 +1,15 @@
-import { machineCapacity, ProviderError, type ResumeStageObserver, type SandboxInfo } from "@armada/core";
+import { ProviderError, type ResumeStageObserver, type SandboxInfo } from "@armada/core";
 import { SHARED_ARTIFACT_CACHE_PATH } from "@armada/core/server";
 import { NotFoundError, type Sandbox } from "modal";
 import type { boundModalApp, modalConnection } from "./client.ts";
 import { modalBuilderImageError, modalError, refusal } from "./errors.ts";
 import { DEPLOYMENT_TAG } from "./inventory.ts";
-import { lookupModalCompute, lookupNamedModalCompute, verifyModalComputeOwnership } from "./machine.ts";
+import {
+  allocateModalCompute,
+  lookupModalCompute,
+  lookupNamedModalCompute,
+  verifyModalComputeOwnership,
+} from "./machine.ts";
 import type { Machine, RunnerDistribution, RunnerTransport, Scope } from "./ports.ts";
 import type { ModalProviderOptions } from "./provider.ts";
 import { SSH_PORT } from "./ssh.ts";
@@ -162,32 +167,20 @@ export function createPhysicalLifecycle(deps: {
       row.phase = "creating";
       row.grantExpiresAt = Date.now() + row.ttlSeconds * 1000;
       await save(row);
-      const capacity = row.size === undefined ? null : machineCapacity("modal", row.size);
       sb = await measure("modal_sandbox_create", () =>
-        client.sandboxes.create(app, image, {
+        allocateModalCompute(client, app, image, {
           ...(row.runtimePolicy === "explicit-vm-v1" ? { runtime: "vm" as const } : {}),
-          ...(capacity
-            ? {
-                cpu: capacity.vcpus / 2,
-                cpuLimit: capacity.vcpus / 2,
-                memoryMiB: capacity.memoryMiB,
-                memoryLimitMiB: capacity.memoryMiB,
-              }
-            : {}),
+          ...(row.size === undefined ? {} : { size: row.size }),
           name: row.physicalName,
           tags: {
             ...ownershipTags(row),
             ...(!row.golden && deploymentId ? { [DEPLOYMENT_TAG]: deploymentId } : {}),
           },
-          timeoutMs: row.ttlSeconds * 1000,
-          workdir: "/home/user",
+          computeTtlSeconds: row.ttlSeconds,
           ...(artifactVolume
             ? { volumes: { [SHARED_ARTIFACT_CACHE_PATH]: artifactVolume.withMountOptions({ readOnly: true }) } }
             : {}),
           unencryptedPorts: [SSH_PORT],
-          secrets: [],
-          env: {},
-          includeOidcIdentityToken: false,
         }),
       );
     } else {
