@@ -297,6 +297,15 @@ waive deployed proof; local checks do not prove provider settings or credentials
    Existing project tokens must be scoped to their matching environment. CLI
    uploads become the only deploy writer. Delete/disable independent deploy hooks
    or other automation that can promote main outside the serialized Actions path.
+   For the default Modal runtime path, set `ARMADA_MODAL_DIALOUT=1` and
+   `ARMADA_MODAL_RUNTIME_MANIFEST=/opt/armada/runtime-manifests/x64.json`.
+   The server image provides `ARMADA_RUNTIME_ARTIFACT_DIR`.
+   Before migrations, production release runs the candidate server's startup
+   validator against the Railway deployment variables and the candidate image.
+   The production project token needs read access to those variables. If a
+   variable used by the validator is sealed in Railway, its value is unavailable
+   and the release stops. Keep provider settings stable from validation through
+   rollout.
 4. Vercel owner: verify both projects use Root Directory apps/dashboard and
    **Include source files outside of the Root Directory in the Build Step**.
    Ensure old active branches incorporate the config; source-local disablement
@@ -306,7 +315,7 @@ waive deployed proof; local checks do not prove provider settings or credentials
    Keep domains/project IDs/build/runtime vars; explicit CLI paths stay available.
    Remove obsolete Vercel/Post-deploy smoke required checks in GitHub rules,
    never Armada's fast verdict. Historical checks are not erased by a commit.
-5. No opt-in variables need enabling. Dispatch main's pinned staging workflow
+5. No release opt-in flags are required. Dispatch main's pinned staging workflow
    under the freeze, confirm staging proof, then use an owner-reviewed release.
    Do not restore legacy production Git deployment or standalone SQL apply.
 
