@@ -561,21 +561,27 @@ export function createDockerHostStore(sql: Sql, key: string) {
   async function verifyRestoreSource(tx: Sql, logical: Sandbox, job: RestoreJob) {
     const { rows } = await tx.query<StoredJob>(
       `select * from public.docker_host_jobs where bound_sandbox_id=$1 and host_id=$2
-       and (bound_operation='restore' or (bound_operation='create' and outcome='completed'))`,
+       and bound_operation in ('create','restore') and outcome='completed'`,
       [logical.id, logical.docker_host_id],
     );
-    let sourceMatches = false;
     for (const row of rows) {
-      const allocation = await readJob(row);
-      if (allocation.request.generation === job.request.generation) deny();
+      let allocation: Job;
+      try {
+        allocation = await readJob(row);
+      } catch (error) {
+        if (!(error instanceof DockerHostDenied)) throw error;
+        continue;
+      }
       if (
-        row.outcome === "completed" &&
         allocation.request.generation === logical.docker_generation &&
-        input({ ...job, predecessor: { ...job.predecessor, request: allocation.request } }) === input(job)
+        input({ ...job, predecessor: { ...job.predecessor, request: allocation.request } }) === input(job) &&
+        allocation.request.snapshot?.ownerId === job.request.snapshot?.ownerId &&
+        allocation.request.snapshot?.visibility === job.request.snapshot?.visibility &&
+        allocation.request.snapshot?.id === job.request.snapshot?.id
       )
-        sourceMatches = true;
+        return;
     }
-    if (!sourceMatches) deny();
+    deny();
   }
 
   async function boundMachine(tx: Sql, job: StoredJob, host: Host, installationId: string) {
@@ -1342,6 +1348,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
         if (selection.operation === "restore") {
           const { lifecycleGeneration, ...job } = selection;
           input(job);
+          if (job.requestId !== job.request.generation) deny();
           if (!known) {
             if (job.request.ttlSeconds !== row.effective_ttl_seconds) deny();
             await validateRestoreTarget(tx, row, job);
