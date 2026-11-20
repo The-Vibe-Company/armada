@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import type { LocalHostIo } from "../src/local-host.ts";
 import { run } from "../src/run.ts";
 import { memorySessionStore } from "../src/session.ts";
 
@@ -35,6 +36,11 @@ async function capture(args: string[], fetcher: (request: Request) => Promise<Re
       },
     },
     {
+      localHost: new Proxy({} as LocalHostIo, {
+        get() {
+          throw new Error("Server host commands must avoid local daemon I/O");
+        },
+      }),
       auth: {
         out: () => {},
         err: () => {},
@@ -111,8 +117,8 @@ test("host add pending waits respect token expiry and five-minute limit without 
   }
 });
 
-test("host list accepts a draining host and prints the shared uninstall reason", async () => {
-  const result = await capture(["host", "list"], async () =>
+test("host ls accepts a draining host and prints the shared uninstall reason", async () => {
+  const result = await capture(["host", "ls"], async () =>
     Response.json({
       placement: true,
       serverVersion: "2.49.6",
@@ -125,9 +131,9 @@ test("host list accepts a draining host and prints the shared uninstall reason",
   expect(result.out).toContain("stopped sandbox space: 4.00 GB");
 });
 
-test("host list exposes safe metadata as text or JSON and revoke uses host UUID", async () => {
+test("host ls exposes safe metadata as text or JSON and revoke uses host UUID", async () => {
   for (const json of [false, true]) {
-    const result = await capture(["host", "list", ...(json ? ["--json"] : [])], async (request) => {
+    const result = await capture(["host", "ls", ...(json ? ["--json"] : [])], async (request) => {
       expect(new URL(request.url).pathname).toEndWith("/hosts/list");
       expect(await request.json()).toEqual({ org });
       return Response.json({ placement: true, serverVersion: "2.49.6", hosts: [summary] });
@@ -146,7 +152,7 @@ test("host list exposes safe metadata as text or JSON and revoke uses host UUID"
       ])
         expect(result.out).toContain(value);
   }
-  const revoked = await capture(["host", "revoke", hostId], async (request) => {
+  const revoked = await capture(["host", "rm", hostId], async (request) => {
     expect(new URL(request.url).pathname).toEndWith("/hosts/revoke");
     expect(await request.json()).toEqual({ org, hostId });
     return Response.json({ revoked: true });
@@ -182,7 +188,7 @@ test("host add stops waiting when its unused registration disappears without cla
   expect(result.out).not.toContain(`${hostId} is online`);
 });
 
-test("host show resolves exact names and renders resources, automatic limits and reserved capacity", async () => {
+test("host ls with a selector resolves exact names and renders resources, automatic limits and reserved capacity", async () => {
   const resources = {
     machine: { cpus: 8, memoryBytes: 26 * 1024 ** 3 },
     perSandbox: { cpus: 2, memoryBytes: 4 * 1024 ** 3, pids: 4096 },
@@ -190,14 +196,14 @@ test("host show resolves exact names and renders resources, automatic limits and
     mode: "automatic",
   };
   for (const selector of ["office", hostId]) {
-    const result = await capture(["host", "show", selector], async () =>
+    const result = await capture(["host", "ls", selector], async () =>
       Response.json({ placement: true, hosts: [{ ...summary, running: 3, resources }] }),
     );
     expect(result.code).toBe(0);
     for (const text of ["8 CPUs · 26 GiB RAM", "2 CPUs · 4 GiB RAM · 4096 processes (automatic)", "3/6"])
       expect(result.out).toContain(text);
   }
-  const unknown = await capture(["host", "show", "missing"], async () =>
+  const unknown = await capture(["host", "ls", "missing"], async () =>
     Response.json({ placement: true, hosts: [summary] }),
   );
   expect(unknown.code).not.toBe(0);
@@ -232,14 +238,8 @@ test("host limits sends validated partial overrides or an exclusive automatic re
   }
 });
 
-test("host retention sends a duration to the owner API and show prints reported cleanup", async () => {
-  const saved = await capture(["host", "retention", hostId, "--retention", "24h"], async (request) => {
-    expect(new URL(request.url).pathname).toBe("/api/v1/docker/hosts/retention");
-    expect(await request.json()).toEqual({ org, hostId, retentionSeconds: 86400 });
-    return Response.json({ retentionSeconds: 86400 });
-  });
-  expect(saved.code).toBe(0);
-  const shown = await capture(["host", "show", hostId], async () =>
+test("host ls with a selector prints reported retention and disk information", async () => {
+  const shown = await capture(["host", "ls", hostId], async () =>
     Response.json({
       placement: true,
       hosts: [
@@ -256,9 +256,8 @@ test("host retention sends a duration to the owner API and show prints reported 
 test("host mutation JSON is a single receipt without prose or registration polling", async () => {
   for (const [argv, response, expected] of [
     [["add"], ticket(), ticket()],
-    [["revoke", hostId], { revoked: true }, { hostId, revoked: true }],
+    [["rm", hostId], { revoked: true }, { hostId, revoked: true }],
     [["limits", hostId, "--auto"], {}, { hostId, auto: true }],
-    [["retention", hostId, "--retention", "24h"], {}, { hostId, retentionSeconds: 86400 }],
   ] as const) {
     let calls = 0;
     const result = await capture(["host", ...argv, "--json"], async () => {
@@ -270,4 +269,26 @@ test("host mutation JSON is a single receipt without prose or registration polli
     expect(calls).toBe(1);
     expect(result.slept).toBe(0);
   }
+});
+
+test.each(["list", "show", "retention", "revoke", "status", "uninstall"])(
+  "host %s is unknown and performs no request",
+  async (verb) => {
+    let requests = 0;
+    const result = await capture(["host", verb], async () => {
+      requests++;
+      return Response.json({});
+    });
+    expect(result.code).toBe(2);
+    expect(result.err).toContain("Unknown host command.");
+    expect(requests).toBe(0);
+  },
+);
+
+test("host does not repeat an unexpected command argument in diagnostics", async () => {
+  const value = "a".repeat(64);
+  const result = await capture(["host", value], async () => Response.json({}));
+  expect(result.code).toBe(2);
+  expect(result.err).toContain("Unknown host command.");
+  expect(result.out + result.err).not.toContain(value);
 });

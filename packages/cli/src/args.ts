@@ -1,8 +1,7 @@
 import { GoldenError, isSandboxProvider, SANDBOX_PROVIDERS, type SandboxProviderId } from "@armada/core";
 
-const BOOLEAN = new Set(["--private", "--json", "--all", "--follow", "--no-browser", "--no-connections"]);
+const BOOLEAN = new Set(["--private", "--json", "--no-browser", "--no-connections"]);
 const VALUE = new Set([
-  "--since",
   "--id",
   "--expected-version",
   "--credential-id",
@@ -51,7 +50,8 @@ export function parseArgs(
       positionals.push(arg);
       continue;
     }
-    if (!arg.startsWith("--")) throw new GoldenError("invalid_config", `Unknown option '${arg}'.`);
+    if (!arg.startsWith("--") && !additionalValues.includes(arg) && !additionalBooleans.includes(arg))
+      throw new GoldenError("invalid_config", `Unknown option '${arg}'.`);
     const eq = arg.indexOf("=");
     const key = eq === -1 ? arg : arg.slice(0, eq);
     if (BOOLEAN.has(key) || additionalBooleans.includes(key)) {

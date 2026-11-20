@@ -27,7 +27,7 @@ Commands below start with `armada`. Select an organization with `org use NAME|UU
 | Sandbox detail / status | Sandbox page and prompt status | `detail ID`, `status ID`; actual stored privacy and repository context |
 | Agent turns | Send, steer and interrupt | `send ID PROMPT`, `steer ID TEXT`, `interrupt ID`; model/effort overrides where supported |
 | Stop / wait | Stop and turn progress | `stop ID`, `wait ID --timeout SECONDS [--prompt-id ID]` |
-| Events / commands | Event stream and sandbox commands | `logs ID --all --follow [--since CURSOR]`, `exec ID -- COMMAND` |
+| Events / commands | Event stream and sandbox commands | `events [ID] [-f] [--tail N]`, `exec [ID] -- COMMAND`, `outputs [NAME] [-o DIR]` |
 | MCP definitions | Personal/shared definitions, status and authorization | `mcp list/add/update/connect/status/reconnect/enable/disable/revoke/delete` |
 | Public/OAuth MCP shortcut | Connection creation form | `mcp add NAME URL [--scope personal\|org]`; defaults personal, HTTP, automatic auth discovery |
 | Existing sandbox bindings | Selected connection metadata | `mcp sandbox-connections SANDBOX_UUID --org UUID`; read-only |

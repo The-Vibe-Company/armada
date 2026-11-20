@@ -65,8 +65,11 @@ staging_armada list --org "$staging_org" --golden "$snapshot_id" --owner me --js
 ```bash
 read -r -p 'Returned sandbox ID: ' sandbox_id
 staging_armada status "$sandbox_id" --org "$staging_org"
-staging_armada logs "$sandbox_id" --org "$staging_org" --follow
+staging_armada events "$sandbox_id" --org "$staging_org" -f
 ```
+
+For a pinned client released before the `events` command, use that client's
+`staging_armada logs "$sandbox_id" --org "$staging_org" --follow`.
 
 ### Coordinator rehearsal record
 
@@ -89,8 +92,11 @@ The daemon uses its existing staging registration. Its credential stays on the
 host. Staging supplies the Codex account and authorized repository access as in
 path 1. See the [Docker host quickstart](own-machine-quickstart.md) for setup.
 
+Use the command supported by the pinned CLI. The verified 2.57.2 release below
+uses `host list`. Releases with the five-verb host family use `host ls`.
+
 ```bash
-staging_armada host list --org "$staging_org" --json
+staging_armada host list --org "$staging_org" --json  # Pinned CLI 2.57.2
 staging_armada creds list --org "$staging_org" --json
 read -r -p 'Owner staging Docker host UUID: ' staging_host
 read -r -p 'Staging Codex account UUID: ' docker_account

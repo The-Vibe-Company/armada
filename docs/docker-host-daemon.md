@@ -240,12 +240,9 @@ the ticket expires naturally, and the installer gives Ctrl-C/list guidance.
 Unregistered binaries without retained installation files can be replaced;
 unreadable or partially registered state is preserved for diagnosis.
 
-`armada host status` prints public local status; `armada host uninstall` delegates
-to the separate binary's drain/revoke/removal procedure. Both work without login.
-Uninstall can wait for active sandbox cleanup and must be retried, not bypassed,
-if drain is unresolved. Native diagnostic output is not relayed by the wrapper;
-run `armada-docker-host status` or `armada-docker-host uninstall` directly when
-repairing local service or ownership problems. Never delete registration state or
+Run `armada-docker-host status` or `armada-docker-host uninstall` on the Docker
+machine. The daemon drains and revokes the registration before removing its
+installation. Retry an unresolved drain without bypassing it. Never delete registration state or
 force-clear a daemon lock to make installation succeed.
 
 ## Host authority, ownership and failure recovery
@@ -798,7 +795,7 @@ host builds and install the daemon from that release candidate on each managed
 host using its existing registration. Check that the user service reconnects
 and that existing containers and workspaces are still intact. The installer
 served by a deployed server uses that server's artifact, so use the candidate
-binary for the pre-deploy upgrade. After the deploy, check `armada host list --json`
+binary for the pre-deploy upgrade. After the deploy, check `armada host ls --json`
 for `protocol: 1` and `upgradeRequired: false`.
 
 Snapshot build results still include the verified image baseline in the receipt.
@@ -877,16 +874,13 @@ On a machine already linked to the same server, the current installer keeps its
 registration/name, safely upgrades the binary, and attempts to cancel the unused
 new ticket; if reconciliation fails, the ticket expires naturally.
 For a different server it creates a separate server-scoped installation and user
-service; it does not replace the existing server connection. Use
-`armada host status --server HTTPS_ORIGIN` and
-`armada host uninstall --server HTTPS_ORIGIN` to select the intended installation.
-With multiple installations, omitting the server returns an inventory and
-selection guidance without changing either installation.
+service. Run the corresponding daemon binary with `status --instance SHA256_SERVER_ORIGIN`
+or `uninstall --instance SHA256_SERVER_ORIGIN` for a named installation.
 Unreadable existing identity/state refuses installation rather than guessing.
 
 CLI: `armada host add [--name NAME] [--org UUID]` prints that command and waits
-boundedly for the exact host. `armada host list [--json]` shows safe metadata;
-`armada host revoke UUID` revokes through the admin API. Selected organization is
+boundedly for the exact host. `armada host ls [--json]` shows safe metadata;
+`armada host rm UUID` revokes through the admin API. Selected organization is
 reused. `armada launch --provider docker --agent codex --host UUID_OR_NAME`
 resolves names exactly among nonrevoked hosts in the selected org and refuses
 ambiguous names. Names are optional, nonempty trimmed display strings up to64
@@ -1010,8 +1004,8 @@ were performed here.
 ### Capacity visibility (#1773, slice c1)
 
 The host list API now adds observed hardware, effective automatic per-sandbox
-limits, admission capacity and running reservations. CLI `armada host list` and
-`armada host show HOST` (exact name or UUID, optional `--json`) show these values;
+limits, admission capacity and running reservations. CLI `armada host ls` and
+`armada host ls HOST` (exact name or UUID, optional `--json`) show these values;
 the dashboard host row shows running/capacity and its Facts show hardware,
 limits and automatic/manual mode. Retained sandbox count is separate from
 running reservations. Pending starts reserve slots until physically stopped,
@@ -1184,9 +1178,8 @@ Each has independent registration credentials, durable receipts and runtime cach
 The daemon's existing installation-ID and host-ID ownership labels scope container,
 volume and snapshot operations, including cleanup; shared images remain shared.
 
-Use `armada host status --server https://armada.example` or
-`armada host uninstall --server https://armada.example` to select one.
-Without `--server`, multiple installations are listed, never implicitly removed.
+Use `armada-docker-host@<sha256-of-origin> status --instance <sha256-of-origin>`
+to inspect a named installation, or substitute `uninstall` to remove it.
 An old legacy daemon's origin is read from its private state when status does not
 yet expose it. Unreadable registration refuses installation before reading or
 exchanging the new one-use token; repair the existing local installation first.
@@ -1265,14 +1258,13 @@ If a sweep fails, the daemon waits until the next hourly sweep to try again.
 
 ### Retention controls and visibility
 
-`armada host show HOST` (also `--json`) and the Machines → Docker hosts panel show the
+`armada host ls HOST` (also `--json`) and the Machines → Docker hosts panel show the
 last reported retention delay and next local cleanup deadline, with the host's
 last check-in. No reported deadline means none has been reported, not proof
 that the disk is empty. Offline hosts continue enforcing their saved policy.
 
-The member who added the Docker host can run
-`armada host retention HOST --retention 24h` (units: `s`, `m`, `h`, `d`; `0`
-means next-sweep cleanup), or save retention in seconds in the Machines → Docker hosts panel.
+The member who added the Docker host can save retention in seconds in the
+Machines → Docker hosts panel. Use 0 for next-sweep cleanup.
 The maximum is 365 days. Other members, including other admins, cannot change
 this machine policy. A saved request is applied and persisted at the daemon's
 next check-in; the panel distinguishes requested from reported settings.
@@ -1291,7 +1283,7 @@ the policy delta, preserving their original stopped age.
 ### Disk visibility and launch floor
 
 Hosts report unprivileged available bytes on the Docker data filesystem at each
-check-in. `armada host show` and the Machines → Docker hosts panel show that observation
+check-in. `armada host ls HOST` and the Machines → Docker hosts panel show that observation
 and the default **10 GB** floor (10,000,000,000 bytes). An unavailable observation
 is shown as unknown, never as zero or invented free space. Reports are as fresh
 as the host's last check-in, not a reservation or a guarantee of launch success.
@@ -1430,7 +1422,7 @@ The cleanup-reason migration must deploy before the new server accepts reports;
 no migration was applied during development.
 
 Default retention is the earlier of 24 hours after the first observed stop and
-the allocation’s immutable expiry. Explicit `armada host retention` overrides
+the allocation’s immutable expiry. Explicit retention overrides
 keep their configured duration, including beyond expiry. Policy updates preserve
 the observed stop age; default cleanup still respects durable resume fencing.
 

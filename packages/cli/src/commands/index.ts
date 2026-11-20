@@ -8,7 +8,6 @@ import completion from "./completion.ts";
 import creds from "./creds.ts";
 import detail from "./detail.ts";
 import doctor from "./doctor.ts";
-import exec from "./exec.ts";
 import extend from "./extend.ts";
 import github from "./github.ts";
 import host from "./host.ts";
@@ -17,12 +16,12 @@ import launch from "./launch.ts";
 import list from "./list.ts";
 import login from "./login.ts";
 import logout from "./logout.ts";
-import logs from "./logs.ts";
 import org from "./org.ts";
 import recovery from "./recovery.ts";
 import report from "./report.ts";
 import rm from "./rm.ts";
 import routine from "./routine.ts";
+import { sandboxInspectionCommands } from "./sandbox-inspection.ts";
 import send from "./send.ts";
 import snapshot from "./snapshot.ts";
 import status from "./status.ts";
@@ -47,8 +46,7 @@ export const commands: readonly Command[] = [
   report,
   send,
   steer,
-  exec,
-  logs,
+  ...sandboxInspectionCommands,
   doctor,
   completion,
   login,

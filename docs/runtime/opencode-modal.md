@@ -16,7 +16,7 @@ an authenticated, loopback-only HTTP listener. Armada subscribes to that process
 retry waits into `armada/modelRateLimit`. Native retry events omit HTTP status;
 recognized rate-limit/overload messages use rate-limit wording, while every other
 retry remains visible as a generic model-provider request retry. It never starts another
-request or sleeps on behalf of an in-flight native retry. CLI status/logs and the
+request or sleeps on behalf of an in-flight native retry. CLI status/events and the
 sandbox page display the existing wait/count/total fields.
 
 The listener uses a fresh per-process password delivered only in the child
