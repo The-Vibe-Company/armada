@@ -3,7 +3,7 @@
 **Owner decision 2026-11-13: Boat is not part of the release gate.**
 Boat remains a first-class provider, not disabled or retired. Post-deploy, pinned and
 release-gate entry points ignore Boat cases before validating their unused
-credentials/model/golden fields. They print exactly once per invocation:
+credentials, model and snapshot fields. They print exactly once per invocation:
 `boat: not part of the release gate`. This supersedes Boat
 acceptance procedures below for automated staging/release use, not Boat product
 support. Modal full smoke and existing owner Docker-host parity probes remain.
@@ -132,7 +132,7 @@ the server's normal actor/org authorization.
 Coordinator procedure (never executed by workers):
 1. Select one existing production Boat snapshot and the coordinator's own model
    account/org. Supply one valid selected Boat case via ARMADA_SMOKE_CASES.
-   These are identifiers, not credentials; no golden/host registration or
+   These are identifiers, not credentials; no snapshot or host registration or
    production deployment settings are changed.
 2. Set ARMADA_URL to the exact production Armada **API origin** (no path, query,
    userinfo or fragment). Read the production bearer securely from stdin/env,
@@ -153,7 +153,7 @@ unset ARMADA_TOKEN
 Case shape (identifiers/placeholders only):
 
 ```json
-[{"provider":"boat","harness":"codex","org":"<production-org-id>","golden":"<existing-production-boat-golden>","model":"<configured-model>","modelAccountId":"<coordinator-model-account-id>"}]
+[{"provider":"boat","harness":"codex","org":"<production-org-id>","golden":"<existing-production-boat-snapshot>","model":"<configured-model>","modelAccountId":"<coordinator-model-account-id>"}]
 ```
 
 Only the sandbox ID returned by this invocation's own launch may be prompted,
@@ -203,10 +203,10 @@ explains waits for launches still in flight to return its handle, until none
 is in flight or for at most the longest launch request timeout (10 minutes).
 When nothing is unexplained there is no wait, so an unrelated launch does not
 delay scoped cleanup or the next scoped parent. A scoped child is registered under its parent's owner and
-golden without an owner API launch, so the run cannot attribute another case's
-child: scoped Codex probes that share an org and golden run one after
+snapshot without an owner API launch, so the run cannot attribute another case's
+child: scoped Codex probes that share an org and snapshot run one after
 another, from the baseline snapshot through scoped cleanup. Expiry, templates
-and scoped runs on other goldens are not held by that queue. Scoped parent
+and scoped runs on other snapshots are not held by that queue. Scoped parent
 launch, ready, and stop receipts have distinct step names in the journal.
 
 A model account admits a bounded number of working agents, possibly one, and
@@ -400,7 +400,7 @@ A named `time_to_ready` pass records milliseconds from immediately before
 launch through its ready observation, tagged with provider/harness and case.
 Each ordinary worker also emits `lifecycle_cleanup_summary`, with total elapsed
 time, known leftover IDs and an explicit unknown-launch flag. An ambiguous
-launch cannot be retried or declared clean: use the reported org/golden/start
+launch cannot be retried or declared clean: use the reported org/snapshot/start
 time to reconcile staging resources before rerunning. No new correlation API is
 introduced. Interrupted runners still require operator reconciliation.
 
@@ -471,7 +471,7 @@ checkout/restore is claimed beyond the existing Git pack/object proof.
 The earlier stop receipt is invalidated before these verification reads, so any
 failure still runs idempotent cleanup rather than trusting potentially stale
 state. `preservation_cleanup_summary` reports known leftover IDs or an unknown
-launch with org/golden/start time, plus a validated recovery ID when available.
+launch with org/snapshot/start time, plus a validated recovery ID when available.
 Archive bytes, commit IDs and note/provider text are never logged.
 
 No new allocation, model turn, case field, secret or migration. The dirty worker
@@ -486,7 +486,7 @@ and finally cleanup are unchanged. Offline tests are not live acceptance receipt
 `--default-skills` deliberately requires `--work-preservation`: it reuses that
 clean/dirty worker pair and its cleanup inventory, adding no allocation or model
 turn. Both staging entrypoints include the flag. Every case requires its existing
-org/golden UUIDs; canonical casing is used.
+org and snapshot UUIDs; canonical casing is used.
 
 Before any compute, named `default_skills_golden`, `default_skills_org` and
 `default_skills_personal` reads fetch the shipped defaults API. The client derives
@@ -532,14 +532,14 @@ tools. The runner uses the owner API to verify receipts and clean up compute.
 Named proofs: parent configuration, native turn, actual correlated child launch,
 message, nonpartial child assistant answer (not prompt/tool echo), stop and
 operation ordering. Launch is idle; message supplies a fresh answer challenge.
-Input selection must match the parent's golden/account/version/model. Read
+Input selection must match the parent's snapshot/account/version/model. Read
 evidence must match the child identity/binding. A no-option control must show no
 successful delegated effect and either no tools with a fresh no-access reply,
 or the exact authority denial for the valid launch request—not generic failure.
 This is a live native control, not a claim that separately supplied user tokens
 are banned; backend scope/epoch denial remains covered by its owning tests.
 
-Before parent allocation, snapshot a complete ordinary owner-me/golden inventory.
+Before parent allocation, record a complete ordinary inventory for the owner and snapshot.
 After the parent is quiesced/stopped, cleanup re-reads bounded logs and inventory.
 Only receipt-claimed IDs corroborated as new owned rows can be stopped with the
 owner API. Preexisting, parent, unverified and unclaimed IDs are never blindly
@@ -610,7 +610,7 @@ verdict to success. Failed workers retain logical failed status after cleanup;
 their finite durable stoppedAt receipt confirms physical exit because the
 terminal-failure status projection intentionally hides provider state. A failed
 row without that receipt remains unconfirmed. `expiry_cleanup_summary` reports leftover IDs or ambiguous
-launches with org/golden/start time. Lost create responses are never retried.
+launches with org/snapshot/start time. Lost create responses are never retried.
 This is not a resource janitor: an interrupted runner or unknown create still
 requires operator reconciliation.
 
@@ -1842,17 +1842,19 @@ Run against the staging **dashboard origin**, separately from the server-origin
 compute probes above. Record the tested SHA, origin and each result; this journey
 has not passed merely because the server-origin smoke passed.
 
-1. Use a disposable CLI configuration directory and unset `ARMADA_TOKEN`. Run
-   `armada login --url https://<staging-dashboard>` in a terminal. Discovery must
-   offer the enabled methods, with no discovery error. Anonymous
-   `GET /api/v1/auth/methods` on that same origin must return 200 JSON and no-store.
-2. With the staging test account, complete each enabled GitHub/Google provider
-   using `armada login --provider github --url https://<staging-dashboard>` (then
-   google). Confirm the loopback callback exchanges the code and saves a session.
-3. Log out and complete email login, including code verification. Confirm a
-   subsequent `armada org list --url https://<staging-dashboard>` succeeds. Log
-   out and remove the disposable configuration directory. Never record codes,
-   tokens or callback query strings in evidence.
+1. Use a disposable CLI configuration directory and unset `ARMADA_TOKEN`.
+   Set `ARMADA_URL` to the staging dashboard origin for the whole journey.
+   Run `armada login` in a terminal. Discovery must offer the enabled methods
+   without errors. Anonymous `GET /api/v1/auth/methods` on that same origin must
+   return 200 JSON and no-store.
+2. With the staging test account, complete each enabled browser sign-in using
+   `armada login --provider github` or `armada login --provider google`. Confirm
+   that each loopback callback exchanges the code and saves a session. Run
+   `armada logout` between sign-ins.
+3. Complete email login, including code verification, then confirm that
+   `armada org list` succeeds with the saved staging session. Run
+   `armada logout` and remove the disposable configuration directory. Never
+   record codes, tokens or callback query strings in evidence.
 
 The discovery regression began in **v2.28.0**, which first shipped #1505
 (`fb2fc624`): the CLI began requesting auth/methods while the dashboard retained

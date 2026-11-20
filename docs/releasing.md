@@ -182,9 +182,8 @@ armada --version
 armada login --url https://armada.thevibecompany.co
 ```
 
-Installing v2 under the same package replaces the old global `armada` executable. Verify the
-new version before removing any separate legacy installation. Authentication state from v1
-is not reused by v2; sign in once. See [onboarding](dave-onboarding.md).
+Verify the installed version before removing any separate older installation.
+See [onboarding](dave-onboarding.md) for first-run setup.
 
 ### Smoke resources and model accounts
 
@@ -577,7 +576,7 @@ Baseline: [release 43817524703](https://github.com/The-Vibe-Company/armada/actio
 Within smoke, logs place the clean lifecycle at 121405ms and the preservation
 lifecycle at 47925ms. The final journal cleanup runs from approximately 06:56:07
 to 07:03:07 UTC (7m). Repeated `sandbox_not_ready` delete acknowledgements dominate
-that interval. This is not evidence of redundant golden creation. Cleanup already
+that interval. This is not evidence of redundant snapshot creation. Cleanup already
 runs independent receipts concurrently in two authority-ordered waves; do not
 parallelize delegated children with their parent fence or drop cleanup coverage.
 
@@ -599,7 +598,7 @@ executing workflow revision before replacing these controls.
 | --- | --- |
 | Merge-safe pinned release | Whole-release staging reservation, early ordinary admission yield and completion wakeup implemented; coordinator must record a release concurrent with ordinary main and schema-changing merges |
 | Exact production SQL equals smoked SQL | Pinned release staging rejects forward history; ordinary migrations defer for the entire release. Coordinator must compare smoked and production immutable migration inventories; no deployed proof claimed |
-| Faster Modal/Docker probes, no lost coverage | Baseline measured above; current ordinary smoke validates Modal cases only. Full parity provider scheduling landed in #2406. Existing release smoke remains Modal-only; parity gate wiring and authenticated same-commit golden reuse remain outstanding |
+| Faster Modal/Docker probes, no lost coverage | Baseline measured above; current ordinary smoke validates Modal cases only. Full parity provider scheduling landed in #2406. Existing release smoke remains Modal-only; parity gate wiring and authenticated same-commit snapshot reuse remain outstanding |
 | Before/after timings | Baseline above; per-step instrumentation implemented. Coordinator must collect an authorized post-merge staging run; no after measurement or speedup is claimed |
 
 No new configuration, CI job, required check or deployment prerequisite is added
@@ -615,10 +614,10 @@ of a release exposed to ordinary staging/schema writes; the whole-release lock
 addresses that cause. No new required PR check or provider setting is added.
 
 This repository change does not close #2394: gate wiring, any proven duplicate
-golden work and authorized before/after runtime evidence remain outstanding.
-The current smoke entrypoints launch authenticated existing goldens rather than
+snapshot work and authorized before/after runtime evidence remain outstanding.
+The current smoke entrypoints launch authenticated existing snapshots rather than
 building them; no duplicate build was found to remove. Do not infer a same-commit
-golden cache hit from a golden name or a successful historical smoke alone.
+snapshot cache hit from a snapshot name or a successful historical smoke alone.
 
 ## Tag last
 
