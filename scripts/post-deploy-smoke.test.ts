@@ -283,7 +283,13 @@ test("pending turns terminate at the measured deadline and cleanup errors remain
   expect(fake.calls.filter((call) => call.path === "sandbox/wait")).toHaveLength(Math.ceil(deadlines.wait / 1000));
   expect(fake.io.now()).toBe(deadlines.wait);
   expect(fake.receipts().slice(-2)).toEqual([
-    { case: 0, step: "wait", pass: false, code: "poll_limit_exceeded" },
+    {
+      case: 0,
+      step: "wait",
+      pass: false,
+      code: "poll_limit_exceeded",
+      waitResponse: expect.objectContaining({ state: "running", promptIdMatches: true }),
+    },
     { case: 0, step: "cleanup_sandbox", pass: false, code: "unavailable" },
   ]);
 });
@@ -1622,10 +1628,42 @@ test("a resumed turn receipt arriving after its measured deadline fails and the 
     step: "resume_wait",
     pass: false,
     code: "poll_limit_exceeded",
+    waitResponse: expect.objectContaining({ state: "finished", promptIdMatches: true }),
   });
   expect(fake.calls.at(-2)?.path).toBe("sandbox/stop");
   expect(fake.calls.at(-1)?.path).toBe("sandbox/status");
 });
+
+test.each([undefined, 503])(
+  "resume wait retains the last prompt state after a transport timeout (HTTP status %s)",
+  async (httpStatus) => {
+    let reads = 0;
+    const fake = lifecycleFixture("none", (call) => {
+      if (call.path !== "sandbox/wait" || call.body.prompt_id !== "turn-2") return;
+      if (++reads === 1) return json({ prompt: { promptId: "turn-2", state: "running" } });
+      fake.advance(deadlines.resume_wait);
+      const error = new DOMException("private transport detail", "TimeoutError");
+      if (httpStatus === undefined) throw error;
+      return Object.assign(json({}, httpStatus), {
+        json: () => Promise.reject(error),
+      });
+    });
+    expect(await fake.run()).toBe(false);
+    expect(fake.receipts()).toContainEqual({
+      case: 0,
+      step: "resume_wait",
+      pass: false,
+      code: httpStatus === undefined ? "poll_limit_exceeded" : "api_failed",
+      waitResponse: expect.objectContaining({
+        state: "running",
+        promptIdMatches: true,
+        transportTimeoutMs: deadlines.resume_wait - 1000,
+        ...(httpStatus === undefined ? {} : { httpStatus }),
+      }),
+    });
+    expect(fake.lines.join("")).not.toContain("private transport detail");
+  },
+);
 
 test("resume wait reports only the redacted shape of an invalid response", async () => {
   const invalidResponses = [
