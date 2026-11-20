@@ -7,7 +7,7 @@ import { OPENCODE_ARTIFACT } from "../packages/agent-runtime/src/opencode-artifa
 import { publishedRuntimeArchitectures } from "../packages/agent-runtime/src/publication.ts";
 
 type FilePin = { path: string; sha256: string; bytes: number };
-export type PublicationManifest = {
+type PublicationManifest = {
   architecture: string;
   runtime: FilePin;
   harnesses: Record<string, { archive: FilePin }>;
