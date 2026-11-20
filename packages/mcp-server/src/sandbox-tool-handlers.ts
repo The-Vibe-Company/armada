@@ -223,7 +223,9 @@ export function configureTools(
                         } else if (activationOpened) {
                           await data.sandboxes.recordLaunchStage?.(found.id, stage, 0, generation + 1);
                         }
-                      } catch {}
+                      } catch (error) {
+                        if (stage === "accepted") throw error;
+                      }
                     },
                   }
                 : {}),

@@ -1776,10 +1776,12 @@ describe("tools", () => {
         await db.exec("alter table sandboxes add constraint reject_native_start check (status <> 'starting')");
       const mcp = await client(await token(people.member));
       const prompt = boat.provider.prompt;
+      let dispatched = false;
       boat.provider.prompt = async (request) => {
         if (scenario === "stale callback")
           await db.query("update sandboxes set lifecycle_generation=lifecycle_generation+1 where id=$1", [id]);
         if (!stopped) await request.onResumeStage?.("accepted");
+        dispatched = true;
         return prompt(request);
       };
 
@@ -1789,6 +1791,7 @@ describe("tools", () => {
 
       const refused = scenario === "stale callback" || scenario === "rollback";
       expect(Boolean(sent.isError)).toBe(refused);
+      expect(dispatched).toBe(!refused);
       if (scenario === "rollback") {
         const { rows } = await db.query(
           "select status, lifecycle_generation::int, activity_lease_id from sandboxes where id=$1",
