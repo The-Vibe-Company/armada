@@ -14,6 +14,7 @@ type Step = {
 type Job = {
   steps: Step[];
   needs?: string | string[];
+  if?: string;
   environment?: string;
   permissions?: Record<string, string>;
   outputs?: Record<string, string>;
@@ -143,6 +144,15 @@ test("production approval gates deployment after finalization accepts work or re
   expect(approval?.environment).toBe("production-deploy");
   expect(approval?.needs).toEqual(["release-metadata", "finalize-release"]);
   expect(workflow.jobs.production?.needs).toContain("production-approval");
+});
+
+test("a recovery that reuses check, binary and smoke receipts still reaches production", () => {
+  const approval = workflow.jobs["production-approval"]?.if ?? "";
+  const production = workflow.jobs.production?.if ?? "";
+  expect(approval).toContain("!cancelled()");
+  expect(approval).toContain("needs.finalize-release.result == 'success'");
+  expect(production).toContain("!cancelled()");
+  expect(production).toContain("needs.production-approval.result == 'success'");
 });
 
 test("the publishing token can write version PR labels through the reusable workflow", () => {
