@@ -2,9 +2,11 @@ import { decryptSecret, encryptSecret, type Sql, toBytea } from "@armada/core/se
 import {
   DISPATCHING_TURN_CANCELLED,
   failTurnReceipt,
+  NATIVE_DISPATCH_ABANDONED,
   NATIVE_DISPATCH_UNCERTAIN,
   QUEUED_DISPATCH_EVIDENCE,
   QUEUED_TURN_CANCELLED,
+  resetAbandonedNativeTurn,
 } from "../account-turn-dispatch.ts";
 import { deferTransactionWake, runtimeWakes } from "../wake-bus.ts";
 import type { Job, JobStore } from "./runner.ts";
@@ -64,8 +66,8 @@ export function createJobsStore(sql: Sql, encryptionKey?: string) {
       return await sql.transaction(async (tx) => {
         const {
           rows: [receipt],
-        } = await tx.query<{ state: string }>(
-          `select state from public.account_turn_queue
+        } = await tx.query<{ state: string; account_id: string }>(
+          `select state, account_id from public.account_turn_queue
            where sandbox_id = $1 and request_id = $2 for update nowait`,
           [sandboxId, requestId],
         );
@@ -86,13 +88,15 @@ export function createJobsStore(sql: Sql, encryptionKey?: string) {
           cancelled: boolean;
           queued_with_evidence: boolean;
           native_uncertain: boolean;
+          native_abandoned: boolean;
         }>(
           `select s.lifecycle_generation::text as generation,
                   case when q.state = 'queued' then ${QUEUED_TURN_CANCELLED}
                        else ${DISPATCHING_TURN_CANCELLED} end as cancelled,
                   (q.state = 'queued' and ${QUEUED_DISPATCH_EVIDENCE}) as queued_with_evidence,
                   (q.state = 'dispatching' and (q.dispatch_until is null or q.dispatch_until <= clock_timestamp())
-                    and ${NATIVE_DISPATCH_UNCERTAIN}) as native_uncertain
+                    and ${NATIVE_DISPATCH_UNCERTAIN}) as native_uncertain,
+                  (q.state = 'dispatching' and ${NATIVE_DISPATCH_ABANDONED}) as native_abandoned
            from public.sandboxes s join public.account_turn_queue q on q.sandbox_id = s.id
            where s.id = $1 and q.request_id = $2`,
           [sandboxId, requestId],
@@ -107,7 +111,16 @@ export function createJobsStore(sql: Sql, encryptionKey?: string) {
             await failTurnReceipt(tx, sandboxId, requestId, reason === "native_dispatch_uncertain");
           return job;
         }
-        if (receipt.state === "queued") {
+        let reset = false;
+        if (!retiring && sandbox?.native_abandoned) {
+          await tx.query("select id from public.credentials where id = $1 for update nowait", [receipt.account_id]);
+          const { rows } = await tx.query(
+            `select j.id from public.jobs j where ${fence} and j.generation = $4 and j.generation <= $5 for update nowait`,
+            [...claim, sandbox.generation],
+          );
+          if (rows.length) reset = await resetAbandonedNativeTurn(tx, sandboxId, requestId);
+        }
+        if (receipt.state === "queued" || (reset && sandbox?.generation !== job.generation)) {
           const {
             rows: [updated],
           } = await tx.query<{ generation: string }>(
@@ -125,6 +138,7 @@ export function createJobsStore(sql: Sql, encryptionKey?: string) {
             [...claim, requestId, retiring, phase === "before_handler"],
           );
           if (updated) return { ...job, generation: updated.generation };
+          if (reset) throw new Error("Abandoned turn reset lost its generation fence.");
         }
         if (retiring) await retireClaim(tx, job, owner, sandbox?.generation ?? null);
         return job;
