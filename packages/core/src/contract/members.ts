@@ -2,7 +2,7 @@ import { z } from "zod";
 import type { Operation } from "./index.ts";
 
 const org = z.string({ error: "org must be text." }).nullish();
-export const memberEmailPattern = /^\s*[^\s@]+@[^\s@]+\.[^\s@]+\s*$/;
+export const memberEmailPattern = /^\s*[^\s@]+@[^\s@][^\s@.]*\.[^\s@]+\s*$/;
 const email = z
   .string({ error: (issue) => (issue.input == null ? "email is required." : "email must be text.") })
   .meta({
