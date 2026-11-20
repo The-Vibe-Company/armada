@@ -14,11 +14,13 @@ import {
   DISPATCHING_TURN_CANCELLED,
   type DispatchTurn,
   dispatchAccountTurn,
+  NATIVE_DISPATCH_ABANDONED,
   NATIVE_DISPATCH_UNCERTAIN,
   QUEUED_DISPATCH_EVIDENCE,
   QUEUED_TURN_CANCELLED,
   RUNTIME_LANE,
   RUNTIME_REQUEST_EVIDENCE,
+  resetAbandonedNativeTurn,
   UNCERTAIN_DISPATCH_MESSAGE,
 } from "./account-turn-dispatch.ts";
 import type { Caller } from "./caller.ts";
@@ -460,20 +462,11 @@ export function createAccountTurnQueue(sql: Sql, key: string) {
               const abandoned = await tx.query(
                 `select s.id from public.sandboxes s
                  join public.account_turn_queue q on q.sandbox_id=s.id and q.request_id=$2
-                 where s.id=$1 and s.stop_requested_at is null and s.deleted_at is null and s.expires_at>now()
-                 and (s.status in ('ready','running') or (s.status='stopped' and s.lifecycle_generation=q.queued_generation)) and not coalesce(${RUNTIME_LANE},false)
-                 and s.lifecycle_generation=q.dispatch_generation and s.activity_lease_id is null
-                 and not coalesce(${RUNTIME_REQUEST_EVIDENCE},false) for update of s`,
+                 where s.id=$1 and ${NATIVE_DISPATCH_ABANDONED} for update of s`,
                 [candidate.sandbox_id, candidate.request_id],
               );
               if (abandoned.rows.length) {
-                await tx.query(
-                  `with retried as (update public.account_turn_queue set state='queued',
-                    dispatch_generation=null,dispatch_until=null,failure_reason=null
-                    where sandbox_id=$1 and request_id=$2 and state='dispatching' returning sandbox_id)
-                   delete from public.account_agent_reservations r using retried q where r.sandbox_id=q.sandbox_id`,
-                  [candidate.sandbox_id, candidate.request_id],
-                );
+                await resetAbandonedNativeTurn(tx, candidate.sandbox_id, candidate.request_id);
                 return null;
               }
             }
