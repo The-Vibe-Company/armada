@@ -1380,6 +1380,7 @@ test("runtime batches survive a deploy handover exactly once in event_log and th
     });
     return {
       fetch: requests.fetch,
+      activeRequests: requests.requests,
       holdNextBatch() {
         holdBatch = true;
       },
@@ -1435,7 +1436,6 @@ test("runtime batches survive a deploy handover exactly once in event_log and th
     const before = (await original.fetch(subscribe())).body!.getReader();
     const firstPage = readFrames((await before.read()).value);
 
-    // Let the admitted batch finish on A during drain, then retry it on B without using A's ACK.
     original.holdNextBatch();
     const inFlight = Promise.resolve(original.fetch(post(3, 4)));
     try {
@@ -1450,6 +1450,7 @@ test("runtime batches survive a deploy handover exactly once in event_log and th
       const refused = await original.fetch(post(3, 4, 5, 6));
       expect(refused.status).toBe(503);
       await refused.body?.cancel();
+      expect(original.activeRequests.size).toBe(1);
       releaseBatch.resolve();
       await (await inFlight).body?.cancel();
       expect((await eventLog()).map(({ sequence }) => sequence)).toEqual(["1", "2", "3", "4"]);
