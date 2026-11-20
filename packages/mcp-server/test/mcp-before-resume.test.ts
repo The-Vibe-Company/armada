@@ -294,23 +294,13 @@ test("same-boot autoarchive fences SQL leases before Boat resume and reinstalls 
     expect(writes).toBe(aWrites);
     expect(resumes).toBe(aResumes);
     fresh = aHash;
-    // Known stop also persists stopped_at; same-boot resume clears it BEFORE the model turn.
+    // A persisted stop needs lifecycle admission before native MCP preparation.
     previousHash = fresh;
     state = "archived";
     await db.query("update public.sandboxes set status='stopped',stopped_at=now() where id=$1", [record.id]);
-    expect(
-      (await db.query<{ stopped_at: Date | null }>("select stopped_at from public.sandboxes where id=$1", [record.id]))
-        .rows[0]?.stopped_at,
-    ).not.toBeNull();
+    await expect(prompt()).rejects.toThrow("no longer active");
+    await db.query("update public.sandboxes set status='starting',stopped_at=null where id=$1", [record.id]);
     await prompt();
-    expect(
-      (
-        await db.query<{ status: string; stopped_at: Date | null }>(
-          "select status,stopped_at from public.sandboxes where id=$1",
-          [record.id],
-        )
-      ).rows[0],
-    ).toMatchObject({ status: "ready", stopped_at: null });
     expect((await deliveredHash()) === fresh).toBe(false);
     // An authorized VM with no bootstrap/lease must not churn generations.
     const empty = await createSqlSandboxStore(db).insert({

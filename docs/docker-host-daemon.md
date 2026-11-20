@@ -309,6 +309,10 @@ A completed bootstrap duplicate repeats ACK only. Recovered pending bootstrap is
 terminally uncertain and cannot replay with the same or a fresh ID for that machine
 generation. Resolve authority/clean up rather than assuming no process started.
 Host ACK is handoff, **not** health, prompt completion or journal commit.
+A recovered pending resume is likewise uncertain even if the daemon crashed
+before starting the operation. Snapshot build failures suppress raw exception
+text because build output and init commands can contain credentials. Known
+baseline-tool and missing-ref failures retain their specific diagnostics.
 
 ## Persisted placement and admission
 
@@ -1075,7 +1079,9 @@ digests. Retired request IDs replay their saved outcome on exact redelivery (inc
 snapshot image IDs); changed input is rejected. Neither path executes again. Retired create/bootstrap/build identities cannot be repeated for that generation
 under a new request ID (resume remains available);
 cleanup must still match its original machine fingerprint. Fences are never
-evicted or aged out within an installation.
+evicted or aged out within an installation. Compaction retains a stopped
+generation's receipt until exact-generation retention or deletion evidence is
+durable, so the daemon can still discover and clean up the allocation.
 
 Admission stops at 16,384 total full receipts plus fences or 8 MiB of state for
 non-cleanup jobs. Legacy installations receive a one-time cleanup ceiling of their existing
@@ -1343,6 +1349,15 @@ deadline. This lane never writes the state file or contacts the server. The
 mailbox subsequently observes the stop and persists/reports its proof;
 server acknowledgement can therefore lag physical enforcement during slow work.
 
+The mailbox rotates its own TTL work across generations. A failed ledger write
+does not prevent a physical expiry attempt, but the daemon publishes proof only
+after saving it. The mailbox retries saved physical-cleanup and expiry reports
+after local physical work, rotating the report cursors across restarts. Retained
+output capture has a separate per-host lane with one archive read/upload in
+flight. When opening an older ledger without an active TTL list, the daemon
+reconstructs the list from receipts and keeps the obligation for a retained
+resume when compacted receipts cannot establish stop/resume order.
+
 ### Diagnosing older daemons (#2540)
 
 A server deployment does not upgrade installed host executables. Upgrade on the
@@ -1403,7 +1418,11 @@ unreferenced official images be removed, under the existing two-generation
 retention rule. User snapshots and foreign resources are never pruning targets.
 Running/starting allocations and queued or durably claimed resumes are protected.
 Cleanup authorization and its reason are saved before physical deletion; reports
-retry after disconnection. Sandbox status records `retention_elapsed` or
+retry after disconnection. Each iteration polls before deleting a retained
+allocation so queued resume or bootstrap work can protect its generation even
+when a different job is first in the mailbox. Offline cleanup still runs.
+An already-deleted allocation keeps its pending cleanup report. An uncertain
+Docker inspection never authorizes deletion. Sandbox status records `retention_elapsed` or
 `disk_pressure`, displays the workspace loss, and refuses resume with that cause.
 Old daemons can continue reporting without the optional reason and retain the
 outdated-version guidance from part 1. Upgrade daemons to enable pressure cleanup.
