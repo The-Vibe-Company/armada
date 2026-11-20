@@ -373,11 +373,12 @@ remains upstream, in addition to live membership/owner/binding checks here.
 ### Provider options and recovery contracts
 
 - Allocation inventory tags are stable and server-owned. Use the trusted
-  staging-only host allocation option for enrolled runtimes. It freezes routing on the
-  machine and skips starting the tunnel listener. The server owns runtime health.
-  Explicit resource selections remain immutable across physical restores. New
-  managed reservations record ownership at allocation. Older rows without that
-  evidence remain unknown.
+  staging-only host allocation option for enrolled runtimes. It freezes routing
+  on the machine and skips starting the tunnel listener. The server owns runtime
+  health. Explicit resource selections remain immutable across physical restores.
+  Only new managed launch reservations opt into explicit VM allocation. Record
+  VM evidence after confirmed named creation and bind it to the physical ID and
+  generation. Older rows without that evidence remain unknown.
 - The history-only provider reads server-owned history for `get`, `events`, and
   `getPrompt` without reaching the live App or runner. Admission and lifecycle
   decisions require the live provider. Unknown-create adoption requires verified
@@ -404,9 +405,10 @@ remains upstream, in addition to live membership/owner/binding checks here.
   does not block finishing it. Resume interrupted deletion through the same delete
   path and recheck ownership and retention after remote observation. Resume
   refuses deleting machines. Recovery itself leaves Image collection to the
-  artifact owner. On stop, retain the trusted common checkpoint for the exact
-  incarnation, and confirm the incarnation is absent before removing its
-  recovery images.
+  artifact owner. Only the trusted server can call `stopRuntime`, after it
+  verifies that the checkpoint for the exact physical incarnation is durably
+  sealed and ACKed. On delete, independently confirm that the incarnation has
+  exited before removing its recovery images.
 - Core validates repository membership and existence against the golden. The
   provider accepts only valid checkout paths and installs no executable
   wrappers for them. Renewing a running machine never allocates or restores
