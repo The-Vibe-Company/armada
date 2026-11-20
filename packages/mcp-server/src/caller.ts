@@ -124,14 +124,14 @@ export async function authenticateCaller(
 /**
  * The user id of a Supabase access token, checked by the issuing Supabase project, so a token
  * of another project, an expired one or a signed-out session is refused. Null when refused.
+ * Unverified claims select the endpoint. The issuing project authenticates the same bearer.
  */
 export async function verifySupabaseUser(token: string, project: SupabaseProject): Promise<string | null> {
-  // Unverified claims select the verification endpoint only. Supabase authenticates the same bearer.
   let client: unknown;
   try {
     client = decodeJwt(token).client_id;
   } catch {
-    // Supabase will refuse an invalid bearer.
+    client = undefined;
   }
   if (!acceptsSessionClient(client, project.cliOAuthClientId)) return null;
   const oauth = client !== undefined;
@@ -176,11 +176,9 @@ export async function verifySupabaseUser(token: string, project: SupabaseProject
     return id.toLowerCase();
   };
   try {
-    // The deadline covers both headers and the entire JSON body, even for custom transports.
     return await Promise.race([verify(), deadline]);
   } catch (error) {
     if (error instanceof AuthUnavailable) throw error;
-    // Transport/parser exceptions can include response contents or request credentials.
     throw new AuthUnavailable("Supabase verification is unavailable.");
   } finally {
     clearTimeout(timer);
