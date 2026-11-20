@@ -1,4 +1,4 @@
-import { assertProvider, createSqlAuthStore } from "@armada/auth";
+import { createSqlAuthStore } from "@armada/auth";
 import {
   createApplicationVault,
   createGoldenAdoption,
@@ -566,11 +566,7 @@ export async function createServerServices(env: Record<string, string | undefine
     launch,
     modelAuth,
     publicUrl: config.publicUrl,
-    loginProviders: (env.ARMADA_AUTH_PROVIDERS ?? "")
-      .split(",")
-      .map((name) => name.trim())
-      .filter(Boolean)
-      .map(assertProvider),
+    loginProviders: config.loginProviders,
     oauth: {
       store: authStore,
       fetch,

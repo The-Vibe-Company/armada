@@ -204,3 +204,11 @@ test("startup requires an explicit dashboard origin when invitation mail is enab
     }),
   ).rejects.toThrow("ARMADA_DASHBOARD_URL");
 });
+
+test("validates the configured login providers before constructing the server", () => {
+  expect(configFromEnv({ ...ENV, ARMADA_AUTH_PROVIDERS: " github, , google " }).loginProviders).toEqual([
+    "github",
+    "google",
+  ]);
+  expect(() => configFromEnv({ ...ENV, ARMADA_AUTH_PROVIDERS: "github,unsupported" })).toThrow("ARMADA_AUTH_PROVIDERS");
+});

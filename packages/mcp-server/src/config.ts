@@ -1,4 +1,4 @@
-import { assertSupabaseUrl, resourceUrl } from "@armada/auth";
+import { assertProvider, assertSupabaseUrl, type Provider, resourceUrl } from "@armada/auth";
 import { DEFAULT_SANDBOX_EXTENSION_HEADROOM_SECONDS, PROVIDER_LIMITS, SANDBOX_STOP_MARGIN_SECONDS } from "@armada/core";
 import { ServerConfigError } from "./server-config-error.ts";
 
@@ -14,6 +14,7 @@ export interface ServerConfig {
   supabaseUrl: string;
   anonKey: string;
   authSecret: string;
+  loginProviders: Provider[];
   /** Origin only. The MCP resource is this plus `/mcp`. */
   publicUrl: string;
   /** Separately configured dashboard origin; never taken from an HTTP return target. */
@@ -135,6 +136,16 @@ export function configFromEnv(env: Record<string, string | undefined>): ServerCo
     throw new ServerConfigError(
       "ARMADA_MODAL_AGENT_PATH=runtime requires ARMADA_MODAL_DIALOUT=1 and ARMADA_MODAL_RUNTIME_MANIFEST.",
     );
+  const providers = (env.ARMADA_AUTH_PROVIDERS ?? "")
+    .split(",")
+    .map((name) => name.trim())
+    .filter(Boolean);
+  let loginProviders: Provider[];
+  try {
+    loginProviders = providers.map(assertProvider);
+  } catch {
+    throw new ServerConfigError("ARMADA_AUTH_PROVIDERS must list supported login providers.");
+  }
   const development = env.NODE_ENV === "development";
 
   return {
@@ -147,6 +158,7 @@ export function configFromEnv(env: Record<string, string | undefined>): ServerCo
     supabaseUrl,
     anonKey: value("SUPABASE_ANON_KEY"),
     authSecret: value("ARMADA_AUTH_SECRET"),
+    loginProviders,
     publicUrl,
     dashboardUrl: dashboardOrigin(env.ARMADA_DASHBOARD_URL?.trim() || undefined, development),
     development,
