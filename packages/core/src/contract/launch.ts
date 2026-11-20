@@ -44,7 +44,7 @@ const selectable = {
 const golden = {
   ...common,
   ...selectable,
-  golden: nonBlank.describe("The name returned by golden discovery."),
+  golden: nonBlank.describe("The launch snapshot name returned by /api/v1/golden/list or armada snapshot list."),
   prompt: nonBlank.optional(),
   size,
   sizePolicyVersion: z.literal(1).optional(),

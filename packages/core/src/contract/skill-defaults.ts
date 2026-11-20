@@ -36,7 +36,7 @@ export const skillDefaultOperations = {
     audience: "admin",
     readOnly: true,
     destructive: false,
-    description: "Read skill defaults for the caller, organization, or visible golden.",
+    description: "Read skill defaults for the caller, organization, or visible snapshot.",
     input: { body: z.union([z.strictObject(personalOrOrg), z.strictObject(golden)]) },
     output,
     successHeaders,
