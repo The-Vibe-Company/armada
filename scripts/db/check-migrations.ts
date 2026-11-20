@@ -31,6 +31,8 @@ function* sqlStatements(sql: string) {
     /--[^\r\n]*|\/\*|((?:[uU]&)?"(?:[^"]|"")*")|([eE]'(?:[^'\\]|\\[\s\S]|'')*'|(?:[uU]&)?'(?:[^']|'')*')|(\$(?:[a-zA-Z_\u0080-\uffff][\w\u0080-\uffff]*)?\$)|[a-zA-Z_\u0080-\uffff][\w$\u0080-\uffff]*|[^\s]/g;
   let tokens: string[] = [];
   let startsAt = 0;
+  let expressionDepth = 0;
+  const routineHeaders: string[][] = [];
   for (let match = lexer.exec(sql); match; match = lexer.exec(sql)) {
     let token = match[0];
     if (match[3]) {
@@ -51,14 +53,29 @@ function* sqlStatements(sql: string) {
       continue;
     }
     if (token === ";") {
-      if (tokens.length) yield { tokens, startsAt };
+      const closesRoutineBody = routineHeaders.length > 0 && tokens.length === 1 && tokens[0] === "end";
+      if (closesRoutineBody) tokens = routineHeaders.pop()!;
+      if (routineHeaders.length === 0 && tokens.length) yield { tokens, startsAt };
       tokens = [];
+      expressionDepth = 0;
     } else {
-      if (!tokens.length) startsAt = match.index;
-      tokens.push(match[1] || match[2] || match[3] ? token : token.toLowerCase());
+      if (!tokens.length && routineHeaders.length === 0) startsAt = match.index;
+      const normalized = match[1] || match[2] || match[3] ? token : token.toLowerCase();
+      if (normalized === "(" || normalized === "[") expressionDepth++;
+      if (normalized === ")" || normalized === "]") expressionDepth--;
+      const opensBody = expressionDepth === 0 && normalized === "atomic" && tokens.at(-1) === "begin";
+      tokens.push(normalized);
+      if (opensBody && tokens[0] === "create") {
+        const kind = tokens[1] === "or" && tokens[2] === "replace" ? tokens[3] : tokens[1];
+        if (kind === "function" || kind === "procedure") {
+          routineHeaders.push(tokens);
+          tokens = [];
+        }
+      }
     }
   }
-  if (tokens.length) yield { tokens, startsAt };
+  const lastStatement = routineHeaders[0] ?? tokens;
+  if (lastStatement.length) yield { tokens: lastStatement, startsAt };
 }
 
 function transactionOnlyCommand(tokens: string[], rollbackTo: boolean, prepareTransaction: boolean) {
@@ -164,7 +181,6 @@ export function routineSettingErrors(sql: string) {
       if (token === "(" || token === "[") depth++;
       if (token === ")" || token === "]") depth--;
       if (depth !== 0) continue;
-      if (verb === "create" && token === "begin" && tokens[index + 1] === "atomic") break;
       if (token !== "set") continue;
 
       const { next, parts } = qualifiedName(tokens, index + 1);

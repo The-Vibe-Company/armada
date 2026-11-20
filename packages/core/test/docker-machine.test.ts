@@ -273,7 +273,7 @@ describe("Docker machine executor", () => {
     expect(f.workspaces.get(restored.volumeName)).toBe("");
   });
 
-  test("full cleanup releases an interrupted restore helper after the target expires", async () => {
+  test("full cleanup reclaims a dead restore helper after the target expires", async () => {
     const f = fixture();
     const source = await f.executor.create(request);
     const predecessor = { request, machineId: f.containers.get(source.containerName).Id };
@@ -281,6 +281,9 @@ describe("Docker machine executor", () => {
     await f.executor.stop(request);
     f.fail("copy helper start");
     await expect(f.executor.restore(target, predecessor)).rejects.toThrow("docker_failed");
+    const helper = [...f.containers.values()].find((container) => container.Id !== predecessor.machineId);
+    expect(helper).toBeDefined();
+    helper.State = { Status: "dead", Running: false };
     f.setTime(2000);
     await expect(f.executor.restore(target, predecessor)).rejects.toThrow("expired");
     await f.executor.delete(target);

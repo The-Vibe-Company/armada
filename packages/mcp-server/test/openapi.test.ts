@@ -56,6 +56,20 @@ test("published OpenAPI matches current server contracts and preserves REST fiel
   });
 });
 
+test("published event cursor schemas enforce the PostgreSQL bigint bound", () => {
+  const { parameters } = published.paths["/api/v1/events"].get;
+  for (const name of ["cursor", "Last-Event-ID"]) {
+    const parameter = parameters.find((item) => item.name === name)!;
+    const pattern = new RegExp(parameter.schema.pattern);
+    for (const value of ["0", "999999999999999999", "1000000000000000000", "9223372036854775807"]) {
+      expect(pattern.test(value)).toBe(true);
+    }
+    for (const value of ["", "-1", "01", "9223372036854775808", "9300000000000000000", "10000000000000000000"]) {
+      expect(pattern.test(value)).toBe(false);
+    }
+  }
+});
+
 test("GitHub OAuth publishes both bearer-free callback transports and the relay's refusal", () => {
   const { get, post } = published.paths["/api/v1/github/oauth/callback"];
   expect(get.security).toEqual([]);

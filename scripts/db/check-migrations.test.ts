@@ -107,11 +107,27 @@ test("tracks real transaction boundaries and ignores SQL inside comments and bod
       lock jobs;
       declare migration cursor with hold for select 1;
       declare migration cursor without hold for select 1;
+      create or replace procedure p() language sql begin /* body */ atomic
+        select case when true then 'END;' else 'BEGIN ATOMIC' end;
+      end;
+      lock jobs;
     `),
   ).toEqual([
     "Line 12: LOCK requires an explicit BEGIN transaction.",
     "Line 14: DECLARE CURSOR requires an explicit BEGIN transaction.",
+    "Line 18: LOCK requires an explicit BEGIN transaction.",
   ]);
+});
+
+test("a SQL-standard routine body does not close the migration transaction", () => {
+  expect(
+    transactionErrors(`
+    BEGIN;
+    CREATE FUNCTION f() RETURNS integer LANGUAGE SQL BEGIN ATOMIC SELECT 1; END;
+    LOCK TABLE public.jobs;
+    COMMIT;
+  `),
+  ).toEqual([]);
 });
 
 test.each([
