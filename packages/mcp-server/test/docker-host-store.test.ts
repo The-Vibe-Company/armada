@@ -15,6 +15,8 @@ import { createDockerHostRoutes } from "../src/docker-host-routes.ts";
 import { createDockerHostStore, DockerHostDenied } from "../src/docker-host-store.ts";
 import { createDockerMachineBindings } from "../src/docker-machine-bindings.ts";
 import { SNAPSHOT_COLUMNS } from "../src/docker-snapshot-data.ts";
+import type { Job } from "../src/jobs/runner.ts";
+import { createJobsStore } from "../src/jobs/store.ts";
 import { createSandboxAccessServices } from "../src/sandbox-access-services.ts";
 import { createFinishedDockerCleanup, requestSandboxFinish, selfFinishToken } from "../src/sandbox-finish.ts";
 import { useMigratedDatabase } from "./migrated-database.ts";
@@ -476,6 +478,121 @@ async function restoreFixture() {
   await store.enqueueSandbox(a.owner, a.sandboxId, a.selection);
   return a;
 }
+
+test("runner restore admission commits the transition, binding and mailbox intent together", async () => {
+  const db = database();
+  const expiresAt = Date.UTC(2099, 0, 1);
+  const host = await fixture();
+  const bindings = createDockerMachineBindings(sql, { ...host, deploymentId: randomUUID() });
+  const sandboxId = randomUUID();
+  const generation = await bindings.bind({ sandboxId, generation: 1 });
+  const a = await boundFixture(host, { sandboxId, generation, expiresAt });
+  await store.enqueueSandbox(a.owner, sandboxId, a.create);
+  const create = await store.poll(a.hostToken, a.installationId);
+  if (create?.operation !== "create") throw new Error("Missing predecessor allocation.");
+  await store.complete(a.hostToken, a.installationId, { requestId: create.requestId, outcome: "completed" });
+  const stop = { requestId: randomUUID(), operation: "stop" as const };
+  await store.enqueueSandbox(a.owner, sandboxId, stop);
+  await store.complete(a.hostToken, a.installationId, { requestId: stop.requestId, outcome: "completed" });
+
+  const owner = randomUUID();
+  const jobs = createJobsStore(sql, key);
+  const jobId = await jobs.enqueue(
+    "turn_dispatch",
+    sandboxId,
+    2,
+    randomUUID(),
+    {},
+    {
+      orgId: a.owner.orgId,
+      maxAttempts: 2,
+    },
+  );
+  const {
+    rows: [claimed],
+  } = await db.query<Job>(
+    `update jobs set state='leased',lease_owner=$2,lease_epoch=1,lease_until='infinity',attempts=1
+     where id=$1 returning id,kind,sandbox_id,generation::text,lease_epoch::text`,
+    [jobId, owner],
+  );
+  if (!claimed) throw new Error("Missing fixture runner claim.");
+  const predecessor = { request: create.request, machineId: "a".repeat(64) };
+  const snapshot = async () =>
+    (
+      await db.query(
+        `select s.status,s.lifecycle_generation::text,s.docker_generation,
+        j.generation::text as job_generation,
+        (select count(*)::int from docker_host_jobs where bound_sandbox_id=s.id and bound_operation='restore') as intents
+       from sandboxes s join jobs j on j.sandbox_id=s.id where j.id=$1`,
+        [jobId],
+      )
+    ).rows;
+  const handoff = (jobStore: typeof jobs) =>
+    store.admitMachineRestore(a.owner, claimed, { ...predecessor, machineGeneration: 1 }, (steps) =>
+      jobStore.handoffGeneration(claimed, owner, steps),
+    );
+
+  const writes = [
+    "select applied, generation::text from public.sandbox_transition",
+    "insert into public.docker_machine_bindings",
+    "insert into public.docker_host_jobs",
+    "update public.jobs j set generation",
+  ];
+  for (const write of writes) {
+    const failure = new Error(`Interrupted after ${write}`);
+    const interrupted = createJobsStore(
+      {
+        ...sql,
+        transaction: (work) =>
+          sql.transaction!((tx) =>
+            work({
+              async query<T>(statement: string, params?: unknown[]) {
+                const result = await tx.query<T>(statement, params);
+                if (statement.trimStart().startsWith(write)) throw failure;
+                return result;
+              },
+            }),
+          ),
+      },
+      key,
+    );
+    await expect(handoff(interrupted)).rejects.toBe(failure);
+    expect(await snapshot()).toEqual([
+      { status: "stopped", lifecycle_generation: "2", docker_generation: generation, job_generation: "2", intents: 0 },
+    ]);
+    expect(await bindings.lookup({ sandboxId, generation: 3 })).toBeUndefined();
+    expect((await store.list(a.actor))[0]?.running).toBe(0);
+  }
+
+  const result = await handoff(jobs);
+  expect(result.generation).toBe(3);
+  expect(await bindings.lookup({ sandboxId, generation: 3 })).toBe(result.requestId);
+  expect((await store.list(a.actor))[0]?.running).toBe(1);
+  expect(await snapshot()).toEqual([
+    { status: "starting", lifecycle_generation: "3", docker_generation: generation, job_generation: "3", intents: 1 },
+  ]);
+  await expect(
+    store.poll(
+      a.hostToken,
+      a.installationId,
+      undefined,
+      false,
+      undefined,
+      undefined,
+      null,
+      null,
+      [],
+      null,
+      false,
+      true,
+    ),
+  ).resolves.toEqual({
+    operation: "restore",
+    requestId: result.requestId,
+    predecessor,
+    request: { ...create.request, generation: result.requestId },
+  });
+});
 
 test("restore enqueue rolls back on interruption and freezes one intent per target generation", async () => {
   const a = await prepareRestore();

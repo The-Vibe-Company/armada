@@ -14,8 +14,8 @@ interface GenerationBinding {
   machine_generation: number | string;
 }
 
-export function createDockerMachineBindings(sql: Sql, scope: HostInstallation) {
-  const { hostId, installationId, deploymentId } = scope;
+export function createDockerMachineGenerationBindings(sql: Sql, scope: Omit<HostInstallation, "deploymentId">) {
+  const { hostId, installationId } = scope;
 
   async function lookup({ sandboxId, generation }: MachineIncarnation) {
     const { rows } = await sql.query<{ daemon_generation: string }>(
@@ -43,6 +43,13 @@ export function createDockerMachineBindings(sql: Sql, scope: HostInstallation) {
       if (!existing) throw new Error("Docker Machine incarnation bound to another host installation");
       return existing;
     },
+  };
+}
+
+export function createDockerMachineBindings(sql: Sql, scope: HostInstallation) {
+  const { hostId, installationId, deploymentId } = scope;
+  return {
+    ...createDockerMachineGenerationBindings(sql, scope),
 
     async *listInventory(report: readonly DockerInventoryContainer[], signal?: AbortSignal) {
       signal?.throwIfAborted();
