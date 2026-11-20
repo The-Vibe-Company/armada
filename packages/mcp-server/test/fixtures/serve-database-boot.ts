@@ -1,5 +1,8 @@
 import { mock, spyOn } from "bun:test";
 import assert from "node:assert/strict";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { VERSION } from "@armada/core";
 import { REQUIRED_MIGRATION } from "../../src/required-migration.ts";
 
@@ -13,6 +16,8 @@ let schemaVersion = REQUIRED_MIGRATION;
 let repaired = false;
 let schemaChecked = false;
 const logs: string[] = [];
+const warming = Promise.withResolvers<void>();
+const warmingEntered = Promise.withResolvers<void>();
 const intervals = spyOn(globalThis, "setInterval");
 const sleep = spyOn(Bun, "sleep").mockImplementation((async () => {
   assert.equal(intervals.mock.calls.length, 0, "No background timer may bypass boot backoff");
@@ -42,6 +47,10 @@ Bun.SQL = class {
         code: "ERR_POSTGRES_SERVER_ERROR",
         errno: "XX000",
       });
+    if (text.startsWith("select distinct app_id")) {
+      warmingEntered.resolve();
+      await warming.promise;
+    }
     if (text.startsWith("lock table public.account_turn_queue")) {
       assert.equal(schemaChecked, true, "Schema must be checked before model repair");
       assert.equal(intervals.mock.calls.length, 0, "Model repair must finish before workers start");
@@ -89,46 +98,77 @@ const env = {
   ARMADA_ENCRYPTION_KEY: Buffer.alloc(32, 17).toString("base64"),
   PORT: String(port),
 };
+const artifactDir = await mkdtemp(join(tmpdir(), "armada-startup-"));
+const manifestPath = join(artifactDir, "runtime.json");
+await Bun.write(
+  manifestPath,
+  JSON.stringify({
+    protocol: 1,
+    platform: "linux",
+    libc: "glibc",
+    architecture: "x64",
+    runtime: { sha256: "a".repeat(64), bytes: 1 },
+    harnesses: {},
+  }),
+);
 try {
   const entered = Promise.withResolvers<void>();
   const release = Promise.withResolvers<void>();
   const streamed = Promise.withResolvers<void>();
-  const server = await startServer(env, {
-    log: () => {},
-    logError: (line) => logs.push(line),
-    routes: [
-      async (request) => {
-        if (new URL(request.url).pathname === "/stream-fixture") {
-          return new Response(
-            new ReadableStream({
-              async start(controller) {
-                controller.enqueue(new TextEncoder().encode("started"));
-                await streamed.promise;
-                assert.equal(
-                  pools.every((pool) => pool.closed === 0),
-                  true,
-                  "POST response retains SQL",
-                );
-                assert.equal(mcpClosed, false, "POST tool stream retains MCP until EOF");
-                controller.enqueue(new TextEncoder().encode("finished"));
-                controller.close();
-              },
-            }),
-            { headers: { "content-type": "text/event-stream" } },
-          );
-        }
-        if (new URL(request.url).pathname !== "/drain-fixture") return null;
-        entered.resolve();
-        await release.promise;
-        assert.equal(
-          pools.every((pool) => pool.closed === 0),
-          true,
-          "HTTP work retains SQL during drain",
-        );
-        return new Response("finished");
+  let listenerStarted = false;
+  const starting = startServer(
+    {
+      ...env,
+      ARMADA_MODAL_DIALOUT: "1",
+      ARMADA_MODAL_RUNTIME_MANIFEST: manifestPath,
+      ARMADA_RUNTIME_ARTIFACT_DIR: artifactDir,
+    },
+    {
+      log: () => {
+        listenerStarted = true;
       },
-    ],
-  });
+      logError: (line) => logs.push(line),
+      routes: [
+        async (request) => {
+          if (new URL(request.url).pathname === "/stream-fixture") {
+            return new Response(
+              new ReadableStream({
+                async start(controller) {
+                  controller.enqueue(new TextEncoder().encode("started"));
+                  await streamed.promise;
+                  assert.equal(
+                    pools.slice(0, 2).every((pool) => pool.closed === 0),
+                    true,
+                    "POST response retains SQL",
+                  );
+                  assert.equal(mcpClosed, false, "POST tool stream retains MCP until EOF");
+                  controller.enqueue(new TextEncoder().encode("finished"));
+                  controller.close();
+                },
+              }),
+              { headers: { "content-type": "text/event-stream" } },
+            );
+          }
+          if (new URL(request.url).pathname !== "/drain-fixture") return null;
+          entered.resolve();
+          await release.promise;
+          assert.equal(
+            pools.slice(0, 2).every((pool) => pool.closed === 0),
+            true,
+            "HTTP work retains SQL during drain",
+          );
+          return new Response("finished");
+        },
+      ],
+    },
+  );
+  try {
+    await Promise.race([warmingEntered.promise, starting]);
+    assert.equal(listenerStarted, true, "Startup must reach listen while Modal warming is pending");
+  } finally {
+    warming.reject(new Error("private startup detail"));
+  }
+  const server = await starting;
   try {
     assert.equal(attempts >= 3, true);
     assert.equal(repaired, true, "Historical model repair must complete before serving");
@@ -202,12 +242,16 @@ try {
     [
       [5, 1],
       [1, 1],
+      [4, 1],
+      [1, 1],
     ],
   );
   assert.equal(
-    logs.some((line) => line.includes("private connection detail")),
+    logs.some((line) => line.includes("private connection detail") || line.includes("private startup detail")),
     false,
   );
+
+  assert.ok(logs.some((line) => line.includes("failed while accessing the registry database")));
 
   intervals.mockClear();
   failUntil = 0;
@@ -218,7 +262,7 @@ try {
   assert.equal(intervals.mock.calls.length, 0, "Outdated schema must fail before workers start");
   assert.equal(repaired, false, "Outdated schema must fail before model repair");
   assert.deepEqual(
-    pools.slice(2).map((p) => p.closed),
+    pools.slice(4).map((p) => p.closed),
     [1, 1],
   );
   schemaVersion = REQUIRED_MIGRATION;
@@ -231,11 +275,12 @@ try {
   assert.equal(attempts > 1, true);
   assert.equal(intervals.mock.calls.length, 0);
   assert.deepEqual(
-    pools.slice(4).map((p) => p.closed),
+    pools.slice(6).map((p) => p.closed),
     [1, 1],
   );
   console.log("BOOT_RETRY_SERVE_AND_EXHAUSTION_VERIFIED");
 } finally {
+  await rm(artifactDir, { recursive: true, force: true });
   Bun.SQL = originalSQL;
   clock.mockRestore();
   sleep.mockRestore();

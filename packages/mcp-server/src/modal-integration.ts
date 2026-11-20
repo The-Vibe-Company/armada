@@ -30,7 +30,11 @@ import { ModalClient } from "modal";
 import type { HandlerOptions } from "./http.ts";
 import type { GitHubLaunchOptions } from "./launch-credentials.ts";
 import { observeNativeFirstToken } from "./launch-stage-record.ts";
-import type { createModalArtifactCache, ModalArtifactBinding } from "./modal-artifact-cache.ts";
+import {
+  type createModalArtifactCache,
+  type ModalArtifactBinding,
+  modalArtifactFailure,
+} from "./modal-artifact-cache.ts";
 import { projectModalEventUsage } from "./modal-event-usage.ts";
 import { modalLaunchEnvironment } from "./modal-launch-environment.ts";
 import { createModalReaper, modalReaperSql } from "./modal-reaper.ts";
@@ -167,9 +171,10 @@ export async function createModalIntegration(options: {
   async function warmRegisteredArtifactCaches(
     cache: ReturnType<typeof createModalArtifactCache>,
     startupSql: Sql,
+    stop: AbortSignal,
     logError: (line: string) => void,
   ) {
-    const startupBudget = AbortSignal.timeout(120_000);
+    const startupBudget = AbortSignal.any([stop, AbortSignal.timeout(120_000)]);
     const vault = createSqlVaultStore(startupSql);
     const { rows } = await startupSql.query<{
       app_id: string;
@@ -183,18 +188,30 @@ export async function createModalIntegration(options: {
     for (let offset = 0; offset < rows.length && !startupBudget.aborted; offset += 4) {
       await Promise.all(
         rows.slice(offset, offset + 4).map(async (row) => {
+          let resolvingCredentials = true;
           try {
             const { tokenId, tokenSecret } = await resolveManagementCredentials(
               { credentialScope: row.authority_scope, credentialOwnerId: row.authority_owner_id },
               vault,
             );
+            resolvingCredentials = false;
             startupBudget.throwIfAborted();
             await cache.warm(
               { appId: row.app_id, appName: row.app_name, environment: row.environment, tokenId, tokenSecret },
               startupBudget,
             );
-          } catch {
-            logError("Modal startup artifact warming failed for a registered App. Retrying on enrolled allocation.");
+          } catch (error) {
+            if (stop.aborted) return;
+            const cause = startupBudget.aborted
+              ? "startup warming deadline exceeded"
+              : resolvingCredentials
+                ? error instanceof VaultError && error.code === "missing_credential"
+                  ? "registered Modal credential is missing"
+                  : "could not resolve the registered Modal credential"
+                : modalArtifactFailure(error);
+            logError(
+              `Modal startup artifact warming failed for a registered App: ${cause}. Retrying on enrolled allocation.`,
+            );
           }
         }),
       );
