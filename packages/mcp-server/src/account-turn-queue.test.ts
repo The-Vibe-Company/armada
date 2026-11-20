@@ -154,7 +154,6 @@ test("a later shared claim cannot bypass the first eligible account receipt", as
   const claim = await claimTurn(requestId);
   expect(claim.job.sandbox_id).toBe(later);
   expect(await admitClaimedAccountTurn(sql, claim)).toBeNull();
-  // A terminal head no longer blocks the next receipt.
   await sql.query("update account_turn_queue set state='failed' where sandbox_id=$1", [first]);
   expect(await admitClaimedAccountTurn(sql, claim)).toMatchObject({ caller, entry: { sandbox_id: later } });
   expect((await sql.query("select sandbox_id from account_agent_reservations")).rows).toEqual([{ sandbox_id: later }]);

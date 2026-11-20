@@ -138,9 +138,6 @@ export async function admitAccountTurn(sql: Sql, candidate: AdmissionEntry, clai
     );
     if (!current.rows.length) return null;
     if (recovering && !claim) {
-      // Recheck under account, queue and sandbox locks: the discovery read may be stale.
-      // Native providers cannot replay uncertain mutations, but an unchanged generation
-      // with no request evidence proves the previous claim never began dispatch.
       const abandoned = await tx.query(
         `select s.id from public.sandboxes s
          join public.account_turn_queue q on q.sandbox_id=s.id and q.request_id=$2
@@ -171,8 +168,7 @@ export async function admitAccountTurn(sql: Sql, candidate: AdmissionEntry, clai
       ],
     );
     if (claim) {
-      // The eligibility query may return no rows without locking a sandbox.
-      // Fence every shared admission outcome, including authorization refusal.
+      // WARNING: A refused eligibility query may return without locking the sandbox.
       const {
         rows: [live],
       } = await tx.query<{ generation: string }>(
