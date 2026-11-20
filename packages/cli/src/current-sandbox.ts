@@ -1,4 +1,5 @@
-import { mkdir, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { constants } from "node:fs";
+import { lstat, mkdir, mkdtemp, open, rename, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { AuthError } from "@armada/auth";
 import type { ListInput, ListResult } from "@armada/core/contract";
@@ -15,10 +16,20 @@ export interface CurrentSandboxFile {
 export function currentSandboxFile(cwd: string) {
   const dir = join(cwd, ".armada");
   const path = join(dir, "sandbox");
+  const checkDirectory = async () => {
+    if (!(await lstat(dir)).isDirectory()) throw new Error(".armada must be a directory in the current workspace.");
+  };
   return {
     async read() {
       try {
-        return await readFile(path, "utf8");
+        await checkDirectory();
+        const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+        try {
+          if (!(await handle.stat()).isFile()) throw new Error(".armada/sandbox must be a regular file.");
+          return await handle.readFile("utf8");
+        } finally {
+          await handle.close();
+        }
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
         throw new AuthError("Could not read .armada/sandbox. Check its permissions or pass a sandbox ID.", "usage");
@@ -26,6 +37,7 @@ export function currentSandboxFile(cwd: string) {
     },
     async write(id: string) {
       await mkdir(dir, { recursive: true });
+      await checkDirectory();
       const temporaryDir = await mkdtemp(join(dir, "sandbox-"));
       try {
         const temporaryFile = join(temporaryDir, "id");
