@@ -452,6 +452,7 @@ fi
         .replaceAll("/usr/bin/apt-get", apt)
         .replaceAll("/usr/bin/id", id)
         .replaceAll("/usr/bin/env", env)
+        .replaceAll("/run/armada-github-python.lock", join(root, "install.lock"))
         .replaceAll("/usr/bin/sudo", sudo),
       env: { ARMADA_GIT_TOKEN: payload },
       encoding: "utf8",
