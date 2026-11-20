@@ -253,7 +253,7 @@ export function generateOpenApi({
       ...(parameters.length ? { parameters } : {}),
       ...(request && {
         requestBody: {
-          required: route !== "viewer/logs" && route !== "viewer/status",
+          required: operation.input.bodyRequired ?? (route !== "viewer/logs" && route !== "viewer/status"),
           description: viewerControl
             ? `Send a JSON object of at most ${maxBodyBytes} bytes. A larger body returns HTTP 503 with viewer_access_denied before dispatch. Reduce the body before retrying.`
             : operation.directServer

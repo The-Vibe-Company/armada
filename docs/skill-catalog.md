@@ -1,5 +1,7 @@
 # Skillpack discovery API (#1007)
 
+The [administrative OpenAPI document](../packages/mcp-server/openapi-admin.json) covers catalog, versions and connection metadata.
+
 Authenticated POST `/api/v1/skillpack/catalog`:
 `{"org":"ORG_UUID","source":"public","offset":0}`.
 Returns `{items,nextOffset}` (50 items per page). Each item contains only

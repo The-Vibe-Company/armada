@@ -12,7 +12,6 @@ export const UNPUBLISHED_REST_ROUTES: Readonly<Record<string, string>> = {
   "routines/": "Routine administration.",
   "variables/": "Readable variable administration.",
   "secrets/": "Application secret administration.",
-  "skillpack/": "Skill catalog administration.",
   "templates/create": "Template authoring.",
   "templates/list": "Template authoring.",
   "templates/get": "Template authoring.",
