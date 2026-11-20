@@ -953,18 +953,32 @@ test("an old runtime without verified restore health cannot receive a resumed pr
   }
 });
 
-test.each(["confirmed", "tainted", "lease expired", "archive unverified", "response lost", "handoff rollback"])(
+const boatResumeRecoveryCases = [
+  "confirmed",
+  "tainted",
+  "lease expired",
+  "archive unverified",
+  "response lost",
+  "handoff rollback",
+  "transition fault",
+  "phase fault",
+  "commit fault",
+];
+
+test.each(boatResumeRecoveryCases)(
   "Boat resume activation and recovery respect retained disk and lease authority (%s)",
   async (condition) => {
     const taint = condition === "tainted";
     const expired = condition === "lease expired";
     const unverified = condition === "archive unverified";
     const rollbackHandoff = condition === "handoff rollback";
+    const fault = condition.endsWith(" fault");
     const responseLost = condition === "response lost" || rollbackHandoff;
     const f = await stopped();
     const requests: string[] = [];
     let activated = false;
     let canIssueTicket = false;
+    let beforeFailure: { generation: number; stop_generation: number } | undefined;
     const network = spyOn(globalThis, "fetch").mockImplementation((async (value: Parameters<typeof fetch>[0]) => {
       const url = String(value instanceof Request ? value.url : value);
       requests.push(url);
@@ -990,7 +1004,15 @@ test.each(["confirmed", "tainted", "lease expired", "archive unverified", "respo
         modelAuth: createModelAuthOwnership(f.sql, ENCRYPTION_KEY),
         policy: {
           async start(value) {
-            if (taint) await f.db.query("update sandboxes set application_secret_tainted=true where id=$1", [f.row.id]);
+            if (taint) {
+              const { rows } = await f.db.query<{ generation: number; stop_generation: number }>(
+                `update public.sandboxes
+                 set application_secret_tainted=true,reconcile_after='infinity'::timestamptz where id=$1
+                 returning lifecycle_generation::int as generation, stop_generation::int`,
+                [f.row.id],
+              );
+              beforeFailure = rows[0];
+            }
             await value.activate?.(value.signal);
             canIssueTicket = true;
             throw Error("Fixture ends before ticket issuance");
@@ -998,25 +1020,38 @@ test.each(["confirmed", "tainted", "lease expired", "archive unverified", "respo
         },
       });
       let handoffRolledBack = false;
-      const requestSql: typeof f.sql = rollbackHandoff
-        ? {
-            ...f.sql,
-            transaction: (work) =>
-              f.sql.transaction!(async (tx) => {
-                const result = await work(tx);
-                if (result === undefined) {
-                  handoffRolledBack = true;
-                  throw Error("Injected request handoff rollback");
-                }
-                return result;
-              }),
-          }
-        : f.sql;
+      const faultSql = bunLikeSql(f.db, (statement) => {
+        if (
+          (condition === "transition fault" && statement.includes("from public.sandbox_transition(")) ||
+          (condition === "phase fault" && statement.startsWith("update public.runtime_resumes set phase=$3"))
+        ) {
+          handoffRolledBack = true;
+          throw Error("Injected request handoff rollback");
+        }
+      });
+      const requestSql: typeof f.sql =
+        rollbackHandoff || fault
+          ? {
+              ...f.sql,
+              transaction: (work) =>
+                faultSql.transaction!(async (tx) => {
+                  const result = await work(tx);
+                  if (
+                    (rollbackHandoff && result === undefined) ||
+                    (condition === "commit fault" && result === "stopping")
+                  ) {
+                    handoffRolledBack = true;
+                    throw Error("Injected request handoff rollback");
+                  }
+                  return result;
+                }),
+            }
+          : f.sql;
       const request = input(f.row.id);
       await expect(
         createRuntimeResume(requestSql, ENCRYPTION_KEY, f.bridge, prepare)(f.caller, request),
       ).rejects.toThrow();
-      expect(handoffRolledBack).toBe(rollbackHandoff);
+      expect(handoffRolledBack).toBe(rollbackHandoff || fault);
       expect(canIssueTicket).toBe(!taint && !expired && !unverified && !responseLost);
       const { rows } = await f.db.query(
         `select l.stage, case when l.stage='accepted' then l.at=r.created_at else l.at>=r.created_at end as dated_correctly
@@ -1037,8 +1072,44 @@ test.each(["confirmed", "tainted", "lease expired", "archive unverified", "respo
       expect(requests.some((path) => path.endsWith("/resume"))).toBe(!taint && !unverified);
       const store = createSqlData(f.sql)(f.caller).sandboxes;
       expect((await store.get(f.row.id))?.status).toBe(
-        taint ? "failed" : expired || responseLost ? "starting" : "stopping",
+        taint ? "failed" : expired || responseLost || fault ? "starting" : "stopping",
       );
+      const expectedEdge = taint
+        ? { to_status: "failed", code: "restore_unconfirmed", phase: "failed" }
+        : { to_status: "stopping", code: "runtime_resume_unenrolled", phase: "abandoned" };
+      const result = await f.db.query(
+        `select t.to_status, t.code, r.phase
+           from public.runtime_resumes r
+           left join public.sandbox_transitions t on t.sandbox_id=r.sandbox_id
+             and t.actor='runtime_resume' and t.from_status='starting'
+          where r.sandbox_id=$1 and r.request_id=$2`,
+        [f.row.id, request.request_id],
+      );
+      expect(result.rows).toEqual(
+        expired || responseLost || fault ? [{ to_status: null, code: null, phase: "dispatched" }] : [expectedEdge],
+      );
+      if (taint) {
+        if (!beforeFailure) throw Error("Missing admitted resume fence.");
+        const { rows } = await f.db.query(
+          `select s.lifecycle_generation::int as generation, s.stop_generation::int,
+                  t.generation::int as journal_generation,
+                  s.stop_requested_at is not null and s.reconcile_after <= now() as cleanup_due,
+                  s.activity_lease_id is null and s.activity_until is null as activity_released
+             from public.sandboxes s
+             join public.sandbox_transitions t on t.sandbox_id=s.id and t.code='restore_unconfirmed'
+            where s.id=$1`,
+          [f.row.id],
+        );
+        expect(rows).toEqual([
+          {
+            generation: beforeFailure.generation + 1,
+            stop_generation: beforeFailure.stop_generation + 1,
+            journal_generation: beforeFailure.generation + 1,
+            cleanup_due: true,
+            activity_released: true,
+          },
+        ]);
+      }
       if (!taint) expect(requests.some((path) => path.endsWith("/stop"))).toBe(false);
       if (responseLost) {
         const running = { body: { sandbox: sdkSandbox({ id: f.row.providerSandboxId, state: "running" }) } };
