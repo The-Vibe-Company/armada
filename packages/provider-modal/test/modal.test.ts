@@ -311,7 +311,7 @@ function fixture(
   };
   const cleanupDelays: number[] = [];
   const detached: (() => Promise<void>)[] = [];
-  const provider = createModalProvider({
+  const { provider, captureRuntimeWork } = createModalProvider({
     admissionSleep,
     cleanupSleep: async (milliseconds) => {
       cleanupDelays.push(milliseconds);
@@ -353,6 +353,7 @@ function fixture(
     },
   });
   return {
+    captureRuntimeWork,
     async seedMachine(template: Machine) {
       const id = crypto.randomUUID();
       const physicalName = `fixture-${id}`;
@@ -1228,7 +1229,7 @@ test("common-runtime Modal capture quiesces the active incarnation and runs the 
   const afterFork = f.log.length;
 
   await expect(
-    f.provider.captureRuntimeWork({
+    f.captureRuntimeWork({
       sandboxId: worker.id,
       physicalGeneration: worker.physicalGeneration!,
       signal: new AbortController().signal,
@@ -1245,7 +1246,7 @@ test("common-runtime Modal capture refuses a stale incarnation before touching p
   const afterFork = f.sdkCommands.length;
 
   await expect(
-    f.provider.captureRuntimeWork({
+    f.captureRuntimeWork({
       sandboxId: worker.id,
       physicalGeneration: "2",
       signal: new AbortController().signal,

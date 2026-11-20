@@ -10,7 +10,6 @@ import {
   readCollectorEntries,
   readCollectorProbeResult,
   readCollectorResult,
-  type WorkPreservation,
 } from "@armada/core/server";
 import { chooseManagementAuthority, matchesManagementAuthority } from "./authority.ts";
 import { abortable, boundModalApp, type ModalConnection, modalConnection } from "./client.ts";
@@ -34,6 +33,7 @@ import type {
 } from "./ports.ts";
 import type { RuntimeTicket } from "./runtime-bootstrap.ts";
 import { createRuntimeLifecycle } from "./runtime-lifecycle.ts";
+import { createRuntimeCapture } from "./runtime-work.ts";
 import { createSandboxInspection } from "./sandbox-inspection.ts";
 import { createSnapshotLifecycle } from "./snapshot-lifecycle.ts";
 import { createSnapshotTombstones } from "./snapshot-tombstones.ts";
@@ -73,13 +73,6 @@ export interface ModalProviderOptions extends ModalConnection {
 }
 export interface ModalProvider extends Provider {
   startRuntime(input: RuntimeTicket & { sandboxId: string; resumeGeneration?: number }): Promise<void>;
-  captureRuntimeWork(input: {
-    sandboxId: string;
-    physicalGeneration: string;
-    signal: AbortSignal;
-    context: NonNullable<Parameters<Provider["exec"]>[0]["preservationContext"]>;
-    onWorkAtRisk?: () => void;
-  }): Promise<WorkPreservation>;
   stopRuntime(input: {
     sandboxId: string;
     physicalGeneration: string;
@@ -121,7 +114,7 @@ export function assertSourceTargetScopes(source: Scope, target: Scope): void {
   )
     throw refusal("forbidden", "Source golden and target machine authority do not match.");
 }
-export function createModalProvider(options: ModalProviderOptions): ModalProvider {
+export function createModalProvider(options: ModalProviderOptions) {
   const { store, distribution } = options;
   const runner: RunnerTransport = {
     call(row, op, input) {
@@ -651,7 +644,7 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
       });
     },
   };
-  return Object.fromEntries(
+  const adapter = Object.fromEntries(
     Object.entries(provider).map(([key, value]) => [
       key,
       typeof value === "function"
@@ -665,4 +658,5 @@ export function createModalProvider(options: ModalProviderOptions): ModalProvide
         : value,
     ]),
   ) as unknown as ModalProvider;
+  return { provider: adapter, captureRuntimeWork: createRuntimeCapture(store, physical) };
 }

@@ -1,12 +1,9 @@
 import { createHash } from "node:crypto";
 import type { ResumeStageObserver, SandboxInfo } from "@armada/core";
-import { preserveWork, runtimeBootstrapScript, SHARED_ARTIFACT_CACHE_PATH } from "@armada/core/server";
+import { runtimeBootstrapScript, SHARED_ARTIFACT_CACHE_PATH } from "@armada/core/server";
 import type { Sandbox } from "modal";
-import { abortable } from "./client.ts";
 import { ModalOperationError, refusal } from "./errors.ts";
-import { executeWorkspaceCommand } from "./golden-exec.ts";
 import type { Machine, ModalResourceReceipt, ModalStore, RunnerDistribution } from "./ports.ts";
-import { quiesceSandboxProcesses } from "./process-scope.ts";
 import type { ModalProvider } from "./provider.ts";
 import { dispatchRuntimeBootstrap, validateRuntimeTicket } from "./runtime-bootstrap.ts";
 
@@ -65,37 +62,6 @@ export function createRuntimeLifecycle({
           "Enrolled Modal bootstrap failed; spawn outcome must be reconciled.",
         );
       });
-    },
-    async captureRuntimeWork({ sandboxId, physicalGeneration, signal, context, onWorkAtRisk }) {
-      signal.throwIfAborted();
-      const row = await store.get(sandboxId);
-      if (
-        !row.commonRuntime ||
-        row.golden ||
-        row.phase !== "active" ||
-        !row.physicalId ||
-        String(row.generation) !== physicalGeneration
-      )
-        throw refusal("sandbox_not_ready", "Work capture requires the exact active common runtime incarnation.");
-      const sandbox = await physical(row, signal);
-      signal.throwIfAborted();
-      if ((await abortable(sandbox.poll(), signal)) !== null)
-        throw refusal("sandbox_not_ready", "Work capture requires live physical compute.");
-      signal.throwIfAborted();
-      await abortable(quiesceSandboxProcesses(sandbox, row, signal), signal);
-      signal.throwIfAborted();
-      return preserveWork(
-        {
-          exec(request) {
-            request.signal?.throwIfAborted();
-            return abortable(executeWorkspaceCommand(sandbox, request), request.signal);
-          },
-        },
-        sandboxId,
-        signal,
-        onWorkAtRisk,
-        context,
-      );
     },
     async stopRuntime(input) {
       if (!/^[1-9][0-9]{0,18}$/.test(input.epoch) || !Number.isSafeInteger(input.watermark) || input.watermark < 0)
@@ -281,8 +247,5 @@ export function createRuntimeLifecycle({
         await save(row);
       });
     },
-  } satisfies Pick<
-    ModalProvider,
-    "startRuntime" | "captureRuntimeWork" | "stopRuntime" | "resumeRuntime" | "rollbackRuntimeResume"
-  >;
+  } satisfies Pick<ModalProvider, "startRuntime" | "stopRuntime" | "resumeRuntime" | "rollbackRuntimeResume">;
 }

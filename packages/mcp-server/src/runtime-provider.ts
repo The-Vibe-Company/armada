@@ -1,18 +1,19 @@
 import { mapHarnesses, type Provider, ProviderError } from "@armada/core";
-import type { ModalProvider } from "@armada/provider-modal";
+import type { ModalRuntimeCapture } from "@armada/provider-modal";
 import { runtimeHarnessSupported } from "./provider-runtime-admission.ts";
 
-export type RuntimeWorkProvider = Provider & Partial<Pick<ModalProvider, "captureRuntimeWork">>;
+export type RuntimeWorkProvider = Provider & { captureRuntimeWork?: ModalRuntimeCapture };
 
 /** Sandbox-bound adapter. Caller supplies authorized persisted binding and a
  * compute-only host (no native model-auth lifecycle hooks). No spread/fallback
  * to host agent methods, including optional ports added in future.
  */
 export function createRuntimeProvider(
-  host: RuntimeWorkProvider,
+  host: Provider,
   providerSandboxId: string,
   reads: Pick<Provider, "getPrompt" | "events">,
   operations?: Pick<Provider, "interrupt" | "steer" | "exec" | "testModelConnection">,
+  captureRuntimeWork?: ModalRuntimeCapture,
 ): RuntimeWorkProvider {
   if (host.id !== "boat" && host.id !== "modal") throw Error("boat_runtime_host_required");
   const unsupported = async (): Promise<never> => {
@@ -39,7 +40,6 @@ export function createRuntimeProvider(
     resume: false,
     parallelConversations: false,
   }));
-  const captureRuntimeWork = host.captureRuntimeWork?.bind(host);
   return {
     id: host.id,
     harnesses: (["codex", "claude", "opencode"] as const).filter((harness) =>
