@@ -17,7 +17,8 @@ IDs, and quote prompts as single arguments.
 ## 1. Establish identity and scope
 
 Run `armada account status`, `armada org list` and `armada org current`.
-For an interactive human, use `armada login`; for automation, use an authorized
+For an interactive human, run `armada login` and authorize the request in the dashboard
+using the printed link and matching short code. For automation, use an authorized
 ARMADA_TOKEN through the environment, never pasted into a prompt or command.
 ARMADA_URL selects the server; confirm it before any write. Do not inspect or
 print token values. `armada org use ORG` persists the selection for that server;

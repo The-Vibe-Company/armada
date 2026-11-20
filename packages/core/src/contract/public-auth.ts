@@ -1,7 +1,6 @@
 import { z } from "zod";
 import type { Operation } from "./index.ts";
 
-export const signInMethod = z.enum(["email", "github", "google"]);
 const browserProvider = z.enum(["github", "google"]);
 const pkce = z.string().regex(/^[A-Za-z0-9._~-]{43,128}$/);
 const loopback = z
@@ -43,15 +42,60 @@ const anonymous = {
 } as const;
 
 export const publicAuthOperations = {
-  authMethods: {
+  authDeviceStart: {
     ...anonymous,
-    name: "authMethods",
-    route: { method: "GET", path: "/api/v1/auth/methods" },
-    input: { body: z.undefined() },
-    output: z.object({ methods: z.array(signInMethod) }),
+    name: "authDeviceStart",
+    route: { method: "POST", path: "/api/v1/auth/device/start" },
+    input: { body: z.object({ hostname: z.string().regex(/^[a-zA-Z0-9_.-]{1,253}$/) }) },
+    output: z.object({
+      device_code: z.string().regex(/^[a-f0-9]{64}$/),
+      user_code: z.string().regex(/^[A-F0-9]{8}$/),
+      verification_uri_complete: z.url(),
+      expires_in: z.number().int().min(1).max(600),
+      interval: z.number().int().min(1).max(600),
+    }),
+    readOnly: false,
+    description: "Start a CLI device login request.",
+    errors: ["invalid", "rate_limited", "unavailable"],
+  },
+  authDeviceInspect: {
+    ...anonymous,
+    name: "authDeviceInspect",
+    route: { method: "POST", path: "/api/v1/auth/device/inspect" },
+    input: { body: z.object({ id: z.uuid() }) },
+    output: z.object({ user_code: z.string(), hostname: z.string() }),
     readOnly: true,
-    description: "List the sign-in methods enabled on this server.",
-    errors: ["unavailable"],
+    description: "Read a pending CLI login request using a signed-in dashboard session.",
+    errors: ["invalid", "unauthorized", "not_found", "unavailable"],
+  },
+  authDeviceDecide: {
+    ...anonymous,
+    name: "authDeviceDecide",
+    route: { method: "POST", path: "/api/v1/auth/device/decide" },
+    input: {
+      body: z.object({ id: z.uuid(), user_code: z.string().regex(/^[A-F0-9]{8}$/), approve: z.boolean() }),
+    },
+    output: z.object({ ok: z.literal(true) }),
+    readOnly: false,
+    description: "Authorize or deny a pending CLI login as the signed-in dashboard user.",
+    errors: ["invalid", "unauthorized", "not_found", "unavailable"],
+  },
+  authDevicePoll: {
+    ...anonymous,
+    name: "authDevicePoll",
+    route: { method: "POST", path: "/api/v1/auth/device/poll" },
+    input: { body: z.object({ device_code: z.string().regex(/^[a-f0-9]{64}$/) }) },
+    output: z.union([
+      session.extend({ status: z.literal("authorized"), email: z.email() }),
+      z.object({
+        status: z.enum(["authorization_pending", "slow_down"]),
+        interval: z.number().int().min(1).max(600),
+      }),
+      z.object({ status: z.enum(["access_denied", "expired_token"]) }),
+    ]),
+    readOnly: false,
+    description: "Poll for a decision or redeem an approved request once.",
+    errors: ["invalid", "unavailable"],
   },
   authAuthorize: {
     ...anonymous,
@@ -80,24 +124,11 @@ export const publicAuthOperations = {
     name: "authEmailStart",
     route: { method: "POST", path: "/api/v1/auth/email/start" },
     input: {
-      body: z
-        .object({
-          email,
-          ...callbackFields,
-          cli_email_link: z
-            .boolean()
-            .optional()
-            .describe("When true, redirect_uri must use the /callback path with no query."),
-        })
-        .refine(({ cli_email_link, redirect_uri }) => {
-          if (!cli_email_link || !URL.canParse(redirect_uri)) return !cli_email_link;
-          const url = new URL(redirect_uri);
-          return url.pathname === "/callback" && !url.search;
-        }),
+      body: z.strictObject({ email, ...callbackFields }),
     },
     output: z.object({ ok: z.literal(true) }),
     readOnly: false,
-    description: "Start email sign-in using a verification code or an opted-in CLI loopback link.",
+    description: "Start email sign-in using a verification code.",
     errors: ["invalid", "usage", "unauthorized", "rate_limited", "unavailable"],
   },
   authEmailVerify: {

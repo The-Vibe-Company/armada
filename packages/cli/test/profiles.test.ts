@@ -6,6 +6,8 @@ import { productionAuthIo } from "../src/auth-commands.ts";
 import { profileDirectory } from "../src/profiles.ts";
 import { run } from "../src/run.ts";
 
+import { loginAuthorized, loginStarted } from "./device-login.fixture.ts";
+
 test("named profiles isolate sessions, logout and preferences while retaining the legacy default", async () => {
   const root = await mkdtemp(join(tmpdir(), "armada-profiles-"));
   try {
@@ -128,10 +130,16 @@ test("a malformed profile session can be cleared or replaced through explicit-se
     const calls: string[] = [];
     auth.fetch = async (url) => {
       calls.push(String(url));
-      return Response.json({ methods: [] });
+      return String(url).endsWith("/start") ? loginStarted() : loginAuthorized();
     };
-    expect(await run(["login", "--url", "https://stage.example", "--provider", "github"], io, { auth })).toBe(2);
-    expect(calls).toEqual(["https://stage.example/api/v1/auth/methods"]);
+    auth.open = () => {};
+    auth.sleep = async () => {};
+    expect(await run(["login", "--url", "https://stage.example"], io, { auth })).toBe(0);
+    expect(calls).toEqual([
+      "https://stage.example/api/v1/auth/device/start",
+      "https://stage.example/api/v1/auth/device/poll",
+    ]);
+    expect((await auth.session.read())?.armadaUrl).toBe("https://stage.example");
     expect(await run(["logout"], io, { auth })).toBe(0);
     expect(await auth.session.read()).toBeNull();
   } finally {

@@ -21,7 +21,6 @@ export function profileStores(env: NodeJS.ProcessEnv) {
   return {
     session: fileSessionStore(join(dir, "session.json")),
     preferences: filePreferences(join(dir, "preferences.json")),
-    emailPreferences: filePreferences(join(dir, "login-email.json")),
     launchPreferences: filePreferences(join(dir, "launch-preferences.json")),
   };
 }

@@ -27,6 +27,7 @@ import { createScopedSandboxData, createSqlData } from "./data.ts";
 import { retryDatabaseBoot } from "./database-boot.ts";
 import { createDatabaseReadiness } from "./database-readiness.ts";
 import { requireDatabaseSchema } from "./database-schema.ts";
+import { deviceLoginFromConfig } from "./device-login-control.ts";
 import { createDockerBootstrapService } from "./docker-bootstrap-service.ts";
 import { createDockerNormalLaunch } from "./docker-normal-launch.ts";
 import { createDockerNormalSend } from "./docker-normal-send.ts";
@@ -462,7 +463,9 @@ export async function createServerServices(env: Record<string, string | undefine
       : undefined;
   const logProviders = { boat: providers.resolve.bind(providers), modal: modal.storedProviderFor };
   const ordinaryLaunchReceipts = createOrdinaryLaunchReceipts(sql);
+  const deviceLogin = deviceLoginFromConfig(sql, config.dashboardUrl, env.SUPABASE_SERVICE_ROLE_KEY);
   const control: ConfiguredControlOptions = {
+    ...(deviceLogin ? { deviceLogin } : {}),
     ordinaryLaunchReceipts,
     ...(dockerControls ? { dockerControls } : {}),
     ...(dockerLaunch ? { dockerLaunch } : {}),

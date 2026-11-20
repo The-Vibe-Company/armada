@@ -109,6 +109,7 @@ Required environment (the server refuses to start without it):
 | --- | --- |
 | `ARMADA_DATABASE_URL` | Privileged Postgres connection (the Supabase `postgres` role). The server's own queries carry the visibility rules. |
 | `SUPABASE_URL`, `SUPABASE_ANON_KEY` | The Supabase project used for sign-in. |
+| `SUPABASE_SERVICE_ROLE_KEY` | Server-only Supabase service-role JWT from the same project. Required for CLI device login. The dashboard uses its existing `ARMADA_MCP_URL` and user session, with no access to this key. |
 | `ARMADA_AUTH_SECRET` | At least 16 characters; seals the OAuth server's sign-in cookie. |
 | `ARMADA_PUBLIC_URL` | The origin clients reach. |
 | `ARMADA_ENCRYPTION_KEY` | 32 random bytes in base64 (`openssl rand -base64 32`). Seals every stored credential with AES-256-GCM. |

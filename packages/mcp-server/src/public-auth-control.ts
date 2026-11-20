@@ -10,7 +10,7 @@ import {
   supabaseAuthorizeUrl,
   verifyEmailCode,
 } from "@armada/auth";
-import { controlRouteKey, publicAuthOperations, signInMethod } from "@armada/core/contract";
+import { controlRouteKey, publicAuthOperations } from "@armada/core/contract";
 import { LaunchError, ProviderRoutingError, VaultError } from "@armada/core/server";
 import type { ControlOptions } from "./control.ts";
 import { readBody } from "./control-body.ts";
@@ -19,23 +19,6 @@ import { fail } from "./control-response.ts";
 import { defineRoutes } from "./routes.ts";
 
 type PublicAuthOptions = Pick<ControlOptions, "supabase" | "now" | "publicUrl" | "exchangeNative" | "refreshNative">;
-
-/** Expose only supported sign-in methods, never upstream configuration. */
-async function authMethodsRoute(_request: Request, options: PublicAuthOptions): Promise<Response> {
-  try {
-    const response = await (options.supabase.fetch ?? fetch)(
-      new URL("/auth/v1/settings", options.supabase.supabaseUrl),
-      { headers: { apikey: options.supabase.anonKey }, signal: AbortSignal.timeout(10_000) },
-    );
-    if (!response.ok) throw new Error();
-    const settings = (await response.json()) as { external?: Record<string, unknown> };
-    if (!settings.external || typeof settings.external !== "object") throw new Error();
-    const methods = signInMethod.options.filter((method) => settings.external?.[method] === true);
-    return Response.json({ methods }, { headers: { "cache-control": "no-store" } });
-  } catch {
-    return fail(503, "unavailable", "Sign-in methods are unavailable; try again later.");
-  }
-}
 
 async function emailVerifyRoute(request: Request, options: PublicAuthOptions): Promise<Response> {
   try {
@@ -67,18 +50,13 @@ async function emailStartRoute(request: Request, options: PublicAuthOptions): Pr
     const body = await readBody(request);
     const email = assertEmail(required(body, "email"));
     const parsed = publicAuthOperations.authEmailStart.input.body.parse(body);
-    const { code_challenge: challenge, state, cli_email_link: cliEmailLink } = parsed;
-    const callback = new URL(parsed.redirect_uri);
-    if (cliEmailLink) callback.searchParams.set("state", state);
+    const { code_challenge: challenge } = parsed;
     await sendEmailLink({
       fetch: options.supabase.fetch ?? fetch,
       supabaseUrl: options.supabase.supabaseUrl,
       anonKey: options.supabase.anonKey,
       email,
-      // Existing clients (including iOS) remain numeric-code-only unless explicitly opted in.
-      redirectTo: cliEmailLink
-        ? callback.toString()
-        : new URL("/login?flow=code", options.publicUrl ?? "https://armada.thevibecompany.co").toString(),
+      redirectTo: new URL("/login?flow=code", options.publicUrl ?? "https://armada.thevibecompany.co").toString(),
       challenge,
     });
     return Response.json({ ok: true }, { headers: { "cache-control": "no-store" } });
@@ -202,10 +180,9 @@ async function nativeRefresh(options: PublicAuthOptions, refreshToken: string) {
   return { accessToken: next.accessToken, refreshToken: next.refreshToken, expiresAt: next.expiresAt };
 }
 
-const { authMethods, authAuthorize, authExchange, authEmailStart, authEmailVerify, authRefresh } = publicAuthOperations;
+const { authAuthorize, authExchange, authEmailStart, authEmailVerify, authRefresh } = publicAuthOperations;
 
 export const publicAuthRoutes = defineRoutes("public-auth", {
-  [controlRouteKey(authMethods.route)]: { methods: [authMethods.route.method], respond: authMethodsRoute },
   [controlRouteKey(authAuthorize.route)]: { methods: [authAuthorize.route.method], respond: authorizeRoute },
   [controlRouteKey(authExchange.route)]: { methods: [authExchange.route.method], respond: exchangeRoute },
   [controlRouteKey(authEmailStart.route)]: { methods: [authEmailStart.route.method], respond: emailStartRoute },

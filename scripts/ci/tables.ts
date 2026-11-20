@@ -39,6 +39,7 @@ const owners = [
     "armada_access_parents orchestrator_* orchestrators",
     [`${core}/delegated-authority.ts`, `${server}/sandbox-access-*.ts`, `${server}/sandbox-armada-access.ts`],
   ],
+  ["oauth_device_requests", ["packages/auth/src/device-login.ts"]],
   ["mcp_tokens oauth_* service_tokens", ["packages/auth/src/*.ts", `${server}/token-control.ts`]],
   ["mcp_*", [`${core}/connections.ts`, `${server}/mcp-*.ts`]],
   ["github_*", [`${server}/github-*.ts`, `${core}/github-*.ts`]],

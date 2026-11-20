@@ -1,9 +1,8 @@
+import { hostname } from "node:os";
 import { createInterface } from "node:readline";
-import { AuthError, type AuthFetch, assertEmail, type Provider } from "@armada/auth";
-import { authClient } from "@armada/sdk/auth";
+import { AuthError, type AuthFetch } from "@armada/auth";
+import { publicAuthOperations } from "@armada/core/contract";
 import { createArmadaApiClient, DEFAULT_ARMADA_API_URL } from "./armada-api.ts";
-import { browserLogin } from "./browser-login.ts";
-import { emailLogin } from "./email-login.ts";
 import type { Preferences } from "./preferences.ts";
 import { profileStores } from "./profiles.ts";
 import type { SessionStore } from "./session.ts";
@@ -19,12 +18,8 @@ export interface AuthIo {
   timeoutMs?: number;
   preferences?: Preferences;
   sleep?: (ms: number) => Promise<void>;
-  readCode?: (signal: AbortSignal) => Promise<string>;
-  readEmail?: (defaultEmail?: string) => Promise<string>;
   interactive?: boolean;
   confirmSignIn?: () => Promise<boolean>;
-  chooseMethod?: (methods: string[], defaultMethod: string) => Promise<string>;
-  emailPreferences?: Preferences;
   launchPreferences?: Preferences;
   chooseLaunch?: (title: string, options: { value: string; label: string }[], preferred?: string) => Promise<string>;
 }
@@ -42,10 +37,6 @@ export function productionAuthIo(
     ...profileStores(env),
     interactive: Boolean(process.stdin.isTTY && process.stderr.isTTY && !env.CI),
     confirmSignIn: async () => /^(y|yes)?$/i.test(await promptLine("You are not signed in. Sign in now? [Y/n] ")),
-    chooseMethod: async (methods, defaultMethod) => {
-      const choice = await promptLine(`Sign-in method (${methods.join(", ")}) [${defaultMethod}]: `);
-      return choice || defaultMethod;
-    },
     chooseLaunch: async (title, options, preferred) => {
       io.err(
         `${title}:\n${options.map((o, i) => `  ${i + 1}. ${o.label}${o.value === preferred ? " (default)" : ""}`).join("\n")}\n`,
@@ -53,126 +44,96 @@ export function productionAuthIo(
       const answer = await promptLine("Choose a number (Enter for default): ");
       return answer ? (options[Number(answer) - 1]?.value ?? "") : (preferred ?? "");
     },
-    readCode: promptCode,
-    readEmail: (previous) => promptLine("Email: ", previous),
   };
 }
 
-function promptLine(question: string, initial = ""): Promise<string> {
+function promptLine(question: string): Promise<string> {
   if (!process.stdin.isTTY || !process.stderr.isTTY)
-    throw new AuthError("Run armada login --email <address> in an interactive terminal.", "usage");
+    throw new AuthError("Run this command in an interactive terminal.", "usage");
   return new Promise((resolve) => {
     const lines = createInterface({ input: process.stdin, output: process.stderr });
     lines.question(question, (answer) => {
       lines.close();
       resolve(answer.trim());
     });
-    if (initial) lines.write(initial);
   });
 }
 
-function promptCode(signal: AbortSignal): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const lines = createInterface({ input: process.stdin, output: process.stderr });
-    const stop = () => {
-      lines.close();
-      reject(new Error("Stopped reading the code."));
-    };
-    signal.addEventListener("abort", stop, { once: true });
-    lines.question("Code from the email (or open its link on this machine): ", (answer) => {
-      signal.removeEventListener("abort", stop);
-      lines.close();
-      resolve(answer);
-    });
-  });
-}
-
-export async function loginCommand(
-  io: AuthIo,
-  how: { provider?: Provider | undefined; email?: string | undefined; url?: string | undefined; json?: boolean } = {},
-): Promise<void> {
+export async function loginCommand(io: AuthIo, how: { url?: string | undefined; json?: boolean } = {}): Promise<void> {
   const origin = how.url ?? io.env.ARMADA_URL ?? DEFAULT_ARMADA_API_URL;
-  const cli = io.env.ARMADA_PROFILE ? `armada --profile ${io.env.ARMADA_PROFILE}` : "armada";
-  if (how.email === undefined) {
-    let methods: string[];
+  const { authDeviceStart, authDevicePoll } = publicAuthOperations;
+  const post = async (path: string, body: unknown) => {
     try {
-      const response = await authClient(origin, (input, init) => io.fetch(input, init)).methods();
-      const value = (await response.json()) as { methods?: unknown };
-      if (
-        !response.ok ||
-        !Array.isArray(value.methods) ||
-        !value.methods.every((method) => ["email", "github", "google"].includes(method))
-      )
-        throw new Error();
-      methods = value.methods;
-    } catch {
-      throw new AuthError("Could not discover enabled sign-in methods; try again later.", "unavailable");
+      const response = await io.fetch(new URL(path, origin), {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+        redirect: "error",
+        signal: AbortSignal.timeout(io.timeoutMs ?? 35_000),
+      });
+      if (response.status === 429)
+        throw new AuthError("Too many CLI login requests. Try again in a minute.", "rate_limited");
+      if (!response.ok) throw new Error();
+      return await response.json();
+    } catch (error) {
+      if (error instanceof AuthError) throw error;
+      throw new AuthError("Armada sign-in could not complete. Start a new login.", "unavailable");
     }
-    if (how.provider && !methods.includes(how.provider))
-      throw new AuthError(
-        `${how.provider} sign-in is not enabled; enabled methods: ${methods.join(", ") || "none"}.`,
-        "usage",
-      );
-    if (!how.provider) {
-      const previous = await io.emailPreferences?.read(origin);
-      const defaultMethod =
-        previous && methods.includes("email")
-          ? "email"
-          : (methods.find((method) => method === "github" || method === "google") ?? methods[0]);
-      if (!defaultMethod) throw new AuthError("No supported sign-in methods are enabled.", "unavailable");
-      const method =
-        methods.length > 1 && io.chooseMethod ? await io.chooseMethod(methods, defaultMethod) : defaultMethod;
-      if (!methods.includes(method)) throw new AuthError("Choose one of the enabled sign-in methods.", "usage");
-      if (method === "email") {
-        if (!io.readEmail) throw new AuthError("Use armada login --email <address>.", "usage");
-        how = { ...how, email: await io.readEmail(previous) };
-      } else {
-        how = { ...how, provider: method as Provider };
+  };
+  const start = authDeviceStart.output.safeParse(
+    await post(authDeviceStart.route.path, {
+      hostname:
+        hostname()
+          .replace(/[^a-zA-Z0-9_.-]/g, "_")
+          .slice(0, 253) || "unknown",
+    }),
+  );
+  if (!start.success) throw new AuthError("Armada returned an invalid login request.", "unavailable");
+  const { device_code, user_code, verification_uri_complete, expires_in } = start.data;
+  const verification = new URL(verification_uri_complete);
+  const local =
+    verification.protocol === "http:" && ["localhost", "127.0.0.1", "[::1]"].includes(verification.hostname);
+  if ((!local && verification.protocol !== "https:") || verification.username || verification.password)
+    throw new AuthError("Armada returned an unsafe browser link.", "unavailable");
+
+  const deadline = io.now().getTime() + expires_in * 1000;
+  const sleep = io.sleep ?? Bun.sleep;
+  let interval = start.data.interval;
+  io.err(`Open ${verification.href} and confirm code ${user_code}.\n`);
+  try {
+    io.open(verification.href);
+  } catch {}
+
+  while (io.now().getTime() < deadline) {
+    await sleep(Math.min(interval * 1000, deadline - io.now().getTime()));
+    if (io.now().getTime() >= deadline) break;
+    const poll = authDevicePoll.output.safeParse(await post(authDevicePoll.route.path, { device_code }));
+    if (!poll.success) throw new AuthError("Armada returned an invalid login response.", "unavailable");
+    const result = poll.data;
+    switch (result.status) {
+      case "authorization_pending":
+      case "slow_down":
+        interval = result.interval;
+        continue;
+      case "access_denied":
+        throw new AuthError("CLI sign-in was denied in the browser.", "unauthorized");
+      case "expired_token":
+        throw new AuthError("This CLI login expired or was already used. Run armada login again.", "unauthorized");
+      case "authorized": {
+        const { accessToken, refreshToken, expiresAt, email } = result;
+        await io.session.write({
+          loginId: crypto.randomUUID(),
+          armadaUrl: origin,
+          accessToken,
+          refreshToken,
+          expiresAt,
+        });
+        io.out(how.json ? '{"authenticated":true}\n' : `Signed in as ${email}.\n`);
+        return;
       }
     }
   }
-  if (how.email !== undefined) {
-    const email = assertEmail(how.email);
-    const result = await emailLogin(io, email, origin);
-    await io.session.write({ loginId: crypto.randomUUID(), armadaUrl: origin, ...result });
-    await io.emailPreferences?.write(origin, email);
-    io.out(how.json ? '{"authenticated":true}\n' : "Logged in.\n");
-    io.err(
-      `Next: run ${cli} launch for guided setup, or ${cli} host add to connect your own machine. Check setup with ${cli} doctor.\n`,
-    );
-    return;
-  }
-  if (how.email === undefined) {
-    const provider = how.provider as Provider;
-    try {
-      const result = await browserLogin({
-        origin,
-        provider,
-        fetch: io.fetch as typeof fetch,
-        open: io.open,
-        ...(io.timeoutMs === undefined ? {} : { timeoutMs: io.timeoutMs }),
-      });
-      await io.session.write({
-        loginId: crypto.randomUUID(),
-        armadaUrl: origin,
-        accessToken: result.accessToken,
-        refreshToken: result.refreshToken,
-        expiresAt: result.expiresAt,
-      });
-      io.out(how.json ? '{"authenticated":true}\n' : "Logged in.\n");
-      io.err(
-        `Next: run ${cli} launch for guided setup, or ${cli} host add to connect your own machine. Check setup with ${cli} doctor.\n`,
-      );
-      return;
-    } catch (error) {
-      if (error instanceof AuthError) throw error;
-      throw new AuthError(
-        "Browser sign-in could not finish because the browser flow was interrupted. Check your connection and start sign-in again.",
-        "unavailable",
-      );
-    }
-  }
-  throw new AuthError("Sign in with --provider github or google.", "usage");
+  throw new AuthError("This CLI login expired. Run armada login again.", "unauthorized");
 }
 
 export async function logoutCommand(io: AuthIo, json = false): Promise<void> {
@@ -226,7 +187,7 @@ export async function tokenRevoke(io: AuthIo, id: string, json = false): Promise
 }
 
 function openBrowser(url: string): void {
-  const command = process.platform === "darwin" ? "open" : process.platform === "win32" ? "cmd" : "xdg-open";
-  const args = process.platform === "win32" ? ["/c", "start", "", url] : [url];
+  const command = process.platform === "darwin" ? "open" : process.platform === "win32" ? "rundll32.exe" : "xdg-open";
+  const args = process.platform === "win32" ? ["url.dll,FileProtocolHandler", url] : [url];
   Bun.spawn([command, ...args], { stdin: "ignore", stdout: "ignore", stderr: "ignore" });
 }

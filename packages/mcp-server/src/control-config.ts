@@ -13,11 +13,12 @@ import {
   githubAppFromEnv,
   githubInstallationAppFromEnv,
 } from "@armada/core/server";
-import { databasePoolMax } from "./config.ts";
+import { dashboardOrigin, databasePoolMax } from "./config.ts";
 import type { ConfiguredControlOptions } from "./control.ts";
 import { createCredentialBindingRecovery } from "./credential-binding-recovery.ts";
 import { createSqlCredentialList } from "./credential-list-sql.ts";
 import { createScopedSandboxData, createSqlData } from "./data.ts";
+import { deviceLoginFromConfig } from "./device-login-control.ts";
 import { createSqlGoldenList } from "./golden-list.ts";
 import { providerRegistry } from "./http.ts";
 import { invitationsFromEnv } from "./invitations.ts";
@@ -122,7 +123,13 @@ export function controlOptionsFromEnv(env: Record<string, string | undefined>): 
       (provider, id, caller, quiesced) => modelAuth.capture(provider, id, caller, quiesced),
       modelAuth.broker,
     );
+  const deviceLogin = deviceLoginFromConfig(
+    sql,
+    dashboardOrigin(env.ARMADA_DASHBOARD_URL, env.NODE_ENV === "development"),
+    env.SUPABASE_SERVICE_ROLE_KEY,
+  );
   return {
+    ...(deviceLogin ? { deviceLogin } : {}),
     ...(env.ARMADA_PUBLIC_URL ? { publicUrl: env.ARMADA_PUBLIC_URL } : {}),
     sandboxBillingAccount: createSandboxBillingAccount(sql),
     credentialBindingRecovery: createSandboxAccountChange(
