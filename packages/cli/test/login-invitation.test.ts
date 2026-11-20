@@ -3,6 +3,8 @@ import type { AuthIo } from "../src/auth-commands.ts";
 import { run } from "../src/run.ts";
 import { memorySessionStore, type Session } from "../src/session.ts";
 
+import { loginAuthorized, loginStarted } from "./device-login.fixture.ts";
+
 const saved: Session = {
   armadaUrl: "https://armada.example",
   accessToken: "old-access",
@@ -32,20 +34,15 @@ function fixture(initial: Session | null = null) {
       err += value;
     },
     now: () => new Date("2026-11-13"),
-    open: () => {
-      throw new Error("Email login must not open a browser");
-    },
-    readEmail: async () => "user@example.test",
-    readCode: async () => "123456",
+    open: () => {},
+    sleep: async () => {},
     fetch: async (input, init) => {
       const path = new URL(String(input)).pathname;
-      if (path.endsWith("/auth/methods")) {
+      if (path.endsWith("/auth/device/start")) {
         logins++;
-        return Response.json({ methods: ["email"] });
+        return loginStarted();
       }
-      if (path.endsWith("/auth/email/start")) return Response.json({ ok: true });
-      if (path.endsWith("/auth/email/verify"))
-        return Response.json({ accessToken: "new-access", refreshToken: "new-refresh", expiresAt: "2099-01-01" });
+      if (path.endsWith("/auth/device/poll")) return loginAuthorized();
       if (path.endsWith("/auth/refresh")) return Response.json({ msg: "private provider diagnostic" }, { status: 401 });
       if (path.endsWith("/token/list") || path.endsWith("/token/whoami") || path.endsWith("/account/status")) {
         commands++;
@@ -79,7 +76,7 @@ for (const [name, initial, commands] of [
       invitations: 1,
       logins: 1,
       commands,
-      out: "Logged in.\nNo API keys.\n",
+      out: "Signed in as user@example.test.\nNo API keys.\n",
     });
     expect(state.output().err).not.toContain("private provider diagnostic");
   });
@@ -143,13 +140,13 @@ for (const args of [["--help"], ["--version"], ["token", "--help"]]) {
   });
 }
 
-test("invited login preserves code-refusal guidance", async () => {
+test("invited login preserves browser denial guidance", async () => {
   const state = fixture();
   const original = state.auth.fetch;
   state.auth.fetch = async (input, init) =>
-    String(input).endsWith("/email/verify") ? Response.json({}, { status: 401 }) : original(input, init);
+    String(input).endsWith("/device/poll") ? Response.json({ status: "access_denied" }) : original(input, init);
   expect(await state.run(["token", "ls"])).toBe(3);
-  expect(state.output().err).toContain("already used");
+  expect(state.output().err).toContain("denied in the browser");
 });
 
 test("a typed server 401 after successful refresh still offers login", async () => {

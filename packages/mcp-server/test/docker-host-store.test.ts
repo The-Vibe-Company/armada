@@ -859,6 +859,95 @@ test("retention cleanup settles an attached restore after expiry with atomic rol
   ]);
 });
 
+test.each(["cleanup", "expiry", "outputs", "completion"] as const)(
+  "late predecessor %s settles after restore attachment without changing the replacement",
+  async (callback) => {
+    const a = await restoreFixture();
+    const {
+      rows: [claim],
+    } = await database().query<Job>(
+      `update jobs set state='leased',lease_owner=$2,lease_epoch=1,lease_until='infinity',attempts=1
+       where id=$1 returning id,sandbox_id,generation::text,lease_epoch::text`,
+      [a.selection.runnerJobId, randomUUID()],
+    );
+    if (!claim) throw new Error("Missing fixture runner claim.");
+    const { requestId } = a.restore;
+    await store.complete(a.hostToken, a.installationId, { requestId, outcome: "completed" });
+    await store.attachMachineRestore(a.owner, claim, requestId);
+    const before = await lifecycle(a.sandboxId);
+    const report = (installationId: string, id = a.create.requestId) => {
+      switch (callback) {
+        case "cleanup":
+          return store.cleaned(a.hostToken, installationId, { requestId: id });
+        case "expiry":
+          return store.expired(a.hostToken, installationId, { requestId: id });
+        case "outputs":
+          return store.retainedOutputs(a.hostToken, installationId, id, null, new AbortController().signal);
+        case "completion":
+          return store.complete(a.hostToken, installationId, { requestId: id, outcome: "failed", retained: true });
+      }
+    };
+    const id = callback === "completion" ? a.cleanupId : a.create.requestId;
+    await denied(report(randomUUID(), id));
+    if (callback === "completion") {
+      const { faultingStore, failure } = interruptDockerCommit(async (tx) => {
+        const result = await tx.query("select 1 from docker_host_jobs where request_id=$1 and outcome='failed'", [id]);
+        return result.rows.length > 0;
+      });
+      await expect(
+        faultingStore.complete(a.hostToken, a.installationId, { requestId: id, outcome: "failed", retained: true }),
+      ).rejects.toMatchObject({ cause: failure });
+      const receipt = async () =>
+        (await database().query("select outcome from docker_host_jobs where request_id=$1", [id])).rows[0];
+      expect(await receipt()).toEqual({ outcome: null });
+      await report(a.installationId, id);
+      expect(await receipt()).toEqual({ outcome: "failed" });
+    }
+    await expect(report(a.installationId, id)).resolves.toBe(callback === "outputs" ? 204 : undefined);
+    expect(await lifecycle(a.sandboxId)).toEqual(before);
+  },
+);
+
+test("poll retires obsolete work without fencing a delayed physical completion", async () => {
+  const a = await restoreFixture();
+  const {
+    rows: [claim],
+  } = await database().query<Job>(
+    `update jobs set state='leased',lease_owner=$2,lease_epoch=1,lease_until='infinity',attempts=1
+     where id=$1 returning id,sandbox_id,generation::text,lease_epoch::text`,
+    [a.selection.runnerJobId, randomUUID()],
+  );
+  if (!claim) throw new Error("Missing fixture runner claim.");
+  expect(await a.poll([a.cleanupId])).toEqual(a.restore);
+  const { requestId } = a.restore;
+  await store.complete(a.hostToken, a.installationId, { requestId, outcome: "completed" });
+  await store.attachMachineRestore(a.owner, claim, requestId);
+  const before = await lifecycle(a.sandboxId);
+
+  const receipt = async () =>
+    (
+      await database().query(
+        "select outcome,cancelled_at is not null as cancelled from docker_host_jobs where request_id=$1",
+        [a.cleanupId],
+      )
+    ).rows[0];
+  const { faultingStore, failure } = interruptDockerCommit(async (tx) => {
+    const result = await tx.query("select 1 from docker_host_jobs where request_id=$1 and cancelled_at is not null", [
+      a.cleanupId,
+    ]);
+    return result.rows.length > 0;
+  });
+  await expect(a.poll([], true, faultingStore)).rejects.toMatchObject({ cause: failure });
+  expect(await receipt()).toEqual({ outcome: null, cancelled: false });
+  expect(await a.poll()).toBeNull();
+  expect(await receipt()).toEqual({ outcome: "failed", cancelled: true });
+  const result = { requestId: a.cleanupId, outcome: "completed" as const };
+  await store.complete(a.hostToken, a.installationId, result);
+  await store.complete(a.hostToken, a.installationId, result);
+  expect(await receipt()).toEqual({ outcome: "completed", cancelled: false });
+  expect(await lifecycle(a.sandboxId)).toEqual(before);
+});
+
 test("an expired pre-handoff restore settles the output probe without reading an archive", async () => {
   const a = await restoreFixture();
   await a.poll();

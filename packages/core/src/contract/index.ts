@@ -33,7 +33,12 @@ export {
 export { type LaunchEnvelope, launchEnvelope, templateLaunchResponse } from "./launch-response.ts";
 export { memberOperations } from "./members.ts";
 export { ORG_PROVIDER_CREDENTIAL_MAX_LENGTH, organizationOperations, orgProvider } from "./organizations.ts";
-export { githubCallbackOperations, PUBLIC_CONTROL_ROUTES, publicAuthOperations, signInMethod } from "./public-auth.ts";
+export {
+  deviceConsentMessage,
+  githubCallbackOperations,
+  PUBLIC_CONTROL_ROUTES,
+  publicAuthOperations,
+} from "./public-auth.ts";
 export { githubOperations, goldenOperations, launchTemplateOperation } from "./resources.ts";
 export {
   DEFAULT_WAIT_SECONDS,
