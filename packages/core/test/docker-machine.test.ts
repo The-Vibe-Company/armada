@@ -134,7 +134,7 @@ function fixture(
           State: { Status: "created", Running: false },
         });
       } else if (action === "start" || action === "stop") {
-        const container = store.get(last);
+        const container = store.get(last) ?? [...containers.values()].find((container) => container.Id === last);
         if (!container) return { exitCode: 1, stdout: "missing" };
         container.State = { Status: action === "start" ? "running" : "exited", Running: action === "start" };
       } else if (action === "rm") {
@@ -185,12 +185,29 @@ function fixture(
 }
 
 describe("Docker machine executor", () => {
+  test("allocation cannot start a different container that takes the verified name", async () => {
+    const f = fixture(undefined, {
+      dir: "/state/artifact-cache",
+      async ensure() {
+        const entry = f.containers.entries().next().value;
+        if (entry) {
+          const [name, container] = entry;
+          f.containers.set(name, { ...container, Id: "f".repeat(64) });
+        }
+        return true;
+      },
+    });
+    await expect(f.executor.create(request)).rejects.toMatchObject({ code: "docker_failed" });
+    expect([...f.containers.values()][0]?.State.Running).toBe(false);
+  });
+
   test("restore retries an incomplete copy into a separate incarnation and adopts a created target", async () => {
     let free = 0;
     const f = fixture(undefined, undefined, async () => requireDockerDiskSpace(free));
     const source = await f.executor.create(request);
     const sourceContainer = f.containers.get(source.containerName);
-    const predecessor = { request, machineId: sourceContainer.Id };
+    expect(source.machineId).toBe(sourceContainer.Id);
+    const predecessor = { request, machineId: source.machineId };
     const target = { ...request, generation: "55555555-5555-5555-5555-555555555555" };
     f.workspaces.set(source.volumeName, "retained workspace");
     await f.executor.stop(request);
@@ -215,6 +232,8 @@ describe("Docker machine executor", () => {
     f.fail("copy");
     const restored = await f.executor.restore(target, predecessor);
     expect(f.containers.get(restored.containerName).Id).toBe(replacement?.Id);
+    expect(restored.machineId).toBe(replacement?.Id);
+    expect(await f.executor.restore(target, predecessor)).toEqual(restored);
     expect(await f.executor.isRunning(target)).toBe(true);
     expect(await f.executor.isStopped(request)).toBe(true);
     expect(f.workspaces.get(restored.volumeName)).toBe("retained workspace");

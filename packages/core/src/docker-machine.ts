@@ -389,6 +389,8 @@ export function createDockerMachineExecutor(options: {
       if (!state.container) fail(result.exitCode === 0 ? "ownership_mismatch" : "docker_failed");
     }
     if (state.expiresAt === undefined || state.expiresAt <= now()) fail("expired");
+    const machineId = state.container.Id;
+    if (typeof machineId !== "string" || !dockerContainerId.test(machineId)) fail("ownership_mismatch");
     // Duplicate create can start an interrupted create, but never resume a stopped machine.
     const status = object(state.container.State);
     if (status.Running !== true) {
@@ -397,13 +399,13 @@ export function createDockerMachineExecutor(options: {
         "container",
         "update",
         ...dockerResourceArgs(dockerHostResources(), options.limits?.()),
-        state.containerName,
+        machineId,
       ]);
       await ensureShared();
       if (state.expiresAt <= now()) fail("expired");
-      await checked(["container", "start", state.containerName]);
+      await checked(["container", "start", machineId]);
     }
-    return { containerName: state.containerName, volumeName: state.volumeName, expiresAt: state.expiresAt };
+    return { machineId, containerName: state.containerName, volumeName: state.volumeName, expiresAt: state.expiresAt };
   }
 
   async function removeInactiveCopyHelper(name: string, sourceId: string) {
