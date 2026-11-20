@@ -509,30 +509,39 @@ test.each(["health", "configureReadableVariables"] as const)(
     const launch = f.options.launch!.boatRuntimeDefault!;
     const { policy } = sink;
     let expired = false;
+    let persisted: boolean | undefined;
     launch.policy = {
       ...policy,
-      start: (input) =>
-        policy.start({
-          ...input,
-          async assertDispatch(tx) {
-            if (tx) {
-              const { rows } = await tx.query(
-                "select 1 from runtime_commands where sandbox_id=$1 and (request_id like 'boat_variables_%')=$2",
-                [input.sandbox.id, operation === "configureReadableVariables"],
-              );
-              expired ||= rows.length > 0;
-            }
-            if (expired) throw Error("Dispatch claim expired.");
-          },
-        }),
+      async start(input) {
+        const hasCommand = async (tx: Sql) =>
+          (
+            await tx.query(
+              "select 1 from runtime_commands where sandbox_id=$1 and (request_id like 'boat_variables_%')=$2",
+              [input.sandbox.id, operation === "configureReadableVariables"],
+            )
+          ).rows.length > 0;
+        try {
+          return await policy.start({
+            ...input,
+            async assertDispatch(tx) {
+              if (tx) expired ||= await hasCommand(tx);
+              if (expired) throw Error("Dispatch claim expired.");
+            },
+          });
+        } finally {
+          // Observe the command journal before outer launch cleanup can change it.
+          persisted = await hasCommand(f.sql);
+        }
+      },
     };
     try {
       await f.api(f.request(template.id));
-      expect(sink.handled).not.toContain(operation);
-      expect(expired).toBe(true);
     } finally {
       await sink.close();
     }
+    expect(sink.handled).not.toContain(operation);
+    expect(expired).toBe(true);
+    expect(persisted).toBe(false);
   },
 );
 

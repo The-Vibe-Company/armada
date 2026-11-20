@@ -1015,7 +1015,7 @@ const startupFailures = [
   "claim loss",
 ] as const;
 
-test.each(startupFailures)(
+test.each([...startupFailures])(
   "startup never publishes readiness after %s and never repeats host bootstrap",
   async (scenario) => {
     const { createRuntimeStartup } = await import("../src/runtime-startup.ts");
@@ -1027,6 +1027,7 @@ test.each(startupFailures)(
     if (scenario === "pre-abort") abort.abort();
     let epoch = "";
     let current = true;
+    let checkedAfterHealthInTransaction = false;
     const start = createRuntimeStartup(
       f.authority,
       {
@@ -1062,9 +1063,15 @@ test.each(startupFailures)(
       cacheDir: "/cache",
       artifact: { sha256: "a".repeat(64), bytes: 10 },
       configuration: { selectedHarness: scenario === "selection" ? "unknown" : "codex" },
-      async assertClaim() {
-        if (!current) throw Error("Dispatch claim expired.");
-      },
+      ...(scenario === "claim loss"
+        ? {
+            async assertClaim(tx?: Sql) {
+              if (current) return;
+              checkedAfterHealthInTransaction = tx !== undefined;
+              throw Error("Dispatch claim expired.");
+            },
+          }
+        : {}),
       signal: abort.signal,
       readinessTimeoutMs: 1000,
     });
@@ -1077,6 +1084,7 @@ test.each(startupFailures)(
           ? "Invalid runtime startup selection."
           : `Armada runtime startup failed (${["pre-abort", "bootstrap"].includes(scenario) ? "bootstrap" : ["timeout", "lifecycle"].includes(scenario) ? "enrolment" : "readiness"}).`,
     });
+    if (scenario === "claim loss") expect(checkedAfterHealthInTransaction).toBe(true);
     expect(starts).toBe(scenario === "pre-abort" || scenario === "selection" ? 0 : 1);
     if (scenario === "pre-abort" || scenario === "selection")
       expect((await f.db.query("select sandbox_id from runtime_enrolments")).rows).toEqual([]);
