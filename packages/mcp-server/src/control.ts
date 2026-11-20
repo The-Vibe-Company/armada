@@ -86,7 +86,7 @@ export async function dispatchControlCommand(
 }
 
 export function createQueuedSandboxDispatch(options: ControlOptions) {
-  const { accountTurns: _queue, runtimeSend, ...unqueued } = options;
+  const { accountTurns: _queue, dockerControls, runtimeSend, ...unqueued } = options;
   const dispatch: DispatchTurn = (caller, input, claim) =>
     dispatchControlCommand(
       "sandbox/send",
@@ -94,6 +94,14 @@ export function createQueuedSandboxDispatch(options: ControlOptions) {
       { ...input },
       {
         ...unqueued,
+        ...(dockerControls
+          ? {
+              dockerControls: {
+                ...dockerControls,
+                invoke: (actor, name, args) => dockerControls.invoke(actor, name, args, claim),
+              },
+            }
+          : {}),
         ...(runtimeSend ? { runtimeSend: (actor, request) => runtimeSend(actor, request, claim) } : {}),
       },
     );
