@@ -244,14 +244,17 @@ For the single CLI/server binary, import `loadEmbeddedRunnerArtifact` from
 `@armada/provider-modal/embedded` after the runtime build. Merge returned bytes/hash
 with MODAL_IMAGE_LOCK in artifact. Bun embeds main.js and its manifest as file
 assets. Both loaders validate the portable bundle, while the disk loader also
-checks native resources. The compiled server needs no external runtime/workspace files. Native
-executables are installed only in Modal, not as host binaries. The compile smoke
-imports the actual composed factory and embedded artifact on all four targets.
+checks native resources. The compiled server needs no external runtime/workspace
+files. Native executables are installed only in Modal, not as host binaries.
+The compile smoke imports the actual composed factory and embedded artifact on
+all four targets.
 
 Saved golden images carry the runtime from their build date. Before private
-bootstrap, distribution refreshes the public runtime for new forks and golden
-builders that have yet to complete fresh-state preparation. Working checkpoint
-resumes keep their saved runtime and native journal.
+bootstrap, the direct Modal runner path refreshes the public runtime for
+first-generation forks and golden builder generations that have yet to complete
+fresh-state preparation. This includes builders reopened from a recovery image.
+Ordinary non-golden working checkpoint resumes in this path keep their saved
+runtime and native journal.
 
 ## Authorized VM build privilege and independent runner Bun
 
