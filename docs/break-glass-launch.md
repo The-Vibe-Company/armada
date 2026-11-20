@@ -49,11 +49,15 @@ The rehearsed 2.57.2 binary below uses `launch`.
 read -r -p 'Sandbox creation command from pinned CLI help: ' sandbox_create_command
 ```
 
-For the Modal path, check the org and snapshot:
+For the Modal path, use the listing verb shown by the pinned version's snapshot
+help. The rehearsed 2.57.2 binary uses `list`. The current snapshot family uses
+`ls`. Reuse the selected verb when recovering an uncertain launch.
 
 ```bash
 staging_armada org list
-staging_armada snapshot ls --org "$staging_org" --provider modal
+staging_armada snapshot --help
+read -r -p 'Snapshot listing verb from pinned CLI help: ' snapshot_list_verb
+staging_armada snapshot "$snapshot_list_verb" --org "$staging_org" --provider modal
 ```
 
 Once the version matches the pin and the org and snapshot are visible, launch
@@ -71,7 +75,7 @@ attempt before trying another launch. Find the snapshot UUID in the first
 command's output, then match the sandbox by launch start time.
 
 ```bash
-staging_armada snapshot ls --org "$staging_org" --provider modal --json
+staging_armada snapshot "$snapshot_list_verb" --org "$staging_org" --provider modal --json
 read -r -p 'Staging Modal snapshot UUID: ' snapshot_id
 staging_armada list --org "$staging_org" --golden "$snapshot_id" --owner me --json
 ```
