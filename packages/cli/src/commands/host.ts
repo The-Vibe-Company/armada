@@ -20,6 +20,7 @@ Manage Docker machines registered with Armada.
   rm       Revoke a host registration by UUID.
 Pass --org UUID for server commands. For install, supply the one-use token on stdin.
 Use armada host <command> --help for options.
+Example: armada host ls --org ORG_UUID --json
 `,
   subcommandHelp: {
     "host ls": `Usage: armada host ls [<UUID|name>] [--org UUID] [--json]
