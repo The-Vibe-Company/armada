@@ -77,7 +77,7 @@ test("Modal stored observations route stopped dial-out answers through the archi
       (await authority.issue({ sandboxId: sandbox.id, ownerId: people.owner, configuration: {} })).enrolmentToken,
     );
     await db.query(
-      "update sandboxes set status='running',lifecycle_generation=lifecycle_generation+1,activity_lease_id=null,activity_until=null,task_prompt_id='stored-prompt' where id=$1",
+      "update sandboxes set status='running',activity_lease_id=null,activity_until=null,task_prompt_id='stored-prompt' where id=$1",
       [sandbox.id],
     );
     await createRuntimeEvents(authority, ENCRYPTION_KEY).append(enrolled.runtimeToken, enrolled.epoch, {
