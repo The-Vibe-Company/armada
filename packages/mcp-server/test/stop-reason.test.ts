@@ -135,6 +135,7 @@ test.each([
   { runtime: false, outcome: "applied", confirmed: false },
   { runtime: false, outcome: "stale", confirmed: true },
   { runtime: false, outcome: "changed_state", confirmed: true },
+  { runtime: false, outcome: "stopped_source", confirmed: true },
 ] as const)(
   "observed provider failure (runtime=$runtime, $outcome, exit confirmed=$confirmed)",
   async ({ runtime, outcome, confirmed }) => {
@@ -143,10 +144,21 @@ test.each([
     const machine = await boat.provider.fork({ from: "snapshot" });
     const id = crypto.randomUUID();
     const now = new Date("2026-01-01T00:00:00Z");
+    const from = outcome === "stopped_source" ? "stopped" : "ready";
+    const applied = outcome === "applied" || outcome === "stopped_source";
     await db.query(
-      `insert into sandboxes(id,provider,provider_sandbox_id,golden_id,org_id,owner_id,harness,status,boat_runtime)
-     values ($1,'boat',$2,$3,$4,$5,'codex','ready',$6)`,
-      [id, machine.id, sharedGoldenId, people.org, people.owner, runtime],
+      `insert into sandboxes(id,provider,provider_sandbox_id,golden_id,org_id,owner_id,harness,status,boat_runtime,stopped_at)
+     values ($1,'boat',$2,$3,$4,$5,'codex',$7,$6,$8)`,
+      [
+        id,
+        machine.id,
+        sharedGoldenId,
+        people.org,
+        people.owner,
+        runtime,
+        from,
+        from === "stopped" ? "2025-12-31" : null,
+      ],
     );
     const store = createSqlData(db)({
       userId: people.owner,
@@ -186,7 +198,7 @@ test.each([
       const read = readStatus(boat.provider, store, sandbox, { now });
       if (outcome === "rollback") await expect(read).rejects.toThrow("reject_observed_exit");
       else if (outcome === "release_failed") await expect(read).rejects.toThrow("Reservation release failed");
-      else expect(await read).toMatchObject({ status: outcome === "applied" ? "failed" : existingStatus });
+      else expect(await read).toMatchObject({ status: applied ? "failed" : existingStatus });
 
       const journal = await db.query(
         "select from_status,to_status,actor,code,generation::int from sandbox_transitions where sandbox_id=$1",
@@ -194,13 +206,13 @@ test.each([
       );
       const row = await store.get(id);
       const reservation = await db.query("select sandbox_id from account_agent_reservations where sandbox_id=$1", [id]);
-      expect(reservation.rows).toEqual(outcome === "applied" && confirmed ? [] : [{ sandbox_id: id }]);
-      if (outcome === "applied") {
+      expect(reservation.rows).toEqual(applied && confirmed ? [] : [{ sandbox_id: id }]);
+      if (applied) {
         expect(journal.rows).toEqual([
           {
-            from_status: "ready",
+            from_status: from,
             to_status: "failed",
-            actor: "lifecycle_runner",
+            actor: from === "stopped" ? "runtime_observation" : "lifecycle_runner",
             code: runtime ? "runtime_provider_failure" : "native_provider_failure",
             generation: sandbox.lifecycleGeneration,
           },
@@ -230,6 +242,7 @@ test.each([
   { runtime: true, scenario: "stale" },
   { runtime: true, scenario: "release_failed" },
   { runtime: false, scenario: "ready" },
+  { runtime: false, scenario: "failed" },
   { runtime: false, scenario: "stale" },
   { runtime: false, scenario: "changed_state" },
   { runtime: false, scenario: "release_failed" },
@@ -239,11 +252,12 @@ test.each([
     const { db, people, sharedGoldenId, openaiCredentialId } = await failureDatabase();
     const boat = fakeBoat();
     const machine = await boat.provider.fork({ from: "snapshot" });
+    if (scenario === "failed") await boat.provider.prompt({ sandboxId: machine.id, harness: "codex", text: "work" });
     await boat.provider.stop({ sandboxId: machine.id });
     const stoppedAt = new Date("2026-01-01T00:00:00Z");
     boat.sandbox(machine.id).info.stoppedAt = stoppedAt;
     const id = crypto.randomUUID();
-    const from = scenario === "running" ? "running" : "ready";
+    const from = scenario === "running" || scenario === "failed" ? scenario : "ready";
     await db.query(
       `insert into sandboxes(id,provider,provider_sandbox_id,golden_id,org_id,owner_id,harness,status,boat_runtime)
        values ($1,'boat',$2,$3,$4,$5,'codex',$6,$7)`,
@@ -278,7 +292,7 @@ test.each([
         begin raise exception 'Stop reservation release failed'; end $$;
         create trigger reject_stop_release before delete on account_agent_reservations
         for each row execute function reject_stop_release();`);
-    const applied = scenario === "ready" || scenario === "running";
+    const applied = scenario === "ready" || scenario === "running" || scenario === "failed";
     const expectedStatus = applied ? "stopped" : scenario === "changed_state" ? "running" : from;
     try {
       const observation = readStatus(boat.provider, store, sandbox, { now: new Date("2026-01-02T00:00:00Z") });
