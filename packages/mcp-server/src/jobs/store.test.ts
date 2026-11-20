@@ -989,6 +989,7 @@ test.each([
   "missing dispatch generation",
   "expired adjacent dispatch without evidence",
   "expired adjacent dispatch with unrelated activity",
+  "adjacent dispatch without a deadline or evidence",
 ] as const)("a failed receipt write rolls back retirement after %s", async (scenario) => {
   const f = await fixture();
   const { db, people, store } = f;
@@ -1008,7 +1009,8 @@ test.each([
     },
   );
   if (uncertain) {
-    const adjacent = scenario.startsWith("expired adjacent");
+    const missingDeadline = scenario === "adjacent dispatch without a deadline or evidence";
+    const adjacent = missingDeadline || scenario.startsWith("expired adjacent");
     const activityId = scenario === "expired adjacent dispatch with unrelated activity" ? crypto.randomUUID() : null;
     await db.query(
       "update sandboxes set lifecycle_generation=$2, activity_lease_id=$3, activity_until=$4 where id=$1",
@@ -1016,7 +1018,11 @@ test.each([
     );
     await db.query(
       "update account_turn_queue set state='dispatching', dispatch_generation=$2, dispatch_until=$3 where request_id=$1",
-      [requestId, scenario === "missing dispatch generation" ? null : 2, adjacent ? "-infinity" : "infinity"],
+      [
+        requestId,
+        scenario === "missing dispatch generation" ? null : 2,
+        missingDeadline ? null : adjacent ? "-infinity" : "infinity",
+      ],
     );
     await db.query("insert into account_agent_reservations (sandbox_id, account_id) values ($1, $2)", [
       sandboxId,

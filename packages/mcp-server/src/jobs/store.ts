@@ -144,7 +144,7 @@ export function createJobsStore(sql: Sql, encryptionKey?: string) {
                   (q.state = 'dispatching' and (q.dispatch_generation is null
                     or q.dispatch_generation < s.lifecycle_generation - 1
                     or (q.dispatch_generation = s.lifecycle_generation - 1
-                      and q.dispatch_until <= clock_timestamp()
+                      and (q.dispatch_until is null or q.dispatch_until <= clock_timestamp())
                       and s.provider in ('boat','modal') and ${RUNTIME_LANE}
                       and s.status in ('ready','running')
                       and s.activity_lease_id is distinct from q.request_id
