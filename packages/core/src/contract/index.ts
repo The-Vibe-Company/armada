@@ -75,7 +75,7 @@ export interface Operation<Input extends z.ZodType, Output extends z.ZodType | u
   readonly output: Output;
   readonly directServer?: true;
   readonly anonymous?: true;
-  readonly scopedAuth?: readonly ("epochGrant" | "finishGrant")[];
+  readonly scopedAuth?: readonly ("epochGrant" | "finishGrant" | "serviceToken" | "viewerGrant")[];
   readonly successHeaders?: Readonly<Record<string, z.ZodType>>;
   readonly outputMediaType?: string;
   readonly errorOutput?: z.ZodType;

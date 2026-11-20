@@ -222,7 +222,8 @@ test("viewer POSTs refuse oversized bodies at their published limits before disp
   }
 });
 
-test("the event feed binds a viewer to its grant's sandbox and rechecks the issuer", async () => {
+test("the published event feed admits a viewer only for its grant's sandbox and a valid issuer", async () => {
+  expect(published.paths["/api/v1/events"].get.security).toContainEqual({ viewerGrant: [] });
   const f = await fixture();
   f.options.eventFeed = {
     owner: () => async () => [],
