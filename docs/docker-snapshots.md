@@ -277,7 +277,7 @@ mutate the repository's main branch. These are coordinator-run real-host checks,
 not unit-test or CI evidence.
 
 Sign in as that same person against the same Armada server, then run
-`armada account ls github` to inspect connection state and installations;
+`armada account ls github` to inspect connection state and installations.
 Use `armada account login github` to authorize again or `armada account add github` to install the App.
 Manage existing installations in GitHub's settings. Status is not a per-repository access
 probe, and `armada status --setup` reports the connection and installation scope, but does not

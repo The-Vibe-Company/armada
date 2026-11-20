@@ -14,7 +14,7 @@ Commands below start with `armada`. Select an organization with `login --org NAM
 | Personal and org credentials | Write-only model/hosting forms; org writes require admin | `creds list`, `creds set KIND`, `creds remove ACCOUNT_UUID`; legacy `creds rm KIND` only when unambiguous; values from stdin or `--file` |
 | Modal credentials | Separate token ID and token-secret fields, stored together | `creds set modal --file /secure/modal-token.json`; canonical JSON uses `token_id` and `token_secret` |
 | Service tokens | Token management | `token create/ls/revoke`; optional organization scope |
-| GitHub connection | Connect, reconnect, disconnect and installation settings | `account ls github`, `account login github`, `account rm github`, `account add github`; manage existing installations in GitHub waits for its own completion |
+| GitHub connection | Connect, reconnect, disconnect and installation settings | `account ls github`, `account login github`, `account rm github`, `account add github`; authorization waits for its own completion. Manage existing installations in GitHub settings. |
 | Snapshot list and identity | Separate Boat/Modal rows under private/shared sections | `snapshot ls [--provider boat\|modal] [--json]`; JSON includes safe `id` and `orgId` |
 | Snapshot capacity | Per-provider server-reported capacity | `armada api golden/capabilities`; null means unknown/unbounded, not zero |
 | Build / rebuild snapshots | Provider selection on create; rebuild keeps the stored provider, name and visibility | `snapshot new NAME --repo URL[@BRANCH]`; update with `--add-repo URL` or `--replace --config FILE` (see examples below) |
