@@ -134,8 +134,10 @@ export type PinnedModalLaunchInput = z.input<typeof pinnedModal>;
 type LaunchBody = z.input<typeof launchInput>;
 export type LaunchInput = ExclusiveVariant<LaunchBody>;
 
-type ExclusiveVariant<Variant, Union = Variant> = Variant extends unknown
-  ? Variant & Partial<Record<Exclude<Union extends unknown ? keyof Union : never, keyof Variant>, never>>
+type VariantKeys<Variant> = Variant extends unknown ? keyof Variant : never;
+type ExclusiveVariant<Variant extends { provider: string }, Union = Variant> = Variant extends unknown
+  ? Variant &
+      Partial<Record<Exclude<VariantKeys<Extract<Union, { provider: Variant["provider"] }>>, keyof Variant>, never>>
   : never;
 export type DockerLaunchInput = Extract<LaunchInput, { provider: "docker" }>;
 export type GoldenLaunchInput = Extract<LaunchInput, { golden: string }>;
