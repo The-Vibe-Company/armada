@@ -1,7 +1,7 @@
 import type { Provider } from "@armada/core";
 import { refusal } from "./errors.ts";
 import type { createNativeLifecycle } from "./native-lifecycle.ts";
-import type { Machine, RunnerTransport } from "./ports.ts";
+import type { RunnerTransport } from "./ports.ts";
 
 type NativeOrchestratorDependencies = Pick<ReturnType<typeof createNativeLifecycle>, "admit" | "healthyAdmission"> & {
   runner: RunnerTransport;
@@ -12,42 +12,6 @@ export function createNativeOrchestratorOperations({
   healthyAdmission,
   runner,
 }: NativeOrchestratorDependencies) {
-  async function verifyNativeSession(
-    row: Machine,
-    request: Parameters<NonNullable<Provider["verifyOrchestratorSession"]>>[0],
-  ) {
-    if (row.golden || row.phase !== "active" || request.physicalGeneration !== String(row.generation))
-      throw refusal("conflict", "Native session verification requires the bound active incarnation.");
-    const result = await runner.call<{
-      physicalGeneration: string;
-      conversationId: string;
-      nativeSessionId: string;
-      verified: boolean;
-    }>(row, "resumeNativeSession", {
-      conversationId: request.conversationId,
-      expectedSessionId: request.nativeSessionId,
-      input: {
-        sandboxId: request.sandboxId,
-        harness: request.harness,
-        model: request.model,
-        ...(request.reasoningEffort === undefined ? {} : { reasoningEffort: request.reasoningEffort }),
-        ...(request.cwd === undefined ? {} : { cwd: request.cwd }),
-      },
-    });
-    if (
-      result?.physicalGeneration !== request.physicalGeneration ||
-      result.conversationId !== request.conversationId ||
-      result.nativeSessionId !== request.nativeSessionId ||
-      result.verified !== true
-    )
-      throw refusal("conflict", "Native session verification did not match the persisted identity.");
-    return {
-      physicalGeneration: request.physicalGeneration,
-      conversationId: request.conversationId,
-      nativeSessionId: request.nativeSessionId,
-      verified: true as const,
-    };
-  }
   return {
     async installOrchestratorEpoch({ sandboxId, token, binding, url }) {
       return admit(sandboxId, async (row, save) => {
@@ -94,11 +58,6 @@ export function createNativeOrchestratorOperations({
         return observed;
       });
     },
-    async verifyOrchestratorSession(request) {
-      return admit(request.sandboxId, async (row) => {
-        return verifyNativeSession(row, request);
-      });
-    },
     async quiesceOrchestrator({ sandboxId, physicalGeneration }) {
       return admit(sandboxId, async (row, save) => {
         if (row.golden || row.phase !== "active" || physicalGeneration !== String(row.generation))
@@ -128,11 +87,7 @@ export function createNativeOrchestratorOperations({
   } satisfies Required<
     Pick<
       Provider,
-      | "installOrchestratorEpoch"
-      | "observeOrchestrator"
-      | "verifyOrchestratorSession"
-      | "quiesceOrchestrator"
-      | "scrubOrchestratorEpoch"
+      "installOrchestratorEpoch" | "observeOrchestrator" | "quiesceOrchestrator" | "scrubOrchestratorEpoch"
     >
   >;
 }
