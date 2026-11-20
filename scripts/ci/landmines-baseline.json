@@ -911,7 +911,7 @@
     "packages/mcp-server/test/runtime-native-auth.test.ts": 6,
     "packages/mcp-server/test/runtime-progress.test.ts": 1,
     "packages/mcp-server/test/runtime-provider.test.ts": 1,
-    "packages/mcp-server/test/runtime-resume.test.ts": 7,
+    "packages/mcp-server/test/runtime-resume.test.ts": 5,
     "packages/mcp-server/test/runtime-routing-state.test.ts": 3,
     "packages/mcp-server/test/runtime-sockets.test.ts": 1,
     "packages/mcp-server/test/runtime-workspace.test.ts": 2,
