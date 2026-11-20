@@ -15,7 +15,8 @@ Global --profile NAME (or ARMADA_PROFILE) isolates saved login and preferences;
 use login --url to configure a new profile's server.
 ARMADA_TOKEN supplies service-token authentication to API commands; a saved login
 does not unset that environment variable. Keep tokens in a secure environment, never arguments.
---json returns {authenticated:true} on success; the browser link remains on stderr.
+--json writes {verificationUrl,userCode,expiresAt} immediately, then
+{authenticated:true} after authorization. Open the link on any machine.
 Example: armada --profile staging login --url https://staging.example.com
 `,
   useSelectedOrg: false,

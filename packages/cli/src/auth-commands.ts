@@ -99,10 +99,19 @@ export async function loginCommand(io: AuthIo, how: { url?: string | undefined; 
   const deadline = io.now().getTime() + expires_in * 1000;
   const sleep = io.sleep ?? Bun.sleep;
   let interval = start.data.interval;
-  io.err(`Open ${verification.href} and confirm code ${user_code}.\n`);
-  try {
-    io.open(verification.href);
-  } catch {}
+  if (how.json) {
+    const handoff = {
+      verificationUrl: verification.href,
+      userCode: user_code,
+      expiresAt: new Date(deadline).toISOString(),
+    };
+    io.out(`${JSON.stringify(handoff)}\n`);
+  } else {
+    io.err(`Open ${verification.href} and confirm code ${user_code}.\n`);
+    try {
+      io.open(verification.href);
+    } catch {}
+  }
 
   while (io.now().getTime() < deadline) {
     await sleep(Math.min(interval * 1000, deadline - io.now().getTime()));

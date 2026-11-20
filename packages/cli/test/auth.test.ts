@@ -198,7 +198,23 @@ describe("auth commands", () => {
       const auth = io();
       auth.env = { ARMADA_URL: ORIGIN };
       auth.session = fileSessionStore(path);
-      auth.sleep = async () => {};
+      auth.interactive = false;
+      const opened: string[] = [];
+      auth.open = (url) => {
+        opened.push(url);
+      };
+      const handoff = `${JSON.stringify({
+        verificationUrl: deviceLoginUrl,
+        userCode: "12AB34CD",
+        expiresAt: "2026-11-08T00:10:00.000Z",
+      })}\n`;
+      let stdout = "";
+      auth.out = (text) => {
+        stdout += text;
+      };
+      auth.sleep = async () => {
+        expect(stdout).toBe(handoff);
+      };
       const calls: string[] = [];
       auth.fetch = async (input, init) => {
         const url = String(input);
@@ -219,7 +235,9 @@ describe("auth commands", () => {
         }
         throw new Error(`Unexpected request: ${url}`);
       };
-      expect(await capture(["login", "--json"], auth)).toMatchObject({ code: 0, out: '{"authenticated":true}\n' });
+      expect(await run(["login", "--json"], auth, { auth })).toBe(0);
+      expect(stdout).toBe(`${handoff}{"authenticated":true}\n`);
+      expect(opened).toEqual([]);
       const { control } = await import("../src/control.ts");
       expect(await control<{ orgs: unknown[] }>(auth, "org/list", {})).toEqual({ orgs: [] });
       expect(calls).toEqual([

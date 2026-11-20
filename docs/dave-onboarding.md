@@ -609,8 +609,12 @@ For an uncertain launch outcome, inspect existing sandbox/receipt state before
 retrying; template launches must preserve their original request key and body.
 
 JSON selection commands return `{"org":<organization>}` when selecting and
-`{"org":null}` when clearing with `org use none --json`. Login and logout
-accept `--json` and return `{"authenticated":true|false}`. Host mutations
+`{"org":null}` when clearing with `org use none --json`. With no TTY,
+`armada login --json` writes a first JSON line containing `verificationUrl`,
+`userCode`, and `expiresAt` (UTC). Share the link and code with the person
+authorizing the request and keep the process running. It writes
+`{"authenticated":true}` after saving the session. `armada logout --json`
+returns `{"authenticated":false}`. Host mutations
 accept `--json`: limits and retention return the host ID and requested policy,
 revoke returns the host ID and `revoked:true`, and add returns the registration
 receipt without waiting for check-in. Protect that short-lived installer receipt.
