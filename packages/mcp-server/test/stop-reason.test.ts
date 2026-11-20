@@ -394,7 +394,8 @@ test.each(["accepted", "already running", "stale state", "rollback"] as const)(
       orgs: [{ orgId: people.org, role: "member" }],
       via: "service",
     }).sandboxes;
-    const { lifecycleGeneration: expectedGeneration } = (await store.get(id))!;
+    const expectedGeneration = (await store.get(id))?.lifecycleGeneration;
+    if (expectedGeneration === undefined) throw new Error("Missing fixture generation");
     if (scenario === "rollback")
       await db.exec("alter table sandboxes add constraint reject_steer_prompt check (task_prompt_id <> 'accepted')");
     const completed = scenario === "accepted" || scenario === "already running";
@@ -412,7 +413,7 @@ test.each(["accepted", "already running", "stale state", "rollback"] as const)(
       else await expect(publication).rejects.toThrow();
       expect(await store.get(id)).toMatchObject({
         status: completed ? "running" : status,
-        lifecycleGeneration: expectedGeneration! + Number(completed),
+        lifecycleGeneration: expectedGeneration + Number(completed),
         taskPromptId: completed ? "accepted" : null,
         conversationIds: completed ? ["conversation"] : [],
       });
