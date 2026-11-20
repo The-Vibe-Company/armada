@@ -172,7 +172,6 @@ export interface Provider {
   fork(request: ForkRequest): Promise<SandboxInfo>;
 
   get(sandboxId: string, options?: { signal?: AbortSignal }): Promise<SandboxInfo>;
-  list(request?: ListRequest): Promise<Page<SandboxInfo>>;
 
   /** One runtime-owned API-key connection probe; never starts/resumes a machine or a conversation. */
   testModelConnection?(request: {
@@ -324,14 +323,6 @@ export interface ForkRequest {
   noEnv?: boolean;
   ttlSeconds?: number;
   idempotencyKey?: string;
-}
-
-export interface ListRequest {
-  /** Only sandboxes carrying every one of these labels. */
-  labels?: Record<string, string>;
-  states?: readonly SandboxState[];
-  limit?: number;
-  cursor?: string;
 }
 
 /** Trusted in-process observation of provider resume boundaries. */

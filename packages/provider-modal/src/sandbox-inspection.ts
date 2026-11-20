@@ -1,4 +1,4 @@
-import type { Provider, SandboxInfo, VmResourceReading } from "@armada/core";
+import type { Provider, VmResourceReading } from "@armada/core";
 import type { ModalClient } from "modal";
 import { matchesManagementAuthority } from "./authority.ts";
 import { refusal } from "./errors.ts";
@@ -132,29 +132,6 @@ export function createSandboxInspection({
       });
     },
     get,
-    async list(r = {}) {
-      await bound();
-      const limit = r.limit ?? 100;
-      if (!Number.isInteger(limit) || limit < 1 || limit > 1000)
-        throw refusal("invalid_request", "Invalid page limit.");
-      const candidates = (await store.list())
-        .filter(
-          (x) =>
-            x.phase !== "deleted" &&
-            matchesManagementAuthority(x.managementAuthority, managementAuthority) &&
-            (x.sourceImage?.scopeKey ?? scopeKey(scope)) === scopeKey(sourceScope) &&
-            (!r.cursor || x.info.id > r.cursor) &&
-            Object.entries(r.labels ?? {}).every(([k, v]) => x.info.labels[k] === v),
-        )
-        .sort((a, b) => a.info.id.localeCompare(b.info.id));
-      const rows: SandboxInfo[] = [];
-      for (let offset = 0; offset < candidates.length; offset += 8) {
-        const batch = await Promise.all(candidates.slice(offset, offset + 8).map((x) => get(x.info.id)));
-        rows.push(...batch.filter((x) => !r.states || r.states.includes(x.state)));
-        if (rows.length > limit) break;
-      }
-      return { items: rows.slice(0, limit), cursor: rows.length > limit ? (rows[limit - 1]?.id ?? null) : null };
-    },
     async resourceReceipts() {
       const rows = (await store.list()).filter(
         (row) =>
@@ -163,7 +140,7 @@ export function createSandboxInspection({
       );
       return Promise.all(rows.map(resourceReceipt));
     },
-  } satisfies Pick<Provider, "observeResources" | "get" | "list"> & {
+  } satisfies Pick<Provider, "observeResources" | "get"> & {
     resourceReceipts(): Promise<ModalResourceReceipt[]>;
   };
   return { sandboxInfo, resourceReceipt, inspection };
