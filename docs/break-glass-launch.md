@@ -112,11 +112,11 @@ host. Staging supplies the Codex account and authorized repository access as in
 path 1. See the [Docker host quickstart](own-machine-quickstart.md) for setup.
 
 Use the command supported by the pinned CLI. The verified 2.57.2 release below
-uses `host list`. Releases with the five-verb host family use `host ls`.
+uses `host list` and `creds list`. Current releases use `host ls` and `account ls`.
 
 ```bash
 staging_armada host list --org "$staging_org" --json  # Pinned CLI 2.57.2
-staging_armada account ls --org "$staging_org" --json
+staging_armada creds list --org "$staging_org" --json  # Pinned CLI 2.57.2
 read -r -p 'Owner staging Docker host UUID: ' staging_host
 read -r -p 'Staging Codex account UUID: ' docker_account
 read -r -p 'Repository and ref (owner/repo@ref): ' worker_repo

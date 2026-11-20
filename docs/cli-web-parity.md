@@ -4,13 +4,13 @@ The CLI and dashboard use the same Armada authorization and provider contracts. 
 
 ## Feature matrix
 
-Commands below start with `armada`. Select an organization with `login --org NAME|UUID`, or pass `--org` for one request.
+Commands below start with `armada`. Select an organization with `login --org NAME\|UUID`, or pass `--org` for one request.
 
 | Feature | Dashboard | CLI |
 |---|---|---|
 | Sign in / local sign out | Sign-in page and logout | `login [--url URL]`, `logout`; email links/codes and enabled social providers |
 | Account identity / session invalidation | Signed-in account and logout | `account status`, `account logout` invalidates the current login session, then clears local auth |
-| Organizations and members | Organization selection and admin management | `org create/list/use/current`, `org members list/add/remove/role` |
+| Organizations and members | Organization selection and admin management | `org create/list`, `login --org NAME\|UUID`, `status --setup`, `org members list/add/remove/role` |
 | Personal and org credentials | Write-only model/hosting forms; org writes require admin | `account ls`, `account add KIND`, `account rm ACCOUNT_UUID`; legacy `account rm --kind KIND` only when unambiguous; values from stdin or `--file` |
 | Modal credentials | Separate token ID and token-secret fields, stored together | `account add modal --file /secure/modal-token.json`; canonical JSON uses `token_id` and `token_secret` |
 | Service tokens | Token management | `token create/ls/revoke`; optional organization scope |
