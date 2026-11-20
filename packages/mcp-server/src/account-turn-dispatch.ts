@@ -100,7 +100,7 @@ type AdmissionEntry = DispatchEntry & {
   state: string;
 };
 
-type TurnClaim = { job: Job; canDispatch(tx: Sql): Promise<boolean> };
+type TurnClaim = { job: Job; canDispatch(tx?: Sql): Promise<boolean> };
 
 class TurnAdmissionLeaseLost extends Error {}
 
@@ -249,13 +249,51 @@ export async function admitAccountTurn(sql: Sql, candidate: AdmissionEntry, clai
 
 export type DispatchTurn = (caller: Caller, input: RuntimeFollowupInput) => Promise<unknown>;
 
+class TurnSettlementLeaseLost extends Error {}
+
+async function settleAccountTurn<T>(
+  sql: Sql,
+  entry: DispatchEntry,
+  claim: TurnClaim | undefined,
+  write: (tx: Sql) => Promise<T>,
+) {
+  if (!sql.transaction) throw new VaultError("unavailable", "Transactional turn settlement unavailable.");
+  try {
+    return await sql.transaction(async (tx) => {
+      await tx.query("select id from public.credentials where id=$1 for update", [entry.account_id]);
+      if (claim) {
+        await tx.query("select id from public.sandboxes where id=$1 for update", [entry.sandbox_id]);
+        if (!(await claim.canDispatch(tx))) return;
+      }
+      const result = await write(tx);
+      if (claim && !(await claim.canDispatch(tx))) throw new TurnSettlementLeaseLost();
+      return result;
+    });
+  } catch (error) {
+    if (!(error instanceof TurnSettlementLeaseLost)) throw error;
+  }
+}
+
 export async function dispatchAccountTurn(
   sql: Sql,
   key: string,
   entry: DispatchEntry,
   caller: Caller,
   dispatch: DispatchTurn,
+  claim?: TurnClaim,
 ) {
+  if (claim) {
+    const { kind, sandbox_id, payload } = claim.job;
+    if (
+      kind !== "turn_dispatch" ||
+      sandbox_id !== entry.sandbox_id ||
+      !payload ||
+      typeof payload !== "object" ||
+      !("requestId" in payload) ||
+      payload.requestId !== entry.request_id
+    )
+      throw new Error("Turn job does not own the dispatch receipt.");
+  }
   let correlationId: string | undefined;
   let phase = "decrypt";
   try {
@@ -268,18 +306,29 @@ export async function dispatchAccountTurn(
       reasoning_effort,
     } = JSON.parse(await decryptSecret(entry.input_enc, key)) as RuntimeFollowupInput & { correlationId?: string };
     correlationId = savedCorrelationId;
+    if (claim) {
+      phase = "dispatch_fence";
+      if (id.toLowerCase() !== entry.sandbox_id || request_id !== entry.request_id)
+        throw new Error("Encrypted turn input does not match its receipt.");
+      if (!(await claim.canDispatch())) return;
+    }
     phase = "send";
     const result = await continueRequest(correlationId, () =>
       dispatch(caller, { id, request_id, prompt, model, reasoning_effort }),
     );
     phase = "publish_receipt";
-    await sql.query(
-      `with admitted as (update public.account_turn_queue set state='admitted',result_enc=$3
-           where sandbox_id=$1 and request_id=$2 and state='dispatching' returning sandbox_id)
-         delete from public.account_agent_reservations r using admitted a where r.sandbox_id=a.sandbox_id`,
-      [id, entry.request_id, await encryptSecret(JSON.stringify(result), key)],
-    );
+    const resultEnc = await encryptSecret(JSON.stringify(result), key);
+    const publish = (tx: Sql) =>
+      tx.query(
+        `with admitted as (update public.account_turn_queue set state='admitted',result_enc=$3
+             where sandbox_id=$1 and request_id=$2 and state='dispatching' returning sandbox_id)
+           delete from public.account_agent_reservations r using admitted a where r.sandbox_id=a.sandbox_id`,
+        [id, entry.request_id, resultEnc],
+      );
+    if (claim) await settleAccountTurn(sql, entry, claim, publish);
+    else await publish(sql);
   } catch (error) {
+    if (claim && (phase === "publish_receipt" || phase === "dispatch_fence")) throw error;
     const origin = error instanceof ToolApiError ? (error.cause ?? error) : error;
     const refusalCode =
       error instanceof ToolApiError || error instanceof VaultError || error instanceof ToolError
@@ -290,8 +339,7 @@ export async function dispatchAccountTurn(
       error.code === "conflict" &&
       (error.message === "Template launch refused: secret_unavailable." ||
         error.message === "Template launch refused: secret_version_changed.");
-    const rejected = await sql.transaction!(async (tx) => {
-      await tx.query("select id from public.credentials where id=$1 for update", [entry.account_id]);
+    const rejected = await settleAccountTurn(sql, entry, claim, async (tx) => {
       const unchanged = await tx.query<{ stopped_runtime: boolean }>(
         `select (s.status='stopped' and coalesce(${RUNTIME_LANE},false)) as stopped_runtime from public.sandboxes s
         join public.account_turn_queue q on q.sandbox_id=s.id and q.request_id=$2
