@@ -44,7 +44,7 @@ import {
   completeSandboxDeletion,
   expireAfterExtension,
   finishEnrolledRuntimeLaunch,
-  publishNativeChildSend,
+  publishNativeTurn,
   publishOwnerStop,
   recordNativeRetentionRefusal,
   recordObservedProviderState,
@@ -69,6 +69,7 @@ export interface ServerSandboxPatch extends SandboxPatch {
   expireAfterExtension?: true;
   nativeRetentionRefusal?: string;
   nativeChildSend?: { fromState: SandboxStatus; placement: string };
+  nativeSteerReceipt?: { fromState: SandboxStatus; placement: string };
   ownerStop?: true;
   onlyIfIdle?: boolean;
   retainedRuntimeStop?: string;
@@ -858,6 +859,11 @@ export function createSqlData(
           if (outcome === "conflict")
             throw new DataError("Runtime readiness publication is stale.", "sandbox_not_ready");
         }
+        const steerReceipt = patch.nativeSteerReceipt;
+        const steerGeneration = patch.expectedGeneration;
+        const steerToken = patch.activityToken;
+        if (steerReceipt && (!patch.finishActivity || steerGeneration === undefined || !steerToken))
+          throw new DataError("Native steer publication requires its activity fence.");
         const childSend = patch.nativeChildSend;
         const childSendToken = patch.activityToken;
         if (childSend && (!patch.advanceGeneration || patch.expectedGeneration === undefined || !childSendToken))
@@ -1078,6 +1084,31 @@ export function createSqlData(
             }
             return updated;
           });
+        } else if (steerReceipt && steerGeneration !== undefined && steerToken) {
+          if (!sql.transaction) throw new Error("Native steer publication requires a transaction.");
+          result = await sql.transaction(async (tx) => {
+            const locked = await tx.query<{ id: string }>(
+              `select s.id from public.sandboxes s where s.id=$3::uuid and ${SANDBOX_VISIBLE}
+                and s.lifecycle_generation=$4 and s.activity_lease_id=$5::uuid and s.activity_until>clock_timestamp()
+                and s.status=$6::public.sandbox_status and s.provider_sandbox_id=$7
+                and s.provider in ('boat','modal') and not s.boat_runtime and s.runtime_transport is null
+                and s.deleted_at is null and s.status<>'deleted' and s.stop_requested_at is null for update`,
+              [...scope, id, steerGeneration, steerToken, steerReceipt.fromState, steerReceipt.placement],
+            );
+            if (!locked.rows.length) return { rows: [] };
+            if (steerReceipt.fromState !== "running")
+              await publishNativeTurn(
+                tx,
+                id,
+                steerReceipt.fromState,
+                String(steerGeneration),
+                steerToken,
+                "native_steer_accepted",
+              );
+            const published = await applyUpdate(tx);
+            if (!published.rows[0]?.id) throw new DataError("Native steer publication is stale.", "sandbox_not_ready");
+            return published;
+          });
         } else if (childSend && childSendToken) {
           if (!sql.transaction) throw new Error("Native child send admission requires a transaction.");
           result = await sql.transaction(async (tx) => {
@@ -1085,7 +1116,14 @@ export function createSqlData(
             const row = admitted.rows[0];
             if (row?.id && childSend.fromState !== "running") {
               if (!row.generation) throw new Error("Native child send admission did not return its generation.");
-              await publishNativeChildSend(tx, id, childSend.fromState, row.generation, childSendToken);
+              await publishNativeTurn(
+                tx,
+                id,
+                childSend.fromState,
+                row.generation,
+                childSendToken,
+                "native_child_send_admitted",
+              );
             }
             return admitted;
           });
