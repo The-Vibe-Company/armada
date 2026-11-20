@@ -165,6 +165,10 @@ test.each([
   ["native request started without a legacy window", 2, "request", null, false, true],
   ["native legacy window still open", 2, "request", "infinity", false, false],
   ["runtime request started", 2, "request", "-infinity", true, false],
+  ["runtime command persisted", 2, "command", "-infinity", true, false],
+  ["runtime legacy window still open", 2, null, "infinity", true, false],
+  ["runtime dispatch has no evidence", 2, null, "-infinity", true, false],
+  ["older job for abandoned runtime dispatch", 3, null, "-infinity", true, false],
   ["native receipt has a prompt ID", 2, "prompt", "-infinity", false, true],
   ["native dispatch has no evidence", 2, null, "-infinity", false, false],
   ["older job for abandoned native dispatch", 3, null, "-infinity", false, false],
@@ -202,6 +206,11 @@ test.each([
     sandboxId,
     f.openaiCredentialId,
   ]);
+  if (activity === "command")
+    await db.query(
+      "insert into runtime_commands (sandbox_id, request_id, epoch, request_enc) values ($1,$2,1,''::bytea)",
+      [sandboxId, `follow_${requestId}`],
+    );
   const outcome = async () =>
     (
       await db.query(
@@ -238,7 +247,7 @@ test.each([
   }
   const owner = crypto.randomUUID();
   const claim = await store.claim("turn_dispatch", owner, 30, 1);
-  const reset = interrupted || scenario === "native dispatch has no evidence" || scenario.startsWith("older job");
+  const reset = interrupted || scenario.endsWith("dispatch has no evidence") || scenario.startsWith("older job");
   expect(await outcome()).toEqual([
     {
       job_state: uncertain ? "failed" : "leased",

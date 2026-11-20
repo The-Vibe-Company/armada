@@ -1,12 +1,12 @@
 import { decryptSecret, encryptSecret, type Sql, toBytea } from "@armada/core/server";
 import {
+  DISPATCH_ABANDONED,
   DISPATCHING_TURN_CANCELLED,
   failTurnReceipt,
-  NATIVE_DISPATCH_ABANDONED,
   NATIVE_DISPATCH_UNCERTAIN,
   QUEUED_DISPATCH_EVIDENCE,
   QUEUED_TURN_CANCELLED,
-  resetAbandonedNativeTurn,
+  resetAbandonedTurn,
 } from "../account-turn-dispatch.ts";
 import { deferTransactionWake, runtimeWakes } from "../wake-bus.ts";
 import type { Job, JobStore } from "./runner.ts";
@@ -88,7 +88,7 @@ export function createJobsStore(sql: Sql, encryptionKey?: string) {
           cancelled: boolean;
           queued_with_evidence: boolean;
           native_uncertain: boolean;
-          native_abandoned: boolean;
+          abandoned: boolean;
         }>(
           `select s.lifecycle_generation::text as generation,
                   case when q.state = 'queued' then ${QUEUED_TURN_CANCELLED}
@@ -96,10 +96,11 @@ export function createJobsStore(sql: Sql, encryptionKey?: string) {
                   (q.state = 'queued' and ${QUEUED_DISPATCH_EVIDENCE}) as queued_with_evidence,
                   (q.state = 'dispatching' and (q.dispatch_until is null or q.dispatch_until <= clock_timestamp())
                     and ${NATIVE_DISPATCH_UNCERTAIN}) as native_uncertain,
-                  (q.state = 'dispatching' and ${NATIVE_DISPATCH_ABANDONED}) as native_abandoned
+                  (q.state = 'dispatching' and ${DISPATCH_ABANDONED}
+                    and (s.lifecycle_generation = $3 or s.status in ('ready','running'))) as abandoned
            from public.sandboxes s join public.account_turn_queue q on q.sandbox_id = s.id
            where s.id = $1 and q.request_id = $2`,
-          [sandboxId, requestId],
+          [sandboxId, requestId, job.generation],
         );
         if (sandbox?.cancelled || sandbox?.queued_with_evidence || sandbox?.native_uncertain) {
           const reason = sandbox.cancelled
@@ -112,13 +113,13 @@ export function createJobsStore(sql: Sql, encryptionKey?: string) {
           return job;
         }
         let reset = false;
-        if (!retiring && sandbox?.native_abandoned) {
+        if (!retiring && sandbox?.abandoned) {
           await tx.query("select id from public.credentials where id = $1 for update nowait", [receipt.account_id]);
           const { rows } = await tx.query(
             `select j.id from public.jobs j where ${fence} and j.generation = $4 and j.generation <= $5 for update nowait`,
             [...claim, sandbox.generation],
           );
-          if (rows.length) reset = await resetAbandonedNativeTurn(tx, sandboxId, requestId);
+          if (rows.length) reset = await resetAbandonedTurn(tx, sandboxId, requestId);
         }
         if (receipt.state === "queued" || (reset && sandbox?.generation !== job.generation)) {
           const {

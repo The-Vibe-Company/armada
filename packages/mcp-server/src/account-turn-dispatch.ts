@@ -17,11 +17,12 @@ export const RUNTIME_LANE = `(s.provider='docker' or s.boat_runtime or s.runtime
 export const NATIVE_DISPATCH_UNCERTAIN = `(not coalesce(${RUNTIME_LANE},false)
   and (s.lifecycle_generation is distinct from q.dispatch_generation
     or s.activity_lease_id is not null or ${QUEUED_DISPATCH_EVIDENCE}))`;
-export const NATIVE_DISPATCH_ABANDONED = `(q.dispatch_until <= clock_timestamp()
+export const DISPATCH_ABANDONED = `(q.dispatch_until <= clock_timestamp()
   and s.stop_requested_at is null and s.deleted_at is null and s.expires_at > clock_timestamp()
-  and (s.status in ('ready','running') or (s.status='stopped' and s.lifecycle_generation=q.queued_generation))
-  and s.lifecycle_generation=q.dispatch_generation and not ${NATIVE_DISPATCH_UNCERTAIN}
-  and not coalesce(${RUNTIME_LANE},false))`;
+  and (s.status in ('ready','running') or (s.status='stopped' and s.lifecycle_generation=q.queued_generation
+    and not coalesce(${RUNTIME_LANE},false)))
+  and s.lifecycle_generation=q.dispatch_generation
+  and s.activity_lease_id is null and not ${QUEUED_DISPATCH_EVIDENCE})`;
 export const UNCERTAIN_DISPATCH_MESSAGE = "Dispatch outcome uncertain; inspect sandbox history before resending.";
 
 const TURN_LIFECYCLE_CANCELLED = `(s.deleted_at is not null or s.expires_at <= now() or s.stop_requested_at is not null
@@ -45,13 +46,13 @@ export async function failTurnReceipt(tx: Sql, sandboxId: string, requestId: str
   );
 }
 
-export async function resetAbandonedNativeTurn(tx: Sql, sandboxId: string, requestId: string) {
+export async function resetAbandonedTurn(tx: Sql, sandboxId: string, requestId: string) {
   const { rows } = await tx.query(
     `with retried as (update public.account_turn_queue q set state='queued',
        dispatch_generation=null,dispatch_until=null,failure_reason=null
        from public.sandboxes s where s.id=q.sandbox_id
        and q.sandbox_id=$1 and q.request_id=$2 and q.state='dispatching'
-       and ${NATIVE_DISPATCH_ABANDONED} returning q.sandbox_id,q.account_id),
+       and ${DISPATCH_ABANDONED} returning q.sandbox_id,q.account_id),
      released as (delete from public.account_agent_reservations r using retried q
        where r.sandbox_id=q.sandbox_id and r.account_id=q.account_id)
      select sandbox_id from retried`,
