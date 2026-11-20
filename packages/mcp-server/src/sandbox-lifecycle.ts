@@ -651,7 +651,7 @@ export async function recordObservedProviderState(
   observation: {
     sandboxId: string;
     generation: number;
-    fromState: "ready" | "running";
+    fromState: SandboxStatus;
     toState: "failed" | "stopped" | "ready" | "running";
     reason: string | null;
     stoppedAt: string | null;
@@ -660,6 +660,9 @@ export async function recordObservedProviderState(
 ) {
   if (!sql.transaction) throw new Error("Provider observation publication requires a transaction.");
   const { sandboxId, generation, fromState, toState, reason, stoppedAt, providerRunPlacement } = observation;
+  const nativeStop = toState === "stopped" && providerRunPlacement !== undefined;
+  const live = fromState === "ready" || fromState === "running";
+  if (fromState === "deleted" || (!live && !nativeStop)) return { kind: "conflict" } satisfies SandboxTransitionResult;
   const nativeTurn = toState === "ready" || toState === "running";
   if (nativeTurn && providerRunPlacement === undefined)
     throw new Error("Native turn observation requires the observed placement.");
@@ -671,11 +674,11 @@ export async function recordObservedProviderState(
          and case when $4::text is null then
            ((s.provider='boat' and s.boat_runtime) or (s.provider='modal' and s.runtime_transport='dialout'))
          else s.provider_sandbox_id=$4 and not s.boat_runtime and s.runtime_transport is distinct from 'dialout' end
-         and s.stop_requested_at is null and s.deleted_at is null
+         and ($5::boolean or s.stop_requested_at is null) and s.deleted_at is null
          and (s.activity_until is null or s.activity_until<now())
          and (s.reconcile_lease_until is null or s.reconcile_lease_until<now())
        for update of s`,
-      [...scope, sandboxId, providerRunPlacement ?? null],
+      [...scope, sandboxId, providerRunPlacement ?? null, nativeStop && !live],
     );
     if (!eligible.rows.length) return { kind: "conflict" } satisfies SandboxTransitionResult;
     const path = providerRunPlacement === undefined ? "runtime" : "native";

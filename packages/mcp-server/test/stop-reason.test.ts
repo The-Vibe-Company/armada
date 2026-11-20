@@ -230,6 +230,7 @@ test.each([
   { runtime: true, scenario: "stale" },
   { runtime: true, scenario: "release_failed" },
   { runtime: false, scenario: "ready" },
+  { runtime: false, scenario: "failed" },
   { runtime: false, scenario: "stale" },
   { runtime: false, scenario: "changed_state" },
   { runtime: false, scenario: "release_failed" },
@@ -239,11 +240,12 @@ test.each([
     const { db, people, sharedGoldenId, openaiCredentialId } = await failureDatabase();
     const boat = fakeBoat();
     const machine = await boat.provider.fork({ from: "snapshot" });
+    if (scenario === "failed") await boat.provider.prompt({ sandboxId: machine.id, harness: "codex", text: "work" });
     await boat.provider.stop({ sandboxId: machine.id });
     const stoppedAt = new Date("2026-01-01T00:00:00Z");
     boat.sandbox(machine.id).info.stoppedAt = stoppedAt;
     const id = crypto.randomUUID();
-    const from = scenario === "running" ? "running" : "ready";
+    const from = scenario === "running" || scenario === "failed" ? scenario : "ready";
     await db.query(
       `insert into sandboxes(id,provider,provider_sandbox_id,golden_id,org_id,owner_id,harness,status,boat_runtime)
        values ($1,'boat',$2,$3,$4,$5,'codex',$6,$7)`,
@@ -278,7 +280,7 @@ test.each([
         begin raise exception 'Stop reservation release failed'; end $$;
         create trigger reject_stop_release before delete on account_agent_reservations
         for each row execute function reject_stop_release();`);
-    const applied = scenario === "ready" || scenario === "running";
+    const applied = scenario === "ready" || scenario === "running" || scenario === "failed";
     const expectedStatus = applied ? "stopped" : scenario === "changed_state" ? "running" : from;
     try {
       const observation = readStatus(boat.provider, store, sandbox, { now: new Date("2026-01-02T00:00:00Z") });

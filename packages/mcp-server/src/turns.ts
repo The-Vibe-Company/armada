@@ -310,10 +310,11 @@ export async function readStatus(
       patch.stoppedAt = (info.stoppedAt ?? options.now).toISOString();
     } else if (sandbox.stoppedAt !== null && next !== "failed") patch.stoppedAt = null;
     if (
-      (sandbox.status === "ready" || sandbox.status === "running") &&
-      (next === "stopped" ||
-        next === "failed" ||
-        (!runtime && next !== sandbox.status && (next === "ready" || next === "running")))
+      (next === "stopped" && !runtime && (sandbox.provider === "boat" || sandbox.provider === "modal")) ||
+      ((sandbox.status === "ready" || sandbox.status === "running") &&
+        (next === "stopped" ||
+          next === "failed" ||
+          (!runtime && next !== sandbox.status && (next === "ready" || next === "running"))))
     )
       patch.providerObservation = {
         fromState: sandbox.status,
