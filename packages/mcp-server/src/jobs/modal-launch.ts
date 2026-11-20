@@ -13,12 +13,7 @@ interface ModalLaunchPlan {
   machine: Omit<ModalMachineOptions, "journal">;
 }
 
-export async function dispatchModalLaunch(
-  sql: Sql,
-  job: Job,
-  context: DispatchContext,
-  plan: ModalLaunchPlan,
-) {
+export async function dispatchModalLaunch(sql: Sql, job: Job, context: DispatchContext, plan: ModalLaunchPlan) {
   const sandboxId = job.sandbox_id;
   const generation = Number(job.generation);
   if (job.kind !== "launch" || !sandboxId || !Number.isSafeInteger(generation) || generation < 1)
