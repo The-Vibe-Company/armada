@@ -1474,44 +1474,63 @@ describe("tools", () => {
     expect(boat.steers).toHaveLength(3);
   });
 
-  test.each(["steer rollback", "send rollback", "send stale state", "send accepted"] as const)(
-    "accepted native receipt publishes only under the current lifecycle fence (%s)",
+  test("accepted native steer retains its receipt when SQL publication rolls back", async () => {
+    const server = await start();
+    const { boat, client, db, people, token } = server;
+    const { id, machine } = await seedRunningSandbox(server);
+    const { promptId } = await boat.provider.prompt({ sandboxId: machine.id, harness: "claude", text: "go" });
+    await db.query("update sandboxes set status='ready' where id=$1", [id]);
+    const mcp = await client(await token(people.member));
+    await db.exec("alter table sandboxes add constraint reject_steer_prompt check (task_prompt_id is null)");
+    try {
+      const result = await call(mcp, "send", { id, steer: true, prompt: "Use bun" });
+      expect(result.isError).toBe(true);
+      expect(result.text).toContain("error code: outcome_unknown");
+      expect((await db.query("select prompt_id from native_webhook_prompts where sandbox_id=$1", [id])).rows).toEqual([
+        { prompt_id: promptId },
+      ]);
+      expect(
+        (await db.query("select status, task_prompt_id, activity_lease_id from sandboxes where id=$1", [id])).rows,
+      ).toEqual([{ status: "ready", task_prompt_id: null, activity_lease_id: expect.any(String) }]);
+      expect((await db.query("select code from sandbox_transitions where sandbox_id=$1", [id])).rows).toEqual([]);
+    } finally {
+      await db.exec("alter table sandboxes drop constraint reject_steer_prompt");
+    }
+  });
+
+  test.each(["rollback", "stale state", "accepted"] as const)(
+    "native send receipt publication (%s)",
     async (scenario) => {
       const server = await start();
       const { boat, client, db, people, token } = server;
-      const { id, machine } = await seedRunningSandbox(server);
-      const steer = scenario === "steer rollback";
-      const rollback = scenario.endsWith("rollback");
-      const stale = scenario === "send stale state";
-      const prompt = boat.provider.prompt;
-      let promptId = steer
-        ? (await prompt({ sandboxId: machine.id, harness: "claude", text: "go" })).promptId
-        : undefined;
-      boat.provider.prompt = async (request) => {
-        const receipt = await prompt(request);
-        promptId = receipt.promptId;
-        if (stale) await db.query("update sandboxes set status='failed' where id=$1", [id]);
-        return receipt;
-      };
+      const { id } = await seedRunningSandbox(server);
       await db.query("update sandboxes set status='ready' where id=$1", [id]);
       const mcp = await client(await token(people.member));
-      if (rollback)
-        await db.exec("alter table sandboxes add constraint reject_native_prompt check (task_prompt_id is null)");
+      const prompt = boat.provider.prompt;
+      boat.provider.prompt = async (request) => {
+        const receipt = await prompt(request);
+        if (scenario === "stale state") await db.query("update sandboxes set status='failed' where id=$1", [id]);
+        return receipt;
+      };
+      if (scenario === "rollback")
+        await db.exec("alter table sandboxes add constraint reject_send_prompt check (task_prompt_id is null)");
       try {
-        const result = await call(mcp, "send", { id, steer, prompt: "Use bun" });
-        const accepted = scenario === "send accepted";
+        const result = await call(mcp, "send", { id, prompt: "continue" });
+        const accepted = scenario === "accepted";
         expect(Boolean(result.isError)).toBe(!accepted);
         if (!accepted) expect(result.text).toContain("error code: outcome_unknown");
-        expect(promptId).toBeDefined();
-        expect((await db.query("select prompt_id from native_webhook_prompts where sandbox_id=$1", [id])).rows).toEqual(
-          [{ prompt_id: promptId }],
+        const { rows: receipts } = await db.query("select prompt_id from native_webhook_prompts where sandbox_id=$1", [
+          id,
+        ]);
+        expect(receipts).toEqual([{ prompt_id: expect.any(String) }]);
+        const { rows: sandboxes } = await db.query(
+          "select status, task_prompt_id, activity_lease_id from sandboxes where id=$1",
+          [id],
         );
-        expect(
-          (await db.query("select status, task_prompt_id, activity_lease_id from sandboxes where id=$1", [id])).rows,
-        ).toEqual([
+        expect(sandboxes).toEqual([
           {
-            status: accepted ? "running" : stale ? "failed" : "ready",
-            task_prompt_id: accepted ? promptId : null,
+            status: accepted ? "running" : scenario === "stale state" ? "failed" : "ready",
+            task_prompt_id: accepted ? receipts[0]?.prompt_id : null,
             activity_lease_id: accepted ? null : expect.any(String),
           },
         ]);
@@ -1533,7 +1552,7 @@ describe("tools", () => {
             : [],
         );
       } finally {
-        if (rollback) await db.exec("alter table sandboxes drop constraint reject_native_prompt");
+        if (scenario === "rollback") await db.exec("alter table sandboxes drop constraint reject_send_prompt");
       }
     },
   );
