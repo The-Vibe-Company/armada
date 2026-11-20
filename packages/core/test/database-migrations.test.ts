@@ -2,6 +2,7 @@ import { afterAll, beforeAll, expect, test } from "bun:test";
 import { readdirSync } from "node:fs";
 import type { PGlite } from "@electric-sql/pglite";
 import { applyMigrations, migrationsDir, openDatabase } from "../../../scripts/db/apply.ts";
+import { closeableFixture } from "../../mcp-server/test/closeable.fixture.ts";
 import { HARNESSES, type SandboxState, type Visibility } from "../src/index.ts";
 
 const PROVIDER_STATES = [
@@ -24,19 +25,12 @@ assertStatesCovered(undefined as never);
 const files = readdirSync(migrationsDir)
   .filter((name) => name.endsWith(".sql"))
   .sort();
-let connection: PGlite | undefined;
-beforeAll(async () => {
-  connection = await openDatabase();
-});
-afterAll(async () => {
-  const db = connection;
-  connection = undefined;
-  await db?.close();
-});
+const migrationDatabase = closeableFixture(openDatabase);
+beforeAll(migrationDatabase.setup);
+afterAll(migrationDatabase.close);
 
 test("migrations apply on a fresh database", async () => {
-  const db = connection;
-  if (!db) throw new Error("Migration fixture is not open");
+  const db = migrationDatabase.get();
   expect(files.every((name) => /^\d{14}_[a-z0-9_]+\.sql$/.test(name))).toBe(true);
   expect(await applyMigrations(db)).toEqual(files);
 
