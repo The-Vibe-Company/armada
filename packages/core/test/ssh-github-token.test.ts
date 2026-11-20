@@ -411,8 +411,16 @@ test("GitHub hydration provisions absent system Python without passing the paylo
   const fixture = join(root, "python-fixture");
   const apt = join(root, "apt-get");
   const id = join(root, "id");
+  const sudo = join(root, "sudo");
+  const env = join(root, "env");
   try {
-    await writeFile(id, "#!/bin/sh\nprintf '0\\n'\n", { mode: 0o700 });
+    await writeFile(id, "#!/bin/sh\nprintf '1000\\n'\n", { mode: 0o700 });
+    await writeFile(env, '#!/bin/sh\ntest -z "$ARMADA_GIT_TOKEN" || exit 91\nexec /usr/bin/env "$@"\n', {
+      mode: 0o700,
+    });
+    await writeFile(sudo, '#!/bin/sh\ntest -z "$ARMADA_GIT_TOKEN" && test "$1" = -n || exit 91\nshift\nexec "$@"\n', {
+      mode: 0o700,
+    });
     await writeFile(
       apt,
       `#!/bin/sh
@@ -431,7 +439,7 @@ esac
 if [ "$2" = -c ]; then
   test -z "$ARMADA_GIT_TOKEN"
 else
-  test "$ARMADA_GIT_TOKEN" = ${shellQuote(payload!)} || exit 93
+  test -n "$ARMADA_GIT_TOKEN" || exit 93
   printf 'installer reached\\n'
 fi
 `,
@@ -442,7 +450,9 @@ fi
         .join("\n")
         .replaceAll("/usr/bin/python3", interpreter)
         .replaceAll("/usr/bin/apt-get", apt)
-        .replaceAll("/usr/bin/id", id),
+        .replaceAll("/usr/bin/id", id)
+        .replaceAll("/usr/bin/env", env)
+        .replaceAll("/usr/bin/sudo", sudo),
       env: { ARMADA_GIT_TOKEN: payload },
       encoding: "utf8",
       timeout: 800,

@@ -202,9 +202,10 @@ cleanup_github_token() {
   unset ARMADA_SSH_PUBLIC_KEY
 }
 trap cleanup_github_token EXIT
-github_python_ready() {
+github_python_ready() (
+  unset ARMADA_GIT_TOKEN
   /usr/bin/env -i /usr/bin/python3 -I -c 'import fcntl,json,os,stat,subprocess,tempfile,time' </dev/null >/dev/null 2>&1
-}
+)
 install_github_python() (
   unset ARMADA_GIT_TOKEN
   if [ "$(/usr/bin/id -u)" = 0 ]; then
@@ -214,7 +215,7 @@ install_github_python() (
   fi
   "$@" /usr/bin/env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin DEBIAN_FRONTEND=noninteractive /bin/sh -c '
     /usr/bin/apt-get -o DPkg::Lock::Timeout=15 update &&
-    /usr/bin/apt-get -o DPkg::Lock::Timeout=15 install -y --no-install-recommends python3
+    /usr/bin/apt-get -o DPkg::Lock::Timeout=15 install -y --no-install-recommends --reinstall python3 python3-minimal
   ' </dev/null >/dev/null 2>&1
 )
 if ! github_python_ready; then
