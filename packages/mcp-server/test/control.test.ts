@@ -2688,7 +2688,7 @@ test("CLI/API connection checks require the owner and current bound revision, ex
     expect(resolutions).toBe(0);
     const rejected = await owner.run(args);
     expect(rejected.code).toBe(1);
-    expect(rejected.err).toBe("");
+    expect(rejected.err).not.toContain(key);
     expect(JSON.parse(rejected.out)).toEqual({
       id,
       ok: false,

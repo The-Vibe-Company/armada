@@ -28,6 +28,7 @@ const runOperation: (command: "mcp" | "bind-credential") => Command["run"] = (co
               (() => (process.stdin.isTTY ? Promise.reject(new Error("stdin required")) : Bun.stdin.text()))
             )(),
       () => (deps.readStdin ? deps.readStdin() : process.stdin.isTTY ? Promise.resolve("") : Bun.stdin.text()),
+      deps.sandboxFile,
     );
 };
 
@@ -173,5 +174,6 @@ Use a sandbox ID from armada list and a credential-account UUID from creds list.
 Do not pass secret credential values. Output is JSON even without --json.
 Example: armada bind-credential SANDBOX_UUID --credential-id ACCOUNT_UUID --org ORG_UUID
 `,
+  automaticJson: true,
   run: runOperation("bind-credential"),
 } satisfies Command;

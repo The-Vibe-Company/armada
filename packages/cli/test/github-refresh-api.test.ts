@@ -65,7 +65,7 @@ test.each([
       },
     );
     expect(code).toBe(1);
-    expect(JSON.parse(error).error).toEqual({ code: "conflict", message });
+    expect(JSON.parse(error).error).toEqual({ code: "conflict", message, hint: expect.anything() });
   },
 );
 

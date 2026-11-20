@@ -122,6 +122,7 @@ describe("run", () => {
             error: {
               code: "usage",
               message: `${diagnostic}. Run 'armada --help'.`,
+              hint: expect.stringContaining("--help"),
             },
           });
         } else {
