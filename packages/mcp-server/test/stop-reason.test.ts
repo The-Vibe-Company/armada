@@ -376,18 +376,27 @@ test.each([
   );
 });
 
-test.each(["accepted", "already running", "stale state", "rollback"] as const)(
+test.each(["accepted", "already running", "stale state", "expired lease"] as const)(
   "native steer publication preserves the activity fence (%s)",
   async (scenario) => {
     const { db, people, sharedGoldenId } = await failureDatabase();
     const id = crypto.randomUUID();
     const activityToken = crypto.randomUUID();
-    const status = scenario === "already running" ? "running" : scenario === "stale state" ? "failed" : "ready";
+    const running = scenario === "already running" || scenario === "expired lease";
+    const status = running ? "running" : scenario === "stale state" ? "failed" : "ready";
     await db.query(
       `insert into sandboxes(id,provider,provider_sandbox_id,golden_id,org_id,owner_id,harness,status,
         activity_lease_id,activity_until)
-       values ($1,'boat','placement',$2,$3,$4,'codex',$5,$6,'infinity')`,
-      [id, sharedGoldenId, people.org, people.owner, status, activityToken],
+       values ($1,'boat','placement',$2,$3,$4,'codex',$5,$6,$7)`,
+      [
+        id,
+        sharedGoldenId,
+        people.org,
+        people.owner,
+        status,
+        activityToken,
+        scenario === "expired lease" ? "-infinity" : "infinity",
+      ],
     );
     const store = createSqlData(db)({
       userId: people.owner,
@@ -396,49 +405,43 @@ test.each(["accepted", "already running", "stale state", "rollback"] as const)(
     }).sandboxes;
     const expectedGeneration = (await store.get(id))?.lifecycleGeneration;
     if (expectedGeneration === undefined) throw new Error("Missing fixture generation");
-    if (scenario === "rollback")
-      await db.exec("alter table sandboxes add constraint reject_steer_prompt check (task_prompt_id <> 'accepted')");
     const completed = scenario === "accepted" || scenario === "already running";
-    try {
-      const publication = store.update(id, {
-        nativeSteerReceipt: { fromState: status === "running" ? "running" : "ready", placement: "placement" },
-        statusReason: null,
-        taskPromptId: "accepted",
-        conversationIds: ["conversation"],
-        finishActivity: true,
-        expectedGeneration,
-        activityToken,
-      });
-      if (completed) await publication;
-      else await expect(publication).rejects.toThrow();
-      expect(await store.get(id)).toMatchObject({
-        status: completed ? "running" : status,
-        lifecycleGeneration: expectedGeneration + Number(completed),
-        taskPromptId: completed ? "accepted" : null,
-        conversationIds: completed ? ["conversation"] : [],
-      });
-      expect((await db.query("select activity_lease_id from sandboxes where id=$1", [id])).rows).toEqual([
-        { activity_lease_id: completed ? null : activityToken },
-      ]);
-      const { rows } = await db.query(
-        "select from_status,to_status,actor,code,generation::int from sandbox_transitions where sandbox_id=$1",
-        [id],
-      );
-      expect(rows).toEqual(
-        scenario === "accepted"
-          ? [
-              {
-                from_status: "ready",
-                to_status: "running",
-                actor: "native_turn",
-                code: "native_steer_accepted",
-                generation: expectedGeneration,
-              },
-            ]
-          : [],
-      );
-    } finally {
-      if (scenario === "rollback") await db.exec("alter table sandboxes drop constraint reject_steer_prompt");
-    }
+    const publication = store.update(id, {
+      nativeSteerReceipt: { fromState: status === "running" ? "running" : "ready", placement: "placement" },
+      statusReason: null,
+      taskPromptId: "accepted",
+      conversationIds: ["conversation"],
+      finishActivity: true,
+      expectedGeneration,
+      activityToken,
+    });
+    if (completed) await publication;
+    else await expect(publication).rejects.toThrow();
+    expect(await store.get(id)).toMatchObject({
+      status: completed ? "running" : status,
+      lifecycleGeneration: expectedGeneration + Number(completed),
+      taskPromptId: completed ? "accepted" : null,
+      conversationIds: completed ? ["conversation"] : [],
+    });
+    expect((await db.query("select activity_lease_id from sandboxes where id=$1", [id])).rows).toEqual([
+      { activity_lease_id: completed ? null : activityToken },
+    ]);
+    const { rows } = await db.query(
+      "select from_status,to_status,actor,code,generation::int from sandbox_transitions where sandbox_id=$1",
+      [id],
+    );
+    expect(rows).toEqual(
+      scenario === "accepted"
+        ? [
+            {
+              from_status: "ready",
+              to_status: "running",
+              actor: "native_turn",
+              code: "native_steer_accepted",
+              generation: expectedGeneration,
+            },
+          ]
+        : [],
+    );
   },
 );

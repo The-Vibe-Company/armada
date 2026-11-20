@@ -928,6 +928,7 @@ export function createSqlData(
         if (reason !== undefined && stopAdmissionReason === undefined) set("status_reason", reason, "::text");
         if (sets.length === 0) return;
         let fence = "";
+        if (steerReceipt) fence += " and s.activity_until>clock_timestamp()";
         if (patch.turnActivity !== undefined)
           fence += " and s.status in ('ready','running') and s.stop_requested_at is null and s.deleted_at is null";
         if (patch.turnActivity === "claim") fence += " and s.activity_lease_id is null";
@@ -1089,7 +1090,7 @@ export function createSqlData(
           result = await sql.transaction(async (tx) => {
             const locked = await tx.query<{ id: string }>(
               `select s.id from public.sandboxes s where s.id=$3::uuid and ${SANDBOX_VISIBLE}
-                and s.lifecycle_generation=$4 and s.activity_lease_id=$5::uuid and s.activity_until>clock_timestamp()
+                and s.lifecycle_generation=$4 and s.activity_lease_id=$5::uuid
                 and s.status=$6::public.sandbox_status and s.provider_sandbox_id=$7
                 and s.provider in ('boat','modal') and not s.boat_runtime and s.runtime_transport is null
                 and s.deleted_at is null and s.status<>'deleted' and s.stop_requested_at is null for update`,
