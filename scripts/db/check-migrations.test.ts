@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
-import { destructiveStatements, dropSafety, transactionErrors } from "./check-migrations";
+import { destructiveStatements, dropSafety, routineSettingErrors, transactionErrors } from "./check-migrations";
 
 test("migration CLI rejects collisions, placeholder versions and non-increasing additions against the current base", () => {
   const script = resolve(import.meta.dir, "check-migrations.ts");
@@ -112,6 +112,39 @@ test("tracks real transaction boundaries and ignores SQL inside comments and bod
     "Line 12: LOCK requires an explicit BEGIN transaction.",
     "Line 14: DECLARE CURSOR requires an explicit BEGIN transaction.",
   ]);
+});
+
+test.each([
+  [
+    "create or replace function public.f(x numeric(10, 2)) returns int language sql set armada /* flag */ . share = 'on' as $$ select 1 $$",
+    "armada.share",
+  ],
+  ['alter function public.f set "armada.share" to default', "armada.share"],
+  [`alter function public.f() set U&"armada!002eshare" UESCAPE '!' from current`, "armada.share"],
+  ["create procedure public.p() language sql set armada.share = 'on' begin atomic select 1; end", "armada.share"],
+  ["alter routine public.f() set armada.share to 'on'", "armada.share"],
+])("rejects a custom routine setting in %s", (sql, parameter) => {
+  expect(routineSettingErrors(`-- comment\n${sql};`)).toEqual([
+    expect.stringMatching(new RegExp(`^Line 2: .*custom parameter.*${parameter}.*pg_catalog[.]set_config`)),
+  ]);
+});
+
+test("allows built-in routine settings, schema changes and SQL inside function bodies", () => {
+  expect(
+    routineSettingErrors(`
+    create function f() returns int set search_path = public language plpgsql as $$
+      begin
+        set armada.share = 'on';
+        return 1;
+      end
+    $$;
+    alter function f() set "work_mem" to '4MB';
+    alter function f() set schema private;
+    create function g() returns text language sql return 'set armada.share to on';
+    create procedure p() language sql begin atomic set armada.share = 'on'; end;
+    set armada.share = 'off';
+  `),
+  ).toEqual([]);
 });
 
 test("finds top-level drops and renames, including quoted names and multi-object statements", () => {
