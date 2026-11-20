@@ -5,6 +5,7 @@ import { MODEL_CATALOG } from "../models.ts";
 import { isExternalRef } from "../sandbox.ts";
 import { SANDBOX_PLACEMENT_PROVIDERS } from "../sandbox-provider.ts";
 import { USAGE_UNAVAILABLE_CODES } from "../sandbox-usage.ts";
+import { sandboxControlErrors, sandboxDispatchErrors, sandboxStatusErrors, stopSandboxErrors } from "./failures.ts";
 import type { Operation } from "./index.ts";
 
 export const sandboxIdInput = z.string().describe("Armada's sandbox id (a uuid, as returned by launch and list).");
@@ -328,29 +329,9 @@ function sandboxOperation<
     audience,
     description: tool.description,
     ...(tool.mcpDescription === undefined ? {} : { mcpDescription: tool.mcpDescription }),
-    errors: [
-      "unauthorized",
-      "dependency_unavailable",
-      "invalid",
-      "forbidden",
-      "not_found",
-      "unavailable",
-      "internal",
-      ...(tool.errors ?? []),
-    ],
+    errors: [...sandboxDispatchErrors, ...(tool.errors ?? [])],
   } satisfies Operation<z.ZodType, z.ZodType> & { toolName: string; tool: typeof tool; mcpBranch: Branch[0] };
 }
-
-const sandboxControlErrors = [
-  "conflict",
-  "invalid_request",
-  "unsupported",
-  "credential_binding_required",
-  "sandbox_terminal",
-  "sandbox_retention_ended",
-  "rate_limited",
-  "outcome_unknown",
-] as const;
 
 const stopDescription =
   "Stops the machine. Modal keeps its disk only if checkpoint succeeds; fallback termination returns " +
@@ -490,7 +471,7 @@ export const sandboxOperations = {
     "agent",
     {
       title: "Stop a sandbox",
-      errors: ["conflict", "credential_binding_unsafe", "rate_limited", "outcome_unknown"],
+      errors: stopSandboxErrors,
       description: stopDescription,
       mcpDescription:
         `${stopDescription} Set turn to interrupt the current turn and keep the machine up. ` +
@@ -524,7 +505,7 @@ export const sandboxOperations = {
     "agent",
     {
       title: "Sandbox status",
-      errors: ["conflict", "rate_limited"],
+      errors: sandboxStatusErrors,
       description: statusDescription,
       mcpDescription: `${statusDescription} Set wait to block until settled or timed out.`,
       input: {
@@ -544,7 +525,7 @@ export const sandboxOperations = {
   ),
   waitSandbox: sandboxOperation("waitSandbox", "/api/v1/sandbox/wait", "wait", "public", {
     title: "Wait for the agent",
-    errors: ["conflict", "rate_limited"],
+    errors: sandboxStatusErrors,
     description:
       `Blocks until the agent settles (its turn finished, failed or was interrupted, or the machine stopped) ` +
       `or the timeout passes, then answers like status with timedOut. Default ${DEFAULT_WAIT_SECONDS}s, ` +
