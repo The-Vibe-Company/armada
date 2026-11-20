@@ -4,7 +4,7 @@ import { NotFoundError, type Sandbox } from "modal";
 import type { boundModalApp, modalConnection } from "./client.ts";
 import { modalBuilderImageError, modalError, refusal } from "./errors.ts";
 import { DEPLOYMENT_TAG } from "./inventory.ts";
-import { lookupModalCompute } from "./machine.ts";
+import { lookupModalCompute, lookupNamedModalCompute, verifyModalComputeOwnership } from "./machine.ts";
 import type { Machine, RunnerDistribution, RunnerTransport, Scope } from "./ports.ts";
 import type { ModalProviderOptions } from "./provider.ts";
 import { SSH_PORT } from "./ssh.ts";
@@ -60,10 +60,7 @@ export function createPhysicalLifecycle(deps: {
     await boundNotAbsence();
     let sb: Sandbox;
     try {
-      sb = await client.sandboxes.fromName(appName, row.physicalName, {
-        environment: scope.binding.environment,
-        includeTerminated: true,
-      });
+      sb = await lookupNamedModalCompute(client, appName, row.physicalName, scope.binding.environment);
     } catch (error) {
       if (modalError(error).code === "not_found")
         throw refusal(
@@ -84,8 +81,7 @@ export function createPhysicalLifecycle(deps: {
         "Named machine ownership verification is unavailable; reservation preserved. Retry reconciliation.",
       );
     }
-    if (!Object.entries(ownershipTags(row)).every(([key, value]) => tags[key] === value))
-      throw refusal("conflict", "Named machine ownership does not match the reservation; resource not modified.");
+    verifyModalComputeOwnership(tags, ownershipTags(row));
     return sb;
   }
   async function bootStage<T>(
