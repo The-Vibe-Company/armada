@@ -548,51 +548,61 @@ describe("tools", () => {
     expect(boat.keys).toEqual([SECRETS.personalBoat]);
   });
 
-  test.each(["applied", "superseded", "rollback"] as const)("launch failure settlement (%s)", async (scenario) => {
-    const { boat, client, db, people, token } = await start();
-    const mcp = await client(await token(people.member));
-    if (scenario === "rollback")
-      await db.exec(`alter table sandboxes add constraint reject_launch_diagnostic
+  test.each(["applied", "superseded", "reported", "rollback"] as const)(
+    "launch failure settlement (%s)",
+    async (scenario) => {
+      const { boat, client, db, people, token } = await start();
+      const mcp = await client(await token(people.member));
+      if (scenario === "rollback")
+        await db.exec(`alter table sandboxes add constraint reject_launch_diagnostic
         check (status_reason is null or status_reason='launch_failed')`);
-    boat.provider.prompt = async () => {
-      if (scenario === "superseded") await db.exec("update sandboxes set status='stopping' where status='starting'");
-      throw new Error("Initial prompt submission failed.");
-    };
+      boat.provider.prompt = async () => {
+        if (scenario === "superseded") await db.exec("update sandboxes set status='stopping' where status='starting'");
+        if (scenario === "reported")
+          await db.exec(
+            "update sandboxes set status='failed', status_reason='Startup already reported a failure' where status='starting'",
+          );
+        throw new Error("Initial prompt submission failed.");
+      };
 
-    const launched = await call(mcp, "launch", {
-      provider: "boat",
-      golden: "shared",
-      harness: "claude",
-      prompt: "hello",
-    });
-    expect(launched.isError).toBe(true);
-    const { rows } = await db.query(
-      "select status, status_reason, lifecycle_generation::int, activity_lease_id from sandboxes",
-    );
-    expect(rows).toEqual([
-      scenario === "applied"
-        ? {
-            status: "failed",
-            status_reason: expect.stringContaining("Initial prompt submission failed."),
-            lifecycle_generation: 2,
-            activity_lease_id: null,
-          }
-        : {
-            status: scenario === "superseded" ? "stopping" : "starting",
-            status_reason: null,
-            lifecycle_generation: 1,
-            activity_lease_id: expect.any(String),
-          },
-    ]);
-    const journal = await db.query(
-      "select from_status, actor, code, generation::int from sandbox_transitions where to_status='failed'",
-    );
-    expect(journal.rows).toEqual(
-      scenario === "applied"
-        ? [{ from_status: "starting", actor: "lifecycle_runner", code: "launch_failed", generation: 2 }]
-        : [],
-    );
-  });
+      const launched = await call(mcp, "launch", {
+        provider: "boat",
+        golden: "shared",
+        harness: "claude",
+        prompt: "hello",
+      }).finally(async () => {
+        if (scenario === "rollback") await db.exec("alter table sandboxes drop constraint reject_launch_diagnostic");
+      });
+      expect(launched.isError).toBe(true);
+      const { rows } = await db.query(
+        "select status, status_reason, lifecycle_generation::int, activity_lease_id from sandboxes",
+      );
+      const settled = scenario === "applied" || scenario === "reported";
+      const reason =
+        scenario === "applied"
+          ? expect.stringContaining("Initial prompt submission failed.")
+          : scenario === "reported"
+            ? "Startup already reported a failure"
+            : null;
+      const state = settled ? "failed" : scenario === "superseded" ? "stopping" : "starting";
+      expect(rows).toEqual([
+        {
+          status: state,
+          status_reason: reason,
+          lifecycle_generation: settled ? 2 : 1,
+          activity_lease_id: settled ? null : expect.any(String),
+        },
+      ]);
+      const journal = await db.query(
+        "select from_status, actor, code, generation::int from sandbox_transitions where to_status='failed'",
+      );
+      expect(journal.rows).toEqual(
+        scenario === "applied"
+          ? [{ from_status: "starting", actor: "lifecycle_runner", code: "launch_failed", generation: 2 }]
+          : [],
+      );
+    },
+  );
 
   test("launch of someone else's private golden is refused like a missing one, before any fork", async () => {
     const { token, client, people, boat } = await start();
