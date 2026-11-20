@@ -136,6 +136,11 @@ export async function createServerServices(env: Record<string, string | undefine
   });
   const data = createSqlData(sql);
   const templates = createTemplateService(sql, config.encryptionKey);
+  const supabase = {
+    supabaseUrl: config.supabaseUrl,
+    anonKey: config.anonKey,
+    cliOAuthClientId: env.ARMADA_CLI_OAUTH_CLIENT_ID,
+  };
   const mcp = createMcpHttpIntegration({
     prepareReadableVariables: templates.prepare,
     deferBackground: true,
@@ -150,7 +155,7 @@ export async function createServerServices(env: Record<string, string | undefine
     development: config.development,
     providerForSandbox: (id) => createMcpSandboxProviderResolver(sql, providers)(id),
     authStore,
-    supabase: { supabaseUrl: config.supabaseUrl, anonKey: config.anonKey },
+    supabase,
   });
   const runtimeMcp = createRuntimeMcp({
     sql,
@@ -478,7 +483,7 @@ export async function createServerServices(env: Record<string, string | undefine
     applicationVault: createApplicationVault(sql, config.encryptionKey),
     mcp: { registry: mcp.registry, broker: mcp.controlBroker },
     authStore,
-    supabase: { supabaseUrl: config.supabaseUrl, anonKey: config.anonKey },
+    supabase,
     store,
     listGoldenRecords: createSqlGoldenList(sql, store),
     listCredentialMetadata: createSqlCredentialList(sql, store),
@@ -580,7 +585,7 @@ export async function createServerServices(env: Record<string, string | undefine
       publicUrl: config.publicUrl,
     },
     authStore,
-    supabase: { supabaseUrl: config.supabaseUrl, anonKey: config.anonKey },
+    supabase,
     data,
     skillDefaults: createSkillDefaultsService(sql),
     connections: mcp.connections,

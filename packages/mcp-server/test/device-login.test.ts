@@ -70,10 +70,13 @@ const options: ControlOptions = {
       }
       switch (path) {
         case "/auth/v1/user":
-          if (bearer !== authorization && ![...sessions.values()].some((id) => bearer === `Bearer ${id}`)) {
+          expect(bearer).toBe(authorization);
+          return Response.json(user);
+        case "/auth/v1/oauth/userinfo":
+          if (![...sessions.values()].some((id) => bearer === `Bearer ${id}`)) {
             return new Response(null, { status: 401 });
           }
-          return Response.json(user);
+          return Response.json({ sub: user.id, email: user.email, email_verified: true });
         case `/auth/v1/admin/users/${user.id}`:
           return Response.json(user);
         case "/auth/v1/admin/generate_link":
@@ -94,6 +97,7 @@ const options: ControlOptions = {
           });
         }
         case "/auth/v1/oauth/authorize": {
+          expect(url.searchParams.get("scope")).toBe("email");
           const id = crypto.randomUUID();
           requests.set(id, url.searchParams);
           return Response.redirect(`https://dashboard.test/oauth/consent?authorization_id=${id}`);

@@ -1,6 +1,7 @@
 import { type AuthFetch, type AuthStore, assertSupabaseUrl, authenticate, bearerKind } from "@armada/auth";
 import type { MemberRole } from "@armada/core";
-import { verifySessionJwt } from "./session-jwt.ts";
+import { decodeJwt } from "jose";
+import { acceptsSessionClient, verifySessionJwt } from "./session-jwt.ts";
 
 /**
  * Who one request is, and the orgs it may act in. An Armada token (service or OAuth access) is bound
@@ -17,6 +18,7 @@ export interface Caller {
 export interface SupabaseProject {
   supabaseUrl: string;
   anonKey: string;
+  cliOAuthClientId?: string | undefined;
   fetch?: AuthFetch;
 }
 
@@ -120,10 +122,21 @@ export async function authenticateCaller(
 }
 
 /**
- * The user id of a Supabase access token, checked by the project itself (`/auth/v1/user`), so a token
+ * The user id of a Supabase access token, checked by the issuing Supabase project, so a token
  * of another project, an expired one or a signed-out session is refused. Null when refused.
  */
 export async function verifySupabaseUser(token: string, project: SupabaseProject): Promise<string | null> {
+  // Unverified claims select the verification endpoint only. Supabase authenticates the same bearer.
+  let client: unknown;
+  try {
+    client = decodeJwt(token).client_id;
+  } catch {
+    // Supabase will refuse an invalid bearer.
+  }
+  if (!acceptsSessionClient(client, project.cliOAuthClientId)) return null;
+  const oauth = client !== undefined;
+  const endpoint = oauth ? "/oauth/userinfo" : "/user";
+  const identityField = oauth ? "sub" : "id";
   const controller = new AbortController();
   let response: Response | undefined;
   const cancelBody = () => {
@@ -138,7 +151,7 @@ export async function verifySupabaseUser(token: string, project: SupabaseProject
     }, 10_000);
   });
   const verify = async (): Promise<string | null> => {
-    response = await (project.fetch ?? fetch)(`${assertSupabaseUrl(project.supabaseUrl)}/auth/v1/user`, {
+    response = await (project.fetch ?? fetch)(`${assertSupabaseUrl(project.supabaseUrl)}/auth/v1${endpoint}`, {
       headers: { apikey: project.anonKey, authorization: `Bearer ${token}`, accept: "application/json" },
       signal: controller.signal,
     });
@@ -156,7 +169,7 @@ export async function verifySupabaseUser(token: string, project: SupabaseProject
       throw new AuthUnavailable(`Supabase answered ${response.status}.`);
     }
     const user: unknown = await response.json();
-    const id = typeof user === "object" && user !== null && "id" in user ? user.id : undefined;
+    const id = typeof user === "object" && user !== null ? (user as Record<string, unknown>)[identityField] : undefined;
     if (typeof id !== "string" || !UUID.test(id)) {
       throw new AuthUnavailable("Supabase returned an invalid identity.");
     }

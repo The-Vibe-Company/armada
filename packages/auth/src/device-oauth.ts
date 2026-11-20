@@ -64,7 +64,7 @@ export function createDeviceOAuth(clientId: string, clientSecret: string, redire
           client_id: clientId,
           redirect_uri: redirectUri,
           response_type: "code",
-          scope: "openid",
+          scope: "email",
           state,
           code_challenge: await s256(verifier(id)),
           code_challenge_method: "S256",
@@ -111,9 +111,10 @@ export function createDeviceOAuth(clientId: string, clientSecret: string, redire
           code_verifier: verifier(id),
         });
         const user = await json(
-          await request("/user", { headers: { authorization: `Bearer ${session.accessToken}` } }),
+          await request("/oauth/userinfo", { headers: { authorization: `Bearer ${session.accessToken}` } }),
         );
-        if (user.id !== userId || typeof user.email !== "string" || !user.email) throw unavailable();
+        if (user.sub !== userId || user.email_verified !== true || typeof user.email !== "string" || !user.email)
+          throw unavailable();
         return { ...session, email: user.email };
       },
 

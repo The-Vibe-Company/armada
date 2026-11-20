@@ -145,7 +145,7 @@ export function controlOptionsFromEnv(env: Record<string, string | undefined>): 
     mcp: { registry },
     connections: createSqlMcpLaunchPort(sql, registry),
     authStore,
-    supabase: { supabaseUrl, anonKey },
+    supabase: { supabaseUrl, anonKey, cliOAuthClientId: env.ARMADA_CLI_OAUTH_CLIENT_ID },
     encryptionKey,
     github: { app: githubApp },
     store,
