@@ -84,6 +84,23 @@ export async function lookupModalCompute(
   return sandbox;
 }
 
+export function lookupNamedModalCompute(
+  client: Pick<ModalClient, "sandboxes">,
+  appName: string,
+  name: string,
+  environment: string,
+) {
+  return client.sandboxes.fromName(appName, name, { environment, includeTerminated: true });
+}
+
+export function verifyModalComputeOwnership(
+  actual: Readonly<Record<string, string>>,
+  expected: Readonly<Record<string, string>>,
+) {
+  if (Object.entries(expected).some(([tag, value]) => actual[tag] !== value))
+    throw conflict("Modal machine ownership does not match the incarnation; resource not modified.");
+}
+
 export async function snapshotModalRecoveryImage(sandbox: Sandbox, signal?: AbortSignal) {
   signal?.throwIfAborted();
   const image = await sandbox.snapshotFilesystem({ ttlMs: null });
@@ -126,9 +143,7 @@ export function createModalMachine(options: ModalMachineOptions) {
     armada_machine_key: key(id),
   });
   async function verify(sandbox: Sandbox, id: MachineIncarnation) {
-    const actual = await sandbox.getTags();
-    if (Object.entries(tags(id)).some(([name, value]) => actual[name] !== value))
-      throw conflict("Modal machine ownership does not match the incarnation.");
+    verifyModalComputeOwnership(await sandbox.getTags(), tags(id));
     return sandbox;
   }
 
@@ -140,12 +155,7 @@ export function createModalMachine(options: ModalMachineOptions) {
   }
 
   async function named(id: MachineIncarnation) {
-    const sandbox = await optional(() =>
-      client.sandboxes.fromName(appName, name(id), {
-        environment: binding.environment,
-        includeTerminated: true,
-      }),
-    );
+    const sandbox = await optional(() => lookupNamedModalCompute(client, appName, name(id), binding.environment));
     return sandbox && verify(sandbox, id);
   }
 
