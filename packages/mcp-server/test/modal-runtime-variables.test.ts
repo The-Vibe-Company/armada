@@ -509,7 +509,7 @@ test.each(["health", "configureReadableVariables"] as const)(
     const launch = f.options.launch!.boatRuntimeDefault!;
     const { policy } = sink;
     let expired = false;
-    let persisted: boolean | undefined;
+    let persistedBeforeCleanup: boolean | undefined;
     launch.policy = {
       ...policy,
       async start(input) {
@@ -529,8 +529,7 @@ test.each(["health", "configureReadableVariables"] as const)(
             },
           });
         } finally {
-          // Observe the command journal before outer launch cleanup can change it.
-          persisted = await hasCommand(f.sql);
+          persistedBeforeCleanup = await hasCommand(f.sql);
         }
       },
     };
@@ -541,7 +540,7 @@ test.each(["health", "configureReadableVariables"] as const)(
     }
     expect(sink.handled).not.toContain(operation);
     expect(expired).toBe(true);
-    expect(persisted).toBe(false);
+    expect(persistedBeforeCleanup).toBe(false);
   },
 );
 
