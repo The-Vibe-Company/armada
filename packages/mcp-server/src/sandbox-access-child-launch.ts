@@ -30,20 +30,23 @@ export class ChildLaunchNotAllocated extends Error {
     super("Child launch was not allocated.", { cause });
   }
 
-  record(operation: Pick<ChildOperation, "id" | "sandboxId">) {
+  record(operation: Pick<ChildOperation, "id" | "sandboxId">, code: string) {
     const error = this.cause;
-    const code =
+    const authorityDenied = error instanceof DelegatedAuthorityDenied;
+    const refusalCode =
       error instanceof VaultError ||
       error instanceof LaunchError ||
       error instanceof GoldenError ||
       error instanceof ProviderError
         ? error.code
-        : this.reason;
+        : authorityDenied
+          ? "authority_denied"
+          : this.reason;
     const diagnostic = failureDiagnostic(error ?? this);
     const errorClass =
       error instanceof GoldenError
         ? "GoldenError"
-        : error instanceof DelegatedAuthorityDenied
+        : authorityDenied
           ? "DelegatedAuthorityDenied"
           : diagnostic.errorClass;
     recordOperatorDiagnostic(
@@ -53,6 +56,7 @@ export class ChildLaunchNotAllocated extends Error {
         sandboxId: operation.sandboxId,
         operationId: operation.id,
         code,
+        refusalCode,
       },
     );
   }

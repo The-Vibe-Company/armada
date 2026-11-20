@@ -473,6 +473,7 @@ test("MCP renewal finds a private Modal machine forked from an org golden with i
   const physicals = spyOn(SandboxService.prototype, "fromId").mockImplementation(async (id) => {
     expect(id).toBe("sb-renew-physical");
     return {
+      sandboxId: id,
       poll: async () => {
         polls++;
         return null;
