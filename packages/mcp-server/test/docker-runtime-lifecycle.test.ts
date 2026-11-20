@@ -1,10 +1,13 @@
 import { expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
+import { createMemoryAuthStore } from "@armada/auth";
 import type { AgentEvent, Sql } from "@armada/core";
 import { createSqlVaultStore, encryptSecret } from "@armada/core/server";
+import { createQueuedSandboxDispatch } from "../src/control.ts";
 import { createSqlData } from "../src/data.ts";
 import { createDockerBootstrapService } from "../src/docker-bootstrap-service.ts";
 import { createDockerHostStore } from "../src/docker-host-store.ts";
+import { createDockerNormalSend } from "../src/docker-normal-send.ts";
 import { createDockerRuntimeLifecycle, DockerRuntimeDenied } from "../src/docker-runtime-lifecycle.ts";
 import { createDockerSandboxControls } from "../src/docker-sandbox-controls.ts";
 import { createDockerSandboxService } from "../src/docker-sandbox-service.ts";
@@ -115,26 +118,97 @@ async function ready(f: Fixture) {
 
 // These integration tests own the Docker lifecycle composition: concrete host ACK,
 // credential admission, enrolment, encrypted command replay and archive authorization.
-test("a queued Docker turn rolls back prompt admission when its claim expires before commit", async () => {
-  const f = await fixture();
-  const session = await ready(f);
-  const input = { requestId: randomUUID(), text: "queued turn" };
-  const commandId = `docker_prompt_${input.requestId}`;
-  const assertClaim = async (tx: Sql) => {
-    const command = await tx.query("select 1 from public.runtime_commands where sandbox_id=$1 and request_id=$2", [
-      f.sandbox.id,
-      commandId,
-    ]);
-    if (command.rows.length) throw new Error("Claim expired during prompt admission");
-  };
+test.each(["prompt", "readable variables"] as const)(
+  "a queued Docker send rolls back %s admission when its claim expires before commit",
+  async (operation) => {
+    const f = await fixture();
+    const session = await ready(f);
+    const input = { id: f.sandbox.id, request_id: randomUUID(), prompt: "queued turn" };
+    const commandId =
+      operation === "prompt" ? `docker_prompt_${input.request_id}` : `docker_variables_${input.id}_${session.epoch}`;
+    if (operation === "readable variables") {
+      const manifest = await encryptSecret(JSON.stringify({ request: {}, variables: { TEST_VALUE: "test" } }), key);
+      await database().query(
+        `insert into public.docker_launch_requests(sandbox_id,actor_epoch,request_hash,request_enc,result_enc)
+         select $1,e.epoch,$2,$3,$4 from public.mcp_actor_epochs e where e.user_id=$5 and e.org_id=$6`,
+        [input.id, "a".repeat(64), manifest, await encryptSecret("{}", key), f.actor.userId, f.actor.orgId],
+      );
+    }
+    let now = 0;
+    const promptId = randomUUID();
+    const clock = {
+      now: () => now,
+      wait: async (ms: number) => {
+        now += ms;
+        const next = await commands.next(session.runtimeToken, session.epoch);
+        const command = next.command;
+        if (!command) throw new Error("No command to acknowledge");
+        const result =
+          command.op === "prompt"
+            ? { promptId, conversationId: randomUUID(), status: "running" }
+            : { acknowledged: true };
+        await commands.complete(session.runtimeToken, session.epoch, {
+          epoch: session.epoch,
+          requestId: command.requestId,
+          status: 200,
+          body: { version: 1, requestId: command.requestId, result },
+        });
+      },
+    };
+    const dispatch = createQueuedSandboxDispatch({
+      authStore: createMemoryAuthStore(),
+      supabase: { supabaseUrl: "https://unused.test", anonKey: "fixture" },
+      store: createSqlVaultStore(sql),
+      encryptionKey: key,
+      data: createSqlData(sql),
+      providers: {
+        async resolve() {
+          throw new Error("Docker send must use the runtime.");
+        },
+      },
+      dockerControls: createDockerSandboxControls(sql, key, {
+        send: createDockerNormalSend(sql, key, { enabled: true, dispatchQueued: true, clock }),
+      }),
+    });
+    const caller = {
+      userId: f.actor.userId,
+      via: "service" as const,
+      orgs: [{ orgId: f.actor.orgId, role: "member" as const }],
+    };
+    const handoffGeneration = async () => {
+      throw new Error("Running send must not hand off generation.");
+    };
+    let expired = false;
+    await expect(
+      dispatch(caller, input, {
+        handoffGeneration,
+        async canDispatch(tx) {
+          if (!tx) return true;
+          const command = await tx.query(
+            "select 1 from public.runtime_commands where sandbox_id=$1 and request_id=$2",
+            [input.id, commandId],
+          );
+          expired = command.rows.length > 0;
+          return !expired;
+        },
+      }),
+    ).rejects.toThrow();
+    expect(expired).toBe(true);
+    expect(
+      (
+        await database().query("select 1 from public.runtime_commands where sandbox_id=$1 and request_id=$2", [
+          input.id,
+          commandId,
+        ])
+      ).rows,
+    ).toEqual([]);
 
-  await denied(service.prompt(f.actor, f.sandbox.id, input, undefined, assertClaim));
-  expect((await commands.next(session.runtimeToken, session.epoch)).command).toBeNull();
-
-  const nextClaim = async () => {};
-  expect(await service.prompt(f.actor, f.sandbox.id, input, undefined, nextClaim)).toEqual({ state: "pending" });
-  expect((await commands.next(session.runtimeToken, session.epoch)).command?.requestId).toBe(commandId);
-});
+    await expect(dispatch(caller, input, { handoffGeneration, canDispatch: async () => true })).resolves.toMatchObject({
+      promptId,
+      requestId: input.request_id,
+    });
+  },
+);
 
 test("Docker readiness rejects an ACK read against an older lifecycle generation", async () => {
   const f = await fixture();
