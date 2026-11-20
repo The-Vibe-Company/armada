@@ -3257,25 +3257,28 @@ test("Docker Machine inventory projects only exact scoped report bindings", asyn
   ]);
 });
 
-test("Docker Machine inventory refuses a foreign binding even under rewritten report labels", async () => {
-  const source = await fixture();
-  const reporting = await fixture();
-  const serverUrl = "https://inventory.example.test";
-  const { hostId, installationId, hostToken } = reporting;
-  const incarnation = { sandboxId: randomUUID(), generation: 23 };
-  const generation = await createDockerMachineGenerationBindings(sql, source).bind(incarnation);
-  const inventory = store.machineInventory(hostToken, installationId, serverUrl, [
-    {
-      sandboxId: incarnation.sandboxId,
-      generation,
-      machineId: "a".repeat(64),
-      createdAt: new Date(0),
-      deploymentId: `${serverUrl}/${hostId}/${installationId}`,
-      containerName: `armada-${installationId}-${hostId}-${incarnation.sandboxId}-${generation}`,
-    },
-  ]);
-  expect(await Array.fromAsync(inventory.listInventory())).toEqual([]);
-});
+test.each(["hostId", "installationId"] as const)(
+  "Docker Machine inventory refuses a binding with a different %s even under rewritten report labels",
+  async (scopeKey) => {
+    const reporting = await fixture();
+    const serverUrl = "https://inventory.example.test";
+    const { hostId, installationId, hostToken } = reporting;
+    const incarnation = { sandboxId: randomUUID(), generation: 23 };
+    const bindings = createDockerMachineGenerationBindings(sql, { hostId, installationId, [scopeKey]: randomUUID() });
+    const generation = await bindings.bind(incarnation);
+    const inventory = store.machineInventory(hostToken, installationId, serverUrl, [
+      {
+        sandboxId: incarnation.sandboxId,
+        generation,
+        machineId: "a".repeat(64),
+        createdAt: new Date(0),
+        deploymentId: `${serverUrl}/${hostId}/${installationId}`,
+        containerName: `armada-${installationId}-${hostId}-${incarnation.sandboxId}-${generation}`,
+      },
+    ]);
+    expect(await Array.fromAsync(inventory.listInventory())).toEqual([]);
+  },
+);
 
 test("Docker Machine inventory refuses credentials from a different installation", async () => {
   const { hostToken } = await fixture();
