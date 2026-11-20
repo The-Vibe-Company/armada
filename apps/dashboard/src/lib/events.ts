@@ -24,8 +24,6 @@ export function mergeEvents(shown: readonly ChatEvent[], incoming: readonly Chat
   return merged;
 }
 
-type EventPage = ReturnType<typeof parseEventPage>;
-
 export const initialChatHistory = {
   events: [] as ChatEvent[],
   cursor: null as string | null,
@@ -33,12 +31,11 @@ export const initialChatHistory = {
   loaded: false,
 };
 
-/** Apply a page and its continuation together. A rejected page leaves the resume position intact. */
 export function applyChatPage(
   history: typeof initialChatHistory,
-  page: EventPage,
+  page: ReturnType<typeof parseEventPage>,
   direction: "forward" | "latest" | "older",
-): typeof initialChatHistory | null {
+) {
   const older = direction === "older";
   const previous = older ? history.olderCursor : history.cursor;
   const next = older ? page.olderCursor : page.cursor;
@@ -53,7 +50,7 @@ export function applyChatPage(
     cursor: older ? history.cursor : page.cursor || history.cursor,
     olderCursor: direction === "forward" ? history.olderCursor : page.hasMore ? (page.olderCursor ?? null) : null,
     loaded: true,
-  };
+  } satisfies typeof initialChatHistory;
 }
 
 /** A message event: its `messageId` and `textMode` say how its text joins the other events of the same message. */

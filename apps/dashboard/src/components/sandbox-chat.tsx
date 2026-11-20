@@ -58,7 +58,7 @@ import {
   SEND_KEY_FIELD,
   UNCONFIRMED_ACTION,
 } from "@/lib/composer";
-import { applyChatPage, initialChatHistory, isActiveStatus, parseEventPage } from "@/lib/events";
+import { applyChatPage, type ChatEvent, initialChatHistory, isActiveStatus, parseEventPage } from "@/lib/events";
 import { describeFailure } from "@/lib/failure";
 import type { LaunchKey } from "@/lib/launch-key";
 import { cn } from "@/lib/utils";
