@@ -18,7 +18,6 @@ test("real Bun.SQL bigint reads complete shared send and stop through the Boat S
     await client.begin(async (tx) => {
       const sql = sqlOver({
         unsafe: (text, params) => tx.unsafe(text, params),
-        // Keep publication atomic without committing the enclosing fixture.
         begin: (work) =>
           tx.savepoint((savepoint) => work({ unsafe: (text, params) => savepoint.unsafe(text, params) })),
       });
