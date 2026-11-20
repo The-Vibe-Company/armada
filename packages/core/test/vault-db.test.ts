@@ -98,6 +98,33 @@ describe("orgs and members", () => {
 });
 
 describe("credentials", () => {
+  test.each(["named", "kind-based"] as const)(
+    "%s org account creation records the creator across rotations by a different admin",
+    async (path) => {
+      await withVault(async ({ db, store, people }) => {
+        const org = await createOrg(store, people.stan, "Shared");
+        await addMember(store, people.stan, { org: org.id, email: "ada@example.com", role: "admin" });
+        await db.exec("set role service_role");
+        const input = { scope: "org", org: org.id, kind: "openai", value: "first-key" } as const;
+        if (path === "named") {
+          const account = await mutateCredentialAccount(store, KEY, people.stan, { ...input, action: "set" });
+          await mutateCredentialAccount(store, KEY, people.ada, {
+            ...input,
+            action: "set",
+            id: account.id!,
+            expectedVersion: account.version,
+            value: "rotated-key",
+          });
+        } else {
+          await setCredential(store, KEY, people.stan, input);
+          await setCredential(store, KEY, people.ada, { ...input, value: "rotated-key" });
+        }
+        const result = await db.query("select created_by, version from public.credentials where owner_id=$1", [org.id]);
+        expect(result.rows).toEqual([{ created_by: people.stan, version: 2 }]);
+      });
+    },
+  );
+
   test("legacy org account writes recheck locked authorization at persistence after validation", async () => {
     await withVault(async ({ db, store, people }) => {
       const org = await createOrg(store, people.stan, "Azure admission");
