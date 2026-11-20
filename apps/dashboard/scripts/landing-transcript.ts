@@ -75,7 +75,7 @@ const API: Record<string, unknown> = {
 };
 
 const SESSION = [
-  ["snapshot", "list"],
+  ["snapshot", "ls"],
   ["new", "widgets", "--provider", "boat", "--agent", "codex", "Fix the flaky checkout test in widgets", "--ttl", "4h"],
   ["events", SANDBOX],
 ];

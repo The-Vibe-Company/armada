@@ -49,6 +49,49 @@ async function seedTurn(f: Awaited<ReturnType<typeof fixture>>, sandboxId: strin
   );
 }
 
+test("a replacement launch claimant reads Modal create intent and fences the previous writer", async () => {
+  const f = await fixture();
+  const id = await sandbox(f);
+  const encryptionKey = btoa("\0".repeat(32));
+  const jobId = await f.store.enqueue("launch", id, 2, id, null, {
+    orgId: f.people.org,
+    maxAttempts: 3,
+    deadline: new Date("2100-01-01T00:00:00Z"),
+    request: { ownerId: f.people.owner, digest: "fixture" },
+  });
+  const owner = crypto.randomUUID();
+  const first = (await f.store.claim("launch", owner, 30, 1))!;
+  const journal = f.store.modalLaunchJournal(first);
+  const intent = { operation: "create", phase: "creating", revision: 1, intent: "fixture" } as const;
+  const receipt = { ...intent, phase: "allocated", revision: 2, machineId: "machine" } as const;
+  expect(await journal.read("machine-key")).toBeUndefined();
+  expect(await journal.compareAndSet("machine-key", undefined, intent)).toBe(true);
+  await f.db.query("update jobs set lease_until='-infinity' where id=$1", [jobId]);
+
+  const restarted = createJobsStore(f.sql, encryptionKey);
+  const successorOwner = crypto.randomUUID();
+  const successor = (await restarted.claim("launch", successorOwner, 30, 1))!;
+  const resumed = restarted.modalLaunchJournal(successor);
+  expect(await resumed.read("machine-key")).toEqual(intent);
+  await expect(journal.read("machine-key")).rejects.toThrow("claim is no longer current");
+  expect(await journal.compareAndSet("machine-key", 1, receipt)).toBe(false);
+  expect(await resumed.compareAndSet("different-key", 1, receipt)).toBe(false);
+  expect(await resumed.compareAndSet("machine-key", 1, receipt)).toBe(true);
+  expect(await resumed.compareAndSet("machine-key", 1, { ...receipt, machineId: "other" })).toBe(false);
+  expect(
+    await restarted.complete(successor, successorOwner, {
+      status: "retry",
+      after: new Date(0),
+      outcome: { reason: "waiting_for_enrolment" },
+    }),
+  ).toBe(true);
+  const retried = restarted.modalLaunchJournal((await restarted.claim("launch", crypto.randomUUID(), 30, 1))!);
+  expect(await retried.read("machine-key")).toEqual(receipt);
+  await f.db.query("update sandboxes set lifecycle_generation=3 where id=$1", [id]);
+  await expect(retried.read("machine-key")).rejects.toThrow("claim is no longer current");
+  expect(await retried.compareAndSet("machine-key", 2, { ...receipt, revision: 3 })).toBe(false);
+});
+
 async function turnFixture() {
   const f = await fixture();
   const key = btoa("\0".repeat(32));
@@ -1039,6 +1082,65 @@ test.each([
       },
     ]);
   }
+});
+
+test("a stale turn preserves its open dispatch window across an interrupted requeue", async () => {
+  const f = await turnFixture();
+  const sandboxId = await sandbox(f, true);
+  const requestId = await f.accept(sandboxId);
+  await f.makeDue(sandboxId);
+  await f.db.query("update sandboxes set lifecycle_generation=3 where id=$1", [sandboxId]);
+  await f.db.query(
+    `update account_turn_queue set state='dispatching', dispatch_generation=2, dispatch_until='2100-01-01T00:00:00Z'
+     where request_id=$1`,
+    [requestId],
+  );
+  let dispatches = 0;
+  const send: DispatchTurn = async () => {
+    dispatches++;
+    throw new Error("Stale receipt must not dispatch");
+  };
+  const interrupted = createJobsStore(
+    {
+      ...f.sql,
+      transaction: (work) =>
+        f.sql.transaction!(async (tx) => {
+          await work(tx);
+          throw new Error("Connection lost before stale turn requeue commit.");
+        }),
+    },
+    btoa("\0".repeat(32)),
+  );
+  const state = () =>
+    f.db.query(
+      `select j.state as job, q.state as receipt, j.attempts, j.generation::text,
+              (j.run_after=q.dispatch_until) as waits_for_receipt
+       from jobs j join account_turn_queue q on q.sandbox_id=j.sandbox_id where q.request_id=$1`,
+      [requestId],
+    );
+  const first = f.runnerFor(send, { ...f.store, retireStale: interrupted.retireStale });
+  expect(await first.reconcileOne(signal)).toBe(true);
+  await first.drain();
+  expect((await state()).rows).toEqual([
+    { job: "leased", receipt: "dispatching", attempts: 1, generation: "2", waits_for_receipt: false },
+  ]);
+  await f.db.query("update jobs set lease_until='-infinity' where sandbox_id=$1", [sandboxId]);
+
+  const runner = f.runnerFor(send);
+  expect(await runner.reconcileOne(signal)).toBe(true);
+  await runner.drain();
+  expect((await state()).rows).toEqual([
+    { job: "queued", receipt: "dispatching", attempts: 1, generation: "2", waits_for_receipt: true },
+  ]);
+  expect(await runner.reconcileOne(signal)).toBe(false);
+  await f.db.query("update account_turn_queue set dispatch_until='-infinity' where request_id=$1", [requestId]);
+  await f.makeDue(sandboxId);
+  expect(await runner.reconcileOne(signal)).toBe(true);
+  await runner.drain();
+  expect((await state()).rows).toEqual([
+    { job: "failed", receipt: "failed", attempts: 2, generation: "2", waits_for_receipt: null },
+  ]);
+  expect(dispatches).toBe(0);
 });
 
 test("transactional enqueue wakes after commit and replays the encrypted job by key", async () => {

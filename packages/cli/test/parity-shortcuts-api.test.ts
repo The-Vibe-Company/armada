@@ -10,11 +10,10 @@ import { memorySessionStore } from "../src/session.ts";
 const selectedOrg = "11111111-1111-4111-8111-111111111111";
 const overrideOrg = "22222222-2222-4222-8222-222222222222";
 
-test("golden capabilities and URL/JSON MCP creation use canonical authenticated HTTP bodies and persisted org selection", async () => {
+test("URL/JSON MCP creation use canonical authenticated HTTP bodies and persisted org selection", async () => {
   const directory = await mkdtemp(join(tmpdir(), "armada-parity-shortcuts-"));
   try {
     const requests: { path: string; body: Record<string, unknown> }[] = [];
-    let capabilitiesMode: "normal" | "unconfigured" | "mismatch" = "normal";
     let output = "";
     let error = "";
     const preferencesPath = join(directory, "preferences.json");
@@ -40,19 +39,6 @@ test("golden capabilities and URL/JSON MCP creation use canonical authenticated 
         requests.push({ path, body });
         if (path === "/api/v1/org/list")
           return Response.json({ orgs: [{ id: selectedOrg, name: "Team", role: "admin" }] });
-        if (path === "/api/v1/golden/capabilities") {
-          if (capabilitiesMode === "unconfigured")
-            return Response.json(
-              { error: { code: "provider_not_configured", message: "Modal is not configured." } },
-              { status: 503 },
-            );
-          const provider = capabilitiesMode === "mismatch" ? "boat" : (body.provider ?? "boat");
-          return Response.json({
-            provider,
-            maxGoldens: provider === "modal" ? null : 1,
-            extraMetadata: "must-not-be-displayed",
-          });
-        }
         if (path === "/api/v1/mcp/create" || path === "/api/v1/mcp/update")
           return Response.json({
             connection: {
@@ -85,23 +71,6 @@ test("golden capabilities and URL/JSON MCP creation use canonical authenticated 
     }
     expect((await execute(["org", "use", "Team"])).code).toBe(0);
     auth.preferences = filePreferences(preferencesPath);
-    const defaultCapabilities = await execute(["golden", "capabilities", "--json"]);
-    expect(defaultCapabilities.code).toBe(0);
-    expect(JSON.parse(defaultCapabilities.out)).toEqual({ provider: "boat", maxGoldens: 1 });
-    expect(requests.at(-1)).toEqual({ path: "/api/v1/golden/capabilities", body: { org: selectedOrg } });
-    const modal = await execute(["golden", "capabilities", "--provider", "modal", "--org", overrideOrg, "--json"]);
-    expect(modal.code).toBe(0);
-    expect(JSON.parse(modal.out)).toEqual({ provider: "modal", maxGoldens: null });
-    expect(requests.at(-1)?.body).toEqual({ provider: "modal", org: overrideOrg });
-    expect((await execute(["golden", "capabilities", "--provider", "modal"])).out).toContain("unbounded/unknown");
-    for (const mode of ["unconfigured", "mismatch"] as const) {
-      capabilitiesMode = mode;
-      const before = requests.length;
-      const failed = await execute(["golden", "capabilities", "--provider", "modal", "--json"]);
-      expect(failed.code).toBe(1);
-      expect(failed.out).toBe("");
-      expect(requests).toHaveLength(before + 1);
-    }
     const shortcut = await execute(["mcp", "add", "Public service", "https://mcp.example.com/mcp", "--json"]);
     expect(shortcut.code).toBe(0);
     expect(requests.at(-1)).toEqual({

@@ -36,7 +36,7 @@ Open source, MIT. Sandboxes run on a connected Boat or Modal account or on a reg
 
 For your own compute, [register a Docker host and choose fresh launch or a host-local snapshot](docs/own-machine-quickstart.md) instead of the cloud path below.
 
-1. **Snapshot**: build once from your repositories (`armada snapshot create`).
+1. **Snapshot**: build once from your repositories (`armada snapshot new`).
 2. **Launch**: pick an agent, the model, the effort and the provider (`armada new`).
 3. **Sandbox**: a fresh, isolated fork where `git` and `gh` act as you.
 4. **Drive**: follow, steer, stop and resume (`armada events -f`, `armada send`).
@@ -115,11 +115,11 @@ armada github connect
 **5. Build a snapshot.** The server clones the repositories in a disposable sandbox, runs your optional `--setup` script, scans for leaked secrets and only then saves the snapshot. `--init` commands run at every launch, after the pull. Add `--provider modal` to build it for Modal. Only admins build organization snapshots; members add `--private` to build one for themselves.
 
 ```sh
-armada snapshot create web --repo https://github.com/acme/web@main --init "bun install" --org acme
-armada snapshot list
+armada snapshot new web --repo https://github.com/acme/web@main --init "bun install" --org acme --wait
+armada snapshot ls
 ```
 
-A long build keeps running on the server: `armada snapshot build-status <job-id>` reports it.
+A long build keeps running on the server. Check it with `armada snapshot show --build <job-id>` and wait for `succeeded` before launching.
 
 **6. Launch an agent.** With a prompt the agent starts at once; without one the sandbox waits, ready, for your first prompt. In a snapshot with several repositories, `--repo owner/repo` starts the agent in that one ([details](docs/dave-onboarding.md#6-launch-from-the-cli)).
 

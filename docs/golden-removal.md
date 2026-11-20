@@ -4,7 +4,7 @@
 
 POST /api/v1/golden/remove with JSON `{ "id": "<snapshot UUID>", "org": "<optional org selector>" }`.
 Returns HTTP 200 with `{ "id": "...", "removedAt": "<ISO timestamp>", "artifacts": "retained" }`.
-The same operation is `armada snapshot remove <snapshot-id> [--org <org>] [--json]`.
+The same operation is `armada snapshot rm <snapshot-id> [--org <org>] [--json]`.
 Removal is idempotent for the currently authorized caller. Not found/private/out-of-scope
 resources return 404, non-admin org mutations 403, unresolved operations 409.
 The response deliberately excludes config, provider identifiers, credentials and child details.

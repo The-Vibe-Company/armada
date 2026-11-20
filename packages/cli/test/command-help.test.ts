@@ -25,9 +25,7 @@ for (const command of [
   "routine",
   "template",
   "snapshot",
-  "snapshot create",
-  "snapshot retirement reconcile",
-  "golden retirement dry-run",
+  "snapshot new",
   "creds",
   "creds import claude",
   "creds connect",
@@ -110,7 +108,7 @@ test("events help rejects an invalid profile from the environment", async () => 
   expect(stderr).toContain("Profile names must be 1–64");
 });
 
-test.each(["snapshot", "golden", "creds"])("bare %s prints focused family help", async (command) => {
+test.each(["snapshot", "creds"])("bare %s prints focused family help", async (command) => {
   let stdout = "";
   const fail = () => {
     throw new Error("Family help must not perform authenticated or secret I/O");
@@ -121,11 +119,11 @@ test.each(["snapshot", "golden", "creds"])("bare %s prints focused family help",
     { env: {}, fetch: Object.assign(fail, { preconnect: fail }) },
   );
   expect(code).toBe(0);
-  expect(stdout).toStartWith(`Usage: armada ${command === "golden" ? "snapshot" : command} `);
+  expect(stdout).toStartWith(`Usage: armada ${command} `);
 });
 
 test.each([
-  [["golden", "create", "name", "--help"], "armada --help"],
+  [["snapshot", "new", "name", "--help"], "armada snapshot new --help"],
   [["creds", "set", "--help", "--unknown"], "armada creds set --help"],
 ] as const)("%j leaves malformed help requests to the operation parser", async (argv, hint) => {
   let stderr = "";

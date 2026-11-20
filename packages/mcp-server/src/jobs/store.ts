@@ -1,4 +1,5 @@
 import { decryptSecret, encryptSecret, type Sql, toBytea } from "@armada/core/server";
+import type { ModalMachineJournal } from "@armada/provider-modal";
 import {
   COMPLETED_RUNTIME_WAKE,
   CONFIRMED_WAKE_WITHOUT_TICKET,
@@ -22,6 +23,10 @@ type JobRow = Omit<Job, "payload"> & { payload_enc: string | null };
 const fence = "j.id = $1 and j.lease_owner = $2 and j.lease_epoch = $3 and j.lease_until > clock_timestamp()";
 const claimIdentity = (job: Job, owner: string) => [job.id, owner, job.lease_epoch];
 const claimKey = (job: Job, owner: string) => [...claimIdentity(job, owner), job.generation];
+
+const ADJACENT_REMOTE_RUNTIME_DISPATCH = `(q.state = 'dispatching'
+  and q.dispatch_generation = s.lifecycle_generation - 1
+  and s.provider in ('boat','modal') and ${RUNTIME_LANE} and s.status in ('ready','running'))`;
 
 const CURRENT_DOCKER_PROMPT_COMMAND = `(s.provider = 'docker' and exists(
   select 1 from public.runtime_commands c
@@ -66,8 +71,9 @@ export async function withJobLease<T>(sql: Sql, job: Job, write: (tx: Sql) => Pr
     );
     if (!sandboxes.length) return;
     const { rows: jobs } = await tx.query(
-      "select id from public.jobs where id=$1 and lease_epoch=$2 and lease_until > clock_timestamp() for update",
-      [job.id, job.lease_epoch],
+      `select id from public.jobs where id=$1 and lease_epoch=$2 and lease_until > clock_timestamp()
+       and sandbox_id=$3 and generation=$4 and kind=$5 for update`,
+      [job.id, job.lease_epoch, job.sandbox_id, job.generation, job.kind],
     );
     if (jobs.length) return write(tx);
   });
@@ -130,6 +136,7 @@ export function createJobsStore(sql: Sql, encryptionKey?: string) {
           native_uncertain: boolean;
           abandoned: boolean;
           unrecoverable_dispatch: boolean;
+          open_dispatch_until: string | null;
         }>(
           `select s.lifecycle_generation::text as generation,
                   case when q.state = 'queued' then ${QUEUED_TURN_CANCELLED}
@@ -141,12 +148,13 @@ export function createJobsStore(sql: Sql, encryptionKey?: string) {
                     and (s.lifecycle_generation = $3 or s.status in ('ready','running'))) as abandoned,
                   (q.state = 'dispatching' and (q.dispatch_generation is null
                     or q.dispatch_generation < s.lifecycle_generation - 1
-                    or (q.dispatch_generation = s.lifecycle_generation - 1
-                      and (q.dispatch_until is null or q.dispatch_until <= clock_timestamp())
-                      and s.provider in ('boat','modal') and ${RUNTIME_LANE}
-                      and s.status in ('ready','running')
+                    or (${ADJACENT_REMOTE_RUNTIME_DISPATCH}
+                      and (q.dispatch_until is null or q.dispatch_until <= statement_timestamp())
                       and s.activity_lease_id is distinct from q.request_id
-                      and not ${QUEUED_DISPATCH_EVIDENCE}))) as unrecoverable_dispatch
+                      and not ${QUEUED_DISPATCH_EVIDENCE}))) as unrecoverable_dispatch,
+                  case when ${ADJACENT_REMOTE_RUNTIME_DISPATCH}
+                    and isfinite(q.dispatch_until) and q.dispatch_until > statement_timestamp()
+                    then q.dispatch_until::text end as open_dispatch_until
            from public.sandboxes s join public.account_turn_queue q on q.sandbox_id = s.id
            where s.id = $1 and q.request_id = $2`,
           [sandboxId, requestId, job.generation],
@@ -204,6 +212,15 @@ export function createJobsStore(sql: Sql, encryptionKey?: string) {
           );
           if (updated) return { ...job, generation: updated.generation };
           if (reset) throw new Error("Abandoned turn reset lost its generation fence.");
+        }
+        if (retiring && sandbox?.open_dispatch_until) {
+          const { rows } = await tx.query(
+            `update public.jobs j set state = 'queued', lease_owner = null, lease_until = null, run_after = $4,
+               attempts = case when $6::boolean then j.attempts - 1 else j.attempts end
+             where ${fence} and j.generation < $5 returning j.id`,
+            [...claimIdentity(job, owner), sandbox.open_dispatch_until, sandbox.generation, phase === "no_dispatch"],
+          );
+          if (rows.length) return job;
         }
         if (
           retiring &&
@@ -271,6 +288,47 @@ export function createJobsStore(sql: Sql, encryptionKey?: string) {
   }
 
   return {
+    modalLaunchJournal(job: Job) {
+      if (job.kind !== "launch" || !job.sandbox_id || !job.generation) {
+        throw new Error("Modal machine journal requires a launch claim.");
+      }
+      return {
+        async read(key) {
+          const checkpoint = await withJobLease(sql, job, async (tx) => {
+            const { rows } = await tx.query<{
+              checkpoint: { key: string; entry: Awaited<ReturnType<ModalMachineJournal["read"]>> } | null;
+            }>(
+              "select outcome->'modal_machine' as checkpoint from public.jobs where id=$1 and lease_until > clock_timestamp()",
+              [job.id],
+            );
+            return rows[0]?.checkpoint;
+          });
+          if (checkpoint === undefined) throw new Error("Modal launch claim is no longer current.");
+          if (checkpoint && checkpoint.key !== key) throw new Error("Modal launch journal key changed.");
+          return checkpoint?.entry;
+        },
+        async compareAndSet(key, revision, next) {
+          if (next.revision !== (revision ?? 0) + 1) return false;
+          return (
+            (await withJobLease(sql, job, async (tx) => {
+              const { rows } = await tx.query(
+                `update public.jobs set outcome=jsonb_set(
+                   case when outcome is null then '{}'::jsonb
+                        when jsonb_typeof(outcome) = 'object' then outcome
+                        else jsonb_build_object('result', outcome) end,
+                   '{modal_machine}', $2::jsonb)
+                 where id=$1 and lease_until > clock_timestamp()
+                   and (outcome->'modal_machine' is null or outcome->'modal_machine'->>'key' = $3)
+                   and (outcome->'modal_machine'->'entry'->>'revision')::integer is not distinct from $4::integer
+                 returning id`,
+                [job.id, JSON.stringify({ key, entry: next }), key, revision ?? null],
+              );
+              return rows.length > 0;
+            })) ?? false
+          );
+        },
+      } satisfies ModalMachineJournal;
+    },
     async enqueue(
       kind: string,
       sandboxId: string | null,
@@ -420,7 +478,14 @@ export function createJobsStore(sql: Sql, encryptionKey?: string) {
           `select public.complete_job($1,$2,$3,$4,$5,
              case when $5 = 'failed' then jsonb_build_object('reason', $8::text, 'evidence', evidence)
                   else evidence end, $7) as completed
-           from (select coalesce($6::jsonb, (select outcome from public.jobs where id = $1)) as evidence) data`,
+           from (
+             select case when kind = 'launch' and $6::jsonb is not null
+                         then jsonb_build_object('result', $6::jsonb) ||
+                           case when outcome->'modal_machine' is null then '{}'::jsonb
+                                else jsonb_build_object('modal_machine', outcome->'modal_machine') end
+                         else coalesce($6::jsonb, outcome) end as evidence
+             from public.jobs where id = $1
+           ) data`,
           [
             ...claimIdentity(job, owner),
             generation,
@@ -443,5 +508,8 @@ export function createJobsStore(sql: Sql, encryptionKey?: string) {
       }
       return complete(sql, job.generation);
     },
-  } satisfies JobStore & { enqueue: (...args: never[]) => Promise<string> };
+  } satisfies JobStore & {
+    enqueue: (...args: never[]) => Promise<string>;
+    modalLaunchJournal: (job: Job) => ModalMachineJournal;
+  };
 }

@@ -534,7 +534,7 @@ export class GoldenCreateService {
 
 /**
  * The single-segment directory each repo is cloned into, so a golden created this way can later be
- * pulled at launch the same way as one from `armada golden create --repo <url>`: `basename`, with a
+ * pulled at launch the same way as one from `armada snapshot new NAME --repo <url>`: `basename`, with a
  * `-2`, `-3`, ... suffix on collision. The build script and the persisted config call this once each,
  * deterministically, so the two never disagree about where a repo lives.
  */

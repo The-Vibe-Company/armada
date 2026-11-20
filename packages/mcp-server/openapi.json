@@ -82,7 +82,7 @@
                       "golden": {
                         "type": "string",
                         "pattern": "\\S",
-                        "description": "The Boat or Modal snapshot name returned by /api/v1/golden/list or armada snapshot list."
+                        "description": "The Boat or Modal snapshot name returned by /api/v1/golden/list or armada snapshot ls."
                       },
                       "prompt": {
                         "type": "string",
@@ -223,7 +223,7 @@
                       "golden": {
                         "type": "string",
                         "pattern": "\\S",
-                        "description": "The Boat or Modal snapshot name returned by /api/v1/golden/list or armada snapshot list."
+                        "description": "The Boat or Modal snapshot name returned by /api/v1/golden/list or armada snapshot ls."
                       },
                       "prompt": {
                         "type": "string",
@@ -355,7 +355,7 @@
                       "golden": {
                         "type": "string",
                         "pattern": "\\S",
-                        "description": "The Boat or Modal snapshot name returned by /api/v1/golden/list or armada snapshot list."
+                        "description": "The Boat or Modal snapshot name returned by /api/v1/golden/list or armada snapshot ls."
                       },
                       "prompt": {
                         "type": "string",
@@ -496,7 +496,7 @@
                       "golden": {
                         "type": "string",
                         "pattern": "\\S",
-                        "description": "The Boat or Modal snapshot name returned by /api/v1/golden/list or armada snapshot list."
+                        "description": "The Boat or Modal snapshot name returned by /api/v1/golden/list or armada snapshot ls."
                       },
                       "prompt": {
                         "type": "string",

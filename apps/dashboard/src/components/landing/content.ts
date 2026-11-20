@@ -20,7 +20,7 @@ export const INSTALL = "npm install -g @the-vibe-company/armada";
 
 /** The CLI line under each chapter of the story: every command and flag is one `armada --help` documents. */
 export const STORY = {
-  golden: "armada snapshot create widgets --repo https://github.com/acme/widgets --provider modal",
+  golden: "armada snapshot new widgets --repo https://github.com/acme/widgets --provider modal",
   launch:
     'armada new widgets --provider modal --agent claude --model claude-opus-5-5 --reasoning-effort high "Add a dark theme"',
   tools: "armada mcp add docs https://mcp.example.com/mcp --scope org",

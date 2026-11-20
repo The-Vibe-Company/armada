@@ -25,18 +25,18 @@ production rebuild.
 
 ## Recovering a build receipt today
 
-For Boat and Modal, `armada snapshot create` and `armada snapshot update` now
+For Boat and Modal, `armada snapshot new` and `armada snapshot update` now
 submit a durable build job and use short status requests. If the CLI disconnects or its local wait
 ends, inspect the existing job before retrying. With the printed build ID:
 
 ```sh
-armada snapshot build-status JOB_UUID
+armada snapshot show --build JOB_UUID
 ```
 
 If the receipt was lost, look it up with the saved admission key and organization:
 
 ```sh
-armada snapshot build-status --idempotency-key SAVED_KEY --org ORG_UUID
+armada snapshot show --idempotency-key SAVED_KEY --org ORG_UUID
 ```
 
 Replace `JOB_UUID`, `SAVED_KEY`, and `ORG_UUID` with the values from your
