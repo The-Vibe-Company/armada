@@ -105,7 +105,8 @@ export const sandboxCheckOperations = {
     destructive: false,
     audience: "public",
     errors: controlErrors,
-    description: "Check that a snapshot allows the repository and the caller's GitHub connection can read it.",
+    description:
+      "Check that a Boat or Modal snapshot allows the repository and the caller's GitHub connection can read it.",
     input: { body: proofRequest.extend({ golden: z.string(), repository: z.string() }) },
     output: z.object({
       githubReady: z.literal(true),

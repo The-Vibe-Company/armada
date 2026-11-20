@@ -82,7 +82,7 @@
                       "golden": {
                         "type": "string",
                         "pattern": "\\S",
-                        "description": "The launch snapshot name returned by /api/v1/golden/list or armada snapshot list."
+                        "description": "The Boat or Modal snapshot name returned by /api/v1/golden/list or armada snapshot list."
                       },
                       "prompt": {
                         "type": "string",
@@ -223,7 +223,7 @@
                       "golden": {
                         "type": "string",
                         "pattern": "\\S",
-                        "description": "The launch snapshot name returned by /api/v1/golden/list or armada snapshot list."
+                        "description": "The Boat or Modal snapshot name returned by /api/v1/golden/list or armada snapshot list."
                       },
                       "prompt": {
                         "type": "string",
@@ -355,7 +355,7 @@
                       "golden": {
                         "type": "string",
                         "pattern": "\\S",
-                        "description": "The launch snapshot name returned by /api/v1/golden/list or armada snapshot list."
+                        "description": "The Boat or Modal snapshot name returned by /api/v1/golden/list or armada snapshot list."
                       },
                       "prompt": {
                         "type": "string",
@@ -496,7 +496,7 @@
                       "golden": {
                         "type": "string",
                         "pattern": "\\S",
-                        "description": "The launch snapshot name returned by /api/v1/golden/list or armada snapshot list."
+                        "description": "The Boat or Modal snapshot name returned by /api/v1/golden/list or armada snapshot list."
                       },
                       "prompt": {
                         "type": "string",
@@ -2312,7 +2312,7 @@
     "/api/v1/golden/list": {
       "post": {
         "operationId": "golden_list",
-        "description": "List launch snapshots visible to the caller. A snapshot without a providerSnapshotId cannot be launched yet.",
+        "description": "List Boat and Modal launch snapshots visible to the caller. A snapshot without a providerSnapshotId cannot be launched yet.",
         "security": [
           {
             "serviceToken": []
@@ -2744,7 +2744,7 @@
     "/api/v1/golden/adopt": {
       "post": {
         "operationId": "golden_adopt",
-        "description": "Dry-run first: select an existing visible snapshot by ID. Confirm with the returned receipt within ten minutes. Preserves all rows and ACLs.",
+        "description": "Dry-run first: select an existing visible Boat snapshot by ID. Confirm with the returned receipt within ten minutes. Preserves all rows and ACLs.",
         "security": [
           {
             "serviceToken": []
@@ -4484,7 +4484,7 @@
                     ]
                   },
                   "golden": {
-                    "description": "Filter by snapshot UUID.",
+                    "description": "Filter by Boat or Modal snapshot UUID.",
                     "type": "string",
                     "format": "uuid",
                     "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
@@ -8191,7 +8191,7 @@
     "/api/v1/sandbox/github-preflight-v1": {
       "post": {
         "operationId": "sandbox_github_preflight_v1",
-        "description": "Check that a snapshot allows the repository and the caller's GitHub connection can read it.",
+        "description": "Check that a Boat or Modal snapshot allows the repository and the caller's GitHub connection can read it.",
         "x-armada-direct-server": true,
         "security": [
           {

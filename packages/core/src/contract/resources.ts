@@ -127,7 +127,7 @@ export const goldenOperations = {
     name: "listGoldens",
     route: { method: "POST", path: "/api/v1/golden/list" },
     description:
-      "List launch snapshots visible to the caller. A snapshot without a providerSnapshotId cannot be launched yet.",
+      "List Boat and Modal launch snapshots visible to the caller. A snapshot without a providerSnapshotId cannot be launched yet.",
     audience: "public",
     readOnly: true,
     destructive: false,
@@ -151,7 +151,7 @@ export const goldenOperations = {
     name: "adoptGolden",
     route: { method: "POST", path: "/api/v1/golden/adopt" },
     description:
-      "Dry-run first: select an existing visible snapshot by ID. Confirm with the returned receipt within ten minutes. Preserves all rows and ACLs.",
+      "Dry-run first: select an existing visible Boat snapshot by ID. Confirm with the returned receipt within ten minutes. Preserves all rows and ACLs.",
     audience: "public",
     readOnly: false,
     destructive: false,
