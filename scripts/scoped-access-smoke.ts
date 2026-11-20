@@ -141,7 +141,6 @@ function receiptDiagnostic(call: Call | undefined, key: string) {
     keyMatches,
     receiptIdValid: uuid(operationId),
     receiptSandboxIdValid: uuid(sandboxId),
-    // The receipt carries identity and state. Correlate with the server's operator_failure for the cause.
     ...((state === "failed" || state === "uncertain") &&
       keyMatches &&
       uuid(operationId) && { operationId, ...(uuid(sandboxId) && { sandboxId }) }),
