@@ -143,13 +143,19 @@ export function createJobsStore(sql: Sql, encryptionKey?: string) {
                    and (s.activity_lease_id = q.request_id
                      or (s.activity_lease_id is null and s.status in ('ready','running')
                        and s.provider in ('boat','modal')
-                       and exists(
+                       and (exists(
                          select 1 from public.runtime_commands c
                          join public.runtime_enrolments e on e.sandbox_id = c.sandbox_id and e.epoch = c.epoch
                          where c.sandbox_id = s.id and c.request_id = 'follow_' || q.request_id::text
                            and c.result_enc is not null and e.runtime_hash is not null
                            and e.lifecycle_generation = s.lifecycle_generation
-                       )))))
+                       ) or exists(
+                         select 1 from public.runtime_resumes r
+                         join public.runtime_enrolments e on e.sandbox_id = r.sandbox_id and e.epoch = r.target_epoch
+                         where r.sandbox_id = s.id and r.request_id = q.request_id
+                           and r.phase = 'complete' and r.receipt is not null and e.runtime_hash is not null
+                           and e.lifecycle_generation = s.lifecycle_generation
+                       ))))))
              returning j.generation::text`,
             [...claim, requestId, retiring, phase === "before_handler"],
           );
