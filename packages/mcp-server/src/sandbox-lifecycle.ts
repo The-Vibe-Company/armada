@@ -639,18 +639,14 @@ export async function recordObservedProviderState(
       [...scope, sandboxId, providerRunPlacement ?? null],
     );
     if (!eligible.rows.length) return { kind: "conflict" } satisfies SandboxTransitionResult;
+    const path = providerRunPlacement === undefined ? "runtime" : "native";
     const result = await transitionSandbox(tx, {
       sandboxId,
       expectedGeneration: generation,
       fromStates: [fromState],
       toState,
       actor: toState === "stopped" ? "runtime_observation" : "lifecycle_runner",
-      code:
-        toState === "failed"
-          ? "runtime_provider_failure"
-          : providerRunPlacement === undefined
-            ? "runtime_provider_stopped"
-            : "native_provider_stopped",
+      code: `${path}_provider_${toState === "failed" ? "failure" : "stopped"}`,
       effects: [],
       ...(toState === "stopped"
         ? { settlement: { lease: null, statusReason: reason, stopRequestedAt: null, stoppedAt } }
