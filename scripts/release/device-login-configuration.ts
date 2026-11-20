@@ -11,10 +11,7 @@ export function missingDeviceLoginConfiguration(railway: unknown, vercel: unknow
   const server = railway as Record<string, unknown>;
   const missingServer = serverRequired.filter((name) => !Object.hasOwn(server, name) || server[name] === "");
   const missingDashboard = dashboardRequired.filter(
-    (name) =>
-      !dashboard.some(
-        (entry) => entry?.key === name && Array.isArray(entry.target) && entry.target.includes("production"),
-      ),
+    (name) => !dashboard.some((entry) => entry?.key === name && [entry.target].flat().includes("production")),
   );
   return [
     ...missingServer.map((name) => `Railway server: ${name}`),
