@@ -158,7 +158,8 @@ export function createJobsStore(sql: Sql, encryptionKey?: string) {
                       and (q.dispatch_until is null or q.dispatch_until <= statement_timestamp())
                       and ${NO_ADJACENT_DISPATCH_EVIDENCE}))) as unrecoverable_dispatch,
                   case when ${ADJACENT_RUNTIME_DISPATCH}
-                    and (s.provider in ('boat','modal') or ${NO_ADJACENT_DISPATCH_EVIDENCE})
+                    and (s.provider in ('boat','modal') or ${NO_ADJACENT_DISPATCH_EVIDENCE}
+                      or (s.activity_lease_id is null and ${CURRENT_DOCKER_PROMPT_COMMAND}))
                     and isfinite(q.dispatch_until) and q.dispatch_until > statement_timestamp()
                     then q.dispatch_until::text end as open_dispatch_until
            from public.sandboxes s join public.account_turn_queue q on q.sandbox_id = s.id
