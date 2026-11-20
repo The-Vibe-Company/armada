@@ -508,7 +508,7 @@ describe("armada org and armada creds against the control API", () => {
     });
   });
 
-  test("armada logs resolves an Armada id through the authenticated server, without a local boat key", async () => {
+  test("armada events resolves an Armada id through the authenticated server, without a local boat key", async () => {
     await withServer(async ({ db, options }) => {
       const org = crypto.randomUUID();
       await db.query("insert into orgs (id, name) values ($1, 'Logs')", [org]);
@@ -573,7 +573,7 @@ describe("armada org and armada creds against the control API", () => {
           supabaseUrl: "https://supabase.test",
         }),
       };
-      expect(await run(["logs", armadaId], { out: auth.out, err: auth.err }, { auth })).toBe(0);
+      expect(await run(["events", armadaId], { out: auth.out, err: auth.err }, { auth })).toBe(0);
       expect(out).toBe("from server\n");
       expect(err).toBe("");
       expect(calls).toEqual([{ path: "bx_server_only", authorization: "server-resolved" }]);
@@ -1835,7 +1835,7 @@ test("public sandbox logs omit account-private native quota and auth records", a
       hasMore: false,
     });
     options.logs = async () => ({ provider: boat.provider, providerSandboxId: "bx_1" });
-    const result = await stan.run(["logs", STAN, "--json"]);
+    const result = await stan.run(["events", STAN, "--json"]);
     expect(result.code).toBe(0);
     expect(result.out).toContain("public work");
     expect(result.out).toContain("ordinary-native-init");

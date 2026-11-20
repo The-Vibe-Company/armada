@@ -60,11 +60,14 @@ function eventText(event: LogsResult["events"][number]) {
   return JSON.stringify(event);
 }
 
+const usage = "armada events [sandbox-id] [-f] [--tail N] [--org UUID] [--json]";
+
 export default {
   name: "events",
   summary: "Read agent events from a sandbox",
-  usage: "  armada events [sandbox-id] [-f] [--tail N]  Read agent events",
-  help: `Usage: armada events [sandbox-id] [-f] [--tail N] [--org UUID] [--json]
+  usage: `  ${usage}
+                                           Read agent events`,
+  help: `Usage: ${usage}
 Read one page of agent events. --tail N starts with the last N events (1–1000).
 -f follows new events until the sandbox settles. Ctrl-C stops the reader.
 Piped output and --json emit one JSON object per event.

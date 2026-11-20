@@ -64,6 +64,29 @@ export class ArmadaApiError extends AuthError {
 
 export type ArmadaCommandClient = ReturnType<typeof commandClient>;
 
+async function authenticatedSession(io: ArmadaApiIo, options: ArmadaApiOptions = {}) {
+  const environmentToken = io.env.ARMADA_TOKEN;
+  let saved = environmentToken ? null : await io.session.read();
+  const origin = await resolveArmadaOrigin(io, options.url, saved);
+  const initial = environmentToken || saved?.accessToken;
+  if (!initial) throw new AuthError("Set ARMADA_TOKEN or run armada login.", "unauthorized");
+  let token = initial;
+  const timeoutMs = io.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  if (!environmentToken && saved && Date.parse(saved.expiresAt) - Date.now() <= 60_000) {
+    saved = await refresh(origin, io, saved.refreshToken, saved, timeoutMs, undefined, options.rawJson);
+    token = saved.accessToken;
+  }
+  const renewToken = saved
+    ? async (signal?: AbortSignal) => {
+        if (!saved) throw new Error("No saved login to refresh.");
+        saved = await refresh(origin, io, saved.refreshToken, saved, timeoutMs, signal, options.rawJson);
+        token = saved.accessToken;
+        return token;
+      }
+    : undefined;
+  return { origin, timeoutMs, environmentToken, token: () => token, renewToken };
+}
+
 export async function createArmadaApiClient(
   io: ArmadaApiIo,
   options: ArmadaApiOptions = {},
@@ -323,29 +346,6 @@ export async function createArmadaApiClient(
       throw new AuthError(apiMessage(payload, `Armada server request failed (${response.status}).`), "unavailable");
     },
   );
-}
-
-async function authenticatedSession(io: ArmadaApiIo, options: ArmadaApiOptions = {}) {
-  const environmentToken = io.env.ARMADA_TOKEN;
-  let saved = environmentToken ? null : await io.session.read();
-  const origin = await resolveArmadaOrigin(io, options.url, saved);
-  const initial = environmentToken || saved?.accessToken;
-  if (!initial) throw new AuthError("Set ARMADA_TOKEN or run armada login.", "unauthorized");
-  let token = initial;
-  const timeoutMs = io.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-  if (!environmentToken && saved && Date.parse(saved.expiresAt) - Date.now() <= 60_000) {
-    saved = await refresh(origin, io, saved.refreshToken, saved, timeoutMs, undefined, options.rawJson);
-    token = saved.accessToken;
-  }
-  const renewToken = saved
-    ? async (signal?: AbortSignal) => {
-        if (!saved) throw new Error("No saved login to refresh.");
-        saved = await refresh(origin, io, saved.refreshToken, saved, timeoutMs, signal, options.rawJson);
-        token = saved.accessToken;
-        return token;
-      }
-    : undefined;
-  return { origin, timeoutMs, environmentToken, token: () => token, renewToken };
 }
 
 export async function createArmadaSdkReader(io: ArmadaApiIo) {

@@ -67,8 +67,7 @@ is soft for one event; keep a 1 MiB receive allowance plus envelope overhead.
 Visibility rules are unchanged.
 
 CLI: `armada events [id] --tail N`, optionally `-f` to follow until settled. Piped output and `--json` emit one JSON object per event.
-Tail cannot combine with `--all` or `--since`. Follow switches from the initial
-backward page to forward polling at its newest cursor.
+Follow switches from the initial backward page to forward polling at its newest cursor.
 
 ## Historical measurement
 

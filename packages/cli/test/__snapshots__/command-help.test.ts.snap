@@ -123,9 +123,12 @@ Usage:
   armada send|steer <sandbox-id> <text> [--model ID] [--reasoning-effort LEVEL]
                                            send accepts --request-id UUID to reuse an uncertain runtime instruction.
                                            Full-account follow-up sends can queue FIFO; queued is not completed.
-  armada exec [sandbox-id] -- COMMAND  Run a shell command
-  armada events [sandbox-id] [-f] [--tail N]  Read agent events
-  armada outputs [NAME] [-o DIR]          List or download saved outputs
+  armada exec [sandbox-id] [--cwd PATH] [--timeout SECONDS] [--org UUID] [--json] -- COMMAND
+                                           Run a shell command
+  armada events [sandbox-id] [-f] [--tail N] [--org UUID] [--json]
+                                           Read agent events
+  armada outputs [NAME] [-o DIR] [--id ID] [--org UUID] [--json]
+                                           List or download saved outputs
   armada api ROUTE [JSON|-]
   armada snapshot retirement dry-run|reconcile <snapshot-id> [--limit 1-50] [--org UUID]
   armada snapshot remove <name|snapshot-id> [--provider boat|modal] [--org UUID] [--json]

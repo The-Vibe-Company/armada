@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { sandboxOutputOperations } from "@armada/core/contract/sandbox-outputs";
@@ -19,12 +19,12 @@ const snapshot = {
   files: [{ name, size: 3, sha256: null, updatedAt: "2026-11-20T00:00:00Z" }],
 } satisfies ReturnType<typeof sandboxOutputOperations.listSandboxOutputs.output.parse>;
 
-async function invoke(args: string[], serve: (request: Request) => Response) {
+async function invoke(args: string[], serve: (request: Request) => Response, stdoutIsTTY = false) {
   let out = "";
   let err = "";
   const io = { out: (s: string) => (out += s), err: (s: string) => (err += s) };
   const code = await run(args, io, {
-    stdoutIsTTY: false,
+    stdoutIsTTY,
     auth: {
       ...io,
       env: { ARMADA_TOKEN: "fixture", ARMADA_SANDBOX: id },
@@ -47,18 +47,18 @@ test("outputs lists the saved snapshot of the current sandbox as JSON", async ()
   expect(JSON.parse(result.out)).toEqual(snapshot);
 });
 
-test("outputs downloads a named binary file to the requested directory", async () => {
+test.each([Uint8Array.of(0, 255, 10), Uint8Array.of()])("outputs saves the exact bytes (%j)", async (bytes) => {
   const dir = await mkdtemp(join(tmpdir(), "armada-outputs-"));
-  const bytes = Uint8Array.of(0, 255, 10);
   try {
     const result = await invoke(["outputs", name, "-o", dir], (request) => {
       expect(new URL(request.url).pathname).toBe(`/api/v1/sandboxes/${id}/outputs/notes%20%231.bin`);
-      return new Response(bytes);
+      return new Response(bytes.length ? bytes : null, { headers: { "content-length": String(bytes.length) } });
     });
     expect(result.code).toBe(0);
     const path = join(dir, name);
     expect(JSON.parse(result.out)).toEqual({ path });
     expect(await Bun.file(path).bytes()).toEqual(bytes);
+    if (process.platform !== "win32") expect((await stat(path)).mode & 0o777).toBe(0o600);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -70,4 +70,15 @@ test("outputs rejects an unsafe filename before download", async () => {
   });
   expect(result.code).toBe(2);
   expect(result.err).toContain("Invalid output file name");
+});
+
+test("outputs shows the retained snapshot when collection is unavailable", async () => {
+  const result = await invoke(
+    ["outputs"],
+    () => Response.json({ ...snapshot, unavailable: "collector_unsupported" }),
+    true,
+  );
+  expect(result.code).toBe(0);
+  expect(result.out).toContain("Output collection is unavailable");
+  expect(result.out).toContain(name);
 });

@@ -1,4 +1,4 @@
-import { link, mkdir, mkdtemp, rm } from "node:fs/promises";
+import { link, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { AuthError } from "@armada/auth";
 import { GoldenError } from "@armada/core";
@@ -37,12 +37,14 @@ const outputs: Command["run"] = async (argv, { io, deps, auth }) => {
     const snapshot = await read((sdk) => sdk.outputs.list({ id }));
     if (!sandboxOutputOperations.listSandboxOutputs.output.safeParse(snapshot).success)
       throw new AuthError("Armada returned an invalid output snapshot.", "unavailable");
-    if (json) io.out(`${JSON.stringify(snapshot)}\n`);
-    else if (snapshot.unavailable) io.out("Output collection is unavailable for this sandbox.\n");
-    else if (!snapshot.files.length) io.out("No saved outputs.\n");
-    else
+    if (json) {
+      io.out(`${JSON.stringify(snapshot)}\n`);
+    } else {
+      if (snapshot.unavailable) io.out("Output collection is unavailable for this sandbox.\n");
+      if (!snapshot.files.length && !snapshot.unavailable) io.out("No saved outputs.\n");
       for (const file of snapshot.files)
         io.out(`${JSON.stringify(file.name)}\t${file.skipped ?? `${file.size} bytes`}\n`);
+    }
     return 0;
   }
 
@@ -50,7 +52,7 @@ const outputs: Command["run"] = async (argv, { io, deps, auth }) => {
   const path = join(dir, name);
   const signal = AbortSignal.timeout(300_000);
   const response = await read((sdk) => sdk.outputs.get({ id, name }, { signal }), signal);
-  if (response.status !== 200 || !response.body) {
+  if (response.status !== 200 || (!response.body && response.headers.get("content-length") !== "0")) {
     await response.body?.cancel();
     throw new AuthError("Armada did not return a complete output file.", "unavailable");
   }
@@ -59,7 +61,8 @@ const outputs: Command["run"] = async (argv, { io, deps, auth }) => {
     await mkdir(dir, { recursive: true });
     temporaryDir = await mkdtemp(join(dir, ".armada-output-"));
     const temporaryFile = join(temporaryDir, "download");
-    await Bun.write(temporaryFile, response);
+    await writeFile(temporaryFile, "", { mode: 0o600 });
+    if (response.body) await Bun.write(temporaryFile, response);
     await link(temporaryFile, path);
   } catch {
     throw new AuthError("Could not save the sandbox output. Check the destination and retry.", "unavailable");
@@ -71,11 +74,14 @@ const outputs: Command["run"] = async (argv, { io, deps, auth }) => {
   return 0;
 };
 
+const usage = "armada outputs [NAME] [-o DIR] [--id ID] [--org UUID] [--json]";
+
 export default {
   name: "outputs",
   summary: "List or download saved sandbox outputs",
-  usage: "  armada outputs [NAME] [-o DIR]          List or download saved outputs",
-  help: `Usage: armada outputs [NAME] [-o DIR] [--id ID] [--org UUID] [--json]
+  usage: `  ${usage}
+                                           List or download saved outputs`,
+  help: `Usage: ${usage}
 List saved outputs for the current sandbox or the sandbox selected with --id.
 With NAME, download the file into DIR (default the current directory).
 Choose a directory without a file of the same name.
