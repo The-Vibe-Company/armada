@@ -27,19 +27,19 @@ import {
   BOAT_RETAINED_OUTPUT_STOP,
   CAN_WRITE_LIVE,
   collectOutputTransfers,
+  LIVE_OUTPUT_CANDIDATE,
   lockOutputSandbox,
+  OUTPUT_COLLECTOR_ELIGIBLE,
   OUTPUT_SCAN_UNPUBLISHED,
   recordOutputPublication,
   remainingOutputOrgBytes,
 } from "./output-transfers.ts";
+import { claimOutputFailure, markOutputCollectorSupported } from "./sandbox-lifecycle.ts";
 
 // Native and enrolled-runtime Boat/Modal sandboxes: providers read the declared directory through
 // their own fixed channel (Provider.readOutputs), never caller commands or the agent runtime.
 // Docker sandboxes have no provider exec; their reader is the runtime's fixed read-only operation.
 // Application-secret taint is irreversible and forbids every file egress (same policy as exec and work recovery).
-const ELIGIBLE = `provider in ('boat','modal','docker') and not application_secret_tainted
-  and not ('collector_unsupported' = any(outputs_failure_reasons))`;
-
 /** The only provider surface output collection uses. */
 type OutputReader = Pick<
   Provider,
@@ -59,9 +59,8 @@ const BOAT_RETAINED_CANDIDATE = `${BOAT_RETAINED_OUTPUT_STOP}
   and not exists (select 1 from public.sandbox_transitions t where t.sandbox_id=sandboxes.id
     and t.generation=sandboxes.lifecycle_generation and t.code='launch_interrupted')`;
 
-const LIVE_CANDIDATE = `(${ELIGIBLE}) and status in ('running','ready') and stopped_at is null`;
 const CAPTURE_CANDIDATE = `not application_secret_tainted and provider_sandbox_id is not null
-  and ((${LIVE_CANDIDATE}) or (${BOAT_RETAINED_CANDIDATE}))`;
+  and ((${LIVE_OUTPUT_CANDIDATE}) or (${BOAT_RETAINED_CANDIDATE}))`;
 export const OUTPUTS_CAPTURE = "outputs_capture";
 
 type OutputTarget = {
@@ -90,16 +89,7 @@ export async function recordOutputFailure(
   generation?: string | null,
   attemptCount?: number,
 ): Promise<void> {
-  const claim = await sql.query<OutputTarget>(
-    `update public.sandboxes
-     set outputs_failure_reasons=array_append(outputs_failure_reasons,$2)
-     where id=$1 and status<>'deleted' and not application_secret_tainted
-     and ($3::bigint is null or lifecycle_generation=$3::bigint)
-     and not ($2 = any(outputs_failure_reasons))
-     returning provider, status`,
-    [id, reason, generation ?? null],
-  );
-  const target = claim.rows[0];
+  const target = await claimOutputFailure(sql, id, reason, generation ?? null);
   if (!target) return;
   const attempt = { ...target, attemptCount };
   if (reason === "output_directory_missing") {
@@ -217,12 +207,7 @@ async function probeOutputCapability(
   );
   if (!ready) throw new OutputCollectionError("output_unavailable");
   signal?.throwIfAborted();
-  const verified = await sql.query(
-    `update public.sandboxes set outputs_collector_supported=true
-     where id=$1 and lifecycle_generation=$2::bigint and provider_sandbox_id=$3 and ${LIVE_CANDIDATE} returning id`,
-    [id, generation, providerId],
-  );
-  return verified.rows.length > 0;
+  return markOutputCollectorSupported(sql, id, generation, providerId);
 }
 
 async function collect(
@@ -246,7 +231,7 @@ async function collect(
     if (options.canDispatch && !(await options.canDispatch())) return;
     const { rows } = await outputPhase("admit_read", () =>
       sql.query<{ outputs_collector_supported: boolean }>(
-        `select outputs_collector_supported from public.sandboxes where id=$1 and ${ELIGIBLE}
+        `select outputs_collector_supported from public.sandboxes where id=$1 and ${OUTPUT_COLLECTOR_ELIGIBLE}
           and lifecycle_generation=$2::bigint and provider_sandbox_id=$3 and (${eligibility})`,
         [id, generation, providerId],
       ),
@@ -257,7 +242,7 @@ async function collect(
   const authorizeRead = async () => {
     if (!(await admitRead(CAN_WRITE_LIVE))) throw new OutputCollectionError("output_unavailable");
   };
-  const admitted = await admitRead(periodic ? LIVE_CANDIDATE : CAN_WRITE_LIVE);
+  const admitted = await admitRead(periodic ? LIVE_OUTPUT_CANDIDATE : CAN_WRITE_LIVE);
   if (!admitted) return;
   // Final capture never probes first. Its bounded read is the last chance to collect a deliverable,
   // and the read's own exit status classifies an unsupported collector, so a transient or parallel
@@ -420,7 +405,7 @@ export async function captureFinalOutputs(
         }>(
           `select provider,provider_sandbox_id,lifecycle_generation::text as generation,clock_timestamp()::text as scan
            from public.sandboxes where id=$1 and stopped_at is null and (${CAN_WRITE_LIVE})
-           and provider_sandbox_id is not null and ${ELIGIBLE}`,
+           and provider_sandbox_id is not null and ${OUTPUT_COLLECTOR_ELIGIBLE}`,
           [id],
         ),
       )
