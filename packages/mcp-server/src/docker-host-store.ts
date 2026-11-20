@@ -15,6 +15,7 @@ import {
   decryptSecret,
   encryptSecret,
   isSnapshotBaselineTool,
+  type Machine,
   type MachineIdentity,
   readOutputArchive,
   type SnapshotBaselineTool,
@@ -62,6 +63,7 @@ import { deferTransactionWake } from "./wake-bus.ts";
 type Actor = { userId: string; orgId: string };
 type Job = DockerHostJob;
 type RestoreJob = Extract<Job, { operation: "restore" }>;
+type MachineCreateResult = { kind: "pending" | "unknown" } | { kind: "completed"; machine: MachineIdentity };
 export const DOCKER_JOB_REQUEST_OUTCOME_SQL =
   "case when j.refused_resume_generation is not null then 'failed' else j.outcome end";
 const settledRefusedResumeSql = `
@@ -700,6 +702,17 @@ export function createDockerHostStore(sql: Sql, key: string) {
     deny();
   }
 
+  async function matchesMachineCreateGeneration(tx: Sql, row: Sandbox, requestId: string) {
+    // Machine create uses its bound daemon UUID as the request key. Legacy
+    // create uses the logical launch request ID, independently of placement.
+    if (requestId !== row.docker_generation) return true;
+    const bindings = createDockerMachineGenerationBindings(tx, {
+      hostId: row.docker_host_id,
+      installationId: row.docker_installation_id,
+    });
+    return (await bindings.lookup({ sandboxId: row.id, generation: Number(row.lifecycle_generation) })) === requestId;
+  }
+
   async function requireCurrentMachine(tx: Sql, logical: Sandbox, delivered: Job) {
     const frozen = await machine(tx, logical, "stop");
     if (input(delivered) !== input({ ...delivered, request: frozen })) deny();
@@ -773,6 +786,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
     if (operation === "resume")
       return failDockerResumeActivation(tx, row.id, row.lifecycle_generation, job.request_id, message);
     if (operation !== "create" && operation !== "bootstrap") return false;
+    if (operation === "create" && !(await matchesMachineCreateGeneration(tx, row, job.request_id))) return false;
     if (await supersededLifecycle(tx, job)) return false;
     return failDockerStartup(tx, row.id, row.lifecycle_generation, "docker_startup_failed", message);
   }
@@ -1394,6 +1408,57 @@ export function createDockerHostStore(sql: Sql, key: string) {
         });
       });
     },
+    // The runner owns placement admission and schedules subsequent receipt reconciliation.
+    async submitMachineCreate(actor: Actor, request: Parameters<Machine["create"]>[0]): Promise<MachineCreateResult> {
+      const { sandboxId, generation, source, computeTtlSeconds, signal } = request;
+      signal?.throwIfAborted();
+      return transaction(async (tx) => {
+        if (!Number.isSafeInteger(generation) || generation < 1 || request.size !== null) deny();
+        const { host, row } = await lockSandboxAdmission(tx, actor, sandboxId, "create");
+        if (
+          String(row.lifecycle_generation) !== String(generation) ||
+          !(await matchesMachineCreateGeneration(tx, row, row.docker_generation))
+        )
+          deny();
+        const epoch = await permission(tx, actor, row, "create");
+        const requestId = row.docker_generation;
+        const existing = (
+          await tx.query<StoredJob>(
+            `select * from public.docker_host_jobs where bound_sandbox_id=$1 and bound_operation='create'`,
+            [sandboxId],
+          )
+        ).rows[0];
+        if (existing && existing.request_id !== requestId) deny();
+        if (!existing) {
+          await refuseDraining(tx, host.id);
+          await state(tx, row, "create");
+        }
+        const allocation = await machine(tx, row, "create");
+        if (
+          allocation.ttlSeconds !== computeTtlSeconds ||
+          (allocation.snapshot
+            ? source.kind !== "snapshot" || source.ref !== allocation.snapshot.id
+            : source.kind !== "image" || source.ref !== allocation.image)
+        )
+          deny();
+        signal?.throwIfAborted();
+        await insert(
+          tx,
+          host.id,
+          { operation: "create", requestId, request: allocation },
+          {
+            bound_sandbox_id: sandboxId,
+            bound_actor_id: actor.userId,
+            bound_actor_epoch: epoch,
+            bound_operation: "create",
+          },
+        );
+        if (!existing || existing.outcome === null) return { kind: "pending" };
+        if (existing.cancelled_at !== null || existing.outcome !== "completed" || !existing.result_machine_id)
+          return { kind: "unknown" };
+        return { kind: "completed", machine: { sandboxId, generation, machineId: existing.result_machine_id } };
+      });
+    },
     async admitMachineRestore(
       actor: Actor,
       job: Pick<RunnerJob, "id" | "sandbox_id" | "generation">,
@@ -1916,7 +1981,10 @@ export function createDockerHostStore(sql: Sql, key: string) {
             const logical = generationFenced(row.bound_operation)
               ? await boundMachine(tx, row, host, installationId)
               : await currentOrSupersededMachine(tx, row, host, installationId);
-            if (!logical) {
+            if (
+              !logical ||
+              (row.bound_operation === "create" && !(await matchesMachineCreateGeneration(tx, logical, row.request_id)))
+            ) {
               supersededPlacement = true;
               deny();
             }

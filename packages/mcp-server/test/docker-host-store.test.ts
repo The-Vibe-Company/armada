@@ -382,6 +382,70 @@ async function boundFixture(
   return { ...host, sandboxId, generation, owner, create };
 }
 
+async function machineCreateFixture() {
+  const host = await fixture();
+  const sandboxId = randomUUID();
+  const bindings = createDockerMachineBindings(sql, { ...host, deploymentId: randomUUID() });
+  const generation = await bindings.bind({ sandboxId, generation: 1 });
+  const image = job().request.image;
+  const a = await boundFixture(host, { sandboxId, generation, expiresAt: Date.UTC(2099, 0, 1), image });
+  const request = {
+    sandboxId,
+    generation: 1,
+    source: { kind: "image" as const, ref: image },
+    computeTtlSeconds: 3600,
+    size: null,
+  };
+  return { ...a, request };
+}
+
+test("Machine create replays one intent and recovers the authenticated container ID", async () => {
+  const a = await machineCreateFixture();
+  const create = () => store.submitMachineCreate(a.owner, a.request);
+  await denied(store.submitMachineCreate(a.owner, { ...a.request, computeTtlSeconds: 300 }));
+  expect(await create()).toEqual({ kind: "pending" });
+  expect(await create()).toEqual({ kind: "pending" });
+
+  const delivered = await store.poll(a.hostToken, a.installationId);
+  expect(delivered).toMatchObject({
+    operation: "create",
+    requestId: a.generation,
+    request: { sandboxId: a.sandboxId, generation: a.generation, ttlSeconds: 3600 },
+  });
+  const machineId = "d".repeat(64);
+  await store.complete(a.hostToken, a.installationId, {
+    requestId: a.generation,
+    outcome: "completed",
+    machineId,
+  });
+  expect(await create()).toEqual({
+    kind: "completed",
+    machine: { sandboxId: a.sandboxId, generation: 1, machineId },
+  });
+  expect(await store.poll(a.hostToken, a.installationId)).toBeNull();
+});
+
+test("Machine create does not infer identity from an ID-less receipt", async () => {
+  const a = await machineCreateFixture();
+  await store.submitMachineCreate(a.owner, a.request);
+  await store.complete(a.hostToken, a.installationId, { requestId: a.generation, outcome: "completed" });
+  expect(await store.submitMachineCreate(a.owner, a.request)).toEqual({ kind: "unknown" });
+});
+
+test("a stale Machine create does not dispatch or fail the current generation", async () => {
+  const a = await machineCreateFixture();
+  await store.submitMachineCreate(a.owner, a.request);
+  expect(await store.poll(a.hostToken, a.installationId)).toHaveProperty("requestId", a.generation);
+  const db = database();
+  await db.query("update sandboxes set lifecycle_generation=2 where id=$1", [a.sandboxId]);
+
+  await denied(store.submitMachineCreate(a.owner, a.request));
+  expect(await store.poll(a.hostToken, a.installationId)).toBeNull();
+  await store.complete(a.hostToken, a.installationId, { requestId: a.generation, outcome: "failed" });
+  const sandbox = await db.query("select status from sandboxes where id=$1", [a.sandboxId]);
+  expect(sandbox.rows).toEqual([{ status: "starting" }]);
+});
+
 async function prepareRestore(registered?: Awaited<ReturnType<typeof fixture>>, useSnapshot = false) {
   const host = registered ?? (await fixture());
   const db = database();
