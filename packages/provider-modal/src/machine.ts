@@ -130,7 +130,7 @@ export function verifyModalComputeOwnership(
     throw conflict("Modal machine ownership does not match the incarnation; resource not modified.");
 }
 
-export async function snapshotModalRecoveryImage(sandbox: Sandbox, signal?: AbortSignal) {
+async function snapshotModalRecoveryImage(sandbox: Sandbox, signal?: AbortSignal) {
   signal?.throwIfAborted();
   const image = await sandbox.snapshotFilesystem({ ttlMs: null });
   if (!image.imageId) throw refusal("unavailable", "Modal checkpoint returned no image.");
@@ -155,6 +155,7 @@ export async function terminateModalCompute(
 export async function stopModalCompute(
   sandbox: Sandbox,
   options: NonNullable<Parameters<typeof terminateModalCompute>[1]> & {
+    runStep?<T>(stage: "modal_checkpoint_snapshot" | "modal_checkpoint_terminate", work: () => Promise<T>): Promise<T>;
     checkpoint?: {
       prepare(): Promise<void>;
       recordIntent(): Promise<void>;
@@ -162,14 +163,15 @@ export async function stopModalCompute(
     };
   },
 ) {
-  const { checkpoint, signal } = options;
+  const { checkpoint, signal, runStep = (_stage, work) => work() } = options;
   if (checkpoint) {
     await checkpoint.prepare();
     signal?.throwIfAborted();
     await checkpoint.recordIntent();
-    await checkpoint.recordImage(await snapshotModalRecoveryImage(sandbox, signal));
+    const imageId = await runStep("modal_checkpoint_snapshot", () => snapshotModalRecoveryImage(sandbox, signal));
+    await checkpoint.recordImage(imageId);
   }
-  await terminateModalCompute(sandbox, options);
+  await runStep("modal_checkpoint_terminate", () => terminateModalCompute(sandbox, options));
 }
 
 async function optional<T>(operation: () => Promise<T>) {
