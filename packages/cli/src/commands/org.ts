@@ -9,13 +9,11 @@ export default {
   armada org list
   armada org setup [--org <name>]          Show organization provider setup status
   armada org connect boat|modal [--org <name>] [--file <path>]
-                                           Connect an org provider using hidden input, stdin or a file
-  armada org use <name|UUID|none>           Persist selection for this Armada server
-  armada org current                        Show selected organization`,
+                                           Connect an org provider using hidden input, stdin or a file`,
     invitations: `  armada org invitations create <email> [--role admin|member] [--org <name|UUID>] [--json]
   armada org invitations list [--org <name|UUID>] [--json]
   armada org invitations resend|revoke <id> [--org <name|UUID>] [--json]
-                                           Admin invitation management; --org overrides org use selection.
+                                           Admin invitation management; --org overrides the saved selection.
                                            Email sent means provider accepted, not confirmed inbox delivery.
   armada org invitations accept [--file <path>] [--json]
                                            Token from stdin/file only; log in personally with the matching
@@ -25,11 +23,9 @@ export default {
                                            grants membership immediately and does not send an invitation.`,
   },
   help: `Usage: armada org <command> [arguments]
-Manage organization selection, provider setup and membership.
+Manage organizations, provider setup and membership.
 Use a leaf command with --help or -h for flags and authorization requirements.
   list         List your organizations, roles and IDs.
-  use          Save a local default by name/UUID, or clear it with none.
-  current      Read the saved selection; not a current-membership check.
   create       Create an organization and become its admin.
   setup        Inspect provider configuration, not lifecycle readiness.
   connect      Connect Boat/Modal as an organization admin.
@@ -63,22 +59,8 @@ Example: armada org invitations list --org my-team --json
 `,
     "org list": `Usage: armada org list [--json]
 List your organizations after Armada login, including their IDs and your roles.
-Use an exact organization name or UUID with armada org use.
+Use an exact organization name or UUID with armada login --org NAME|UUID.
 Example: armada org list --json
-`,
-    "org use": `Usage: armada org use <name|UUID|none>
-Save a default organization for this Armada server in local preferences.
-Selecting a name or UUID requires login and an exact, unambiguous organization match.
-Use none to clear the saved selection locally; this does not delete an organization.
-For commands that use the saved default, an explicit --org overrides it.
-Example: armada org use my-team
-Example: armada org use none
-`,
-    "org current": `Usage: armada org current
-Read the saved local organization selection for this Armada server, without a server request.
-Output is JSON: org is the saved UUID, or null when no selection is saved.
-This does not check current membership or access.
-Example: armada org current
 `,
     "org create": `Usage: armada org create <name> [--json]
 Create an organization after Armada login; you become its admin.
@@ -108,24 +90,24 @@ Example: armada org members remove teammate@example.com --org my-team
 `,
     "org invitations create": `Usage: armada org invitations create <email> [--role admin|member] [--org <name|UUID>] [--json]
 Invite someone as an organization admin after Armada login; the default role is member.
-Select an organization with --org or armada org use.
+Select an organization with --org or armada login --org NAME|UUID.
 Sent means the email provider accepted delivery, not confirmed inbox receipt.
 Example: armada org invitations create teammate@example.com --org my-team
 `,
     "org invitations list": `Usage: armada org invitations list [--org <name|UUID>] [--json]
 List invitation metadata as an organization admin after Armada login.
-Select an organization with --org or armada org use; output includes IDs, not tokens.
+Select an organization with --org or armada login --org NAME|UUID; output includes IDs, not tokens.
 Example: armada org invitations list --org my-team --json
 `,
     "org invitations resend": `Usage: armada org invitations resend <id> [--org <name|UUID>] [--json]
 Resend an invitation as an organization admin after Armada login.
-Use an invitation ID from org invitations list, and select --org or armada org use.
+Use an invitation ID from org invitations list, and select --org or armada login --org NAME|UUID.
 Sent means email-provider acceptance, not confirmed inbox receipt.
 Example: armada org invitations resend INVITATION_UUID --org my-team
 `,
     "org invitations revoke": `Usage: armada org invitations revoke <id> [--org <name|UUID>] [--json]
 Revoke an invitation as an organization admin after Armada login.
-Use an invitation ID from org invitations list, and select --org or armada org use.
+Use an invitation ID from org invitations list, and select --org or armada login --org NAME|UUID.
 Example: armada org invitations revoke INVITATION_UUID --org my-team
 `,
     "org invitations accept": `Usage: armada org invitations accept [--file <path>] [--json]

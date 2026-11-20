@@ -163,6 +163,7 @@ async function fixture() {
     options,
     requests,
     seed,
+    clearSelection: () => filePreferences(path).write("https://armada.test", undefined),
     async setActor(userId: string) {
       await auth.session.write({
         armadaUrl: "https://armada.test",
@@ -297,7 +298,7 @@ test("CLI list matches scoped web filters, exact totals and stable pages with sa
     const revoked = await f.cli(["ls", "--json", "--page-info"]);
     expect(revoked.code).not.toBe(0);
     expect(revoked.out).toBe("");
-    expect((await f.cli(["org", "use", "none"])).code).toBe(0);
+    await f.clearSelection();
     const stalePrincipal = JSON.parse((await f.cli(["ls", "--json", "--page-info"])).out);
     expect(stalePrincipal.total).toBe(1);
     expect(stalePrincipal.sandboxes.map((s: { id: string }) => s.id)).toEqual([sid(36)]);

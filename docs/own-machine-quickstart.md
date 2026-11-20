@@ -41,7 +41,7 @@ this guide does not enable any feature.
 
 [Install the CLI and sign in](dave-onboarding.md#1-install-the-cli), then
 [create/select an organization](dave-onboarding.md#4-create-or-select-an-org).
-You must be an org admin to add a host. Run `armada org current` and copy its
+You must be an org admin to add a host. Run `armada org list` and copy the organization
 UUID; replace ORG_UUID below consistently.
 
 Store your model credentials and connect GitHub before launching. For API keys

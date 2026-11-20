@@ -107,7 +107,7 @@ export const CODEX_AUTH_PATH = "/home/user/.codex/auth.json";
 
 interface KindInfo {
   /** The name `armada creds set <name>` takes. */
-  name: string;
+  name?: string;
   label: string;
   /** What launch injects it as. A file kind has no variable. */
   env?: string;
@@ -124,6 +124,7 @@ export const CREDENTIAL_KINDS: Readonly<Record<CredentialKind, KindInfo>> = {
   boat: { name: "boat", label: "boat.dev API key" },
   modal: { name: "modal", label: "Modal token pair (id and secret)" },
   skillpack: { name: "skillpack", label: "Skillpack personal access token" },
+  antigravity: { label: "Antigravity" },
 };
 
 /**
@@ -140,13 +141,15 @@ export function parseCredentialKind(name: string): CredentialKind {
     if (info.name === wanted) return kind as CredentialKind;
   }
   const known = Object.values(CREDENTIAL_KINDS)
-    .map((info) => info.name)
+    .flatMap((info) => (info.name === undefined ? [] : [info.name]))
     .join(", ");
   throw new VaultError("invalid", `Unknown credential '${name}'. Use one of: ${known}.`);
 }
 
 export function credentialName(kind: CredentialKind): string {
-  return CREDENTIAL_KINDS[kind].name;
+  const name = CREDENTIAL_KINDS[kind].name;
+  if (name === undefined) throw new VaultError("invalid", `Unsupported credential kind: ${kind}.`);
+  return name;
 }
 
 /**

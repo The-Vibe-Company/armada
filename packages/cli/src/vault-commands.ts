@@ -21,7 +21,6 @@ import {
   VaultError,
 } from "@armada/core";
 import { flag, parseArgs, single } from "./args.ts";
-import { resolveArmadaOrigin } from "./armada-api.ts";
 import type { AuthIo } from "./auth-commands.ts";
 import { control } from "./control.ts";
 import { invitationCommand } from "./invitation-commands.ts";
@@ -64,30 +63,6 @@ export function vaultIo(auth: AuthIo, deps: Pick<Deps, "readFile" | "readStdin">
 export async function orgCommand(argv: readonly string[], io: VaultIo): Promise<number> {
   const [sub, ...rest] = argv;
   switch (sub) {
-    case "use":
-    case "current": {
-      const args = parseArgs(rest);
-      const origin = await resolveArmadaOrigin(io.auth);
-      const preferences = io.auth.preferences;
-      if (!preferences) throw usage("Organization preferences are not available.");
-      if (sub === "current") {
-        expect(args.positionals, 0, "armada org current");
-        io.auth.out(`${JSON.stringify({ org: (await preferences.read(origin)) ?? null })}\n`);
-        return 0;
-      }
-      const ref = one(args.positionals, "armada org use <name|UUID|none>");
-      if (ref === "none") {
-        await preferences.write(origin, undefined);
-        io.auth.out(flag(args, "--json") ? '{"org":null}\n' : "Organization selection cleared.\n");
-        return 0;
-      }
-      const { orgs } = await control<{ orgs: OrgSummary[] }>(io.auth, "org/list", {});
-      const matches = orgs.filter((org) => org.id === ref || org.name.toLowerCase() === ref.toLowerCase());
-      if (matches.length !== 1 || !matches[0]) throw usage("Choose one of your organizations by UUID or exact name.");
-      await preferences.write(origin, matches[0].id);
-      io.auth.out(`${JSON.stringify({ org: matches[0] })}\n`);
-      return 0;
-    }
     case "setup":
     case "connect": {
       const args = parseArgs(rest);

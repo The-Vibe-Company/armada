@@ -26,7 +26,7 @@ const claimKey = (job: Job, owner: string) => [...claimIdentity(job, owner), job
 
 const ADJACENT_RUNTIME_DISPATCH = `(q.state = 'dispatching'
   and q.dispatch_generation = s.lifecycle_generation - 1
-  and s.provider in ('boat','modal','docker') and ${RUNTIME_LANE} and s.status in ('ready','running'))`;
+  and s.provider in ('boat','modal','docker') and ${RUNTIME_LANE})`;
 
 const NO_ADJACENT_DISPATCH_EVIDENCE = `(s.activity_lease_id is distinct from q.request_id
   and not ${QUEUED_DISPATCH_EVIDENCE}
@@ -154,12 +154,15 @@ export function createJobsStore(sql: Sql, encryptionKey?: string) {
                     and (s.lifecycle_generation = $3 or s.status in ('ready','running'))) as abandoned,
                   (q.state = 'dispatching' and (q.dispatch_generation is null
                     or q.dispatch_generation < s.lifecycle_generation - 1
-                    or (${ADJACENT_RUNTIME_DISPATCH}
+                    or (${ADJACENT_RUNTIME_DISPATCH} and s.status in ('ready','running')
                       and (q.dispatch_until is null or q.dispatch_until <= statement_timestamp())
                       and ${NO_ADJACENT_DISPATCH_EVIDENCE}))) as unrecoverable_dispatch,
                   case when ${ADJACENT_RUNTIME_DISPATCH}
-                    and (s.provider in ('boat','modal') or ${NO_ADJACENT_DISPATCH_EVIDENCE}
-                      or (s.activity_lease_id is null and ${CURRENT_DOCKER_PROMPT_COMMAND}))
+                    and ((s.status in ('ready','running')
+                      and (s.provider in ('boat','modal') or ${NO_ADJACENT_DISPATCH_EVIDENCE}
+                        or (s.activity_lease_id is null and ${CURRENT_DOCKER_PROMPT_COMMAND})))
+                      or (s.status in ('starting','ready','running')
+                        and s.activity_lease_id is null and ${CURRENT_DOCKER_RESUME_JOB}))
                     and isfinite(q.dispatch_until) and q.dispatch_until > statement_timestamp()
                     then q.dispatch_until::text end as open_dispatch_until
            from public.sandboxes s join public.account_turn_queue q on q.sandbox_id = s.id

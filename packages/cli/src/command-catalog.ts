@@ -24,7 +24,7 @@ See command --help for supported JSON output; keep captured values/tokens out of
 Quick start / common examples:
   armada login
   armada org list
-  armada org use my-team
+  armada login --org my-team
   armada status --setup
   armada host add --name my-workstation
   armada new

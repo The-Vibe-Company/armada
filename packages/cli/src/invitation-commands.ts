@@ -21,7 +21,8 @@ export async function invitationCommand(argv: readonly string[], io: VaultIo): P
   }
   const selected = input.org ?? (await io.auth.preferences?.read(await resolveArmadaOrigin(io.auth)));
   const org = selected ? await resolveOrganization(selected, io) : undefined;
-  if (!org) throw new VaultError("invalid", "Select an organization with --org <name|UUID> or armada org use.");
+  if (!org)
+    throw new VaultError("invalid", "Select an organization with --org <name|UUID> or armada login --org NAME|UUID.");
   if (input.action === "list") {
     const result = await request(io, "org/invitations/list", { org });
     const invitations = result.invitations.map(publicInvitation);

@@ -77,7 +77,7 @@ armada login
 
 ```sh
 armada org create acme
-armada org use acme
+armada login --org acme
 printenv BOAT_API_KEY | armada org connect boat --org acme
 # Modal instead: printf '%s %s' "$MODAL_TOKEN_ID" "$MODAL_TOKEN_SECRET" | armada org connect modal --org acme
 armada org setup --org acme
@@ -235,7 +235,7 @@ answers HTTP 401) and no interactive sign-in took place. For example, signed-out
 `armada ls` and `armada ls --json` exit 3, and so does bare `armada`.
 Exit 1 means access denial, state, unsupported operation or service failure.
 Check `armada ls --json` for visible IDs and state; verify your org selection
-with `armada org current` or pass `--org UUID`.
+with `armada status --setup` or pass `--org UUID`.
 
 Sandbox mutations are not replayed after transport/server failures or state
 conflicts. Existing authentication recovery may refresh a personal session and

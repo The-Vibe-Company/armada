@@ -6,7 +6,7 @@ function templateDefinitionHelp(action: "create" | "publish") {
   const creating = action === "create";
   return `Usage: armada template ${action} ${creating ? "NAME" : "NAME|ID --expected-revision N"} [definition input] [--org NAME|UUID] [--json]
 ${creating ? "Create a launch template with its first immutable version." : "Publish a new immutable version of an existing launch template, not a partial patch."}
-Requires Armada login or ARMADA_TOKEN. Select an organization with --org or armada org use.
+Requires Armada login or ARMADA_TOKEN. Select an organization with --org or armada login --org NAME|UUID.
 ${creating ? "--scope personal|org selects visibility; with explicit --org it is required.\nWithout explicit --org, scope defaults to personal in the selected organization." : "Names must match exactly and identify one active template; use an ID from template list\nif names collide. The target keeps its existing scope.\n--expected-revision is a required positive integer from template get/list.\nA stale version is refused; inspect the current definition before deciding to republish."}
 Organization-scoped writes require administrator permission.
 
@@ -46,7 +46,7 @@ Manage reusable launch definitions and their immutable template versions.
   launch   Launch a template version using a saved --request-key for safe retries.
 
 Actions require Armada login or ARMADA_TOKEN. Select an organization with --org
-NAME|UUID or armada org use. Templates may be personal or organization-scoped;
+NAME|UUID or armada login --org NAME|UUID. Templates may be personal or organization-scoped;
 organization-scoped writes require administrator permission.
 Use IDs from template list when exact names collide across scopes.
 Definitions store variable/secret references; do not put raw secret values in them.
@@ -61,7 +61,7 @@ Example: armada template get TEMPLATE_UUID --revision 1 --org ORG_UUID --json
     "template launch": `Usage: armada template launch NAME|ID --request-key KEY [--revision N] [options]
 Launch an existing template, resolving its references into a frozen launch manifest.
 Requires Armada login or ARMADA_TOKEN; select an organization with --org NAME|UUID
-or armada org use. Find template IDs and current versions with template list/get.
+or armada login --org NAME|UUID. Find template IDs and current versions with template list/get.
 Names must match exactly and identify one active template; use an ID if names collide.
 
 Options:
@@ -86,7 +86,7 @@ Example: armada template launch TEMPLATE_UUID --request-key audit_run_1 --revisi
 `,
     "template delete": `Usage: armada template delete NAME|ID --expected-revision N [--org NAME|UUID] [--json]
 Mark a launch template deleted; this command is not sandbox deletion.
-Requires Armada login or ARMADA_TOKEN; select an organization with --org or armada org use.
+Requires Armada login or ARMADA_TOKEN; select an organization with --org or armada login --org NAME|UUID.
 An organization-scoped template requires administrator permission.
 Names must match exactly and identify one active template. Use an ID from template list
 when names collide across scopes.
@@ -98,7 +98,7 @@ Example: armada template delete TEMPLATE_UUID --expected-revision 2 --org ORG_UU
 `,
     "template list": `Usage: armada template list [--org NAME|UUID] [--json]
 List visible launch-template metadata: IDs, names, scope, status and current version.
-Requires Armada login or ARMADA_TOKEN; select an organization with --org or armada org use.
+Requires Armada login or ARMADA_TOKEN; select an organization with --org or armada login --org NAME|UUID.
 Use a template ID from this list when names collide across scopes.
 --json emits the API response with an items array; human output is a compact table.
 Use armada template get ID --json to inspect a definition, not list.
@@ -106,7 +106,7 @@ Example: armada template list --org ORG_UUID --json
 `,
     "template get": `Usage: armada template get NAME|ID [--revision N] [--org NAME|UUID] [--json]
 Inspect a visible launch template; omitted --revision selects its current version.
-Requires Armada login or ARMADA_TOKEN; select an organization with --org or armada org use.
+Requires Armada login or ARMADA_TOKEN; select an organization with --org or armada login --org NAME|UUID.
 Names must match exactly and identify one active template; use an ID from template list
 when names collide across scopes. --revision is a positive integer.
 Human output shows metadata and the selected version, not the definition.

@@ -17,7 +17,7 @@ Use --help or -h at the family or subcommand level; no login or value input is r
 Values come only from piped stdin or --file; bytes are preserved, never echoed or cached.
 Set creates a new entry; duplicate names conflict. With --org, set requires explicit
 --scope personal|org. Without --org, set defaults to personal in the organization
-selected by armada org use.
+selected by armada login --org NAME|UUID.
 Lists include your personal entries and visible organization entries; IDs determine mutation scope.
 Only vars read prints the readable value (without adding a newline); vars read --json includes the value
 alongside item metadata. Lists, writes and all secret output remain metadata only.
@@ -62,7 +62,8 @@ export async function applicationVaultCommand(
     }
   }
   const selected = input.org ?? (await io.auth.preferences?.read(await resolveArmadaOrigin(io.auth)));
-  if (!selected) throw new VaultError("invalid", "Select an organization with --org <name|UUID> or armada org use.");
+  if (!selected)
+    throw new VaultError("invalid", "Select an organization with --org <name|UUID> or armada login --org NAME|UUID.");
   body.org = await resolveOrganization(selected, io);
   const routes = {
     set: resource === "vars" ? "variables/set" : "secrets/set",
