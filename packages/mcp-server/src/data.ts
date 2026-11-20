@@ -79,6 +79,7 @@ export interface ServerSandboxPatch extends SandboxPatch {
   retainedRuntimeStop?: string;
   modalRuntimeExtensionTarget?: string;
   providerObservation?: { fromState: SandboxStatus; providerRunPlacement?: string };
+  nativeDiagnostic?: { state: SandboxStatus; placement: string; previousReason: string | null };
   turnActivity?: "claim" | "finish";
 }
 
@@ -821,6 +822,8 @@ export function createSqlData(
         )
           throw new DataError("Owner stop requires its activity generation, token and phase.");
         const reason = statusReasonOf(patch);
+        if (patch.nativeDiagnostic && (patch.expectedGeneration === undefined || reason === undefined))
+          throw new DataError("Native diagnostic refresh requires generation and diagnostic evidence.");
         if (patch.providerObservation !== undefined) {
           if (
             patch.expectedGeneration === undefined ||
@@ -942,6 +945,15 @@ export function createSqlData(
         if (reason !== undefined && stopAdmissionReason === undefined) set("status_reason", reason, "::text");
         if (sets.length === 0) return;
         let fence = "";
+        if (patch.nativeDiagnostic) {
+          const { state, placement, previousReason } = patch.nativeDiagnostic;
+          params.push(state, placement, previousReason);
+          fence += ` and s.status=$${params.length - 2}::public.sandbox_status
+            and s.provider_sandbox_id=$${params.length - 1}
+            and s.status_reason is not distinct from $${params.length}::text
+            and s.provider in ('boat','modal') and not s.boat_runtime and s.runtime_transport is distinct from 'dialout'
+            and s.stop_requested_at is null and s.deleted_at is null and s.status<>'deleted'`;
+        }
         if (patch.nativeSteerReceipt) fence += " and s.activity_until>clock_timestamp()";
         if (patch.turnActivity !== undefined)
           fence += " and s.status in ('ready','running') and s.stop_requested_at is null and s.deleted_at is null";

@@ -566,3 +566,57 @@ test.each(["accepted", "already running", "stale state", "expired lease"] as con
       });
   },
 );
+
+test.each(["applied", "stale source", "stale diagnostic", "commit failure"] as const)(
+  "native same-state diagnostic refresh (%s)",
+  async (outcome) => {
+    const { db, people, sharedGoldenId } = await failureDatabase();
+    const boat = fakeBoat();
+    const machine = await boat.provider.fork({ from: "snapshot" });
+    const info = boat.sandbox(machine.id).info;
+    info.state = "failed";
+    info.error = "Provider diagnostic";
+    const id = crypto.randomUUID();
+    await db.query(
+      `insert into sandboxes(id,provider,provider_sandbox_id,golden_id,org_id,owner_id,harness,status,status_reason)
+       values ($1,'boat',$2,$3,$4,$5,'codex','failed','Prior diagnostic')`,
+      [id, machine.id, sharedGoldenId, people.org, people.owner],
+    );
+    const store = createSqlData(db)({
+      userId: people.owner,
+      orgs: [{ orgId: people.org, role: "member" }],
+      via: "service",
+    }).sandboxes;
+    const sandbox = (await store.get(id))!;
+    if (outcome === "stale source")
+      await db.query("update sandboxes set status='ready',status_reason=null where id=$1", [id]);
+    if (outcome === "stale diagnostic")
+      await db.query("update sandboxes set status_reason='Newer diagnostic' where id=$1", [id]);
+    if (outcome === "commit failure")
+      await db.exec(`create function reject_diagnostic_refresh() returns trigger language plpgsql as $$
+        begin raise exception 'Diagnostic commit rejected'; end $$;
+        create constraint trigger reject_diagnostic_refresh after update on sandboxes deferrable initially deferred
+        for each row execute function reject_diagnostic_refresh();`);
+
+    const expected = {
+      status: outcome === "stale source" ? "ready" : "failed",
+      statusReason:
+        outcome === "stale source" ? null : outcome === "stale diagnostic" ? "Newer diagnostic" : info.error,
+    };
+    try {
+      const observation = readStatus(boat.provider, store, sandbox, { now: new Date("2026-01-01") });
+      if (outcome === "commit failure") await expect(observation).rejects.toThrow("Diagnostic commit rejected");
+      else expect(await observation).toMatchObject(expected);
+      expect(await store.get(id)).toMatchObject({
+        ...expected,
+        statusReason: outcome === "commit failure" ? "Prior diagnostic" : expected.statusReason,
+        lifecycleGeneration: sandbox.lifecycleGeneration,
+      });
+      const { rows } = await db.query("select id from sandbox_transitions where sandbox_id=$1", [id]);
+      expect(rows).toEqual([]);
+    } finally {
+      if (outcome === "commit failure")
+        await db.exec("drop trigger reject_diagnostic_refresh on sandboxes; drop function reject_diagnostic_refresh()");
+    }
+  },
+);
