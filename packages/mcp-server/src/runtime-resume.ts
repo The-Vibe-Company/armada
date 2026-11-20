@@ -471,8 +471,10 @@ export function createRuntimeResume(
                 !runtime.live &&
                 runtime.epoch === admitted.op.source_epoch),
           );
+          await assertClaim(tx);
           if (boatSourceEpoch && !retained && error instanceof BoatResumeActivationUncertain) {
             await deferAmbiguousBoatResume(tx, found.id, requestId, admitted.current.lifecycleGeneration);
+            await assertClaim(tx);
             return;
           }
           const status = await requestFailedRuntimeResumeStop(

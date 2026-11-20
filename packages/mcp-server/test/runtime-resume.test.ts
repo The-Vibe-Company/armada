@@ -14,7 +14,7 @@ import { createModelAuthOwnership } from "../src/model-auth.ts";
 import { createRuntimeCheckpoint, createRuntimeStopCheckpoint } from "../src/runtime-checkpoint.ts";
 import { createRuntimeFollowup } from "../src/runtime-followup.ts";
 import { createRuntimeHistory } from "../src/runtime-history.ts";
-import { createRuntimeResume } from "../src/runtime-resume.ts";
+import { BoatResumeActivationUncertain, createRuntimeResume } from "../src/runtime-resume.ts";
 import { createRuntimeServing } from "../src/runtime-serving.ts";
 import { createSandboxArmadaAccess } from "../src/sandbox-armada-access.ts";
 import { createSandboxLifecycle, transitionSandbox } from "../src/sandbox-lifecycle.ts";
@@ -379,15 +379,24 @@ describe.each(["boat", "modal"] as const)("queued runtime wake admission (%s)", 
     "prompt admission loss",
     "publication loss",
     "scoped grant loss",
+    "unenrolled failure",
+    "unenrolled claim loss",
+    "ambiguous deferral claim loss",
     "stale",
     "retarget failure",
     "wrong request",
     "replaced epoch",
   ] as const;
 
-  const cases = scenarios.filter((scenario) => (scenario === "scoped grant loss") === (provider === "modal"));
+  const cases = scenarios.filter((scenario) =>
+    provider === "modal"
+      ? scenario === "scoped grant loss" || scenario === "unenrolled failure" || scenario === "unenrolled claim loss"
+      : scenario !== "scoped grant loss",
+  );
   test.each(cases)("fences queued wake admission and publication (%s)", async (scenario) => {
     const scoped = scenario === "scoped grant loss";
+    const unenrolled = scenario === "unenrolled failure" || scenario === "unenrolled claim loss";
+    const ambiguous = scenario === "ambiguous deferral claim loss";
     const f = await fixture();
     const access = scoped ? await scopedAccessFor(f) : undefined;
     const request = input(f.row.id);
@@ -424,6 +433,8 @@ describe.each(["boat", "modal"] as const)("queued runtime wake admission (%s)", 
         )
       ).rows[0];
     let preparations = 0;
+    let stops = 0;
+    let activityUntil: string | undefined;
     let replacementEpoch: string | undefined;
     const prepare: NonNullable<Parameters<typeof createRuntimeResume>[3]> = async () => {
       preparations++;
@@ -434,7 +445,21 @@ describe.each(["boat", "modal"] as const)("queued runtime wake admission (%s)", 
         intent: true,
       });
       return {
-        async start(_signal, restore) {
+        async start(_signal, restore, confirmActivation) {
+          if (ambiguous) {
+            activityUntil = (
+              await f.db.query<{ activity_until: string }>("select activity_until::text from sandboxes where id=$1", [
+                f.row.id,
+              ])
+            ).rows[0]?.activity_until;
+            throw new BoatResumeActivationUncertain(Error("Activation response lost"));
+          }
+          if (unenrolled) {
+            if (provider === "modal") await confirmActivation!();
+            if (scenario === "unenrolled claim loss")
+              await f.db.query("update jobs set lease_until='-infinity' where id=$1", [id]);
+            throw Error("Runtime did not enrol");
+          }
           f.deliverPromptEventsBeforeReply();
           const ready = await f.reboot(restore);
           if (scenario === "replaced epoch") {
@@ -448,7 +473,8 @@ describe.each(["boat", "modal"] as const)("queued runtime wake admission (%s)", 
           return ready;
         },
         async stop() {
-          throw Error("Unexpected stop during queued wake");
+          if (!unenrolled && !ambiguous) throw Error("Unexpected stop during queued wake");
+          stops++;
         },
       };
     };
@@ -479,6 +505,14 @@ describe.each(["boat", "modal"] as const)("queued runtime wake admission (%s)", 
       ).rows[0];
     const claim = {
       async canDispatch(tx?: Parameters<typeof store.inspect>[2]) {
+        if (tx && ambiguous) {
+          const { rows } = await tx.query<{ activity_until: string }>(
+            "select activity_until::text from sandboxes where id=$1",
+            [f.row.id],
+          );
+          if (rows[0]?.activity_until !== activityUntil)
+            await tx.query("update jobs set lease_until='-infinity' where id=$1", [id]);
+        }
         if ((await store.inspect(job, owner, tx)) !== "dispatch") return false;
         if (!tx || !scenario.endsWith(" loss")) return true;
         const evidence = await wakeEvidence(tx);
@@ -529,6 +563,26 @@ describe.each(["boat", "modal"] as const)("queued runtime wake admission (%s)", 
         replacementEpoch,
       ]);
       expect(rows).toHaveLength(0);
+    } else if (unenrolled || ambiguous) {
+      await expect(attempt()).rejects.toMatchObject({ code: "conflict" });
+      const settled = scenario === "unenrolled failure";
+      const expected = settled
+        ? provider === "modal"
+          ? { status: "stopping", phase: "abandoned", stops: 0 }
+          : { status: "failed", phase: "failed", stops: 1 }
+        : { status: "starting", phase: "dispatched", stops: 0 };
+      expect(await read()).toMatchObject({ status: expected.status, intent: true });
+      const { rows } = await f.db.query<{ phase: string; activity_until: string | null }>(
+        `select r.phase,s.activity_until::text from runtime_resumes r join sandboxes s on s.id=r.sandbox_id
+         where r.sandbox_id=$1 and r.request_id=$2`,
+        [f.row.id, request.request_id],
+      );
+      expect(rows[0]?.phase).toBe(expected.phase);
+      if (ambiguous) {
+        expect(activityUntil).toBeDefined();
+        expect(rows[0]?.activity_until).toBe(activityUntil!);
+      }
+      expect(stops).toBe(expected.stops);
     } else if (scenario.endsWith(" loss")) {
       await expect(attempt()).rejects.toThrow();
       expect(await read()).toMatchObject({ status: "starting", intent: true });
