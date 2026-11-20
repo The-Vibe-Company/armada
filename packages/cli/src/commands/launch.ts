@@ -2,6 +2,7 @@ import { GoldenError, HARNESSES, type LaunchResult, MODEL_CATALOG, resolveModelC
 import { requireLaunchAgent } from "../agent-validation.ts";
 import { flag, parseArgs, providerFlag, single, values } from "../args.ts";
 import { createArmadaApiClient } from "../armada-api.ts";
+import { rememberSandbox } from "../current-sandbox.ts";
 import { prepareLaunch } from "../devx.ts";
 import { launchDocker } from "../docker-launch.ts";
 import { parseTtl } from "../operations.ts";
@@ -28,7 +29,7 @@ const run: Command["run"] = async (argv, { io, deps, auth }) => {
     ["--armada-access", "--keep-after-merge"],
   );
   if (single(args, "--provider") === "docker") {
-    return launchDocker(args, io, { ...auth, fetch: deps.fetch ?? auth.fetch });
+    return launchDocker(args, io, { ...auth, fetch: deps.fetch ?? auth.fetch }, deps.sandboxFile);
   }
   if (
     ["--host", "--image", "--idempotency-key", "--credential-version", "--golden", "--variable", "--secret"].some(
@@ -107,6 +108,7 @@ const run: Command["run"] = async (argv, { io, deps, auth }) => {
     },
     { signal: AbortSignal.timeout(10 * 60_000) },
   );
+  if (result.sandbox.status !== "failed") await rememberSandbox(result.sandbox.id, deps.sandboxFile, io);
   io.out(flag(args, "--json") ? `${JSON.stringify(result, null, 2)}\n` : launchText(result, auth.now()));
   if (!flag(args, "--json"))
     await printOptionalResourceAdvice(client, result.sandbox.id, single(args, "--org"), io.err);
@@ -172,6 +174,7 @@ After an uncertain launch, inspect armada list before retrying.
 Example: armada launch starter --provider modal --agent codex "Inspect the repository" --json
 Example: armada launch "Inspect the repository" --provider docker --host workstation --agent codex --org ORG_UUID
 `,
+  automaticJson: true,
   run,
 } satisfies Command;
 

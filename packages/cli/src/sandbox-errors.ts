@@ -50,11 +50,6 @@ export function sandboxFailure(path: string, status: number, serverCode: unknown
               : status === 429
                 ? "rate_limited"
                 : "unavailable";
-  const wasInterior =
-    /^\/api\/v1\/sandbox\/(?:status|send|steer|interrupt|exec|stop|extend|wait)$/.test(path) ||
-    path === "/api/v1/logs/read" ||
-    path.startsWith("/api/v1/sandboxes/");
-  const legacyCode = status === 403 || (wasInterior && status === 404) ? "conflict" : "unavailable";
   const bindingReasons: Record<string, string> = {
     "This sandbox is already bound; its account cannot change.":
       "This sandbox is already bound; its account cannot change. Run armada detail ID to inspect the existing binding; keep that account.",
@@ -99,6 +94,5 @@ export function sandboxFailure(path: string, status: number, serverCode: unknown
       bindingReason ??
       help[code] ??
       `Sandbox operation failed (${status}). Check access and sandbox status. ${inspect} A mutation may already have been accepted; check its outcome before retrying.`,
-    legacyCode: code === legacyCode ? undefined : legacyCode,
   };
 }

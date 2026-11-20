@@ -44,7 +44,6 @@ export class ArmadaApiError extends AuthError {
     readonly status: number,
     message: string,
     readonly details?: Readonly<{ phase: string }>,
-    readonly legacyCode?: string,
     exitCode?: 1 | 2,
   ) {
     super(
@@ -265,7 +264,6 @@ export async function createArmadaApiClient(
             response.status,
             help,
             undefined,
-            undefined,
             ["invalid_request", "no_credentials"].includes(failureCode) ? 2 : 1,
           );
       }
@@ -278,7 +276,6 @@ export async function createArmadaApiClient(
           response.status,
           sandboxError.message,
           undefined,
-          sandboxError.legacyCode,
           sandboxError.exitCode,
         );
       if (path === "/api/v1/github/refresh" && failureCode === "unsupported")
@@ -288,7 +285,6 @@ export async function createArmadaApiClient(
           apiMessage(payload, "") === GITHUB_REFRESH_MODAL_NATIVE
             ? GITHUB_REFRESH_MODAL_NATIVE
             : "GitHub refresh is not supported for this sandbox's provider or runtime. Its GitHub access was not changed.",
-          undefined,
           undefined,
           1,
         );
