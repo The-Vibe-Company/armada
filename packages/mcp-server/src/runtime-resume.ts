@@ -420,7 +420,6 @@ export function createRuntimeResume(
       const preActivationArchive = error instanceof BoatRetentionUnconfirmed;
       const completed = await read(sql, found.id, requestId).catch(() => undefined);
       if (completed?.receipt && (await store.get(found.id))) return completed.receipt;
-      // Preserve recoverable live-epoch uncertainty. Never re-activate or reissue a ticket.
       const cleanup = await sql
         .transaction(async (tx) => {
           const member = await tx.query(
