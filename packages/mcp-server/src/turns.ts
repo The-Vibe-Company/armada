@@ -313,7 +313,10 @@ export async function readStatus(
       (next === "stopped" || (runtime && next === "failed")) &&
       (sandbox.status === "ready" || sandbox.status === "running")
     )
-      patch.providerObservationFrom = sandbox.status;
+      patch.providerObservation = {
+        fromState: sandbox.status,
+        ...(runtime ? {} : { providerRunPlacement: sandbox.providerSandboxId }),
+      };
     try {
       await store.update(sandbox.id, patch);
     } catch (error) {
