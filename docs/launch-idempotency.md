@@ -145,10 +145,10 @@ each payload, with null when the sandbox has no reference.
 ## Canonical launch API
 
 The [OpenAPI contract](../packages/mcp-server/openapi.json) describes the validated request variants for
-`POST /api/v1/sandbox/launch`: snapshot, explicit Boat runtime, explicit Modal
+`POST /api/v1/sandbox/launch`: Boat or Modal snapshot, explicit Boat runtime, explicit Modal
 runtime from a snapshot or pinned template, Docker host and Docker snapshot, each
 with its supported replay fields. Every variant requires `provider` and `harness`.
-Before upgrading, reconcile outstanding snapshot launch requests that omitted the provider
+Before upgrading, reconcile outstanding Boat or Modal snapshot launch requests that omitted the provider
 or included null optional fields. If sending the corrected body with the original
 key conflicts, keep the key and recover the original attempt by receipt ID or
 `externalRef`. Unknown fields are rejected. Use
@@ -159,11 +159,11 @@ All `sandbox/launch` sources share an envelope. Read the placement and Armada ID
 at `sandbox.provider` and `sandbox.id`. The `golden` record is null for Docker.
 `promptId`, `conversationId`, `runtime` and `helper` are null when unavailable.
 CLI JSON uses the same envelope, including `sandbox.id` and `golden.name`
-when launching from a snapshot.
+when the response includes a Boat or Modal snapshot record.
 
 ## Explicit runtime launch
 
-For explicit runtime launches from a snapshot, send the selectors to `POST /api/v1/sandbox/launch`.
+For explicit runtime launches from a Boat or Modal snapshot, send the selectors to `POST /api/v1/sandbox/launch`.
 Use `provider: "boat"`, `runtimeVersion: 1` and `boatRuntime: true` for Boat. Use
 `provider: "modal"`, `runtimeVersion: 1` and `runtimeTransport: "dialout"` for Modal.
 Both snapshot paths require a harness and are subject to runtime admission checks

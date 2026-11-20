@@ -1,8 +1,9 @@
 # Sandbox work preservation
 
-Armada-managed stops attempt a bounded recovery archive before removing compute.
-The first version always uses encrypted server storage, even with valid GitHub
-credentials: this avoids network pushes and expired-authorization failures without
+Eligible Armada-managed stops attempt a bounded recovery archive before removing
+compute. Boat shared-runtime stops report acknowledged runtime checkpoint evidence,
+and sandboxes exposed to application secrets are excluded from archive capture.
+Recovery archives use encrypted server storage, even with valid GitHub credentials: this avoids network pushes and expired-authorization failures without
 changing a working branch. No remote ref is pushed or forced.
 
 The archive contains local repository history and dirty work, not ignored files.
