@@ -698,15 +698,46 @@ export function createDockerHostStore(sql: Sql, key: string) {
     deny();
   }
 
+  async function requireCurrentMachine(tx: Sql, logical: Sandbox, delivered: Job) {
+    const frozen = await machine(tx, logical, "stop");
+    if (input(delivered) !== input({ ...delivered, request: frozen })) deny();
+    return logical;
+  }
+
   async function boundMachine(tx: Sql, job: StoredJob, host: Host, installationId: string) {
     const logical = await sandbox(tx, job.bound_sandbox_id ?? deny(), host, installationId);
     const delivered = await readJob(
       job,
       job.bound_operation === "deletePhysical" ? logical.lifecycle_generation : undefined,
     );
-    const frozen = await machine(tx, logical, "stop");
-    if (input(delivered) !== input({ ...delivered, request: frozen })) deny();
-    return logical;
+    return requireCurrentMachine(tx, logical, delivered);
+  }
+
+  async function callbackMachine(tx: Sql, job: StoredJob, host: Host, installationId: string) {
+    const logical = await sandbox(tx, job.bound_sandbox_id ?? deny(), host, installationId);
+    const delivered = await readJob(job);
+    if (delivered.request.generation === logical.docker_generation)
+      return requireCurrentMachine(tx, logical, delivered);
+
+    const receipt =
+      (
+        await tx.query<StoredJob>(
+          `select * from public.docker_host_jobs where request_id=$1 and host_id=$2 and bound_sandbox_id=$3
+         and bound_operation='restore' and outcome='completed' and cancelled_at is null`,
+          [logical.docker_generation, host.id, logical.id],
+        )
+      ).rows[0] ?? deny();
+    const { job: restore, lifecycleGeneration } = await readStoredJob(receipt);
+    if (restore.operation !== "restore" || restore.request.generation !== receipt.request_id || !lifecycleGeneration)
+      deny();
+    await requireRestoreBindings(tx, logical, restore, lifecycleGeneration);
+    const predecessor = await tx.query(
+      `select 1 from public.docker_machine_bindings where sandbox_id=$1 and host_id=$2 and installation_id=$3
+       and daemon_generation=$4 and machine_generation<$5`,
+      [logical.id, host.id, installationId, delivered.request.generation, lifecycleGeneration],
+    );
+    if (!predecessor.rows.length) deny();
+    return undefined;
   }
   async function settleRefusedResume(tx: Sql, row: Sandbox, job: StoredJob) {
     const generation = job.refused_resume_generation;
@@ -1937,7 +1968,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
           job.bound_operation === "deletePhysical"
         )
           deny();
-        let logical: Sandbox;
+        let logical: Sandbox | undefined;
         if (job.bound_operation === "restore") {
           logical = await sandbox(tx, job.bound_sandbox_id, host, installationId);
           const { job: restore, lifecycleGeneration } = await readStoredJob(job);
@@ -1954,7 +1985,8 @@ export function createDockerHostStore(sql: Sql, key: string) {
           if (job.outcome !== "completed" || job.cancelled_at) deny();
           await requireRestoreBindings(tx, logical, restore, lifecycleGeneration);
         } else {
-          logical = await boundMachine(tx, job, host, installationId);
+          logical = await callbackMachine(tx, job, host, installationId);
+          if (!logical) return;
         }
         // Status repeats across lifecycles; mailbox ordering identifies which
         // lifecycle owns this fact even after a later resume has stopped again.
@@ -2006,7 +2038,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
                 [host.id, requestId],
               )
             ).rows[0] ?? deny();
-          let logical: Sandbox;
+          let logical: Sandbox | undefined;
           if (job.bound_operation === "restore") {
             logical = await sandbox(tx, job.bound_sandbox_id ?? deny(), host, installationId);
             const { job: restore, lifecycleGeneration } = await readStoredJob(job);
@@ -2016,7 +2048,8 @@ export function createDockerHostStore(sql: Sql, key: string) {
             if (job.outcome !== "completed" || job.cancelled_at) deny();
             await requireRestoreBindings(tx, logical, restore, lifecycleGeneration);
           } else {
-            logical = await boundMachine(tx, job, host, installationId);
+            logical = await callbackMachine(tx, job, host, installationId);
+            if (!logical) return;
           }
           if (await supersededLifecycle(tx, job, true)) return;
           const predicate = `id=$1 and not application_secret_tainted and ${DOCKER_RETAINED_OUTPUT_STOP}`;
@@ -2070,7 +2103,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
               result.requestId,
             ])
           ).rows[0] ?? deny();
-        let logical: Sandbox;
+        let logical: Sandbox | undefined;
         if (job.bound_operation === "restore") {
           logical = await sandbox(tx, job.bound_sandbox_id ?? deny(), host, installationId);
           const { job: restore, lifecycleGeneration } = await readStoredJob(job);
@@ -2098,7 +2131,8 @@ export function createDockerHostStore(sql: Sql, key: string) {
             job.bound_operation !== "resume"
           )
             deny();
-          logical = await boundMachine(tx, job, host, installationId);
+          logical = await callbackMachine(tx, job, host, installationId);
+          if (!logical) return;
           if (logical.status === "deleted" || (await supersededLifecycle(tx, job, true))) return;
         }
         // The authenticated host's observed physical stop supplies the evidence.
@@ -2177,9 +2211,13 @@ export function createDockerHostStore(sql: Sql, key: string) {
             ])
           ).rows[0] ?? deny();
         let logical: Sandbox | undefined;
+        let supersededPlacement = false;
         if (hint.bound_sandbox_id) {
           if (generationFenced(hint.bound_operation)) await readJob(hint);
-          else logical = await boundMachine(tx, hint, host, installationId);
+          else {
+            logical = await callbackMachine(tx, hint, host, installationId);
+            supersededPlacement = logical === undefined;
+          }
         }
         const jobs = await tx.query<StoredJob>(
           `select * from public.docker_host_jobs where host_id=$1 and request_id=$2 for update`,
@@ -2275,7 +2313,8 @@ export function createDockerHostStore(sql: Sql, key: string) {
             );
           }
         } else if (result.imageId !== undefined) deny();
-        const staleRestorePredecessor = logical !== undefined && (await supersededLifecycle(tx, job, true));
+        const staleRestorePredecessor =
+          supersededPlacement || (logical !== undefined && (await supersededLifecycle(tx, job, true)));
         if (
           logical &&
           !staleRestorePredecessor &&
@@ -2289,15 +2328,13 @@ export function createDockerHostStore(sql: Sql, key: string) {
             await startupFailed(tx, logical, job, result.reason);
           }
         }
-        // Persist terminal receipts below, but never replay old stop/delete
-        // effects onto a lifecycle admitted after that job.
         const staleCleanup =
           staleRestorePredecessor ||
           ((job.bound_operation === "stop" || job.bound_operation === "delete") &&
             (await supersededLifecycle(tx, job)));
         if (result.retained) {
-          if (!logical || job.bound_operation !== "stop") deny();
-          if (!staleCleanup)
+          if ((!logical && !supersededPlacement) || job.bound_operation !== "stop") deny();
+          if (logical && !staleCleanup)
             await confirmRefusedDockerResumeRetention(tx, logical.id, logical.lifecycle_generation, job.request_id);
         }
         if (result.outcome === "completed" && job.bound_sandbox_id && !staleCleanup) {
