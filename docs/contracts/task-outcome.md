@@ -9,13 +9,16 @@ The browser-safe `TaskOutcome` type is exported by `@armada/core`:
 - `null`: no outcome reported for this turn. This does not mean success.
 
 After `wait` shows that the latest prompt finished, its authenticated owner or a
-current organization admin can report that prompt's outcome:
+current organization admin can report that prompt's outcome. Set `SANDBOX_ID`
+to the sandbox ID and `PROMPT_ID` to the latest finished prompt ID. For a ready
+report with PR metadata, replace the sample PR number and URL and set `HEAD_SHA`
+to the PR's full 40-character head commit SHA. Choose the outcome that applies.
 
 ```sh
-armada report <sandbox-id> ready --prompt-id <prompt-id> \
+armada report "$SANDBOX_ID" ready --prompt-id "$PROMPT_ID" \
   --pr-number 42 --pr-url https://github.com/example/repo/pull/42 \
-  --head-sha <full-40-character-sha>
-armada report <sandbox-id> blocked --prompt-id <prompt-id> --reason "Needs an owner decision"
+  --head-sha "$HEAD_SHA"
+armada report "$SANDBOX_ID" blocked --prompt-id "$PROMPT_ID" --reason "Needs an owner decision"
 ```
 
 MCP tool `report` and POST `/api/v1/sandbox/report` take
