@@ -14,6 +14,7 @@ import { join } from "node:path";
 import { redactKnownTokens } from "@armada/core";
 import { AcpDriver } from "./acp.ts";
 import { HarnessError } from "./errors.ts";
+import type { Journal } from "./journal.ts";
 import type { Driver, DriverContext, DriverEvent } from "./protocol.ts";
 import { createRedactor } from "./state.ts";
 
@@ -86,11 +87,11 @@ export class AntigravityDriver implements Driver {
     root: string;
     cwd: string;
     credential: AntigravityCredential;
-    registerSecrets(values: readonly string[]): void;
+    journal: Pick<Journal, "registerApplicationSecrets">;
   }) {
     const { credential, root } = options;
     const secrets = credential.method === "google" ? secretLeaves(credential.token) : [credential.apiKey];
-    options.registerSecrets(secrets);
+    options.journal.registerApplicationSecrets(secrets);
     this.redact = createRedactor(secrets);
     this.secretForms = secrets
       .filter(Boolean)
