@@ -15,8 +15,6 @@ const machine = {
   ttlSeconds: 3600,
 };
 
-// This boundary owns the shared installer's composition into the host machine,
-// not another replay of the installer's own download validation test suite.
 test("host installs the verified runtime through its owned machine port and reuses the private warm cache", async () => {
   const directory = await mkdtemp(join(tmpdir(), "armada-host-runtime-"));
   try {
@@ -46,7 +44,6 @@ test("host installs the verified runtime through its owned machine port and reus
     expect(urls).toEqual([`https://staging.example/api/runtime/artifacts/${artifact.sha256}`]);
     expect(copied).toEqual([executable, executable]);
     expect(new Uint8Array(await readFile(join(cacheDir, artifact.sha256)))).toEqual(executable);
-    // Cache corruption must be detected on the next start, never copied to Docker.
     await writeFile(join(cacheDir, artifact.sha256), "corrupt runtime");
     await expect(install(input)).rejects.toThrow("Docker runtime installation failed");
     expect(copied).toHaveLength(2);
@@ -76,8 +73,6 @@ test("host installation refuses invalid artifact bytes before Docker mutation an
   }
 });
 
-// Exercise the actual fixed shell launcher against a local executable fixture.
-// Its extra observation FD emits only a digest: no credential file, sockets or sleeps.
 test("runtime starter delivers only enrolment on private stdin and detaches runtime output", async () => {
   const directory = await mkdtemp(join(tmpdir(), "armada-host-runtime-start-"));
   try {
@@ -97,7 +92,6 @@ test("runtime starter delivers only enrolment on private stdin and detaches runt
           events.push("start");
           expect(JSON.parse(input.stdin)).toEqual({ serverUrl: "https://staging.example", enrolmentToken: token });
           expect(JSON.stringify(input.command).includes(token)).toBe(false);
-          // Remap only the fixed executable path into the local fixture; run the real script.
           const program = input.command[0];
           if (!program) throw new Error("Missing bootstrap program");
           const result = spawnSync(
@@ -116,7 +110,6 @@ test("runtime starter delivers only enrolment on private stdin and detaches runt
       {
         serverUrl: "https://staging.example",
         cacheDir: join(directory, "cache"),
-        // The shared-cache warm-up follows a successful bootstrap and is never awaited.
         warmSharedArtifacts: (runtime) => {
           events.push(`warm:${runtime}`);
           return new Promise(() => {});

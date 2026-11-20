@@ -64,7 +64,6 @@ function fixture(
     },
   };
   const run = async () => {
-    // Receipt comes from the actual store write, not a fixture-supplied pending record.
     expect(state.receipts.some((r) => r.requestId === job.requestId && !r.outcome)).toBe(true);
     executed.push(job.operation);
     if (failure) throw failure;
@@ -121,7 +120,6 @@ test.each(["create", "stop", "delete"] as const)(
     expect(f.executed).toEqual([]);
     f.failSave(false);
     await tick(f.store, f.api, f.executor);
-    // A new iteration reloads only durable state, as a restarted process does.
     await tick(f.store, f.api, f.executor);
     expect(f.executed).toEqual([operation]);
     expect(f.acknowledgements).toEqual(["completed", "completed"]);
@@ -492,7 +490,6 @@ test("a failed image fetch is reported with its reason even when the server refu
   await tick(generic.store, generic.api, generic.executor);
   expect(generic.state().receipts[0]?.reason).toBeUndefined();
 
-  // A refused report preserves the durable reason for the next tick.
   const sent: Record<string, unknown>[] = [];
   const transient = httpApi((async (_url: string | URL | Request, init?: RequestInit) => {
     sent.push(JSON.parse(String(init?.body)));
@@ -600,7 +597,6 @@ test("offline TTL stop confirmation survives restart and lost ACK without replay
   expect(f.state().receipts[0]).toMatchObject({ expired: true, outcome: "completed" });
   expect(f.state().receipts[0]?.expiryReported).toBeUndefined();
   expect(JSON.stringify(calls)).not.toContain(state.hostToken);
-  // Reload the durable receipt; a later unavailable daemon cannot erase the proof.
   const restarted = {
     ...executor,
     async stopIfExpired() {
@@ -736,7 +732,6 @@ test("bounded TTL sweeps retire confirmed generations while reporting fairly acr
   };
   await tick(f.store, api, executor);
   expect(reports).toEqual([first]);
-  // Each tick reloads only durable state; no in-memory cursor is supplied by the fixture.
   await tick(f.store, api, executor);
   expect(reports).toEqual([first, second]);
   await tick(f.store, api, executor);
@@ -843,8 +838,6 @@ test("private native state survives reopening, excludes concurrent owners and re
   }
 });
 
-// One owner boundary for write/read compatibility: a large save may be refused,
-// but must never replace readable state with a file its own reader rejects.
 test("native state writes remain readable or preserve the previous durable state", async () => {
   const directory = await mkdtemp(join(tmpdir(), "armada-docker-state-size-"));
   try {
@@ -865,9 +858,7 @@ test("native state writes remain readable or preserve the previous durable state
     try {
       await store.save(next);
       accepted = true;
-    } catch {
-      /* a bounded persistence layer may refuse admission */
-    }
+    } catch {}
     const restored = await store.load();
     expect(JSON.stringify(restored) === JSON.stringify(accepted ? next : previous)).toBe(true);
   } finally {
@@ -1114,8 +1105,6 @@ test("unregister distinguishes a pending drain from confirmed revocation and rej
   }
 });
 
-// The daemon's loop passes `dispatch`, but an older server never holds a poll, so
-// the build still runs inline and must keep the other work moving (#2561).
 for (const [caller, options] of [
   ["a serial caller", {}],
   [
@@ -1240,7 +1229,6 @@ for (const [caller, options] of [
     }
   });
 
-// The no-Node fallback must not label arbitrary HTTP output as a canceled ticket/name.
 test("HTTP reuse authenticates only with the fresh ticket and validates public identity before confirmation", async () => {
   const state = fixture().state();
   const token = "c".repeat(64);
@@ -1354,7 +1342,6 @@ test("compaction preserves cleanup capacity, TTL facts and stored replay fences"
       image: `sha256:${"a".repeat(64)}`,
     },
   };
-  // Exceed the default cleanup capacity, not an incidental near-limit file size.
   initial.receipts = Array.from({ length: 17409 }, (_, index) => {
     const suffix = index.toString(16).padStart(12, "0");
     return {
@@ -1477,7 +1464,6 @@ test("TTL index deduplicates active receipts, retires terminal history and rotat
   expect((await f.store.load()).receipts).toHaveLength(5);
 });
 
-// Build legacy compacted state through the production compactor, not invented fences.
 test.each(["stop", "delete", "expired", "resumed"] as const)(
   "legacy compacted %s history preserves only uncertain live TTL obligations",
   async (kind) => {
@@ -1513,7 +1499,6 @@ test.each(["stop", "delete", "expired", "resumed"] as const)(
           requestId: crypto.randomUUID(),
         });
     }
-    // Reach the real compaction threshold with closed unrelated receipts.
     state.receipts.push(
       ...Array.from({ length: 4500 }, () => ({
         request: { ...original.request, sandboxId: crypto.randomUUID(), generation: crypto.randomUUID() },
@@ -1692,7 +1677,6 @@ test("server retention override persists and shifts pending deadlines without re
   state.retentionSeconds = 86400;
   state.retention = [{ request: f.job.request, requestId: f.job.requestId, deadline: 100000000 }];
   await f.store.save(state);
-  // A completed-job replay must not bypass durable policy storage.
   f.api.poll = async () => ({ job: f.job, retentionSeconds: 3600 });
   await tick(f.store, f.api, f.executor);
   expect((await f.store.load()).retentionSeconds).toBe(3600);
@@ -1754,7 +1738,7 @@ test.each(["stop", "create", "resume"] as const)(
         await f.store.save(next);
       },
     };
-    await store.save(state); // Compaction happens before the first observation.
+    await store.save(state);
     const deleted: string[] = [];
     const executor: Executor = {
       ...f.executor,
@@ -1764,7 +1748,6 @@ test.each(["stop", "create", "resume"] as const)(
       },
     };
     const api: Api = { ...f.api, poll: async () => ({ job: null }) };
-    // Each tick reloads a serialized state, just like a restarted daemon.
     for (let i = 0; i < 3; i++) await tick(store, api, executor, false, () => 1000);
     expect(deleted.sort()).toEqual(expected);
   },
@@ -1856,7 +1839,6 @@ test("physical expiry stops every generation while create is stalled without rac
   await observed.promise;
   expect(stopped).toEqual([]);
   expect(f.state()).toEqual(before);
-  // Settle fast inspections without releasing the blocked allocation.
   for (let i = 0; i < 10; i++) await Promise.resolve();
   expect(checks).toBe(2);
   const newlyAdmitted = fixture();
@@ -1884,7 +1866,6 @@ test("physical expiry stops every generation while create is stalled without rac
   await expiry.drain();
   finish.resolve();
   await pending;
-  // Only the serialized mailbox persists and publishes the physical proof.
   await tick(f.store, f.api, f.executor);
   expect(f.state().receipts.find((r) => r.requestId === second.job.requestId)?.expired).toBe(true);
 });
@@ -1945,7 +1926,6 @@ test("a queued resume is observed before a due local retention deletion", async 
     return { job: resume };
   };
   await tick(f.store, f.api, executor, false, () => 0);
-  // The resume claims the stopped generation before retention may delete it.
   expect(order).toEqual(["poll", "resume", "startRuntime"]);
   expect((await f.store.load()).retention).toEqual([]);
 });
@@ -2008,9 +1988,6 @@ test("a resume behind another mailbox job still cancels its generation's due ret
       enrolmentToken: `armada_enrol_${"c".repeat(64)}`,
     },
   };
-  // The server serves one job per poll, ordered so every stop/delete precedes
-  // startup work. An unrelated stop is therefore handed out first, and the
-  // resume for this generation is only visible as pending intent.
   const unrelated: Job = {
     requestId: crypto.randomUUID(),
     operation: "stop",
@@ -2020,15 +1997,12 @@ test("a resume behind another mailbox job still cancels its generation's due ret
   f.api.poll = async () => {
     order.push("poll");
     polls++;
-    // The server reports every held generation with the poll, including a
-    // resume queued behind this stop, not only the single job it hands out.
     return {
       job: polls === 1 ? unrelated : resume,
       pendingStarts: [{ sandboxId: resume.request.sandboxId, generation: resume.request.generation }],
     };
   };
   await tick(f.store, f.api, executor, false, () => 0);
-  // The due generation is not deleted while a resume for it is queued behind the stop.
   expect(order).not.toContain("delete");
   expect((await f.store.load()).retention).toEqual([]);
 });
@@ -2065,8 +2039,6 @@ test("an abandoned resume claim releases at immutable expiry for default cleanup
   offline = true;
   await expect(tick(f.store, f.api, f.executor, false, () => 999)).rejects.toThrow("offline");
   expect((await f.store.load()).retention).toEqual([]);
-  // A fresh load on each tick represents restart; expiry retires the durable
-  // hold, then default discovery reclaims the expired workspace.
   await expect(tick(f.store, f.api, f.executor, false, () => 1000)).rejects.toThrow("offline");
   expect((await f.store.load()).resumeClaims?.[0]?.active).toBe(false);
   expect((await f.store.load()).retention?.[0]?.deadline).toBe(1000);
@@ -2075,8 +2047,6 @@ test("an abandoned resume claim releases at immutable expiry for default cleanup
   const original = compacted.receipts.find((receipt) => receipt.requestId === f.job.requestId)!;
   original.expired = true;
   original.expiryReported = true;
-  // A completed unrelated snapshot supplies the ledger pressure that triggers
-  // real compaction; its opaque image bytes are never sent to Docker.
   compacted.receipts.push({
     requestId: crypto.randomUUID(),
     operation: "buildSnapshot",
@@ -2089,7 +2059,7 @@ test("an abandoned resume claim releases at immutable expiry for default cleanup
   await f.store.save(compacted);
   offline = false;
   await tick(f.store, f.api, f.executor, false, () => 1999);
-  expect(acknowledgements).toEqual([true]); // expired replays cannot renew the claim
+  expect(acknowledgements).toEqual([true]);
   expect(deleted).toBe(true);
   offline = true;
   await expect(tick(f.store, f.api, f.executor, false, () => 2000)).rejects.toThrow("offline");
@@ -2125,7 +2095,7 @@ test("disk pressure reclaims oldest eligible workspaces until the floor, preserv
   f.executor.isStopped = async (request) => {
     if (request === undefined) throw Error("missing request");
     if (request.generation === requests[2]!.generation) throw Error("foreign ownership");
-    return request.generation !== requests[3]!.generation; // running/starting
+    return request.generation !== requests[3]!.generation;
   };
   f.executor.deleteStopped = async (request) => {
     expect(
@@ -2189,7 +2159,6 @@ test("the mailbox loop drains ready jobs without idling and runs another sandbox
         (item) => !acknowledged.includes(item.requestId) && !options?.running?.includes(item.requestId),
       );
       if (job) return { job: structuredClone(job), held: true };
-      // The server holds the poll until something changes.
       await changed.promise;
       return { job: null, held: true };
     },
@@ -2259,7 +2228,6 @@ test("runJobs admits the job a held poll returns once its sandbox's running job 
     async register() {
       throw new Error("unused");
     },
-    // Like the server: a sandbox is blocked only until its running job's outcome is recorded.
     async poll(_state, options) {
       const running = options?.running ?? [];
       if (running.length) held.resolve();
@@ -2287,7 +2255,6 @@ test("runJobs admits the job a held poll returns once its sandbox's running job 
     },
   };
   const executor: Executor = {
-    // The create completes while the next poll is held, which then returns the stop.
     create: async () => held.promise,
     stop: async () => {},
     delete: async () => {},
@@ -2302,7 +2269,6 @@ test("runJobs admits the job a held poll returns once its sandbox's running job 
   });
   expect(sleeps).toEqual([]);
   expect(acknowledged).toEqual([create.requestId, stop.requestId]);
-  // The stop is admitted from the hold that returned it, not refused and polled for again.
   expect(delivered).toEqual([create.requestId, stop.requestId]);
   expect(state.receipts.map((receipt) => receipt.outcome)).toEqual(["completed", "completed"]);
 });
@@ -2333,7 +2299,6 @@ test("against a server that cannot hold a poll, jobs run serially and none is ad
   const dispatch = (job: Job) => {
     dispatched.push(job.requestId);
   };
-  // The older server answers without `held` and knows nothing of `running`.
   expect(await tick(f.store, f.api, f.executor, false, Date.now, { dispatch })).toBe("worked");
   expect(dispatched).toEqual([]);
   expect(f.acknowledgements).toEqual(["completed"]);
@@ -2396,7 +2361,6 @@ test("a ledger that cannot be saved before a held poll never overwrites a comple
     ...f.api,
     async poll(state, options) {
       if (options?.running?.length) {
-        // The running job completes durably while this poll is held; its ACK is lost.
         gate.resolve();
         await work?.catch(() => {});
         return { job: null, held: true };
@@ -2415,15 +2379,12 @@ test("a ledger that cannot be saved before a held poll never overwrites a comple
     work = running;
   };
   expect(await tick(store, api, executor, false, Date.now, { dispatch })).toBe("worked");
-  // The pre-poll save fails once; the completion's own save during the poll succeeds.
   failNextSave = true;
   const blocked = tick(store, api, executor, false, Date.now, { dispatch, running: new Set([f.job.requestId]) });
   await expect(blocked).rejects.toThrow("disk unavailable");
   gate.resolve();
   await expect(work).rejects.toThrow("ACK lost");
-  // A tick with a ledger it could not save admitted nothing and wrote nothing afterwards.
   expect(f.state().receipts.find((receipt) => receipt.requestId === f.job.requestId)?.outcome).toBe("completed");
-  // The re-delivered job replays its durable outcome instead of running again.
   expect(await tick(store, api, executor, false, Date.now, { dispatch })).toBe("worked");
   await work;
   expect(f.executed).toEqual(["create"]);
@@ -2431,8 +2392,6 @@ test("a ledger that cannot be saved before a held poll never overwrites a comple
 });
 
 test("a job of a sandbox whose operation still runs here waits, even if the server already freed the sandbox", async () => {
-  // The server records an outcome without the host when it cancels queued work,
-  // and then hands out the sandbox's next job while its create still executes.
   const f = fixture("stop");
   const api: Api = {
     ...f.api,

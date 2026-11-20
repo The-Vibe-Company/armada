@@ -86,7 +86,6 @@ test("managed service persists registration and refuses cleanup of unknown files
   }
 });
 
-// Keep real fsync and rename without contending for the CI runner's backing disk.
 async function upgradeFixture(instance?: string) {
   const fixtureDirectory =
     process.platform === "linux"

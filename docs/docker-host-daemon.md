@@ -1579,3 +1579,18 @@ enrolled root is `/home/user/.armada-runtime/<sandbox id>`, so any cache in a
 snapshot belongs to another sandbox ID, and Modal snapshot finalization removes
 `/home/user/.armada-runtime` before capture. Both download per launch; this
 change does not alter their images or lifecycle.
+
+## Docker host regression fixtures
+
+Daemon restart cases reload the file store between iterations and create
+compacted receipts through the production store. The persistence size test
+allows an oversized save to fail and checks that the previous state is still
+readable. Mailbox cases hold polls and releases with explicit gates so they can
+order completion, acknowledgement loss, and replay without timing delays.
+
+The runtime install tests cover how the host invokes the shared installer.
+The launcher test substitutes a local executable for the installed runtime and
+runs the actual shell script. A separate file descriptor observes only a digest
+of the enrolment input. The service upgrade fixture uses writable shared memory
+where available to exercise real fsync and rename without adding load to the CI
+runner's backing disk.
