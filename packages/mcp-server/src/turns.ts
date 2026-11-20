@@ -316,6 +316,7 @@ export async function readStatus(
     } else if (sandbox.stoppedAt !== null && next !== "failed") patch.stoppedAt = null;
     if (
       nativeExit ||
+      (!runtime && isSandboxProvider(sandbox.provider) && sandbox.status === "stopped" && next === "failed") ||
       ((sandbox.status === "ready" || sandbox.status === "running") && (next === "stopped" || next === "failed")) ||
       (!runtime &&
         (sandbox.status === "stopped" ||
