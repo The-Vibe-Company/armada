@@ -315,25 +315,26 @@ test("lease expiry during shared admission rolls back the dispatch window and re
   expect((await sql.query("select sandbox_id from account_agent_reservations")).rows).toEqual([]);
 });
 
-test.each([null, "1"])(
-  "shared recovery rechecks dispatch evidence when recorded generation is %s",
-  async (generation) => {
-    const sandboxId = ids[0]!;
-    const requestId = requests[0]!;
-    await queue.accept(caller, { id: sandboxId, request_id: requestId, prompt: "next" });
-    const claim = await claimTurn(requestId);
-    await sql.query(
-      "update account_turn_queue set state='dispatching',dispatch_generation=$1,dispatch_until='-infinity'",
-      [generation],
-    );
-    await sql.query("update sandboxes set provider='boat',boat_runtime=true,activity_lease_id=$2 where id=$1", [
-      sandboxId,
-      generation === null ? requestId : requests[1],
-    ]);
-    expect(await admitClaimedAccountTurn(sql, claim)).toBeNull();
-    expect((await sql.query("select sandbox_id from account_agent_reservations")).rows).toEqual([]);
-  },
-);
+test.each([
+  ["dispatch generation is missing", null, "-infinity", true],
+  ["activity belongs to a different request", "1", "-infinity", false],
+  ["the window is open and the wake has no receipt", "1", "infinity", true],
+] as const)("shared recovery preserves the dispatch when %s", async (_reason, generation, until, ownActivity) => {
+  const sandboxId = ids[0]!;
+  const requestId = requests[0]!;
+  await queue.accept(caller, { id: sandboxId, request_id: requestId, prompt: "next" });
+  const claim = await claimTurn(requestId);
+  await sql.query("update account_turn_queue set state='dispatching',dispatch_generation=$1,dispatch_until=$2", [
+    generation,
+    until,
+  ]);
+  await sql.query("update sandboxes set provider='boat',boat_runtime=true,activity_lease_id=$2 where id=$1", [
+    sandboxId,
+    ownActivity ? requestId : requests[1],
+  ]);
+  expect(await admitClaimedAccountTurn(sql, claim)).toBeNull();
+  expect((await sql.query("select sandbox_id from account_agent_reservations")).rows).toEqual([]);
+});
 
 test("shared recovery returns a newly expired dispatch without intent to FIFO", async () => {
   const sandboxId = ids[0]!;

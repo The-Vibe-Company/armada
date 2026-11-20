@@ -25,8 +25,6 @@ const STOPPED_DOCKER_WAKE_IN_PROGRESS = `(s.provider='docker' and s.status='stop
 export const QUEUED_DISPATCH_EVIDENCE = `(q.native_prompt_id is not null
   or (s.task_prompt_id=q.request_id::text) is true or (${RUNTIME_REQUEST_EVIDENCE}) is true)`;
 export const RUNTIME_LANE = `(s.provider='docker' or s.boat_runtime or s.runtime_transport='dialout')`;
-// A current, completed wake can only return its stored receipt. A successor
-// with the job lease does not have to wait for the previous dispatch window.
 export const COMPLETED_RUNTIME_WAKE = `(s.provider in ('boat','modal') and ${RUNTIME_LANE}
   and s.status in ('ready','running') and s.activity_lease_id is null
   and q.dispatch_generation in (s.lifecycle_generation, s.lifecycle_generation - 1)

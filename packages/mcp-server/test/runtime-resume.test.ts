@@ -401,7 +401,8 @@ describe.each(["boat", "modal"] as const)("queued runtime wake admission (%s)", 
 
   const cases = scenarios.filter((scenario) =>
     provider === "modal"
-      ? scenario === "scoped grant loss" ||
+      ? scenario === "current" ||
+        scenario === "scoped grant loss" ||
         scenario === "unenrolled failure" ||
         scenario === "unenrolled claim loss" ||
         scenario === "restore admission loss" ||
