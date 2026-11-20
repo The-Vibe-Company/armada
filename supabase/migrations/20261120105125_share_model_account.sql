@@ -1,7 +1,6 @@
 begin;
 
--- JWTs can update only value_enc and the restrictive model policies still apply.
--- Permit only the personal-to-org move for model accounts at this boundary.
+-- Keep owner existence checks privileged for ordinary credential writes.
 create or replace function public.credentials_guard()
 returns trigger
 language plpgsql
@@ -19,9 +18,6 @@ begin
     new.id is distinct from old.id
     or new.kind is distinct from old.kind
     or new.created_at is distinct from old.created_at
-    or ((new.scope is distinct from old.scope or new.owner_id is distinct from old.owner_id)
-      and not (old.scope = 'user' and new.scope = 'org'
-        and old.kind in ('claude_oauth','anthropic','openai','codex_auth','opencode','morph')))
   ) then
     raise exception 'credential identity may not change' using errcode = '23514';
   end if;
@@ -29,12 +25,42 @@ begin
 end;
 $$;
 
+-- Scope and owner changes are reserved for the protected transaction. Check
+-- the invoking role as well as the transaction's function-local setting.
+create function public.guard_credential_scope_move()
+returns trigger
+language plpgsql
+set search_path = ''
+as $$
+begin
+  if (new.scope is distinct from old.scope or new.owner_id is distinct from old.owner_id)
+    and not (
+      coalesce(current_setting('armada.share_model_account', true), '') = 'on'
+      and current_user = (
+        select pg_get_userbyid(proowner) from pg_proc
+        where oid = 'public.share_model_account(uuid,uuid,uuid)'::regprocedure
+      )
+      and old.scope = 'user' and new.scope = 'org'
+      and old.kind in ('claude_oauth','anthropic','openai','codex_auth','opencode','morph')
+    ) then
+    raise exception 'credential scope may change only through the protected transaction' using errcode = '23514';
+  end if;
+  return new;
+end;
+$$;
+revoke all on function public.guard_credential_scope_move() from public, anon, authenticated, service_role;
+
+create trigger guard_credential_scope_move
+before update on public.credentials
+for each row execute function public.guard_credential_scope_move();
+
 -- Internal transaction. Keep it ungranted until launch admission rechecks
 -- scope under the credential lock for bindings resolved before this call.
 create function public.share_model_account(p_actor uuid, p_account uuid, p_org uuid)
 returns uuid
 language plpgsql
 set search_path = ''
+set armada.share_model_account = 'on'
 as $$
 declare
   v_kind public.credential_kind;
@@ -86,7 +112,6 @@ begin
   set credential_id = case when credential_id = p_account then null else credential_id end,
       credential_ids = array_remove(credential_ids, p_account)
   where credential_id = p_account or p_account = any(credential_ids);
-
 
   return p_account;
 end;

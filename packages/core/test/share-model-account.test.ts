@@ -127,3 +127,10 @@ test.each(["anon", "authenticated", "service_role"])("the share function is ungr
   );
   expect(rows).toEqual([{ granted: false }]);
 });
+
+test("the service role cannot bypass the share transaction by updating the table", async () => {
+  await db.exec("set local role service_role; set local armada.share_model_account = 'on'");
+  await expect(
+    db.query("update public.credentials set scope='org', owner_id=$2 where id=$1", [account, org]),
+  ).rejects.toMatchObject({ code: "23514" });
+});
