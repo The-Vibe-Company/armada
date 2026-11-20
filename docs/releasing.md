@@ -671,7 +671,9 @@ The release sequence follows the design in [#2838](https://github.com/The-Vibe-C
 
    After verifying the release, the publishing job adds `autorelease: tagged`
    and removes `autorelease: pending` on the original version PR. Do this
-   idempotently in that order. Release Please's
+   idempotently in that order. Successful release and exact-tag verification
+   is required for production approval. A label failure emits a workflow
+   warning and production can proceed. Release Please's
    [PR builder](https://github.com/googleapis/release-please/blob/891bcf6253b390e39df9ff3e1c059a836bd39c98/src/manifest.ts#L920-L939)
    blocks while a merged release PR carries the pending label, even when a
    release exists. With release creation disabled, the publishing job owns
