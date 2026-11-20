@@ -635,7 +635,7 @@
     "packages/mcp-server/src/boat-runtime-launch.ts": 1,
     "packages/mcp-server/src/boat-runtime-manifest.ts": 1,
     "packages/mcp-server/src/boat-runtime-resume.ts": 1,
-    "packages/mcp-server/src/caller.ts": 9,
+    "packages/mcp-server/src/caller.ts": 7,
     "packages/mcp-server/src/child-authority.ts": 1,
     "packages/mcp-server/src/config.ts": 10,
     "packages/mcp-server/src/control-body.ts": 2,
