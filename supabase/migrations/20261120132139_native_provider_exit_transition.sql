@@ -29,8 +29,9 @@ declare
   extension_expiry boolean := (p_actor = 'expiry' and p_code = 'extension_expired' and p_to_state = 'stopping') is true;
   runtime_resume_admission boolean := (p_code = 'runtime_resume_admitted') is true;
   native_retention_refusal boolean := (p_code = 'native_retention_unconfirmed') is true;
+  native_child_send boolean := (p_code = 'native_child_send_admitted') is true;
   failed_resume_request boolean := p_activity_lease is not null and not extension_expiry
-    and not runtime_resume_admission and not native_retention_refusal;
+    and not runtime_resume_admission and not native_retention_refusal and not native_child_send;
   interrupted_resume boolean := not failed_resume_request and (
     p_actor = 'runtime_resume' and p_code = 'runtime_resume_unenrolled' and p_to_state = 'stopping'
   ) is true;
@@ -227,6 +228,23 @@ begin
     allowed_effects := array[]::text[];
   end if;
 
+  if native_child_send then
+    if p_actor is distinct from 'native_turn' or p_to_state is distinct from 'running'
+      or p_activity_lease is null or p_effects is distinct from '[]'::jsonb then
+      raise exception 'invalid native child send transition' using errcode = '22023';
+    end if;
+    if sandbox.provider not in ('boat', 'modal') or sandbox.boat_runtime or sandbox.runtime_transport is not null
+      or sandbox.status not in ('starting', 'ready', 'stopping', 'stopped', 'failed')
+      or sandbox.deleted_at is not null or sandbox.stop_requested_at is not null
+      or sandbox.activity_lease_id is distinct from p_activity_lease
+      or (sandbox.activity_until > clock_timestamp()) is not true then
+      return query select false, null::bigint;
+      return;
+    end if;
+    allowed_actors := array['native_turn'];
+    allowed_effects := array[]::text[];
+  end if;
+
   if p_actor = 'runtime_observation' and (
     (p_code = 'native_provider_stopped' and p_to_state = 'stopped'
       and sandbox.status in ('starting', 'stopping', 'failed', 'stopped'))
@@ -394,6 +412,7 @@ begin
         else s.stop_requested_at
       end end,
       stopped_at = case
+        when native_child_send then s.stopped_at
         when native_retention_refusal then null
         when docker_expiry or docker_cleanup then coalesce(s.stopped_at, now())
         when p_actor in ('reconciler', 'runtime_observation', 'native_turn') then p_stopped_at else case p_to_state
