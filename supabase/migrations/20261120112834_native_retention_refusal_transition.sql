@@ -116,8 +116,8 @@ begin
     ('stopped', 'starting', array['resume_admission'], array['resume']),
     ('starting', 'running', array['runtime_enrolment'], array['turn_dispatch']),
     ('starting', 'ready', array['runtime_enrolment'], array['turn_dispatch']),
-    ('ready', 'running', array['docker_host'], array[]::text[]),
-    ('running', 'ready', array['runtime_turn'], array[]::text[]),
+    ('ready', 'running', array['docker_host', 'native_turn'], array[]::text[]),
+    ('running', 'ready', array['runtime_turn', 'native_turn'], array[]::text[]),
     ('starting', 'stopping', array['owner', 'finish', 'expiry', 'idle'], array['stop']),
     ('running', 'stopping', array['owner', 'finish', 'expiry', 'idle'], array['stop']),
     ('ready', 'stopping', array['owner', 'finish', 'expiry', 'idle'], array['stop']),
@@ -241,6 +241,13 @@ begin
     return;
   end if;
 
+  if p_actor = 'native_turn' and (
+    sandbox.provider not in ('boat', 'modal') or sandbox.boat_runtime
+    or sandbox.runtime_transport is not distinct from 'dialout'
+  ) then
+    raise exception 'native turn observation requires a provider-run sandbox' using errcode = '22023';
+  end if;
+
   if p_actor = 'runtime_observation' and p_stopped_at is null then
     raise exception 'runtime stop observation requires an exit timestamp' using errcode = '22023';
   end if;
@@ -351,7 +358,7 @@ begin
         when p_code = 'docker_work_merged' then 'work_merged'
         when checkpointed_idle then case when p_code = 'runtime_checkpoint_work_merged'
           then 'work_merged' else 'idle_paused' end
-        when p_actor in ('reconciler', 'runtime_observation') then p_status_reason else case p_to_state
+        when p_actor in ('reconciler', 'runtime_observation', 'native_turn') then p_status_reason else case p_to_state
         when 'starting' then null
         when 'stopping' then case
           when p_code in ('expired', 'idle_paused', 'agent_finished', 'work_merged') then p_code
@@ -372,7 +379,7 @@ begin
       stopped_at = case
         when native_retention_refusal then null
         when docker_expiry or docker_cleanup then coalesce(s.stopped_at, now())
-        when p_actor in ('reconciler', 'runtime_observation') then p_stopped_at else case p_to_state
+        when p_actor in ('reconciler', 'runtime_observation', 'native_turn') then p_stopped_at else case p_to_state
         when 'starting' then null
         when 'stopped' then coalesce(s.stopped_at, clock_timestamp())
         else s.stopped_at
