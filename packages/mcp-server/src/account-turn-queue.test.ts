@@ -48,12 +48,12 @@ beforeAll(async () => {
       activity_lease_id uuid,task_prompt_id text,lifecycle_generation bigint default 1,reconcile_lease_until timestamptz,
       docker_host_id uuid,docker_installation_id uuid,docker_generation uuid);
     create table runtime_commands(sandbox_id uuid,sequence bigint,request_id text);
-    create table runtime_enrolments(sandbox_id uuid,epoch bigint);
+    create table runtime_enrolments(sandbox_id uuid,epoch bigint,runtime_hash text,lifecycle_generation bigint);
     create table runtime_checkpoints(sandbox_id uuid,epoch bigint,merge_stop boolean);
     create table docker_host_jobs(bound_sandbox_id uuid,position bigint,request_id uuid);
     create table docker_resume_claims(sandbox_id uuid,request_id uuid,actor_id uuid,host_id uuid,
       installation_id uuid,generation uuid,lifecycle_generation bigint,accepted boolean);
-    create table runtime_resumes(sandbox_id uuid,request_id uuid);
+    create table runtime_resumes(sandbox_id uuid,request_id uuid,target_epoch bigint,phase text,receipt jsonb);
     create table runtime_idle_turns(sandbox_id uuid,prompt_id text,settled boolean);
     create table account_agent_reservations(sandbox_id uuid primary key,account_id uuid);`);
   // Apply this migration against a minimal real schema: no hand-written queue store behavior.
@@ -315,25 +315,26 @@ test("lease expiry during shared admission rolls back the dispatch window and re
   expect((await sql.query("select sandbox_id from account_agent_reservations")).rows).toEqual([]);
 });
 
-test.each([null, "1"])(
-  "shared recovery rechecks dispatch evidence when recorded generation is %s",
-  async (generation) => {
-    const sandboxId = ids[0]!;
-    const requestId = requests[0]!;
-    await queue.accept(caller, { id: sandboxId, request_id: requestId, prompt: "next" });
-    const claim = await claimTurn(requestId);
-    await sql.query(
-      "update account_turn_queue set state='dispatching',dispatch_generation=$1,dispatch_until='-infinity'",
-      [generation],
-    );
-    await sql.query("update sandboxes set provider='boat',boat_runtime=true,activity_lease_id=$2 where id=$1", [
-      sandboxId,
-      generation === null ? requestId : requests[1],
-    ]);
-    expect(await admitClaimedAccountTurn(sql, claim)).toBeNull();
-    expect((await sql.query("select sandbox_id from account_agent_reservations")).rows).toEqual([]);
-  },
-);
+test.each([
+  ["dispatch generation is missing", null, "-infinity", true],
+  ["activity belongs to a different request", "1", "-infinity", false],
+  ["the window is open and the wake has no receipt", "1", "infinity", true],
+] as const)("shared recovery preserves the dispatch when %s", async (_reason, generation, until, ownActivity) => {
+  const sandboxId = ids[0]!;
+  const requestId = requests[0]!;
+  await queue.accept(caller, { id: sandboxId, request_id: requestId, prompt: "next" });
+  const claim = await claimTurn(requestId);
+  await sql.query("update account_turn_queue set state='dispatching',dispatch_generation=$1,dispatch_until=$2", [
+    generation,
+    until,
+  ]);
+  await sql.query("update sandboxes set provider='boat',boat_runtime=true,activity_lease_id=$2 where id=$1", [
+    sandboxId,
+    ownActivity ? requestId : requests[1],
+  ]);
+  expect(await admitClaimedAccountTurn(sql, claim)).toBeNull();
+  expect((await sql.query("select sandbox_id from account_agent_reservations")).rows).toEqual([]);
+});
 
 test("shared recovery returns a newly expired dispatch without intent to FIFO", async () => {
   const sandboxId = ids[0]!;
