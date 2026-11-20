@@ -170,7 +170,7 @@ export function createScopedProbe(item: ScopedProbeCase, enabled: boolean, io: S
     }
     return fail("scoped_incomplete_snapshot");
   }
-  async function logs(id: string, phase: "initial_evidence" | "launch_evidence" | "cleanup", until?: number) {
+  async function logs(id: string, phase: "initial_evidence" | "tool_evidence" | "cleanup", until?: number) {
     // Re-read from the start: providers can complete a tool in an existing event.
     let cursor: string | undefined;
     const cursors = new Set<string>();
@@ -407,20 +407,46 @@ export function createScopedProbe(item: ScopedProbeCase, enabled: boolean, io: S
         evidenceUnknown = false;
         adopt();
         let tools = calls(true);
-        const hasLaunchResult = (seen: Call[]) =>
-          seen.some(
-            (call) =>
-              call.name === "launch" &&
-              call.input.idempotencyKey === launchKey &&
-              (call.error || Object.keys(call.result).length > 0),
+        const hasResult = (call: Call) => call.error || call.denied || Object.keys(call.result).length > 0;
+        const boundRead = (call: Call, childId: string) =>
+          call.result.id === childId &&
+          call.result.orgId === item.org &&
+          call.result.provider === item.provider &&
+          call.result.harness === "codex" &&
+          call.result.goldenId === item.goldenId &&
+          call.result.credentialId === item.modelAccountId &&
+          call.result.credentialVersion === credentialVersion &&
+          call.result.model === item.model &&
+          (!item.reasoningEffort || call.result.reasoningEffort === item.reasoningEffort);
+        const answered = (call: Call, childId: string) =>
+          !call.error &&
+          boundRead(call, childId) &&
+          Array.isArray(call.result.events) &&
+          assistantAnswers(call.result.events, answer);
+        const evidenceReady = (seen: Call[]) => {
+          const mutations = seen.filter((call) => call.name !== "read" && childTools.includes(call.name));
+          if (mutations.some((call) => hasResult(call) && (!successful(call) || call.denied))) return true;
+          const childId = mutations.find((call) => call.name === "launch")?.result.sandboxId;
+          return (
+            uuid(childId) &&
+            mutations.some((call) => call.name === "message" && hasResult(call)) &&
+            mutations.some((call) => call.name === "stop" && hasResult(call)) &&
+            seen.some((call) => call.name === "read" && call.input.sandboxId === childId && answered(call, childId))
           );
-        if (enabled && !hasLaunchResult(tools)) {
+        };
+        if (enabled && !evidenceReady(tools)) {
           const until = Math.min(io.deadline, io.now() + 10_000);
           const updated = await observeSmokeLaunch(until, io, async () => {
-            await logs(id, "launch_evidence", until);
+            try {
+              await logs(id, "tool_evidence", until);
+            } catch (error) {
+              if (typeof row(error).transportTimeoutMs === "number" && io.now() >= until) return;
+              throw error;
+            }
             adopt();
             const seen = calls(true);
-            return hasLaunchResult(seen) ? seen : undefined;
+            if (io.now() <= until) tools = seen;
+            return evidenceReady(seen) ? seen : undefined;
           });
           if (updated) tools = updated;
         }
@@ -512,27 +538,12 @@ export function createScopedProbe(item: ScopedProbeCase, enabled: boolean, io: S
           }
           return call;
         });
-        const boundRead = (call: Call) =>
-          call.result.id === childId &&
-          call.result.orgId === item.org &&
-          call.result.provider === item.provider &&
-          call.result.harness === "codex" &&
-          call.result.goldenId === item.goldenId &&
-          call.result.credentialId === item.modelAccountId &&
-          call.result.credentialVersion === credentialVersion &&
-          call.result.model === item.model &&
-          (!item.reasoningEffort || call.result.reasoningEffort === item.reasoningEffort);
-        const answered = (call: Call) =>
-          !call.error &&
-          boundRead(call) &&
-          Array.isArray(call.result.events) &&
-          assistantAnswers(call.result.events, answer);
         await io.step("scoped_child_answer", async () => {
           if (
             reads.length < 1 ||
             reads.length > 20 ||
             reads.some((call) => call.input.sandboxId !== childId) ||
-            !reads.some(answered)
+            !reads.some((call) => answered(call, childId))
           )
             fail("scoped_answer_unproven");
         });
@@ -574,7 +585,7 @@ export function createScopedProbe(item: ScopedProbeCase, enabled: boolean, io: S
               (call) =>
                 tools.indexOf(message) < tools.indexOf(call) &&
                 tools.indexOf(call) < tools.indexOf(stop) &&
-                answered(call),
+                answered(call, childId),
             )
           )
             fail("scoped_order_unproven");
