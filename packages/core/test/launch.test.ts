@@ -64,7 +64,7 @@ describe("launch", () => {
   const boatModes = ["prompted", "idle"] as const;
   const modalModes = [...boatModes, "private", "stale epoch"] as const;
   for (const provider of ["boat", "modal"] as const)
-    test.each(provider === "modal" ? modalModes : boatModes)(
+    test.each([...(provider === "modal" ? modalModes : boatModes)])(
       `${provider} runtime default prepares workspace before publication/inference (%s)`,
       async (mode) => {
         const prompted = mode === "prompted";
