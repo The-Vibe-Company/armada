@@ -1498,6 +1498,27 @@ describe("tools", () => {
     }
   });
 
+  test("native send refuses a same-generation state change before dispatch", async () => {
+    const server = await start();
+    const { boat, client, db, people, token } = server;
+    const { id } = await seedRunningSandbox(server);
+    await db.query("update sandboxes set status='ready' where id=$1", [id]);
+    const mcp = await client(await token(people.member));
+    const get = boat.provider.get;
+    boat.provider.get = async (placement) => {
+      await db.query("update sandboxes set status='failed' where id=$1", [id]);
+      return get(placement);
+    };
+    const prompt = spyOn(boat.provider, "prompt");
+    const result = await call(mcp, "send", { id, prompt: "continue" });
+    expect(result.isError).toBe(true);
+    expect(result.text).toContain("error code: sandbox_not_ready");
+    expect(prompt).not.toHaveBeenCalled();
+    expect((await db.query("select status, activity_lease_id from sandboxes where id=$1", [id])).rows).toEqual([
+      { status: "failed", activity_lease_id: null },
+    ]);
+  });
+
   test("exec redacts the agent's credentials from the output", async () => {
     const { token, client, people, boat } = await start();
     const mcp = await client(await token(people.member));

@@ -183,8 +183,10 @@ export function configureTools(
     );
     const generation = found.lifecycleGeneration;
     let acknowledged = false;
-    const resumeAdmission: Pick<ServerSandboxPatch, "nativeResumeAdmission"> =
-      machine.state === "stopped" ? { nativeResumeAdmission: found.providerSandboxId } : {};
+    const admission: Pick<ServerSandboxPatch, "nativeResumeAdmission" | "nativeSendAdmission"> =
+      machine.state === "stopped"
+        ? { nativeResumeAdmission: found.providerSandboxId }
+        : { nativeSendAdmission: { fromState: found.status, placement: found.providerSandboxId } };
     return sandboxActivity(
       data.sandboxes,
       found,
@@ -193,7 +195,7 @@ export function configureTools(
         ...(args.request_id ? { queueRequestId: args.request_id } : {}),
         renewLifecycle: machine.state === "stopped" && found.statusReason !== "idle_paused",
         stopRequested: false,
-        ...resumeAdmission,
+        ...admission,
       },
       async (signal, activityToken) => {
         let activationOpened = machine.state === "stopped";
