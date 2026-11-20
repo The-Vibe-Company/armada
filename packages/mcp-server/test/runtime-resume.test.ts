@@ -372,7 +372,7 @@ describe("queued runtime wake admission", () => {
     "replaced epoch",
   ] as const;
 
-  test.each(scenarios)("fences queued wake admission and publication (%s)", async (scenario) => {
+  test.each([...scenarios])("fences queued wake admission and publication (%s)", async (scenario) => {
     const f = await fixture();
     const request = input(f.row.id);
     const before = (await createSqlData(f.sql)(f.caller).sandboxes.get(f.row.id))!.lifecycleGeneration!;
