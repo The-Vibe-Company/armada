@@ -32,10 +32,47 @@ import type {
   WaitResult,
 } from "@armada/core/contract";
 import type { ServerFailureCode } from "@armada/core/contract/failures";
+import { streamSandboxEvents } from "@armada/core/contract/sandbox-events";
 import { sandboxOutputOperations } from "@armada/core/contract/sandbox-outputs";
 import { sandboxViewerOperations } from "@armada/core/contract/sandbox-viewer";
+import { sandboxEventStream } from "./events.ts";
 import { apiUrl, jsonPost, type RequestPolicy, requestApi, TEMPLATE_LAUNCH_ROUTE } from "./request.ts";
 import { sandboxClient } from "./sandboxes.ts";
+
+interface EventReference {
+  id: string;
+  sandboxId: string;
+  ref: string;
+  createdAt: string;
+}
+
+export type SandboxEvent = EventReference &
+  ({ kind: "transition"; sequence: null } | { kind: "runtime_event"; sequence: string });
+
+export interface EventStreamInput {
+  sandbox: string;
+  /** Last processed global event ID. Omit to replay retained history. */
+  cursor?: string;
+}
+
+export interface SandboxEventState {
+  cursor: string;
+  transition?: Extract<SandboxEvent, { kind: "transition" }>;
+  runtimeEvent?: Extract<SandboxEvent, { kind: "runtime_event" }>;
+}
+
+/** Track the latest reference of each kind for a single sandbox. */
+export const reduceSandboxEvent: (state: SandboxEventState | undefined, event: SandboxEvent) => SandboxEventState = (
+  state,
+  event,
+) => {
+  if (state && BigInt(event.id) <= BigInt(state.cursor)) return state;
+  return {
+    ...state,
+    cursor: event.id,
+    ...(event.kind === "transition" ? { transition: event } : { runtimeEvent: event }),
+  };
+};
 
 export type FailureCode = ServerFailureCode | "unknown_response" | "transport_error";
 
@@ -194,6 +231,58 @@ export class Armada {
       options,
     );
   }
+
+  readonly events: {
+    stream: (input: EventStreamInput, options?: RequestOptions) => AsyncGenerator<SandboxEvent, void>;
+  } = {
+    stream: ({ sandbox, cursor }, options) => {
+      const { route, outputMediaType } = streamSandboxEvents;
+      let initial = true;
+      const controller = new AbortController();
+      const signal = options?.signal ? AbortSignal.any([controller.signal, options.signal]) : controller.signal;
+      const stream = sandboxEventStream(
+        { sandbox, ...(cursor === undefined ? {} : { cursor }) },
+        async (lastId) => {
+          const query = new URLSearchParams({ sandbox });
+          const headers = new Headers({ accept: outputMediaType });
+          if (lastId !== undefined) {
+            if (initial) query.set("cursor", lastId);
+            else headers.set("last-event-id", lastId);
+          }
+          initial = false;
+
+          try {
+            const { response } = await this.fetchResponse(
+              `${route.path}?${query}`,
+              { method: route.method, headers },
+              true,
+              { ...options, signal },
+              undefined,
+              (response) => response.ok,
+            );
+            const contentType = response.headers.get("content-type")?.split(";")[0]?.trim().toLowerCase();
+            if (contentType === outputMediaType && response.body) return { body: response.body };
+            await response.body?.cancel().catch(() => {});
+            throw new ArmadaError("unknown_response", response.status, undefined, false);
+          } catch (error) {
+            if (
+              error instanceof ArmadaError &&
+              (error.code === "transport_error" || [429, 502, 503, 504].includes(error.status))
+            )
+              return { retryAfterMs: Math.max(1000, (error.retryAfterSeconds ?? 0) * 1000) };
+            throw error;
+          }
+        },
+        signal,
+      );
+      const close = stream.return.bind(stream);
+      stream.return = (value) => {
+        controller.abort();
+        return close(value);
+      };
+      return stream;
+    },
+  };
 
   readonly outputs = {
     list: async (input: OutputsListInput, options?: RequestOptions) => {
