@@ -665,3 +665,50 @@ requests fail closed. A sealed golden is not implicitly restored/unsealed. Worke
 never take this path and retain normal runtime process/journal/outbox behavior.
 The NNP OS fixture now runs the actual production scanner through this root SDK
 helper and verifies nonzero status/stdout/stderr, command timeout and output bounds.
+
+## Test fixtures and opt-in conformance
+
+The artifact-validation test copies the actual loader to a disposable package
+tree so file imports resolve fixture assets without modifying the shared
+workspace artifact. The distribution test uses an incompressible payload to
+force multiple chunks and replays the captured installation commands in an
+isolated directory. It checks Linux's single-command size limit and verifies
+that a digest mismatch leaves the previously installed runtime intact. To
+verify the embedded runtime, compile `test/bundle.ts` and run the resulting
+executable without the workspace runtime files available.
+
+The provider lifecycle tests exercise the real adapter through injected ports.
+Golden cases create their own images, while worker lifecycle cases start with
+a saved image. The history cursor regression uses real migrations and
+PostgreSQL semantics to distinguish bigint cursor ordering from the projected
+text alias. Fixture timestamps run in reverse and event IDs are synthetic.
+
+The live Modal conformance fixture is opt-in and billable. The coordinator
+must expose the supplied listen port through HTTPS at the ingest URL before
+running it. Pass management and model configuration only over private stdin.
+The fixture requires explicit tokens and refuses operator profiles, borrowed
+Apps, and caller-supplied management authority. Keep SDK causes and tokens out
+of diagnostics. Source generated scripts from current production core.
+
+Use a fresh exclusive evidence directory and retain the journal, including
+pending and ambiguous creates. Never retry ambiguous creation or adopt an App
+by name, prefix, or age. Require terminal readback to prove cleanup. Inventory
+read errors leave the journal intact, and only fresh durable readback can
+authorize finalization. The conformance App fixture targets public Modal CLI
+1.6.3 and injects CLI execution for local tests.
+
+The Linux process-scope and checkpoint conformance fixtures require a
+disposable PID and mount namespace and the native runtime build for checkpoint
+coverage. Run checkpoint conformance as root and PID 1 in that namespace.
+Never run the quiescer against the host or a coding worker's namespace.
+The fixtures exercise real seccomp and pidfd behavior, verify that platform
+exec helpers do not gain writer trust, and check for late state recreation
+after quiescence. For the open-journal snapshot case, inspect the actual
+holder's kernel file descriptors.
+
+The OS build fixture uses disposable Docker infrastructure, public artifacts,
+and synthetic data. Pass the isolated production core source directory as the
+first positional argument. Its harness must expose the unmodified `baselineSetup`.
+Use the production npm launcher for the no-PATH regression. The SSH fixture
+checks inherited no-new-privileges in an approved image and selects root only
+from trusted golden metadata. Workers run as the sandbox user.

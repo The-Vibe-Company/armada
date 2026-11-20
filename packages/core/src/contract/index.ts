@@ -98,7 +98,7 @@ export const launch = {
   name: "launch",
   toolName: "launch",
   mcpDescription:
-    "Forks a golden into a new sandbox, pulls its repos, runs its init commands, and starts the agent. " +
+    "Forks a Boat or Modal snapshot into a new sandbox, pulls its repos, runs its init commands, and starts the agent. " +
     "With `prompt` the agent starts working at once (status running). Without it the sandbox is left ready " +
     "and the conversation starts at the first `send`. The sandbox gets only your (or your org's) Armada " +
     "credentials for this agent, never the boat.dev account's. When the caller connected GitHub, git and gh in " +

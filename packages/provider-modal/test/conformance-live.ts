@@ -1,8 +1,3 @@
-/** OPT-IN BILLABLE. Receive explicit management/model configuration via PRIVATE stdin only.
- * The coordinator must expose listenPort with HTTPS ingress at ingestUrl before invoking.
- * No profile/environment/credential-file reads. Never print configuration, SDK causes or tokens.
- */
-
 import { join } from "node:path";
 import { PGlite } from "@electric-sql/pglite";
 import { ModalClient } from "modal";
@@ -24,19 +19,15 @@ import { appJournal, cliAppAdapter, createOwnedApp, finalizeOwnedApp } from "./c
 interface Input {
   tokenId?: string;
   tokenSecret?: string;
-  /** Explicit operator opt-in to public SDK profile loading, never a manual credential-file read. */
   operatorProfile?: boolean;
   scope: Scope;
-  /** Trusted operator-selected provenance, independent of this fixture's private/org access scope. */
   managementAuthority?: ModalManagementProvenance;
   appName?: never;
-  /** New, exclusive local directory for durable non-secret run evidence. */
   receiptDirectory: string;
   artifact: Omit<ComposedModalOptions["artifact"], "bundle" | "sha256"> & { dist: string };
   ingestUrl: string;
   listenPort: number;
   models: boolean;
-  /** Current production core generates these scripts; credentials remain private stdin only. */
   goldenRecipe?: GoldenSshRecipe & { scanCommand: string };
   harness: HarnessEnvironment;
 }
@@ -131,8 +122,6 @@ async function main() {
       process.exitCode = 1;
     } finally {
       try {
-        // Read failures are not empty inventories. Historical receipts remain in the journal;
-        // only a fresh durable read authorizes finalization after successful conformance cleanup.
         const resources = await provider.resourceReceipts();
         const images = await db.query("select name,record from public.modal_images");
         const proof = { complete: completed, resources, imageCount: images.rows.length };
@@ -151,7 +140,6 @@ async function main() {
     }
   } finally {
     try {
-      // Preserve any pending creation journal; never adopt, retry or stop its App here.
       if (owned) await save({ app: owned, status: owned.finalization });
     } finally {
       try {
