@@ -313,10 +313,11 @@ export function configureTools(
           else await data.sandboxes.recordPendingSteer?.(found.id, found.providerSandboxId, found.taskPromptId || null);
           return {
             patch: {
-              status: "running",
+              nativeSteerReceipt: { fromState: found.status, placement: found.providerSandboxId },
+              statusReason: null,
               taskPromptId,
               conversationIds: appendConversation(found.conversationIds, receipt.conversationId),
-            },
+            } satisfies ServerSandboxPatch,
             result: {
               id: found.id,
               promptId: receipt.promptId,

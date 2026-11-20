@@ -645,12 +645,13 @@ export async function recordRuntimeStartupFailure(
   return result;
 }
 
-export async function publishNativeChildSend(
+export async function publishNativeTurn(
   tx: Sql,
   sandboxId: string,
   fromState: SandboxStatus,
   generation: string,
   activityLease: string,
+  code: "native_child_send_admitted" | "native_steer_accepted",
 ) {
   const result = await transitionSandbox(tx, {
     sandboxId,
@@ -658,11 +659,11 @@ export async function publishNativeChildSend(
     fromStates: [fromState],
     toState: "running",
     actor: "native_turn",
-    code: "native_child_send_admitted",
+    code,
     effects: [],
     settlement: { lease: null, activityLease, statusReason: null, stopRequestedAt: null, stoppedAt: null },
   });
-  if (result.kind === "conflict") throw new Error("Native child send lost its activity fence.");
+  if (result.kind === "conflict") throw new Error("Native turn publication lost its activity fence.");
 }
 
 export async function recordObservedProviderState(
