@@ -6,6 +6,7 @@ import type { Caller } from "./caller.ts";
 import type { Job } from "./jobs/runner.ts";
 import { continueRequest, recordOperatorDiagnostic } from "./request-observability.ts";
 import type { RuntimeFollowupInput } from "./runtime-followup.ts";
+import type { RuntimeTurnClaim } from "./runtime-resume.ts";
 import { ToolApiError } from "./tool-api.ts";
 import { ToolError } from "./tool-error.ts";
 
@@ -247,7 +248,7 @@ export async function admitAccountTurn(sql: Sql, candidate: AdmissionEntry, clai
     });
 }
 
-export type DispatchTurn = (caller: Caller, input: RuntimeFollowupInput) => Promise<unknown>;
+export type DispatchTurn = (caller: Caller, input: RuntimeFollowupInput, claim?: RuntimeTurnClaim) => Promise<unknown>;
 
 class TurnSettlementLeaseLost extends Error {}
 
@@ -280,7 +281,7 @@ export async function dispatchAccountTurn(
   entry: DispatchEntry,
   caller: Caller,
   dispatch: DispatchTurn,
-  claim?: TurnClaim,
+  claim?: TurnClaim & RuntimeTurnClaim,
 ) {
   if (claim) {
     const { kind, sandbox_id, payload } = claim.job;
@@ -314,7 +315,7 @@ export async function dispatchAccountTurn(
     }
     phase = "send";
     const result = await continueRequest(correlationId, () =>
-      dispatch(caller, { id, request_id, prompt, model, reasoning_effort }),
+      dispatch(caller, { id, request_id, prompt, model, reasoning_effort }, claim),
     );
     phase = "publish_receipt";
     const resultEnc = await encryptSecret(JSON.stringify(result), key);

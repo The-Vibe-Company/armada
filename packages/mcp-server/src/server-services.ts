@@ -18,7 +18,7 @@ import { repairHistoricalTurnModels } from "./account-model-upgrade.ts";
 import { createAccountTurnQueue } from "./account-turn-queue.ts";
 import { boatRuntimeLaunch } from "./boat-runtime-launch.ts";
 import { boatRuntimeResume } from "./boat-runtime-resume.ts";
-import { type ConfiguredControlOptions, dispatchControlCommand } from "./control.ts";
+import { type ConfiguredControlOptions, createQueuedSandboxDispatch } from "./control.ts";
 import { createCredentialBindingRecovery } from "./credential-binding-recovery.ts";
 import { createSqlCredentialList } from "./credential-list-sql.ts";
 import { createScopedSandboxData, createSqlData } from "./data.ts";
@@ -638,14 +638,11 @@ export async function createServerServices(env: Record<string, string | undefine
     templates,
     data,
     configureAccountDispatch: () => {
-      const { accountTurns: _queue, ...unqueuedControl } = control;
-      accountTurns.setDispatch((caller, input) =>
-        dispatchControlCommand(
-          "sandbox/send",
-          caller,
-          { ...input },
-          { ...unqueuedControl, ...(dockerControls ? { dockerControls: makeDockerControls(true) } : {}) },
-        ),
+      accountTurns.setDispatch(
+        createQueuedSandboxDispatch({
+          ...control,
+          ...(dockerControls ? { dockerControls: makeDockerControls(true) } : {}),
+        }),
       );
     },
   };
