@@ -315,7 +315,7 @@ waive deployed proof; local checks do not prove provider settings or credentials
    Keep domains/project IDs/build/runtime vars; explicit CLI paths stay available.
    Remove obsolete Vercel/Post-deploy smoke required checks in GitHub rules,
    never Armada's fast verdict. Historical checks are not erased by a commit.
-5. No opt-in variables need enabling. Dispatch main's pinned staging workflow
+5. No release opt-in flags are required. Dispatch main's pinned staging workflow
    under the freeze, confirm staging proof, then use an owner-reviewed release.
    Do not restore legacy production Git deployment or standalone SQL apply.
 
