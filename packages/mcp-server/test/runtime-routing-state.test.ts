@@ -65,10 +65,10 @@ test.each(["core", "scoped"] as const)(
     const runtime = await store.insert({ ...f.input(), boatRuntime: true });
     expect(runtime.boatRuntime).toBe(true);
     expect((await f.scoped.get(runtime.id))?.boatRuntime).toBe(true);
-    await store.update(runtime.id, { status: "stopped", stoppedAt: new Date().toISOString() });
-    expect((await f.db.query("select boat_runtime from sandboxes where id=$1", [runtime.id])).rows).toEqual([
-      { boat_runtime: true },
-    ]);
+    await store.update(runtime.id, { effectiveTtlSeconds: 7200 });
+    expect(
+      (await f.db.query("select boat_runtime, effective_ttl_seconds from sandboxes where id=$1", [runtime.id])).rows,
+    ).toEqual([{ boat_runtime: true, effective_ttl_seconds: 7200 }]);
   },
 );
 
