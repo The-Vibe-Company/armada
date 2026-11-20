@@ -1,4 +1,5 @@
 import { LaunchError } from "@armada/core/server";
+import type { DispatchTurn } from "./account-turn-dispatch.ts";
 import { rejectUnknownVaultRoute } from "./application-vault-control.ts";
 import type { Caller } from "./caller.ts";
 import { readControlBody } from "./control-body.ts";
@@ -82,6 +83,21 @@ export async function dispatchControlCommand(
   if (registered && !registered.pattern && "handler" in registered)
     return registered.handler({ route, caller, body, options, request });
   return unknownControlCommand(route, caller, body, options);
+}
+
+export function createQueuedSandboxDispatch(options: ControlOptions) {
+  const { accountTurns: _queue, runtimeSend, ...unqueued } = options;
+  const dispatch: DispatchTurn = (caller, input, claim) =>
+    dispatchControlCommand(
+      "sandbox/send",
+      caller,
+      { ...input },
+      {
+        ...unqueued,
+        ...(runtimeSend ? { runtimeSend: (actor, request) => runtimeSend(actor, request, claim) } : {}),
+      },
+    );
+  return dispatch;
 }
 
 function unknownControlCommand(route: string, caller: Caller, body: Record<string, unknown>, options: ControlOptions) {

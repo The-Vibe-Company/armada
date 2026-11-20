@@ -4,7 +4,7 @@ import { createSqlVaultStore, DelegatedAuthority, type Provider } from "@armada/
 import { fakeBoat, retainedSandbox, sandbox as sdkSandbox } from "../../provider-boat/test/support.ts";
 import { createAccountTurnQueue } from "../src/account-turn-queue.ts";
 import { boatRuntimeResume } from "../src/boat-runtime-resume.ts";
-import { dispatchControlCommand } from "../src/control.ts";
+import { createQueuedSandboxDispatch, dispatchControlCommand } from "../src/control.ts";
 import { createSqlData } from "../src/data.ts";
 import { createJobsStore } from "../src/jobs/store.ts";
 import { modalRuntimeLaunch } from "../src/modal-runtime-launch.ts";
@@ -418,9 +418,32 @@ describe("queued runtime wake admission", () => {
       });
       const send = createRuntimeFollowup(f.sql, ENCRYPTION_KEY, f.bridge, undefined, resume);
       const sentRequest = scenario === "different job request" ? input(f.row.id) : request;
-      const attempt = () => send(f.caller, sentRequest, (handoff) => store.handoffGeneration(job, owner, handoff));
+      const claim = {
+        canDispatch: async (tx?: Parameters<typeof store.inspect>[2]) =>
+          (await store.inspect(job, owner, tx)) === "dispatch",
+        handoffGeneration: (handoff: Parameters<typeof store.handoffGeneration>[2]) =>
+          store.handoffGeneration(job, owner, handoff),
+      };
+      const attempt = () => send(f.caller, sentRequest, claim);
       if (scenario === "current lease") {
-        await expect(attempt()).resolves.toMatchObject({ resumed: true, requestId: request.request_id });
+        const dispatch = createQueuedSandboxDispatch({
+          authStore: createMemoryAuthStore(),
+          supabase: { supabaseUrl: "https://unused.test", anonKey: "fixture" },
+          store: createSqlVaultStore(f.sql),
+          encryptionKey: ENCRYPTION_KEY,
+          data: createSqlData(f.sql),
+          providers: {
+            async resolve() {
+              throw new Error("Runtime send does not call a native provider.");
+            },
+          },
+          runtimeSend: send,
+        });
+        const { runtimeVersion: _version, ...sendInput } = sentRequest;
+        await expect(dispatch(f.caller, sendInput, claim)).resolves.toMatchObject({
+          resumed: true,
+          requestId: request.request_id,
+        });
         expect(preparations).toBe(1);
       } else {
         if (scenario === "failed job retarget") {
@@ -484,7 +507,26 @@ test("an already enrolled uncertain resume reconciles on a fresh server without 
     } finally {
       await f.db.exec("alter table sandbox_transitions drop constraint test_reject_settlement");
     }
-    const recovered = await createRuntimeResume(f.sql, ENCRYPTION_KEY, f.bridge)(f.caller, request);
+    const recover = createRuntimeResume(f.sql, ENCRYPTION_KEY, f.bridge);
+    await f.db.query("update sandboxes set activity_until='infinity' where id=$1", [f.row.id]);
+    await expect(
+      recover(f.caller, request, {
+        async canDispatch(tx) {
+          const { rows } = await (tx ?? f.sql).query(
+            "select id from public.sandboxes where id=$1 and activity_until='infinity'",
+            [f.row.id],
+          );
+          return rows.length === 1;
+        },
+        async handoffGeneration() {
+          throw new Error("An existing resume intent never advances the generation.");
+        },
+      }),
+    ).rejects.toThrow("Queued runtime turn lease is no longer current.");
+    expect(
+      (await f.db.query("select activity_until='infinity' as preserved from sandboxes where id=$1", [f.row.id])).rows,
+    ).toEqual([{ preserved: true }]);
+    const recovered = await recover(f.caller, request);
     expect((await createSqlData(f.sql)(f.caller).sandboxes.get(f.row.id))?.status).toBe("ready");
     expect(recovered.runtime.epoch).toBe("2");
     expect(activations).toBe(1);

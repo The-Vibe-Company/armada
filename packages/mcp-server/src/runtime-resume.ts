@@ -4,7 +4,7 @@ import { BoatRetentionUnconfirmed } from "@armada/provider-boat";
 import type { Caller } from "./caller.ts";
 import { createSqlData, type SandboxView } from "./data.ts";
 import { createGoldenRuntimeEnvironment } from "./golden-runtime-environment.ts";
-import type { GenerationHandoff } from "./jobs/runner.ts";
+import type { JobContext } from "./jobs/runner.ts";
 import { recordLaunchStageQuietly, recordResumeAcceptedAt } from "./launch-stage-record.ts";
 import { runtimeBridgeTarget } from "./provider-runtime-admission.ts";
 import { lockRuntimeAccount } from "./runtime-account-admission.ts";
@@ -30,8 +30,8 @@ export interface RuntimeResumeInput {
   runtimeVersion: 1;
   prompt: string;
 }
-/** Internal authority for the first wake of an exact queued send. */
-export type RuntimeWakeHandoff = (handoff: GenerationHandoff) => Promise<string>;
+/** Shared runner authority for an exact queued send. */
+export type RuntimeTurnClaim = Pick<JobContext, "canDispatch" | "handoffGeneration">;
 
 export interface RuntimeResumeReceipt {
   id: string;
@@ -96,11 +96,7 @@ export function createRuntimeResume(
         [id, request],
       )
     ).rows[0];
-  return async (
-    caller: Caller,
-    input: RuntimeResumeInput,
-    handoffWake?: RuntimeWakeHandoff,
-  ): Promise<RuntimeResumeReceipt> => {
+  return async (caller: Caller, input: RuntimeResumeInput, claim?: RuntimeTurnClaim): Promise<RuntimeResumeReceipt> => {
     refuseConversationSelector(input);
     const requestId = input.request_id.toLowerCase();
     if (input.runtimeVersion !== 1 || !uuid.test(input.id) || !uuid.test(requestId) || !input.prompt.trim())
@@ -131,7 +127,11 @@ export function createRuntimeResume(
     const pricingContext = await store.captureUsagePricingContext?.(found.id);
     const lockAccount = (tx: Sql) =>
       lockRuntimeAccount(tx, caller, found, "Pinned runtime account is no longer authorized.");
-    const firstWakeHandoff = prior ? undefined : handoffWake;
+    const assertClaim = async (tx: Sql) => {
+      if (claim && !(await claim.canDispatch(tx)))
+        throw new VaultError("conflict", "Queued runtime turn lease is no longer current.");
+    };
+    const firstWakeClaim = prior ? undefined : claim;
     const admit = async (tx: Sql) => {
       const fence = (
         await tx.query<{ tainted: boolean; lease: string | null; busy: boolean; unexpired: boolean }>(
@@ -167,9 +167,9 @@ export function createRuntimeResume(
       ).rows[0];
       const existing = await read(tx, found.id, requestId);
       if (existing) {
-        if (firstWakeHandoff)
-          throw new VaultError("conflict", "Runtime resume intent changed during queued admission.");
+        if (firstWakeClaim) throw new VaultError("conflict", "Runtime resume intent changed during queued admission.");
         if (existing.request_hash !== hash) throw new VaultError("conflict", "Resume request input changed.");
+        await assertClaim(tx);
         if (existing.receipt) return { current, op: existing, first: false };
         if (
           existing.phase !== "dispatched" ||
@@ -190,9 +190,10 @@ export function createRuntimeResume(
           activityToken: requestId,
           ...(current.lifecycleGeneration !== undefined ? { expectedGeneration: current.lifecycleGeneration } : {}),
         });
+        await assertClaim(tx);
         return { current, op: existing, first: false };
       }
-      if (handoffWake && !firstWakeHandoff) throw new VaultError("conflict", "Runtime resume intent disappeared.");
+      if (claim && !firstWakeClaim) throw new VaultError("conflict", "Runtime resume intent disappeared.");
       if (!prepare)
         throw new VaultError("unavailable", "Trusted runtime resume policy is unavailable; no compute was activated.");
       if (
@@ -268,8 +269,8 @@ export function createRuntimeResume(
       return { current: active, op, first: true };
     };
     let admission: Awaited<ReturnType<typeof admit>> | undefined;
-    if (firstWakeHandoff) {
-      await firstWakeHandoff({
+    if (firstWakeClaim) {
+      await firstWakeClaim.handoffGeneration({
         lockPrerequisites: lockAccount,
         async advance(tx, job) {
           const { payload } = job;
@@ -362,7 +363,14 @@ export function createRuntimeResume(
             // Restored disk state carries revoked epoch authority. Reauthorize before
             // inference, never on a replay of an already dispatched prompt.
             if (!admitted.first && (found.provider === "modal" || found.provider === "boat"))
-              await environment.deliver(found.provider, actor, found.id, admitted.op.target_epoch, signal);
+              await environment.deliver(
+                found.provider,
+                actor,
+                found.id,
+                admitted.op.target_epoch,
+                signal,
+                claim ? assertClaim : undefined,
+              );
             await prepareGitHub?.(caller, found.id);
             await prepareMcp?.(caller, found.id, signal);
             if (found.runtimeTransport === "dialout")
