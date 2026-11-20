@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import type { ResumeStageObserver, SandboxInfo } from "@armada/core";
 import type { Sandbox } from "modal";
 import { ModalOperationError, refusal } from "./errors.ts";
-import { observeModalCompute, snapshotModalRecoveryImage, terminateModalCompute } from "./machine.ts";
+import { observeModalCompute, stopModalCompute, terminateModalCompute } from "./machine.ts";
 import type { Machine, ModalResourceReceipt, ModalStore, RunnerDistribution } from "./ports.ts";
 import type { ModalProvider } from "./provider.ts";
 import { bootstrapModalRuntime, validateRuntimeTicket } from "./runtime-bootstrap.ts";
@@ -102,30 +102,39 @@ export function createRuntimeLifecycle({
           if (!["active", "checkpoint", "terminate"].includes(row.phase))
             throw refusal("conflict", "Snapshot outcome is unknown; retain the physical source for reconciliation.");
           const sb = await physical(row);
-          if (row.phase !== "terminate") {
-            if ((await sb.poll()) !== null) throw refusal("sandbox_not_ready", "Checkpoint source has exited.");
-            delete row.runtimeResumeGeneration;
-            row.runtimeCheckpoint = expected;
-            row.phase = "checkpoint";
-            row.info.state = "stopping";
-            await save(row);
-            if (!row.quiesced) {
-              await distribution.prepareSnapshot(sb, row);
-              row.quiesced = true;
-              await save(row);
-            }
-            row.phase = "snapshot";
-            await save(row);
-            const recoveryImageId = await snapshotModalRecoveryImage(sb);
-            if (row.recoveryImageId)
-              row.retainedRecoveryIds = [...(row.retainedRecoveryIds ?? []), row.recoveryImageId];
-            row.recoveryImageId = recoveryImageId;
-            row.phase = "terminate";
-            await save(row);
-          } else if (!row.recoveryImageId || !prior || !row.quiesced) {
+          const needsSnapshot = row.phase !== "terminate";
+          if (!needsSnapshot && (!row.recoveryImageId || !prior || !row.quiesced))
             throw refusal("conflict", "Termination lacks a retained common checkpoint.");
-          }
-          await terminateModalCompute(sb);
+          await stopModalCompute(sb, {
+            ...(needsSnapshot && {
+              checkpoint: {
+                async prepare() {
+                  if ((await sb.poll()) !== null) throw refusal("sandbox_not_ready", "Checkpoint source has exited.");
+                  delete row.runtimeResumeGeneration;
+                  row.runtimeCheckpoint = expected;
+                  row.phase = "checkpoint";
+                  row.info.state = "stopping";
+                  await save(row);
+                  if (!row.quiesced) {
+                    await distribution.prepareSnapshot(sb, row);
+                    row.quiesced = true;
+                    await save(row);
+                  }
+                },
+                async recordIntent() {
+                  row.phase = "snapshot";
+                  await save(row);
+                },
+                async recordImage(recoveryImageId) {
+                  if (row.recoveryImageId)
+                    row.retainedRecoveryIds = [...(row.retainedRecoveryIds ?? []), row.recoveryImageId];
+                  row.recoveryImageId = recoveryImageId;
+                  row.phase = "terminate";
+                  await save(row);
+                },
+              },
+            }),
+          });
           row.phase = "stopped";
           row.info.state = "stopped";
           row.info.providerState = "stopped";
