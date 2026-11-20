@@ -133,6 +133,7 @@ test.each([
   { runtime: true, outcome: "release_failed", confirmed: true },
   { runtime: false, outcome: "applied", confirmed: true },
   { runtime: false, outcome: "applied", confirmed: false },
+  { runtime: false, outcome: "stale", confirmed: true },
   { runtime: false, outcome: "changed_state", confirmed: true },
 ] as const)(
   "observed provider failure (runtime=$runtime, $outcome, exit confirmed=$confirmed)",
