@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { AgentEvent } from "@armada/core";
-import { isActiveStatus, mergeEvents, parseEventPage } from "./events.ts";
+import { applyChatPage, initialChatHistory, isActiveStatus, parseEventPage } from "./events.ts";
 
 const message = (id: string, text: string) =>
   ({
@@ -13,15 +13,54 @@ const message = (id: string, text: string) =>
   }) satisfies AgentEvent;
 
 describe("events", () => {
-  test("a page is appended once, in arrival order; an event read again keeps its place and takes the newer body", () => {
-    const first = [message("a", "one"), message("b", "tw")];
-    const merged = mergeEvents(first, [message("b", "two"), message("c", "three")]);
-    expect(merged.map((event) => [event.id, event.kind === "message" && event.text])).toEqual([
+  test("replaying conversation events updates their bodies without appending duplicates", () => {
+    const first = applyChatPage(
+      initialChatHistory,
+      { events: [message("a", "one"), message("b", "tw")], cursor: "2", hasMore: false },
+      "forward",
+    )!;
+    const replay = applyChatPage(
+      first,
+      { events: [message("b", "two"), message("c", "three")], cursor: "3", hasMore: false },
+      "forward",
+    )!;
+    expect(replay.events.map((event) => [event.id, event.kind === "message" && event.text])).toEqual([
       ["a", "one"],
       ["b", "two"],
       ["c", "three"],
     ]);
-    expect(mergeEvents(merged, [])).toEqual(merged);
+  });
+
+  test("a rejected continuation leaves the last applied cursor available for the next read", () => {
+    const first = applyChatPage(
+      initialChatHistory,
+      { events: [message("a", "one")], cursor: "1", hasMore: true },
+      "forward",
+    )!;
+    expect(
+      applyChatPage(first, { events: [message("b", "truncated")], cursor: "1", hasMore: true }, "forward"),
+    ).toBeNull();
+    expect(first.cursor).toBe("1");
+    const resumed = applyChatPage(first, { events: [message("b", "two")], cursor: "2", hasMore: false }, "forward");
+    expect(resumed).toMatchObject({ cursor: "2", events: [message("a", "one"), message("b", "two")] });
+  });
+
+  test("loading older history keeps the forward resume position and the live version of an overlapping event", () => {
+    const latest = applyChatPage(
+      initialChatHistory,
+      { events: [message("b", "live")], cursor: "2", olderCursor: "before-b", hasMore: true },
+      "latest",
+    )!;
+    const older = applyChatPage(
+      latest,
+      { events: [message("a", "first"), message("b", "old")], cursor: "1", hasMore: false },
+      "older",
+    );
+    expect(older).toMatchObject({
+      cursor: "2",
+      olderCursor: null,
+      events: [message("a", "first"), message("b", "live")],
+    });
   });
 
   test("only starting, ready, running and stopping sandboxes are polled", () => {
