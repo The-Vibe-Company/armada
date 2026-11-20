@@ -1188,6 +1188,26 @@ test("enrolled Modal forks mount the environment artifact cache read-only", asyn
   });
 });
 
+test("enrolled Modal bootstrap rejects a different physical machine before consuming the attempt", async () => {
+  const f = fixture(scope, fixtureSql, undefined, undefined, true);
+  const row = await runningFork(f);
+  const lookup = f.client.sandboxes.fromId;
+  f.client.sandboxes.fromId = async (id) => ({ ...(await lookup(id)), sandboxId: "sb_other" }) as Sandbox;
+  const execs = f.sdkCommands.length;
+
+  await expect(
+    f.provider.startRuntime({
+      sandboxId: row.id,
+      serverUrl: "https://armada.example",
+      enrolmentToken: `armada_enrol_${"a".repeat(64)}`,
+      cacheDir: "/home/user/.armada-runtime-bootstrap",
+      artifact: { sha256: "b".repeat(64), bytes: 1 },
+    }),
+  ).rejects.toMatchObject({ code: "conflict" });
+  expect(f.sdkCommands).toHaveLength(execs);
+  expect((await f.store.get(row.id)).runtimeStartAttempted).toBeUndefined();
+});
+
 test("enrolled Modal host forks never start or call the tunnel and stop without a recovery claim", async () => {
   const f = fixture(scope, fixtureSql, undefined, undefined, true);
   const row = await runningFork(f);
@@ -1206,6 +1226,8 @@ test("enrolled Modal host forks never start or call the tunnel and stop without 
     artifact: { sha256: "b".repeat(64), bytes: 1 },
   });
   const bootstrap = f.sdkCommands.at(-1);
+  expect(bootstrap?.argv.at(-1)).toContain("stdio:['pipe','ignore','ignore',9]");
+  expect(bootstrap?.argv.at(-1)).toContain("/opt/armada/artifact-cache");
   expect(JSON.stringify(bootstrap?.argv)).not.toContain(`armada_enrol_${"a".repeat(64)}`);
   expect(bootstrap?.params).toMatchObject({ env: {}, secrets: [], stderr: "ignore", stdout: "ignore" });
   expect(JSON.parse(bootstrap?.stdin[0] ?? "")).toEqual({
