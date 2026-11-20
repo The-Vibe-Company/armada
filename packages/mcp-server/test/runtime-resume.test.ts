@@ -390,6 +390,7 @@ describe.each(["boat", "modal"] as const)("queued runtime wake admission (%s)", 
     "unenrolled failure",
     "unenrolled claim loss",
     "restore admission loss",
+    "before ticket loss",
     "ticket commit loss",
     "heartbeat loss",
     "ambiguous deferral claim loss",
@@ -406,8 +407,9 @@ describe.each(["boat", "modal"] as const)("queued runtime wake admission (%s)", 
         scenario === "unenrolled failure" ||
         scenario === "unenrolled claim loss" ||
         scenario === "restore admission loss" ||
+        scenario === "before ticket loss" ||
         scenario === "ticket commit loss"
-      : scenario !== "scoped grant loss" && scenario !== "restore admission loss" && scenario !== "ticket commit loss",
+      : !["scoped grant loss", "restore admission loss", "before ticket loss", "ticket commit loss"].includes(scenario),
   );
   test.each(cases)("fences queued wake admission and publication (%s)", async (scenario) => {
     const scoped = scenario === "scoped grant loss";
@@ -459,6 +461,8 @@ describe.each(["boat", "modal"] as const)("queued runtime wake admission (%s)", 
     let replacementEpoch: string | undefined;
     let restores = 0;
     let bootstraps = 0;
+    let lostBeforeTicket = false;
+    let bootstrappedEpoch: string | undefined;
     const hasTicket = async () =>
       Boolean(
         (
@@ -476,8 +480,13 @@ describe.each(["boat", "modal"] as const)("queued runtime wake admission (%s)", 
           id: "modal",
           async stop() {},
           async get() {
-            if (restores)
+            if (restores) {
+              if (scenario === "before ticket loss" && !lostBeforeTicket) {
+                lostBeforeTicket = true;
+                await f.db.query("update jobs set lease_until='-infinity' where id=$1", [id]);
+              }
               return { state: "ready", providerState: "active", expiresAt: new Date(Date.now() + 86_400_000) };
+            }
             if (scenario === "restore admission loss")
               await f.db.query("update jobs set lease_until='-infinity' where id=$1", [id]);
             return { state: "stopped" };
@@ -485,8 +494,9 @@ describe.each(["boat", "modal"] as const)("queued runtime wake admission (%s)", 
           async resumeRuntime() {
             restores++;
           },
-          async startRuntime() {
+          async startRuntime({ enrolmentToken }: { enrolmentToken: string }) {
             bootstraps++;
+            if (scenario === "before ticket loss") bootstrappedEpoch = (await f.authority.enrol(enrolmentToken)).epoch;
             throw Error("Fixture ends at bootstrap invocation");
           },
         }) as unknown as Awaited<ReturnType<Parameters<typeof modalRuntimeResume>[0]["hostFor"]>>,
@@ -513,7 +523,7 @@ describe.each(["boat", "modal"] as const)("queued runtime wake admission (%s)", 
         generation: String(before + 1),
         intent: true,
       });
-      if (scenario === "restore admission loss" || scenario === "ticket commit loss")
+      if (["restore admission loss", "before ticket loss", "ticket commit loss"].includes(scenario))
         return modalPlacement(f.caller, sandbox);
       return {
         async start(_signal, restore, confirmActivation) {
@@ -673,6 +683,25 @@ describe.each(["boat", "modal"] as const)("queued runtime wake admission (%s)", 
       expect(preparations).toBe(1);
       expect(restores).toBe(0);
       expect(await read()).toMatchObject({ status: "starting", intent: true });
+    } else if (scenario === "before ticket loss") {
+      await expect(attempt()).rejects.toMatchObject({ code: "conflict" });
+      expect(await hasTicket()).toBe(false);
+      expect(restores).toBe(1);
+      expect(bootstraps).toBe(0);
+      await f.db.query("update jobs set generation=$2 where id=$1", [id, before]);
+      const successor = crypto.randomUUID();
+      const retry = (await store.claim("turn_dispatch", successor, 30, 1))!;
+      expect(retry.generation).toBe(String(before + 1));
+      const successorClaim = {
+        job: retry,
+        canDispatch: async (tx?: Sql) => (await store.inspect(retry, successor, tx)) === "dispatch",
+        handoffGeneration: () => Promise.reject(Error("A confirmed restore cannot advance generation again.")),
+      };
+      expect((await admitClaimedAccountTurn(f.sql, successorClaim))?.entry.request_id).toBe(request.request_id);
+      await expect(send(f.caller, request, successorClaim)).rejects.toMatchObject({ code: "conflict" });
+      expect(restores).toBe(1);
+      expect(bootstraps).toBe(1);
+      expect(bootstrappedEpoch).toBe("2");
     } else if (scenario === "ticket commit loss") {
       await expect(attempt()).rejects.toMatchObject({ code: "conflict" });
       expect(restores).toBe(1);
