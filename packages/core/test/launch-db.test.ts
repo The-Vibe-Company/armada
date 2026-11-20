@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import type { PGlite } from "@electric-sql/pglite";
 import { openMigratedDatabase } from "../../../scripts/test-support/migrated-database.ts";
+import { closeableFixture } from "../../mcp-server/test/closeable.fixture.ts";
 import {
   createSqlGoldenStore,
   createSqlSandboxStore,
@@ -16,21 +17,15 @@ import { serviceGoldenOperations } from "./support/service-golden-operations.ts"
 
 const TOKEN = "claude_database_token";
 
-let connection: PGlite | undefined;
-beforeAll(async () => {
-  connection = await openMigratedDatabase();
-});
-afterAll(async () => {
-  const db = connection;
-  connection = undefined;
-  await db?.close();
-});
+const launchDatabase = closeableFixture(openMigratedDatabase);
+beforeAll(launchDatabase.setup);
+afterAll(launchDatabase.close);
 
 describe("launch database", () => {
   test.each(["interrupted", "refused", "registered", "commit-unknown", "delete-pending", "deleted"] as const)(
     "ordinary snapshot admission remains protected across a %s fork",
     async (outcome) => {
-      const db = connection!;
+      const db = launchDatabase.get();
       const people = await fixture(db);
       const { createSqlData } = await import("../../mcp-server/src/data.ts");
       const commitLost = new Error("admission commit acknowledgement lost");
@@ -123,8 +118,7 @@ describe("launch database", () => {
   );
 
   test("sandbox interior is current owner/admin independently of source and legacy visibility", async () => {
-    const db = connection;
-    if (!db) throw new Error("Launch database fixture is not open");
+    const db = launchDatabase.get();
     try {
       const people = await fixture(db);
       const goldens = { ...createSqlGoldenStore(db), ...serviceGoldenOperations(db) };

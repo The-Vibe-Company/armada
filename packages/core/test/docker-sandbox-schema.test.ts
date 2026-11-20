@@ -1,14 +1,10 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import type { PGlite } from "@electric-sql/pglite";
 import { openMigratedDatabase } from "../../../scripts/test-support/migrated-database.ts";
+
+import { closeableFixture } from "../../mcp-server/test/closeable.fixture.ts";
 
 // The migrated database owns these storage/security contracts; no provider or API is enabled.
 describe("Docker plain-image sandbox schema", () => {
-  let connection: PGlite | undefined;
-  function database() {
-    if (!connection) throw new Error("Docker schema fixture is not open");
-    return connection;
-  }
   const org = crypto.randomUUID();
   const otherOrg = crypto.randomUUID();
   const issuer = crypto.randomUUID();
@@ -18,25 +14,29 @@ describe("Docker plain-image sandbox schema", () => {
   const installation = crypto.randomUUID();
   const image = `ubuntu@sha256:${"a".repeat(64)}`;
 
-  beforeAll(async () => {
-    connection = await openMigratedDatabase();
-    const db = database();
-    for (const id of [issuer, owner, other]) await db.query("insert into auth.users(id) values ($1)", [id]);
-    for (const id of [org, otherOrg]) await db.query("insert into orgs(id,name) values ($1,$2)", [id, `Docker ${id}`]);
-    for (const id of [issuer, owner, other]) {
-      await db.query("insert into members(org_id,user_id,role) values ($1,$2,'member')", [org, id]);
+  const fixture = closeableFixture(async () => {
+    const db = await openMigratedDatabase();
+    try {
+      for (const id of [issuer, owner, other]) await db.query("insert into auth.users(id) values ($1)", [id]);
+      for (const id of [org, otherOrg])
+        await db.query("insert into orgs(id,name) values ($1,$2)", [id, `Docker ${id}`]);
+      for (const id of [issuer, owner, other]) {
+        await db.query("insert into members(org_id,user_id,role) values ($1,$2,'member')", [org, id]);
+      }
+      await db.query(
+        `insert into docker_hosts(id,org_id,owner_id,installation_id,hash,registration_expires_at)
+         values ($1,$2,$3,$4,$5,now()-interval '1 day')`,
+        [host, org, issuer, installation, "a".repeat(64)],
+      );
+      return db;
+    } catch (error) {
+      await db.close();
+      throw error;
     }
-    await db.query(
-      `insert into docker_hosts(id,org_id,owner_id,installation_id,hash,registration_expires_at)
-       values ($1,$2,$3,$4,$5,now()-interval '1 day')`,
-      [host, org, issuer, installation, "a".repeat(64)],
-    );
   });
-  afterAll(async () => {
-    const db = connection;
-    connection = undefined;
-    await db?.close();
-  });
+  beforeAll(fixture.setup);
+  afterAll(fixture.close);
+  const database = fixture.get;
 
   function record(overrides: Record<string, unknown> = {}): Record<string, unknown> {
     const id = crypto.randomUUID();
