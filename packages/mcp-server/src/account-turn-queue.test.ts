@@ -45,12 +45,14 @@ beforeAll(async () => {
     create table mcp_actor_epochs(org_id uuid,user_id uuid,epoch bigint);
     create table sandboxes(id uuid primary key,harness text default 'codex',provider text,boat_runtime boolean,runtime_transport text,model text,reasoning_effort text,credential_id uuid,credential_version int,org_id uuid,owner_id uuid,
       conversation_ids text[],visibility text default 'private',status_reason text,preservation_note text,status text,deleted_at timestamptz,stopped_at timestamptz,stop_requested_at timestamptz,expires_at timestamptz,
-      activity_lease_id uuid,task_prompt_id text,lifecycle_generation bigint default 1,reconcile_lease_until timestamptz);
+      activity_lease_id uuid,task_prompt_id text,lifecycle_generation bigint default 1,reconcile_lease_until timestamptz,
+      docker_host_id uuid,docker_installation_id uuid,docker_generation uuid);
     create table runtime_commands(sandbox_id uuid,sequence bigint,request_id text);
     create table runtime_enrolments(sandbox_id uuid,epoch bigint);
     create table runtime_checkpoints(sandbox_id uuid,epoch bigint,merge_stop boolean);
     create table docker_host_jobs(bound_sandbox_id uuid,position bigint,request_id uuid);
-    create table docker_resume_claims(sandbox_id uuid,request_id uuid);
+    create table docker_resume_claims(sandbox_id uuid,request_id uuid,actor_id uuid,host_id uuid,
+      installation_id uuid,generation uuid,lifecycle_generation bigint,accepted boolean);
     create table runtime_resumes(sandbox_id uuid,request_id uuid);
     create table runtime_idle_turns(sandbox_id uuid,prompt_id text,settled boolean);
     create table account_agent_reservations(sandbox_id uuid primary key,account_id uuid);`);
@@ -97,7 +99,7 @@ afterAll(async () => {
 });
 beforeEach(async () => {
   await database().exec(
-    "update credentials set max_agents=1,model_limits='{}'::jsonb; delete from runtime_commands; delete from runtime_checkpoints; delete from runtime_enrolments; delete from docker_host_jobs; delete from runtime_resumes; delete from jobs; delete from account_turn_queue; delete from account_agent_reservations; delete from runtime_idle_turns; update sandboxes set status='ready',status_reason=null,task_prompt_id=null,stopped_at=null,stop_requested_at=null,lifecycle_generation=1,activity_lease_id=null,provider=null,boat_runtime=false,runtime_transport=null; update mcp_actor_epochs set epoch=1;",
+    "update credentials set max_agents=1,model_limits='{}'::jsonb; delete from runtime_commands; delete from runtime_checkpoints; delete from runtime_enrolments; delete from docker_host_jobs; delete from docker_resume_claims; delete from runtime_resumes; delete from jobs; delete from account_turn_queue; delete from account_agent_reservations; delete from runtime_idle_turns; update sandboxes set status='ready',status_reason=null,task_prompt_id=null,stopped_at=null,stop_requested_at=null,lifecycle_generation=1,activity_lease_id=null,provider=null,boat_runtime=false,runtime_transport=null; update mcp_actor_epochs set epoch=1;",
   );
 });
 
@@ -346,6 +348,56 @@ test("shared recovery returns a newly expired dispatch without intent to FIFO", 
     { state: "queued", dispatch_until: null },
   ]);
   expect((await sql.query("select sandbox_id from account_agent_reservations")).rows).toEqual([]);
+});
+
+test.each([null, true, false])("stopped Docker wake settlement follows host claim outcome %s", async (accepted) => {
+  const sandboxId = ids[0]!;
+  const requestId = requests[0]!;
+  const input = { id: sandboxId, request_id: requestId, prompt: "wake Docker" };
+  await sql.query(
+    `update sandboxes set provider='docker',status='stopped',status_reason='idle_paused',stopped_at=now(),
+       docker_host_id=$2,docker_installation_id=$3,docker_generation=$4 where id=$1`,
+    [sandboxId, ids[1], ids[2], requests[1]],
+  );
+  expect(await queue.accept(caller, input)).toMatchObject({ status: "queued" });
+  const claim = await claimTurn(requestId);
+  const admission = await admitClaimedAccountTurn(sql, claim);
+  if (!admission) throw new Error("Expected initial Docker wake admission.");
+  await dispatchAccountTurn(
+    sql,
+    btoa("x".repeat(32)),
+    admission.entry,
+    admission.caller,
+    async () => {
+      // Bootstrap commits physical intent before it can commit the bound mailbox job.
+      await sql.query(
+        `insert into docker_resume_claims
+       select id,$2,owner_id,docker_host_id,docker_installation_id,docker_generation,lifecycle_generation,$3
+       from sandboxes where id=$1`,
+        [sandboxId, requestId, accepted],
+      );
+      throw new VaultError("conflict", accepted === false ? "Workspace retention ended" : "Docker resume is pending");
+    },
+    claim,
+  );
+
+  if (accepted === false) {
+    expect(await queue.status(caller, sandboxId, requestId)).toMatchObject({ failed: true });
+    expect((await sql.query("select sandbox_id from account_agent_reservations")).rows).toEqual([]);
+    return;
+  }
+
+  expect((await sql.query("select state,dispatch_until<=now() as recoverable from account_turn_queue")).rows).toEqual([
+    { state: "dispatching", recoverable: true },
+  ]);
+  expect((await sql.query("select sandbox_id from account_agent_reservations")).rows).toEqual([
+    { sandbox_id: sandboxId },
+  ]);
+  await sql.query("update jobs set lease_until='-infinity' where id=$1", [claim.job.id]);
+  const successor = await claimTurn(requestId);
+  expect(successor.job.id).toBe(claim.job.id);
+  const replay = await admitClaimedAccountTurn(sql, successor);
+  expect(replay?.entry.request_id).toBe(requestId);
 });
 
 test("interrupted shared admission rolls back the receipt and reservation together", async () => {
