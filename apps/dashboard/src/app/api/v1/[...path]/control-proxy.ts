@@ -6,6 +6,7 @@ import {
   PUBLIC_CONTROL_ROUTES,
   sandboxCheckOperations,
   skillDefaultOperations,
+  streamSandboxEvents,
   tokenOperations,
 } from "@armada/core/contract";
 
@@ -198,12 +199,18 @@ export async function forwardControl(
   const method: ControlVerb = request.method;
   const sandboxOutputs = method === "GET" ? sandboxOutputsPath(request.url) : null;
   const relative = sandboxOutputs ?? path.join("/");
-  const downloadHeaders = new Headers();
+  const eventStream =
+    method === streamSandboxEvents.route.method && relative === controlRouteKey(streamSandboxEvents.route);
+  const forwardedHeaders = new Headers();
   if (sandboxOutputs && !sandboxOutputs.endsWith("/outputs")) {
     for (const name of ["range", "if-range"]) {
       const value = request.headers.get(name);
-      if (value) downloadHeaders.set(name, value);
+      if (value) forwardedHeaders.set(name, value);
     }
+  }
+  if (eventStream) {
+    const cursor = request.headers.get("last-event-id");
+    if (cursor) forwardedHeaders.set("last-event-id", cursor);
   }
   const sandboxDeletion =
     method === "DELETE" && path.length === 2 && path[0] === "sandboxes" && SANDBOX_ID.test(path[1] ?? "");
@@ -211,7 +218,13 @@ export async function forwardControl(
     ? (PUBLIC_CONTROL_ROUTES[relative] ?? [])
     : [];
   const isPublic = publicMethods.includes(method);
-  if (!sandboxOutputs && !sandboxDeletion && !isPublic && !(method === "POST" && PRIVATE_POST_PATHS.has(relative)))
+  if (
+    !eventStream &&
+    !sandboxOutputs &&
+    !sandboxDeletion &&
+    !isPublic &&
+    !(method === "POST" && PRIVATE_POST_PATHS.has(relative))
+  )
     return fail(404, "Not found.");
   const authorization = request.headers.get("authorization");
   if (!isPublic && !authorization) return fail(401, "Unauthorized.");
@@ -232,10 +245,10 @@ export async function forwardControl(
     response = await fetchImpl(target, {
       method,
       headers: {
-        ...Object.fromEntries(downloadHeaders),
+        ...Object.fromEntries(forwardedHeaders),
         ...(authorization ? { authorization } : {}),
         ...(method === "POST" ? { "content-type": request.headers.get("content-type") ?? "application/json" } : {}),
-        accept: "application/json",
+        accept: eventStream ? streamSandboxEvents.outputMediaType : "application/json",
       },
       ...(body ? { body } : {}),
       redirect: isPublic ? "manual" : "error",
@@ -285,7 +298,8 @@ export async function forwardControl(
     const length = response.headers.get("content-length");
     if (length && !response.headers.has("content-encoding")) headers.set("content-length", length);
   }
-  headers.set("cache-control", sandboxOutputs ? "private, no-store" : "no-store");
+  if (eventStream && response.headers.get("x-accel-buffering") === "no") headers.set("x-accel-buffering", "no");
+  headers.set("cache-control", sandboxOutputs || eventStream ? "private, no-store" : "no-store");
   return new Response(response.body, { status: response.status, headers });
 }
 
