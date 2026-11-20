@@ -33,6 +33,7 @@ export type RequestResult =
       response: Response;
       payload: unknown;
       bodyReadFailed: boolean;
+      /** Code from a structured error object. CLI route detection uses its presence. */
       rawCode?: string;
       failure?: Failure;
     };
@@ -126,10 +127,10 @@ export const requestApi: (
       !signal.aborted
     )
       continue;
-    const structuredCode =
+    const rawCode =
       error && typeof error === "object" && "code" in error && typeof error.code === "string" ? error.code : undefined;
-    const rawCode = typeof error === "string" ? error : structuredCode;
-    const code: FailureCode = rawCode && isServerFailureCode(rawCode) ? rawCode : "unknown_response";
+    const serverCode = typeof error === "string" ? error : rawCode;
+    const code: FailureCode = serverCode && isServerFailureCode(serverCode) ? serverCode : "unknown_response";
     return {
       kind: "response",
       response,
@@ -138,7 +139,7 @@ export const requestApi: (
       ...(rawCode !== undefined ? { rawCode } : {}),
       failure: {
         code,
-        serverCode: rawCode && /^[a-z][a-z0-9_]{0,99}$/.test(rawCode) ? rawCode : undefined,
+        serverCode: serverCode && /^[a-z][a-z0-9_]{0,99}$/.test(serverCode) ? serverCode : undefined,
         outcomeUnknown: !readOnly && (status >= 500 || code === "outcome_unknown"),
         retryAfterSeconds,
       },
