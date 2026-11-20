@@ -2899,69 +2899,9 @@ function accounts(route: string, body: Row, request: Request): Response {
   return json({ error: "Not found." }, 404);
 }
 
-type FixtureEventRef = ReturnType<typeof streamSandboxEvents.output.parse>;
-
-const eventRefs = new Map<string, FixtureEventRef[]>();
-const eventListeners = new Map<string, Set<(event: FixtureEventRef) => void>>();
-let eventId = 0;
-
-function recordSandboxEvent(sandboxId: string, kind: FixtureEventRef["kind"], sequence: number) {
-  const id = String(++eventId);
-  const event: FixtureEventRef = {
-    id,
-    sandboxId,
-    sequence: kind === "runtime_event" ? String(sequence) : null,
-    kind,
-    ref: kind === "runtime_event" ? String(sequence) : id,
-    createdAt: new Date().toISOString(),
-  };
-  const refs = eventRefs.get(sandboxId) ?? [];
-  refs.push(event);
-  eventRefs.set(sandboxId, refs);
-  for (const listener of eventListeners.get(sandboxId) ?? []) listener(event);
-}
-
-function fixtureEventStream(request: Request, url: URL, sandboxId: string) {
-  const cursor = Number(request.headers.get("last-event-id") ?? url.searchParams.get("cursor") ?? "0");
-  const listeners = eventListeners.get(sandboxId) ?? new Set();
-  eventListeners.set(sandboxId, listeners);
-  const encoder = new TextEncoder();
-  let unsubscribe: (() => void) | undefined;
-  const body = new ReadableStream<Uint8Array>({
-    start(controller) {
-      const send = (event: FixtureEventRef) => {
-        controller.enqueue(encoder.encode(`id: ${event.id}\ndata: ${JSON.stringify(event)}\n\n`));
-      };
-      unsubscribe = () => {
-        listeners.delete(send);
-        request.signal.removeEventListener("abort", abort);
-      };
-      const abort = () => {
-        unsubscribe?.();
-        controller.close();
-      };
-      if (request.signal.aborted) {
-        controller.close();
-        return;
-      }
-      request.signal.addEventListener("abort", abort, { once: true });
-      controller.enqueue(encoder.encode(": connected\n\n"));
-      for (const event of eventRefs.get(sandboxId) ?? []) if (Number(event.id) > cursor) send(event);
-      listeners.add(send);
-    },
-    cancel() {
-      unsubscribe?.();
-    },
-  });
-  return new Response(body, {
-    headers: { "content-type": streamSandboxEvents.outputMediaType, "cache-control": "no-store" },
-  });
-}
-
 function control(url: URL, body: Row): Response {
   if (url.pathname === "/__test/reset") {
     state = seed();
-    eventRefs.clear();
     pendingOAuth.clear();
     sessions.clear();
     goldenJobs.clear();
@@ -3141,20 +3081,7 @@ const server = Bun.serve({
     const body = text ? (JSON.parse(text) as Row) : {};
     if (url.pathname.startsWith("/auth/v1/")) return auth(request, url, body);
     if (url.pathname.startsWith("/__test/")) return control(url, body);
-    if (url.pathname === "/mcp") {
-      const message = body as unknown as RpcMessage;
-      const sandboxId = String((message.params?.arguments as Row | undefined)?.id ?? "");
-      const sandbox = state.sandboxes.find((row) => row.id === sandboxId);
-      const beforeStatus = sandbox?.status;
-      const beforeCount = state.events.get(sandboxId)?.length ?? 0;
-      const response = mcp(message, viewer(request));
-      const afterCount = state.events.get(sandboxId)?.length ?? 0;
-      if (sandbox?.status !== beforeStatus) recordSandboxEvent(sandboxId, "transition", 0);
-      for (let index = beforeCount; index < afterCount; index++) {
-        recordSandboxEvent(sandboxId, "runtime_event", index + 1);
-      }
-      return response;
-    }
+    if (url.pathname === "/mcp") return mcp(body as unknown as RpcMessage, viewer(request));
     const canonicalLaunch = url.pathname === "/api/v1/sandbox/launch";
     if (canonicalLaunch && request.method === "POST" && body.armadaAccess) {
       if (
@@ -3184,7 +3111,9 @@ const server = Bun.serve({
       const sandbox = state.sandboxes.find((row) => row.id === url.searchParams.get("sandbox"));
       if (!caller || !sandbox || !canOpenSandbox(sandbox, caller))
         return controlFail(403, "forbidden", "Sandbox events are not available to this caller.");
-      return fixtureEventStream(request, url, String(sandbox.id));
+      return new Response(": connected\n\n", {
+        headers: { "content-type": streamSandboxEvents.outputMediaType, "cache-control": "no-store" },
+      });
     }
     if (url.pathname.startsWith("/api/v1/")) {
       const route = url.pathname.slice("/api/v1/".length);
