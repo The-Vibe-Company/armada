@@ -751,19 +751,9 @@ test.each([false, true])("idle checkpoint fences Docker stop and retained restor
     "update public.runtime_commands set result_enc=$4 where sandbox_id=$1 and epoch=$2 and request_id=$3",
     [f.sandbox.id, resumed.epoch, verified.requestId, await encryptSecret(JSON.stringify(verifiedReceipt), key)],
   );
-  expect(await runtime.ready(f.actor, f.sandbox.id, verifiedId)).toEqual({ state: "pending" });
-  const retry = (await commands.next(resumed.runtimeToken, resumed.epoch)).command;
-  if (retry?.op !== "health") throw Error("missing replacement health probe");
-  expect(await runtime.ready(f.actor, f.sandbox.id, verifiedId)).toEqual({ state: "pending" });
-  expect((await commands.next(resumed.runtimeToken, resumed.epoch)).command).toEqual(retry);
-  const retryReceipt = {
-    ...verifiedReceipt,
-    requestId: retry.requestId,
-    body: { ...verifiedReceipt.body, requestId: retry.requestId },
-  };
-  await commands.complete(resumed.runtimeToken, resumed.epoch, retryReceipt);
-  expect((await reservations.get(f.actor, f.sandbox.id)).status).toBe("ready");
-  await commands.complete(resumed.runtimeToken, resumed.epoch, retryReceipt);
+  expect(await runtime.ready(f.actor, f.sandbox.id, verifiedId)).toEqual({ state: "ready", epoch: resumed.epoch });
+  expect((await commands.next(resumed.runtimeToken, resumed.epoch)).command).toBeNull();
+  await commands.complete(resumed.runtimeToken, resumed.epoch, verifiedReceipt);
   await expect(runtime.ready(f.actor, f.sandbox.id, healthId)).rejects.toThrow();
   expect(
     (

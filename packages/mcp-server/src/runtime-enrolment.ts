@@ -313,7 +313,7 @@ export function createRuntimeEnrolments(sql: Sql, encryptionKey: string, options
       if (!updated) throw new RuntimeEnrolmentDenied();
       if (
         sandbox.status === "starting" &&
-        !(await publishDockerRuntimeReadiness(tx, sandbox.id, sandbox.lifecycle_generation, "bootstrap"))
+        (await publishDockerRuntimeReadiness(tx, sandbox.id, sandbox.lifecycle_generation, "bootstrap")) === "conflict"
       )
         throw new RuntimeEnrolmentDenied();
       return { sandboxId: sandbox.id, epoch: updated.epoch, runtimeToken, configuration };
@@ -402,16 +402,17 @@ export function createRuntimeEnrolments(sql: Sql, encryptionKey: string, options
   }
 
   async function confirmDockerRestore(tx: Sql, scope: RuntimeSessionScope, generation: string, health: unknown) {
-    if (!(await dockerRestoreMatches(tx, scope, health))) return;
-    if (!(await publishDockerRuntimeReadiness(tx, scope.sandboxId, generation, "retained")))
-      throw new RuntimeEnrolmentDenied();
+    if (!(await dockerRestoreMatches(tx, scope, health))) return "unverified";
+    const publication = await publishDockerRuntimeReadiness(tx, scope.sandboxId, generation, "retained");
+    if (publication === "conflict") throw new RuntimeEnrolmentDenied();
+    return publication;
   }
 
   /** Trusted server-side command issuer/readback, under the same owner/lifecycle fence. */
   async function withOwner<T>(
     sandboxId: string,
     ownerId: string,
-    work: (tx: Sql, scope: RuntimeOwnerScope) => Promise<T>,
+    work: (tx: Sql, scope: RuntimeOwnerScope, generation: string) => Promise<T>,
     expectedLifecycleGeneration?: string,
   ) {
     return transaction(async (tx) => {
@@ -429,12 +430,16 @@ export function createRuntimeEnrolments(sql: Sql, encryptionKey: string, options
         )
       ).rows[0];
       if (!row || !supportsProtocol(row.runtime_protocol_version)) throw new RuntimeEnrolmentDenied();
-      return work(tx, {
-        sandboxId: sandbox.id,
-        epoch: row.epoch,
-        provider: sandbox.provider as NonNullable<RuntimeOwnerScope["provider"]>,
-        ...(row.command_grant_expires_at ? { commandGrantExpiresAt: row.command_grant_expires_at } : {}),
-      });
+      return work(
+        tx,
+        {
+          sandboxId: sandbox.id,
+          epoch: row.epoch,
+          provider: sandbox.provider as NonNullable<RuntimeOwnerScope["provider"]>,
+          ...(row.command_grant_expires_at ? { commandGrantExpiresAt: row.command_grant_expires_at } : {}),
+        },
+        sandbox.lifecycle_generation,
+      );
     });
   }
   const route: Route = async (request) => {
@@ -467,7 +472,6 @@ export function createRuntimeEnrolments(sql: Sql, encryptionKey: string, options
     withBootstrap,
     withSession,
     withOwner,
-    dockerRestoreMatches,
     confirmDockerRestore,
     lockSourceMembers,
     route,

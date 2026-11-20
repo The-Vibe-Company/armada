@@ -264,7 +264,7 @@ export async function publishDockerRuntimeReadiness(
      ))`,
     [sandboxId, enrolment === "retained", generation],
   );
-  if (!starting) return true;
+  if (!starting) return "skipped";
   const transition = await transitionSandbox(tx, {
     sandboxId,
     expectedGeneration: generation,
@@ -274,7 +274,7 @@ export async function publishDockerRuntimeReadiness(
     code: "runtime_enrolled",
     effects: [],
   });
-  return transition.kind === "applied";
+  return transition.kind;
 }
 
 export async function finishLaunchSuccess(

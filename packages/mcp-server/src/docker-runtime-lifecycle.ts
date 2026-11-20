@@ -46,6 +46,7 @@ export function createDockerRuntimeLifecycle(sql: Sql, key: string, options: { e
       authority: ReturnType<typeof createRuntimeEnrolments>,
       sandbox: Awaited<ReturnType<ReturnType<typeof createDockerSandboxService>["get"]>>,
       epoch: string,
+      generation: string,
     ) => Promise<T>,
     allowPending = false,
     reserveTurn = false,
@@ -107,11 +108,11 @@ export function createDockerRuntimeLifecycle(sql: Sql, key: string, options: { e
         );
         if (pending.rows.length) return { state: "pending" as const };
       }
-      return authority.withOwner(sandboxId, actor.userId, async (_fenced, scope) => {
+      return authority.withOwner(sandboxId, actor.userId, async (_fenced, scope, generation) => {
         const current = await createDockerSandboxService(scoped, key).get(actor, sandboxId);
         if (JSON.stringify(current) !== JSON.stringify(snapshot)) deny();
         await assertClaim?.(scoped);
-        const result = await work(scoped, authority, current, scope.epoch);
+        const result = await work(scoped, authority, current, scope.epoch, generation);
         await assertClaim?.(scoped);
         return result;
       });
@@ -129,34 +130,16 @@ export function createDockerRuntimeLifecycle(sql: Sql, key: string, options: { e
       return admitted(
         actor,
         sandboxId,
-        async (tx, authority, sandbox, epoch) => {
-          const probeId = `docker_ready_${requestId}`;
-          const {
-            rows: [latest],
-          } = await tx.query<{ request_id: string; sequence: string }>(
-            `select request_id,sequence::text from public.runtime_commands
-             where sandbox_id=$1 and epoch=$2 and (request_id=$3 or starts_with(request_id,$3 || '_'))
-             order by sequence desc limit 1`,
-            [sandboxId, epoch, probeId],
-          );
+        async (tx, authority, sandbox, epoch, generation) => {
+          const id = `docker_ready_${requestId}`;
           const commands = createRuntimeCommands(authority, key);
-          const enqueue = (id: string) =>
-            commands.enqueue(actor.userId, { version: 1, requestId: id, sandboxId, op: "health" }, epoch);
-          if (!latest) {
-            await enqueue(probeId);
-            return { state: "pending" as const };
-          }
-          const id = latest.request_id;
+          await commands.enqueue(actor.userId, { version: 1, requestId: id, sandboxId, op: "health" }, epoch);
           const response = await commands.result(actor.userId, sandboxId, id, epoch);
           if (response.state === "pending") return { state: "pending" as const };
           if (response.state !== "finished") deny();
           const health = readRuntimeCommandSuccess(response.reply, epoch, id);
-          if (!(await authority.dockerRestoreMatches(tx, { sandboxId, epoch }, health))) deny();
-          if (sandbox.status === "starting") {
-            await enqueue(`${probeId}_${latest.sequence}`);
-            return { state: "pending" as const };
-          }
-          if (!["ready", "running"].includes(sandbox.status)) deny();
+          const publication = await authority.confirmDockerRestore(tx, { sandboxId, epoch }, generation, health);
+          if (publication === "unverified" || (sandbox.status === "starting" && publication !== "applied")) deny();
           return { state: "ready" as const, epoch };
         },
         true,
