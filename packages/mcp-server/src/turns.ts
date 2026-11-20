@@ -304,33 +304,40 @@ export async function readStatus(
     isSandboxProvider(sandbox.provider) &&
     ((next === "stopped" && info.state === "stopped") || (next === "failed" && info.physicalExitConfirmed === true));
   if (next !== sandbox.status || reason !== sandbox.statusReason || (nativeExit && sandbox.stoppedAt === null)) {
+    const nativeDiagnostic = !runtime && isSandboxProvider(sandbox.provider) && !nativeExit && next === sandbox.status;
     const patch: ServerSandboxPatch = {
-      status: next,
       statusReason: reason,
       ...(sandbox.lifecycleGeneration === undefined ? {} : { expectedGeneration: sandbox.lifecycleGeneration }),
     };
-    if (next === "failed" && info.physicalExitConfirmed) {
-      patch.stoppedAt = (info.stoppedAt ?? options.now).toISOString();
-    } else if (next === "stopped") {
-      patch.stoppedAt = (info.stoppedAt ?? options.now).toISOString();
-    } else if (sandbox.stoppedAt !== null && next !== "failed") patch.stoppedAt = null;
-    if (
-      nativeExit ||
-      (!runtime && isSandboxProvider(sandbox.provider) && (next === "starting" || next === "stopping")) ||
-      (!runtime && isSandboxProvider(sandbox.provider) && sandbox.status === "stopped" && next === "failed") ||
-      ((sandbox.status === "ready" || sandbox.status === "running") && (next === "stopped" || next === "failed")) ||
-      (!runtime &&
-        (sandbox.status === "stopped" ||
-          sandbox.status === "failed" ||
-          sandbox.status === "ready" ||
-          sandbox.status === "running") &&
-        next !== sandbox.status &&
-        (next === "ready" || next === "running"))
-    )
-      patch.providerObservation = {
-        fromState: sandbox.status,
-        ...(runtime ? {} : { providerRunPlacement: sandbox.providerSandboxId }),
+    if (nativeDiagnostic) {
+      patch.nativeDiagnostic = {
+        state: sandbox.status,
+        placement: sandbox.providerSandboxId,
+        previousReason: sandbox.statusReason,
       };
+    } else {
+      patch.status = next;
+      if (next === "stopped" || (next === "failed" && info.physicalExitConfirmed)) {
+        patch.stoppedAt = (info.stoppedAt ?? options.now).toISOString();
+      } else if (sandbox.stoppedAt !== null && next !== "failed") patch.stoppedAt = null;
+      if (
+        nativeExit ||
+        (!runtime && isSandboxProvider(sandbox.provider) && (next === "starting" || next === "stopping")) ||
+        (!runtime && isSandboxProvider(sandbox.provider) && sandbox.status === "stopped" && next === "failed") ||
+        ((sandbox.status === "ready" || sandbox.status === "running") && (next === "stopped" || next === "failed")) ||
+        (!runtime &&
+          (sandbox.status === "stopped" ||
+            sandbox.status === "failed" ||
+            sandbox.status === "ready" ||
+            sandbox.status === "running") &&
+          next !== sandbox.status &&
+          (next === "ready" || next === "running"))
+      )
+        patch.providerObservation = {
+          fromState: sandbox.status,
+          ...(runtime ? {} : { providerRunPlacement: sandbox.providerSandboxId }),
+        };
+    }
     try {
       await store.update(sandbox.id, patch);
     } catch (error) {
