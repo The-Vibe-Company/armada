@@ -40,7 +40,7 @@ import type { Caller } from "./caller.ts";
 import { scopedOrg } from "./control-caller.ts";
 import { createResourceStore, type ResourceStore } from "./resource-store.ts";
 import { unsettledRuntimeCommands } from "./runtime-idle-evidence.ts";
-import { finishEnrolledRuntimeReadiness, recordObservedRuntimeState, settleRuntimeTurn } from "./sandbox-lifecycle.ts";
+import { finishEnrolledRuntimeLaunch, recordObservedRuntimeState, settleRuntimeTurn } from "./sandbox-lifecycle.ts";
 import { SANDBOX_MEMBER, SANDBOX_VISIBLE } from "./sandbox-visibility.ts";
 import { admittedTurnContexts, stampTurnPricing, withServerCost } from "./turn-pricing.ts";
 import { preserveBeforeStop, readWorkRecovery, type StopAuthority } from "./work-preservation.ts";
@@ -778,16 +778,20 @@ export function createSqlData(
             throw new DataError("Runtime state observation is stale.", "sandbox_not_ready");
           return;
         }
+        const initialPrompt =
+          patch.status === "running" && patch.taskPromptId && patch.conversationIds
+            ? { promptId: patch.taskPromptId, conversationIds: patch.conversationIds }
+            : undefined;
         if (
           patch.finishActivity &&
-          patch.status === "ready" &&
+          (patch.status === "ready" || initialPrompt) &&
           patch.expectedGeneration !== undefined &&
           patch.activityToken
         ) {
           if (!sql.transaction) throw new Error("Runtime readiness publication requires a transaction.");
           const { expectedGeneration, activityToken } = patch;
           const outcome = await sql.transaction((tx) =>
-            finishEnrolledRuntimeReadiness(tx, scope, id, expectedGeneration, activityToken),
+            finishEnrolledRuntimeLaunch(tx, scope, id, expectedGeneration, activityToken, initialPrompt),
           );
           if (outcome === "applied") return;
           if (outcome === "conflict")
