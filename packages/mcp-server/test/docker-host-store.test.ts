@@ -777,6 +777,39 @@ test("authenticated restore expiry settles the exact starting generation before 
   ]);
 });
 
+test("authenticated restore expiry settles the attached replacement once", async () => {
+  const a = await restoreFixture();
+  const {
+    rows: [claim],
+  } = await database().query<Job>(
+    `update jobs set state='leased',lease_owner=$2,lease_epoch=1,lease_until='infinity',attempts=1
+     where id=$1 returning id,sandbox_id,generation::text,lease_epoch::text`,
+    [a.selection.runnerJobId, randomUUID()],
+  );
+  if (!claim) throw new Error("Missing fixture runner claim.");
+  const expiry = { requestId: a.restore.requestId };
+  expect(await a.poll()).toEqual(a.restore);
+  await store.complete(a.hostToken, a.installationId, { ...expiry, outcome: "completed" });
+  await store.attachMachineRestore(a.owner, claim, expiry.requestId);
+
+  const interrupted = failDockerObservationCommit(a.sandboxId, "docker_expiry_observed");
+  await expect(interrupted.faultingStore.expired(a.hostToken, a.installationId, expiry)).rejects.toMatchObject({
+    cause: interrupted.failure,
+  });
+  expect(await lifecycle(a.sandboxId)).toMatchObject({ status: "starting", lifecycle_generation: "2" });
+
+  await store.expired(a.hostToken, a.installationId, expiry);
+  await store.expired(a.hostToken, a.installationId, expiry);
+  expect(await lifecycle(a.sandboxId)).toMatchObject({
+    status: "stopped",
+    status_reason: "expired",
+    lifecycle_generation: "3",
+  });
+  expect(await dockerJournal(a.sandboxId, "docker_expiry_observed")).toEqual([
+    { from_status: "starting", to_status: "stopped", generation: "3" },
+  ]);
+});
+
 test("an expired pre-handoff restore settles the output probe without reading an archive", async () => {
   const a = await restoreFixture();
   await a.poll();
