@@ -77,7 +77,7 @@ const API: Record<string, unknown> = {
 const SESSION = [
   ["snapshot", "list"],
   [
-    "launch",
+    "new",
     "widgets",
     "--provider",
     "boat",
