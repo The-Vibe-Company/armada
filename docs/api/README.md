@@ -45,7 +45,14 @@ for example `armada launch review --provider modal --agent codex --json`.
 Read the sandbox ID, provider and status from `sandbox.id`, `sandbox.provider`
 and `sandbox.status`. For Boat and Modal, read the snapshot name from
 `golden.name`. Docker returns `golden: null` even when the launch uses a Docker
-snapshot. Pinned template requests return a durable template receipt.
+snapshot. A successful pinned-template request to `sandbox/launch` includes
+`sandbox.templateManifest` in the same envelope. The separate
+`templates/launch` operation returns a durable template receipt.
+
+The request can select a model account with `credentialId`. The selected
+account's simultaneous-agent limit applies across sandbox providers. For Morph
+account setup, model selection and the default limit, see
+[Morph model accounts](../morph.md).
 
 Omit `prompt` to launch without starting a turn. The first
 `sandbox/send` then opens the conversation. Save the returned Armada
@@ -248,8 +255,9 @@ this order:
    `armada bind-credential SANDBOX_UUID --credential-id ACCOUNT_UUID`, or
    `POST /api/v1/sandbox/bind-credential` with
    `{"id":"<sandbox UUID>","credentialId":"<account UUID>"}`. Replace the UUID
-   placeholders with the sandbox and model account IDs. The workspace and
-   conversations are retained.
+   placeholders with the sandbox and model account IDs. Stop the sandbox
+   safely and let lifecycle reconciliation finish before binding. Binding
+   retains the workspace and conversations without starting the sandbox.
 3. HTTP 409 `sandbox_terminal` when the sandbox cannot take a send in its
    current state: it has expired, failed or been deleted, or it is stopped and
    a send cannot resume it. Stopped Boat and Modal sandboxes resume on send
