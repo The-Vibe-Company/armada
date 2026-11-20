@@ -1,7 +1,10 @@
 import { expect, mock, spyOn, test } from "bun:test";
+import { createMemoryAuthStore, generateToken, sha256Hex } from "@armada/auth";
 import type { AgentEvent } from "@armada/core";
+import { streamSandboxEvents } from "@armada/core/contract";
 import * as coreServer from "@armada/core/server";
 import { createUsagePricingContext, decryptSecret, encryptSecret } from "@armada/core/server";
+import { type ControlOptions, handleControlRequest } from "../src/control.ts";
 import { createSqlData } from "../src/data.ts";
 import { createEventFeed } from "../src/event-feed.ts";
 import { createJobsStore } from "../src/jobs/store.ts";
@@ -9,6 +12,7 @@ import { createOutboundWebhooks } from "../src/outbound-webhooks.ts";
 import { createRuntimeEnrolments } from "../src/runtime-enrolment.ts";
 import { createRuntimeEvents } from "../src/runtime-events.ts";
 import { createRuntimeIdle } from "../src/runtime-idle.ts";
+import { createServerRequestDrain } from "../src/server-request-drain.ts";
 import { sqlOver } from "../src/sql.ts";
 import { eventFeedWakeKey, runtimeWakes } from "../src/wake-bus.ts";
 import { rowOnlyDatabase } from "./row-only-database.ts";
@@ -1331,6 +1335,143 @@ test("runtime ingest wakes the authorized event feed after commit and suppresses
     expect(notifications).toBe(1);
   } finally {
     close();
+    await f.close();
+  }
+});
+
+test("runtime batches survive a deploy handover exactly once in event_log and the resumed SSE stream", async () => {
+  const f = await fixture();
+  const authStore = createMemoryAuthStore();
+  const owner = generateToken("service");
+  authStore.addMembership(f.people.owner, { orgId: f.people.org, name: "Example", role: "member" });
+  await authStore.insertToken("service", {
+    userId: f.people.owner,
+    orgId: f.people.org,
+    hash: await sha256Hex(owner),
+    label: "test",
+    createdAt: new Date().toISOString(),
+  });
+  const active = await f.enrol();
+  const promptId = crypto.randomUUID();
+  await f.db.query("update sandboxes set status='running',task_prompt_id=$2 where id=$1", [f.id, promptId]);
+
+  const admitted = Promise.withResolvers<void>();
+  const releaseBatch = Promise.withResolvers<void>();
+  function replica() {
+    let holdBatch = false;
+    const shutdown = new AbortController();
+    const ingest = createRuntimeEvents(createRuntimeEnrolments(f.sql, ENCRYPTION_KEY), ENCRYPTION_KEY).route;
+    const control: ControlOptions = {
+      authStore,
+      supabase: { supabaseUrl: "https://example.test", anonKey: "placeholder" },
+      encryptionKey: undefined,
+      store: {} as ControlOptions["store"],
+      eventFeed: createEventFeed(f.sql, new coreServer.DelegatedAuthority(f.sql, async () => {})),
+      eventStreamShutdown: shutdown.signal,
+    };
+    const requests = createServerRequestDrain(async (request) => {
+      if (holdBatch && request.method === "POST") {
+        admitted.resolve();
+        await releaseBatch.promise;
+      }
+      const response = (await ingest(request)) ?? (await handleControlRequest(request, control));
+      if (!response) throw new Error("Unexpected handover request");
+      return response;
+    });
+    return {
+      fetch: requests.fetch,
+      holdNextBatch() {
+        holdBatch = true;
+      },
+      drain() {
+        requests.beginDrain();
+        shutdown.abort();
+      },
+    };
+  }
+
+  const post = (...sequences: number[]) =>
+    new Request("https://example.test/api/runtime/events", {
+      method: "POST",
+      headers: { authorization: `Bearer ${active.runtimeToken}`, "x-armada-runtime-epoch": active.epoch },
+      body: JSON.stringify({
+        sandboxId: f.id,
+        generation: active.epoch,
+        events: sequences.map((sequence) => ({
+          sequence,
+          event: { ...f.other(`event-${sequence}`), promptId },
+        })),
+      }),
+    });
+  const subscribe = (cursor?: string) =>
+    new Request(`https://example.test/api/v1/events?sandbox=${f.id}`, {
+      headers: { authorization: `Bearer ${owner}`, ...(cursor ? { "Last-Event-ID": cursor } : {}) },
+    });
+  function readFrames(chunk: Uint8Array | undefined) {
+    return new TextDecoder()
+      .decode(chunk)
+      .trimEnd()
+      .split("\n\n")
+      .map((frame) => {
+        const [id, data] = frame.split("\n");
+        const event = streamSandboxEvents.output.parse(JSON.parse(data!.slice(6)));
+        expect(id).toBe(`id: ${event.id}`);
+        return event;
+      });
+  }
+
+  const eventLog = async () =>
+    (
+      await f.db.query<{ id: string; sequence: string }>(
+        "select id::text,sequence::text from event_log where sandbox_id=$1 and kind='runtime_event' order by id::bigint",
+        [f.id],
+      )
+    ).rows;
+
+  const original = replica();
+  const replacement = replica();
+  try {
+    expect(await (await original.fetch(post(1, 2))).json()).toEqual({ acknowledgedSequence: 2 });
+    const before = (await original.fetch(subscribe())).body!.getReader();
+    const firstPage = readFrames((await before.read()).value);
+
+    // Let the admitted batch finish on A during drain, then retry it on B without using A's ACK.
+    original.holdNextBatch();
+    const inFlight = Promise.resolve(original.fetch(post(3, 4)));
+    try {
+      await Promise.race([
+        admitted.promise,
+        inFlight.then((response) => {
+          throw new Error(`Batch did not reach the admission barrier (HTTP ${response.status})`);
+        }),
+      ]);
+      original.drain();
+      expect((await before.read()).done).toBe(true);
+      const refused = await original.fetch(post(3, 4, 5, 6));
+      expect(refused.status).toBe(503);
+      await refused.body?.cancel();
+      releaseBatch.resolve();
+      await (await inFlight).body?.cancel();
+      expect((await eventLog()).map(({ sequence }) => sequence)).toEqual(["1", "2", "3", "4"]);
+      expect(await (await replacement.fetch(post(3, 4, 5, 6))).json()).toEqual({ acknowledgedSequence: 6 });
+
+      const resumed = (await replacement.fetch(subscribe(firstPage.at(-1)!.id))).body!.getReader();
+      try {
+        const received = [...firstPage, ...readFrames((await resumed.read()).value)];
+        const rows = await eventLog();
+        expect(rows.map(({ sequence }) => sequence)).toEqual(["1", "2", "3", "4", "5", "6"]);
+        expect(received.map(({ id, sequence }) => ({ id, sequence }))).toEqual(rows);
+      } finally {
+        await resumed.cancel();
+      }
+    } finally {
+      releaseBatch.resolve();
+      const response = await inFlight;
+      if (!response.bodyUsed) await response.body?.cancel();
+    }
+  } finally {
+    original.drain();
+    replacement.drain();
     await f.close();
   }
 });
