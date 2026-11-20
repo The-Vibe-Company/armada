@@ -641,7 +641,6 @@ export async function finishLaunchFailure(
     [...scope, sandboxId, generation, activityToken],
   );
   if (!sandbox) return false;
-  // Runtime progress may have already published the failure for this launch.
   if (sandbox.status === "failed") return true;
   const result = await recordRuntimeStartupFailure(tx, sandboxId, sandbox.generation, "launch_failed", message);
   if (result.kind === "conflict") throw new Error("Locked launch failure could not transition.");
