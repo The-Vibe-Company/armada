@@ -234,3 +234,12 @@ test.each(["intact", "tampered", "incomplete artifact"])("npm verifies tarballs 
     rmSync(directory, { recursive: true, force: true });
   }
 });
+
+test("candidate configuration failure blocks production migrations", () => {
+  const steps = workflow.jobs.production?.steps ?? [];
+  const validate = steps.findIndex((step) => step.name === "Validate candidate server configuration before migrations");
+  const deploy = steps.findIndex((step) => step.run?.includes("/deploy-production.sh"));
+  expect(validate).toBeGreaterThanOrEqual(0);
+  expect(deploy).toBeGreaterThan(validate);
+  expect(steps[validate]?.["continue-on-error"]).not.toBe(true);
+});

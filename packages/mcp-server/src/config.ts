@@ -1,5 +1,6 @@
-import { resourceUrl } from "@armada/auth";
+import { assertSupabaseUrl, resourceUrl } from "@armada/auth";
 import { DEFAULT_SANDBOX_EXTENSION_HEADROOM_SECONDS, PROVIDER_LIMITS, SANDBOX_STOP_MARGIN_SECONDS } from "@armada/core";
+import { ServerConfigError } from "./server-config-error.ts";
 
 export interface ServerConfig {
   boatAgentPath: "native" | "runtime";
@@ -42,7 +43,9 @@ export function dashboardOrigin(value: string = DEFAULT_DASHBOARD_URL, developme
       throw new Error();
     return url.origin;
   } catch {
-    throw new Error("ARMADA_DASHBOARD_URL must be an HTTPS origin without credentials, path, query or fragment.");
+    throw new ServerConfigError(
+      "ARMADA_DASHBOARD_URL must be an HTTPS origin without credentials, path, query or fragment.",
+    );
   }
 }
 
@@ -65,31 +68,52 @@ function checkEncryptionKey(base64Key: string): void {
   try {
     length = Uint8Array.from(atob(base64Key.trim()), (char) => char.charCodeAt(0)).length;
   } catch {
-    throw new Error("ARMADA_ENCRYPTION_KEY is not valid base64.");
+    throw new ServerConfigError("ARMADA_ENCRYPTION_KEY is not valid base64.");
   }
-  if (length !== KEY_BYTES) throw new Error(`ARMADA_ENCRYPTION_KEY must be ${KEY_BYTES} bytes in base64.`);
+  if (length !== KEY_BYTES) throw new ServerConfigError(`ARMADA_ENCRYPTION_KEY must be ${KEY_BYTES} bytes in base64.`);
 }
 
 /** Main pool only; one additional autonomous connection is budgeted separately. */
 export function databasePoolMax(value: string | undefined): number {
   if (value === undefined) return 3;
-  if (!/^[0-9]+$/.test(value.trim())) throw new Error("ARMADA_DATABASE_POOL_MAX must be an integer >= 2.");
+  if (!/^[0-9]+$/.test(value.trim())) throw new ServerConfigError("ARMADA_DATABASE_POOL_MAX must be an integer >= 2.");
   const max = Number(value);
-  if (!Number.isSafeInteger(max) || max < 2) throw new Error("ARMADA_DATABASE_POOL_MAX must be an integer >= 2.");
+  if (!Number.isSafeInteger(max) || max < 2)
+    throw new ServerConfigError("ARMADA_DATABASE_POOL_MAX must be an integer >= 2.");
   return max;
 }
 
 /** Reads and checks the server's environment. Messages name a variable, never its value. */
 export function configFromEnv(env: Record<string, string | undefined>): ServerConfig {
   const missing = REQUIRED.filter((name) => !env[name]?.trim());
-  if (missing.length > 0) throw new Error(`Set ${missing.join(", ")}.`);
+  if (missing.length > 0) throw new ServerConfigError(`Set ${missing.join(", ")}.`);
   const value = (name: (typeof REQUIRED)[number]) => (env[name] ?? "").trim();
 
   const port = env.PORT?.trim() ? Number(env.PORT) : DEFAULT_PORT;
-  if (!Number.isInteger(port) || port < 1 || port > 65_535) throw new Error("PORT must be a TCP port number.");
-  if (value("ARMADA_AUTH_SECRET").length < 16) throw new Error("ARMADA_AUTH_SECRET must be at least 16 characters.");
+  if (!Number.isInteger(port) || port < 1 || port > 65_535)
+    throw new ServerConfigError("PORT must be a TCP port number.");
+  if (value("ARMADA_AUTH_SECRET").length < 16)
+    throw new ServerConfigError("ARMADA_AUTH_SECRET must be at least 16 characters.");
   checkEncryptionKey(value("ARMADA_ENCRYPTION_KEY"));
-  const publicUrl = new URL(resourceUrl(value("ARMADA_PUBLIC_URL"))).origin;
+  let publicUrl: string;
+  let supabaseUrl: string;
+  const databaseUrl = value("ARMADA_DATABASE_URL");
+  try {
+    publicUrl = new URL(resourceUrl(value("ARMADA_PUBLIC_URL"))).origin;
+  } catch {
+    throw new ServerConfigError("ARMADA_PUBLIC_URL must be an origin.");
+  }
+  try {
+    supabaseUrl = assertSupabaseUrl(value("SUPABASE_URL"));
+  } catch {
+    throw new ServerConfigError("SUPABASE_URL must be an HTTPS origin.");
+  }
+  try {
+    const database = new URL(databaseUrl);
+    if (!["postgres:", "postgresql:"].includes(database.protocol) || !database.hostname) throw new Error();
+  } catch {
+    throw new ServerConfigError("ARMADA_DATABASE_URL must be a PostgreSQL URL with a hostname.");
+  }
   const sandboxExtensionHeadroomSeconds = env.ARMADA_SANDBOX_EXTENSION_HEADROOM_SECONDS?.trim()
     ? Number(env.ARMADA_SANDBOX_EXTENSION_HEADROOM_SECONDS)
     : DEFAULT_SANDBOX_EXTENSION_HEADROOM_SECONDS;
@@ -98,17 +122,19 @@ export function configFromEnv(env: Record<string, string | undefined>): ServerCo
     sandboxExtensionHeadroomSeconds < 0 ||
     sandboxExtensionHeadroomSeconds > PROVIDER_LIMITS.modal.maxTtlSeconds - SANDBOX_STOP_MARGIN_SECONDS
   )
-    throw new Error(
+    throw new ServerConfigError(
       "ARMADA_SANDBOX_EXTENSION_HEADROOM_SECONDS must be a non-negative whole number within the Modal lifetime limit minus stop margin.",
     );
   const boatAgentPath = env.ARMADA_BOAT_AGENT_PATH ?? "native";
   if (boatAgentPath !== "native" && boatAgentPath !== "runtime")
-    throw Error("ARMADA_BOAT_AGENT_PATH must be native or runtime.");
+    throw new ServerConfigError("ARMADA_BOAT_AGENT_PATH must be native or runtime.");
   const modalAgentPath = env.ARMADA_MODAL_AGENT_PATH ?? "runtime";
   if (modalAgentPath !== "native" && modalAgentPath !== "runtime")
-    throw Error("ARMADA_MODAL_AGENT_PATH must be native or runtime.");
+    throw new ServerConfigError("ARMADA_MODAL_AGENT_PATH must be native or runtime.");
   if (modalAgentPath === "runtime" && (env.ARMADA_MODAL_DIALOUT !== "1" || !env.ARMADA_MODAL_RUNTIME_MANIFEST?.trim()))
-    throw Error("ARMADA_MODAL_AGENT_PATH=runtime requires ARMADA_MODAL_DIALOUT=1 and ARMADA_MODAL_RUNTIME_MANIFEST.");
+    throw new ServerConfigError(
+      "ARMADA_MODAL_AGENT_PATH=runtime requires ARMADA_MODAL_DIALOUT=1 and ARMADA_MODAL_RUNTIME_MANIFEST.",
+    );
   const development = env.NODE_ENV === "development";
 
   return {
@@ -118,14 +144,14 @@ export function configFromEnv(env: Record<string, string | undefined>): ServerCo
     port,
     githubRuntimeEnabled: env.ARMADA_GITHUB_RUNTIME_ENABLED === "true",
     githubLegacyAutoPrepareEnabled: env.ARMADA_GITHUB_LEGACY_AUTO_PREPARE_ENABLED === "true",
-    supabaseUrl: value("SUPABASE_URL").replace(/\/+$/, ""),
+    supabaseUrl,
     anonKey: value("SUPABASE_ANON_KEY"),
     authSecret: value("ARMADA_AUTH_SECRET"),
     publicUrl,
     dashboardUrl: dashboardOrigin(env.ARMADA_DASHBOARD_URL?.trim() || undefined, development),
     development,
     encryptionKey: value("ARMADA_ENCRYPTION_KEY"),
-    databaseUrl: value("ARMADA_DATABASE_URL"),
+    databaseUrl,
     databasePoolMax: databasePoolMax(env.ARMADA_DATABASE_POOL_MAX),
   };
 }

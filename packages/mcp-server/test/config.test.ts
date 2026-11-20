@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { configFromEnv, dashboardOrigin } from "../src/config.ts";
+import { readStartupConfiguration } from "../src/startup-configuration.ts";
 import { ENCRYPTION_KEY } from "./support.ts";
 
 const ENV = {
@@ -149,4 +150,34 @@ describe("config", () => {
     expect(() => configFromEnv({ ...ENV, ARMADA_PUBLIC_URL: "http://armada.example.com/x" })).toThrow(/origin/);
     expect(() => configFromEnv({ ...ENV, PORT: "http" })).toThrow(/PORT/);
   });
+});
+
+test.each([
+  ["SUPABASE_URL", "https://example.com/private-path"],
+  ["ARMADA_DATABASE_URL", "https://example.com"],
+])("rejects an invalid startup URL for %s without including its value", (name, value) => {
+  try {
+    configFromEnv({ ...ENV, [name]: value });
+  } catch (error) {
+    expect(String(error)).toContain(name);
+    expect(String(error)).not.toContain(value);
+    return;
+  }
+  throw new Error(`Expected startup to reject ${name}`);
+});
+
+test.each([
+  ["ARMADA_BOAT_RUNTIME_MANIFEST", { ARMADA_BOAT_AGENT_PATH: "runtime" }],
+  ["ARMADA_MODAL_RUNTIME_MANIFEST", { ARMADA_MODAL_DIALOUT: "1" }],
+  ["ARMADA_DOCKER_RUNTIME_MANIFEST", { ARMADA_DOCKER_HOSTS: "1", ARMADA_DOCKER_PLACEMENT: "1" }],
+] as const)("rejects an unusable %s when startup needs it", async (name, settings) => {
+  await expect(
+    readStartupConfiguration({
+      ...ENV,
+      ARMADA_MODAL_AGENT_PATH: "native",
+      ARMADA_MODAL_DIALOUT: undefined,
+      ...settings,
+      [name]: "/nonexistent/manifest.json",
+    }),
+  ).rejects.toThrow(name);
 });
