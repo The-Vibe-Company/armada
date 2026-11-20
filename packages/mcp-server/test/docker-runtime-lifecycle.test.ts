@@ -853,7 +853,7 @@ test("rebound Docker usage has its epoch's admitted prices before the accepted p
   expect(admitted?.pricing_context.credentialId).toBe(selected);
 });
 
-test("a queued Docker send resumes the exact host job and fences wake readiness", async () => {
+test("a queued Docker send resumes the exact host job and fences health enqueue and send", async () => {
   const f = await fixture();
   await ready(f);
   const stopId = randomUUID();
@@ -930,17 +930,17 @@ test("a queued Docker send resumes the exact host job and fences wake readiness"
     resume: bootstrap,
     send: createDockerNormalSend(sql, key, { enabled: true, dispatchQueued: true, clock }),
   });
-  const healthId = `docker_health_${input.request_id}`;
+  const healthId = `docker_ready_${input.request_id}`;
   const wakeHealth = (tx: Sql) =>
     tx.query("select 1 from public.runtime_commands where sandbox_id=$1 and request_id=$2", [input.id, healthId]);
-  let loseAt: "health enqueue" | "readiness" | undefined = "health enqueue";
+  let loseAt: "health enqueue" | "dispatch" | undefined = "health enqueue";
   const claim = {
     handoffGeneration: (handoff: Parameters<typeof store.handoffGeneration>[2]) =>
       store.handoffGeneration(job, owner, handoff),
     async canDispatch(tx?: Sql) {
       if (tx && session) {
         if (loseAt === "health enqueue" && (await wakeHealth(tx)).rows.length) return false;
-        if (loseAt === "readiness") {
+        if (loseAt === "dispatch") {
           const { rows } = await tx.query("select id from public.sandboxes where id=$1 and status='ready'", [input.id]);
           if (rows.length) return false;
         }
@@ -953,11 +953,11 @@ test("a queued Docker send resumes the exact host job and fences wake readiness"
   );
   expect((await reservations.get(f.actor, input.id)).status).toBe("starting");
   expect((await wakeHealth(sql)).rows).toHaveLength(0);
-  loseAt = "readiness";
+  loseAt = "dispatch";
   await expect(controls.invoke(caller, "send", input, claim)).rejects.toThrow(
     "Docker sandbox operation is unavailable",
   );
-  expect((await reservations.get(f.actor, input.id)).status).toBe("starting");
+  expect((await reservations.get(f.actor, input.id)).status).toBe("ready");
   expect((await wakeHealth(sql)).rows).toHaveLength(1);
   loseAt = undefined;
   await expect(controls.invoke(caller, "send", input, claim)).resolves.toMatchObject({

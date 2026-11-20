@@ -4,10 +4,9 @@ import { decryptSecret } from "@armada/core/server";
 import { admitAccountCapacity } from "./account-capacity.ts";
 import { createSqlData } from "./data.ts";
 import { createDockerSandboxService } from "./docker-sandbox-service.ts";
-import { runtimeHealthMatches } from "./runtime-agent.ts";
 import { createRuntimeCommands, readDockerPromptReceipt, readRuntimeCommandSuccess } from "./runtime-commands.ts";
 import { createRuntimeEnrolments, scopedRuntimeSql } from "./runtime-enrolment.ts";
-import { publishDockerRuntimeReadiness } from "./sandbox-lifecycle.ts";
+import { runtimeHealthMatches } from "./runtime-health.ts";
 
 type Actor = { userId: string; orgId: string };
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
@@ -131,44 +130,16 @@ export function createDockerRuntimeLifecycle(sql: Sql, key: string, options: { e
       return admitted(
         actor,
         sandboxId,
-        async (tx, authority) => {
-          const id = `docker_health_${requestId}`;
+        async (_tx, authority, sandbox, epoch) => {
+          const id = `docker_ready_${requestId}`;
           const commands = createRuntimeCommands(authority, key);
           const queued = await commands.enqueue(actor.userId, { version: 1, requestId: id, sandboxId, op: "health" });
           const response = await commands.result(actor.userId, sandboxId, id, queued.epoch);
           if (response.state === "pending") return { state: "pending" as const };
           if (response.state !== "finished") deny();
-          const health = readRuntimeCommandSuccess(response.reply, queued.epoch, id);
-          if (!health || !runtimeHealthMatches(health, queued.epoch)) deny();
-          const checkpoint = (
-            await tx.query<{ epoch: string; watermark: string }>(
-              "select epoch::text,watermark::text from public.runtime_checkpoints where sandbox_id=$1 and epoch=$2::bigint-1 and watermark is not null",
-              [sandboxId, queued.epoch],
-            )
-          ).rows[0];
-          if (checkpoint) {
-            const saved = (
-              await tx.query<{ conversation_ids: string[] }>(
-                "select conversation_ids from public.sandboxes where id=$1",
-                [sandboxId],
-              )
-            ).rows[0];
-            if (
-              !object(health.restoredFrom) ||
-              saved?.conversation_ids.length !== 1 ||
-              !runtimeHealthMatches(health, queued.epoch, {
-                epoch: checkpoint.epoch,
-                watermark: Number(checkpoint.watermark),
-                conversationId: saved.conversation_ids[0] as string,
-              })
-            )
-              deny();
-          }
-          return authority.withOwner(sandboxId, actor.userId, async (fenced, scope) => {
-            if (scope.epoch !== queued.epoch) deny();
-            if (!(await publishDockerRuntimeReadiness(fenced, sandboxId, "resume_health"))) deny();
-            return { state: "ready" as const, epoch: scope.epoch };
-          });
+          const health = readRuntimeCommandSuccess(response.reply, epoch, id);
+          if (!runtimeHealthMatches(health, epoch) || !["ready", "running"].includes(sandbox.status)) deny();
+          return { state: "ready" as const, epoch };
         },
         true,
         false,

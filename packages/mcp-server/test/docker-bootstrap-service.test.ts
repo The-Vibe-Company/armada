@@ -32,6 +32,19 @@ const sql: Sql = {
   query: (q, v) => database().query(q, v),
   transaction: (work) => database().transaction((tx) => work({ query: (q, v) => tx.query(q, v) })),
 };
+const failWrite = (fragment: string) =>
+  ({
+    query: sql.query,
+    transaction: (work) =>
+      sql.transaction!((tx) =>
+        work({
+          query: (statement, values) => {
+            if (statement.includes(fragment)) throw Error("handoff write failed");
+            return tx.query(statement, values);
+          },
+        }),
+      ),
+  }) satisfies Sql;
 const key = Buffer.alloc(32, 9).toString("base64");
 const manifest = {
   protocol: 1,
@@ -702,7 +715,7 @@ test.each([false, true])("idle checkpoint fences Docker stop and retained restor
   await runtime.ready(f.actor, f.sandbox.id, verifiedId);
   const verified = (await commands.next(resumed.runtimeToken, resumed.epoch)).command;
   if (verified?.op !== "health") throw Error("missing verified health");
-  await commands.complete(resumed.runtimeToken, resumed.epoch, {
+  const verifiedReceipt = {
     epoch: resumed.epoch,
     requestId: verified.requestId,
     status: 200,
@@ -711,7 +724,41 @@ test.each([false, true])("idle checkpoint fences Docker stop and retained restor
       requestId: verified.requestId,
       result: { ready: true, generation: resumed.epoch, restoredFrom: proof },
     },
-  });
+  };
+  await expect(
+    commands.complete(resumed.runtimeToken, session.epoch, { ...verifiedReceipt, epoch: session.epoch }),
+  ).rejects.toThrow();
+  await db.query(
+    "update public.runtime_enrolments set lifecycle_generation=lifecycle_generation-1 where sandbox_id=$1",
+    [f.sandbox.id],
+  );
+  await expect(commands.complete(resumed.runtimeToken, resumed.epoch, verifiedReceipt)).rejects.toThrow();
+  await db.query(
+    "update public.runtime_enrolments set lifecycle_generation=lifecycle_generation+1 where sandbox_id=$1",
+    [f.sandbox.id],
+  );
+  expect(await runtime.ready(f.actor, f.sandbox.id, verifiedId)).toEqual({ state: "pending" });
+
+  const failingCommands = createRuntimeCommands(
+    createRuntimeEnrolments(failWrite("from public.sandbox_transition("), key),
+    key,
+  );
+  await expect(failingCommands.complete(resumed.runtimeToken, resumed.epoch, verifiedReceipt)).rejects.toThrow();
+  expect(await runtime.ready(f.actor, f.sandbox.id, verifiedId)).toEqual({ state: "pending" });
+  expect((await reservations.get(f.actor, f.sandbox.id)).status).toBe("starting");
+
+  await commands.complete(resumed.runtimeToken, resumed.epoch, verifiedReceipt);
+  expect((await reservations.get(f.actor, f.sandbox.id)).status).toBe("ready");
+  await commands.complete(resumed.runtimeToken, resumed.epoch, verifiedReceipt);
+  expect(
+    (
+      await db.query(
+        `select t.actor,t.code from public.sandbox_transitions t join public.sandboxes s on s.id=t.sandbox_id
+       where s.id=$1 and t.generation=s.lifecycle_generation and t.to_status='ready'`,
+        [f.sandbox.id],
+      )
+    ).rows,
+  ).toEqual([{ actor: "runtime_enrolment", code: "runtime_enrolled" }]);
   expect(await runtime.ready(f.actor, f.sandbox.id, verifiedId)).toEqual({ state: "ready", epoch: resumed.epoch });
   expect(await reservations.get(f.actor, f.sandbox.id)).toMatchObject({
     status: "ready",
@@ -1077,19 +1124,6 @@ test.each(refusalOrders)(
     if (order === "ACK first") await ack(job.requestId);
     const failedAckFirst =
       order === "failed ACK first" || order === "failed retained-stop ACK after early resume failure";
-    const failWrite = (fragment: string) =>
-      ({
-        query: sql.query,
-        transaction: (work) =>
-          sql.transaction!((tx) =>
-            work({
-              query: (statement, values) => {
-                if (statement.includes(fragment)) throw Error("handoff write failed");
-                return tx.query(statement, values);
-              },
-            }),
-          ),
-      }) satisfies Sql;
     if (order === "failed ACK first") {
       const durableState = async () =>
         (

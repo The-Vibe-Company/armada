@@ -278,7 +278,8 @@ export function createRuntimeCommands(
       }
       let promptId: string | null = null;
       let requestedConversation: string | undefined;
-      if (acceptedPromptId) {
+      let dockerReadiness = false;
+      if (acceptedPromptId || String(value.requestId).startsWith("docker_ready_")) {
         const command = (
           await tx.query<{ request_enc: Uint8Array<ArrayBuffer> }>(
             `select request_enc from public.runtime_commands
@@ -288,6 +289,7 @@ export function createRuntimeCommands(
         ).rows[0];
         if (command) {
           const request: RunnerRequest = JSON.parse(await decryptSecret(command.request_enc, key));
+          dockerReadiness = request.op === "health" && request.requestId.startsWith("docker_ready_");
           if (request.op === "prompt") {
             promptId = acceptedPromptId;
             requestedConversation = request.input.conversationId;
@@ -306,6 +308,14 @@ export function createRuntimeCommands(
       // Use the first durable reply, including on replay. A stop may already
       // have cancelled the queue entry; it cannot erase accepted turn identity.
       const reply = JSON.parse(await decryptSecret(row.result_enc, key));
+      if (dockerReadiness) {
+        await authority.confirmDockerRestore(
+          tx,
+          scope,
+          generation,
+          readRuntimeCommandSuccess(reply, scope.epoch, row.request_id),
+        );
+      }
       const result = reply.body?.result;
       const queued = /^(?:follow_|docker_prompt_|resume_)([a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12})$/i.exec(
         row.request_id,
