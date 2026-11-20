@@ -2627,7 +2627,7 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     await provider.snapshot({ sandboxId: builder.id, name: snapshot });
     expect((await f.store.get(builder.id)).managementAuthority).toEqual(requested);
     expect((await f.store.image(snapshot)).managementAuthority).toEqual(requested);
-    const { provider: restoredConnection } = await createComposedModalProvider(configuration); // New server adapter retains chosen immutable context.
+    const { provider: restoredConnection } = await createComposedModalProvider(configuration);
     const fork = await restoredConnection.fork({ from: snapshot });
     expect((await f.store.get(fork.id)).managementAuthority).toEqual(requested);
     await restoredConnection.stop({ sandboxId: fork.id });
@@ -2695,7 +2695,7 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     await settleDetachedModalCollections();
     calls = f.log.filter((x) => x === "delete-image").length;
     await expect(userKey.provider.collectRetiredSnapshot(snapshot)).resolves.toBe("pending");
-    expect(f.log.filter((x) => x === "delete-image")).toHaveLength(calls); // Cannot collect another authority's tombstone.
+    expect(f.log.filter((x) => x === "delete-image")).toHaveLength(calls);
     await restoredConnection.delete({ sandboxId: fork.id });
     expect(f.log.filter((x) => x === "delete-image").length).toBeGreaterThan(calls);
     close();
