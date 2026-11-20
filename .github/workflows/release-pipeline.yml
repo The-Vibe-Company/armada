@@ -550,7 +550,11 @@ jobs:
   production-approval:
     name: Approve production deployment
     needs: [release-metadata, finalize-release]
-    if: needs.release-metadata.outputs.publish == 'true' && needs.release-metadata.outputs.production-run == ''
+    # Recovery reuses check, binary and smoke receipts, so those jobs are skipped;
+    # without a status function GitHub would skip this job and production too.
+    if: >-
+      !cancelled() && needs.finalize-release.result == 'success' &&
+      needs.release-metadata.outputs.publish == 'true' && needs.release-metadata.outputs.production-run == ''
     runs-on: ubuntu-latest
     timeout-minutes: 1
     environment: production-deploy
@@ -568,6 +572,7 @@ jobs:
       actions: read
       statuses: write
     needs: [release-metadata, production-approval]
+    if: ${{ !cancelled() && needs.production-approval.result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 40
     environment: production
