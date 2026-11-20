@@ -205,7 +205,10 @@ test("private image org-fallback provenance survives adding a personal key, rota
       managementAuthority: { credentialScope: "org", credentialOwnerId: people.org },
       sourceImage: { scopeKey: scopeKey(scope), name: "source", imageId: "im-source" },
     };
-    await createSqlModalStore(db, scope).reserve("stored-private", machine);
+    await db.query(
+      "insert into modal_machines(scope,org_id,owner_id,visibility,id,request_key,record) values($1,$2,$3,'private',$4,$5,$6::jsonb)",
+      [scopeKey(scope), scope.orgId, scope.userId, machine.info.id, "stored-private", JSON.stringify(machine)],
+    );
     // A stored read reaches only Armada's database: the request records itself, never a Modal call.
     const records: { event: string }[] = [];
     let reader!: Awaited<ReturnType<typeof integration.storedProviderFor>>;
