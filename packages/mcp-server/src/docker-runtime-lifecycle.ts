@@ -108,11 +108,11 @@ export function createDockerRuntimeLifecycle(sql: Sql, key: string, options: { e
         );
         if (pending.rows.length) return { state: "pending" as const };
       }
-      return authority.withOwner(sandboxId, actor.userId, async (_fenced, scope, generation) => {
+      return authority.withOwner(sandboxId, actor.userId, async (_fenced, scope) => {
         const current = await createDockerSandboxService(scoped, key).get(actor, sandboxId);
         if (JSON.stringify(current) !== JSON.stringify(snapshot)) deny();
         await assertClaim?.(scoped);
-        const result = await work(scoped, authority, current, scope.epoch, generation);
+        const result = await work(scoped, authority, current, scope.epoch, scope.lifecycleGeneration);
         await assertClaim?.(scoped);
         return result;
       });

@@ -38,6 +38,7 @@ export interface RuntimeSessionScope {
 }
 /** Owner scopes also name the locked sandbox's provider for request-correlated command records. */
 export interface RuntimeOwnerScope extends RuntimeSessionScope {
+  lifecycleGeneration: string;
   provider?: "boat" | "modal" | "docker";
   commandGrantExpiresAt?: Date;
 }
@@ -412,7 +413,7 @@ export function createRuntimeEnrolments(sql: Sql, encryptionKey: string, options
   async function withOwner<T>(
     sandboxId: string,
     ownerId: string,
-    work: (tx: Sql, scope: RuntimeOwnerScope, generation: string) => Promise<T>,
+    work: (tx: Sql, scope: RuntimeOwnerScope) => Promise<T>,
     expectedLifecycleGeneration?: string,
   ) {
     return transaction(async (tx) => {
@@ -430,16 +431,13 @@ export function createRuntimeEnrolments(sql: Sql, encryptionKey: string, options
         )
       ).rows[0];
       if (!row || !supportsProtocol(row.runtime_protocol_version)) throw new RuntimeEnrolmentDenied();
-      return work(
-        tx,
-        {
-          sandboxId: sandbox.id,
-          epoch: row.epoch,
-          provider: sandbox.provider as NonNullable<RuntimeOwnerScope["provider"]>,
-          ...(row.command_grant_expires_at ? { commandGrantExpiresAt: row.command_grant_expires_at } : {}),
-        },
-        sandbox.lifecycle_generation,
-      );
+      return work(tx, {
+        sandboxId: sandbox.id,
+        epoch: row.epoch,
+        lifecycleGeneration: sandbox.lifecycle_generation,
+        provider: sandbox.provider as NonNullable<RuntimeOwnerScope["provider"]>,
+        ...(row.command_grant_expires_at ? { commandGrantExpiresAt: row.command_grant_expires_at } : {}),
+      });
     });
   }
   const route: Route = async (request) => {
