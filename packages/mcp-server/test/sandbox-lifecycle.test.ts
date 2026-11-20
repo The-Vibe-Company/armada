@@ -154,6 +154,11 @@ test.each(["accepted", "superseded", "expired lease", "reconciliation lease", "j
         await expect(finish).rejects.toThrow(
           scenario === "journal failure" ? "reject_native_ready" : "publication is stale",
         );
+      if (scenario === "expired lease" || scenario === "reconciliation lease") {
+        await expect(
+          store.update(launch.id, { ...patch, status: "failed", statusReason: "readiness refused" }),
+        ).rejects.toThrow("Launch failure publication is stale");
+      }
       const row = await db.query(
         "select status, lifecycle_generation::int as generation, activity_lease_id from sandboxes",
       );
