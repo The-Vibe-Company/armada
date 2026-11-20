@@ -1708,7 +1708,7 @@
     "packages/provider-modal/src/grants.ts": 1,
     "packages/provider-modal/src/ingest.ts": 1,
     "packages/provider-modal/src/process-scope.ts": 5,
-    "packages/provider-modal/src/provider.ts": 5,
+    "packages/provider-modal/src/provider.ts": 4,
     "packages/provider-modal/src/receipts.ts": 1,
     "packages/provider-modal/src/runtime-overlay.ts": 1,
     "packages/provider-modal/src/snapshot.ts": 3,

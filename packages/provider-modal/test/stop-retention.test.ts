@@ -123,7 +123,7 @@ function fixture(stage: "scrub" | "snapshot", { productionDetach = false } = {})
     },
   } as unknown as RunnerDistribution;
   const detached: (() => Promise<void>)[] = [];
-  const provider = createModalProvider({
+  const { provider } = createModalProvider({
     scope,
     appName: "bound",
     client,

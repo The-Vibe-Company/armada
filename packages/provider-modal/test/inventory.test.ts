@@ -76,7 +76,7 @@ function fixture(overrides: Partial<ModalProviderOptions>, sdk: Partial<ModalCli
       },
     },
     ...overrides,
-  });
+  }).provider;
 }
 
 async function collect(iterable: AsyncIterable<ProviderInventoryMachine>) {

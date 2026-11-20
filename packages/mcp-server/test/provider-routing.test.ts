@@ -147,7 +147,7 @@ describe("provider routing", () => {
     const server = await start({
       modalProviderFor: (tokens, binding) => {
         calls.push({ tokens, binding });
-        return { ...modal.provider, id: "modal" } as Provider;
+        return { provider: { ...modal.provider, id: "modal" } as Provider };
       },
     });
     await seedModal(server);

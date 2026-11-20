@@ -7,6 +7,7 @@ import {
   type Sql,
   VaultError,
 } from "@armada/core/server";
+import type { ModalRuntimeCapture } from "@armada/provider-modal";
 import { createSqlData } from "./data.ts";
 import { createObservedBoatProvider } from "./observed-boat.ts";
 import { runtimeHarnessSupported } from "./provider-runtime-admission.ts";
@@ -20,7 +21,12 @@ import { createRuntimeProvider } from "./runtime-provider.ts";
 export function createRuntimeServing(sql: Sql, key: string) {
   const commands = createRuntimeCommands(createRuntimeEnrolments(sql, key), key);
   const history = createRuntimeHistory(sql, key);
-  return async (apiKey: string | Provider, target: ProviderTarget, actor: { userId: string }) => {
+  return async (
+    apiKey: string | Provider,
+    target: ProviderTarget,
+    actor: { userId: string },
+    captureRuntimeWork?: ModalRuntimeCapture,
+  ) => {
     const member = (
       await sql.query<{ role: MemberRole }>(
         "select role::text as role from public.members where org_id=$1 and user_id=$2",
@@ -243,6 +249,7 @@ export function createRuntimeServing(sql: Sql, key: string) {
             },
           }
         : undefined,
+      captureRuntimeWork,
     );
   };
 }

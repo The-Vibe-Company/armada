@@ -67,7 +67,7 @@ describe("Modal user stop and wake-on-send", () => {
           return { id: f.row.providerSandboxId, state, providerState: state, physicalGeneration: "1" };
         },
         async captureRuntimeWork() {
-          return { status: "clean" };
+          return { status: "clean" as const };
         },
         async stop() {
           state = "stopped";
@@ -80,7 +80,7 @@ describe("Modal user stop and wake-on-send", () => {
           retained = { epoch, watermark };
           state = "stopped";
         },
-      } as unknown as Provider;
+      };
       const serve = createRuntimeServing(f.sql, ENCRYPTION_KEY);
       const resume = createRuntimeResume(f.sql, ENCRYPTION_KEY, f.bridge, async () => ({
         async start(_signal, restore) {
@@ -101,7 +101,10 @@ describe("Modal user stop and wake-on-send", () => {
         store: createSqlVaultStore(f.sql),
         encryptionKey: ENCRYPTION_KEY,
         data: createSqlData(f.sql),
-        providers: { resolve: (target: Parameters<typeof serve>[1]) => serve(host, target, f.caller) },
+        providers: {
+          resolve: (target: Parameters<typeof serve>[1]) =>
+            serve(host as unknown as Provider, target, f.caller, host.captureRuntimeWork),
+        },
         runtimeStopCheckpoint: createRuntimeStopCheckpoint(
           f.sql,
           createRuntimeCheckpoint(f.sql, ENCRYPTION_KEY, f.bridge),
@@ -113,7 +116,7 @@ describe("Modal user stop and wake-on-send", () => {
         await expect(stop()).rejects.toThrow();
         await f.db.query("update sandboxes set activity_until=now()-interval '1 second' where id=$1", [f.row.id]);
         const target = (await controls.data(f.caller).sandboxes.get(f.row.id))!;
-        const provider = await serve(host, target, f.caller);
+        const provider = await serve(host as unknown as Provider, target, f.caller, host.captureRuntimeWork);
         const stopCall = spyOn(provider, "stop");
         const lifecycle = createSandboxLifecycle(f.sql, async () => provider);
         expect(await lifecycle.reconcileOne()).toBe(true);

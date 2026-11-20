@@ -201,7 +201,7 @@ test("native Boat and Modal event reads record first_token per activation at the
     encryptionKey: ENCRYPTION_KEY,
     providerFor: () => native("boat"),
     modalTokensFor: async () => ({ tokenId: "id", tokenSecret: "secret", scope: "org" }),
-    modalProviderFor: () => native("modal"),
+    modalProviderFor: () => ({ provider: native("modal") }),
   });
   const firstToken = async (id: string) =>
     (
