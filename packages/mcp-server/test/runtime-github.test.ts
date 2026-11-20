@@ -94,49 +94,46 @@ async function fixture(
 }
 
 test.each([
-  ["capability issuance", 0, 0, 0],
-  ["command admission", 1, 0, 0],
-  ["acknowledgement publication", 1, 1, 0],
-] as const)(
-  "queued GitHub preparation rolls back %s on claim loss",
-  async (phase, capabilities, commands, delivered) => {
-    const { f, service, close } = await fixture();
-    const state = async (tx: Sql) =>
-      (
-        await tx.query<{ capabilities: number; issued: number; commands: number; delivered: number }>(
-          `select
+  ["capability issuance", 0, 0],
+  ["command admission", 1, 0],
+  ["acknowledgement publication", 1, 1],
+] as const)("queued GitHub preparation rolls back %s on claim loss", async (phase, capabilities, commands) => {
+  const { f, service, close } = await fixture();
+  const state = async (tx: Sql) =>
+    (
+      await tx.query<{ capabilities: number; issued: number; commands: number; delivered: number }>(
+        `select
         (select count(*)::int from runtime_github_capabilities where sandbox_id=$1) as capabilities,
         (select count(*)::int from github_runtime_issued where sandbox_id=$1) as issued,
-        (select count(*)::int from runtime_commands where sandbox_id=$1) as commands,
+        (select count(*)::int from runtime_commands where sandbox_id=$1 and starts_with(request_id, 'github_')) as commands,
         (select count(*)::int from runtime_github_capabilities where sandbox_id=$1 and delivered_at is not null) as delivered`,
-          [f.row.id],
-        )
-      ).rows[0]!;
-    let expired = false;
-    try {
-      await expect(
-        service.prepareLaunch(f.caller, f.row.id, async (tx: Sql) => {
-          const current = await state(tx);
-          if (
-            (phase === "capability issuance" && current.issued > 0) ||
-            (phase === "command admission" && current.commands > 0) ||
-            (phase === "acknowledgement publication" && current.delivered > 0)
-          ) {
-            expired = true;
-            throw Error("Turn claim expired");
-          }
-        }),
-      ).rejects.toThrow();
-      expect(expired).toBe(true);
-      expect(await state(f.sql)).toEqual({ capabilities, issued: capabilities, commands, delivered });
+        [f.row.id],
+      )
+    ).rows[0]!;
+  let expired = false;
+  try {
+    await expect(
+      service.prepareLaunch(f.caller, f.row.id, async (tx: Sql) => {
+        const current = await state(tx);
+        if (
+          (phase === "capability issuance" && current.issued > 0) ||
+          (phase === "command admission" && current.commands > 0) ||
+          (phase === "acknowledgement publication" && current.delivered > 0)
+        ) {
+          expired = true;
+          throw Error("Turn claim expired");
+        }
+      }),
+    ).rejects.toThrow();
+    expect(expired).toBe(true);
+    expect(await state(f.sql)).toEqual({ capabilities, issued: capabilities, commands, delivered: 0 });
 
-      await service.prepareLaunch(f.caller, f.row.id, async () => {});
-      expect((await service.status(f.caller, f.row.id)).configured).toBe(true);
-    } finally {
-      await close();
-    }
-  },
-);
+    await service.prepareLaunch(f.caller, f.row.id, async () => {});
+    expect((await service.status(f.caller, f.row.id)).configured).toBe(true);
+  } finally {
+    await close();
+  }
+});
 
 test("Modal runtime GitHub credentials still work beyond the original deadline after extension", async () => {
   let clock = Date.now();
