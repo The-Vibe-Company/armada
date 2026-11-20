@@ -170,7 +170,7 @@ test("default profile organization preferences use the saved login origin", asyn
   };
   expect(
     await run(
-      ["list"],
+      ["ls"],
       {
         out: () => {},
         err: () => {},

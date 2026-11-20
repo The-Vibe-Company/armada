@@ -78,7 +78,7 @@ command's output, then match the sandbox by launch start time.
 ```bash
 staging_armada snapshot "$snapshot_list_verb" --org "$staging_org" --provider modal --json
 read -r -p 'Staging Modal snapshot UUID: ' snapshot_id
-staging_armada ls --org "$staging_org" --golden "$snapshot_id" --owner me --json
+staging_armada "$sandbox_list_command" --org "$staging_org" --golden "$snapshot_id" --owner me --json
 ```
 
 ```bash
