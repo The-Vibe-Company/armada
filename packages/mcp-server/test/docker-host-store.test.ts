@@ -379,7 +379,7 @@ async function boundFixture(
   return { ...host, sandboxId, generation, owner, create };
 }
 
-async function restoreFixture(registered?: Awaited<ReturnType<typeof fixture>>) {
+async function prepareRestore(registered?: Awaited<ReturnType<typeof fixture>>) {
   const host = registered ?? (await fixture());
   const db = database();
   const bindings = createDockerMachineBindings(sql, { ...host, deploymentId: randomUUID() });
@@ -415,8 +415,7 @@ async function restoreFixture(registered?: Awaited<ReturnType<typeof fixture>>) 
       ],
     );
   await putIntent(cleanupId, "stop", { bound: 1, job: cleanup });
-  const { requestId, ...payload } = restore;
-  await putIntent(requestId, "restore", { bound: 1, job: payload, lifecycleGeneration: "2" });
+  const selection = { ...restore, lifecycleGeneration: 2 };
   const poll = (running: string[] = [], supportsRestore = true, hostStore = store) =>
     hostStore.poll(
       a.hostToken,
@@ -432,8 +431,44 @@ async function restoreFixture(registered?: Awaited<ReturnType<typeof fixture>>) 
       false,
       supportsRestore,
     );
-  return { ...a, restore, cleanupId, poll };
+  return { ...a, restore, selection, cleanupId, poll, putIntent };
 }
+
+async function restoreFixture() {
+  const a = await prepareRestore();
+  await store.enqueueSandbox(a.owner, a.sandboxId, a.selection);
+  return a;
+}
+
+test("restore enqueue rolls back on interruption and freezes one intent per target generation", async () => {
+  const a = await prepareRestore();
+  const { selection } = a;
+  const enqueue = (intent = selection, mailbox = store) => mailbox.enqueueSandbox(a.owner, a.sandboxId, intent);
+  const { faultingStore, failure } = failDockerJobCommit(selection.requestId, null);
+  await expect(enqueue(selection, faultingStore)).rejects.toMatchObject({ cause: failure });
+  const retry = { ...selection, requestId: randomUUID() };
+  await expect(enqueue(retry)).resolves.toEqual({ requestId: retry.requestId });
+  await expect(enqueue(retry)).resolves.toEqual({ requestId: retry.requestId });
+  await expect(a.poll()).resolves.toEqual({ ...a.restore, requestId: retry.requestId });
+  await store.complete(a.hostToken, a.installationId, { requestId: retry.requestId, outcome: "completed" });
+  await denied(enqueue(selection));
+});
+
+test("restore enqueue refuses stale generations, unbound targets and altered predecessor inputs", async () => {
+  const a = await prepareRestore();
+  const { selection } = a;
+  for (const intent of [
+    { ...selection, lifecycleGeneration: 1 },
+    { ...selection, request: { ...selection.request, generation: randomUUID() } },
+    {
+      ...selection,
+      predecessor: { ...selection.predecessor, request: { ...selection.predecessor.request, ttlSeconds: 123 } },
+    },
+  ]) {
+    await denied(store.enqueueSandbox(a.owner, a.sandboxId, intent));
+  }
+  await expect(a.poll([a.cleanupId])).resolves.toBeNull();
+});
 
 test("restore work is gated and stays eligible behind an excluded predecessor cleanup", async () => {
   const a = await restoreFixture();
@@ -479,7 +514,12 @@ test("restore work is gated and stays eligible behind an excluded predecessor cl
 test("the daemon recovers pending restores and drains unrelated work with a full poll exclusion budget", async () => {
   const host = await fixture();
   const pairs: Awaited<ReturnType<typeof restoreFixture>>[] = [];
-  for (let index = 0; index < 13; index++) pairs.push(await restoreFixture(host));
+  for (let index = 0; index < 13; index++) {
+    const pair = await prepareRestore(host);
+    const { requestId, ...job } = pair.restore;
+    await pair.putIntent(requestId, "restore", { bound: 1, job, lifecycleGeneration: "2" });
+    pairs.push(pair);
+  }
 
   let state: State = {
     server: "https://armada.example",
