@@ -28,7 +28,7 @@ permission does not masquerade as contents access. Credentials are headers to
 GitHub's fixed API origin; redirects are refused.
 
 A known 401/403/404 access refusal blocks with code no_credentials and the
-repository directory plus armada github connect/grant-access instructions. No
+repository directory with instructions to run `armada account login github` and grant repository access. No
 compute or sandbox row is allocated. Missing connection with unknown public
 visibility also blocks conservatively; do not infer that an inaccessible repo is
 public because GitHub is unavailable. Authenticated preflight transport/rate-limit

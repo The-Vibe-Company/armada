@@ -476,7 +476,7 @@ describe("tools", () => {
     });
     const mcp = await call(await s.client(bearer), "launch", { provider: "boat", golden: "shared", harness: "claude" });
     expect(mcp.isError).toBe(true);
-    expect(mcp.text).toContain("armada github connect");
+    expect(mcp.text).toContain("armada account login github");
     expect(s.boat.forks).toHaveLength(0);
     expect((await s.db.query("select id from sandboxes order by id")).rows).toEqual(before);
   });

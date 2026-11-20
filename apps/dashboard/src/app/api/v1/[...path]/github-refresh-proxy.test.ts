@@ -10,7 +10,7 @@ test("GitHub repair crosses the dashboard proxy with only the sandbox id and bea
   let out = "";
   try {
     const code = await run(
-      ["github", "refresh", "sandbox-id"],
+      ["api", "github/refresh", '{"id":"sandbox-id"}'],
       {
         out: (text) => {
           out += text;

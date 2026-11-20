@@ -135,10 +135,10 @@ test("setup status names the uninstall for a draining host instead of telling th
 });
 
 test.each([
-  [{ status: "not_connected", login: null }, "warning", "armada github connect"],
+  [{ status: "not_connected", login: null }, "warning", "armada account login github"],
   [{ status: "not_connected", login: null, configured: false }, "unknown", "server operator"],
-  [{ status: "needs_reconnect", login: "owner" }, "warning", "armada github reconnect"],
-  [{ status: "connected", login: "owner", installations: [] }, "warning", "armada github install"],
+  [{ status: "needs_reconnect", login: "owner" }, "warning", "armada account login github"],
+  [{ status: "connected", login: "owner", installations: [] }, "warning", "armada account add github"],
   [{ status: "unavailable", login: null, configured: false }, "unknown", "server operator"],
   [{ status: "unavailable", login: "owner", configured: true }, "unknown", "Could not confirm GitHub access"],
 ] as const)(

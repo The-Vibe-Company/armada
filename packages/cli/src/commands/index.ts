@@ -8,7 +8,6 @@ import completion from "./completion.ts";
 import creds from "./creds.ts";
 import detail from "./detail.ts";
 import extend from "./extend.ts";
-import github from "./github.ts";
 import host from "./host.ts";
 import interrupt from "./interrupt.ts";
 import login from "./login.ts";
@@ -54,7 +53,6 @@ export const commands: readonly Command[] = [
   host,
   routine,
   template,
-  github,
   vars,
   secrets,
   mcp,

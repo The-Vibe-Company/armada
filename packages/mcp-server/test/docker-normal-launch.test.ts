@@ -347,7 +347,7 @@ async function fixture(
           async authorizeRepositories(_actor, _resolved, repos) {
             throw new LaunchError(
               "no_credentials",
-              `Repository ${repos[0]!.dir} needs a GitHub connection with read access. Run armada github connect, grant your account and the Armada GitHub App access, then launch again.`,
+              `Repository ${repos[0]!.dir} needs a GitHub connection with read access. Run armada account login github, grant your account and the Armada GitHub App access, then launch again.`,
             );
           },
         }
@@ -863,6 +863,22 @@ test.each([
     }
   },
 );
+
+test("Docker launch replay updates the remedy in a stored GitHub access refusal", async () => {
+  const f = await fixture();
+  f.setFailure();
+  await rejected(f.service().launch(f.caller, f.body), "sandbox_not_ready");
+  const stored =
+    "Repository project needs a GitHub connection with read access. Run armada github connect, grant your account and the Armada GitHub App access, then launch again.";
+  await database().query("update sandboxes set status_reason=$2 where id=$1", [f.body.requestId, stored]);
+  const expected = stored.replace("armada github connect", "armada account login github");
+  await expect(f.service().launch(f.caller, f.body)).rejects.toMatchObject({
+    code: "no_credentials",
+    message: expected,
+  });
+  const record = await f.service(sql, true, 10_000, officialImage, true).launch(f.caller, f.body);
+  expect(record.sandbox.statusReason).toBe(expected);
+});
 
 test("prompt-free, image-free launch normalizes UUIDs, uses the default image, honors TTL and stops at runtime readiness", async () => {
   const f = await fixture({ daemonVersion: "2.27.0" });
