@@ -67,7 +67,7 @@ export interface RuntimeResumePlacement {
     signal: AbortSignal,
     restore: { epoch: string; watermark: number; conversationId: string | null },
     confirmActivation?: () => Promise<void>,
-    assertDispatch?: () => Promise<void>,
+    assertDispatch?: (tx?: Sql) => Promise<void>,
   ): Promise<{ epoch: string }>;
   /** Exact previously authorized compute identity; no activation/reissue on failure. */
   stop(): Promise<void>;

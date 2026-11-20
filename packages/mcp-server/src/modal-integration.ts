@@ -18,7 +18,7 @@ import {
   createComposedModalProvider,
   createGenerationGrants,
   createModalIngestHandler,
-  createModalInventory,
+  createModalMachineInventory,
   MODAL_IMAGE_LOCK,
   type ModalManagementAuthority,
   type ResolvedModalManagementCredentials,
@@ -398,7 +398,7 @@ export async function createModalIntegration(options: {
         }
         const inventoryClient = client;
         return {
-          ...createModalInventory(inventoryClient, registration.app_name, binding, deploymentId),
+          ...createModalMachineInventory(inventoryClient, registration.app_name, binding, deploymentId),
           async openSandbox(machineId) {
             const sandbox = await inventoryClient.sandboxes.fromId(machineId);
             return {

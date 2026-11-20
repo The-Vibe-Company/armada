@@ -224,21 +224,19 @@ the command; for example, `armada exec ID -- --help` remains remote command text
 
 ### Sandbox errors and scripts
 
-Sandbox failures go to stderr; stdout remains available for successful output.
-Use `--json` for `{"error":{"code":"not_found","message":"…","legacyCode":"conflict"}}`.
-`code` now classifies missing/inaccessible sandboxes as `not_found`, access
-denials as `forbidden`, and lifecycle refusals as `conflict`,
-`sandbox_not_ready` or `no_running_turn` when the server supplies that reason.
-Only fixed, recognized reasons are displayed; arbitrary provider/guest text is
-never echoed. For an unknown failure the CLI gives safe status/selection guidance,
-not an invented underlying cause.
+Sandbox commands select an explicit ID first, then `ARMADA_SANDBOX`, then the
+ID in `.armada/sandbox` in the current directory. Successful launches record
+their sandbox ID in that file. A UUID prefix must match exactly one visible
+sandbox in the selected organization scope. For commands that take text, use
+`--` to mark where the payload starts when you omit the ID, as in
+`armada send -- Review the diff`.
 
-Existing `code` and `message` fields remain; when a sandbox code is corrected,
-the additive `legacyCode` field aliases the old CLI code. New integrations should
-use `error.code`; integrations migrating old code comparisons can use
-`error.legacyCode // error.code` in jq. Versioned API reasons (such as `extension_not_found`) are retained. Stop
-previously collapsed service/outcome reasons into `unavailable`; these now retain
-the versioned reason with `legacyCode: "unavailable"`. Exit 2 means a usage/invalid-request
+Sandbox commands default to JSON when stdout is redirected or piped. On a
+terminal, pass `--json` for machine output. A failed command in machine mode
+ends stderr with one JSON line, for example
+`{"error":{"code":"not_found","message":"Sandbox not found or not accessible.","hint":null}}`.
+Read the final line because stderr can also carry progress or recovery details.
+The exit code remains the script's success signal. Exit 2 means a usage/invalid-request
 failure. Exit 3 means authentication is required: any command exits 3 with
 `unauthorized` when there is no valid session or service token (or the API
 answers HTTP 401) and no interactive sign-in took place. For example, signed-out

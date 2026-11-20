@@ -1,4 +1,5 @@
 import { MACHINE_SIZES, type MachineSize } from "./machine-size.ts";
+import type { ProviderInventoryMachine } from "./provider.ts";
 import { PROVIDER_LIMITS, type SandboxPlacementProviderId } from "./sandbox-provider.ts";
 
 export interface MachineCapabilities {
@@ -109,5 +110,5 @@ export interface Machine {
     request: MachineIncarnation & OperationOptions & { readonly machineId?: string },
   ): Promise<MachineObservation>;
 
-  listInventory?(signal?: AbortSignal): AsyncIterable<MachineInventoryEntry>;
+  listInventory?(signal?: AbortSignal): AsyncIterable<MachineInventoryEntry | ProviderInventoryMachine>;
 }

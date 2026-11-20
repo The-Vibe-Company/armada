@@ -16,8 +16,9 @@ Example: armada --profile staging login --url https://staging.example.com
 
 Exit codes: 0 success; 1 server/operation failure; 2 invalid usage or missing configuration; 3 authentication failure.
 Scripts: check exit status before consuming stdout; failed operations may have partial output.
-Common typed errors with --json use {error:{code,message}} on stderr, not stdout.
-Progress/warnings can also use stderr; do not assume the entire stream is one JSON document.
+Sandbox commands use JSON when stdout is redirected or when you pass --json.
+In machine mode, the final stderr line on failure is {error:{code,message,hint}}.
+Progress and warnings can appear earlier on stderr.
 See command --help for supported JSON output; keep captured values/tokens out of shared logs.
 
 Quick start / common examples:
@@ -75,6 +76,8 @@ Environment:
   ARMADA_TOKEN                             API token for non-interactive authentication. Takes precedence over
                                            a saved login session.
   ARMADA_URL                               Armada API server (default: https://armada.thevibecompany.co).
+  ARMADA_SANDBOX                           Current sandbox UUID or unique prefix. A sandbox argument overrides it;
+                                           otherwise the CLI falls back to .armada/sandbox in the current directory.
 `;
 
 export const commandWords = [

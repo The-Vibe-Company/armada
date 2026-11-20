@@ -121,7 +121,7 @@ export interface SavedImage {
   collectUntil?: number;
 }
 export interface ModalStore {
-  reserve(key: string, machine: Machine, runtimeSourceId?: string): Promise<Machine>;
+  reserve(key: string, machine: Machine, sourceId?: string): Promise<Machine>;
   findByRequestKey(key: string): Promise<Machine | null>;
   get(id: string): Promise<Machine>;
   watermark(id: string, generation: number): Promise<number>;

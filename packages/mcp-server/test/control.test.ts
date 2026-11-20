@@ -2391,18 +2391,22 @@ test("access launch resolves an omitted account and grants only its persisted bi
           fork: async (request) => {
             const image = await createSqlModalStore(db, sourceScope).image(request.from);
             const info = await fake.provider.fork(request);
-            await machines.reserve(info.id, {
-              info,
-              phase: "active",
-              generation: 1,
-              launchUserId: caller.userId,
-              golden: false,
-              ttlSeconds: request.ttlSeconds ?? 900,
-              physicalName: info.id,
-              grantExpiresAt: Date.now() + 900_000,
-              managementAuthority: { credentialScope: "org", credentialOwnerId: org.id },
-              sourceImage: { scopeKey: scopeKey(sourceScope), name: request.from, imageId: image.imageId! },
-            });
+            await machines.reserve(
+              info.id,
+              {
+                info,
+                phase: "active",
+                generation: 1,
+                launchUserId: caller.userId,
+                golden: false,
+                ttlSeconds: request.ttlSeconds ?? 900,
+                physicalName: info.id,
+                grantExpiresAt: Date.now() + 900_000,
+                managementAuthority: { credentialScope: "org", credentialOwnerId: org.id },
+                sourceImage: { scopeKey: scopeKey(sourceScope), name: request.from, imageId: image.imageId! },
+              },
+              image.sourceId,
+            );
             return info;
           },
           get: async (id) => ({ ...(await machines.get(id)).info, physicalGeneration: "1" }),
@@ -2688,7 +2692,7 @@ test("CLI/API connection checks require the owner and current bound revision, ex
     expect(resolutions).toBe(0);
     const rejected = await owner.run(args);
     expect(rejected.code).toBe(1);
-    expect(rejected.err).toBe("");
+    expect(rejected.err).not.toContain(key);
     expect(JSON.parse(rejected.out)).toEqual({
       id,
       ok: false,

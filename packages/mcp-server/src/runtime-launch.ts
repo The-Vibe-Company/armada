@@ -9,7 +9,13 @@ import type { RuntimeGitHub } from "./runtime-github.ts";
 import { createRuntimeStartup } from "./runtime-startup.ts";
 import { runtimeWorkspace } from "./runtime-workspace.ts";
 
-type LaunchInput = Parameters<NonNullable<LaunchOptions["runtime"]>["start"]>[0];
+type LaunchPolicy = NonNullable<LaunchOptions["runtime"]>;
+type LaunchInput = Parameters<LaunchPolicy["start"]>[0] & {
+  assertDispatch?: (tx?: Sql) => Promise<void>;
+};
+export type RuntimeLaunchPolicy = Omit<LaunchPolicy, "start"> & {
+  start(input: LaunchInput): ReturnType<LaunchPolicy["start"]>;
+};
 type Started = Awaited<ReturnType<NonNullable<LaunchOptions["runtime"]>["start"]>>;
 type Bootstrap = Parameters<typeof createRuntimeStartup>[1]["bootstrap"];
 type LaunchPlan = Awaited<ReturnType<typeof runtimeConfiguration>>;
@@ -54,7 +60,12 @@ export function createRuntimeLaunch(options: RuntimeLaunchOptions, provider: "bo
     const agent = runtimeAgentFor(commands, actor.userId, sandbox, defaults, plan.configuration.cwd);
     const ready = await createRuntimeStartup(authority, {
       bootstrap: request.bootstrap(),
-      health: (admission) => agent.health(admission, restoreCheckpoint),
+      health: (admission, epoch) =>
+        agent.health(
+          admission,
+          restoreCheckpoint,
+          input.assertDispatch ? { expectedEpoch: epoch, assertClaim: input.assertDispatch } : undefined,
+        ),
     })({
       ownerId: actor.userId,
       sandboxId: sandbox.id,
@@ -63,9 +74,10 @@ export function createRuntimeLaunch(options: RuntimeLaunchOptions, provider: "bo
       ...plan,
       ...(sandbox.lifecycleGeneration === undefined ? {} : { expectedGeneration: sandbox.lifecycleGeneration }),
       ...(commandGrantExpiresAt !== undefined ? { commandGrantExpiresAt } : {}),
+      ...(input.assertDispatch ? { assertClaim: input.assertDispatch } : {}),
       signal,
     });
-    await environment.deliver(provider, actor, sandbox.id, ready.epoch, signal);
+    await environment.deliver(provider, actor, sandbox.id, ready.epoch, signal, input.assertDispatch);
     return {
       ...runtimeWorkspace(input, agent, ready.epoch, options.github),
       installScopedReference: (request) =>

@@ -944,7 +944,78 @@ test("startup refuses a mismatched physical sandbox before replacing the live ru
   );
 });
 
-test.each(["selection", "pre-abort", "timeout", "bootstrap", "replacement", "lifecycle", "stop"] as const)(
+test.each(["before issuance", "during issuance"] as const)(
+  "queued startup stops when the claim expires %s",
+  async (expiry) => {
+    const { createRuntimeStartup } = await import("../src/runtime-startup.ts");
+    const f = await fixture();
+    const session = await f.enrol();
+    let current = expiry !== "before issuance";
+    const authority = createRuntimeEnrolments(
+      {
+        ...f.sql,
+        transaction: (work) =>
+          f.sql.transaction!((tx) =>
+            work({
+              ...tx,
+              async query<T>(statement: string, values?: unknown[]) {
+                const result = await tx.query<T>(statement, values);
+                if (expiry === "during issuance" && statement.includes("insert into public.runtime_enrolments"))
+                  current = false;
+                return result;
+              },
+            }),
+          ),
+      },
+      ENCRYPTION_KEY,
+    );
+    const bootstrap = mock(async () => {
+      throw Error("unexpected bootstrap");
+    });
+    const start = createRuntimeStartup(authority, {
+      bootstrap,
+      health: async () => {
+        throw Error("unexpected health");
+      },
+    });
+
+    const startup = {
+      ownerId: f.people.owner,
+      sandboxId: f.id,
+      providerSandboxId: "command-native",
+      serverUrl: "https://armada.invalid",
+      cacheDir: "/cache",
+      artifact: { sha256: "a".repeat(64), bytes: 10 },
+      configuration: { selectedHarness: "codex" },
+      async assertClaim() {
+        if (!current) throw Error("queued claim expired");
+      },
+    };
+    await expect(start(startup)).rejects.toMatchObject({ code: "sandbox_not_ready" });
+    expect(bootstrap).not.toHaveBeenCalled();
+    const ticket = await f.db.query<{ pending: boolean }>(
+      "select enrolment_hash is not null as pending from runtime_enrolments where sandbox_id=$1",
+      [f.id],
+    );
+    expect(ticket.rows).toEqual([{ pending: false }]);
+    expect(await f.authority.withSession(session.runtimeToken, session.epoch, async (_tx, scope) => scope.epoch)).toBe(
+      session.epoch,
+    );
+  },
+);
+
+const startupFailures = [
+  "selection",
+  "pre-abort",
+  "timeout",
+  "bootstrap",
+  "replacement",
+  "lifecycle",
+  "stop",
+  "claim loss",
+] as const;
+
+test.each([...startupFailures])(
   "startup never publishes readiness after %s and never repeats host bootstrap",
   async (scenario) => {
     const { createRuntimeStartup } = await import("../src/runtime-startup.ts");
@@ -955,6 +1026,8 @@ test.each(["selection", "pre-abort", "timeout", "bootstrap", "replacement", "lif
     const abort = new AbortController();
     if (scenario === "pre-abort") abort.abort();
     let epoch = "";
+    let current = true;
+    let checkedAfterHealthInTransaction = false;
     const start = createRuntimeStartup(
       f.authority,
       {
@@ -965,6 +1038,7 @@ test.each(["selection", "pre-abort", "timeout", "bootstrap", "replacement", "lif
             epoch = (await f.authority.enrol(input.enrolmentToken)).epoch;
         },
         async health() {
+          if (scenario === "claim loss") current = false;
           if (scenario === "replacement") await f.enrol();
           if (scenario === "stop") await f.db.query("update sandboxes set stop_requested_at=now() where id=$1", [f.id]);
           return { runtime: "armada", epoch };
@@ -989,6 +1063,15 @@ test.each(["selection", "pre-abort", "timeout", "bootstrap", "replacement", "lif
       cacheDir: "/cache",
       artifact: { sha256: "a".repeat(64), bytes: 10 },
       configuration: { selectedHarness: scenario === "selection" ? "unknown" : "codex" },
+      ...(scenario === "claim loss"
+        ? {
+            async assertClaim(tx?: Sql) {
+              if (current) return;
+              checkedAfterHealthInTransaction = tx !== undefined;
+              throw Error("Dispatch claim expired.");
+            },
+          }
+        : {}),
       signal: abort.signal,
       readinessTimeoutMs: 1000,
     });
@@ -1001,6 +1084,7 @@ test.each(["selection", "pre-abort", "timeout", "bootstrap", "replacement", "lif
           ? "Invalid runtime startup selection."
           : `Armada runtime startup failed (${["pre-abort", "bootstrap"].includes(scenario) ? "bootstrap" : ["timeout", "lifecycle"].includes(scenario) ? "enrolment" : "readiness"}).`,
     });
+    if (scenario === "claim loss") expect(checkedAfterHealthInTransaction).toBe(true);
     expect(starts).toBe(scenario === "pre-abort" || scenario === "selection" ? 0 : 1);
     if (scenario === "pre-abort" || scenario === "selection")
       expect((await f.db.query("select sandbox_id from runtime_enrolments")).rows).toEqual([]);

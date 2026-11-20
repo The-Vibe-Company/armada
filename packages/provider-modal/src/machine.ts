@@ -11,7 +11,7 @@ import {
 import type { ModalClient, Sandbox } from "modal";
 import { boundModalApp } from "./client.ts";
 import { modalError, refusal } from "./errors.ts";
-import { listModalInventory } from "./inventory.ts";
+import { createModalMachineInventory } from "./inventory.ts";
 import { dispatchRuntimeBootstrap, type RuntimeTicket, validateRuntimeTicket } from "./runtime-bootstrap.ts";
 
 type Create = Parameters<Machine["create"]>[0];
@@ -282,13 +282,7 @@ export function createModalMachine(options: ModalMachineOptions) {
         return { kind: "unknown" };
       }
     },
-    async *listInventory(signal) {
-      for await (const entry of listModalInventory(client, bound, null, signal)) {
-        const generation = Number(entry.generation);
-        if (entry.sandboxId && Number.isSafeInteger(generation) && generation > 0)
-          yield { ...entry, sandboxId: entry.sandboxId, generation };
-      }
-    },
+    ...createModalMachineInventory(client, appName, binding, null),
   } satisfies Machine;
 }
 

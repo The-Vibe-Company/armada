@@ -71,6 +71,7 @@ export function recordOperatorDiagnostic(
     operationId?: string;
     operationSequence?: string;
     code?: string | undefined;
+    refusalCode?: string | undefined;
     log?: Log;
   } = {},
 ): void {
@@ -89,6 +90,7 @@ export function recordOperatorDiagnostic(
             ? options.operationSequence
             : undefined,
         code: options.code,
+        refusalCode: options.refusalCode,
         ...diagnostic,
       }),
     );

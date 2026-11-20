@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import type { CreateGoldenRequest, ForkRequest, Provider, SandboxInfo } from "@armada/core";
 import { mapHarnesses, ProviderError, parseMachineSize, resolveModelChoice } from "@armada/core";
 import type { boundModalApp } from "./client.ts";
-import { ModalOperationError, modalError, refusal } from "./errors.ts";
+import { ModalOperationError, refusal } from "./errors.ts";
 import type { createPhysicalLifecycle } from "./physical-lifecycle.ts";
 import type { Machine, ModalManagementProvenance, ModalResourceReceipt, ModalStore, Scope } from "./ports.ts";
 import { scopeKey } from "./store.ts";
@@ -47,17 +47,15 @@ export function createLaunchLifecycle({
       throw refusal("invalid_request", "Modal machine TTL must be 1–86400 seconds (maximum 24 hours).");
     let imageId: string | undefined;
     let sourceImage: Machine["sourceImage"];
-    let runtimeSourceId: string | undefined;
+    let sourceId: string | undefined;
     if ("from" in request) {
       const snapshot = await source.store.image(request.from);
       assertAuthority(snapshot);
       if (snapshot.info.status !== "ready" || !snapshot.imageId)
         throw refusal("sandbox_not_ready", "Snapshot is not ready.");
-      if (commonRuntime) {
-        const sourceRow = await source.store.get(snapshot.sourceId);
-        if (sourceRow.commonRuntime) throw refusal("invalid_request", "Enrolled Modal forks are not enabled.");
-        runtimeSourceId = snapshot.sourceId;
-      }
+      const sourceRow = await source.store.get(snapshot.sourceId);
+      if (sourceRow.commonRuntime) throw refusal("invalid_request", "Enrolled Modal forks are not enabled.");
+      sourceId = snapshot.sourceId;
       imageId = snapshot.imageId;
       sourceImage = { scopeKey: scopeKey(source.scope), name: request.from, imageId };
     }
@@ -88,7 +86,7 @@ export function createLaunchLifecycle({
         ...(imageId ? { imageId } : {}),
         ...(sourceImage ? { sourceImage } : {}),
       },
-      runtimeSourceId,
+      sourceId,
     );
     const needsBoot = (row: Machine) => {
       if (
@@ -133,35 +131,6 @@ export function createLaunchLifecycle({
         throw refusal("forbidden", "Split source/target adapter is fork-only for golden creation.");
       return launch(r, true);
     },
-    async fork(r) {
-      if (r.size !== undefined) {
-        try {
-          parseMachineSize(r.size);
-        } catch {
-          throw refusal("invalid_request", "Size must be small, medium, large or xlarge.");
-        }
-      }
-      if (commonRuntime) return launch(r, false);
-      const snapshot = await source.store.image(r.from);
-      assertAuthority(snapshot);
-      let sourceLeaseEntered = false;
-      try {
-        return await source.store.lease(snapshot.sourceId, async (sourceRow) => {
-          sourceLeaseEntered = true;
-          if (sourceRow.commonRuntime) throw refusal("invalid_request", "Enrolled Modal forks are not enabled.");
-          return launch(r, false);
-        });
-      } catch (error) {
-        if (!sourceLeaseEntered && modalError(error).providerCode === "lifecycle_lease_busy")
-          throw new ProviderError({
-            provider: "modal",
-            code: "conflict",
-            providerCode: "fork_source_busy",
-            message: "The Modal snapshot source is busy. No sandbox was created; retry after the current operation.",
-            retryable: true,
-          });
-        throw error;
-      }
-    },
+    fork: (r) => launch(r, false),
   } satisfies Pick<Provider, "createGolden" | "fork">;
 }

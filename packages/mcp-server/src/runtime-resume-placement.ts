@@ -1,6 +1,5 @@
 import {
   type CredentialReader,
-  type LaunchOptions,
   type Provider,
   type ResumeStageObserver,
   SANDBOX_STOP_MARGIN_SECONDS,
@@ -11,6 +10,7 @@ import type { Caller } from "./caller.ts";
 import { launchCredentials } from "./launch-credentials.ts";
 import { recordLaunchStageQuietly } from "./launch-stage-record.ts";
 import type { ModelAuthOwnership } from "./model-auth.ts";
+import type { RuntimeLaunchPolicy } from "./runtime-launch.ts";
 import type { RuntimeResumePlacement, RuntimeResumePrepare } from "./runtime-resume.ts";
 
 type Sandbox = Parameters<RuntimeResumePrepare>[1];
@@ -19,7 +19,7 @@ export interface RuntimeResumeOptions {
   sql: Sql;
   vault: CredentialReader;
   key: string;
-  policy: NonNullable<LaunchOptions["runtime"]>;
+  policy: RuntimeLaunchPolicy;
   modelAuth?: ModelAuthOwnership;
 }
 
@@ -61,6 +61,7 @@ export function runtimeResumePlacement<H extends Provider>(
           credentials,
           signal,
           restoreCheckpoint,
+          ...(assertDispatch ? { assertDispatch } : {}),
           activate: async (admission) => {
             placement.retained(await host.get(sandbox.providerSandboxId, { signal: admission }));
             const identity = [sandbox.id, caller.userId, sandbox.lifecycleGeneration, restoreCheckpoint.epoch];

@@ -294,10 +294,29 @@ export async function finishLaunchSuccess(
      from public.sandboxes s where s.id=$3::uuid and ${SANDBOX_VISIBLE} for update of s`,
     [...scope, sandboxId],
   );
-  if (sandbox?.native_path && prompt) {
-    const applied =
-      sandbox.owned && (await finishPromptedNativeLaunch(tx, sandboxId, generation, activityToken, prompt));
-    return applied ? "applied" : "native_conflict";
+  if (sandbox?.native_path) {
+    if (!sandbox.owned) return "native_conflict";
+    if (prompt)
+      return (await finishPromptedNativeLaunch(tx, sandboxId, generation, activityToken, prompt))
+        ? "applied"
+        : "native_conflict";
+    const result = await transitionSandbox(tx, {
+      sandboxId,
+      expectedGeneration: generation,
+      fromStates: ["starting"],
+      toState: "ready",
+      actor: "lifecycle_runner",
+      code: "native_launch_ready",
+      effects: [],
+      settlement: {
+        statusReason: null,
+        stopRequestedAt: null,
+        stoppedAt: null,
+        lease: null,
+        activityLease: activityToken,
+      },
+    });
+    return result.kind === "applied" ? "applied" : "native_conflict";
   }
   if (sandbox && !sandbox.enrolled_path) return "other_path";
   if (!sandbox?.owned) return "conflict";

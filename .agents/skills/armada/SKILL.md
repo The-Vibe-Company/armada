@@ -14,6 +14,12 @@ versioned installation. Read the installed command's help rather than inventing
 flags. Examples use placeholders such as GOLDEN, SANDBOX and ORG; substitute real
 IDs, and quote prompts as single arguments.
 
+Sandbox commands emit JSON when stdout is piped or redirected. On failure,
+parse the final stderr line for `error.code`, `error.message`, and `error.hint`.
+An explicit sandbox ID overrides `ARMADA_SANDBOX` and the local
+`.armada/sandbox` file written by a successful launch. Prefer explicit IDs in
+coordinator scripts that manage several sandboxes from one directory.
+
 ## 1. Establish identity and scope
 
 Run `armada account status`, `armada org list` and `armada org current`.

@@ -453,6 +453,7 @@ test.each(["launch", "message"] as const)(
         expect.objectContaining({
           event: "operator_failure",
           phase: `scoped.child_${action}.dispatch_admission`,
+          ...(action === "message" ? { refusalCode: "authority_denied" } : {}),
           errorClass: "DelegatedAuthorityDenied",
           sandboxId: receipt.sandboxId,
           operationId: receipt.id,
@@ -1684,9 +1685,28 @@ test.each(["accepted", "stale", "abort"] as const)("native child send (%s)", asy
       "insert into outbound_webhook_endpoints(org_id,url,secret_enc) values($1,'https://receiver.example/events',$2)",
       [p.org, new Uint8Array([1])],
     );
-    const receipt = await services.childWorker.message(token, "idle-child", child.id, "follow up");
+    const lines: string[] = [];
+    let receipt: Awaited<ReturnType<typeof services.childWorker.message>> | undefined;
+    await observeRequest(
+      async () => {
+        receipt = await services.childWorker.message(token, "idle-child", child.id, "follow up");
+        return new Response();
+      },
+      (line) => lines.push(line),
+    );
+    if (!receipt) throw Error("Missing child receipt.");
     if (scenario !== "accepted") {
       expect(receipt.state).toBe("failed");
+      expect(lines.map((line) => JSON.parse(line))).toContainEqual(
+        expect.objectContaining({
+          event: "operator_failure",
+          phase: "scoped.child_message.execution",
+          code: "child_dispatch_not_admitted",
+          refusalCode: scenario === "stale" ? "sandbox_not_ready" : "native_admission_error",
+          operationId: receipt.id,
+          sandboxId: child.id,
+        }),
+      );
       expect(fake.prompts).toHaveLength(0);
       expect(
         (

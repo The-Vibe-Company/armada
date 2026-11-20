@@ -117,6 +117,145 @@ describe("launch database", () => {
     },
   );
 
+  test.each(["ready", "running", "failed", "stale", "same-generation restart", "receipt rollback"] as const)(
+    "core SQL launch settles %s with its registered generation",
+    async (outcome) => {
+      const db = launchDatabase.get();
+      const people = await fixture(db);
+      const { provider } = fakeBoat();
+      const sandboxes = createSqlSandboxStore(db);
+      const id = crypto.randomUUID();
+      const stopped: string[] = [];
+      provider.stop = async ({ sandboxId }) => {
+        stopped.push(sandboxId);
+      };
+      if (outcome === "failed") {
+        provider.get = async () => {
+          throw new Error("Initialization failed");
+        };
+      }
+      if (outcome === "receipt rollback") {
+        await db.exec(`
+          create function pg_temp.reject_core_launch_receipt() returns trigger language plpgsql as $$
+          begin
+            if new.task_prompt_id is not null and exists (
+              select 1 from public.sandbox_transitions where sandbox_id=new.id and to_status='running'
+            ) then
+              raise exception 'injected receipt failure';
+            end if;
+            return new;
+          end;
+          $$;
+          create trigger reject_core_launch_receipt before update of task_prompt_id on sandboxes
+          for each row when (new.id = '${id}') execute function pg_temp.reject_core_launch_receipt();
+        `);
+      }
+      const prompted = outcome === "running" || outcome === "receipt rollback";
+      try {
+        const launch = launchSandbox(
+          provider,
+          {
+            goldens: createSqlGoldenStore(db),
+            sandboxes,
+            credentials: {
+              resolve: async () => ({
+                env: { CLAUDE_CODE_OAUTH_TOKEN: TOKEN },
+                secrets: [TOKEN],
+                codexAuthJson: false,
+              }),
+            },
+          },
+          actor(people, "owner"),
+          { golden: "mine", harness: "claude", ...(prompted ? { prompt: "go" } : {}) },
+          {
+            newId: () => id,
+            async onRegistered() {
+              if (outcome === "stale") await db.query("update sandboxes set lifecycle_generation=2 where id=$1", [id]);
+              if (outcome === "same-generation restart") {
+                await sandboxes.update(id, { status: "ready", expectedGeneration: 1 });
+                const result = await db.query(
+                  `select applied from sandbox_transition($1,1,array['ready']::sandbox_status[],'starting',
+                    'lifecycle_runner','native_provider_phase','[]',null,null,null,null,null)`,
+                  [id],
+                );
+                expect(result.rows).toEqual([{ applied: true }]);
+              }
+            },
+          },
+        );
+        if (outcome === "ready" || outcome === "running") {
+          expect((await launch).sandbox.status).toBe(outcome);
+        } else {
+          const message =
+            outcome === "stale" || outcome === "same-generation restart"
+              ? "settlement is stale"
+              : outcome === "receipt rollback"
+                ? "injected receipt failure"
+                : "Initialization failed";
+          await expect(launch).rejects.toThrow(message);
+        }
+        expect(stopped).toHaveLength(outcome === "failed" || outcome === "receipt rollback" ? 1 : 0);
+        const expectedStatus =
+          outcome === "stale" || outcome === "same-generation restart"
+            ? "starting"
+            : outcome === "receipt rollback"
+              ? "failed"
+              : outcome;
+        expect(
+          (await db.query("select status,task_prompt_id,conversation_ids from sandboxes where id=$1", [id])).rows,
+        ).toEqual([
+          {
+            status: expectedStatus,
+            task_prompt_id: outcome === "running" ? "prompt_1" : null,
+            conversation_ids: outcome === "running" ? ["conv_1"] : [],
+          },
+        ]);
+        expect(
+          (
+            await db.query(
+              "select from_status,to_status,actor,code,generation::int from sandbox_transitions where sandbox_id=$1 order by id",
+              [id],
+            )
+          ).rows,
+        ).toEqual(
+          outcome === "stale"
+            ? []
+            : outcome === "same-generation restart"
+              ? [
+                  {
+                    from_status: "starting",
+                    to_status: "ready",
+                    actor: "lifecycle_runner",
+                    code: "unleased_native_launch",
+                    generation: 1,
+                  },
+                  {
+                    from_status: "ready",
+                    to_status: "starting",
+                    actor: "lifecycle_runner",
+                    code: "native_provider_phase",
+                    generation: 1,
+                  },
+                ]
+              : [
+                  {
+                    from_status: "starting",
+                    to_status: expectedStatus,
+                    actor: outcome === "running" ? "native_turn" : "lifecycle_runner",
+                    code: "unleased_native_launch",
+                    generation: 1,
+                  },
+                ],
+        );
+      } finally {
+        if (outcome === "receipt rollback")
+          await db.exec(
+            "drop trigger reject_core_launch_receipt on sandboxes; drop function pg_temp.reject_core_launch_receipt()",
+          );
+      }
+    },
+  );
+
   test("sandbox interior is current owner/admin independently of source and legacy visibility", async () => {
     const db = launchDatabase.get();
     try {
@@ -267,9 +406,10 @@ describe("launch database", () => {
         ),
       ).rejects.toThrow();
 
-      await asUser(db, people.owner, () =>
-        sandboxes.update(mine.sandbox.id, { status: "failed", statusReason: "Weekly limit reached" }),
-      );
+      await db.query("update sandboxes set status='failed', status_reason=$2 where id=$1", [
+        mine.sandbox.id,
+        "Weekly limit reached",
+      ]);
       const failed = await serviceData({
         userId: people.owner,
         orgs: [{ orgId: people.org, role: "member" }],
@@ -280,9 +420,10 @@ describe("launch database", () => {
         db.query("update sandboxes set status = 'running', stopped_at = null where id = $1", [mine.sandbox.id]),
       ).rejects.toThrow(/sandboxes_status_reason_chk/);
 
-      await asUser(db, people.owner, () =>
-        sandboxes.update(mine.sandbox.id, { status: "stopped", stoppedAt: "2026-11-08T13:00:00.000Z" }),
-      );
+      await db.query("update sandboxes set status='stopped', status_reason=null, stopped_at=$2 where id=$1", [
+        mine.sandbox.id,
+        "2026-11-08T13:00:00.000Z",
+      ]);
       const stopped = await db.query<{ status: string; stopped_at: Date; status_reason: string | null }>(
         "select status::text as status, stopped_at, status_reason from sandboxes where id = $1",
         [mine.sandbox.id],

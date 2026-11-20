@@ -1,5 +1,6 @@
 import { setTimeout as delay } from "node:timers/promises";
 import { isHarness, ProviderError } from "@armada/core";
+import type { Sql } from "@armada/core/server";
 import { currentRequestId, recordOperatorFailure } from "./request-observability.ts";
 import { type createRuntimeEnrolments, RuntimeEnrolmentDenied } from "./runtime-enrolment.ts";
 import { logRuntimeStage } from "./runtime-progress.ts";
@@ -15,7 +16,7 @@ interface Ports {
   /** Bounded host transport; contains only the ticket and public install metadata. */
   bootstrap(input: BootstrapInput): Promise<void>;
   /** Agent bridge bound to this same persisted owner/logical sandbox. */
-  health(signal: AbortSignal): Promise<{ runtime: "armada"; epoch: string }>;
+  health(signal: AbortSignal, epoch: string): Promise<{ runtime: "armada"; epoch: string }>;
 }
 interface StartupClock {
   now(): number;
@@ -44,6 +45,7 @@ export function createRuntimeStartup(
     configuration: Record<string, unknown>;
     commandGrantExpiresAt?: number;
     expectedGeneration?: number;
+    assertClaim?: (tx?: Sql) => Promise<void>;
     signal?: AbortSignal;
     /** Readiness budget AFTER the bounded host bootstrap returns. */
     readinessTimeoutMs?: number;
@@ -90,6 +92,7 @@ export function createRuntimeStartup(
         sandboxId,
         expectedProviderSandboxId: providerSandboxId,
         configuration: input.configuration,
+        ...(input.assertClaim ? { assertClaim: input.assertClaim } : {}),
         ...(input.expectedGeneration === undefined ? {} : { expectedGeneration: input.expectedGeneration }),
         ...(input.commandGrantExpiresAt !== undefined ? { commandGrantExpiresAt: input.commandGrantExpiresAt } : {}),
       });
@@ -98,6 +101,8 @@ export function createRuntimeStartup(
       diagnosticPhase = "bootstrap";
       const bootstrapAt = time.now();
       entering("bootstrap", bootstrapAt);
+      await input.assertClaim?.();
+      signal?.throwIfAborted();
       await ports.bootstrap({
         sandboxId: providerSandboxId,
         serverUrl,
@@ -134,7 +139,7 @@ export function createRuntimeStartup(
         diagnosticPhase = phase = "readiness";
         const enrolledAt = time.now();
         entering("readiness", enrolledAt);
-        const ready = await ports.health(admission);
+        const ready = await ports.health(admission, ticket.epoch);
         admission.throwIfAborted();
         if (time.now() >= deadline || ready.runtime !== "armada" || ready.epoch !== ticket.epoch)
           throw Error("runtime_startup_wrong_health");
@@ -143,8 +148,9 @@ export function createRuntimeStartup(
         await authority.withOwner(
           sandboxId,
           ownerId,
-          async (_tx, scope) => {
+          async (tx, scope) => {
             if (scope.epoch !== ticket.epoch) throw Error("runtime_startup_replaced");
+            await input.assertClaim?.(tx);
           },
           ticket.lifecycleGeneration,
         );

@@ -48,34 +48,30 @@ test.each(
     ["report", id, "blocked", "--prompt-id", id, "--reason", "audit"],
     ["bind-credential", id, "--credential-id", id],
   ].map((args) => ({ args })),
-)("missing sandbox gets actionable not_found and a legacy code: $args", async ({ args }) => {
+)("missing sandbox gets actionable not_found: $args", async ({ args }) => {
   const { exit, err } = await capture([...args, "--json"], 404, "not_found");
   expect(exit).toBe(1);
   const failure = JSON.parse(err).error;
   expect(failure.code).toBe("not_found");
-  expect(failure.legacyCode).toBe(
-    ["recovery", "advice", "report", "bind-credential"].includes(args[0] ?? "") ? "unavailable" : "conflict",
-  );
   expect(failure.message).toContain("not found or not accessible");
   expect(failure.message).toContain("armada list --json");
   expect(failure.message).not.toContain("Outcome unknown");
 });
 
 test.each([
-  [400, "invalid_request", "invalid_request", "unavailable", 2, "COMMAND --help"],
-  [403, "forbidden", "forbidden", "conflict", 1, "org admin"],
-  [409, "conflict", "conflict", "unavailable", 1, "start/stop"],
-  [409, "no_running_turn", "no_running_turn", "unavailable", 1, "armada send"],
-  [409, "sandbox_not_ready", "sandbox_not_ready", "unavailable", 1, "Wait until"],
-  [400, "unsupported", "unsupported", "unavailable", 1, "not supported"],
-  [500, "internal", "unavailable", undefined, 1, "may already have been accepted"],
-  [400, canary, "invalid_request", "unavailable", 2, "COMMAND --help"],
-])("sandbox HTTP %s / %s keeps a closed reason and next step", async (status, server, code, legacy, exit, step) => {
+  [400, "invalid_request", "invalid_request", 2, "COMMAND --help"],
+  [403, "forbidden", "forbidden", 1, "org admin"],
+  [409, "conflict", "conflict", 1, "start/stop"],
+  [409, "no_running_turn", "no_running_turn", 1, "armada send"],
+  [409, "sandbox_not_ready", "sandbox_not_ready", 1, "Wait until"],
+  [400, "unsupported", "unsupported", 1, "not supported"],
+  [500, "internal", "unavailable", 1, "may already have been accepted"],
+  [400, canary, "invalid_request", 2, "COMMAND --help"],
+])("sandbox HTTP %s / %s keeps a closed reason and next step", async (status, server, code, exit, step) => {
   const result = await capture(["steer", id, "hello", "--json"], status as number, server);
   expect(result.exit).toBe(exit);
   const failure = JSON.parse(result.err).error;
   expect(failure.code).toBe(code);
-  expect(failure.legacyCode).toBe(legacy);
   expect(failure.message).toContain(step as string);
 });
 
@@ -88,11 +84,11 @@ test("human error guidance is stderr-only and does not retry a stop rejection", 
 });
 
 test.each(["provider_unavailable", "dependency_unavailable", "outcome_unknown"])(
-  "stop preserves its previous unavailable code as an alias for %s",
+  "stop gives outcome guidance for %s",
   async (code) => {
     const result = await capture(["stop", id, "--json"], 503, code);
     expect(result.exit).toBe(1);
-    expect(JSON.parse(result.err).error).toMatchObject({ code, legacyCode: "unavailable" });
+    expect(JSON.parse(result.err).error).toMatchObject({ code });
     expect(JSON.parse(result.err).error.message).toContain("armada list --json");
   },
 );
