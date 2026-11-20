@@ -121,7 +121,7 @@ export type Defect =
   | "wrong-prompt"
   | "wrong-request"
   | "wrong-source";
-export type CliFlag =
+type CliFlag =
   | "--resume"
   | "--ordinary"
   | "--idle"
@@ -133,7 +133,7 @@ export type CliFlag =
   | "--skills"
   | "--variables"
   | "--usage";
-export interface Expected {
+interface Expected {
   success: boolean;
   counters: { launches: number; stops: number; checkpoints: number; resumes: number; sends: number };
   firstSends?: number;
