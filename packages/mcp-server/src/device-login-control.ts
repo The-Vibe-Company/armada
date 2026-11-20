@@ -1,22 +1,27 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
-import { BodyTooLargeError, createDeviceLoginStore, createDeviceSession } from "@armada/auth";
+import { BodyTooLargeError, createDeviceLoginStore, createDeviceOAuth } from "@armada/auth";
 import type { Sql } from "@armada/core";
 import { controlRouteKey, deviceConsentMessage, publicAuthOperations } from "@armada/core/contract";
-import { VaultError } from "@armada/core/server";
+import { decryptSecret, encryptSecret, VaultError } from "@armada/core/server";
 import { authenticateCaller } from "./caller.ts";
 import { readBody } from "./control-body.ts";
 import type { ControlOptions } from "./control-options.ts";
 import { fail } from "./control-response.ts";
 import { defineRoutes } from "./routes.ts";
 
-export function deviceLoginFromConfig(
-  db: Sql,
-  dashboardUrl: string,
-  adminKey: string | undefined,
-  consentKey: string | undefined,
-) {
-  if (!adminKey || !consentKey || !/^[a-f0-9]{64}$/.test(consentKey)) return undefined;
-  return { store: createDeviceLoginStore(db), dashboardUrl, adminKey, consentKey };
+export function deviceLoginFromConfig(db: Sql, dashboardUrl: string, env: Record<string, string | undefined>) {
+  const {
+    ARMADA_CLI_OAUTH_CLIENT_ID: clientId,
+    ARMADA_CLI_OAUTH_CLIENT_SECRET: clientSecret,
+    ARMADA_CLI_CONSENT_KEY: consentKey,
+  } = env;
+  if (!clientId || !clientSecret || !consentKey || !/^[a-f0-9]{64}$/.test(consentKey)) return undefined;
+  return {
+    store: createDeviceLoginStore(db),
+    dashboardUrl,
+    consentKey,
+    oauth: createDeviceOAuth(clientId, clientSecret, new URL("/cli-login", dashboardUrl).href),
+  };
 }
 
 const { authDeviceStart, authDeviceInspect, authDeviceDecide, authDevicePoll } = publicAuthOperations;
@@ -54,11 +59,9 @@ async function handle(
       if (!parsed.success) return fail(400, "invalid", "Invalid CLI poll.");
       const result = await device.store.poll(parsed.data.device_code);
       if (result.status !== "approved") return respond(result);
-      const { accessToken, refreshToken, expiresAt, email } = await createDeviceSession(
-        { ...options.supabase, fetch: options.supabase.fetch ?? fetch, adminKey: device.adminKey, now },
-        result.userId,
-      );
-      return respond({ status: "authorized", accessToken, refreshToken, expiresAt, email });
+      const code = await decryptSecret(result.codeEnc, options.encryptionKey);
+      const session = await device.oauth(options.supabase, now).exchange(result.id, code, result.userId);
+      return respond({ status: "authorized", ...session });
     }
 
     const authorization = request.headers.get("authorization");
@@ -87,7 +90,15 @@ async function handle(
     if (Math.abs(now.getTime() - issued_at) > 60_000 || !timingSafeEqual(expected, Buffer.from(proof, "hex")))
       return fail(401, "unauthorized", "Confirm the CLI login on the dashboard.");
 
-    const decided = await device.store.decide(id, user_code, caller.caller.userId, approve);
+    const userId = caller.caller.userId;
+    let codeEnc = null;
+    if (approve) {
+      const login = await device.store.inspect(id);
+      if (login?.user_code !== user_code) return missing();
+      const code = await device.oauth(options.supabase, now).approve(id, userId, authorization);
+      codeEnc = await encryptSecret(code, options.encryptionKey);
+    }
+    const decided = await device.store.decide(id, user_code, userId, codeEnc);
     return decided ? respond({ ok: true }) : missing();
   } catch (error) {
     if (error instanceof BodyTooLargeError) return fail(413, "invalid", "CLI login request is too large.");

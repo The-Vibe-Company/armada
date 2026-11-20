@@ -126,8 +126,7 @@ export function controlOptionsFromEnv(env: Record<string, string | undefined>): 
   const deviceLogin = deviceLoginFromConfig(
     sql,
     dashboardOrigin(env.ARMADA_DASHBOARD_URL, env.NODE_ENV === "development"),
-    env.SUPABASE_SERVICE_ROLE_KEY,
-    env.ARMADA_CLI_CONSENT_KEY,
+    env,
   );
   return {
     ...(deviceLogin ? { deviceLogin } : {}),
@@ -146,7 +145,7 @@ export function controlOptionsFromEnv(env: Record<string, string | undefined>): 
     mcp: { registry },
     connections: createSqlMcpLaunchPort(sql, registry),
     authStore,
-    supabase: { supabaseUrl, anonKey },
+    supabase: { supabaseUrl, anonKey, cliOAuthClientId: env.ARMADA_CLI_OAUTH_CLIENT_ID },
     encryptionKey,
     github: { app: githubApp },
     store,

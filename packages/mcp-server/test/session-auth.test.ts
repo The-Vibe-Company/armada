@@ -95,6 +95,35 @@ test("invalid signed claims, signatures and unknown keys never reach the session
   expect(reads).toBe(0);
 });
 
+test("only Armada's CLI OAuth client can use a client-bound Supabase session", async () => {
+  const cliOAuthClientId = "armada-cli";
+  const options = {
+    now,
+    store: {
+      sessionMemberships: async () => [],
+      memberships: async () => [],
+    } as unknown as AuthStore,
+    supabase: {
+      supabaseUrl: "https://project.supabase.co",
+      anonKey: "public_placeholder",
+      cliOAuthClientId,
+      fetch: async (url: string | URL | Request) => {
+        if (String(url) === `${issuer}/.well-known/jwks.json`) return Response.json({ keys: [jwk] });
+        expect(String(url)).toBe(`${issuer}/oauth/userinfo`);
+        return Response.json({ sub: userId });
+      },
+    },
+  };
+  const symmetricToken = (client_id: string) =>
+    new SignJWT({ sub: userId, client_id }).setProtectedHeader({ alg: "HS256" }).sign(new Uint8Array(32));
+  for (const signed of [token, (claims: { client_id: string }) => symmetricToken(claims.client_id)]) {
+    const foreign = await signed({ client_id: "other-client" });
+    const cli = await signed({ client_id: cliOAuthClientId });
+    expect((await authenticateCaller(`Bearer ${foreign}`, options)).ok).toBe(false);
+    expect((await authenticateCaller(`Bearer ${cli}`, options)).ok).toBe(true);
+  }
+});
+
 test("public key cache expires after sixty seconds without accepting removed keys or bypassing outages", async () => {
   let time = now.getTime(),
     fetches = 0,

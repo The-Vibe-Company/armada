@@ -27,10 +27,14 @@ function keys(project: { supabaseUrl: string; fetch?: AuthFetch }) {
   return resolver;
 }
 
+export function acceptsSessionClient(client: unknown, allowedClient: string | undefined) {
+  return client === undefined || (typeof client === "string" && client !== "" && client === allowedClient);
+}
+
 /** Undefined keeps legacy algorithms on Auth's existing path; null refuses an invalid ES256 bearer. */
 export async function verifySessionJwt(
   token: string,
-  project: { supabaseUrl: string; fetch?: AuthFetch },
+  project: { supabaseUrl: string; fetch?: AuthFetch; cliOAuthClientId?: string | undefined },
   now: Date,
 ): Promise<{ userId: string; sessionId: string } | null | undefined> {
   let header: ReturnType<typeof decodeProtectedHeader>;
@@ -52,6 +56,7 @@ export async function verifySessionJwt(
     });
     if (
       payload.role !== "authenticated" ||
+      !acceptsSessionClient(payload.client_id, project.cliOAuthClientId) ||
       typeof payload.sub !== "string" ||
       !UUID.test(payload.sub) ||
       typeof payload.session_id !== "string" ||
