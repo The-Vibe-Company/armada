@@ -491,14 +491,16 @@ test("runner restore admission commits the transition, binding and mailbox inten
   const create = await store.poll(a.hostToken, a.installationId);
   if (create?.operation !== "create") throw new Error("Missing predecessor allocation.");
   await store.complete(a.hostToken, a.installationId, { requestId: create.requestId, outcome: "completed" });
-  await db.query("update sandboxes set status='stopped',stopped_at=now() where id=$1", [sandboxId]);
+  const stop = { requestId: randomUUID(), operation: "stop" as const };
+  await store.enqueueSandbox(a.owner, sandboxId, stop);
+  await store.complete(a.hostToken, a.installationId, { requestId: stop.requestId, outcome: "completed" });
 
   const owner = randomUUID();
   const jobs = createJobsStore(sql, key);
   const jobId = await jobs.enqueue(
     "turn_dispatch",
     sandboxId,
-    1,
+    2,
     randomUUID(),
     {},
     {
@@ -526,7 +528,7 @@ test("runner restore admission commits the transition, binding and mailbox inten
       )
     ).rows;
   const handoff = (jobStore: typeof jobs) =>
-    store.admitMachineRestore(a.owner, claimed, predecessor, (steps) =>
+    store.admitMachineRestore(a.owner, claimed, { ...predecessor, machineGeneration: 1 }, (steps) =>
       jobStore.handoffGeneration(claimed, owner, steps),
     );
 
@@ -544,15 +546,17 @@ test("runner restore admission commits the transition, binding and mailbox inten
   );
   await expect(handoff(interrupted)).rejects.toBe(failure);
   expect(await snapshot()).toEqual([
-    { status: "stopped", lifecycle_generation: "1", docker_generation: generation, job_generation: "1", intents: 0 },
+    { status: "stopped", lifecycle_generation: "2", docker_generation: generation, job_generation: "2", intents: 0 },
   ]);
-  expect(await bindings.lookup({ sandboxId, generation: 2 })).toBeUndefined();
+  expect(await bindings.lookup({ sandboxId, generation: 3 })).toBeUndefined();
+  expect((await store.list(a.actor))[0]?.running).toBe(0);
 
   const result = await handoff(jobs);
-  expect(result.generation).toBe(2);
-  expect(await bindings.lookup({ sandboxId, generation: 2 })).toBe(result.requestId);
+  expect(result.generation).toBe(3);
+  expect(await bindings.lookup({ sandboxId, generation: 3 })).toBe(result.requestId);
+  expect((await store.list(a.actor))[0]?.running).toBe(1);
   expect(await snapshot()).toEqual([
-    { status: "starting", lifecycle_generation: "2", docker_generation: generation, job_generation: "2", intents: 1 },
+    { status: "starting", lifecycle_generation: "3", docker_generation: generation, job_generation: "3", intents: 1 },
   ]);
   await expect(
     store.poll(

@@ -1305,12 +1305,21 @@ export function createDockerHostStore(sql: Sql, key: string) {
     async admitMachineRestore(
       actor: Actor,
       job: Pick<RunnerJob, "sandbox_id" | "generation">,
-      predecessor: RestoreJob["predecessor"],
+      retained: RestoreJob["predecessor"] & { machineGeneration: number },
       handoffGeneration: (handoff: GenerationHandoff) => Promise<string>,
     ) {
       const { sandbox_id: sandboxId, generation } = job;
       const expected = Number(generation);
-      if (!sandboxId || predecessor.request.sandboxId !== sandboxId || !Number.isSafeInteger(expected) || expected < 1)
+      const { machineGeneration, ...predecessor } = retained;
+      if (
+        !sandboxId ||
+        predecessor.request.sandboxId !== sandboxId ||
+        !Number.isSafeInteger(expected) ||
+        expected < 1 ||
+        !Number.isSafeInteger(machineGeneration) ||
+        machineGeneration < 0 ||
+        machineGeneration > expected
+      )
         deny();
 
       let admission: Awaited<ReturnType<typeof lockSandboxAdmission>> | undefined;
@@ -1326,7 +1335,8 @@ export function createDockerHostStore(sql: Sql, key: string) {
             hostId: host.id,
             installationId: row.docker_installation_id,
           });
-          if ((await bindings.lookup({ sandboxId, generation: expected })) !== predecessor.request.generation) deny();
+          if ((await bindings.lookup({ sandboxId, generation: machineGeneration })) !== predecessor.request.generation)
+            deny();
           const epoch = await permission(tx, actor, row, "restore");
           await refuseDraining(tx, host.id);
           await admitDockerCapacity(tx, host.id);
