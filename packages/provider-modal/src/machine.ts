@@ -92,7 +92,8 @@ export async function terminateModalCompute(
   const exitCode = await sandbox.poll();
   signal?.throwIfAborted();
   if (exitCode !== null) return;
-  await sandbox.terminate({ wait });
+  if (wait) await sandbox.terminate({ wait: true });
+  else await sandbox.terminate();
   signal?.throwIfAborted();
   if ((await sandbox.poll()) === null) throw refusal("unavailable", "Modal termination has not completed.");
   signal?.throwIfAborted();
