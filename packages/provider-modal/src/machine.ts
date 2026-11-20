@@ -309,7 +309,7 @@ case $? in
 esac`;
   await dispatchRuntimeBootstrap(
     sb,
-    ["sh", "-c", lockAndExec, "sh", lock, "node", "-e", script],
+    () => ["sh", "-c", lockAndExec, "sh", lock, "node", "-e", script],
     serverUrl,
     ticket.enrolmentToken,
     "Enrolled Modal bootstrap failed; reconcile the runtime binding.",

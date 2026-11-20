@@ -28,13 +28,13 @@ export function validateRuntimeTicket(ticket: RuntimeTicket) {
 
 export async function dispatchRuntimeBootstrap(
   sandbox: Sandbox,
-  command: string[],
+  command: () => string[],
   serverUrl: string,
   enrolmentToken: string,
   failureMessage: string,
 ) {
   try {
-    const child = await sandbox.exec(["/usr/bin/env", "-i", "PATH=/usr/local/bin:/usr/bin:/bin", ...command], {
+    const child = await sandbox.exec(["/usr/bin/env", "-i", "PATH=/usr/local/bin:/usr/bin:/bin", ...command()], {
       env: {},
       secrets: [],
       timeoutMs: 150_000,

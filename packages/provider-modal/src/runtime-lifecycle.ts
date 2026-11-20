@@ -55,7 +55,11 @@ export function createRuntimeLifecycle({
         await save(row);
         await dispatchRuntimeBootstrap(
           sb,
-          ["node", "-e", runtimeBootstrapScript(serverUrl, input.artifact, input.cacheDir, SHARED_ARTIFACT_CACHE_PATH)],
+          () => [
+            "node",
+            "-e",
+            runtimeBootstrapScript(serverUrl, input.artifact, input.cacheDir, SHARED_ARTIFACT_CACHE_PATH),
+          ],
           serverUrl,
           input.enrolmentToken,
           "Enrolled Modal bootstrap failed; spawn outcome must be reconciled.",
