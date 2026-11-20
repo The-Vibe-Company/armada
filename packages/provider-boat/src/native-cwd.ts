@@ -1,7 +1,7 @@
 import { deflateSync } from "node:zlib";
 import type { ExecRequest } from "@armada/core";
 import { claudeMcpBridge } from "./native-claude-mcp.ts";
-import { NATIVE_USAGE_BOOTSTRAP } from "./native-usage.ts";
+import { claudePythonModules, codexPythonModules, NATIVE_USAGE_BOOTSTRAP, nativePython } from "./native-usage.ts";
 
 export const NATIVE_HARNESS_PATHS = {
   codex: "/usr/local/bin/codex",
@@ -27,17 +27,22 @@ export async function installNativeCwdWrapper(
     sandboxId,
     timeoutSeconds: 60,
     command: [
-      nativeInterpreterSetup(harness === "codex" || managedClaudeMcp || readableVariables),
+      nativeInterpreterSetup(
+        harness === "codex" ? codexPythonModules : managedClaudeMcp ? claudePythonModules : undefined,
+        readableVariables,
+      ),
       nativeCwdInstallScript(path, command, cwd, managedClaudeMcp),
     ].join("; "),
   });
 }
 
-function nativeInterpreterSetup(pythonRequired: boolean) {
-  const check = ["/bin/bash -c ':'", ...(pythonRequired ? ["/usr/bin/python3 -I -c 'import tomllib'"] : [])].join(
-    " && ",
-  );
-  const packages = pythonRequired ? "bash python3" : "bash";
+function nativeInterpreterSetup(bridgeModules: string | undefined, readableVariables: boolean) {
+  const check = [
+    "/usr/bin/env -i /bin/bash -c ':'",
+    ...(bridgeModules ? [`test -n ${nativePython(bridgeModules)}`] : []),
+    ...(readableVariables ? ["/usr/bin/python3 -I -c 'import hashlib,json,os,stat,tempfile'"] : []),
+  ].join(" && ");
+  const packages = bridgeModules || readableVariables ? "bash python3" : "bash";
   const apt = quote(
     `/usr/bin/apt-get -o DPkg::Lock::Timeout=15 update && /usr/bin/apt-get -o DPkg::Lock::Timeout=15 install -y --no-install-recommends ${packages}`,
   );
@@ -46,7 +51,7 @@ function nativeInterpreterSetup(pythonRequired: boolean) {
     `native_interpreters_ready() { { ${check}; } >/dev/null 2>&1; }`,
     "if ! native_interpreters_ready; then",
     `  if [ "$(/usr/bin/id -u)" -eq 0 ]; then ${install}; else /usr/bin/sudo -n ${install}; fi || { echo 'Boat native wrapper could not install system interpreters' >&2; exit 1; }`,
-    "  if ! native_interpreters_ready; then echo 'Boat native wrapper requires system Bash and, for Python bridges, Python 3.11+' >&2; exit 1; fi",
+    "  if ! native_interpreters_ready; then echo 'Boat native wrapper requires system Bash and a compatible Python for the requested bridge' >&2; exit 1; fi",
     "fi",
   ].join("\n");
 }
@@ -61,8 +66,8 @@ export function nativeCwdCommand(path: string, harness: NativeHarness, cwd?: str
         `selected=${quote(cwd ?? "")}`,
         `if [ -z "$selected" ] && [ -f ${quote(`${path}.armada-cwd`)} ]; then selected=$(cat -- ${quote(`${path}.armada-cwd`)}); fi`,
         'if [ -n "$selected" ]; then cd -- "$selected" || exit 1; fi',
-        `if [ -x "$HOME/.armada/github-native-proxy" ]; then exec "$HOME/.armada/github-native-proxy" ${managedClaudeMcp ? `/usr/bin/python3 -I -c ${quote(claudeMcpBridge)} ` : ""}${original} "$@"; fi`,
-        `exec ${managedClaudeMcp ? `/usr/bin/python3 -I -c ${quote(claudeMcpBridge)} ` : ""}${original} "$@"`,
+        `if [ -x "$HOME/.armada/github-native-proxy" ]; then exec "$HOME/.armada/github-native-proxy" ${managedClaudeMcp ? `${nativePython(claudePythonModules)} -I -c ${quote(claudeMcpBridge)} ` : ""}${original} "$@"; fi`,
+        `exec ${managedClaudeMcp ? `${nativePython(claudePythonModules)} -I -c ${quote(claudeMcpBridge)} ` : ""}${original} "$@"`,
       ].join("; "),
     );
   // Bash arrays preserve arbitrary runtime arguments without eval or shell re-parsing.
@@ -83,7 +88,7 @@ export function nativeCwdCommand(path: string, harness: NativeHarness, cwd?: str
     // Boat sends WORK_DIR as cwd in thread/start and thread/resume, overriding process cwd.
     // Only stdio app-server needs a protocol bridge; CLI invocations keep their normal transport.
     `if [ "\${args[0]-}" = app-server ]; then`,
-    `  exec /usr/bin/python3 -I -c ${quote(compressedCodexBridge())} "$selected" ${original} "\${args[@]}"`,
+    `  exec ${nativePython(codexPythonModules)} -I -c ${quote(compressedCodexBridge())} "$selected" ${original} "\${args[@]}"`,
     "fi",
     `exec ${original} "\${args[@]}"`,
   ].join("\n");
@@ -93,7 +98,7 @@ export function nativeCwdCommand(path: string, harness: NativeHarness, cwd?: str
 /** The command runs only inside a Boat sandbox, through its existing VM exec primitive. */
 export function nativeCwdInstallScript(path: string, command: string, cwd?: string, managedClaudeMcp = false): string {
   const payload = nativeCwdInstallPayload(path, command, cwd, managedClaudeMcp);
-  return `if [ "$(id -u)" -eq 0 ]; then /bin/bash -c ${quote(payload)}; else exec sudo -n /bin/bash -c ${quote(payload)}; fi`;
+  return `if [ "$(id -u)" -eq 0 ]; then bash -c ${quote(payload)}; else exec sudo -n bash -c ${quote(payload)}; fi`;
 }
 
 function nativeCwdInstallPayload(

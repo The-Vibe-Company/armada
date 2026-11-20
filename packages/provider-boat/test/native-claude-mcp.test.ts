@@ -22,6 +22,7 @@ test("ordinary Claude needs no Python bridge and managed installation refuses fa
         async (request) => {
           const command = request.command
             .replaceAll("/usr/bin/python3", "/nonexistent/python3")
+            .replaceAll("/usr/local/bin/python3", "/nonexistent/local-python3")
             .replaceAll("/usr/bin/id", "/nonexistent/id")
             .replaceAll("/usr/bin/apt-get", "/nonexistent/apt-get")
             .replaceAll("/usr/bin/sudo", "/nonexistent/sudo");

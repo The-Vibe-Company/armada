@@ -15,8 +15,33 @@ import {
 const BOAT_INPUT_PREFIX = "<important-instructions-from-user>\n";
 const BOAT_INPUT_SUFFIX = "</important-instructions-from-user>";
 const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
+export const codexPythonModules = "tomllib,zlib";
+export const claudePythonModules = "json,os,signal,stat,subprocess,threading,uuid";
+
+export function nativePython(modules: string) {
+  return `"$(
+    for python in /usr/bin/python3 /usr/local/bin/python3; do
+      if [ "$python" = /usr/local/bin/python3 ] && [ "$(/usr/bin/id -u)" -eq 0 ]; then
+        python=$(/usr/bin/readlink -f -- "$python") || continue
+        path="$python"
+        while [ -n "$path" ]; do
+          mode=$(/usr/bin/stat -c %a -- "$path") && owner=$(/usr/bin/stat -c %u -- "$path") || break
+          [ "$owner" -eq 0 ] && [ "$((0$mode & 022))" -eq 0 ] || break
+          path=${"$"}{path%/*}
+        done
+        [ -z "$path" ] || continue
+      fi
+      if "$python" -I -c 'import ${modules}' >/dev/null 2>&1; then
+        printf '%s' "$python"
+        exit 0
+      fi
+    done
+    exit 1
+  )"`;
+}
+
 const command = (operation: string, ...args: string[]) =>
-  `/usr/bin/python3 -I -c ${quote(NATIVE_USAGE_BOOTSTRAP)} ${[operation, ...args].map(quote).join(" ")}`;
+  `${nativePython("json,os,stat,zlib")} -I -c ${quote(NATIVE_USAGE_BOOTSTRAP)} ${[operation, ...args].map(quote).join(" ")}`;
 export async function admitNativeUsage(provider: Provider, sandboxId: string, text: string): Promise<string | null> {
   const ticket = randomUUID();
   try {
