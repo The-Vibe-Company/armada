@@ -14,23 +14,24 @@ import { optional, required } from "./control-input.ts";
 import { connectOrgProvider, disconnectOrgProvider, orgProviderStatus, validateOrgProvider } from "./org-provider.ts";
 import { type ControlRouteContext, defineRoutes } from "./routes.ts";
 
-function parseMemberInput<T extends z.ZodType>(schema: T, value: unknown): z.output<T> {
+function parseMemberInput<T extends z.ZodType>(schema: T, value: unknown) {
   const parsed = schema.safeParse(value);
   if (!parsed.success)
     throw new VaultError("invalid", parsed.error.issues[0]?.message ?? "Invalid membership request.");
-  return parsed.data;
+  const data: z.output<T> = parsed.data;
+  return data;
 }
 
 function memberRoute<T extends z.ZodType & { shape: { org: z.ZodType<string | null | undefined> } }>(
   operation: { route: { method: "POST" }; input: { body: T } },
-  handle: (context: ControlRouteContext, input: Omit<z.output<T>, "org"> & { org: string | undefined }) => unknown,
+  handle: (context: ControlRouteContext, org: string | undefined, input: z.output<T>) => unknown,
 ) {
   const schema = operation.input.body;
   return {
     methods: [operation.route.method],
     handler: (context: ControlRouteContext) => {
       const org = scopedOrg(context.caller, parseMemberInput(schema.shape.org, context.body.org) ?? undefined);
-      return handle(context, { ...parseMemberInput(schema, context.body), org });
+      return handle(context, org, parseMemberInput(schema, context.body));
     },
   };
 }
@@ -54,25 +55,25 @@ export const orgRoutes = defineRoutes("org-control", {
   },
   [controlRouteKey(memberOperations.listMembers.route)]: memberRoute(
     memberOperations.listMembers,
-    ({ caller, options }, { org }) => listMembers(options.store, caller.userId, org),
+    ({ caller, options }, org) => listMembers(options.store, caller.userId, org),
   ),
   [controlRouteKey(memberOperations.addMember.route)]: memberRoute(
     memberOperations.addMember,
-    async ({ caller, options }, { org, email, role }) => ({
+    async ({ caller, options }, org, { email, role }) => ({
       member: await addMember(options.store, caller.userId, { org, email, role: role ?? "member" }),
     }),
   ),
   [controlRouteKey(memberOperations.setMemberRole.route)]: memberRoute(
     memberOperations.setMemberRole,
-    async ({ caller, options }, input) => {
-      await setMemberRole(options.store, caller.userId, input);
+    async ({ caller, options }, org, { email, role }) => {
+      await setMemberRole(options.store, caller.userId, { org, email, role });
       return { ok: true };
     },
   ),
   [controlRouteKey(memberOperations.removeMember.route)]: memberRoute(
     memberOperations.removeMember,
-    async ({ caller, options }, input) => {
-      await removeMember(options.store, caller.userId, input);
+    async ({ caller, options }, org, { email }) => {
+      await removeMember(options.store, caller.userId, { org, email });
       return { ok: true };
     },
   ),
