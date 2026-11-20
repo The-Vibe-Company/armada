@@ -952,6 +952,7 @@ export function createSqlData(
             and s.provider_sandbox_id=$${params.length - 1}
             and s.status_reason is not distinct from $${params.length}::text
             and s.provider in ('boat','modal') and not s.boat_runtime and s.runtime_transport is distinct from 'dialout'
+            and (s.status<>'failed' or s.stopped_at is null)
             and s.stop_requested_at is null and s.deleted_at is null and s.status<>'deleted'`;
         }
         if (patch.nativeSteerReceipt) fence += " and s.activity_until>clock_timestamp()";

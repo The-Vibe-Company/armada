@@ -567,7 +567,7 @@ test.each(["accepted", "already running", "stale state", "expired lease"] as con
   },
 );
 
-test.each(["applied", "stale source", "stale diagnostic", "commit failure"] as const)(
+test.each(["applied", "stale source", "stale diagnostic", "confirmed exit", "commit failure"] as const)(
   "native same-state diagnostic refresh (%s)",
   async (outcome) => {
     const { db, people, sharedGoldenId } = await failureDatabase();
@@ -592,6 +592,8 @@ test.each(["applied", "stale source", "stale diagnostic", "commit failure"] as c
       await db.query("update sandboxes set status='ready',status_reason=null where id=$1", [id]);
     if (outcome === "stale diagnostic")
       await db.query("update sandboxes set status_reason='Newer diagnostic' where id=$1", [id]);
+    if (outcome === "confirmed exit")
+      await db.query("update sandboxes set stopped_at=$2 where id=$1", [id, "2026-01-01T00:00:00.000Z"]);
     if (outcome === "commit failure")
       await db.exec(`create function reject_diagnostic_refresh() returns trigger language plpgsql as $$
         begin raise exception 'Diagnostic commit rejected'; end $$;
@@ -601,7 +603,13 @@ test.each(["applied", "stale source", "stale diagnostic", "commit failure"] as c
     const expected = {
       status: outcome === "stale source" ? "ready" : "failed",
       statusReason:
-        outcome === "stale source" ? null : outcome === "stale diagnostic" ? "Newer diagnostic" : info.error,
+        outcome === "stale source"
+          ? null
+          : outcome === "stale diagnostic"
+            ? "Newer diagnostic"
+            : outcome === "confirmed exit"
+              ? "Prior diagnostic"
+              : info.error,
     };
     try {
       const observation = readStatus(boat.provider, store, sandbox, { now: new Date("2026-01-01") });
