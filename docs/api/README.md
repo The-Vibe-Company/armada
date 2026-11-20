@@ -49,10 +49,10 @@ snapshot. A successful pinned-template request to `sandbox/launch` includes
 `sandbox.templateManifest` in the same envelope. The separate
 `templates/launch` operation returns a durable template receipt.
 
-The request can select a model account with `credentialId`. The selected
-account's simultaneous-agent limit applies across sandbox providers. For Morph
-account setup, model selection and the default limit, see
-[Morph model accounts](../morph.md).
+For Boat and Modal snapshot launches and for Docker launches, use
+`credentialId` to select a model account. The account’s simultaneous-agent
+limit applies across sandbox providers. For Morph account setup, model
+selection and the default limit, see [Morph model accounts](../morph.md).
 
 Omit `prompt` to launch without starting a turn. The first
 `sandbox/send` then opens the conversation. Save the returned Armada
