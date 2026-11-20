@@ -411,6 +411,18 @@ begin
     raise exception 'failed sandbox exit is unconfirmed' using errcode = '22023';
   end if;
 
+  if native_stopped_failure and sandbox.status = 'stopped' then
+    if p_activity_lease is not null or p_effects is distinct from '[]'::jsonb then
+      raise exception 'unconfirmed native failure has no lifecycle lease or effects' using errcode = '22023';
+    end if;
+    -- Do not target exit columns: their UPDATE trigger resolves uncertain capacity.
+    update public.sandboxes set status = p_to_state, status_reason = p_status_reason,
+      transition_context = jsonb_build_object('actor', p_actor, 'code', p_code)
+    where id = p_id;
+    return query select true, sandbox.lifecycle_generation;
+    return;
+  end if;
+
   if (p_to_state = 'starting' and not native_resume) or self_finish or docker_stop or docker_expiry or docker_cleanup or interrupted_resume
     or failed_resume_request or extension_expiry or native_retention_refusal then
     sandbox.lifecycle_generation := sandbox.lifecycle_generation + 1;
@@ -441,7 +453,6 @@ begin
         when extension_expiry then 'expired'
         when owner_stop_admission then coalesce(p_status_reason, s.status_reason)
         when owner_stop_settlement then s.status_reason
-        when native_stopped_failure and s.status = 'stopped' then p_status_reason
         when docker_refusal or interrupted_resume then null
         when p_code = 'docker_idle_paused' then 'idle_paused'
         when p_code = 'docker_work_merged' then 'work_merged'

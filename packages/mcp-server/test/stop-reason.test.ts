@@ -211,6 +211,12 @@ test.each([
       const row = await store.get(id);
       const reservation = await db.query("select sandbox_id from account_agent_reservations where sandbox_id=$1", [id]);
       expect(reservation.rows).toEqual(applied && confirmed ? [] : [{ sandbox_id: id }]);
+      if (from === "stopped" && !confirmed) {
+        const { rows } = await db.query("select dispatch_generation::int from account_turn_queue where sandbox_id=$1", [
+          id,
+        ]);
+        expect(rows).toEqual([{ dispatch_generation: sandbox.lifecycleGeneration }]);
+      }
       if (applied) {
         expect(journal.rows).toEqual([
           {
