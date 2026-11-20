@@ -747,7 +747,6 @@ test.each([false, true])("idle checkpoint fences Docker stop and retained restor
   expect(await runtime.ready(f.actor, f.sandbox.id, verifiedId)).toEqual({ state: "pending" });
   expect((await reservations.get(f.actor, f.sandbox.id)).status).toBe("starting");
 
-  // Simulate an overlapping server that acknowledged the verified health reply without the transition.
   await db.query(
     "update public.runtime_commands set result_enc=$4 where sandbox_id=$1 and epoch=$2 and request_id=$3",
     [f.sandbox.id, resumed.epoch, verified.requestId, await encryptSecret(JSON.stringify(verifiedReceipt), key)],
