@@ -580,6 +580,17 @@ test("detail verifies the App once per read and still rejects a changed binding"
   expect(appReads).toBe(2);
 });
 
+test("detail refuses exit evidence from a different physical machine", async () => {
+  const f = fixture();
+  const row = await activeWorker(f);
+  const lookup = f.client.sandboxes.fromId;
+  f.client.sandboxes.fromId = async (id) => {
+    const sandbox = await lookup(id);
+    return { ...sandbox, sandboxId: "sb_other", poll: async () => 0 } as Sandbox;
+  };
+  await expect(f.provider.get(row.id)).rejects.toMatchObject({ code: "conflict" });
+});
+
 async function goldenBuildGitHub(key: string): Promise<typeof fetch> {
   await getDb().query(
     "insert into github_connections(user_id,github_id,login,refresh_token_enc,access_token_enc,access_expires_at) values($1,77,'builder',$2,$3,now()+interval '8 hours') on conflict (user_id) do update set refresh_token_enc=excluded.refresh_token_enc,access_token_enc=excluded.access_token_enc,access_expires_at=excluded.access_expires_at",
