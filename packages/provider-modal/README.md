@@ -2,7 +2,7 @@
 
 ## Root / #523 factory contract
 
-`await createComposedModalProvider(options)` returns `{provider, ingest, close}`.
+`await createComposedModalProvider(options)` returns `{provider, captureRuntimeWork, ingest, close}`. Runtime work capture is a separate connection port.
 Mount `ingest` at the exact public HTTPS `ingestUrl` under the server's `/api/v1`
 routing. Provide transactional server SQL, persistent random >=32-byte signingKey,
 appName, artifact and resolveHarnessEnvironment.

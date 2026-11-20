@@ -121,7 +121,7 @@ describe("createGoldenCreateService, wired to a real database", () => {
           expect(binding).toEqual(modal);
           expect(context.credentialScope).toBe("org");
           expect(context.caller.userId).toBe(actor.userId);
-          return provider;
+          return { provider };
         },
       });
       const workerTargets: unknown[] = [];

@@ -1135,7 +1135,13 @@ test.each(stopRecoveryCases)("scoped Modal stop recovery after %s", async (loss)
           expect(target.visibility).toBe("private");
           expect(target.sourceGoldenVisibility).toBe("org");
           expect(caller.userId).toBe(p.owner);
-          return createRuntimeProvider(host, physicalId, { events: host.events, getPrompt: host.getPrompt });
+          return createRuntimeProvider(
+            host,
+            physicalId,
+            { events: host.events, getPrompt: host.getPrompt },
+            undefined,
+            host.captureRuntimeWork,
+          );
         },
       },
       credentials,

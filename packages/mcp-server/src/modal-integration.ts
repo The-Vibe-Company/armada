@@ -231,7 +231,7 @@ export async function createModalIntegration(options: {
     context: Parameters<NonNullable<HandlerOptions["modalProviderFor"]>>[2],
     storedReads = false,
     onRuntimeBinding?: (binding: ModalArtifactBinding) => void,
-  ): Promise<Provider> => {
+  ) => {
     const authority = await options.sql.query<{ app_name: string }>(
       "select app_name from public.modal_server_apps where org_id=$1 and app_id=$2 and environment=$3",
       [context.target.orgId, binding.appId, binding.environment],
@@ -299,9 +299,9 @@ export async function createModalIntegration(options: {
       }),
     };
     // Stored reads skip the App lookup and every live Modal call: they read Armada's database, so no provider record.
-    if (storedReads) return (await createComposedModalProvider(composed)).provider;
+    if (storedReads) return createComposedModalProvider(composed);
     const sandbox = { sandboxId: () => diagnosticSandboxId(context.target) };
-    const { provider } = await observeProviderCall(
+    const { provider, captureRuntimeWork } = await observeProviderCall(
       "modal",
       "initialize",
       () => createComposedModalProvider(composed),
@@ -309,7 +309,10 @@ export async function createModalIntegration(options: {
       sandbox,
     );
     onRuntimeBinding?.({ appId: binding.appId, appName, environment: binding.environment, ...tokens });
-    return observeProvider("modal", provider, sandbox);
+    return {
+      provider: observeProvider("modal", provider, sandbox),
+      captureRuntimeWork: observeProvider("modal", { captureRuntimeWork }, sandbox).captureRuntimeWork,
+    };
   };
   async function goldenTarget(
     target: Omit<ProviderTarget, "modal">,
@@ -434,7 +437,7 @@ export async function createModalIntegration(options: {
     storedProviderFor: async (target: ProviderTarget, caller: { userId: string }) => {
       if (target.provider !== "modal" || !target.modal) throw new VaultError("invalid", "Expected Modal binding.");
       const tokens = await modalTokensFor(target, caller);
-      const host = await modalProviderFor(
+      const { provider: host } = await modalProviderFor(
         // The resolver's scope label is not the structured machine Scope.
         // Pass only the token pair, exactly as the live registry does.
         { tokenId: tokens.tokenId, tokenSecret: tokens.tokenSecret },

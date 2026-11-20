@@ -158,7 +158,7 @@ async function composeModalProvider(options: ComposedModalOptions) {
     captureProcessBaseline,
     sealProcessBaseline,
   });
-  const provider = createModalProvider({
+  const connectionPorts = createModalProvider({
     ...options,
     ...connection,
     deploymentId: modalDeploymentId(options.scope.binding.environment, ingestUrl.origin),
@@ -171,7 +171,7 @@ async function composeModalProvider(options: ComposedModalOptions) {
   });
   const ingest = createModalIngestHandler({ sql: options.sql, verifyGrant: grants.verifyGrant });
   return {
-    provider,
+    ...connectionPorts,
     ingest,
     close: () => {
       if (!options.client) client.close();

@@ -207,12 +207,19 @@ function stopPort(f: Awaited<ReturnType<typeof runtimeFixture>>, commands = f.br
         createRuntimeCheckpoint(f.sql, ENCRYPTION_KEY, commands),
       ),
       provider: async () =>
-        createRuntimeProvider(host, physicalId, {
-          events: ({ sandboxId: _, ...page }) => createRuntimeHistory(f.sql, ENCRYPTION_KEY)(f.caller, f.row.id, page),
-          async getPrompt() {
-            throw Error("No native/live prompt reads during compute stop");
+        createRuntimeProvider(
+          host,
+          physicalId,
+          {
+            events: ({ sandboxId: _, ...page }) =>
+              createRuntimeHistory(f.sql, ENCRYPTION_KEY)(f.caller, f.row.id, page),
+            async getPrompt() {
+              throw Error("No native/live prompt reads during compute stop");
+            },
           },
-        }),
+          undefined,
+          host.captureRuntimeWork,
+        ),
     },
     calls: () => calls,
   };

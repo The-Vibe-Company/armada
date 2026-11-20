@@ -234,8 +234,10 @@ export async function createServerServices(env: Record<string, string | undefine
       await sandboxArmadaAccess.beforePrompt(provider, id);
     },
   });
-  const modalProviderFor: typeof modal.modalProviderFor = async (...args) =>
-    sandboxArmadaAccess.wrap(await modal.modalProviderFor(...args));
+  const modalProviderFor: NonNullable<HandlerOptions["modalProviderFor"]> = async (...args) => {
+    const ports = await modal.modalProviderFor(...args);
+    return { ...ports, provider: sandboxArmadaAccess.wrap(ports.provider) };
+  };
   const runtimeProviderFor = createRuntimeServing(sql, config.encryptionKey);
   const providers = providerRegistry({
     launchStageSql: sql,
@@ -335,13 +337,15 @@ export async function createServerServices(env: Record<string, string | undefine
   ) => {
     if (!target.modal) throw Error("Modal binding required.");
     const tokens = await modal.modalTokensFor(target, caller);
-    return (await modal.modalProviderFor(
-      { tokenId: tokens.tokenId, tokenSecret: tokens.tokenSecret },
-      target.modal,
-      { target, caller, credentialScope: tokens.scope },
-      false,
-      (binding) => warmModalArtifacts?.beginWarming(binding, options.logError ?? console.error),
-    )) as import("@armada/provider-modal").ModalProvider;
+    return (
+      await modal.modalProviderFor(
+        { tokenId: tokens.tokenId, tokenSecret: tokens.tokenSecret },
+        target.modal,
+        { target, caller, credentialScope: tokens.scope },
+        false,
+        (binding) => warmModalArtifacts?.beginWarming(binding, options.logError ?? console.error),
+      )
+    ).provider;
   };
   if (config.modalAgentPath === "runtime" && modalRuntimePolicy) {
     launch.modalRuntimeDefault = {

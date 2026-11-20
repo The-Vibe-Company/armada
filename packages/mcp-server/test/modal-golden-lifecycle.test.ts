@@ -198,10 +198,10 @@ test("secure Modal golden publishes a NULL master, restores from its own image, 
         },
       },
     };
-    const provider = createModalProvider(providerOptions);
+    const { provider } = createModalProvider(providerOptions);
     const secondaryActor: GoldenActor = { ...actor, userId: people.owner };
     const secondaryScope: Scope = { ...scope, userId: people.owner };
-    const secondaryProvider = createModalProvider({
+    const { provider: secondaryProvider } = createModalProvider({
       ...providerOptions,
       scope: secondaryScope,
       store: createSqlModalStore(db, secondaryScope),
