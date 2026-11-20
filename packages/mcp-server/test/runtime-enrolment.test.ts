@@ -459,11 +459,9 @@ test("runtime bootstrap SQL is service-only and private routes reject ambient/ma
   expect(mutation).toBe(false);
 });
 
-// The happy-path owner is control.test.ts's real launch completion. These are
-// lookalike completions which must NOT turn the exception into a fencing bypass.
-test("initial handoff exception refuses expired leases, generation jumps, missing prompt and concurrent stop", async () => {
+test("launch-shaped publication cannot carry runtime authority to another generation", async () => {
   const f = await fixture();
-  for (const change of ["expired", "jump", "missing-prompt", "stop"]) {
+  for (const change of ["ordinary", "expired", "jump", "missing-prompt", "stop"]) {
     await f.db.query(
       "update sandboxes set status='starting',stop_requested_at=null,activity_lease_id=$2,activity_until=now()+interval '2 minutes',task_prompt_id=null where id=$1",
       [f.id, crypto.randomUUID()],
