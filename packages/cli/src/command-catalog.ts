@@ -30,7 +30,7 @@ Quick start / common examples:
   armada new
   armada list
   armada status SANDBOX_ID
-  armada send SANDBOX_ID "Continue the task"
+  armada prompt SANDBOX_ID "Continue the task"
   armada events SANDBOX_ID --tail 20
   armada stop SANDBOX_ID
   eval "$(armada completion bash)"

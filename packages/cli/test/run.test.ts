@@ -68,8 +68,7 @@ describe("run", () => {
     "rm",
     "extend",
     "report",
-    "send",
-    "steer",
+    "prompt",
     "exec",
     "stop",
     "wait",
@@ -108,6 +107,8 @@ describe("run", () => {
     };
     for (const [args, command, checkHelp] of [
       [["frobnicate"], "frobnicate"],
+      [["send"], "send", true],
+      [["steer"], "steer", true],
       [["snapshot", "frobnicate", "--org", "org_placeholder"], "snapshot frobnicate"],
       ...[
         "create",

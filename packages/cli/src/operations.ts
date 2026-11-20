@@ -17,7 +17,11 @@ import { resourceAdviceText } from "./resource-advice.ts";
 import { sandboxListText } from "./sandbox-list.ts";
 
 export async function operation(
-  command: Exclude<keyof ArmadaCommandClient["sandboxes"], "launch" | "logs"> | "detail" | "rm" | "mcp",
+  command:
+    | Exclude<keyof ArmadaCommandClient["sandboxes"], "launch" | "logs" | "send" | "steer">
+    | "detail"
+    | "rm"
+    | "mcp",
   argv: readonly string[],
   auth: AuthIo,
   read: (path?: string) => Promise<string>,
@@ -29,11 +33,9 @@ export async function operation(
     argv,
     command === "report"
       ? ["--reason", "--pr-number", "--pr-url", "--head-sha"]
-      : command === "send"
-        ? ["--request-id"]
-        : command === "list"
-          ? ["--status", "--harness", "--golden", "--owner", "--page", "--limit"]
-          : [],
+      : command === "list"
+        ? ["--status", "--harness", "--golden", "--owner", "--page", "--limit"]
+        : [],
     command === "list"
       ? ["--page-info"]
       : command === "rm"
@@ -45,8 +47,7 @@ export async function operation(
   const end = argv.indexOf("--");
   if (command === "exec" && (end < 0 || end === argv.length - 1 || args.positionals.length > argv.length - end))
     throw new GoldenError("invalid_config", "Use armada exec [sandbox-id] -- COMMAND.");
-  const payload = command === "send" || command === "steer" || command === "exec";
-  const implicitWithPayload = payload && end >= 0 && args.positionals.length === argv.length - end - 1;
+  const implicitWithPayload = command === "exec" && end >= 0 && args.positionals.length === argv.length - end - 1;
   const implicitReport =
     command === "report" && args.positionals.length === 1 && ["ready", "blocked"].includes(args.positionals[0] ?? "");
   const [id, ...rest] = implicitWithPayload || implicitReport ? [undefined, ...args.positionals] : args.positionals;
@@ -56,7 +57,6 @@ export async function operation(
     detail: ["--prompt-id"],
     recovery: [],
     advice: [],
-    send: ["--request-id", "--model", "--reasoning-effort"],
     exec: ["--cwd", "--timeout"],
     stop: [],
     wait: ["--timeout", "--prompt-id"],
@@ -108,8 +108,6 @@ export async function operation(
   if (command === "status") body.recorded = !flag(args, "--live");
   for (const [flag, key] of Object.entries({
     "--org": "org",
-    "--model": "model",
-    "--reasoning-effort": "reasoning_effort",
     "--cwd": "cwd",
     "--prompt-id": "prompt_id",
   })) {
@@ -124,11 +122,6 @@ export async function operation(
     const minimum = command === "wait" ? 0 : 1;
     if (!Number.isSafeInteger(seconds) || seconds < minimum || seconds > 600)
       throw new GoldenError("invalid_config", `--timeout must be ${minimum}–600 seconds.`);
-  }
-  if (command === "send") {
-    const requestId = single(args, "--request-id");
-    if (requestId !== undefined) uuid(requestId, "--request-id");
-    body.request_id = requestId?.toLowerCase() ?? crypto.randomUUID();
   }
   if (command === "list") Object.assign(body, sandboxListFilters(args));
   if (command === "extend") {
@@ -158,9 +151,9 @@ export async function operation(
       if (sha !== undefined) outcome.headSha = sha;
     }
     body.outcome = outcome;
-  } else if (command === "send" || command === "steer" || command === "exec") {
-    if (!rest.length) throw new GoldenError("invalid_config", "Provide the prompt or command after the id.");
-    body[command === "send" ? "prompt" : command === "steer" ? "text" : "command"] = rest.join(" ");
+  } else if (command === "exec") {
+    if (!rest.length) throw new GoldenError("invalid_config", "Provide the command after the id.");
+    body.command = rest.join(" ");
   } else if ((command === "list" && id) || rest.length)
     throw new GoldenError("invalid_config", "Unexpected arguments.");
   if (command !== "list") {
@@ -174,10 +167,8 @@ export async function operation(
       : command === "exec"
         ? Number(body.timeout_seconds ?? 120)
         : undefined;
-  if (command === "send" && !flag(args, "--json"))
-    auth.err("Sending message… Waking the sandbox if paused; waiting for acceptance.\n");
   const signal =
-    command === "stop" || command === "bind-credential" || command === "send"
+    command === "stop" || command === "bind-credential"
       ? AbortSignal.timeout(660_000)
       : seconds === undefined
         ? undefined
@@ -210,8 +201,6 @@ export async function operation(
         `${error.message} Outcome unknown. Run armada status ${body.id} to check before retrying.`,
         "unavailable",
       );
-    if (command === "send" && error instanceof AuthError)
-      error.message += ` Send request ID: ${body.request_id}. Keep it with the original input when investigating uncertain delivery.`;
     throw error;
   });
 

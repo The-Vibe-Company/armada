@@ -78,7 +78,7 @@ CLI and dashboard messages use the same ordinary send request, with a UUID
 from immutable runtime identity and stored lifecycle state; clients do not
 select a resume endpoint or start a new conversation after pause.
 
-The CLI generates a UUID when omitted. `armada send ID 'instruction'
+The CLI generates a UUID when omitted. `armada prompt ID 'instruction'
 --request-id UUID` supplies an existing identity for reconciling an uncertain
 runtime delivery. Send errors display the request ID; retain it and the exact
 original input and inspect status before deciding whether to reconcile. There

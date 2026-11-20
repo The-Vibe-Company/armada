@@ -41,8 +41,8 @@ test.each(
     ["events", id],
     ["stop", id],
     ["interrupt", id],
-    ["send", id, "hello"],
-    ["steer", id, "hello"],
+    ["prompt", id, "hello"],
+    ["prompt", "--steer", id, "hello"],
     ["exec", id, "--", "printf audit"],
     ["rm", id, "--yes"],
     ["report", id, "blocked", "--prompt-id", id, "--reason", "audit"],
@@ -62,13 +62,13 @@ test.each([
   [400, "invalid_request", "invalid_request", 2, "COMMAND --help"],
   [403, "forbidden", "forbidden", 1, "org admin"],
   [409, "conflict", "conflict", 1, "start/stop"],
-  [409, "no_running_turn", "no_running_turn", 1, "armada send"],
+  [409, "no_running_turn", "no_running_turn", 1, "armada prompt"],
   [409, "sandbox_not_ready", "sandbox_not_ready", 1, "Wait until"],
   [400, "unsupported", "unsupported", 1, "not supported"],
   [500, "internal", "unavailable", 1, "may already have been accepted"],
   [400, canary, "invalid_request", 2, "COMMAND --help"],
 ])("sandbox HTTP %s / %s keeps a closed reason and next step", async (status, server, code, exit, step) => {
-  const result = await capture(["steer", id, "hello", "--json"], status as number, server);
+  const result = await capture(["prompt", "--steer", id, "hello", "--json"], status as number, server);
   expect(result.exit).toBe(exit);
   const failure = JSON.parse(result.err).error;
   expect(failure.code).toBe(code);
@@ -114,7 +114,7 @@ test.each(["", canary])("binding refusal preserves only an exact fixed reason (s
 
 test.each([
   { args: ["new", "web", "--provider", "boat", "--agent", "codex", "hello"] },
-  { args: ["send", id, "hello"] },
+  { args: ["prompt", id, "hello"] },
 ])("host_full remains actionable without relaying provider diagnostics: $args", async ({ args }) => {
   const result = await capture([...args, "--json"], 409, "host_full");
   expect(result.exit).toBe(1);
@@ -129,7 +129,7 @@ test("terminal send reports the exact shared recovery reason and rejects appende
     "Cannot control docker sandbox: stopped. Its container is removed after finish/stop; start a new sandbox on the same branch.";
   for (const code of ["sandbox_terminal", "invalid_request"])
     for (const suffix of ["", canary]) {
-      const result = await capture(["send", id, "hello", "--json"], 409, code, message + suffix);
+      const result = await capture(["prompt", id, "hello", "--json"], 409, code, message + suffix);
       expect(JSON.parse(result.err).error.message.startsWith(message)).toBe(suffix === "");
     }
 });
