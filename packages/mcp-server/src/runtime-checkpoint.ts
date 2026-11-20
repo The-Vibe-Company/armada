@@ -7,6 +7,7 @@ import { runtimeHarnessSupported } from "./provider-runtime-admission.ts";
 import type { createRuntimeCommands } from "./runtime-commands.ts";
 import { createRuntimeEnrolments } from "./runtime-enrolment.ts";
 import { unsettledRuntimeCommands } from "./runtime-idle-evidence.ts";
+import { recordStoppedCheckpointNote } from "./sandbox-lifecycle.ts";
 
 interface Intent {
   epoch: string;
@@ -227,15 +228,7 @@ export function createRuntimeCheckpoint(
           "update public.runtime_checkpoints set watermark=$3,completed_at=coalesce(completed_at,now()) where sandbox_id=$1 and epoch=$2 and (watermark is null or watermark=$3) returning sandbox_id",
           [sandbox.id, intent.epoch, proof.watermark],
         );
-        await tx.query(
-          `update public.sandboxes set preservation_note=$2
-           where id=$1 and stopped_at is not null and status in ('stopped','failed') and not application_secret_tainted
-             and preservation_stop_generation is distinct from stop_generation`,
-          [
-            sandbox.id,
-            `Armada runtime checkpoint acknowledged for epoch ${intent.epoch} through event ${proof.watermark}; host stop is confirmed. No Git work archive is claimed.`,
-          ],
-        );
+        await recordStoppedCheckpointNote(tx, sandbox.id, intent.epoch, proof.watermark);
         if (!saved.rows.length)
           throw new VaultError("conflict", "Runtime checkpoint receipt conflicts with prior proof.");
         return { ...current, watermark: String(proof.watermark) };

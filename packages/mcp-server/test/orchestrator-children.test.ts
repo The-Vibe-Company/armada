@@ -1073,7 +1073,7 @@ test("registered failed child with confirmed stopped compute releases explicit c
   }
 });
 
-const stopRecoveryCases = ["checkpoint", "handler", "both", "recovery rollback"] as const;
+const stopRecoveryCases = ["checkpoint", "handler", "both", "recovery rollback"];
 
 test.each(stopRecoveryCases)("scoped Modal stop recovery after %s", async (loss) => {
   const loseStopReply = loss === "both";
