@@ -12,9 +12,11 @@ export default {
                                            Start a turn or redirect a running turn`,
   help: `Usage: armada prompt [--steer] [--org UUID] [--json] [sandbox-id] [--] <text>
 A new prompt automatically resumes a retained stopped sandbox. Use --steer to redirect a running turn.
+Steering can join a turn natively or interrupt and restart the same conversation.
+Check the receipt's delivery field to see which happened.
 Omit the ID and put the text after -- to use the current sandbox.
 New turns accept --request-id UUID, --model ID and --reasoning-effort LEVEL.
-Runtime model and effort remain launch-pinned. Full-account prompts can queue FIFO.
+Runtime model and effort remain launch-pinned. Full-account prompts can queue FIFO before execution.
 For uncertain runtime delivery, reuse the request ID with identical input.
 Native providers do not deduplicate by request ID. Inspect state before retrying.
 Example: armada prompt SANDBOX_UUID --steer -- "Focus on the failing test"
