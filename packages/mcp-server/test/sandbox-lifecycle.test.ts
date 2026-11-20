@@ -1142,11 +1142,18 @@ test.each(["queued", "dispatching", "acknowledged"])("idle-only stop preserves %
     );
   }
 
-  const admission = { status: "stopping", stopRequested: true, onlyIfIdle: true } as const;
+  const admission = { ownerStop: true, status: "stopping", stopRequested: true, onlyIfIdle: true } as const;
+  const { onlyIfIdle: _, ...manualAdmission } = admission;
+  const settlement = {
+    ownerStop: true,
+    status: "stopped",
+    stoppedAt: new Date().toISOString(),
+    stopRequested: false,
+  } as const;
   const stop = (patch: typeof admission | Omit<typeof admission, "onlyIfIdle">, sandbox = idle) =>
     sandboxActivity(store, sandbox, patch, async () => ({
       result: "stopped",
-      patch: { status: "stopped", stoppedAt: new Date().toISOString(), stopRequested: false },
+      patch: settlement,
     }));
 
   await expect(stop(admission)).rejects.toThrow("The sandbox is busy");
@@ -1160,12 +1167,80 @@ test.each(["queued", "dispatching", "acknowledged"])("idle-only stop preserves %
     await expect(stop(admission)).rejects.toMatchObject({ code: "sandbox_not_ready" });
     const current = (await store.get(id))!;
     expect(await stop(admission, current)).toBe("stopped");
-    return;
-  }
-  expect((await db.query("select state from account_turn_queue where sandbox_id=$1", [id])).rows).toEqual([{ state }]);
+  } else {
+    expect((await db.query("select state from account_turn_queue where sandbox_id=$1", [id])).rows).toEqual([
+      { state },
+    ]);
 
-  expect(await stop({ status: "stopping", stopRequested: true })).toBe("stopped");
-  expect((await db.query("select state from account_turn_queue where sandbox_id=$1", [id])).rows).toEqual([
-    { state: "failed" },
+    expect(await stop(manualAdmission)).toBe("stopped");
+    expect((await db.query("select state from account_turn_queue where sandbox_id=$1", [id])).rows).toEqual([
+      { state: "failed" },
+    ]);
+  }
+
+  const journal = await db.query(
+    `select from_status, to_status, actor, code from sandbox_transitions
+     where sandbox_id=$1 order by id`,
+    [id],
+  );
+  expect(journal.rows).toEqual([
+    { from_status: status, to_status: "stopping", actor: "owner", code: "owner_stop_admitted" },
+    { from_status: "stopping", to_status: "stopped", actor: "lifecycle_runner", code: "owner_stop_settled" },
   ]);
+});
+
+test.each(["owner_stop_admitted", "owner_stop_settled"])("owner stop rolls back when %s fails", async (code) => {
+  const { db, people } = await sharedDatabase();
+  const sql: Sql = {
+    query: (q, v) => db.query(q, v),
+    transaction: (work) =>
+      db.transaction((tx) =>
+        work({
+          async query<T>(q: string, v?: unknown[]) {
+            const result = await tx.query<T>(q, v);
+            if (q.includes("public.sandbox_transition(") && v?.[5] === code)
+              throw new Error("stop transaction interrupted");
+            return result;
+          },
+        }),
+      ),
+  };
+  const store = createSqlData(sql)({
+    userId: people.owner,
+    orgs: [{ orgId: people.org, role: "member" }],
+    via: "service",
+  }).sandboxes;
+  const id = crypto.randomUUID();
+  await db.query(
+    `insert into sandboxes (id, provider, provider_sandbox_id, golden_id, org_id, owner_id, harness, status)
+     select $1,'boat','stop-rollback',id,$2,$3,'claude','ready' from goldens where name='shared'`,
+    [id, people.org, people.owner],
+  );
+  const original = (await store.get(id))!;
+  const admission = { ownerStop: true, status: "stopping", stopRequested: true } as const;
+  const settlement = {
+    ownerStop: true,
+    status: "stopped",
+    stoppedAt: new Date().toISOString(),
+    stopRequested: false,
+  } as const;
+  let dispatched = false;
+  await expect(
+    sandboxActivity(store, original, admission, async () => {
+      dispatched = true;
+      return { result: "stopped", patch: settlement };
+    }),
+  ).rejects.toThrow("stop transaction interrupted");
+
+  const admitted = code === "owner_stop_settled";
+  expect(dispatched).toBe(admitted);
+  expect(await store.get(id)).toMatchObject({
+    status: admitted ? "stopping" : "ready",
+    lifecycleGeneration: original.lifecycleGeneration! + Number(admitted),
+    stoppedAt: null,
+    stopRequestedAt: admitted ? expect.any(String) : null,
+  });
+  expect((await db.query("select code from sandbox_transitions where sandbox_id=$1", [id])).rows).toEqual(
+    admitted ? [{ code: "owner_stop_admitted" }] : [],
+  );
 });

@@ -41,6 +41,7 @@ interface SandboxTransition {
     | "runtime_observation"
     | "runtime_turn"
     | "owner"
+    | "api"
     | "finish"
     | "expiry"
     | "idle"
@@ -372,6 +373,31 @@ export async function expireAfterExtension(
     },
   });
   return result.kind === "applied";
+}
+
+export async function publishOwnerStop(
+  tx: Sql,
+  stop: {
+    sandboxId: string;
+    generation: string;
+    fromState: SandboxStatus;
+    toState: "stopping" | "stopped" | "failed";
+    code: "owner_stop_admitted" | "runtime_retained_stop" | "owner_stop_settled";
+  },
+) {
+  if (stop.fromState === stop.toState) return;
+  const result = await transitionSandbox(tx, {
+    sandboxId: stop.sandboxId,
+    expectedGeneration: stop.generation,
+    fromStates: [stop.fromState],
+    toState: stop.toState,
+    // The reconciler uses this persisted journal identity to recover retained stops across deploys.
+    actor:
+      stop.code === "owner_stop_settled" ? "lifecycle_runner" : stop.code === "runtime_retained_stop" ? "api" : "owner",
+    code: stop.code,
+    effects: [],
+  });
+  if (result.kind === "conflict") throw new Error("Locked owner stop could not transition.");
 }
 
 export async function completeSandboxDeletion(

@@ -379,6 +379,15 @@ test.each(["boat", "modal"] as const)("%s stop recovers the original checkpoint 
       );
       expect(rows[0]?.ok).toBe(false);
     }
+    expect(
+      (
+        await f.db.query(
+          `select actor, code from sandbox_transitions
+         where sandbox_id=$1 and to_status='stopping'`,
+          [f.row.id],
+        )
+      ).rows,
+    ).toEqual([{ actor: "api", code: "runtime_retained_stop" }]);
     const final = await createSqlData(f.sql)(f.caller).sandboxes.get(f.row.id);
     if (provider === "boat") expect(final?.preservationNote).toContain("runtime checkpoint acknowledged");
     else {
