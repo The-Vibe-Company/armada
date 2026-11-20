@@ -21,7 +21,7 @@ test("public install uses provider exec with shared receipt validation and sanit
   expect(await run(catalogLock("codex"))).toEqual(catalogReceipt);
   await expect(run(catalogLock("claude-code"))).rejects.toThrow("Skillpack installation failed:");
   exitCode = 127;
-  await expect(run("")).rejects.toThrow("skillpack_cli_unavailable. Rebuild the golden with armada golden update");
+  await expect(run("")).rejects.toThrow("skillpack_cli_unavailable. Rebuild the golden with armada snapshot update");
   await expect(
     installSkill(provider, "sandbox", "/home/user/repo", "codex", catalogReference, ["skillpack_download_unavailable"]),
   ).rejects.toThrow("last golden build reported skillpack_download_unavailable: allow GitHub release egress");

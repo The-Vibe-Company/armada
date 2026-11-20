@@ -379,7 +379,7 @@ async function resolveGoldenLaunch(
   if (requestedHelper?.some((cap) => helper.status !== "supported" || !helper.capabilities.includes(cap as "diagnose")))
     throw new LaunchError(
       "unsupported",
-      "Helper capability unsupported. Rebuild the golden with armada golden update; this server supports diagnose only.",
+      "Helper capability unsupported. Rebuild the golden with armada snapshot update; this server supports diagnose only.",
       {
         helperRefusal:
           helper.status === "unsupported"

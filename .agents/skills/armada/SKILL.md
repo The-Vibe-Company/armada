@@ -50,11 +50,11 @@ any receipt UUID returned. On success, pass `sandbox.id` to subsequent tools.
 
 ## 2. Choose before launching
 
-- Inspect `armada snapshot list --json` and `armada template list --json`.
+- Inspect `armada snapshot ls --json` and `armada template list --json`.
   To refresh a shared snapshot, update its build configuration with the owner authorization.
   A golden is a provider-specific saved environment; a template is an immutable
   revision specifying a golden, harness and configuration. Use IDs if names clash.
-  Use `armada snapshot capabilities --json` for provider capacity and the
+  Use `armada api golden/capabilities` for provider capacity and the
   authenticated REST adoption endpoint for canonical Boat golden adoption.
 - Call MCP `launch_options` with `{}` for the server’s harnesses, models, sizes and TTL limits.
 - Call MCP `outputs_list` with `id` to list the stored output snapshot. Call `output_read` with `id` and `name` for base64 contents up to 32 KiB. Use the REST output download for larger files.
@@ -63,7 +63,7 @@ any receipt UUID returned. On success, pass `sandbox.id` to subsequent tools.
   For scoped tokens, omit `org` or use the scoped org UUID.
 - Choose the provider that owns the golden. A golden built on one provider
   is not automatically available on the other. Check
-  `armada snapshot capabilities --provider boat --json` (or substitute modal).
+  `armada api golden/capabilities '{"provider":"boat"}'` (or substitute modal).
 - All launches through `POST /api/v1/sandbox/launch` require an explicit provider
   and harness. The server resolves model credentials during launch. Personal sessions can select the organization by slug or UUID. For a scoped token, omit `org` or send its org UUID.
   A malformed request returns HTTP 400 with error code `invalid`.

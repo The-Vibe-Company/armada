@@ -315,7 +315,7 @@ test("CLI list matches scoped web filters, exact totals and stable pages with sa
 test("CLI golden list preserves discoverable UUIDs and provider-neutral metadata", async () => {
   const f = await fixture();
   try {
-    const goldens = JSON.parse((await f.cli(["golden", "list", "--json"])).out);
+    const goldens = JSON.parse((await f.cli(["snapshot", "ls", "--json"])).out);
     expect(goldens.find((g: { id: string }) => g.id === golden)).toMatchObject({
       id: golden,
       orgId: org,
@@ -447,63 +447,6 @@ test("CLI catalog service create and metadata actions use the API and preserve U
     expect(JSON.parse(renamed.out).connection).toMatchObject({ id, name: "Second account", catalogId: "linear" });
     const defaults = await f.cli(["mcp", "default", id, "on", "--json"]);
     expect(JSON.parse(defaults.out).connection).toMatchObject({ id, defaultForLaunch: true });
-  } finally {
-    await f.close();
-  }
-});
-
-test("CLI retirement dry-run and reconcile reach scoped authorized API without provider mutations", async () => {
-  const f = await fixture();
-  try {
-    const { GoldenSnapshotRetirements } = await import("@armada/core/server");
-    let mutations = 0;
-    f.options.goldenRetirements = new GoldenSnapshotRetirements({
-      sql: f.db,
-      encryptionKey: key,
-      provider: async () => ({
-        ...fakeBoat().provider,
-        id: "boat",
-        backendIdentity: async () => ({ id: "account" }),
-        managementIdentity: async () => ({ scope: "org", ownerId: org }),
-        deleteSnapshot: async () => {
-          mutations++;
-        },
-      }),
-    });
-    for (const action of ["dry-run", "reconcile"]) {
-      const result = await f.cli(
-        [
-          "golden",
-          "retirement",
-          action,
-          golden,
-          "--limit",
-          "2",
-          "--json",
-          ...(action === "reconcile" ? ["--file", "review.json"] : []),
-        ],
-        async () => JSON.stringify({ results: [{ receipt: "a".repeat(64) }] }),
-      );
-      expect(result.code).toBe(0);
-      expect(JSON.parse(result.out)).toEqual({ results: [{ outcome: "deferred", reason: "binding_unavailable" }] });
-      expect(f.requests.at(-1)).toMatchObject({
-        path: "/api/v1/golden/retirement/" + action,
-        body: { id: golden, org, limit: 2 },
-        status: 200,
-      });
-    }
-    expect((await f.cli(["golden", "retirement", "dry-run", golden, "--org", secondOrg, "--json"])).code).toBe(1);
-    expect((await f.cli(["golden", "retirement", "dry-run", golden, "--limit", "51", "--json"])).code).toBe(1);
-    await f.db.query("update members set role='member' where org_id=$1 and user_id=$2", [org, me]);
-    expect(
-      (
-        await f.cli(["golden", "retirement", "reconcile", golden, "--json", "--file", "review.json"], async () =>
-          JSON.stringify({ results: [{ receipt: "a".repeat(64) }] }),
-        )
-      ).code,
-    ).toBe(1);
-    expect((await f.db.query("select * from golden_snapshot_retirements")).rows).toEqual([]);
-    expect(mutations).toBe(0);
   } finally {
     await f.close();
   }

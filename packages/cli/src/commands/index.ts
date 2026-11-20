@@ -68,7 +68,7 @@ export const commands: readonly Command[] = [
 const byName = new Map(commands.map((command) => [command.name, command]));
 
 export function findCommand(name: string) {
-  return byName.get(name === "golden" ? "snapshot" : name);
+  return byName.get(name);
 }
 
 export function sandboxUsage(group: UsageGroup): string {
@@ -81,10 +81,6 @@ export function sandboxUsage(group: UsageGroup): string {
 export function focusedHelp(argv: readonly string[]) {
   if (!["--help", "-h"].includes(argv.at(-1) ?? "")) return undefined;
   const parts = argv.slice(0, -1);
-  if (parts[0] === "golden") {
-    if (parts.length > 1 && !Object.hasOwn(snapshot.subcommandHelp, `snapshot ${parts[1]}`)) return undefined;
-    parts[0] = "snapshot";
-  }
   const path = parts.join(" ");
   const command = byName.get(path);
   if (command) return command.help;

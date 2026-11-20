@@ -54,7 +54,7 @@ function goldenJson(row: GoldenRecord): GoldenJson {
 }
 
 /**
- * `armada golden create --name`: securely builds a golden from one or more GitHub repositories in a
+ * `armada snapshot new NAME`: securely builds a golden from one or more GitHub repositories in a
  * disposable, no-env builder, over the caller's own cached GitHub connection, and persists it only
  * once a fail-closed secret scan and the snapshot both succeed. The caller needs no boat.dev key.
  */

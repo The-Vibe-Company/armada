@@ -28,7 +28,7 @@ describe("golden command", () => {
       calls.push("fetch");
       throw new Error("No request should run");
     };
-    const result = await capture(["golden", "create", "web", "--repo", WEB, "--init", "TOKEN=abc pnpm i"], {
+    const result = await capture(["snapshot", "new", "web", "--repo", WEB, "--init", "TOKEN=abc pnpm i"], {
       auth: loggedIn("22222222-2222-4222-8222-222222222222", fetch, { ARMADA_URL: "https://armada.test" }),
     });
     expect(result.code).toBe(2);
@@ -92,9 +92,10 @@ describe("golden command", () => {
 
       const created = await capture(
         [
-          "golden",
-          "create",
+          "snapshot",
+          "new",
           "monorepo",
+          "--wait",
           "--private",
           "--repo",
           "https://github.com/acme/web.git",
@@ -143,7 +144,7 @@ describe("golden command", () => {
         select org_id, name, visibility, owner_id, 'modal', 'im-cli', 'ws-cli', 'main', 'ap-cli', config
         from goldens where provider = 'boat' and name = 'monorepo'`);
       const modalOnly = await asUser(db, people.owner, () =>
-        capture(["golden", "list", "--provider", "modal", "--json"], { auth }),
+        capture(["snapshot", "ls", "--provider", "modal", "--json"], { auth }),
       );
       expect(JSON.parse(modalOnly.out).map((row: { provider: string }) => row.provider)).toEqual(["modal"]);
     } finally {
@@ -184,7 +185,7 @@ describe("golden command", () => {
         ARMADA_URL: "https://armada.test",
       });
 
-      const result = await capture(["golden", "list", "--json"], { auth });
+      const result = await capture(["snapshot", "ls", "--json"], { auth });
       expect(result.code).toBe(0);
       expect(result.out).toContain('"name": "web"');
       expect(result.out).not.toContain("eyJhbGciOiJIUzI1NiJ9");
@@ -196,7 +197,7 @@ describe("golden command", () => {
   test("golden commands without a login ask for one", async () => {
     const auth = loggedIn("22222222-2222-4222-8222-222222222222", fetch, { SUPABASE_ANON_KEY: "anon" });
     await auth.session.clear();
-    const result = await capture(["golden", "list"], { auth });
+    const result = await capture(["snapshot", "ls"], { auth });
     expect(result.code).toBe(3);
     expect(result.err).toContain("You are not signed in. Run armada login.");
   });

@@ -39,11 +39,11 @@ but each provider needs its own build; their snapshots cannot be launched on a
 Docker host.
 
 ```sh
-armada snapshot create office --provider docker \
+armada snapshot new office --provider docker \
   --host 1bd0db41-6429-430b-99e2-06d60ddf1aa3 --org "$ARMADA_ORG" \
   --config armada.snapshot.json --private
-armada snapshot list --provider docker --org "$ARMADA_ORG"
-armada snapshot get SNAPSHOT_UUID --provider docker --org "$ARMADA_ORG"
+armada snapshot ls --provider docker --org "$ARMADA_ORG"
+armada snapshot show SNAPSHOT_UUID --provider docker --org "$ARMADA_ORG"
 armada launch "Work on this project" --provider docker --golden SNAPSHOT_UUID \
   --org "$ARMADA_ORG" --agent codex --credential-id "$ARMADA_CREDENTIAL_ID"
 ```
@@ -83,8 +83,8 @@ after successful build/scan and exact immutable provenance verification. Known
 pattern scanning is not a proof against arbitrary encoded/user-supplied secrets:
 never put credentials in repository/config/init content.
 
-Failed builds expose a safe `failureReason` in `armada snapshot get`,
-`armada snapshot list` and the dashboard snapshot details. The host daemon logs
+Failed builds expose a safe `failureReason` in `armada snapshot show`,
+`armada snapshot ls` and the dashboard snapshot details. The host daemon logs
 the snapshot ID and a fixed failure message. Raw Docker/build/init output is
 not returned or logged because it can contain credentials. A failed build, an
 expired build and invalidated build authorization have distinct messages;
