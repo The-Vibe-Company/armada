@@ -34,7 +34,6 @@ const CURRENT_DOCKER_PROMPT_RESPONSE = `(s.provider = 'docker' and exists(
     and h.hash is not null and h.registration_hash is null and h.revoked_at is null
 ))`;
 
-// Docker wake-on-send binds the host job to the physical claim when it opens the next lifecycle generation.
 const CURRENT_DOCKER_RESUME_JOB = `(s.provider = 'docker' and exists(
   select 1 from public.docker_resume_claims c
   join public.docker_host_jobs h_job on h_job.request_id = c.request_id
