@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import type { AuthIo } from "../src/auth-commands.ts";
 import { run } from "../src/run.ts";
 import { memorySessionStore } from "../src/session.ts";
 
@@ -9,7 +10,7 @@ async function runRm(args: string[]) {
   const requests: { method: string | undefined; path: string }[] = [];
   let stdout = "";
   let stderr = "";
-  const auth = {
+  const auth: AuthIo = {
     env: { ARMADA_URL: "https://armada.test", ARMADA_TOKEN: "fixture-token" },
     session: memorySessionStore(),
     now: () => new Date("2026-11-20T00:00:00Z"),
@@ -20,7 +21,7 @@ async function runRm(args: string[]) {
     err: (text: string) => {
       stderr += text;
     },
-    fetch: async (input: RequestInfo | URL, init?: RequestInit) => {
+    fetch: async (input, init) => {
       const url = new URL(String(input));
       requests.push({ method: init?.method, path: url.pathname + url.search });
       return Response.json({ id: sandboxId, status: "deleted" });
