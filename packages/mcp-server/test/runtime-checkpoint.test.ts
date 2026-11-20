@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, expect, test } from "bun:test";
+import { expect, test } from "bun:test";
 import { createMemoryAuthStore } from "@armada/auth";
 import type { Sql } from "@armada/core/server";
 import { createSqlSandboxStore, createSqlVaultStore, DelegatedAuthority } from "@armada/core/server";
@@ -15,29 +15,30 @@ import { createRuntimeHistory } from "../src/runtime-history.ts";
 import { createRuntimeProvider, type RuntimeWorkProvider } from "../src/runtime-provider.ts";
 import { createSandboxArmadaAccess } from "../src/sandbox-armada-access.ts";
 import { callSharedTool } from "../src/tool-api.ts";
-import { runtimeFixture, runtimeFixtureGolden } from "./runtime.fixture.ts";
+import { runtimeFixture, runtimeFixtureGolden, scopedRuntimeFixture } from "./runtime.fixture.ts";
 import { ENCRYPTION_KEY, fakeBoat, PUBLIC_URL, seedDatabase } from "./support.ts";
 
-let shared: (Awaited<ReturnType<typeof seedDatabase>> & { modalGoldenId: string }) | undefined;
-
-beforeAll(async () => {
+const prepared = scopedRuntimeFixture(async () => {
   const db = await openMigratedDatabase();
   try {
     const seeded = await seedDatabase(db);
-    shared = { ...seeded, modalGoldenId: await runtimeFixtureGolden(db, seeded.people, "modal") };
+    return {
+      ...seeded,
+      modalGoldenId: await runtimeFixtureGolden(db, seeded.people, "modal"),
+      close: () => db.close(),
+    };
   } catch (error) {
-    await db.close();
+    try {
+      await db.close();
+    } catch (closeError) {
+      throw new AggregateError([error, closeError], "Checkpoint fixture setup and cleanup failed");
+    }
     throw error;
   }
 });
-afterAll(async () => {
-  const db = shared?.db;
-  shared = undefined;
-  await db?.close();
-});
 
-function checkpointFixture(provider: "boat" | "modal" = "boat", idle = false) {
-  if (!shared) throw Error("Checkpoint database is not open");
+async function checkpointFixture(provider: "boat" | "modal" = "boat", idle = false) {
+  const shared = await prepared();
   return runtimeFixture(shared, provider, "codex", idle, undefined, {
     goldenId: provider === "modal" ? shared.modalGoldenId : shared.sharedGoldenId,
     providerSandboxId: crypto.randomUUID(),
@@ -45,8 +46,7 @@ function checkpointFixture(provider: "boat" | "modal" = "boat", idle = false) {
 }
 
 async function enrolledCheckpointTarget() {
-  if (!shared) throw Error("Checkpoint database is not open");
-  const { db, people, modalGoldenId } = shared;
+  const { db, people, modalGoldenId } = await prepared();
   const sql: Sql = {
     query: (q, v) => db.query(q, v),
     transaction: (work) => db.transaction((tx) => work({ query: (q, v) => tx.query(q, v) })),
