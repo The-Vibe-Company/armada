@@ -491,8 +491,7 @@ jobs:
     timeout-minutes: 10
     permissions:
       contents: write
-      issues: write
-      pull-requests: read
+      pull-requests: write
       packages: write
     env:
       VERSION: ${{ needs.release-metadata.outputs.version }}
@@ -535,13 +534,27 @@ jobs:
           ref: ${{ github.workflow_sha }}
           fetch-depth: 0
           persist-credentials: false
-      - name: Verify the published tag and reconcile the version PR
+      - name: Verify the published release and tag
+        run: |
+          set -euo pipefail
+          gh api --silent "repos/$GH_REPO/releases/tags/v$VERSION"
+          test "$(git rev-parse --verify "refs/tags/v$VERSION^{commit}")" = "$RELEASE_SHA"
+      - name: Reconcile the published version PR
+        id: reconcile
+        continue-on-error: true
         run: bun scripts/release/publication.ts reconcile
+      - name: Warn when version PR labels could not be reconciled
+        if: steps.reconcile.outcome == 'failure'
+        run: echo "::warning::Version PR labels could not be reconciled. Production can proceed. The next published-version preparation run retries reconciliation before Release Please."
 
   production-approval:
     name: Approve production deployment
     needs: [release-metadata, finalize-release]
-    if: needs.release-metadata.outputs.publish == 'true' && needs.release-metadata.outputs.production-run == ''
+    # Recovery reuses check, binary and smoke receipts, so those jobs are skipped;
+    # without a status function GitHub would skip this job and production too.
+    if: >-
+      !cancelled() && needs.finalize-release.result == 'success' &&
+      needs.release-metadata.outputs.publish == 'true' && needs.release-metadata.outputs.production-run == ''
     runs-on: ubuntu-latest
     timeout-minutes: 1
     environment: production-deploy
@@ -559,6 +572,7 @@ jobs:
       actions: read
       statuses: write
     needs: [release-metadata, production-approval]
+    if: ${{ !cancelled() && needs.production-approval.result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 40
     environment: production

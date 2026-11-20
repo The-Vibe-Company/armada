@@ -15,12 +15,12 @@ import type { RuntimeMcp } from "./runtime-mcp.ts";
 import type { RestoreScopedRuntimeAccess } from "./sandbox-armada-access.ts";
 import { refuseConversationSelector, SINGLE_CONVERSATION_GUIDANCE } from "./sandbox-conversation.ts";
 import {
-  admitRetainedRuntimeResume,
   confirmRuntimeResumeActivation,
   deferAmbiguousBoatResume,
   publishRuntimeWake,
   requestFailedRuntimeResumeStop,
   restoreModalResumeSchedule,
+  transitionSandbox,
 } from "./sandbox-lifecycle.ts";
 
 export interface RuntimeResumeInput {
@@ -182,7 +182,14 @@ export function createRuntimeResume(
       }
       if (!prepare)
         throw new VaultError("unavailable", "Trusted runtime resume policy is unavailable; no compute was activated.");
-      if (current.status !== "stopped" || !current.stoppedAt || current.stopRequestedAt || fence.lease || !epoch)
+      if (
+        current.status !== "stopped" ||
+        !current.stoppedAt ||
+        current.stopRequestedAt ||
+        fence.lease ||
+        !epoch ||
+        current.lifecycleGeneration === undefined
+      )
         throw new VaultError("conflict", "Resume requires a confirmed retained stop and no unresolved admission.");
       const proof = (
         await tx.query<{ watermark: string }>(
@@ -224,11 +231,24 @@ export function createRuntimeResume(
           op.empty_checkpoint,
         ],
       );
-      if (
-        current.lifecycleGeneration === undefined ||
-        (await admitRetainedRuntimeResume(tx, found.id, current.lifecycleGeneration, requestId)).kind !== "applied"
-      )
-        throw new VaultError("conflict", "Runtime resume admission is stale.");
+      const transition = await transitionSandbox(tx, {
+        sandboxId: found.id,
+        expectedGeneration: current.lifecycleGeneration,
+        fromStates: ["stopped"],
+        toState: "starting",
+        actor: "resume_admission",
+        code: "runtime_resume_admitted",
+        effects: [],
+        settlement: {
+          lease: null,
+          statusReason: null,
+          stopRequestedAt: null,
+          stoppedAt: null,
+          activityLease: requestId,
+        },
+      });
+      if (transition.kind === "conflict")
+        throw new VaultError("conflict", "Runtime resume admission lost its retained stop or dispatch authority.");
       await tx.query(
         `update public.sandbox_launch_stages l set at=least(l.at,r.created_at)
            from public.runtime_resumes r

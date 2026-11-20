@@ -42,6 +42,7 @@ import { createResourceStore, type ResourceStore } from "./resource-store.ts";
 import { unsettledRuntimeCommands } from "./runtime-idle-evidence.ts";
 import {
   completeSandboxDeletion,
+  expireAfterExtension,
   finishEnrolledRuntimeLaunch,
   recordObservedRuntimeState,
   settleRuntimeTurn,
@@ -62,6 +63,7 @@ export interface SandboxView extends SandboxRecord {
 
 export interface ServerSandboxPatch extends SandboxPatch {
   deleteCompleted?: true;
+  expireAfterExtension?: true;
   onlyIfIdle?: boolean;
   retainedRuntimeStop?: string;
   modalRuntimeExtensionTarget?: string;
@@ -763,6 +765,16 @@ export function createSqlData(
         );
       },
       async update(id, patch) {
+        if (patch.expireAfterExtension) {
+          const { expectedGeneration, activityToken } = patch;
+          if (!sql.transaction || expectedGeneration === undefined || !activityToken || !patch.finishActivity)
+            throw new DataError("Unsafe extension settlement requires its activity generation and token.");
+          const applied = await sql.transaction((tx) =>
+            expireAfterExtension(tx, scope, id, expectedGeneration, activityToken),
+          );
+          if (!applied) throw new DataError("Extension activity changed before settlement.", "sandbox_not_ready");
+          return;
+        }
         if (patch.deleteCompleted) {
           const { expectedGeneration, activityToken } = patch;
           if (!sql.transaction || expectedGeneration === undefined || !activityToken || !patch.finishActivity)

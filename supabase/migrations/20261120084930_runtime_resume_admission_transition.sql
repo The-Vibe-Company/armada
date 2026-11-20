@@ -1,4 +1,4 @@
--- Journal request-owned retained runtime resume admission without duplicating its dispatch.
+-- Admit retained Boat and Modal runtime resumes under their existing request lease.
 begin;
 create or replace function public.sandbox_transition(
   p_id uuid,
@@ -26,8 +26,9 @@ declare
   docker_resume boolean;
   docker_stop boolean;
   docker_refusal boolean := (p_code = 'docker_resume_refusal_stop') is true;
-  retained_resume boolean := (p_code = 'runtime_resume_admitted') is true;
-  failed_resume_request boolean := p_activity_lease is not null and not retained_resume;
+  extension_expiry boolean := (p_actor = 'expiry' and p_code = 'extension_expired' and p_to_state = 'stopping') is true;
+  runtime_resume_admission boolean := (p_code = 'runtime_resume_admitted') is true;
+  failed_resume_request boolean := p_activity_lease is not null and not extension_expiry and not runtime_resume_admission;
   interrupted_resume boolean := not failed_resume_request and (
     p_actor = 'runtime_resume' and p_code = 'runtime_resume_unenrolled' and p_to_state = 'stopping'
   ) is true;
@@ -49,28 +50,6 @@ begin
     or (sandbox.status = any(p_from_states)) is not true then
     return query select false, null::bigint;
     return;
-  end if;
-
-  if retained_resume then
-    if p_actor is distinct from 'resume_admission' or p_to_state is distinct from 'starting'
-      or p_activity_lease is null or jsonb_typeof(p_effects) is distinct from 'array'
-      or jsonb_array_length(p_effects) <> 0 then
-      raise exception 'invalid request-owned runtime resume admission' using errcode = '22023';
-    end if;
-    if ((sandbox.provider = 'boat' and sandbox.boat_runtime)
-        or (sandbox.provider = 'modal' and sandbox.runtime_transport = 'dialout')) is not true
-      or sandbox.status <> 'stopped' or sandbox.stopped_at is null
-      or sandbox.expires_at <= clock_timestamp() or sandbox.application_secret_tainted
-      or sandbox.stop_requested_at is not null or sandbox.deleted_at is not null
-      or sandbox.activity_lease_id is not null or sandbox.activity_until >= now()
-      or sandbox.reconcile_lease_until >= now()
-      or not exists (select 1 from public.runtime_resumes r
-        where r.sandbox_id = p_id and r.request_id = p_activity_lease and r.phase = 'dispatched')
-      or exists (select 1 from public.account_turn_queue q
-        where q.sandbox_id = p_id and q.request_id = p_activity_lease and q.state <> 'dispatching') then
-      return query select false, null::bigint;
-      return;
-    end if;
   end if;
 
   docker_resume := p_code = 'docker_resume_admitted';
@@ -161,6 +140,43 @@ begin
   ) then
     allowed_actors := array['runtime_resume'];
     allowed_effects := array[]::text[];
+  end if;
+
+  if extension_expiry then
+    if p_activity_lease is null or jsonb_typeof(p_effects) is distinct from 'array'
+      or jsonb_array_length(p_effects) <> 0 then
+      raise exception 'extension expiry requires its activity lease and uses the existing reconciler' using errcode = '22023';
+    end if;
+    if sandbox.provider not in ('boat', 'modal') or sandbox.runtime_transport = 'dialout'
+      or sandbox.status not in ('ready', 'running') or sandbox.deleted_at is not null
+      or sandbox.stop_requested_at is not null or sandbox.reconcile_lease_until > clock_timestamp()
+      or sandbox.activity_lease_id is distinct from p_activity_lease
+      or (sandbox.activity_until > clock_timestamp()) is not true then
+      return query select false, null::bigint;
+      return;
+    end if;
+    allowed_effects := array[]::text[];
+  end if;
+
+  if runtime_resume_admission then
+    if p_actor is distinct from 'resume_admission' or p_to_state is distinct from 'starting'
+      or p_activity_lease is null or jsonb_typeof(p_effects) is distinct from 'array'
+      or jsonb_array_length(p_effects) <> 0 then
+      raise exception 'runtime resume admission requires its request lease and uses the existing dispatcher' using errcode = '22023';
+    end if;
+    if ((sandbox.provider = 'boat' and sandbox.boat_runtime)
+        or (sandbox.provider = 'modal' and sandbox.runtime_transport = 'dialout')) is not true
+      or sandbox.status <> 'stopped' or sandbox.stopped_at is null or sandbox.stop_requested_at is not null
+      or sandbox.deleted_at is not null or sandbox.expires_at <= clock_timestamp() or sandbox.application_secret_tainted
+      or sandbox.activity_lease_id is not null or sandbox.activity_until >= now()
+      or sandbox.reconcile_lease_until >= now()
+      or not exists (select 1 from public.runtime_resumes r where r.sandbox_id = p_id
+        and r.request_id = p_activity_lease and r.phase = 'dispatched' and r.receipt is null)
+      or exists (select 1 from public.account_turn_queue q where q.sandbox_id = p_id
+        and q.request_id = p_activity_lease and q.state <> 'dispatching') then
+      return query select false, null::bigint;
+      return;
+    end if;
   end if;
 
   if failed_resume_request then
@@ -256,7 +272,7 @@ begin
     end if;
   end if;
   if p_to_state in ('starting', 'stopping') and not reconciler_stop and not interrupted_resume and not self_finish and not checkpointed_idle
-    and not failed_resume_request and not retained_resume
+    and not failed_resume_request and not extension_expiry and not runtime_resume_admission
     and not coalesce(docker_resume, false) and not docker_stop
     and jsonb_array_length(p_effects) <> 1 then
     raise exception 'sandbox transition requires one lifecycle job' using errcode = '22023';
@@ -268,48 +284,33 @@ begin
   end if;
 
   if p_to_state = 'starting' or self_finish or docker_stop or docker_expiry or docker_cleanup or interrupted_resume
-    or failed_resume_request then
+    or failed_resume_request or extension_expiry then
     sandbox.lifecycle_generation := sandbox.lifecycle_generation + 1;
-  end if;
-
-  if retained_resume then
-    update public.sandboxes s
-    set status = p_to_state,
-        lifecycle_generation = sandbox.lifecycle_generation,
-        activity_lease_id = p_activity_lease,
-        activity_until = now() + interval '2 minutes',
-        reconcile_lease = null,
-        reconcile_lease_until = null,
-        stopped_at = null,
-        stop_requested_at = null,
-        status_reason = null,
-        task_outcome = null,
-        task_prompt_id = null,
-        transition_context = jsonb_build_object('actor', p_actor, 'code', p_code)
-    where s.id = p_id;
-    return query select true, sandbox.lifecycle_generation;
-    return;
   end if;
 
   update public.sandboxes s
   set status = p_to_state,
       lifecycle_generation = sandbox.lifecycle_generation,
-      stop_generation = case when interrupted_resume or failed_resume_request or checkpointed_idle
+      expires_at = case when extension_expiry then clock_timestamp() else s.expires_at end,
+      stop_generation = case when extension_expiry or interrupted_resume or failed_resume_request or checkpointed_idle
         or (reconciler_stop and s.stop_requested_at is null) or (self_finish and s.provider <> 'docker')
         then s.stop_generation + 1 else s.stop_generation end,
       reconcile_after = case when interrupted_resume or (failed_resume_request and p_to_state = 'stopping') then 'infinity'::timestamptz
         when failed_resume_request then now()
-        when self_finish or checkpointed_idle then now() else s.reconcile_after end,
-      reconcile_lease = case when interrupted_resume then null else s.reconcile_lease end,
-      reconcile_lease_until = case when interrupted_resume then null else s.reconcile_lease_until end,
-      activity_lease_id = case when interrupted_resume or failed_resume_request then null else s.activity_lease_id end,
-      activity_until = case when interrupted_resume or failed_resume_request then null else s.activity_until end,
+        when self_finish or checkpointed_idle or extension_expiry then now() else s.reconcile_after end,
+      reconcile_lease = case when interrupted_resume or runtime_resume_admission then null else s.reconcile_lease end,
+      reconcile_lease_until = case when interrupted_resume or runtime_resume_admission then null else s.reconcile_lease_until end,
+      task_outcome = case when runtime_resume_admission then null else s.task_outcome end,
+      task_prompt_id = case when runtime_resume_admission then null else s.task_prompt_id end,
+      activity_lease_id = case when runtime_resume_admission then p_activity_lease when interrupted_resume or failed_resume_request or extension_expiry then null else s.activity_lease_id end,
+      activity_until = case when runtime_resume_admission then now() + interval '2 minutes' when interrupted_resume or failed_resume_request or extension_expiry then null else s.activity_until end,
       docker_retention_deadline = case when docker_resume then null else s.docker_retention_deadline end,
       status_reason = case
         when docker_expiry then case when s.status_reason in ('agent_finished', 'work_merged')
           then s.status_reason else 'expired' end
         when failed_resume_request then case when p_to_state = 'failed'
           then 'Runtime resume failed before a restored worker was confirmed; cleanup requested.' end
+        when extension_expiry then 'expired'
         when docker_refusal or interrupted_resume then null
         when p_code = 'docker_idle_paused' then 'idle_paused'
         when p_code = 'docker_work_merged' then 'work_merged'
@@ -342,12 +343,17 @@ begin
       end end,
       deleted_at = case when docker_cleanup then coalesce(s.deleted_at, now()) when p_to_state = 'deleted' then clock_timestamp() else s.deleted_at end,
       transition_context = jsonb_build_object('actor', p_actor, 'code', p_code)
-  where s.id = p_id and (not (interrupted_resume or reconciler_stop) or exists (
+  where s.id = p_id and (not (interrupted_resume or reconciler_stop or runtime_resume_admission) or exists (
     select 1 from public.members m where m.org_id = s.org_id and m.user_id = s.owner_id
   ));
   if not found then
     return query select false, null::bigint;
     return;
+  end if;
+
+  if extension_expiry then
+    update public.account_turn_queue set state = 'failed', failure_reason = 'Dispatch refused by owner stop.'
+    where sandbox_id = p_id and state in ('queued', 'dispatching');
   end if;
 
   for effect in select * from jsonb_to_recordset(p_effects) as item(

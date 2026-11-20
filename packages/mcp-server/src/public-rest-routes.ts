@@ -4,7 +4,7 @@
  * one, so a new route there must be published or given a reason.
  */
 export const UNPUBLISHED_REST_ROUTES: Readonly<Record<string, string>> = {
-  "org/": "Organization administration.",
+  "org/invitations/": "Organization invitation administration.",
   "creds/": "Model credential administration.",
   "mcp/": "MCP connection administration.",
   "docker/": "Docker host and snapshot administration.",
