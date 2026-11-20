@@ -965,6 +965,46 @@ test.each([
         [sandboxId, `docker_prompt_${requestId}`],
       );
     }
+    if (recover) {
+      await db.query("update account_turn_queue set dispatch_until='2100-01-01T00:00:00Z' where request_id=$1", [
+        requestId,
+      ]);
+      const owner = crypto.randomUUID();
+      const stale = (await store.claim("turn_dispatch", owner, 30, 1))!;
+      expect(await store.inspect(stale, owner)).toBe("stale");
+      const interrupted = createJobsStore(
+        {
+          ...f.sql,
+          transaction: (work) =>
+            f.sql.transaction!(async (tx) => {
+              await work(tx);
+              throw new Error("Connection lost before Docker resume deferral committed.");
+            }),
+        },
+        btoa("\0".repeat(32)),
+      );
+      await expect(interrupted.retireStale(stale, owner, "no_dispatch")).rejects.toThrow("Connection lost");
+      expect(await store.inspect(stale, owner)).toBe("stale");
+      await db.query("update jobs set lease_until='-infinity' where id=$1", [id]);
+
+      const successor = crypto.randomUUID();
+      const claim = (await store.claim("turn_dispatch", successor, 30, 1))!;
+      await store.retireStale(claim, successor, "no_dispatch");
+      expect(
+        (
+          await db.query(
+            `select j.state, j.attempts, j.generation::text, j.lease_owner,
+                    (j.run_after=q.dispatch_until) as waits_for_receipt
+             from jobs j join account_turn_queue q on q.sandbox_id=j.sandbox_id
+             where j.id=$1 and q.request_id=$2`,
+            [id, requestId],
+          )
+        ).rows,
+      ).toEqual([{ state: "queued", attempts: 1, generation: "2", lease_owner: null, waits_for_receipt: true }]);
+      expect(await store.claim("turn_dispatch", crypto.randomUUID(), 30, 1)).toBeFalsy();
+      await db.query("update account_turn_queue set dispatch_until='-infinity' where request_id=$1", [requestId]);
+      await db.query("update jobs set run_after='-infinity' where id=$1", [id]);
+    }
     const owner = crypto.randomUUID();
     const job = (await store.claim("turn_dispatch", owner, 30, 1))!;
     expect(job).toMatchObject({ id, generation: recover ? "3" : "2", payload: { requestId } });
