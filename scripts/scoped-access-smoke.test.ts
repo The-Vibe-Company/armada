@@ -282,6 +282,11 @@ describe("ordinary scoped Armada smoke", () => {
   test("waits for a late stop result in the finished parent turn without replaying it", async () => {
     const f = fixture();
     f.state.lateStop = true;
+    f.state.mutate = (tools) => {
+      const read = f.wire("read", { sandboxId: child }, {}, "earlier-read");
+      read.result.isError = true;
+      tools.splice(2, 0, read);
+    };
     await run(f);
     expect(f.state.sends).toBe(1);
     expect(f.state.logReads).toBe(2);
