@@ -183,6 +183,8 @@ export function configureTools(
     );
     const generation = found.lifecycleGeneration;
     let acknowledged = false;
+    const resumeAdmission: Pick<ServerSandboxPatch, "nativeResumeAdmission"> =
+      machine.state === "stopped" ? { nativeResumeAdmission: found.providerSandboxId } : {};
     return sandboxActivity(
       data.sandboxes,
       found,
@@ -191,10 +193,11 @@ export function configureTools(
         ...(args.request_id ? { queueRequestId: args.request_id } : {}),
         renewLifecycle: machine.state === "stopped" && found.statusReason !== "idle_paused",
         stopRequested: false,
-        ...(machine.state === "stopped" ? { status: "starting" as const, stoppedAt: null } : {}),
+        ...resumeAdmission,
       },
       async (signal, activityToken) => {
         let activationOpened = machine.state === "stopped";
+        let admissionFailure: { error: unknown } | undefined;
         const receipt = await measure("send_submit", () =>
           provider
             .prompt({
@@ -211,8 +214,7 @@ export function configureTools(
                         if (stage === "accepted") {
                           if (!activationOpened) {
                             await data.sandboxes.update(found.id, {
-                              status: "starting",
-                              stoppedAt: null,
+                              nativeResumeAdmission: found.providerSandboxId,
                               renewActivity: true,
                               activityToken,
                               expectedGeneration: generation + 1,
@@ -222,12 +224,18 @@ export function configureTools(
                         } else if (activationOpened) {
                           await data.sandboxes.recordLaunchStage?.(found.id, stage, 0, generation + 1);
                         }
-                      } catch {}
+                      } catch (error) {
+                        if (stage === "accepted") {
+                          admissionFailure = { error };
+                          throw error;
+                        }
+                      }
                     },
                   }
                 : {}),
             })
             .catch(async (error: unknown) => {
+              if (admissionFailure) throw admissionFailure.error;
               if (error instanceof BoatRetentionUnconfirmed && generation !== undefined) {
                 await data.sandboxes.update(found.id, {
                   nativeRetentionRefusal: found.providerSandboxId,

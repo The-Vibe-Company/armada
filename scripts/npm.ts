@@ -141,7 +141,8 @@ export async function stageSdk(options: { out: string; version?: string; declara
   writeJson(join(dir, "package.json"), {
     name: SDK_PACKAGE,
     version,
-    description: "TypeScript client for the Armada sandbox API: launch, send, wait, logs, stop, files and webhooks.",
+    description:
+      "TypeScript client for the Armada sandbox API, including sandbox control, output snapshots and webhook verification.",
     keywords: ["armada", "agents", "sandbox", "sdk"],
     ...COMMON,
     repository: { ...COMMON.repository, directory: "packages/sdk" },

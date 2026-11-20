@@ -15,6 +15,8 @@ export interface RequestPolicy {
   renewToken?: () => Promise<string>;
   readOnly?: boolean;
   readRetries?: number;
+  /** Return matching download responses without reading their bodies. */
+  streamResponse?: (response: Response) => boolean;
 }
 
 interface Failure {
@@ -31,6 +33,7 @@ export type RequestResult =
       response: Response;
       payload: unknown;
       bodyReadFailed: boolean;
+      /** Code from a structured error object. CLI route detection uses its presence. */
       rawCode?: string;
       failure?: Failure;
     };
@@ -72,7 +75,7 @@ export const requestApi: (
     try {
       const init = typeof requestInit === "function" ? requestInit() : requestInit;
       const headers = Object.fromEntries(new Headers(init.headers).entries());
-      headers.accept = "application/json";
+      headers.accept ??= "application/json";
       if (token !== undefined) headers.authorization = `Bearer ${token}`;
       response = await fetch(url, { ...init, headers, redirect: "error", signal });
     } catch (error) {
@@ -87,6 +90,7 @@ export const requestApi: (
       renewed = true;
       continue;
     }
+    if (policy.streamResponse?.(response)) return { kind: "response", response, payload: null, bodyReadFailed: false };
     let payload: unknown = null;
     let bodyReadFailed = false;
     let text: string | undefined;
@@ -125,7 +129,8 @@ export const requestApi: (
       continue;
     const rawCode =
       error && typeof error === "object" && "code" in error && typeof error.code === "string" ? error.code : undefined;
-    const code: FailureCode = rawCode && isServerFailureCode(rawCode) ? rawCode : "unknown_response";
+    const serverCode = typeof error === "string" ? error : rawCode;
+    const code: FailureCode = serverCode && isServerFailureCode(serverCode) ? serverCode : "unknown_response";
     return {
       kind: "response",
       response,
@@ -134,7 +139,7 @@ export const requestApi: (
       ...(rawCode !== undefined ? { rawCode } : {}),
       failure: {
         code,
-        serverCode: rawCode && /^[a-z][a-z0-9_]{0,99}$/.test(rawCode) ? rawCode : undefined,
+        serverCode: serverCode && /^[a-z][a-z0-9_]{0,99}$/.test(serverCode) ? serverCode : undefined,
         outcomeUnknown: !readOnly && (status >= 500 || code === "outcome_unknown"),
         retryAfterSeconds,
       },
