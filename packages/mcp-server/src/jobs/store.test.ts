@@ -949,13 +949,13 @@ test.each([
   },
 );
 
-test.each(["confirmed stop", "superseded dispatch"] as const)(
+test.each(["confirmed stop", "superseded dispatch", "missing dispatch generation"] as const)(
   "a failed receipt write rolls back retirement after %s",
   async (scenario) => {
     const f = await fixture();
     const { db, people, store } = f;
-    const superseded = scenario === "superseded dispatch";
-    const sandboxId = await sandbox(f, superseded);
+    const uncertain = scenario !== "confirmed stop";
+    const sandboxId = await sandbox(f, uncertain);
     const requestId = crypto.randomUUID();
     await seedTurn(f, sandboxId, requestId);
     const id = await store.enqueue(
@@ -969,11 +969,11 @@ test.each(["confirmed stop", "superseded dispatch"] as const)(
         maxAttempts: 2,
       },
     );
-    if (superseded) {
+    if (uncertain) {
       await db.query("update sandboxes set lifecycle_generation=4 where id=$1", [sandboxId]);
       await db.query(
-        "update account_turn_queue set state='dispatching', dispatch_generation=2, dispatch_until='infinity' where request_id=$1",
-        [requestId],
+        "update account_turn_queue set state='dispatching', dispatch_generation=$2, dispatch_until='infinity' where request_id=$1",
+        [requestId, scenario === "missing dispatch generation" ? null : 2],
       );
       await db.query("insert into account_agent_reservations (sandbox_id, account_id) values ($1, $2)", [
         sandboxId,
@@ -1002,11 +1002,11 @@ test.each(["confirmed stop", "superseded dispatch"] as const)(
           [id],
         )
       ).rows;
-    expect(await states()).toEqual([{ job: "leased", receipt: superseded ? "dispatching" : "queued" }]);
+    expect(await states()).toEqual([{ job: "leased", receipt: uncertain ? "dispatching" : "queued" }]);
     await db.query("update jobs set lease_until='-infinity' where id=$1", [id]);
     await claimAndRetire();
     expect(await states()).toEqual([{ job: "failed", receipt: "failed" }]);
-    if (superseded) {
+    if (uncertain) {
       expect(
         (
           await db.query(
