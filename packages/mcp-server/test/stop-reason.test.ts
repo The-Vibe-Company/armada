@@ -135,6 +135,7 @@ test.each([
   { runtime: false, outcome: "applied", confirmed: false },
   { runtime: false, outcome: "stale", confirmed: true },
   { runtime: false, outcome: "changed_state", confirmed: true },
+  { runtime: false, outcome: "stopped_source", confirmed: true },
 ] as const)(
   "observed provider failure (runtime=$runtime, $outcome, exit confirmed=$confirmed)",
   async ({ runtime, outcome, confirmed }) => {
@@ -143,10 +144,12 @@ test.each([
     const machine = await boat.provider.fork({ from: "snapshot" });
     const id = crypto.randomUUID();
     const now = new Date("2026-01-01T00:00:00Z");
+    const from = outcome === "stopped_source" ? "stopped" : "ready";
+    const applied = outcome === "applied" || outcome === "stopped_source";
     await db.query(
       `insert into sandboxes(id,provider,provider_sandbox_id,golden_id,org_id,owner_id,harness,status,boat_runtime)
-     values ($1,'boat',$2,$3,$4,$5,'codex','ready',$6)`,
-      [id, machine.id, sharedGoldenId, people.org, people.owner, runtime],
+     values ($1,'boat',$2,$3,$4,$5,'codex',$7,$6)`,
+      [id, machine.id, sharedGoldenId, people.org, people.owner, runtime, from],
     );
     const store = createSqlData(db)({
       userId: people.owner,
@@ -186,7 +189,7 @@ test.each([
       const read = readStatus(boat.provider, store, sandbox, { now });
       if (outcome === "rollback") await expect(read).rejects.toThrow("reject_observed_exit");
       else if (outcome === "release_failed") await expect(read).rejects.toThrow("Reservation release failed");
-      else expect(await read).toMatchObject({ status: outcome === "applied" ? "failed" : existingStatus });
+      else expect(await read).toMatchObject({ status: applied ? "failed" : existingStatus });
 
       const journal = await db.query(
         "select from_status,to_status,actor,code,generation::int from sandbox_transitions where sandbox_id=$1",
@@ -194,13 +197,13 @@ test.each([
       );
       const row = await store.get(id);
       const reservation = await db.query("select sandbox_id from account_agent_reservations where sandbox_id=$1", [id]);
-      expect(reservation.rows).toEqual(outcome === "applied" && confirmed ? [] : [{ sandbox_id: id }]);
-      if (outcome === "applied") {
+      expect(reservation.rows).toEqual(applied && confirmed ? [] : [{ sandbox_id: id }]);
+      if (applied) {
         expect(journal.rows).toEqual([
           {
-            from_status: "ready",
+            from_status: from,
             to_status: "failed",
-            actor: "lifecycle_runner",
+            actor: from === "stopped" ? "runtime_observation" : "lifecycle_runner",
             code: runtime ? "runtime_provider_failure" : "native_provider_failure",
             generation: sandbox.lifecycleGeneration,
           },

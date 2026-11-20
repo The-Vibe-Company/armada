@@ -227,8 +227,12 @@ begin
     allowed_effects := array[]::text[];
   end if;
 
-  if p_actor = 'runtime_observation' and p_code = 'native_provider_stopped'
-    and p_to_state = 'stopped' and sandbox.status in ('starting', 'stopping', 'failed', 'stopped') then
+  if p_actor = 'runtime_observation' and (
+    (p_code = 'native_provider_stopped' and p_to_state = 'stopped'
+      and sandbox.status in ('starting', 'stopping', 'failed', 'stopped'))
+    or (p_code = 'native_provider_failure' and p_to_state = 'failed'
+      and sandbox.status in ('failed', 'stopped') and sandbox.stop_requested_at is null)
+  ) then
     if sandbox.provider not in ('boat', 'modal') or sandbox.boat_runtime
       or sandbox.runtime_transport is not distinct from 'dialout'
       or sandbox.deleted_at is not null or sandbox.activity_until >= now()
@@ -262,7 +266,7 @@ begin
   end if;
 
   if p_actor = 'runtime_observation' and p_stopped_at is null then
-    raise exception 'runtime stop observation requires an exit timestamp' using errcode = '22023';
+    raise exception 'provider exit observation requires an exit timestamp' using errcode = '22023';
   end if;
 
   -- Docker resume enqueues its host mailbox job in the admission transaction.

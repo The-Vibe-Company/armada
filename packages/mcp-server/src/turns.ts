@@ -299,7 +299,11 @@ export async function readStatus(
   // Stored projections never acquire activity/lifecycle leases or publish over a
   // concurrent admission. The existing lifecycle worker refreshes physical state.
   if (options.stored) return report({ ...sandbox, statusReason: reason }, next, info, prompt, info.expiresAt ?? null);
-  if (next !== sandbox.status || reason !== sandbox.statusReason) {
+  const nativeExit =
+    !runtime &&
+    isSandboxProvider(sandbox.provider) &&
+    ((next === "stopped" && info.state === "stopped") || (next === "failed" && info.physicalExitConfirmed === true));
+  if (next !== sandbox.status || reason !== sandbox.statusReason || (nativeExit && sandbox.stoppedAt === null)) {
     const patch: ServerSandboxPatch = {
       status: next,
       statusReason: reason,
@@ -311,7 +315,7 @@ export async function readStatus(
       patch.stoppedAt = (info.stoppedAt ?? options.now).toISOString();
     } else if (sandbox.stoppedAt !== null && next !== "failed") patch.stoppedAt = null;
     if (
-      (next === "stopped" && !runtime && isSandboxProvider(sandbox.provider)) ||
+      nativeExit ||
       ((sandbox.status === "ready" || sandbox.status === "running") &&
         (next === "stopped" ||
           next === "failed" ||
