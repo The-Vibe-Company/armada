@@ -619,27 +619,26 @@ export async function recordObservedProviderState(
     toState: "failed" | "stopped";
     reason: string | null;
     stoppedAt: string | null;
+    providerRunPlacement?: string;
   },
 ) {
   if (!sql.transaction) throw new Error("Provider observation publication requires a transaction.");
-  const { sandboxId, generation, fromState, toState, reason, stoppedAt } = observation;
+  const { sandboxId, generation, fromState, toState, reason, stoppedAt, providerRunPlacement } = observation;
   return sql.transaction(async (tx) => {
-    const eligible = await tx.query<{ runtime: boolean }>(
-      `select ((s.provider='boat' and s.boat_runtime)
-           or (s.provider='modal' and s.runtime_transport is not distinct from 'dialout')) as runtime
-       from public.sandboxes s
+    const eligible = await tx.query(
+      `select s.id from public.sandboxes s
        where s.id=$3::uuid and ${SANDBOX_VISIBLE}
          and s.provider in ('boat','modal')
-         and ($4::boolean or (s.provider='boat' and s.boat_runtime)
-           or (s.provider='modal' and s.runtime_transport='dialout'))
+         and case when $4::text is null then
+           ((s.provider='boat' and s.boat_runtime) or (s.provider='modal' and s.runtime_transport='dialout'))
+         else s.provider_sandbox_id=$4 and not s.boat_runtime and s.runtime_transport is distinct from 'dialout' end
          and s.stop_requested_at is null and s.deleted_at is null
          and (s.activity_until is null or s.activity_until<now())
          and (s.reconcile_lease_until is null or s.reconcile_lease_until<now())
        for update of s`,
-      [...scope, sandboxId, toState === "stopped"],
+      [...scope, sandboxId, providerRunPlacement ?? null],
     );
-    const row = eligible.rows[0];
-    if (!row) return { kind: "conflict" } satisfies SandboxTransitionResult;
+    if (!eligible.rows.length) return { kind: "conflict" } satisfies SandboxTransitionResult;
     const result = await transitionSandbox(tx, {
       sandboxId,
       expectedGeneration: generation,
@@ -649,7 +648,7 @@ export async function recordObservedProviderState(
       code:
         toState === "failed"
           ? "runtime_provider_failure"
-          : row.runtime
+          : providerRunPlacement === undefined
             ? "runtime_provider_stopped"
             : "native_provider_stopped",
       effects: [],

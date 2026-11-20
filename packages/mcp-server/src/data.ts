@@ -69,7 +69,7 @@ export interface ServerSandboxPatch extends SandboxPatch {
   onlyIfIdle?: boolean;
   retainedRuntimeStop?: string;
   modalRuntimeExtensionTarget?: string;
-  providerObservationFrom?: "ready" | "running";
+  providerObservation?: { fromState: "ready" | "running"; providerRunPlacement?: string };
   turnActivity?: "claim" | "finish";
 }
 
@@ -801,18 +801,19 @@ export function createSqlData(
         )
           throw new DataError("Owner stop requires its activity generation, token and phase.");
         const reason = statusReasonOf(patch);
-        if (patch.providerObservationFrom !== undefined) {
+        if (patch.providerObservation !== undefined) {
           if (
             patch.expectedGeneration === undefined ||
             reason === undefined ||
             (patch.status !== "failed" && patch.status !== "stopped") ||
-            (patch.status === "stopped" && !patch.stoppedAt)
+            (patch.status === "stopped" && !patch.stoppedAt) ||
+            (patch.providerObservation.providerRunPlacement !== undefined && patch.status !== "stopped")
           )
             throw new DataError("Provider observation publication requires generation and state evidence.");
           const result = await recordObservedProviderState(sql, scope, {
             sandboxId: id,
             generation: patch.expectedGeneration,
-            fromState: patch.providerObservationFrom,
+            ...patch.providerObservation,
             toState: patch.status,
             reason,
             stoppedAt: patch.stoppedAt ?? null,

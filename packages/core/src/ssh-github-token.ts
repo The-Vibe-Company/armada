@@ -1,5 +1,6 @@
 import { GitHubHydrationError } from "./api-failure.ts";
 import type { Provider } from "./provider.ts";
+import { shellQuote } from "./shell-quote.ts";
 import { type SshExecDeps, sshStdinCheckout } from "./ssh-executor.ts";
 
 /** Private repair for a running legacy Boat sandbox, never a golden or a persisted credential. */
@@ -182,6 +183,12 @@ except Exception:
     sys.exit(1)
 `;
 
+const CHECK_PYTHON = "/usr/bin/python3 -I -c 'import fcntl,json,os,stat,subprocess,tempfile,time'";
+const PROVISION_PYTHON = `umask 022
+if ${CHECK_PYTHON}; then exit 0; fi
+/usr/bin/apt-get -o DPkg::Lock::Timeout=15 update &&
+/usr/bin/apt-get -o DPkg::Lock::Timeout=15 install -y --no-install-recommends --reinstall python3 python3-minimal`;
+
 // Only constant code crosses sudo argv. Its environment contains no inherited credential values.
 const BOOTSTRAP = `set +x
 cleanup_github_token() {
@@ -202,13 +209,38 @@ cleanup_github_token() {
   unset ARMADA_SSH_PUBLIC_KEY
 }
 trap cleanup_github_token EXIT
+github_python_ready() (
+  unset ARMADA_GIT_TOKEN
+  /usr/bin/env -i /usr/bin/timeout --kill-after=1s 2s ${CHECK_PYTHON} </dev/null >/dev/null 2>&1
+)
+install_github_python() (
+  unset ARMADA_GIT_TOKEN
+  if [ "$(/usr/bin/id -u)" = 0 ]; then
+    set --
+  else
+    set -- /usr/bin/sudo -n
+  fi
+  "$@" /usr/bin/env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin DEBIAN_FRONTEND=noninteractive /bin/sh -c '
+    umask 077
+    exec /usr/bin/timeout --kill-after=2s 25s /usr/bin/flock -x -o /run/armada-github-python.lock /bin/sh -c "$1"
+  ' sh ${shellQuote(PROVISION_PYTHON)} </dev/null >/dev/null 2>&1
+)
+unset ARMADA_GITHUB_INSTALL_TIMEOUT
+if ! github_python_ready; then
+  if ! install_github_python || ! github_python_ready; then
+    printf '%s\\n' 'ARMADA_GITHUB_FAILURE bootstrap' >&2
+    exit 1
+  fi
+  export ARMADA_GITHUB_INSTALL_TIMEOUT=25
+fi
 /usr/bin/python3 -I <<'ARMADA_GITHUB_TOKEN'
 import os,subprocess,sys
 try:
     payload=os.environ.pop('ARMADA_GIT_TOKEN')
     command=['/usr/bin/python3','-I','-c',${JSON.stringify(GITHUB_TOKEN_INSTALLER)}]
     if os.getuid()!=0: command=['/usr/bin/sudo','-n']+command
-    result=subprocess.run(command,input=payload.encode(),stdout=subprocess.DEVNULL,stderr=subprocess.PIPE,env={'PATH':'/usr/local/bin:/usr/bin:/bin','HOME':'/home/user'},timeout=45)
+    timeout=25 if os.environ.pop('ARMADA_GITHUB_INSTALL_TIMEOUT',None)=='25' else 45
+    result=subprocess.run(command,input=payload.encode(),stdout=subprocess.DEVNULL,stderr=subprocess.PIPE,env={'PATH':'/usr/local/bin:/usr/bin:/bin','HOME':'/home/user'},timeout=timeout)
     if result.returncode!=0:
         allowed=['privilege','payload','directories','lock','executables','install','token_write']
         reason=next((v for v in allowed if result.stderr==('ARMADA_GITHUB_FAILURE '+v+'\\n').encode()),'sudo')
