@@ -129,7 +129,7 @@ interface SmokeIo {
   out: (line: string) => void;
   recordSandbox?: (org: string, id: string, key: string, provider?: "modal" | "docker") => Promise<void>;
 }
-const WAIT_SANDBOX_STATUSES: readonly string[] = [
+const OBSERVED_SANDBOX_STATUSES: readonly string[] = [
   "starting",
   "ready",
   "running",
@@ -1251,16 +1251,51 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
           });
         launchSkills = result.sandbox.skills;
       });
-      await step(scoped ? "scoped_parent_ready" : "ready", () =>
-        poll(
-          (timeoutMs) => sandbox<{ status: string }>("status", { id: sandboxId }, timeoutMs),
-          (result) => {
-            if (result.status === "failed" || result.status === "stopped") fail("sandbox_not_ready");
-            return result.status === "ready";
-          },
-          { step: "ready" },
-        ),
-      );
+      const readinessStep = scoped ? "scoped_parent_ready" : "ready";
+      await step(readinessStep, async () => {
+        let statusResponse: { status: string; providerState: string; statusReason: string } | undefined;
+        try {
+          await poll(
+            async (timeoutMs) => {
+              const result = await sandbox<{
+                status?: unknown;
+                providerState?: unknown;
+                statusReason?: unknown;
+              } | null>("status", { id: sandboxId }, timeoutMs);
+              const { status, providerState, statusReason } = result ?? {};
+              statusResponse = {
+                status:
+                  typeof status === "string" && OBSERVED_SANDBOX_STATUSES.includes(status) ? status : jsonShape(status),
+                providerState:
+                  providerState === "active" || providerState === "stopped" ? providerState : jsonShape(providerState),
+                statusReason: jsonShape(statusReason),
+              };
+              return result;
+            },
+            (result) => {
+              if (!result) fail("invalid_response");
+              const { status } = result;
+              if (status === "failed" || status === "stopped") fail("sandbox_not_ready");
+              return status === "ready";
+            },
+            { step: "ready" },
+          );
+        } catch (error) {
+          if (error instanceof SmokeFailure) {
+            io.out(
+              JSON.stringify({
+                step: "readiness_diagnostic",
+                readinessStep,
+                code: error.code,
+                statusResponse,
+                transportTimeoutMs: error.transportTimeoutMs,
+                httpStatus: error.status,
+              }),
+            );
+          }
+          throw error;
+        }
+      });
       if (scoped) {
         await scoped.run(sandboxId!, parentCredentialVersion!);
         await step("scoped_parent_stop", stopSandbox);
@@ -1389,7 +1424,9 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
                 lastResponse = {
                   body: jsonShape(result),
                   status:
-                    typeof status === "string" && WAIT_SANDBOX_STATUSES.includes(status) ? status : jsonShape(status),
+                    typeof status === "string" && OBSERVED_SANDBOX_STATUSES.includes(status)
+                      ? status
+                      : jsonShape(status),
                   providerState: jsonShape(result?.providerState),
                   prompt: jsonShape(prompt),
                   promptId: jsonShape(prompt?.promptId),
