@@ -25,7 +25,7 @@ Quick start / common examples:
   armada login
   armada org list
   armada org use my-team
-  armada doctor
+  armada status --setup
   armada host add --name my-workstation
   armada new
   armada list

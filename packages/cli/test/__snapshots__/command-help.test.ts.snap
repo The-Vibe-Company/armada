@@ -23,7 +23,7 @@ Quick start / common examples:
   armada login
   armada org list
   armada org use my-team
-  armada doctor
+  armada status --setup
   armada host add --name my-workstation
   armada new
   armada list
@@ -41,7 +41,7 @@ Usage:
   armada host rm UUID [--org UUID]
   armada new [prompt] --provider docker [--host UUID|NAME | --golden snapshot-UUID] --agent claude|codex|opencode [--credential-id UUID] [--org NAME|UUID] [--repo owner/repo[@branch] ...] [--variable KEY:UUID:VERSION ...] [--secret KEY:UUID:VERSION ...] [--idempotency-key KEY] [--json]
                                            Docker launch through the normal Armada API using the official Armada environment.
-  armada doctor [--org UUID] [--json]      Check session, server, GitHub, hosts and model accounts
+  armada status [--setup] [--org UUID] [--json]  Check identity, server, GitHub, hosts and accounts
   armada completion bash|zsh|fish           Print a shell completion script
   armada --version                         Print the version
   armada --help                            Show this help (also -h or help); no login required
@@ -298,11 +298,16 @@ Example: armada extend SANDBOX_UUID --ttl 30m --org ORG_UUID --json
 `;
 
 exports[`armada status help preserves its output 1`] = `
-"Usage: armada status <sandbox-id> [--live] [--org UUID] [--json]
-Read sandbox status after Armada login and server authorization.
+"Usage: armada status [--setup] [--org UUID] [--json]
+       armada status [sandbox-id] [--live] [--org UUID] [--json]
+Without a sandbox ID or current sandbox, check identity, selected organization,
+server, GitHub, hosts and model accounts. Use --setup to inspect setup from a
+sandbox workspace. Setup reports metadata and exits 1 if a check fails.
+An explicit ID, ARMADA_SANDBOX or .armada/sandbox selects sandbox status.
 Default: recorded state, without a provider probe. --live reads provider/prompt details.
 Use a sandbox ID from armada list --json. Output is JSON even without --json.
 Recorded state is not proof of current provider readiness.
+Example: armada status --setup --org ORG_UUID --json
 Example: armada status SANDBOX_UUID --org ORG_UUID --json
 Example: armada status SANDBOX_UUID --live --org ORG_UUID
 "
