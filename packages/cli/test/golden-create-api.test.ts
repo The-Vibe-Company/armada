@@ -133,6 +133,8 @@ for (const outcome of ["succeeded", "failed", "billing", "recovery", "disconnect
         "--idempotency-key",
         "stable-admission-key",
         "--wait",
+        "--timeout",
+        "1",
       ],
       {
         out: (text) => {
@@ -143,7 +145,8 @@ for (const outcome of ["succeeded", "failed", "billing", "recovery", "disconnect
         },
       },
       {
-        sleep: async () => {
+        sleep: async (ms) => {
+          expect(ms).toBeLessThan(1000);
           sleeps++;
         },
         auth: {

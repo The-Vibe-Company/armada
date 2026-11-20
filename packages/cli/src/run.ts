@@ -37,6 +37,7 @@ import { type LocalHostIo, localHostCommand, productionLocalHostIo } from "./loc
 import { profileStores, selectProfile } from "./profiles.ts";
 import { skillCommand } from "./skill-install.ts";
 import { snapshotText } from "./snapshot-text.ts";
+import { waitForSnapshot } from "./snapshot-wait.ts";
 
 export interface Io {
   out(text: string): void;
@@ -303,7 +304,7 @@ export async function snapshotCommand([verb, ...rest]: readonly string[], io: Io
     if (
       args.positionals.length ||
       provider ||
-      (jobId !== undefined && idempotencyKey !== undefined) ||
+      (jobId !== undefined && (idempotencyKey !== undefined || org !== undefined)) ||
       (idempotencyKey !== undefined && !org)
     )
       throw new GoldenError("invalid_config", "Use snapshot show --build JOB_ID or --idempotency-key KEY --org ORG.");
@@ -382,22 +383,15 @@ async function admitGoldenBuild(
       "The server did not return a durable build receipt; the CLI/server may be out of date and the operation may already have completed. Upgrade them together and inspect snapshot ls before retrying; do not resubmit blindly.",
     );
   if (!flag(args, "--json")) io.out(`Build job: ${job.jobId}\n`);
-  const deadline = AbortSignal.timeout(Math.max(1, seconds * 1000));
-  let current = job;
+  let current: GoldenBuildStatus;
   try {
-    for (
-      let attempt = 0;
-      (current.state === "queued" || current.state === "running") && attempt < Math.ceil(seconds / 2);
-      attempt++
-    ) {
-      deadline.throwIfAborted();
-      await (deps.sleep ?? ((ms) => new Promise<void>((resolve) => setTimeout(resolve, ms))))(2000);
-      current = await client.golden<GoldenBuildStatus>(
-        "build/status",
-        { jobId: job.jobId, org: body.org },
-        AbortSignal.any([deadline, AbortSignal.timeout(10_000)]),
-      );
-    }
+    current = await waitForSnapshot(
+      job,
+      seconds,
+      deps.sleep,
+      ({ state }) => state === "queued" || state === "running",
+      (signal) => client.golden<GoldenBuildStatus>("build/status", { jobId: job.jobId }, signal),
+    );
   } catch (error) {
     if (error instanceof GoldenError) throw error;
     throw new GoldenError(

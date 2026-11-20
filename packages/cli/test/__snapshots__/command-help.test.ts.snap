@@ -57,7 +57,7 @@ Usage:
   armada snapshot rebuild UUID --provider docker --org UUID [--request-id UUID] [--json]
   armada snapshot rm NAME|UUID [--provider boat|modal] [--org ORG] [--json]
   armada snapshot show NAME|UUID [--provider boat|modal|docker] [--org ORG] [--json]
-  armada snapshot show --build JOB_ID [--org ORG] [--json]
+  armada snapshot show --build JOB_ID [--json]
   armada snapshot show --idempotency-key KEY --org ORG [--json]
   armada launch <snapshot> --agent claude|codex|opencode ["prompt"] [--model <id>] [--reasoning-effort <level>]
                                            [--armada-access [--credential-id <id>] [--max-active-children <1..100>]]
@@ -491,7 +491,7 @@ Manage provider-scoped snapshots. Use a verb with --help for its options.
   armada snapshot rebuild UUID --provider docker --org UUID [--request-id UUID] [--json]
   armada snapshot rm NAME|UUID [--provider boat|modal] [--org ORG] [--json]
   armada snapshot show NAME|UUID [--provider boat|modal|docker] [--org ORG] [--json]
-  armada snapshot show --build JOB_ID [--org ORG] [--json]
+  armada snapshot show --build JOB_ID [--json]
   armada snapshot show --idempotency-key KEY --org ORG [--json]
 "
 `;

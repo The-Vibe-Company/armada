@@ -9,7 +9,7 @@ const usage = {
   rm: "armada snapshot rm NAME|UUID [--provider boat|modal] [--org ORG]",
   show: "armada snapshot show NAME|UUID [--provider boat|modal|docker] [--org ORG]",
 };
-const buildLookup = "armada snapshot show --build JOB_ID [--org ORG] [--json]";
+const buildLookup = "armada snapshot show --build JOB_ID [--json]";
 const keyLookup = "armada snapshot show --idempotency-key KEY --org ORG [--json]";
 const usageRows = [
   usage.ls,
@@ -47,7 +47,8 @@ Remove a Boat/Modal snapshot from launch selection. Use the ID from snapshot ls 
   "snapshot show": `Usage: ${usage.show}
    or: ${buildLookup}
    or: ${keyLookup}
-Inspect a snapshot or a durable Boat/Modal build, including its build ID. Docker takes a snapshot UUID and --org UUID.
+Inspect a snapshot or a durable Boat/Modal build. A build UUID identifies the job across organizations you can access.
+Docker takes a snapshot UUID and --org UUID.
 `,
 };
 
@@ -62,6 +63,11 @@ ${usageRows}
   subcommandHelp,
   helpWhenBare: true,
   automaticJson: true,
+  useSelectedOrg: ([verb, ...rest]) => {
+    const end = rest.indexOf("--");
+    const flags = end < 0 ? rest : rest.slice(0, end);
+    return verb !== "show" || !flags.some((arg) => arg === "--build" || arg.startsWith("--build="));
+  },
   async run(argv, { io, deps }) {
     const { snapshotCommand } = await import("../run.ts");
     return snapshotCommand(argv, io, deps);

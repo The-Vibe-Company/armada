@@ -3,6 +3,7 @@ import { type Args, flag, single, uuid } from "./args.ts";
 import { createArmadaApiClient } from "./armada-api.ts";
 import type { AuthIo } from "./auth-commands.ts";
 import { resolveHost } from "./host-commands.ts";
+import { waitForSnapshot } from "./snapshot-wait.ts";
 export async function dockerSnapshotCommand(
   operation: "ls" | "new" | "update" | "rebuild" | "rm" | "show",
   args: Args,
@@ -113,12 +114,14 @@ export async function dockerSnapshotCommand(
       "build_failed",
       `Build outcome unknown. Inspect ${requestId} with snapshot show before retrying.`,
     );
-  const deadline = AbortSignal.timeout(Math.max(1, seconds * 1000));
   try {
-    for (let attempt = 0; row.status === "building" && attempt < Math.ceil(seconds / 2); attempt++) {
-      await (sleep ?? ((ms) => new Promise<void>((resolve) => setTimeout(resolve, ms))))(2000);
-      row = parseDockerSnapshotRecord((await post("get", { id: requestId }, deadline)).snapshot);
-    }
+    row = await waitForSnapshot(
+      row,
+      seconds,
+      sleep,
+      ({ status }) => status === "building",
+      async (signal) => parseDockerSnapshotRecord((await post("get", { id: requestId }, signal)).snapshot),
+    );
   } catch {
     throw new GoldenError(
       "build_failed",

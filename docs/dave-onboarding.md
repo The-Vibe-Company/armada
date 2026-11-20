@@ -298,9 +298,9 @@ are saved configuration executed at **every launch**, after repository pulls; th
 build-time setup. Neither should contain credentials. See [snapshot configuration](golden-create.md)
 for directory layout and project-specific initialization.
 
-Creation prints `Build job: <job-id>`. It normally waits up to 60 seconds. A completed
-build yields a snapshot; a queued/running build may instead print `Build is ...` with the
-next command. Replace `BUILD_JOB_ID` with that ID to read its status:
+Creation prints `Build job: <job-id>` and returns after admission. Add `--wait` to observe
+the build for up to 60 seconds by default. Replace `BUILD_JOB_ID` with the printed ID
+to read its status:
 
 ```sh
 armada snapshot show --build BUILD_JOB_ID

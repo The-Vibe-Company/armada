@@ -79,12 +79,12 @@ describe("golden list through the Armada API", () => {
   });
 });
 
-test("snapshot show returns the scoped durable build ID and state", async () => {
+test("snapshot show returns the durable build ID and state", async () => {
   const jobId = "11111111-1111-4111-8111-111111111111";
   let output = "";
   const requests: unknown[] = [];
   const code = await run(
-    ["snapshot", "show", "--build", jobId, "--org", "Example"],
+    ["snapshot", "show", "--build", jobId],
     { out: (text) => (output += text), err: () => {} },
     {
       stdoutIsTTY: false,
@@ -103,6 +103,6 @@ test("snapshot show returns the scoped durable build ID and state", async () => 
     },
   );
   expect(code).toBe(0);
-  expect(requests).toEqual([["/api/v1/golden/build/status", { jobId, org: "Example" }]]);
+  expect(requests).toEqual([["/api/v1/golden/build/status", { jobId }]]);
   expect(JSON.parse(output)).toMatchObject({ jobId, state: "queued" });
 });
