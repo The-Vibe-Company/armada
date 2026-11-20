@@ -92,6 +92,7 @@ type StoredJob = Bound & {
   input_enc: Uint8Array<ArrayBuffer>;
   outcome: string | null;
   result_image_id?: string | null;
+  result_machine_id?: string | null;
   cancelled_at?: string | null;
   refused_resume_generation?: string | null;
 };
@@ -2164,6 +2165,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
         outcome: "completed" | "failed";
         reason?: DockerJobFailureReason;
         imageId?: string;
+        machineId?: string;
         baselineVersion?: number;
         baselineTool?: SnapshotBaselineTool;
         missingRefIndex?: number;
@@ -2176,6 +2178,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
           "outcome",
           ...(result.reason !== undefined ? ["reason"] : []),
           ...(result.imageId !== undefined ? ["imageId"] : []),
+          ...(result.machineId !== undefined ? ["machineId"] : []),
           ...(result.baselineVersion !== undefined ? ["baselineVersion"] : []),
           ...(result.baselineTool !== undefined ? ["baselineTool"] : []),
           ...(result.missingRefIndex !== undefined ? ["missingRefIndex"] : []),
@@ -2231,12 +2234,23 @@ export function createDockerHostStore(sql: Sql, key: string) {
           [host.id, result.requestId],
         );
         const job = jobs.rows[0] ?? deny();
+        if (
+          result.machineId !== undefined &&
+          (result.outcome !== "completed" ||
+            typeof result.machineId !== "string" ||
+            !/^[a-f0-9]{64}$/.test(result.machineId) ||
+            !job.bound_sandbox_id ||
+            (job.bound_operation !== "create" && job.bound_operation !== "restore"))
+        )
+          deny();
         // A cancelled job's server outcome is not a machine fact. The first host
         // receipt replaces it; after that, terminal facts are immutable.
         if (
           job.outcome !== null &&
           job.cancelled_at === null &&
-          (job.outcome !== result.outcome || (job.result_image_id ?? null) !== (result.imageId ?? null))
+          (job.outcome !== result.outcome ||
+            (job.result_image_id ?? null) !== (result.imageId ?? null) ||
+            (result.machineId !== undefined && job.result_machine_id !== result.machineId))
         )
           deny();
         // A retired snapshot build is already failed and its build authorization is
@@ -2395,8 +2409,8 @@ export function createDockerHostStore(sql: Sql, key: string) {
         }
         if (job.outcome === null || job.cancelled_at !== null) {
           await tx.query(
-            `update public.docker_host_jobs set outcome=$2,completed_at=now(),result_image_id=$3,cancelled_at=null where request_id=$1`,
-            [result.requestId, result.outcome, result.imageId ?? null],
+            `update public.docker_host_jobs set outcome=$2,completed_at=now(),result_image_id=$3,result_machine_id=$4,cancelled_at=null where request_id=$1`,
+            [result.requestId, result.outcome, result.imageId ?? null, result.machineId ?? null],
           );
         }
       });

@@ -273,6 +273,7 @@ export function createDockerHostRoutes(
                       ? ["outcome", "reason"]
                       : ["outcome"]),
               ...("imageId" in body ? ["imageId"] : []),
+              ...("outcome" in body && "machineId" in body ? ["machineId"] : []),
               ...("baselineVersion" in body ? ["baselineVersion"] : []),
               ...("baselineTool" in body ? ["baselineTool"] : []),
               ...("missingRefIndex" in body ? ["missingRefIndex"] : []),
@@ -481,6 +482,9 @@ export function createDockerHostRoutes(
       if (outcome !== "completed" && outcome !== "failed") throw new InvalidInput();
       const requestId = string(body.requestId);
       if ("retained" in body && (body.retained !== true || outcome !== "failed")) throw new InvalidInput();
+      const machineId = "machineId" in body ? string(body.machineId) : undefined;
+      if (machineId !== undefined && (outcome !== "completed" || !/^[a-f0-9]{64}$/.test(machineId)))
+        throw new InvalidInput();
       // A reason explains a failure; it never accompanies a success.
       const reason = body.reason === undefined ? undefined : string(body.reason);
       if (
@@ -517,6 +521,7 @@ export function createDockerHostRoutes(
         outcome,
         ...(reason === undefined ? {} : { reason: reason as DockerJobFailureReason }),
         ...("imageId" in body ? { imageId: string(body.imageId) } : {}),
+        ...(machineId === undefined ? {} : { machineId }),
         ...(typeof baselineVersion === "number" ? { baselineVersion } : {}),
         ...(isSnapshotBaselineTool(baselineTool) ? { baselineTool } : {}),
         ...(typeof missingRefIndex === "number" ? { missingRefIndex } : {}),
