@@ -53,7 +53,9 @@ export async function sandboxActivity<T>(
     if (!(error instanceof CoreLaunchSettlementConflict) && options.failurePatch)
       await store
         .update(sandbox.id, { ...options.failurePatch(error), finishActivity: true, activityToken: token, ...expected })
-        .catch(() => {});
+        .catch((settlementError: unknown) => {
+          if (settlementError instanceof CoreLaunchSettlementConflict) throw settlementError;
+        });
     throw error;
   } finally {
     clearTimeout(deadline);

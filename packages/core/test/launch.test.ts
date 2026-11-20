@@ -62,12 +62,12 @@ const other: GoldenActor = { userId: OTHER, orgId: ORG, role: "member" };
 
 describe("launch", () => {
   const boatModes = ["prompted", "idle"] as const;
-  const modalModes = [...boatModes, "private", "stale epoch"] as const;
+  const modalModes = [...boatModes, "private", "stale epoch", "lost prompt epoch"] as const;
   for (const provider of ["boat", "modal"] as const)
     test.each([...(provider === "modal" ? modalModes : boatModes)])(
       `${provider} runtime default prepares workspace before publication/inference (%s)`,
       async (mode) => {
-        const prompted = mode === "prompted";
+        const prompted = mode === "prompted" || mode === "lost prompt epoch";
         const visibility = mode === "private" ? "private" : "org";
         const readyOrder = ["bind", "start", "workspace", "mcp", ...(mode === "private" ? [] : ["admit"])];
         const source = golden("org");
@@ -119,7 +119,11 @@ describe("launch", () => {
           async update(id, patch) {
             if (patch.finishActivity) {
               settlements.push(patch);
-              if (mode === "stale epoch" && patch.status === "ready") throw new CoreLaunchSettlementConflict();
+              if (
+                (mode === "stale epoch" && patch.status === "ready") ||
+                (mode === "lost prompt epoch" && patch.status === "failed")
+              )
+                throw new CoreLaunchSettlementConflict();
             }
             await store.update(id, patch);
           },
@@ -195,6 +199,7 @@ describe("launch", () => {
                     },
                     async prompt() {
                       expect(order).toEqual(readyOrder);
+                      if (mode === "lost prompt epoch") throw Error("Runtime epoch changed.");
                       return { promptId: "runtime", conversationId: "conversation", status: "queued" };
                     },
                   };
@@ -203,9 +208,11 @@ describe("launch", () => {
             } satisfies NonNullable<LaunchOptions["boatRuntimeDefault"]>,
           },
         );
-        if (mode === "stale epoch") {
+        if (mode === "stale epoch" || mode === "lost prompt epoch") {
           await expect(launched).rejects.toThrow("Core launch settlement is stale.");
-          expect(settlements.map((patch) => patch.status)).toEqual(["ready"]);
+          expect(settlements).toMatchObject([
+            { status: mode === "stale epoch" ? "ready" : "failed", expectedRuntimeEpoch: "1" },
+          ]);
           expect(world.stopped).toEqual([]);
           return;
         }

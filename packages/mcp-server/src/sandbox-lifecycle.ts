@@ -320,14 +320,9 @@ export async function finishLaunchSuccess(
     });
     return result.kind === "applied" ? "applied" : "native_conflict";
   }
-  if (!sandbox?.owned || !sandbox.enrolled_path) return "conflict";
-  if (!runtimeEpoch) return "epoch_conflict";
-  const live = await tx.query(
-    `select 1 from public.runtime_enrolments where sandbox_id=$1 and lifecycle_generation=$2
-      and epoch=$3 and runtime_hash is not null for update`,
-    [sandboxId, generation, runtimeEpoch],
-  );
-  if (!live.rows.length) return "epoch_conflict";
+  const conflict = runtimeEpoch ? "epoch_conflict" : "conflict";
+  if (!sandbox?.owned || !sandbox.enrolled_path) return conflict;
+  if (!runtimeEpoch || !(await hasPreparedRuntime(tx, sandboxId, generation, runtimeEpoch))) return "epoch_conflict";
   const eligible = await tx.query(
     `select s.id from public.sandboxes s where s.id=$3 and ${SANDBOX_VISIBLE}
       and s.status='starting' and s.lifecycle_generation=$5
@@ -338,7 +333,7 @@ export async function finishLaunchSuccess(
       and s.task_prompt_id is null and cardinality(s.conversation_ids)=0`,
     [...scope, sandboxId, activityToken, generation],
   );
-  if (!eligible.rows.length) return "conflict";
+  if (!eligible.rows.length) return "epoch_conflict";
   const result = await transitionSandbox(tx, {
     sandboxId,
     expectedGeneration: generation,
@@ -348,7 +343,7 @@ export async function finishLaunchSuccess(
     code: "runtime_enrolled",
     effects: [],
   });
-  if (result.kind === "conflict") return "conflict";
+  if (result.kind === "conflict") return "epoch_conflict";
   if (prompt) {
     await tx.query(
       `update public.sandboxes set task_prompt_id=$2,conversation_ids=$3::text[],
@@ -360,6 +355,15 @@ export async function finishLaunchSuccess(
     await tx.query("update public.sandboxes set activity_lease_id=null,activity_until=null where id=$1", [sandboxId]);
   }
   return "applied";
+}
+
+async function hasPreparedRuntime(tx: Sql, sandboxId: string, generation: number, epoch: string) {
+  const live = await tx.query(
+    `select 1 from public.runtime_enrolments where sandbox_id=$1 and lifecycle_generation=$2
+      and epoch=$3 and runtime_hash is not null for update`,
+    [sandboxId, generation, epoch],
+  );
+  return live.rows.length > 0;
 }
 
 async function finishPromptedNativeLaunch(
@@ -682,7 +686,21 @@ export async function finishLaunchFailure(
   generation: number,
   activityToken: string,
   message: string,
+  runtimeEpoch: string | undefined,
 ) {
+  if (runtimeEpoch) {
+    const {
+      rows: [current],
+    } = await tx.query<{ status: string }>(
+      `select s.status from public.sandboxes s where s.id=$3 and ${SANDBOX_VISIBLE} for update of s`,
+      [...scope, sandboxId],
+    );
+    if (
+      !current ||
+      (current.status !== "failed" && !(await hasPreparedRuntime(tx, sandboxId, generation, runtimeEpoch)))
+    )
+      return "epoch_conflict";
+  }
   const {
     rows: [sandbox],
   } = await tx.query<{ generation: string; status: "starting" | "failed" }>(
@@ -694,7 +712,7 @@ export async function finishLaunchFailure(
      returning s.lifecycle_generation::text as generation, s.status`,
     [...scope, sandboxId, generation, activityToken],
   );
-  if (!sandbox) return false;
+  if (!sandbox) return runtimeEpoch ? "epoch_conflict" : false;
   if (sandbox.status === "failed") return true;
   const result = await recordRuntimeStartupFailure(tx, sandboxId, sandbox.generation, "launch_failed", message);
   if (result.kind === "conflict") throw new Error("Locked launch failure could not transition.");

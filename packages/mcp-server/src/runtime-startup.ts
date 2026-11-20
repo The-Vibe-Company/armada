@@ -48,6 +48,7 @@ export function createRuntimeStartup(
     assertClaim?: (tx?: Sql) => Promise<void>;
     ticketGuard?: RuntimeTicketGuard;
     signal?: AbortSignal;
+    onEnrolled?: (epoch: string) => void;
     /** Readiness budget AFTER the bounded host bootstrap returns. */
     readinessTimeoutMs?: number;
   }): Promise<{ runtime: "armada"; epoch: string }> => {
@@ -138,6 +139,7 @@ export function createRuntimeStartup(
           continue;
         }
         if (epoch !== ticket.epoch) throw Error("runtime_startup_replaced");
+        input.onEnrolled?.(epoch);
         diagnosticPhase = phase = "readiness";
         const enrolledAt = time.now();
         entering("readiness", enrolledAt);

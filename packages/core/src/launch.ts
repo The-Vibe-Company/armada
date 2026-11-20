@@ -203,6 +203,7 @@ export interface LaunchOptions extends GoldenLimits {
       sandbox: SandboxRecord;
       credentials: HarnessCredentials;
       signal: AbortSignal;
+      onEnrolled?: (epoch: string) => void;
       /** Private resume policy: validate configuration before activating compute. */
       activate?: (signal: AbortSignal) => Promise<void>;
       restoreCheckpoint?: { epoch: string; watermark: number; conversationId: string | null };
@@ -662,6 +663,7 @@ export async function launchSandbox(
         /* Best effort only. */
       }
     };
+    let enrolledEpoch: string | undefined;
     const start = async (signal: AbortSignal) => {
       if ((record.boatRuntime === true || record.runtimeTransport === "dialout") !== (strategy.kind === "enrolled"))
         throw new LaunchError("start_failed", "The sandbox runtime selection was not persisted; no agent was started.");
@@ -698,6 +700,9 @@ export async function launchSandbox(
           signal,
           progress,
           runtimeStarted: () => timing.mark("runtime_startup"),
+          runtimeEnrolled: (epoch) => {
+            enrolledEpoch = epoch;
+          },
           mark: async (stage) => {
             await mark(stage);
             if (stage === "checkout_done") timing.mark("workspace_preparation");
@@ -819,6 +824,7 @@ export async function launchSandbox(
                   golden.config.init.reduce((sum, command) => sum + initCommand(command).timeoutSeconds, 0)),
             failurePatch: (error) => ({
               status: "failed",
+              ...(enrolledEpoch ? { expectedRuntimeEpoch: enrolledEpoch } : {}),
               statusReason: withSandbox(error, record.id, secrets).message,
             }),
           }),

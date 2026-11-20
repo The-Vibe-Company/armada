@@ -833,8 +833,10 @@ export function createSqlData(
           if (!sql.transaction || expectedGeneration === undefined || !activityToken || typeof reason !== "string")
             throw new DataError("Launch failure requires its activity generation, token and diagnostic.");
           const applied = await sql.transaction((tx) =>
-            finishLaunchFailure(tx, scope, id, expectedGeneration, activityToken, reason),
+            finishLaunchFailure(tx, scope, id, expectedGeneration, activityToken, reason, patch.expectedRuntimeEpoch),
           );
+          if (applied === "epoch_conflict")
+            throw new CoreLaunchSettlementConflict("Launch failure publication is stale.");
           if (!applied) throw new DataError("Launch failure publication is stale.", "sandbox_not_ready");
           return;
         }

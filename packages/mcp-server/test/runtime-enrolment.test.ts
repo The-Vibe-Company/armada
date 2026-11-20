@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { PROTOCOL_VERSION } from "@armada/agent-runtime";
-import { DelegatedAuthority, type Sql } from "@armada/core/server";
+import { CoreLaunchSettlementConflict, DelegatedAuthority, type Sql } from "@armada/core/server";
 import { createSqlData } from "../src/data.ts";
 import { createRuntimeEnrolments } from "../src/runtime-enrolment.ts";
 import { rowOnlyConnection } from "./row-only-database.ts";
@@ -152,6 +152,9 @@ test.each(["boat", "modal"] as const)(
     expect(replacementTicket.lifecycleGeneration).toBe(ticket.lifecycleGeneration);
     const stale = { ...patch, expectedRuntimeEpoch: session.epoch };
     await expect(store.update(f.id, stale)).rejects.toThrow("Runtime readiness publication is stale.");
+    await expect(
+      store.update(f.id, { ...stale, status: "failed", statusReason: "Old prompt lost runtime authority." }),
+    ).rejects.toBeInstanceOf(CoreLaunchSettlementConflict);
     expect(await journal()).toEqual([]);
     expect(await store.get(f.id)).toMatchObject({ status: "starting", lifecycleGeneration: expectedGeneration });
 
@@ -173,6 +176,35 @@ test.each(["boat", "modal"] as const)(
     expect((await f.request("session", replacement.runtimeToken, replacement.epoch)).status).toBe(200);
   },
 );
+
+test("membership revocation makes enrolled launch settlement a lost claim", async () => {
+  const f = await fixture();
+  const activityToken = crypto.randomUUID();
+  await f.db.query(
+    `update sandboxes set status='starting',activity_lease_id=$2,
+      activity_until=now()+interval '1 minute' where id=$1`,
+    [f.id, activityToken],
+  );
+  const ticket = await f.issue();
+  const session = await f.service().enrol(ticket.enrolmentToken);
+  const store = createSqlData(f.sql)({
+    userId: f.people.owner,
+    orgs: [{ orgId: f.people.org, role: "member" }],
+    via: "service",
+  }).sandboxes;
+  await f.db.query("delete from members where org_id=$1 and user_id=$2", [f.people.org, f.people.owner]);
+  await expect(
+    store.update(f.id, {
+      status: "ready",
+      finishActivity: true,
+      activityToken,
+      expectedGeneration: Number(ticket.lifecycleGeneration),
+      expectedRuntimeEpoch: session.epoch,
+    }),
+  ).rejects.toBeInstanceOf(CoreLaunchSettlementConflict);
+  expect((await f.db.query("select status from sandboxes where id=$1", [f.id])).rows).toEqual([{ status: "starting" }]);
+  expect((await f.db.query("select 1 from sandbox_transitions where sandbox_id=$1", [f.id])).rows).toEqual([]);
+});
 
 test("an accepted initial launch prompt publishes under the enrolled generation", async () => {
   const f = await fixture("modal");

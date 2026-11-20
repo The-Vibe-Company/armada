@@ -782,6 +782,7 @@ test("runtime startup privately issues configuration, awaits enrolment and fence
       defaults: { model: "gpt-5.4", reasoningEffort: "high" },
     });
     let bootstrapStart: unknown;
+    let authenticatedEpoch: string | undefined;
     let token: string | undefined;
     let now = 0;
     const configuration = { selectedHarness: "codex", privateMarker: "startup-private-configuration" };
@@ -819,7 +820,8 @@ test("runtime startup privately issues configuration, awaits enrolment and fence
             false,
           );
         },
-        async health(signal) {
+        async health(signal, epoch) {
+          expect(authenticatedEpoch).toBe(epoch);
           now += 30;
           return agent.health(signal);
         },
@@ -878,6 +880,9 @@ test("runtime startup privately issues configuration, awaits enrolment and fence
           cacheDir: "/home/user/.armada-bootstrap",
           artifact: { sha256: "a".repeat(64), bytes: 10 },
           configuration,
+          onEnrolled: (epoch) => {
+            authenticatedEpoch = epoch;
+          },
         }),
       ),
     ).toEqual({ runtime: "armada", epoch: "2" });

@@ -14,6 +14,7 @@ interface LaunchStartContext {
   signal: AbortSignal;
   progress(stage: LaunchInitializationStage): void;
   runtimeStarted(): void;
+  runtimeEnrolled(epoch: string): void;
   mark(stage: LaunchStage): Promise<void>;
   reportGitHub(github: GitHubLaunchInfo): void;
 }
