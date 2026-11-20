@@ -15,7 +15,7 @@ export interface Job {
 
 export interface GenerationHandoff {
   lockPrerequisites(tx: Sql): Promise<void>;
-  advance(tx: Sql): Promise<void>;
+  advance(tx: Sql, job: Job): Promise<void>;
 }
 
 export type JobResult = (
@@ -118,9 +118,9 @@ export function createJobsRunner(
           signal.throwIfAborted();
           const generation = await store.handoffGeneration(job, owner, {
             lockPrerequisites: handoff.lockPrerequisites,
-            async advance(tx) {
+            async advance(tx, claimedJob) {
               signal.throwIfAborted();
-              await handoff.advance(tx);
+              await handoff.advance(tx, claimedJob);
               signal.throwIfAborted();
             },
           });

@@ -368,7 +368,7 @@ export function createJobsStore(sql: Sql, encryptionKey?: string) {
             claim,
           );
           if (current !== job.generation || !rows[0]) throw new Error("Turn job cannot admit another generation.");
-          await handoff.advance(tx);
+          await handoff.advance(tx, job);
           const updated = await tx.query<{ generation: string }>(
             `update public.jobs j set generation = s.lifecycle_generation from public.sandboxes s
            where ${fence} and j.generation = $4 and s.id = j.sandbox_id
