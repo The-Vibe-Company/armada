@@ -165,26 +165,37 @@ jobs:
         shell: bash
         if: (steps.evidence.outputs.reused != 'true')
         run: |
-          [[ "$ARMADA_URL" == 'https://armada-mcp-staging.up.railway.app' ]]
+          evidence="$RUNNER_TEMP/reaper-evidence.jsonl"
+          fail_preflight() {
+            jq -cn --arg phase "$1" --argjson status "$2" \
+              '{step:"smoke_reaper_evidence",pass:false,code:"reaper_preflight_failed",phase:$phase,exitStatus:$status}' \
+              | tee "$evidence"
+            exit 1
+          }
+          [[ "$ARMADA_URL" == 'https://armada-mcp-staging.up.railway.app' ]] || fail_preflight staging_origin "$?"
           scope=(--project "$RAILWAY_PROJECT_ID" --environment "$RAILWAY_ENVIRONMENT_ID" --service "$RAILWAY_SERVICE_ID")
-          deployments=$(timeout 15s railway deployment list --json --limit 20 "${scope[@]}")
+          deployments=$(timeout 15s railway deployment list --json --limit 20 "${scope[@]}") \
+            || fail_preflight deployment_list "$?"
           ids=$(jq -er '
             sort_by(.createdAt) | reverse
             | (map(.status) | index("SUCCESS")) as $current | select($current != null) | .[$current:]
             | map(select(.status == "SUCCESS" or .status == "REMOVED" or .status == "REMOVING"))
             | .[:2][] | .id | if test("^[a-f0-9-]{36}$") then . else error("invalid deployment ID") end
-          ' <<< "$deployments")
+          ' <<< "$deployments") || fail_preflight deployment_selection "$?"
           mapfile -t deployment_ids <<< "$ids"
           filter='((@provider:modal OR @provider:docker) AND (@metric:reaper_unknown_machines OR @event:reaper_overdue_machines)) OR (@event:provider_reaper_retry AND @phase:discovery)'
           read_logs() {
             timeout 15s railway logs "$1" --deployment --json --since 15m --lines 500 "${scope[@]}" --filter "$filter"
           }
-          {
-            read_logs "${deployment_ids[0]}" &&
-              if [[ -n "${deployment_ids[1]:-}" ]]; then
-                read_logs "${deployment_ids[1]}" | jq -c '. + {previousDeployment: true}'
-              fi
-          } | env -i PATH="$PATH" bun .release-tools/scripts/release/smoke-reaper-evidence.ts
+          current_logs=$(read_logs "${deployment_ids[0]}") || fail_preflight current_deployment_logs "$?"
+          previous_logs=
+          if [[ -n "${deployment_ids[1]:-}" ]]; then
+            previous_logs=$(read_logs "${deployment_ids[1]}") || fail_preflight previous_deployment_logs "$?"
+            previous_logs=$(jq -c '. + {previousDeployment: true}' <<< "$previous_logs") \
+              || fail_preflight previous_log_decode "$?"
+          fi
+          printf '%s\n' "$current_logs" "$previous_logs" \
+            | env -i PATH="$PATH" bun .release-tools/scripts/release/smoke-reaper-evidence.ts | tee "$evidence"
       # Stamp the checked-out SHA in ordinary wakeup evidence. GitHub run metadata
       # can describe an older main tip than the source resolved under the lock.
       - name: Migrate then deploy pinned server and dashboard${{ github.event_name == 'workflow_run' && inputs.source_sha == '' && format(' ({0})', env.RELEASE_SHA) || '' }}
@@ -237,7 +248,11 @@ jobs:
           REAPER_OUTCOME: ${{ steps.reaper.outcome }}
         run: |
           if [[ "$REAPER_OUTCOME" != success ]]; then
-            printf '%s\n' '{"step":"smoke_reaper_evidence","pass":false,"code":"reaper_preflight_failed"}' > "$RUNNER_TEMP/armada-smoke.jsonl"
+            if [[ -s "$RUNNER_TEMP/reaper-evidence.jsonl" ]]; then
+              cp "$RUNNER_TEMP/reaper-evidence.jsonl" "$RUNNER_TEMP/armada-smoke.jsonl"
+            else
+              printf '%s\n' '{"step":"smoke_reaper_evidence","pass":false,"code":"reaper_preflight_failed","phase":"evidence_runner"}' > "$RUNNER_TEMP/armada-smoke.jsonl"
+            fi
             : > "$RUNNER_TEMP/dashboard-smoke.jsonl"
             exit 1
           fi
