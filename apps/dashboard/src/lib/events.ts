@@ -24,6 +24,35 @@ export function mergeEvents(shown: readonly ChatEvent[], incoming: readonly Chat
   return merged;
 }
 
+export const initialChatHistory = {
+  events: [] as ChatEvent[],
+  cursor: null as string | null,
+  olderCursor: null as string | null,
+  loaded: false,
+};
+
+export function applyChatPage(
+  history: typeof initialChatHistory,
+  page: ReturnType<typeof parseEventPage>,
+  direction: "forward" | "latest" | "older",
+) {
+  const older = direction === "older";
+  const previous = older ? history.olderCursor : history.cursor;
+  const next = older ? page.olderCursor : page.cursor;
+  if (page.hasMore && (!next || next === previous)) return null;
+
+  let events = history.events;
+  if (page.events.length) {
+    events = older ? mergeEvents(page.events, events) : mergeEvents(events, page.events);
+  }
+  return {
+    events,
+    cursor: older ? history.cursor : page.cursor || history.cursor,
+    olderCursor: direction === "forward" ? history.olderCursor : page.hasMore ? (page.olderCursor ?? null) : null,
+    loaded: true,
+  } satisfies typeof initialChatHistory;
+}
+
 /** A message event: its `messageId` and `textMode` say how its text joins the other events of the same message. */
 export type MessageEvent = Extract<AgentEvent, { kind: "message" }>;
 
