@@ -7,11 +7,12 @@ export function missingDeviceLoginConfiguration(railway: unknown, vercel: unknow
   if (!vercel || typeof vercel !== "object" || !("envs" in vercel) || !Array.isArray(vercel.envs))
     throw new Error("Could not read Vercel dashboard configuration.");
 
+  const dashboard = vercel.envs;
   const server = railway as Record<string, unknown>;
   const missingServer = serverRequired.filter((name) => !Object.hasOwn(server, name) || server[name] === "");
   const missingDashboard = dashboardRequired.filter(
     (name) =>
-      !vercel.envs.some(
+      !dashboard.some(
         (entry) => entry?.key === name && Array.isArray(entry.target) && entry.target.includes("production"),
       ),
   );
