@@ -158,8 +158,8 @@ describe("database", () => {
         "sandboxes SELECT",
         "sandboxes UPDATE(conversation_ids,deleted_at,status,status_reason,stopped_at)",
         "service_tokens DELETE",
-        "service_tokens INSERT",
-        "service_tokens SELECT(created_at,id,label,org_id,revoked_at,user_id)",
+        "service_tokens INSERT(created_at,expires_at,hash,id,label,org_id,revoked_at,user_id)",
+        "service_tokens SELECT(created_at,expires_at,id,label,last_used_at,org_id,revoked_at,user_id)",
         "service_tokens UPDATE(revoked_at)",
         "template_launch_requests SELECT",
       ]);

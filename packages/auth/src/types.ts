@@ -1,5 +1,7 @@
 export type AuthFetch = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
 
+export const SERVICE_TOKEN_USAGE_INTERVAL_MS = 60_000;
+
 export type TokenTable = "service" | "mcp";
 export type MemberRole = "admin" | "member";
 
@@ -10,6 +12,7 @@ export interface TokenRecord {
   label: string;
   revokedAt: string | null;
   createdAt: string;
+  expiresAt: string | null;
 }
 
 export interface ListedToken {
@@ -18,6 +21,8 @@ export interface ListedToken {
   orgName: string;
   createdAt: string;
   revokedAt: string | null;
+  expiresAt: string | null;
+  lastUsedAt: string | null;
 }
 
 export interface Membership {
@@ -45,10 +50,11 @@ export interface OAuthCodeRecord {
 export interface AuthStore {
   sessionMemberships?(userId: string, sessionId: string, now: string): Promise<Membership[] | null>;
   findTokenWithMembership?(kind: TokenTable, hash: string): Promise<{ token: TokenRecord; role: MemberRole } | null>;
+  useServiceToken(hash: string, now: string): Promise<{ token: TokenRecord; role: MemberRole } | null>;
   findTokenByHash(kind: TokenTable, hash: string): Promise<TokenRecord | null>;
   insertToken(
     kind: TokenTable,
-    input: { userId: string; orgId: string; hash: string; label: string; createdAt: string },
+    input: { userId: string; orgId: string; hash: string; label: string; createdAt: string; expiresAt?: string | null },
   ): Promise<TokenRecord>;
   revokeToken(kind: TokenTable, input: { id: string; userId: string; revokedAt: string }): Promise<TokenRecord | null>;
   revokeTokenByHash(kind: TokenTable, hash: string, revokedAt: string): Promise<boolean>;

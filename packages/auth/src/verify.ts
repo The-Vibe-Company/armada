@@ -8,6 +8,7 @@ interface Principal {
   tokenId: string;
   kind: "service" | "mcp";
   role: MemberRole;
+  key?: { name: string; expiresAt: string | null };
 }
 
 type AuthResult = { ok: true; principal: Principal } | { ok: false; error: "invalid_token" };
@@ -16,10 +17,12 @@ export async function authenticate(authorization: string | null, store: AuthStor
   const token = bearer(authorization);
   const kind = token === null ? null : bearerKind(token);
   if (!token || (kind !== "service" && kind !== "access")) return { ok: false, error: "invalid_token" };
-  const table = kind === "service" ? "service" : "mcp";
   const hash = await sha256Hex(token);
-  const joined = store.findTokenWithMembership ? await store.findTokenWithMembership(table, hash) : undefined;
-  const row = joined === undefined ? await store.findTokenByHash(table, hash) : joined?.token;
+  const joined =
+    kind === "service"
+      ? await store.useServiceToken(hash, now.toISOString())
+      : await store.findTokenWithMembership?.("mcp", hash);
+  const row = joined === undefined ? await store.findTokenByHash("mcp", hash) : joined?.token;
   if (!row || row.revokedAt !== null) return { ok: false, error: "invalid_token" };
   if (kind === "access" && (row.label !== "access" || !fresh(row.createdAt, now, ACCESS_TOKEN_TTL_MS))) {
     return { ok: false, error: "invalid_token" };
@@ -34,6 +37,7 @@ export async function authenticate(authorization: string | null, store: AuthStor
       tokenId: row.id,
       kind: kind === "service" ? "service" : "mcp",
       role: member.role,
+      ...(kind === "service" ? { key: { name: row.label, expiresAt: row.expiresAt } } : {}),
     },
   };
 }

@@ -1,6 +1,6 @@
-import type { AuthStore } from "@armada/auth";
+import { type AuthStore, bearerKind } from "@armada/auth";
 import { resolveOrg, VaultError } from "@armada/core/server";
-import { authenticateCaller, type Caller, type SupabaseProject } from "./caller.ts";
+import { authenticateCaller, bearerToken, type Caller, type SupabaseProject } from "./caller.ts";
 import type { ControlOptions } from "./control.ts";
 
 interface CallerControlOptions {
@@ -26,7 +26,14 @@ export async function authenticatedControlCaller(
 
 export async function authenticatedCaller(request: Request, options: CallerControlOptions): Promise<Caller> {
   const caller = await authenticatedControlCaller(request, options);
-  if (!caller) throw new Unauthorized("Run armada login.");
+  if (!caller) {
+    const token = bearerToken(request.headers.get("authorization"));
+    throw new Unauthorized(
+      token && bearerKind(token) === "service"
+        ? "API key is invalid, expired, or revoked. Update ARMADA_TOKEN."
+        : "Run armada login.",
+    );
+  }
   return caller;
 }
 

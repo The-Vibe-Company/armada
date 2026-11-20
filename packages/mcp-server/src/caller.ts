@@ -10,6 +10,7 @@ export interface Caller {
   userId: string;
   orgs: readonly { orgId: string; role: MemberRole }[];
   orgNames?: Readonly<Record<string, string>>;
+  key?: { name: string; expiresAt: string | null };
   via: "service" | "mcp" | "supabase";
 }
 
@@ -65,8 +66,8 @@ export async function authenticateCaller(
       throw new AuthUnavailable("The token store is unavailable.", error);
     }
     if (!result.ok) return { ok: false };
-    const { userId, orgId, role, kind: via } = result.principal;
-    return { ok: true, caller: { userId, orgs: [{ orgId, role }], via } };
+    const { userId, orgId, role, kind: via, key } = result.principal;
+    return { ok: true, caller: { userId, orgs: [{ orgId, role }], via, ...(key ? { key } : {}) } };
   }
   if (!JWT.test(token)) return { ok: false };
   if (options.store.sessionMemberships) {
