@@ -70,6 +70,7 @@ export interface ServerSandboxPatch extends SandboxPatch {
   expireAfterExtension?: true;
   nativeRetentionRefusal?: string;
   nativeResumeAdmission?: string;
+  nativeSendAdmission?: ServerSandboxPatch["nativeChildSend"];
   nativeChildSend?: { fromState: SandboxStatus; placement: string };
   nativeSendReceipt?: { fromState: SandboxStatus; placement: string };
   nativeSteerReceipt?: { fromState: SandboxStatus; placement: string };
@@ -943,8 +944,9 @@ export function createSqlData(
         if (patch.turnActivity !== undefined)
           fence += " and s.status in ('ready','running') and s.stop_requested_at is null and s.deleted_at is null";
         if (patch.turnActivity === "claim") fence += " and s.activity_lease_id is null";
-        if (childSend) {
-          params.push(childSend.fromState, childSend.placement);
+        const nativeSend = patch.nativeSendAdmission ?? childSend;
+        if (nativeSend) {
+          params.push(nativeSend.fromState, nativeSend.placement);
           fence += ` and s.status=$${params.length - 1}::public.sandbox_status and s.provider_sandbox_id=$${params.length}
             and s.provider in ('boat','modal') and not s.boat_runtime
             and s.runtime_transport is null and s.deleted_at is null and s.status<>'deleted'`;

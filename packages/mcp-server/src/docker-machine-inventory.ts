@@ -14,6 +14,10 @@ interface DockerInventoryOwner {
   status: SandboxStatus;
 }
 
+export function dockerInventoryDeploymentId(serverUrl: string, hostId: string, installationId: string) {
+  return `${new URL(serverUrl).origin}/${hostId}/${installationId}`;
+}
+
 export function dockerMachineInventory(
   hostId: string,
   deploymentId: string,

@@ -41,7 +41,8 @@ import {
 } from "./docker-capacity.ts";
 import { hostDrainingSql } from "./docker-host-drain.ts";
 import { supportsDockerHostProtocol } from "./docker-host-version.ts";
-import { createDockerMachineGenerationBindings } from "./docker-machine-bindings.ts";
+import { createDockerMachineGenerationBindings, projectDockerMachineInventory } from "./docker-machine-bindings.ts";
+import { type DockerInventoryContainer, dockerInventoryDeploymentId } from "./docker-machine-inventory.ts";
 import { authorizeSnapshotBuild, resolveDockerSnapshot } from "./docker-snapshot-data.ts";
 import type { GenerationHandoff, Job as RunnerJob } from "./jobs/runner.ts";
 import { recordLaunchStageForActivation } from "./launch-stage-record.ts";
@@ -1040,6 +1041,30 @@ export function createDockerHostStore(sql: Sql, key: string) {
         );
         return { hostId: host.id, retentionSeconds: retention.rows[0]?.retention_seconds ?? undefined };
       });
+    },
+    machineInventory(
+      hostToken: string,
+      installationId: string,
+      serverUrl: string,
+      report: readonly DockerInventoryContainer[],
+    ) {
+      return {
+        async *listInventory(signal?: AbortSignal) {
+          signal?.throwIfAborted();
+          const entries = await transaction(async (tx) => {
+            const { id: hostId } = await authenticate(tx, hostToken, installationId);
+            const deploymentId = dockerInventoryDeploymentId(serverUrl, hostId, installationId);
+            return Array.fromAsync(
+              projectDockerMachineInventory(tx, { hostId, installationId, deploymentId }, report, signal),
+            );
+          });
+          signal?.throwIfAborted();
+          for (const entry of entries) {
+            signal?.throwIfAborted();
+            yield entry;
+          }
+        },
+      } satisfies Required<Pick<Machine, "listInventory">>;
     },
     async inventoryOwnership(hostToken: string, installationId: string, sandboxIds: readonly string[]) {
       return transaction(async (tx) => {
