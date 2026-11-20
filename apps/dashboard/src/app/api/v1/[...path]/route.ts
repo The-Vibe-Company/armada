@@ -1,6 +1,6 @@
 import { controlRouteKey, streamSandboxEvents } from "@armada/core/contract";
 import { readViewer } from "@/lib/data/viewer";
-import { forwardControl } from "./control-proxy.ts";
+import { forwardControl, forwardDashboardEventStream } from "./control-proxy.ts";
 
 export const runtime = "nodejs";
 export const maxDuration = 800;
@@ -23,9 +23,7 @@ export async function GET(request: Request, context: { params: Promise<{ path: s
     );
   }
 
-  const headers = new Headers(request.headers);
-  headers.set("authorization", `Bearer ${viewer.token}`);
-  return forwardControl(new Request(request, { headers }), path);
+  return forwardDashboardEventStream(request, viewer.token);
 }
 
 export async function DELETE(request: Request, context: { params: Promise<{ path: string[] }> }) {

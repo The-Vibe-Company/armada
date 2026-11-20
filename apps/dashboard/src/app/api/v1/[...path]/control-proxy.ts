@@ -186,11 +186,23 @@ async function boundedBody(request: Request, maxBytes: number): Promise<ArrayBuf
   return length ? bytes.buffer : null;
 }
 
+type UpstreamFetch = (input: URL, init: RequestInit) => Promise<Response>;
+
 /** Server-side, same-origin forwarding to the configured Armada control API. */
-export async function forwardControl(
+export function forwardControl(request: Request, path: readonly string[], fetchImpl: UpstreamFetch = fetch) {
+  return forwardRequest(request, path, fetchImpl);
+}
+
+/** The dashboard has already verified the viewer's session before calling this. */
+export function forwardDashboardEventStream(request: Request, viewerToken: string, fetchImpl: UpstreamFetch = fetch) {
+  return forwardRequest(request, [controlRouteKey(streamSandboxEvents.route)], fetchImpl, viewerToken);
+}
+
+async function forwardRequest(
   request: Request,
   path: readonly string[],
-  fetchImpl: (input: URL, init: RequestInit) => Promise<Response> = fetch,
+  fetchImpl: UpstreamFetch,
+  viewerToken?: string,
 ): Promise<Response> {
   const upstream = controlOrigin(process.env.ARMADA_MCP_URL);
   if (!upstream) return fail(503, "Armada API is not configured.");
@@ -200,7 +212,9 @@ export async function forwardControl(
   const sandboxOutputs = method === "GET" ? sandboxOutputsPath(request.url) : null;
   const relative = sandboxOutputs ?? path.join("/");
   const eventStream =
-    method === streamSandboxEvents.route.method && relative === controlRouteKey(streamSandboxEvents.route);
+    viewerToken &&
+    method === streamSandboxEvents.route.method &&
+    relative === controlRouteKey(streamSandboxEvents.route);
   const forwardedHeaders = new Headers();
   if (sandboxOutputs && !sandboxOutputs.endsWith("/outputs")) {
     for (const name of ["range", "if-range"]) {
@@ -226,7 +240,7 @@ export async function forwardControl(
     !(method === "POST" && PRIVATE_POST_PATHS.has(relative))
   )
     return fail(404, "Not found.");
-  const authorization = request.headers.get("authorization");
+  const authorization = eventStream ? `Bearer ${viewerToken}` : request.headers.get("authorization");
   if (!isPublic && !authorization) return fail(401, "Unauthorized.");
   let body: ArrayBuffer | null = null;
   try {

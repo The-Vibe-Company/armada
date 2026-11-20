@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { PUBLIC_CONTROL_ROUTES } from "@armada/core/contract";
-import { forwardControl } from "./control-proxy.ts";
+import { forwardControl, forwardDashboardEventStream } from "./control-proxy.ts";
 import { POST } from "./route.ts";
 
 const env = process.env.ARMADA_MCP_URL;
@@ -638,15 +638,15 @@ test("streams sandbox events as they arrive and forwards the reconnect cursor", 
   const id = "11111111-1111-4111-8111-111111111111";
   const abort = new AbortController();
   const request = new Request(`https://dashboard.test/api/v1/events?sandbox=${id}&cursor=5`, {
-    headers: { authorization: "Bearer masked", "last-event-id": "8", cookie: "session=masked" },
+    headers: { authorization: "Bearer untrusted", "last-event-id": "8", cookie: "session=masked" },
     signal: abort.signal,
   });
   const { readable, writable } = new TransformStream<Uint8Array>();
   let upstreamSignal: AbortSignal | undefined;
-  const response = await forwardControl(request, ["events"], async (input, init) => {
+  const response = await forwardDashboardEventStream(request, "fixture-viewer", async (input, init) => {
     const upstream = new Request(input, init);
     expect(upstream.url).toBe(`https://armada.test/api/v1/events?sandbox=${id}&cursor=5`);
-    expect(upstream.headers.get("authorization")).toBe("Bearer masked");
+    expect(upstream.headers.get("authorization")).toBe("Bearer fixture-viewer");
     expect(upstream.headers.get("cookie")).toBeNull();
     expect(upstream.headers.get("accept")).toBe("text/event-stream");
     expect(upstream.headers.get("last-event-id")).toBe("8");
