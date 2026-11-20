@@ -88,6 +88,7 @@ export function createRuntimeStartup(
       const ticket = await authority.issue({
         ownerId,
         sandboxId,
+        expectedProviderSandboxId: providerSandboxId,
         configuration: input.configuration,
         ...(input.expectedGeneration === undefined ? {} : { expectedGeneration: input.expectedGeneration }),
         ...(input.commandGrantExpiresAt !== undefined ? { commandGrantExpiresAt: input.commandGrantExpiresAt } : {}),
