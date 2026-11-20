@@ -342,6 +342,38 @@ export async function recordDockerCleanupReceipt(
   });
 }
 
+export async function expireAfterExtension(
+  tx: Sql,
+  scope: [string[], string],
+  sandboxId: string,
+  generation: number,
+  activityToken: string,
+) {
+  const visible = await tx.query(
+    `select s.id from public.sandboxes s where s.id=$3::uuid and ${SANDBOX_VISIBLE} for update`,
+    [...scope, sandboxId],
+  );
+  if (!visible.rows.length) return false;
+
+  const result = await transitionSandbox(tx, {
+    sandboxId,
+    expectedGeneration: generation,
+    fromStates: ["ready", "running"],
+    toState: "stopping",
+    actor: "expiry",
+    code: "extension_expired",
+    effects: [],
+    settlement: {
+      lease: null,
+      statusReason: null,
+      stopRequestedAt: null,
+      stoppedAt: null,
+      activityLease: activityToken,
+    },
+  });
+  return result.kind === "applied";
+}
+
 export async function completeSandboxDeletion(
   tx: Sql,
   scope: [string[], string],
