@@ -1,4 +1,5 @@
 import { decryptSecret, encryptSecret, type Sql, toBytea } from "@armada/core/server";
+import type { ModalMachineJournal } from "@armada/provider-modal";
 import {
   COMPLETED_RUNTIME_WAKE,
   CONFIRMED_WAKE_WITHOUT_TICKET,
@@ -66,8 +67,9 @@ export async function withJobLease<T>(sql: Sql, job: Job, write: (tx: Sql) => Pr
     );
     if (!sandboxes.length) return;
     const { rows: jobs } = await tx.query(
-      "select id from public.jobs where id=$1 and lease_epoch=$2 and lease_until > clock_timestamp() for update",
-      [job.id, job.lease_epoch],
+      `select id from public.jobs where id=$1 and lease_epoch=$2 and lease_until > clock_timestamp()
+       and sandbox_id=$3 and generation=$4 and kind=$5 for update`,
+      [job.id, job.lease_epoch, job.sandbox_id, job.generation, job.kind],
     );
     if (jobs.length) return write(tx);
   });
@@ -271,6 +273,47 @@ export function createJobsStore(sql: Sql, encryptionKey?: string) {
   }
 
   return {
+    modalLaunchJournal(job: Job) {
+      if (job.kind !== "launch" || !job.sandbox_id || !job.generation) {
+        throw new Error("Modal machine journal requires a launch claim.");
+      }
+      return {
+        async read(key) {
+          const checkpoint = await withJobLease(sql, job, async (tx) => {
+            const { rows } = await tx.query<{
+              checkpoint: { key: string; entry: Awaited<ReturnType<ModalMachineJournal["read"]>> } | null;
+            }>(
+              "select outcome->'modal_machine' as checkpoint from public.jobs where id=$1 and lease_until > clock_timestamp()",
+              [job.id],
+            );
+            return rows[0]?.checkpoint;
+          });
+          if (checkpoint === undefined) throw new Error("Modal launch claim is no longer current.");
+          if (checkpoint && checkpoint.key !== key) throw new Error("Modal launch journal key changed.");
+          return checkpoint?.entry;
+        },
+        async compareAndSet(key, revision, next) {
+          if (next.revision !== (revision ?? 0) + 1) return false;
+          return (
+            (await withJobLease(sql, job, async (tx) => {
+              const { rows } = await tx.query(
+                `update public.jobs set outcome=jsonb_set(
+                   case when outcome is null then '{}'::jsonb
+                        when jsonb_typeof(outcome) = 'object' then outcome
+                        else jsonb_build_object('result', outcome) end,
+                   '{modal_machine}', $2::jsonb)
+                 where id=$1 and lease_until > clock_timestamp()
+                   and (outcome->'modal_machine' is null or outcome->'modal_machine'->>'key' = $3)
+                   and (outcome->'modal_machine'->'entry'->>'revision')::integer is not distinct from $4::integer
+                 returning id`,
+                [job.id, JSON.stringify({ key, entry: next }), key, revision ?? null],
+              );
+              return rows.length > 0;
+            })) ?? false
+          );
+        },
+      } satisfies ModalMachineJournal;
+    },
     async enqueue(
       kind: string,
       sandboxId: string | null,
@@ -420,7 +463,14 @@ export function createJobsStore(sql: Sql, encryptionKey?: string) {
           `select public.complete_job($1,$2,$3,$4,$5,
              case when $5 = 'failed' then jsonb_build_object('reason', $8::text, 'evidence', evidence)
                   else evidence end, $7) as completed
-           from (select coalesce($6::jsonb, (select outcome from public.jobs where id = $1)) as evidence) data`,
+           from (
+             select case when kind = 'launch' and $6::jsonb is not null
+                         then jsonb_build_object('result', $6::jsonb) ||
+                           case when outcome->'modal_machine' is null then '{}'::jsonb
+                                else jsonb_build_object('modal_machine', outcome->'modal_machine') end
+                         else coalesce($6::jsonb, outcome) end as evidence
+             from public.jobs where id = $1
+           ) data`,
           [
             ...claimIdentity(job, owner),
             generation,
@@ -443,5 +493,8 @@ export function createJobsStore(sql: Sql, encryptionKey?: string) {
       }
       return complete(sql, job.generation);
     },
-  } satisfies JobStore & { enqueue: (...args: never[]) => Promise<string> };
+  } satisfies JobStore & {
+    enqueue: (...args: never[]) => Promise<string>;
+    modalLaunchJournal: (job: Job) => ModalMachineJournal;
+  };
 }
