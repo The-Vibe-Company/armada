@@ -10,7 +10,7 @@ for (const transport of ["mcp", "rest"] as const) {
       throw Object.assign(new Error(privateMessage), { code: "ECONNRESET" });
     };
     const route = createSandboxScopedGateway(
-      { message: fail, launch: fail, read: fail, extend: fail, stop: fail, reconcileOne: fail },
+      { message: fail, launch: fail, read: fail, extend: fail, stop: fail, reconcileOne: fail, drain: fail },
       { catalogGrant: fail },
     );
     const args = { sandboxId: crypto.randomUUID(), text: "hello" };
