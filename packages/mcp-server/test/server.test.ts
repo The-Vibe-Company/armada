@@ -901,15 +901,21 @@ describe("tools", () => {
       orgs: [{ orgId: people.org, role: "member" }],
       via: "service",
     }).sandboxes;
-    const saved = await store.get(String(launchSandboxId(launched.data)));
-    if (!saved) throw new Error("Missing launched sandbox");
-    for (const provider of ["boat", "modal"] as const) {
-      const read = await readStatus(
+    const sandboxId = String(launchSandboxId(launched.data));
+    const readSandbox = async () => {
+      const sandbox = await store.get(sandboxId);
+      if (!sandbox) throw new Error("Missing launched sandbox");
+      return sandbox;
+    };
+    const readLive = async (provider: "boat" | "modal") =>
+      readStatus(
         { ...boat.provider, id: provider },
         store,
-        { ...saved, provider },
+        { ...(await readSandbox()), provider },
         { now: new Date() },
       );
+    for (const provider of ["boat", "modal"] as const) {
+      const read = await readLive(provider);
       expect(read.prompt).toMatchObject({
         state: "finished",
         reason: null,
@@ -917,6 +923,7 @@ describe("tools", () => {
         modelSelectionReason: "model_selection_unverified",
       });
     }
+    const saved = await readSandbox();
     // Stored status must not collect native usage or publish a stale lifecycle observation.
     const writes: string[] = [];
     const observedStore = {
@@ -984,12 +991,7 @@ describe("tools", () => {
       },
       { id: "terminal", at: 206, kind: "prompt", promptId: "prompt_1", status: "finished", text: "work" },
     );
-    const mixed = await readStatus(
-      { ...boat.provider, id: "modal" },
-      store,
-      { ...saved, provider: "modal" },
-      { now: new Date() },
-    );
+    const mixed = await readLive("modal");
     expect(mixed.prompt).toMatchObject({
       state: "finished",
       reason: null,

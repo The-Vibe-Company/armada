@@ -184,6 +184,7 @@ interface SandboxTransition {
     | "runtime_resume"
     | "runtime_observation"
     | "runtime_turn"
+    | "native_turn"
     | "owner"
     | "api"
     | "finish"
@@ -616,7 +617,7 @@ export async function recordObservedProviderState(
     sandboxId: string;
     generation: number;
     fromState: "ready" | "running";
-    toState: "failed" | "stopped";
+    toState: "failed" | "stopped" | "ready" | "running";
     reason: string | null;
     stoppedAt: string | null;
     providerRunPlacement?: string;
@@ -624,6 +625,9 @@ export async function recordObservedProviderState(
 ) {
   if (!sql.transaction) throw new Error("Provider observation publication requires a transaction.");
   const { sandboxId, generation, fromState, toState, reason, stoppedAt, providerRunPlacement } = observation;
+  const nativeTurn = toState === "ready" || toState === "running";
+  if (nativeTurn && providerRunPlacement === undefined)
+    throw new Error("Native turn observation requires the observed placement.");
   return sql.transaction(async (tx) => {
     const eligible = await tx.query(
       `select s.id from public.sandboxes s
@@ -640,15 +644,18 @@ export async function recordObservedProviderState(
     );
     if (!eligible.rows.length) return { kind: "conflict" } satisfies SandboxTransitionResult;
     const path = providerRunPlacement === undefined ? "runtime" : "native";
+    const providerActor = toState === "stopped" ? "runtime_observation" : "lifecycle_runner";
+    const providerCode = toState === "failed" ? "failure" : "stopped";
+    const turnCode = toState === "running" ? "native_turn_running" : "native_turn_settled";
     const result = await transitionSandbox(tx, {
       sandboxId,
       expectedGeneration: generation,
       fromStates: [fromState],
       toState,
-      actor: toState === "stopped" ? "runtime_observation" : "lifecycle_runner",
-      code: `${path}_provider_${toState === "failed" ? "failure" : "stopped"}`,
+      actor: nativeTurn ? "native_turn" : providerActor,
+      code: nativeTurn ? turnCode : `${path}_provider_${providerCode}`,
       effects: [],
-      ...(toState === "stopped"
+      ...(toState === "stopped" || nativeTurn
         ? { settlement: { lease: null, statusReason: reason, stopRequestedAt: null, stoppedAt } }
         : {}),
     });
