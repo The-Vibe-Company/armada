@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { RunnerRequest } from "@armada/agent-runtime";
-import type { Provider } from "@armada/core";
+import type { Provider, Sql } from "@armada/core";
 import type { DelegatedAccessTransport } from "./delegated-access-contract.ts";
 import { DelegatedAccessError } from "./delegated-access-contract.ts";
 import type { createRuntimeCommands } from "./runtime-commands.ts";
@@ -55,6 +55,7 @@ export function createEnrolledDelegatedTransport(
     lifecycleGeneration: string;
     mcpUrl: string;
     signal: AbortSignal;
+    assertClaim?: (tx: Sql) => Promise<void>;
   },
 ) {
   const identity = () => ({ version: 1 as const, sandboxId: input.sandboxId, requestId: randomUUID() });
@@ -70,6 +71,7 @@ export function createEnrolledDelegatedTransport(
     const reply = await commands.call(input.ownerId, command, {
       expectedEpoch: input.epoch,
       signal: input.signal,
+      ...(input.assertClaim ? { assertClaim: input.assertClaim } : {}),
       accept,
     });
     input.signal.throwIfAborted();
@@ -92,6 +94,7 @@ export function createEnrolledDelegatedTransport(
           ...(tokenHash === undefined ? {} : { tokenHash }),
         },
         input.epoch,
+        input.assertClaim,
       );
     },
   } satisfies DelegatedAccessTransport;

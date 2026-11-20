@@ -180,6 +180,83 @@ test.each(["acknowledged", "refused", "reply lost", "epoch replaced", "cancelled
   },
 );
 
+test.each(["reservation", "command", "acknowledgement", "revocation", "scrub"] as const)(
+  "queued scoped access rolls back %s on claim loss and can be restored by a successor",
+  async (point) => {
+    const { db, people, sql, account, row, enrolments, active } = await enrolledCheckpointTarget();
+    await db.query(
+      `insert into armada_access_parents(id,kind,org_id,owner_id,sandbox_id,state,golden_ids,credential_ids)
+       values($1,'sandbox',$2,$3,$1,'ready',array[$4::uuid],array[$5::uuid])`,
+      [row.id, people.org, people.owner, row.goldenId, account.id],
+    );
+    const commands = createRuntimeCommands(enrolments, ENCRYPTION_KEY);
+    let installedToken = "";
+    let refuseInstall = point === "revocation" || point === "scrub";
+    const access = createSandboxArmadaAccess({
+      sql,
+      encryptionKey: ENCRYPTION_KEY,
+      publicUrl: PUBLIC_URL,
+      commands: {
+        enqueue: commands.enqueue,
+        async call(owner, command, options) {
+          if (command.op !== "installOrchestratorEpoch") throw Error("Unexpected awaited runtime operation");
+          await commands.enqueue(owner, command, options?.expectedEpoch, options?.assertClaim);
+          installedToken = command.token;
+          return {
+            status: refuseInstall ? 503 : 200,
+            epoch: active.epoch,
+            requestId: command.requestId,
+            body: { version: 1, requestId: command.requestId, result: { acknowledged: !refuseInstall } },
+          };
+        },
+      },
+    });
+    const generation = (
+      await db.query<{ generation: string }>(
+        "select lifecycle_generation::text as generation from sandboxes where id=$1",
+        [row.id],
+      )
+    ).rows[0]!.generation;
+    const restore = (assertClaim: (tx: Sql) => Promise<void>) =>
+      access.restoreEnrolled(people.owner, row.id, active.epoch, generation, new AbortController().signal, assertClaim);
+    const write = {
+      reservation: "select 1 from orchestrator_delegations where orchestrator_id=$1",
+      command: "select 1 from runtime_commands where sandbox_id=$1",
+      acknowledgement:
+        "select 1 from orchestrator_delegations where orchestrator_id=$1 and acknowledged_at is not null",
+      revocation: "select 1 from orchestrator_delegations where orchestrator_id=$1 and revoked_at is not null",
+      scrub: "select 1 from runtime_commands where sandbox_id=$1 offset 1",
+    }[point];
+    let lost = false;
+    await expect(
+      restore(async (tx) => {
+        lost ||= (await tx.query(write, [row.id])).rows.length > 0;
+        if (lost) throw Error("Test dispatch claim expired");
+      }),
+    ).rejects.toThrow(point === "scrub" ? "denied" : "Test dispatch claim expired");
+    expect(lost).toBe(true);
+    expect((await db.query(write, [row.id])).rows).toHaveLength(0);
+
+    const authority = new DelegatedAuthority(sql, async () => {});
+    const admit = () =>
+      authority.admit(
+        installedToken,
+        {
+          method: "launch",
+          goldenId: row.goldenId,
+          harness: "codex",
+          credentialId: account.id,
+          credentialVersion: account.version,
+        },
+        async (_tx, principal) => principal.ownerId,
+      );
+    if (point === "acknowledgement") await expect(admit()).rejects.toThrow("denied");
+    refuseInstall = false;
+    await restore(async () => {});
+    await expect(admit()).resolves.toBe(people.owner);
+  },
+);
+
 function stopPort(f: Awaited<ReturnType<typeof runtimeFixture>>, commands = f.bridge) {
   let stopped = false,
     calls = 0;
