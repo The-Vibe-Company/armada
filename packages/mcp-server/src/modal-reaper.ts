@@ -26,7 +26,7 @@ type OpenInventory = (
   signal: AbortSignal,
 ) => Promise<ModalReaperConnection>;
 
-export function modalReaperSql(sql: Sql) {
+export function boundedModalSql(sql: Sql) {
   return {
     async query<T>(query: string, params?: unknown[]) {
       if (!sql.transaction) return sql.query<T>(query, params);

@@ -195,8 +195,21 @@ export const runtimeModule: ServerModule = ({ mounts, workers, shutdown }) => {
   workers.isolated.set("steer-recovery", ({ nativePrompts }) => nativePrompts.steerRecovery);
   shutdown.stopSockets = ({ runtimeSockets }) => runtimeSockets.stop();
 };
+const modalArtifactWorker = ({ modal, modalArtifactCache, options }: ServerServices) => {
+  if (!modalArtifactCache) return undefined;
+  return () => {
+    const stop = new AbortController();
+    const logError = options.logError ?? console.error;
+    const done = modal
+      .warmRegisteredArtifactCaches(modalArtifactCache, stop.signal, logError)
+      .catch(() => logError("Modal startup artifact warming failed while accessing the registry database."));
+    return { stop: () => stop.abort(), done };
+  };
+};
+
 export const modalModule: ServerModule = ({ mounts, workers }) => {
   mounts.push(({ modal }) => [modal.route]);
+  workers.background.set("modal-artifacts", modalArtifactWorker);
   workers.isolated.set("modal-inventory", ({ modal, options }) => modal.inventoryReaper(options.log));
 };
 export const mcpBackgroundModule: ServerModule = ({ workers }) =>

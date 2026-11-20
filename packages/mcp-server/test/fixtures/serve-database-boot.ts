@@ -1,5 +1,8 @@
 import { mock, spyOn } from "bun:test";
 import assert from "node:assert/strict";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { VERSION } from "@armada/core";
 import { REQUIRED_MIGRATION } from "../../src/required-migration.ts";
 
@@ -13,6 +16,9 @@ let schemaVersion = REQUIRED_MIGRATION;
 let repaired = false;
 let schemaChecked = false;
 const logs: string[] = [];
+const warming = Promise.withResolvers<void>();
+const warmingEntered = Promise.withResolvers<void>();
+let warmingQueryStarted = false;
 const intervals = spyOn(globalThis, "setInterval");
 const sleep = spyOn(Bun, "sleep").mockImplementation((async () => {
   assert.equal(intervals.mock.calls.length, 0, "No background timer may bypass boot backoff");
@@ -42,6 +48,11 @@ Bun.SQL = class {
         code: "ERR_POSTGRES_SERVER_ERROR",
         errno: "XX000",
       });
+    if (text.startsWith("select distinct app_id")) {
+      warmingQueryStarted = true;
+      warmingEntered.resolve();
+      await warming.promise;
+    }
     if (text.startsWith("lock table public.account_turn_queue")) {
       assert.equal(schemaChecked, true, "Schema must be checked before model repair");
       assert.equal(intervals.mock.calls.length, 0, "Model repair must finish before workers start");
@@ -89,12 +100,34 @@ const env = {
   ARMADA_ENCRYPTION_KEY: Buffer.alloc(32, 17).toString("base64"),
   PORT: String(port),
 };
+const artifactDir = await mkdtemp(join(tmpdir(), "armada-startup-"));
+const manifestPath = join(artifactDir, "runtime.json");
+await Bun.write(
+  manifestPath,
+  JSON.stringify({
+    protocol: 1,
+    platform: "linux",
+    libc: "glibc",
+    architecture: "x64",
+    runtime: { sha256: "a".repeat(64), bytes: 1 },
+    harnesses: {},
+  }),
+);
 try {
   const entered = Promise.withResolvers<void>();
   const release = Promise.withResolvers<void>();
   const streamed = Promise.withResolvers<void>();
-  const server = await startServer(env, {
-    log: () => {},
+  let listenerStarted = false;
+  const warmingEnv = {
+    ...env,
+    ARMADA_MODAL_DIALOUT: "1",
+    ARMADA_MODAL_RUNTIME_MANIFEST: manifestPath,
+    ARMADA_RUNTIME_ARTIFACT_DIR: artifactDir,
+  };
+  const starting = startServer(warmingEnv, {
+    log: (line) => {
+      if (line.startsWith("armada serve: listening")) listenerStarted = true;
+    },
     logError: (line) => logs.push(line),
     routes: [
       async (request) => {
@@ -130,11 +163,21 @@ try {
     ],
   });
   try {
+    await Promise.race([warmingEntered.promise, starting]);
+    assert.equal(listenerStarted, true, "Startup must reach listen while Modal warming is pending");
+  } catch (error) {
+    warming.resolve();
+    throw error;
+  }
+  const server = await starting;
+  try {
     assert.equal(attempts >= 3, true);
     assert.equal(repaired, true, "Historical model repair must complete before serving");
     assert.equal(intervals.mock.calls.length > 0, true);
     const response = await fetch(`http://127.0.0.1:${server.port}/healthz`);
     assert.equal(response.status, 200);
+    assert.equal(warmingQueryStarted, true, "Health must respond with the warming query pending");
+    warming.reject(new Error("private startup detail"));
     const healthy = (await response.json()) as { ok: boolean; idlePauseDelayMs: number };
     assert.equal(healthy.ok, true);
     assert.equal(
@@ -194,6 +237,7 @@ try {
       await drained;
     }
   } finally {
+    warming.resolve();
     await server.stop(true);
     await server.workerDone;
   }
@@ -205,9 +249,11 @@ try {
     ],
   );
   assert.equal(
-    logs.some((line) => line.includes("private connection detail")),
+    logs.some((line) => line.includes("private connection detail") || line.includes("private startup detail")),
     false,
   );
+
+  assert.ok(logs.some((line) => line.includes("failed while accessing the registry database")));
 
   intervals.mockClear();
   failUntil = 0;
@@ -236,6 +282,7 @@ try {
   );
   console.log("BOOT_RETRY_SERVE_AND_EXHAUSTION_VERIFIED");
 } finally {
+  await rm(artifactDir, { recursive: true, force: true });
   Bun.SQL = originalSQL;
   clock.mockRestore();
   sleep.mockRestore();
