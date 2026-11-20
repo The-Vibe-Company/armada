@@ -422,7 +422,7 @@ test("Modal template selection rejects foreign provider/harness, invalid pins an
 });
 
 function fakeBoatRuntimeSink(f: Awaited<ReturnType<typeof fixture>>, acknowledged = true) {
-  f.options.launch!.boatRuntimeDefault!.policy = boatRuntimeLaunch({
+  const policy = boatRuntimeLaunch({
     sql: f.sql,
     encryptionKey: ENCRYPTION_KEY,
     serverUrl: "https://armada.test",
@@ -436,6 +436,7 @@ function fakeBoatRuntimeSink(f: Awaited<ReturnType<typeof fixture>>, acknowledge
       harnesses: { codex: { files: [{ path: "bin/codex" }] } },
     },
   });
+  f.options.launch!.boatRuntimeDefault!.policy = policy;
   const commands = createRuntimeCommands(f.authority, ENCRYPTION_KEY);
   const handled: RunnerRequest["op"][] = [];
   let unsubscribe = () => {};
@@ -480,6 +481,7 @@ function fakeBoatRuntimeSink(f: Awaited<ReturnType<typeof fixture>>, acknowledge
     });
   });
   return {
+    policy,
     handled,
     async close() {
       bootstrap.mockRestore();
@@ -488,6 +490,59 @@ function fakeBoatRuntimeSink(f: Awaited<ReturnType<typeof fixture>>, acknowledge
     },
   };
 }
+
+test.each(["health", "configureReadableVariables"] as const)(
+  "queued startup rolls back %s when the dispatch claim expires before command commit",
+  async (operation) => {
+    const f = await fixture("codex", "boat", "explicit", true);
+    const secret = await f.application.command(f.caller, "secret", "set", {
+      org: f.people.org,
+      scope: "personal",
+      name: "APP_TOKEN",
+      value: "fixture",
+    });
+    const template = await f.create({
+      ...f.definition,
+      secrets: [{ key: "APP_TOKEN", secretId: (secret.item as { id: string }).id, version: 1 }],
+    });
+    const sink = fakeBoatRuntimeSink(f);
+    const launch = f.options.launch!.boatRuntimeDefault!;
+    const { policy } = sink;
+    let expired = false;
+    let persistedBeforeCleanup: boolean | undefined;
+    launch.policy = {
+      ...policy,
+      async start(input) {
+        const hasCommand = async (tx: Sql) =>
+          (
+            await tx.query(
+              "select 1 from runtime_commands where sandbox_id=$1 and (request_id like 'boat_variables_%')=$2",
+              [input.sandbox.id, operation === "configureReadableVariables"],
+            )
+          ).rows.length > 0;
+        try {
+          return await policy.start({
+            ...input,
+            async assertDispatch(tx) {
+              if (tx) expired ||= await hasCommand(tx);
+              if (expired) throw Error("Dispatch claim expired.");
+            },
+          });
+        } finally {
+          persistedBeforeCleanup = await hasCommand(f.sql);
+        }
+      },
+    };
+    try {
+      await f.api(f.request(template.id));
+    } finally {
+      await sink.close();
+    }
+    expect(sink.handled).not.toContain(operation);
+    expect(expired).toBe(true);
+    expect(persistedBeforeCleanup).toBe(false);
+  },
+);
 
 test.each(["modal", "boat"] as const)(
   "%s delivers a short raw binding only through the encrypted runtime command and preserves its receipt",
