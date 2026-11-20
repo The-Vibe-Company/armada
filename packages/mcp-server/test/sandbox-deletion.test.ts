@@ -431,8 +431,8 @@ test("a crash after any deletion completion write rolls back the receipt and cle
         db.transaction(async (tx) => {
           let writes = 0;
           return work({
-            async query(statement, parameters) {
-              const result = await tx.query(statement, parameters);
+            async query<T>(statement: string, parameters?: unknown[]) {
+              const result = await tx.query<T>(statement, parameters);
               if (++writes === crashAfter) throw new Error("Interrupted deletion completion");
               return result;
             },
