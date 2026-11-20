@@ -3,7 +3,7 @@ import { sandboxOperation } from "./sandbox-operation.ts";
 export default sandboxOperation({
   name: "send",
   summary: "Send a new instruction",
-  usage: `  armada send|steer|exec <sandbox-id> <text-or-command> [--model ID] [--reasoning-effort LEVEL]
+  usage: `  armada send|steer <sandbox-id> <text> [--model ID] [--reasoning-effort LEVEL]
                                            send accepts --request-id UUID to reuse an uncertain runtime instruction.
                                            Full-account follow-up sends can queue FIFO; queued is not completed.`,
   help: `Usage: armada send <sandbox-id> <text> [--model <id>] [--reasoning-effort <level>]

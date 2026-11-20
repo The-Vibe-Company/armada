@@ -10,6 +10,7 @@ import {
   launchFailureHelp,
   TEMPLATE_REFUSAL_HELP,
 } from "@armada/core";
+import { Armada, ArmadaError } from "@armada/sdk";
 import { authClient } from "@armada/sdk/auth";
 import { commandClient } from "@armada/sdk/commands";
 import { validApiReceipt } from "./api-receipts.ts";
@@ -67,19 +68,7 @@ export async function createArmadaApiClient(
   io: ArmadaApiIo,
   options: ArmadaApiOptions = {},
 ): Promise<ArmadaCommandClient> {
-  const environmentToken = io.env.ARMADA_TOKEN;
-  let saved = environmentToken ? null : await io.session.read();
-  const origin = await resolveArmadaOrigin(io, options.url, saved);
-  const initialToken = environmentToken || saved?.accessToken;
-  if (!initialToken) throw new AuthError("Set ARMADA_TOKEN or run armada login.", "unauthorized");
-  let token = initialToken;
-  const timeoutMs = io.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-
-  if (!environmentToken && saved && Date.parse(saved.expiresAt) - Date.now() <= 60_000) {
-    saved = await refresh(origin, io, saved.refreshToken, saved, timeoutMs, undefined, options.rawJson);
-    token = saved.accessToken;
-  }
-
+  const { origin, timeoutMs, environmentToken, token, renewToken } = await authenticatedSession(io, options);
   const rawResponses = options.rawJson ? new WeakMap<object, Pick<Response, "text">>() : undefined;
   return commandClient(
     origin,
@@ -89,21 +78,12 @@ export async function createArmadaApiClient(
         if (rawResponses && response.ok && response.body) rawResponses.set(response, response.clone());
         return response;
       },
-      token: () => token,
+      token,
       timeoutMs,
       invalidPath: (error) => {
         throw new AuthError(error.message, "usage");
       },
-      ...(!environmentToken && saved
-        ? {
-            renewToken: async (signal?: AbortSignal) => {
-              if (!saved) throw new Error("No saved login to refresh.");
-              saved = await refresh(origin, io, saved.refreshToken, saved, timeoutMs, signal, options.rawJson);
-              token = saved.accessToken;
-              return token;
-            },
-          }
-        : {}),
+      ...(renewToken ? { renewToken } : {}),
     },
     (result, path, url) => {
       if (options.rawJson) {
@@ -343,6 +323,57 @@ export async function createArmadaApiClient(
       throw new AuthError(apiMessage(payload, `Armada server request failed (${response.status}).`), "unavailable");
     },
   );
+}
+
+async function authenticatedSession(io: ArmadaApiIo, options: ArmadaApiOptions = {}) {
+  const environmentToken = io.env.ARMADA_TOKEN;
+  let saved = environmentToken ? null : await io.session.read();
+  const origin = await resolveArmadaOrigin(io, options.url, saved);
+  const initial = environmentToken || saved?.accessToken;
+  if (!initial) throw new AuthError("Set ARMADA_TOKEN or run armada login.", "unauthorized");
+  let token = initial;
+  const timeoutMs = io.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  if (!environmentToken && saved && Date.parse(saved.expiresAt) - Date.now() <= 60_000) {
+    saved = await refresh(origin, io, saved.refreshToken, saved, timeoutMs, undefined, options.rawJson);
+    token = saved.accessToken;
+  }
+  const renewToken = saved
+    ? async (signal?: AbortSignal) => {
+        if (!saved) throw new Error("No saved login to refresh.");
+        saved = await refresh(origin, io, saved.refreshToken, saved, timeoutMs, signal, options.rawJson);
+        token = saved.accessToken;
+        return token;
+      }
+    : undefined;
+  return { origin, timeoutMs, environmentToken, token: () => token, renewToken };
+}
+
+export async function createArmadaSdkReader(io: ArmadaApiIo) {
+  const session = await authenticatedSession(io);
+  return async <T>(request: (sdk: Armada) => Promise<T>, signal?: AbortSignal) => {
+    const call = () =>
+      request(
+        new Armada({
+          url: session.origin,
+          token: session.token(),
+          fetch: io.fetch,
+          ...(io.timeoutMs === undefined ? {} : { timeoutMs: io.timeoutMs }),
+        }),
+      );
+    try {
+      try {
+        return await call();
+      } catch (error) {
+        if (!(error instanceof ArmadaError) || error.status !== 401 || !session.renewToken) throw error;
+        await session.renewToken(signal);
+        return await call();
+      }
+    } catch (error) {
+      if (!(error instanceof ArmadaError)) throw error;
+      if (error.status === 401) throw new AuthError("Run armada login or update ARMADA_TOKEN.", "unauthorized");
+      throw new ArmadaApiError(error.serverCode ?? error.code, error.status, error.message);
+    }
+  };
 }
 
 async function rawJsonText(response: Pick<Response, "text"> | undefined, payload: unknown) {

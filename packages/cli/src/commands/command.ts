@@ -10,7 +10,6 @@ export type UsageGroup =
   | "list"
   | "advice"
   | "sandbox"
-  | "logs"
   | "setup"
   | "session"
   | "account"

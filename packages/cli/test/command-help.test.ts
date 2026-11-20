@@ -6,7 +6,7 @@ for (const command of [
   "--help",
   "api",
   "launch",
-  "logs",
+  "events",
   "list",
   "advice",
   "rm",
@@ -21,6 +21,7 @@ for (const command of [
   "send",
   "steer",
   "exec",
+  "outputs",
   "routine",
   "template",
   "snapshot",
@@ -36,7 +37,7 @@ for (const command of [
       const argv =
         command === "--help"
           ? [flag]
-          : command === "logs"
+          : command === "events"
             ? [command, flag]
             : ["--profile", "new-user", ...command.split(" "), flag];
       const fail = () => {
@@ -89,13 +90,13 @@ test("host help lists retention alongside the other account commands", async () 
   expect(stdout).toMatch(/^ {2}retention +Update stopped sandbox retention/m);
 });
 
-test("logs help rejects an invalid profile from the environment", async () => {
+test("events help rejects an invalid profile from the environment", async () => {
   let stderr = "";
   const fail = () => {
     throw new Error("Invalid profile must not print help or make a request");
   };
   const code = await run(
-    ["logs", "--help"],
+    ["events", "--help"],
     { out: fail, err: (text) => (stderr += text) },
     { env: { ARMADA_PROFILE: "bad.profile" }, fetch: Object.assign(fail, { preconnect: fail }) },
   );

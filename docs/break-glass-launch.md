@@ -65,7 +65,7 @@ staging_armada list --org "$staging_org" --golden "$snapshot_id" --owner me --js
 ```bash
 read -r -p 'Returned sandbox ID: ' sandbox_id
 staging_armada status "$sandbox_id" --org "$staging_org"
-staging_armada logs "$sandbox_id" --org "$staging_org" --follow
+staging_armada events "$sandbox_id" --org "$staging_org" -f
 ```
 
 ### Coordinator rehearsal record
@@ -77,7 +77,7 @@ with `@the-vibe-company/armada@2.57.2` against staging server 3.0.0
 Codex on Modal from the staging `smoke-modal` snapshot with a 30-minute TTL
 and an explicit `--credential-id`. The coordinator authenticated using an
 existing staging bearer via `ARMADA_TOKEN` in place of browser sign-in.
-The worker answered the rehearsal prompt in one turn, visible in `armada logs`.
+The worker answered the rehearsal prompt in one turn, visible in `armada events`.
 The coordinator ran `armada stop` and confirmed `stopped` with `armada status`.
 [Coordinator's rehearsal record](https://github.com/The-Vibe-Company/armada/issues/2731#issuecomment-6994948597).
 

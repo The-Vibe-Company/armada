@@ -8,6 +8,7 @@ import completion from "./completion.ts";
 import creds from "./creds.ts";
 import detail from "./detail.ts";
 import doctor from "./doctor.ts";
+import events from "./events.ts";
 import exec from "./exec.ts";
 import extend from "./extend.ts";
 import github from "./github.ts";
@@ -17,8 +18,8 @@ import launch from "./launch.ts";
 import list from "./list.ts";
 import login from "./login.ts";
 import logout from "./logout.ts";
-import logs from "./logs.ts";
 import org from "./org.ts";
+import outputs from "./outputs.ts";
 import recovery from "./recovery.ts";
 import report from "./report.ts";
 import rm from "./rm.ts";
@@ -48,7 +49,8 @@ export const commands: readonly Command[] = [
   send,
   steer,
   exec,
-  logs,
+  events,
+  outputs,
   doctor,
   completion,
   login,

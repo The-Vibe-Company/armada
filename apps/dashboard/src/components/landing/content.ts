@@ -26,7 +26,7 @@ export const STORY = {
   tools: "armada mcp add docs https://mcp.example.com/mcp --scope org",
   resume: 'armada send 6f1c2a9e-4b7d-4e2a-9c51-3d8e0f7a2b14 "Now cover the empty cart"',
   keys: "armada creds set codex-auth --file ~/.codex/auth.json",
-  watch: "armada logs 6f1c2a9e-4b7d-4e2a-9c51-3d8e0f7a2b14 --follow",
+  watch: "armada events 6f1c2a9e-4b7d-4e2a-9c51-3d8e0f7a2b14 -f",
 } as const;
 
 /** The CLI path to a first agent, in order, after the sign-in prerequisites the page states. */
