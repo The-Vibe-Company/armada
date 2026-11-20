@@ -316,12 +316,18 @@ describe("runtime resume admission rollback", () => {
                     return tx.query(statement, [params![0], Number(params![1]) + 1, ...params!.slice(2)]);
                   }
                   if (fault === "elapsed expiry" && params?.[5] === "runtime_resume_admitted") {
-                    const expiry = await tx.query<{ elapsed_after_begin: boolean }>(
-                      `update public.sandboxes set expires_at=clock_timestamp() where id=$1
-                        returning expires_at>now() as elapsed_after_begin`,
+                    const expiry = await tx.query<{ expires_ms: number }>(
+                      `update public.sandboxes set expires_at=now()+interval '1 second' where id=$1
+                        returning ceil(extract(epoch from expires_at)*1000)::float8 as expires_ms`,
                       [f.row.id],
                     );
-                    expect(expiry.rows).toEqual([{ elapsed_after_begin: true }]);
+                    // PGlite reads Date.now() for clock_timestamp(), while now() stays at transaction start.
+                    const clock = spyOn(Date, "now").mockReturnValue(expiry.rows[0]!.expires_ms + 1);
+                    try {
+                      return await tx.query(statement, params);
+                    } finally {
+                      clock.mockRestore();
+                    }
                   }
                 }
                 if (statement.startsWith("update public.sandbox_launch_stages")) {
