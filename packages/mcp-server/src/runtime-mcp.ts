@@ -260,10 +260,12 @@ export function createRuntimeMcp(options: {
     signal: AbortSignal | undefined,
     failure: string,
     accept: (reply: Awaited<ReturnType<typeof options.commands.call>>) => boolean,
+    assertClaim?: (tx: Sql) => Promise<void>,
   ) => {
     const reply = await options.commands.call(s.ownerId, request, {
       expectedEpoch,
       accept,
+      ...(assertClaim ? { assertClaim } : {}),
       ...(signal ? { signal } : {}),
     });
     if (
@@ -275,10 +277,11 @@ export function createRuntimeMcp(options: {
       throw new VaultError("unavailable", failure);
     return reply;
   };
-  async function prepare(caller: Caller, id: string, signal?: AbortSignal) {
+  async function prepare(caller: Caller, id: string, signal?: AbortSignal, assertClaim?: (tx: Sql) => Promise<void>) {
     signal?.throwIfAborted();
     const s = await owner(caller, id);
     const initial = await authority.withOwner(s.id, s.ownerId, async (tx, live) => {
+      await assertClaim?.(tx);
       await scope(tx, s.id, live.epoch);
       const selection = await selected(tx, s.id);
       const previous = (
@@ -316,11 +319,13 @@ export function createRuntimeMcp(options: {
           evidence.mcpVersion === 1
         );
       },
+      assertClaim,
     );
     const features = health.body.result as { stdioMcpEnv?: unknown };
     const prepareConfiguration = () => authority.withOwner(s.id, s.ownerId, configure);
     async function configure(tx: Sql, live: RuntimeOwnerScope) {
       if (live.epoch !== initial.epoch) return deny();
+      await assertClaim?.(tx);
       const p = await plan(tx, caller, s, live.epoch, initial.selection);
       if (
         features.stdioMcpEnv !== true &&
@@ -369,6 +374,7 @@ export function createRuntimeMcp(options: {
       const local = scopedRuntimeSql(tx);
       signal?.throwIfAborted();
       await createRuntimeCommands(createRuntimeEnrolments(local, key), key).enqueue(s.ownerId, wire, live.epoch);
+      await assertClaim?.(tx);
       return { ...p, epoch: live.epoch, wire };
     }
     let prepared!: Awaited<ReturnType<typeof prepareConfiguration>>;
@@ -381,6 +387,7 @@ export function createRuntimeMcp(options: {
           request: prepared.wire,
           options: {
             expectedEpoch: prepared.epoch,
+            ...(assertClaim ? { assertClaim } : {}),
             ...(signal ? { signal } : {}),
             accept: acknowledgesRevision,
           },
@@ -400,6 +407,7 @@ export function createRuntimeMcp(options: {
     )
       throw new VaultError("unavailable", "Runtime MCP configuration was not acknowledged.");
     await authority.withOwner(s.id, s.ownerId, async (tx, live) => {
+      await assertClaim?.(tx);
       const p = await plan(tx, caller, s, live.epoch, initial.selection);
       if (live.epoch !== prepared.epoch || JSON.stringify(p.configuration) !== JSON.stringify(prepared.configuration))
         return deny();
@@ -410,6 +418,7 @@ export function createRuntimeMcp(options: {
         [s.id, `runtime:${live.epoch}`, p.configuration.revision],
       );
       if (!written.rows.length) return deny();
+      await assertClaim?.(tx);
     });
     return receipt(s, prepared.epoch, prepared, initial.selection);
   }

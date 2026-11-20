@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
 import { createMemoryAuthStore } from "@armada/auth";
 import type { AgentEvent, Sql } from "@armada/core";
-import { createSqlVaultStore, encryptSecret } from "@armada/core/server";
+import { createSqlMcpRegistry, createSqlVaultStore, encryptSecret } from "@armada/core/server";
 import { createQueuedSandboxDispatch } from "../src/control.ts";
 import { createSqlData } from "../src/data.ts";
 import { createDockerBootstrapService } from "../src/docker-bootstrap-service.ts";
@@ -15,6 +15,7 @@ import { launchCredentials } from "../src/launch-credentials.ts";
 import { createRuntimeCommands } from "../src/runtime-commands.ts";
 import { createRuntimeEnrolments } from "../src/runtime-enrolment.ts";
 import { createRuntimeEvents } from "../src/runtime-events.ts";
+import { createRuntimeMcp } from "../src/runtime-mcp.ts";
 import { createSandboxAccountChange } from "../src/sandbox-account-change.ts";
 import { useMigratedDatabase } from "./migrated-database.ts";
 
@@ -118,7 +119,7 @@ async function ready(f: Fixture) {
 
 // These integration tests own the Docker lifecycle composition: concrete host ACK,
 // credential admission, enrolment, encrypted command replay and archive authorization.
-test.each(["prompt", "readable variables"] as const)(
+test.each(["prompt", "readable variables", "MCP health", "MCP configuration", "MCP acknowledgement"] as const)(
   "a queued Docker send rolls back %s admission when its claim expires before commit",
   async (operation) => {
     const f = await fixture();
@@ -134,6 +135,15 @@ test.each(["prompt", "readable variables"] as const)(
         [input.id, "a".repeat(64), manifest, await encryptSecret("{}", key), f.actor.userId, f.actor.orgId],
       );
     }
+    const isMcp = operation.startsWith("MCP");
+    const commandCount = async (tx: Sql) =>
+      (
+        await tx.query<{ count: number }>(
+          "select count(*)::int as count from public.runtime_commands where sandbox_id=$1",
+          [input.id],
+        )
+      ).rows[0]!.count;
+    const initialCount = await commandCount(sql);
     let now = 0;
     const promptId = randomUUID();
     const clock = {
@@ -143,10 +153,18 @@ test.each(["prompt", "readable variables"] as const)(
         const next = await commands.next(session.runtimeToken, session.epoch);
         const command = next.command;
         if (!command) throw new Error("No command to acknowledge");
-        const result =
-          command.op === "prompt"
-            ? { promptId, conversationId: randomUUID(), status: "running" }
-            : { acknowledged: true };
+        let result: object = { acknowledged: true };
+        switch (command.op) {
+          case "prompt":
+            result = { promptId, conversationId: randomUUID(), status: "running" };
+            break;
+          case "health":
+            result = { ready: true, generation: session.epoch, mcpVersion: 1 };
+            break;
+          case "configureMcp":
+            result = { revision: command.configuration.revision };
+            break;
+        }
         await commands.complete(session.runtimeToken, session.epoch, {
           epoch: session.epoch,
           requestId: command.requestId,
@@ -155,6 +173,30 @@ test.each(["prompt", "readable variables"] as const)(
         });
       },
     };
+    const mcp = createRuntimeMcp({
+      sql,
+      key,
+      origin: "https://armada.example",
+      commands: createRuntimeCommands(authority, key, clock),
+    });
+    if (isMcp) {
+      const connection = await createSqlMcpRegistry(sql, key).save(f.actor.userId, f.actor.orgId, {
+        name: "Fixture MCP",
+        scope: "personal",
+        transport: "http",
+        url: "https://mcp.example",
+        authType: "bearer",
+        authentication: "fixture",
+      });
+      await database().query("update public.mcp_grants set status='connected' where connection_id=$1", [connection.id]);
+      await mcp.connections.bind(input.id, [connection.id]);
+    }
+    const configured = async (tx: Sql) =>
+      (
+        await tx.query<{ configured: boolean }>("select configured from public.mcp_bootstraps where sandbox_id=$1", [
+          input.id,
+        ])
+      ).rows[0]?.configured;
     const dispatch = createQueuedSandboxDispatch({
       authStore: createMemoryAuthStore(),
       supabase: { supabaseUrl: "https://unused.test", anonKey: "fixture" },
@@ -167,7 +209,12 @@ test.each(["prompt", "readable variables"] as const)(
         },
       },
       dockerControls: createDockerSandboxControls(sql, key, {
-        send: createDockerNormalSend(sql, key, { enabled: true, dispatchQueued: true, clock }),
+        send: createDockerNormalSend(sql, key, {
+          enabled: true,
+          dispatchQueued: true,
+          clock,
+          ...(isMcp ? { prepareMcp: mcp.prepare } : {}),
+        }),
       }),
     });
     const caller = {
@@ -179,11 +226,24 @@ test.each(["prompt", "readable variables"] as const)(
       throw new Error("Running send must not hand off generation.");
     };
     let expired = false;
+    const mcpCommandsBeforeCommit = {
+      "MCP health": 1,
+      "MCP configuration": 2,
+      "MCP acknowledgement": 2,
+    };
     await expect(
       dispatch(caller, input, {
         handoffGeneration,
         async canDispatch(tx) {
           if (!tx) return true;
+          if (operation in mcpCommandsBeforeCommit) {
+            expired ||=
+              operation === "MCP acknowledgement"
+                ? (await configured(tx)) === true
+                : (await commandCount(tx)) >=
+                  initialCount + mcpCommandsBeforeCommit[operation as keyof typeof mcpCommandsBeforeCommit];
+            return !expired;
+          }
           const command = await tx.query(
             "select 1 from public.runtime_commands where sandbox_id=$1 and request_id=$2",
             [input.id, commandId],
@@ -194,6 +254,16 @@ test.each(["prompt", "readable variables"] as const)(
       }),
     ).rejects.toThrow();
     expect(expired).toBe(true);
+    if (isMcp) {
+      const committedCommands =
+        mcpCommandsBeforeCommit[operation as keyof typeof mcpCommandsBeforeCommit] -
+        (operation === "MCP acknowledgement" ? 0 : 1);
+      expect(await commandCount(sql)).toBe(initialCount + committedCommands);
+      expect(await configured(sql)).toBe(operation === "MCP acknowledgement" ? false : undefined);
+      expect(
+        (await database().query("select 1 from public.mcp_leases where sandbox_id=$1", [input.id])).rows.length,
+      ).toBe(operation === "MCP acknowledgement" ? 1 : 0);
+    }
     expect(
       (
         await database().query("select 1 from public.runtime_commands where sandbox_id=$1 and request_id=$2", [
@@ -207,6 +277,7 @@ test.each(["prompt", "readable variables"] as const)(
       promptId,
       requestId: input.request_id,
     });
+    if (isMcp) expect(await configured(sql)).toBe(true);
   },
 );
 

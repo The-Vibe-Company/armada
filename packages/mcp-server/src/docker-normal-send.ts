@@ -108,7 +108,7 @@ export function createDockerNormalSend(
           throw failure("conflict", "Docker sandbox resume is still pending.");
       }
       await assertClaim?.();
-      await options.prepareMcp?.(caller, row.id);
+      await options.prepareMcp?.(caller, row.id, undefined, assertClaim);
       let conversationId = queuedConversationId ?? row.conversation_ids.at(-1);
       if (conversationId === undefined && !previous) {
         const launch = (

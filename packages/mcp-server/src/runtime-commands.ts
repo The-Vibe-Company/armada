@@ -1,5 +1,5 @@
 import type { RunnerRequest } from "@armada/agent-runtime";
-import { PROMPT_STATUSES } from "@armada/core";
+import { PROMPT_STATUSES, type Sql } from "@armada/core";
 import { decryptSecret, encryptSecret } from "@armada/core/server";
 import { UUID } from "./control-input.ts";
 import type { Route } from "./http.ts";
@@ -109,7 +109,12 @@ export function createRuntimeCommands(
   key: string,
   time: Clock = clock,
 ) {
-  async function enqueue(ownerId: string, request: RunnerRequest, expectedEpoch?: string) {
+  async function enqueue(
+    ownerId: string,
+    request: RunnerRequest,
+    expectedEpoch?: string,
+    assertClaim?: (tx: Sql) => Promise<void>,
+  ) {
     if (request.version !== 1 || !requestId(request.requestId) || typeof request.op !== "string")
       throw new RuntimeCommandRefused();
     const serialized = JSON.stringify(request);
@@ -118,6 +123,7 @@ export function createRuntimeCommands(
     const wakeKeys = [`socket:${request.sandboxId}`, `poll:${request.sandboxId}`];
     let deferred = false;
     const admitted = await authority.withOwner(request.sandboxId, ownerId, async (tx, scope) => {
+      await assertClaim?.(tx);
       // Application-secret taint forbids file egress: never admit or replay an output read (row
       // locked here). A stored reply may predate the taint, and a read has no effect to reconcile.
       if (
@@ -185,6 +191,7 @@ export function createRuntimeCommands(
           request.op === "prompt" ? (currentRequestId() ?? null) : null,
         ],
       );
+      await assertClaim?.(tx);
       for (const wakeKey of wakeKeys) deferred = deferTransactionWake(tx, wakeKey);
       noteAdmission();
       return { epoch: scope.epoch, requestId: request.requestId, provider: scope.provider, fresh: true };
@@ -356,6 +363,7 @@ export function createRuntimeCommands(
     signal?: AbortSignal;
     timeoutMs?: number;
     expectedEpoch?: string;
+    assertClaim?: (tx: Sql) => Promise<void>;
     accept?: (reply: RuntimeCommandReply) => boolean;
   };
 
@@ -396,7 +404,7 @@ export function createRuntimeCommands(
         const signal = options.signal ?? new AbortController().signal;
         signal.throwIfAborted();
         const deadline = time.now() + timeout;
-        const admitted = await enqueue(ownerId, request, options.expectedEpoch);
+        const admitted = await enqueue(ownerId, request, options.expectedEpoch, options.assertClaim);
         provider = admitted.provider;
         const wakeKey = `reply:${request.sandboxId}:${admitted.epoch}:${request.requestId}`;
         while (true) {
