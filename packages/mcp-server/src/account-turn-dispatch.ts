@@ -305,7 +305,27 @@ export function createTurnDispatchJob(sql: Sql, key: string, dispatch: DispatchT
     async run(job, context) {
       const { sandboxId, requestId } = turnJobRequest(job);
       if (!(await context.canDispatch()))
-        return { status: "fail", reason: "dispatch_budget_expired", unattempted: true };
+        return {
+          status: "fail",
+          reason: "dispatch_budget_expired",
+          unattempted: true,
+          async commit(tx) {
+            // Claim reconciliation can hold the receipt while taking the sandbox lock.
+            await tx.query(
+              "select request_id from public.account_turn_queue where sandbox_id=$1 and request_id=$2 for update nowait",
+              [sandboxId, requestId],
+            );
+            await tx.query(
+              `update public.account_turn_queue q set state='failed', dispatch_until=null,
+                 failure_reason=case when q.state='dispatching' or ${QUEUED_DISPATCH_EVIDENCE}
+                   then '${UNCERTAIN_DISPATCH_MESSAGE}'
+                   else 'Queued prompt could not start before its dispatch budget expired.' end
+               from public.sandboxes s
+               where s.id=q.sandbox_id and q.sandbox_id=$1 and q.request_id=$2 and q.state in ('queued','dispatching')`,
+              [sandboxId, requestId],
+            );
+          },
+        };
       const claim = { job, canDispatch: context.canDispatch, handoffGeneration: context.handoffGeneration };
       const admitted = await admitClaimedAccountTurn(sql, claim);
       if (admitted) await dispatchAccountTurn(sql, key, admitted.entry, admitted.caller, dispatch, claim);
