@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { AuthError } from "@armada/auth";
 import type { AuthIo } from "../src/auth-commands.ts";
 import { filePreferences } from "../src/preferences.ts";
 import { run } from "../src/run.ts";
@@ -106,6 +107,32 @@ test("login --org none clears the selected organization after authorization", as
   expect(await h.run(["login", "--org", "none", "--json"])).toBe(0);
   expect(selected).toBeUndefined();
   expect(h.output().out.trim().split("\n").at(-1)).toBe('{"authenticated":true}');
+});
+
+test("a failed login organization write preserves the previous identity", async () => {
+  const h = harness(async (input) => {
+    const path = new URL(String(input)).pathname;
+    if (path.endsWith("/auth/device/start")) return loginStarted();
+    if (path.endsWith("/auth/device/poll")) return loginAuthorized();
+    throw new Error("Unexpected request");
+  });
+  const previous = {
+    armadaUrl: "https://armada.test",
+    accessToken: "previous-access",
+    refreshToken: "previous-refresh",
+    expiresAt: "2099-01-01T00:00:00.000Z",
+  };
+  await h.auth.session.write(previous);
+  h.auth.preferences = {
+    read: async () => org,
+    write: async () => {
+      throw new AuthError("Could not save organization preferences.", "unavailable");
+    },
+  };
+
+  expect(await h.run(["login", "--org", "none"])).toBe(1);
+  expect(await h.auth.session.read()).toEqual(previous);
+  expect(h.output().err).toContain("Could not save organization preferences.");
 });
 
 test.each(["current", "use"])("org %s is rejected before an API request", async (verb) => {

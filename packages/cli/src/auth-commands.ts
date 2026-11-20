@@ -7,7 +7,7 @@ import { authClient } from "@armada/sdk/auth";
 import { armadaApiUrl } from "./armada-api.ts";
 import type { Preferences } from "./preferences.ts";
 import { profileStores } from "./profiles.ts";
-import type { SessionStore } from "./session.ts";
+import type { Session, SessionStore } from "./session.ts";
 
 export interface AuthIo {
   out(text: string): void;
@@ -76,13 +76,16 @@ export async function loginCommand(
   io: AuthIo,
   how: { url?: string | undefined; json?: boolean; org?: string | undefined } = {},
 ): Promise<void> {
-  const origin = armadaApiUrl(how.url ?? io.env.ARMADA_URL ?? (await io.session.read())?.armadaUrl);
   const preferences = io.preferences;
   if (how.org !== undefined && !preferences)
     throw new AuthError("Organization preferences are not available.", "usage");
   if (how.org !== undefined && !how.org.trim())
     throw new AuthError("Give --org an organization name, UUID or none.", "usage");
 
+  const explicitOrigin = how.url ?? io.env.ARMADA_URL;
+  const savedOrigin =
+    how.org !== undefined && explicitOrigin === undefined ? (await io.session.read())?.armadaUrl : undefined;
+  const origin = armadaApiUrl(explicitOrigin ?? savedOrigin);
   const client = authClient(origin, io.fetch);
   const timeout = io.timeoutMs ?? 35_000;
   const { authDeviceStart, authDevicePoll } = publicAuthOperations;
@@ -147,14 +150,18 @@ export async function loginCommand(
             throw new AuthError("Choose one of your organizations by UUID or exact name.", "usage");
           org = matches[0].id;
         }
-        await io.session.write({
+        const session = {
           loginId: crypto.randomUUID(),
           armadaUrl: origin,
           accessToken,
           refreshToken,
           expiresAt,
-        });
-        if (how.org !== undefined) await preferences?.write(origin, org);
+        } satisfies Session;
+        if (how.org !== undefined && preferences) {
+          await saveLoginSelection(io.session, session, preferences, org);
+        } else {
+          await io.session.write(session);
+        }
         const account = email.replace(/[\p{Cc}\p{Cf}]/gu, "");
         io.out(how.json ? '{"authenticated":true}\n' : `Signed in as ${account}.\n`);
         return;
@@ -162,6 +169,33 @@ export async function loginCommand(
     }
   }
   throw new AuthError("This CLI login expired. Run armada login again.", "unauthorized");
+}
+
+async function saveLoginSelection(
+  store: SessionStore,
+  session: Session & { armadaUrl: string },
+  preferences: Preferences,
+  org: string | undefined,
+) {
+  const origin = session.armadaUrl;
+  async function save(unlocked: SessionStore) {
+    const previous = await preferences.read(origin);
+    await preferences.write(origin, org);
+    try {
+      await unlocked.write(session);
+    } catch (error) {
+      try {
+        await preferences.write(origin, previous);
+      } catch {
+        throw new AuthError(
+          "Sign-in could not be saved, and the organization selection could not be restored.",
+          "unavailable",
+        );
+      }
+      throw error;
+    }
+  }
+  await (store.withLock ? store.withLock(save) : save(store));
 }
 
 export async function logoutCommand(io: AuthIo, json = false): Promise<void> {

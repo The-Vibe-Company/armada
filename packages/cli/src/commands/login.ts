@@ -12,7 +12,8 @@ export default {
   help: `Usage: armada login [--json] [--url <server-origin>] [--org NAME|UUID|none]
 Open the dashboard link, sign in there and authorize the CLI. The browser can
 be on a different machine. Keep the terminal open until it confirms sign-in.
-Server selection: --url, then ARMADA_URL, then the saved login server or the default Armada API origin.
+Server selection: --url, then ARMADA_URL, then the default Armada API origin.
+With --org and no explicit server, use the saved login server when available.
 --org saves a default organization by exact name or UUID after authorization.
 Use --org none to clear it. Omit --org to keep the saved selection.
 Global --profile NAME (or ARMADA_PROFILE) isolates saved login and preferences;
