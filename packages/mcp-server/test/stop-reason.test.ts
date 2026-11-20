@@ -219,6 +219,7 @@ test.each([
   { runtime: true, scenario: "ready" },
   { runtime: true, scenario: "running" },
   { runtime: true, scenario: "stale" },
+  { runtime: true, scenario: "release_failed" },
   { runtime: false, scenario: "ready" },
   { runtime: false, scenario: "stale" },
   { runtime: false, scenario: "changed_state" },
@@ -256,18 +257,18 @@ test.each([
         renewedExpiry,
       ]);
     if (scenario === "changed_state") await db.query("update sandboxes set status='running' where id=$1", [id]);
-    if (scenario === "release_failed") {
+    if (scenario === "release_failed" && !runtime)
       await db.query(
         `insert into account_turn_queue(sandbox_id,request_id,account_id,owner_id,org_id,actor_epoch,credential_version,
           input_hash,input_enc,conversation_id,state,dispatch_generation)
          values ($1,$2,$3,$4,$5,1,1,'hash','data','conversation','dispatching',$6)`,
         [id, crypto.randomUUID(), openaiCredentialId, people.owner, people.org, sandbox.lifecycleGeneration],
       );
+    if (scenario === "release_failed")
       await db.exec(`create function reject_stop_release() returns trigger language plpgsql as $$
         begin raise exception 'Stop reservation release failed'; end $$;
         create trigger reject_stop_release before delete on account_agent_reservations
         for each row execute function reject_stop_release();`);
-    }
     const applied = scenario === "ready" || scenario === "running";
     const expectedStatus = applied ? "stopped" : scenario === "changed_state" ? "running" : from;
     try {
@@ -295,7 +296,7 @@ test.each([
                 from_status: from,
                 to_status: "stopped",
                 actor: "runtime_observation",
-                code: runtime ? "runtime_provider_stopped" : "provider_stopped",
+                code: runtime ? "runtime_provider_stopped" : "native_provider_stopped",
                 generation: sandbox.lifecycleGeneration,
               },
             ]

@@ -9,19 +9,18 @@ import {
   type Sql,
   VaultError,
 } from "@armada/core/server";
-import { admitAccountCapacity } from "./account-capacity.ts";
 import {
-  DISPATCH_ABANDONED,
+  admitAccountTurn,
   DISPATCHING_TURN_CANCELLED,
   type DispatchTurn,
   dispatchAccountTurn,
   NATIVE_DISPATCH_UNCERTAIN,
   QUEUED_DISPATCH_EVIDENCE,
   QUEUED_TURN_CANCELLED,
-  RUNTIME_LANE,
-  RUNTIME_REQUEST_EVIDENCE,
-  resetAbandonedTurn,
+  TURN_FIFO_ELIGIBLE,
+  TURN_RECOVERY_ELIGIBLE,
   UNCERTAIN_DISPATCH_MESSAGE,
+  UNSETTLED_TASK,
 } from "./account-turn-dispatch.ts";
 import type { Caller } from "./caller.ts";
 import { DOCKER_SEND_REFUSAL, DOCKER_SEND_REQUEST } from "./docker-send-request-schema.ts";
@@ -52,11 +51,6 @@ type Entry = {
 };
 type DispatchJobEntry = Pick<Entry, "sandbox_id" | "request_id" | "org_id" | "queued_generation">;
 const DISPATCH_JOB_BACKFILL_BATCH = 20;
-
-const UNSETTLED_TASK = `s.task_prompt_id is not null
-  and (s.status='running' or (s.status='ready' and ${RUNTIME_LANE} and s.provider<>'docker'))
-  and not exists(select 1 from public.runtime_idle_turns t
-    where t.sandbox_id=s.id and t.prompt_id=s.task_prompt_id and t.settled)`;
 
 /** Durable encrypted sends. Account locking serializes FIFO admission across server replicas.
  * Native dispatches are never retried: native providers have no idempotent prompt protocol.
@@ -430,110 +424,15 @@ export function createAccountTurnQueue(sql: Sql, key: string) {
         const candidates = (
           await sql.query<Entry>(
             `select q.* from public.account_turn_queue q join public.sandboxes s on s.id=q.sandbox_id
-             where (q.state='queued' or (q.state='dispatching' and q.dispatch_until<=now() and q.dispatch_generation is not null and ((${RUNTIME_LANE} and ${RUNTIME_REQUEST_EVIDENCE}) or (s.lifecycle_generation=q.dispatch_generation and s.activity_lease_id is null and not coalesce(${RUNTIME_REQUEST_EVIDENCE},false)))))
-           and (exists(select 1 from public.credentials c where c.id=q.account_id and c.max_agents is null) or not exists(select 1 from public.account_turn_queue earlier where earlier.account_id=q.account_id and earlier.state='queued' and earlier.model is not distinct from q.model and earlier.sequence<q.sequence))
+             where (q.state='queued' or (q.state='dispatching' and ${TURN_RECOVERY_ELIGIBLE}))
+           and ${TURN_FIFO_ELIGIBLE}
            order by case when q.sequence>$1::bigint then 0 else 1 end,q.sequence limit 20`,
             [scanAfter],
           )
         ).rows;
         for (const candidate of candidates) {
           scanAfter = String(candidate.sequence);
-          const recovering = candidate.state === "dispatching";
-          const admitted = await sql.transaction!(async (tx) => {
-            const member = (
-              await tx.query<{ role: "admin" | "member"; epoch: string }>(
-                `select m.role,e.epoch::text from public.members m join public.mcp_actor_epochs e using(org_id,user_id)
-             where m.org_id=$1 and m.user_id=$2 for share of m`,
-                [candidate.org_id, candidate.owner_id],
-              )
-            ).rows[0];
-            await tx.query("select id from public.credentials where id=$1 for update", [candidate.account_id]);
-            const current = await tx.query(
-              `select q.request_id from public.account_turn_queue q where q.sandbox_id=$1 and q.request_id=$2 and q.state=$3
-              and (q.state='queued' or q.dispatch_until<=now())
-              and (exists(select 1 from public.credentials c where c.id=q.account_id and c.max_agents is null) or not exists(select 1 from public.account_turn_queue earlier where earlier.account_id=q.account_id and earlier.state='queued' and earlier.model is not distinct from q.model and earlier.sequence<q.sequence)) for update of q`,
-              [candidate.sandbox_id, candidate.request_id, candidate.state],
-            );
-            if (!current.rows.length) return null;
-            if (recovering) {
-              // Recheck under account, queue and sandbox locks: the discovery read may be stale.
-              // Native providers cannot replay uncertain mutations, but an unchanged generation
-              // with no request evidence proves the previous claim never began dispatch.
-              const abandoned = await tx.query(
-                `select s.id from public.sandboxes s
-                 join public.account_turn_queue q on q.sandbox_id=s.id and q.request_id=$2
-                 where s.id=$1 and not coalesce(${RUNTIME_LANE},false) and ${DISPATCH_ABANDONED} for update of s`,
-                [candidate.sandbox_id, candidate.request_id],
-              );
-              if (abandoned.rows.length) {
-                await resetAbandonedTurn(tx, candidate.sandbox_id, candidate.request_id);
-                return null;
-              }
-            }
-            const valid = await tx.query<{ id: string; runtime: boolean }>(
-              `select s.id,${RUNTIME_LANE} as runtime from public.sandboxes s join public.credentials c on c.id=s.credential_id
-             where s.id=$1 and s.owner_id=$2 and s.org_id=$3 and s.credential_id=$4 and s.credential_version=$5
-             and c.version=$5 and c.status='active' and (c.expires_at is null or c.expires_at>now())
-             and ((c.scope='user' and c.owner_id=$2) or (c.scope='org' and c.owner_id=$3))
-             and s.deleted_at is null and s.stop_requested_at is null and s.expires_at>now()
-             and (s.status<>'stopped' or s.lifecycle_generation=$7::bigint)
-             and (s.status in ('ready','running','stopped') or ($6::boolean and s.status='starting')) for update of s`,
-              [
-                candidate.sandbox_id,
-                candidate.owner_id,
-                candidate.org_id,
-                candidate.account_id,
-                candidate.credential_version,
-                recovering,
-                candidate.queued_generation,
-              ],
-            );
-            if (!member || member.epoch !== String(candidate.actor_epoch) || !valid.rows.length) {
-              await tx.query(
-                "update public.account_turn_queue set state='failed',failure_reason='Authorization or sandbox lifecycle changed.' where sandbox_id=$1 and request_id=$2 and state='queued'",
-                [candidate.sandbox_id, candidate.request_id],
-              );
-              return null;
-            }
-            if (recovering && !valid.rows[0]!.runtime) return null;
-            const busy = await tx.query(
-              `select 1 from public.account_turn_queue where sandbox_id=$1 and state='dispatching'
-             union all select 1 from public.sandboxes s where s.id=$1 and (s.reconcile_lease_until>now() or s.activity_lease_id is not null
-             or (${UNSETTLED_TASK})) limit 1`,
-              [candidate.sandbox_id],
-            );
-            if (!recovering && busy.rows.length) return null;
-            try {
-              if (!recovering)
-                await admitAccountCapacity(
-                  tx,
-                  candidate.account_id,
-                  candidate.sandbox_id,
-                  candidate.model ?? undefined,
-                );
-              else
-                await tx.query(
-                  "insert into public.account_agent_reservations(sandbox_id,account_id,model) values($1,$2,$3) on conflict(sandbox_id) do nothing",
-                  [candidate.sandbox_id, candidate.account_id, candidate.model],
-                );
-            } catch (error) {
-              if (error instanceof VaultError && error.code === "conflict") return null;
-              throw error;
-            }
-            const claimed = await tx.query(
-              "update public.account_turn_queue set dispatch_generation=case when state='queued' then (select lifecycle_generation from public.sandboxes where id=$1) else dispatch_generation end,state='dispatching',dispatch_until=now()+interval '15 minutes' where sandbox_id=$1 and request_id=$2 and state=$3 returning request_id",
-              [candidate.sandbox_id, candidate.request_id, candidate.state],
-            );
-            if (!claimed.rows.length) return null;
-            return {
-              entry: candidate,
-              caller: {
-                userId: candidate.owner_id,
-                via: "service" as const,
-                orgs: [{ orgId: candidate.org_id, role: member.role }],
-              },
-            };
-          });
+          const admitted = await admitAccountTurn(sql, candidate);
           if (admitted) return admitted;
         }
         return null;

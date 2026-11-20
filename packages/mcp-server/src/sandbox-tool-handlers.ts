@@ -172,7 +172,7 @@ export function configureTools(
         stoppedAt: (machine.stoppedAt ?? context.now()).toISOString(),
         ...(found.lifecycleGeneration === undefined ? {} : { expectedGeneration: found.lifecycleGeneration }),
         ...(found.status === "ready" || found.status === "running"
-          ? { machineObservation: { fromState: found.status, providerRunPlacement: found.providerSandboxId } }
+          ? { providerObservation: { fromState: found.status, providerRunPlacement: found.providerSandboxId } }
           : {}),
       });
     }

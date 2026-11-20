@@ -609,7 +609,7 @@ export async function recordRuntimeStartupFailure(
   return result;
 }
 
-export async function recordObservedMachineState(
+export async function recordObservedProviderState(
   sql: Sql,
   scope: [string[], string],
   observation: {
@@ -617,16 +617,16 @@ export async function recordObservedMachineState(
     generation: number;
     fromState: "ready" | "running";
     toState: "failed" | "stopped";
-    reason: string | null | undefined;
+    reason: string | null;
     stoppedAt: string | null;
     providerRunPlacement?: string;
   },
 ) {
-  if (!sql.transaction) throw new Error("Machine observation publication requires a transaction.");
+  if (!sql.transaction) throw new Error("Provider observation publication requires a transaction.");
   const { sandboxId, generation, fromState, toState, reason, stoppedAt, providerRunPlacement } = observation;
   return sql.transaction(async (tx) => {
-    const eligible = await tx.query<{ status_reason: string | null }>(
-      `select s.status_reason from public.sandboxes s
+    const eligible = await tx.query(
+      `select s.id from public.sandboxes s
        where s.id=$3::uuid and ${SANDBOX_VISIBLE}
          and s.provider in ('boat','modal')
          and case when $4::text is null then
@@ -638,8 +638,7 @@ export async function recordObservedMachineState(
        for update of s`,
       [...scope, sandboxId, providerRunPlacement ?? null],
     );
-    const row = eligible.rows[0];
-    if (!row) return { kind: "conflict" } satisfies SandboxTransitionResult;
+    if (!eligible.rows.length) return { kind: "conflict" } satisfies SandboxTransitionResult;
     const result = await transitionSandbox(tx, {
       sandboxId,
       expectedGeneration: generation,
@@ -651,17 +650,10 @@ export async function recordObservedMachineState(
           ? "runtime_provider_failure"
           : providerRunPlacement === undefined
             ? "runtime_provider_stopped"
-            : "provider_stopped",
+            : "native_provider_stopped",
       effects: [],
       ...(toState === "stopped"
-        ? {
-            settlement: {
-              lease: null,
-              statusReason: reason === undefined ? row.status_reason : reason,
-              stopRequestedAt: null,
-              stoppedAt,
-            },
-          }
+        ? { settlement: { lease: null, statusReason: reason, stopRequestedAt: null, stoppedAt } }
         : {}),
     });
     if (result.kind === "applied") {
