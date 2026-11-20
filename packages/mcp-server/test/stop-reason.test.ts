@@ -366,11 +366,18 @@ test.each([
   { from: "failed", to: "running", outcome: "applied" },
   { from: "failed", to: "running", outcome: "stale source" },
   { from: "failed", to: "ready", outcome: "confirmed exit" },
-] as const)("native availability $from -> $to ($outcome)", async ({ from, to, outcome }) => {
+  { from: "stopped", to: "starting", outcome: "applied" },
+  { from: "running", to: "stopping", outcome: "applied" },
+  { from: "ready", to: "starting", outcome: "stale source" },
+  { from: "failed", to: "stopping", outcome: "confirmed exit" },
+  { from: "ready", to: "stopping", outcome: "journal failure" },
+] as const)("native provider observation $from -> $to ($outcome)", async ({ from, to, outcome }) => {
   const { db, people, sharedGoldenId } = await failureDatabase();
   const boat = fakeBoat();
   const machine = await boat.provider.fork({ from: "snapshot" });
   const turn = await boat.provider.prompt({ sandboxId: machine.id, harness: "codex", text: "work" });
+  const phase = to === "starting" || to === "stopping";
+  if (phase) boat.sandbox(machine.id).info.state = to;
   if (to === "ready") boat.finish(machine.id, turn.promptId, "finished");
   const stoppedAt = "2026-01-01T00:00:00.000Z";
   const statusReason = from === "failed" ? "Previous provider failure" : null;
@@ -417,6 +424,7 @@ test.each([
       stoppedAt: status === "stopped" || outcome === "confirmed exit" ? stoppedAt : null,
       statusReason: applied || outcome === "stale source" ? null : statusReason,
       lifecycleGeneration: sandbox.lifecycleGeneration,
+      stopRequestedAt: null,
     });
     const { rows } = await db.query(
       "select from_status,to_status,actor,code,generation::int from sandbox_transitions where sandbox_id=$1",
@@ -428,8 +436,8 @@ test.each([
             {
               from_status: from,
               to_status: to,
-              actor: "native_turn",
-              code: "native_provider_available",
+              actor: phase ? "lifecycle_runner" : "native_turn",
+              code: phase ? "native_provider_phase" : "native_provider_available",
               generation: sandbox.lifecycleGeneration,
             },
           ]
