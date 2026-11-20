@@ -760,7 +760,7 @@ test("the runtime sweep settles a completed turn published by an overlapping ser
   expect(checkpoint).not.toHaveBeenCalled();
 });
 
-test.each(["current", "superseded", "rolled back"] as const)(
+test.each(["current", "superseded", "revoked", "rolled back"] as const)(
   "idle stop handoff with a %s checkpoint publication",
   async (scenario) => {
     const f = await fixture();
@@ -805,6 +805,8 @@ test.each(["current", "superseded", "rolled back"] as const)(
         );
         if (scenario === "superseded")
           await f.db.query("update sandboxes set lifecycle_generation=lifecycle_generation+1 where id=$1", [f.id]);
+        if (scenario === "revoked")
+          await f.authority.issue({ ownerId: f.people.owner, sandboxId: f.id, configuration: {} });
         checkpointRequests.push(input.request_id);
         return {
           id: input.id,
@@ -855,6 +857,9 @@ test.each(["current", "superseded", "rolled back"] as const)(
         ...before,
         lifecycle_generation: String(Number(before.lifecycle_generation) + 1),
       });
+    } else if (scenario === "revoked") {
+      expect(journal).toEqual([]);
+      expect(await read()).toEqual(before);
     } else {
       expect(journal).toEqual([
         {
