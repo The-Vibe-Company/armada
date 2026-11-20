@@ -2,6 +2,7 @@ import { createHash, randomBytes } from "node:crypto";
 import type { InvitationErrorReason, InvitationPreview, OrganizationInvitation } from "@armada/core";
 import { decryptSecret, encryptSecret, type Sql, VaultError } from "@armada/core/server";
 import type { Caller, SupabaseProject } from "./caller.ts";
+import { ServerConfigError } from "./server-config-error.ts";
 
 interface Row {
   id: string;
@@ -295,16 +296,15 @@ export class Invitations {
   }
 }
 
-/** Explicit opt-in only. Creating the service never sends email. */
-export function invitationsFromEnv(sql: Sql, env: Record<string, string | undefined>): Invitations {
-  const mail =
-    env.ARMADA_INVITATION_MAIL === "supabase"
-      ? supabaseInvitationMail(
-          { supabaseUrl: env.SUPABASE_URL!, anonKey: env.SUPABASE_ANON_KEY! },
-          env.ARMADA_DASHBOARD_URL!,
-        )
-      : undefined;
-  return new Invitations(sql, env.ARMADA_ENCRYPTION_KEY, mail);
+/** Explicit opt-in only. Creating the mail sender never sends email. */
+export function invitationMailFromEnv(env: Record<string, string | undefined>): InvitationMail | undefined {
+  if (env.ARMADA_INVITATION_MAIL !== "supabase") return;
+  const origin = env.ARMADA_DASHBOARD_URL;
+  try {
+    return supabaseInvitationMail({ supabaseUrl: env.SUPABASE_URL!, anonKey: env.SUPABASE_ANON_KEY! }, origin!);
+  } catch {
+    throw new ServerConfigError("ARMADA_DASHBOARD_URL must be an HTTPS origin when ARMADA_INVITATION_MAIL is enabled.");
+  }
 }
 
 /** Opt-in background retries; stop tracks in-flight delivery through shutdown. */
