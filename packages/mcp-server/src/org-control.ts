@@ -1,16 +1,39 @@
+import { controlRouteKey, memberOperations } from "@armada/core/contract";
 import {
   addMember,
   createOrg,
   listMembers,
   listOrgs,
-  parseRole,
   removeMember,
   setMemberRole,
+  VaultError,
 } from "@armada/core/server";
+import type { z } from "zod";
 import { scopedOrg } from "./control-caller.ts";
 import { optional, required } from "./control-input.ts";
 import { connectOrgProvider, disconnectOrgProvider, orgProviderStatus, validateOrgProvider } from "./org-provider.ts";
-import { defineRoutes } from "./routes.ts";
+import { type ControlRouteContext, defineRoutes } from "./routes.ts";
+
+function parseMemberInput<T extends z.ZodType>(schema: T, value: unknown): z.output<T> {
+  const parsed = schema.safeParse(value);
+  if (!parsed.success)
+    throw new VaultError("invalid", parsed.error.issues[0]?.message ?? "Invalid membership request.");
+  return parsed.data;
+}
+
+function memberRoute<T extends z.ZodType & { shape: { org: z.ZodType<string | null | undefined> } }>(
+  operation: { route: { method: "POST" }; input: { body: T } },
+  handle: (context: ControlRouteContext, input: Omit<z.output<T>, "org"> & { org: string | undefined }) => unknown,
+) {
+  const schema = operation.input.body;
+  return {
+    methods: [operation.route.method],
+    handler: (context: ControlRouteContext) => {
+      const org = scopedOrg(context.caller, parseMemberInput(schema.shape.org, context.body.org) ?? undefined);
+      return handle(context, { ...parseMemberInput(schema, context.body), org });
+    },
+  };
+}
 
 export const orgRoutes = defineRoutes("org-control", {
   "org/create": async ({ caller, body, options }) => {
@@ -29,42 +52,30 @@ export const orgRoutes = defineRoutes("org-control", {
       ),
     };
   },
-  "members/list": ({ caller, body, options }) => {
-    const { store } = options;
-    const { userId } = caller;
-    const org = scopedOrg(caller, optional(body, "org"));
-    return listMembers(store, userId, org);
-  },
-  "members/add": async ({ caller, body, options }) => {
-    const { store } = options;
-    const { userId } = caller;
-    const org = scopedOrg(caller, optional(body, "org"));
-    return {
-      member: await addMember(store, userId, {
-        org,
-        email: required(body, "email"),
-        role: parseRole(optional(body, "role") ?? "member"),
-      }),
-    };
-  },
-  "members/role": async ({ caller, body, options }) => {
-    const { store } = options;
-    const { userId } = caller;
-    const org = scopedOrg(caller, optional(body, "org"));
-    await setMemberRole(store, userId, {
-      org,
-      email: required(body, "email"),
-      role: parseRole(required(body, "role")),
-    });
-    return { ok: true };
-  },
-  "members/remove": async ({ caller, body, options }) => {
-    const { store } = options;
-    const { userId } = caller;
-    const org = scopedOrg(caller, optional(body, "org"));
-    await removeMember(store, userId, { org, email: required(body, "email") });
-    return { ok: true };
-  },
+  [controlRouteKey(memberOperations.listMembers.route)]: memberRoute(
+    memberOperations.listMembers,
+    ({ caller, options }, { org }) => listMembers(options.store, caller.userId, org),
+  ),
+  [controlRouteKey(memberOperations.addMember.route)]: memberRoute(
+    memberOperations.addMember,
+    async ({ caller, options }, { org, email, role }) => ({
+      member: await addMember(options.store, caller.userId, { org, email, role: role ?? "member" }),
+    }),
+  ),
+  [controlRouteKey(memberOperations.setMemberRole.route)]: memberRoute(
+    memberOperations.setMemberRole,
+    async ({ caller, options }, input) => {
+      await setMemberRole(options.store, caller.userId, input);
+      return { ok: true };
+    },
+  ),
+  [controlRouteKey(memberOperations.removeMember.route)]: memberRoute(
+    memberOperations.removeMember,
+    async ({ caller, options }, input) => {
+      await removeMember(options.store, caller.userId, input);
+      return { ok: true };
+    },
+  ),
   "org/provider/status": ({ caller, body, options }) => orgProviderStatus(options.store, caller, optional(body, "org")),
   "org/provider/connect": ({ caller, body, options }) =>
     connectOrgProvider(
