@@ -11,6 +11,7 @@ test("fresh disk proof gates allocating work at the floor but never gates cleanu
     {
       async create() {
         effects.push("create");
+        return { machineId: "a".repeat(64) };
       },
       async resume() {
         effects.push("resume");

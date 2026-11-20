@@ -8,7 +8,11 @@ import {
   parseDockerHostJob,
 } from "../../core/src/docker-host-job.ts";
 import type { DockerHostPollResponse } from "../../core/src/docker-host-wire.ts";
-import { DockerMachineError, type DockerMachineRequest } from "../../core/src/docker-machine.ts";
+import {
+  type createDockerMachineExecutor,
+  DockerMachineError,
+  type DockerMachineRequest,
+} from "../../core/src/docker-machine.ts";
 import type { DockerSandboxLimits } from "../../core/src/docker-resource-policy.ts";
 import {
   DockerSnapshotBaselineError,
@@ -30,9 +34,10 @@ export type Receipt = {
   expiryReported?: true;
   expiryOutputsPending?: true;
 } & (
-  | { operation: "create" | "stop" | "delete" }
+  | { operation: "stop" | "delete" }
+  | { operation: "create"; machineId?: string }
   | { operation: "bootstrap" | "resume" | "deletePhysical"; inputHash: string }
-  | { operation: "restore"; inputHash: string; predecessorKey: string }
+  | { operation: "restore"; inputHash: string; predecessorKey: string; machineId?: string }
   | {
       operation: "buildSnapshot";
       inputHash: string;
@@ -60,6 +65,7 @@ export type State = {
     baselineVersion?: number | null,
     baselineTool?: SnapshotBaselineTool | null,
     missingRefIndex?: number | null,
+    machineId?: string,
   ][];
   cleanupLimit?: number;
   retention?: {
@@ -102,6 +108,11 @@ export interface Api {
   claim?(state: State, requestId: string, accepted: boolean): Promise<void>;
   cleaned?(state: State, requestId: string, reason?: "retention_elapsed" | "disk_pressure"): Promise<void>;
 }
+type AllocationIdentity = Pick<
+  Awaited<ReturnType<ReturnType<typeof createDockerMachineExecutor>["create"]>>,
+  "machineId"
+>;
+
 export interface Executor {
   diskFreeBytes?(): Promise<number | null>;
   cleanupImages?(): Promise<void>;
@@ -115,8 +126,8 @@ export interface Executor {
   restore?(
     request: DockerMachineRequest,
     predecessor: Extract<Job, { operation: "restore" }>["predecessor"],
-  ): Promise<unknown>;
-  create(request: DockerMachineRequest): Promise<unknown>;
+  ): Promise<AllocationIdentity>;
+  create(request: DockerMachineRequest): Promise<AllocationIdentity>;
   stop(request: DockerMachineRequest): Promise<unknown>;
   delete(request: DockerMachineRequest, target?: { scope: "physical-only"; machineId: string }): Promise<unknown>;
   stopIfExpired(request: DockerMachineRequest): Promise<unknown>;
@@ -883,7 +894,11 @@ async function admitLocked(
         await executor.startRuntime(receipt.request, job.bootstrap);
       } else if (receipt.operation === "restore") {
         if (job.operation !== "restore" || !executor.restore) throw Error("Restore unavailable");
-        await executor.restore(receipt.request, job.predecessor);
+        const { machineId } = await executor.restore(receipt.request, job.predecessor);
+        receipt.machineId = machineId;
+      } else if (receipt.operation === "create") {
+        const { machineId } = await executor.create(receipt.request);
+        receipt.machineId = machineId;
       } else if (receipt.operation === "deletePhysical") {
         if (job.operation !== "deletePhysical") throw Error("Changed host job");
         await executor.delete(receipt.request, { scope: "physical-only", machineId: job.machineId });
@@ -1004,6 +1019,7 @@ async function admitLocked(
         ...(old[8] ? { baselineVersion: old[8] } : {}),
         ...(old[9] ? { baselineTool: old[9] } : {}),
         ...(old[10] ? { missingRefIndex: old[10] } : {}),
+        ...(old[11] ? { machineId: old[11] } : {}),
       } as Receipt;
       await api.result(state, replay);
       return "worked";
@@ -1134,7 +1150,7 @@ export function compactReceipts(state: State): void {
       !covered.has(generationKey(receipt.request))
     )
       return true;
-    retired.push([
+    const compacted: NonNullable<State["retired"]>[number] = [
       receipt.requestId,
       digest(
         JSON.stringify([receipt.operation, fingerprint(receipt), "inputHash" in receipt ? receipt.inputHash : null]),
@@ -1148,7 +1164,10 @@ export function compactReceipts(state: State): void {
       receipt.operation === "buildSnapshot" ? (receipt.baselineVersion ?? null) : null,
       receipt.operation === "buildSnapshot" ? (receipt.baselineTool ?? null) : null,
       receipt.operation === "buildSnapshot" ? (receipt.missingRefIndex ?? null) : null,
-    ]);
+    ];
+    if ((receipt.operation === "create" || receipt.operation === "restore") && receipt.machineId)
+      compacted[11] = receipt.machineId;
+    retired.push(compacted);
     return false;
   });
 }
