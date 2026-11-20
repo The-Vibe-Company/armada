@@ -38,14 +38,12 @@ test("named profiles isolate sessions, logout and preferences while retaining th
         return Response.json({ sandboxes: [] });
       },
     };
-    expect(await run(["--profile", "staging", "list", "--json"], io, { auth })).toBe(0);
+    expect(await run(["--profile", "staging", "ls", "--json"], io, { auth })).toBe(0);
     expect(calls).toEqual(["https://stage.example/api/v1/sandbox/list"]);
-    expect(await run(["list", "--json"], io, { auth: { ...auth, env: { ...env, ARMADA_PROFILE: "staging" } } })).toBe(
-      0,
-    );
+    expect(await run(["ls", "--json"], io, { auth: { ...auth, env: { ...env, ARMADA_PROFILE: "staging" } } })).toBe(0);
     expect(calls).toHaveLength(2);
     expect(
-      await run(["--profile=staging", "list"], io, {
+      await run(["--profile=staging", "ls"], io, {
         auth: { ...auth, env: { ...env, ARMADA_URL: "https://wrong.example" } },
       }),
     ).toBe(2);
@@ -74,12 +72,12 @@ test("profile selection overrides the environment and rejects unsafe or unconfig
         throw new Error("Must not request");
       },
     };
-    expect(await run(["--profile", "chosen", "list"], io, { auth })).toBe(2);
+    expect(await run(["--profile", "chosen", "ls"], io, { auth })).toBe(2);
     expect(errors).toContain("--profile chosen login --url");
     for (const name of ["../other", "", "a/b", ".", "x".repeat(65)]) {
-      expect(await run([`--profile=${name}`, "list"], io, { auth })).toBe(2);
+      expect(await run([`--profile=${name}`, "ls"], io, { auth })).toBe(2);
     }
-    expect(await run(["--profile", "one", "--profile", "two", "list"], io, { auth })).toBe(2);
+    expect(await run(["--profile", "one", "--profile", "two", "ls"], io, { auth })).toBe(2);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

@@ -195,21 +195,21 @@ test("CLI list matches scoped web filters, exact totals and stable pages with sa
     await f.seed(36, "ready", "codex", me, "org", sid(100), secondOrg);
     await f.seed(37, "ready", "codex", other, "org", sid(101), alienOrg);
     await f.seed(38, "ready", "codex", me, "org", modalGolden, org, "modal");
-    const defaultList = await f.cli(["list", "--json"]);
+    const defaultList = await f.cli(["ls", "--json"]);
     expect(defaultList.code).toBe(0);
     const defaultEnvelope = JSON.parse(defaultList.out);
     expect(Object.keys(defaultEnvelope)).toEqual(["sandboxes"]);
     expect(defaultEnvelope.sandboxes).toHaveLength(25);
-    const emptyDefault = await f.cli(["list", "--json", "--golden", sid(100)]);
+    const emptyDefault = await f.cli(["ls", "--json", "--golden", sid(100)]);
     expect(emptyDefault.code).toBe(0);
     expect(JSON.parse(emptyDefault.out)).toEqual({ sandboxes: [] });
-    const first = await f.cli(["list", "--json", "--page-info"]);
+    const first = await f.cli(["ls", "--json", "--page-info"]);
     expect(first.code).toBe(0);
     const page = JSON.parse(first.out);
     expect(page).toMatchObject({ total: 35, page: 1, limit: 25, hasMore: true, nextPage: 2 });
     expect(page.sandboxes.map((s: { id: string }) => s.id)).toEqual(Array.from({ length: 25 }, (_, n) => sid(n + 1)));
     expect(f.requests.at(-1)).toMatchObject({ path: "/api/v1/sandbox/list", body: { org } });
-    const secondResponse = await f.cli(["list", "--json", "--page-info", "--page", "2"]);
+    const secondResponse = await f.cli(["ls", "--json", "--page-info", "--page", "2"]);
     expect(secondResponse.code).toBe(0);
     const second = JSON.parse(secondResponse.out);
     expect(second).toMatchObject({ total: 35, page: 2, limit: 25, hasMore: false, nextPage: null });
@@ -217,27 +217,23 @@ test("CLI list matches scoped web filters, exact totals and stable pages with sa
       [26, 27, 28, 29, 30, 31, 34, 35, 38, 32].map(sid),
     );
     expect(
-      JSON.parse((await f.cli(["list", "--json", "--status", "deleted"])).out).sandboxes.map(
-        (s: { id: string }) => s.id,
-      ),
+      JSON.parse((await f.cli(["ls", "--json", "--status", "deleted"])).out).sandboxes.map((s: { id: string }) => s.id),
     ).toEqual([sid(33)]);
     expect(
-      JSON.parse((await f.cli(["list", "--json", "--harness", "claude"])).out).sandboxes.map(
-        (s: { id: string }) => s.id,
-      ),
+      JSON.parse((await f.cli(["ls", "--json", "--harness", "claude"])).out).sandboxes.map((s: { id: string }) => s.id),
     ).toEqual([sid(31), sid(34), sid(35)]);
     expect(
       JSON.parse(
-        (await f.cli(["list", "--json", "--agent", "codex", "--golden", secondGolden, "--owner", other])).out,
+        (await f.cli(["ls", "--json", "--agent", "codex", "--golden", secondGolden, "--owner", other])).out,
       ).sandboxes.map((s: { id: string }) => s.id),
     ).toEqual([sid(32)]);
-    const mine = JSON.parse((await f.cli(["list", "--json", "--page-info", "--owner", "me", "--limit", "200"])).out);
+    const mine = JSON.parse((await f.cli(["ls", "--json", "--page-info", "--owner", "me", "--limit", "200"])).out);
     expect(mine.total).toBe(32);
     expect(mine.sandboxes).toHaveLength(32);
     const filtered = JSON.parse(
       (
         await f.cli([
-          "list",
+          "ls",
           "--json",
           "--page-info",
           "--status",
@@ -259,13 +255,11 @@ test("CLI list matches scoped web filters, exact totals and stable pages with sa
     expect(filtered.sandboxes.map((s: { id: string }) => s.id)).toEqual(
       [21, 22, 23, 24, 25, 26, 27, 28, 29, 30].map(sid),
     );
-    const beyond = JSON.parse(
-      (await f.cli(["list", "--json", "--page-info", "--page", "1000000", "--limit", "1"])).out,
-    );
+    const beyond = JSON.parse((await f.cli(["ls", "--json", "--page-info", "--page", "1000000", "--limit", "1"])).out);
     expect(beyond).toMatchObject({ total: 35, sandboxes: [], hasMore: false, nextPage: null });
-    const foreign = JSON.parse((await f.cli(["list", "--json", "--org", secondOrg])).out);
+    const foreign = JSON.parse((await f.cli(["ls", "--json", "--org", secondOrg])).out);
     expect(foreign.sandboxes.map((s: { id: string }) => s.id)).toEqual([sid(36)]);
-    expect(JSON.parse((await f.cli(["list", "--json", "--page-info", "--golden", sid(100)])).out)).toEqual({
+    expect(JSON.parse((await f.cli(["ls", "--json", "--page-info", "--golden", sid(100)])).out)).toEqual({
       total: 0,
       page: 1,
       limit: 25,
@@ -289,22 +283,22 @@ test("CLI list matches scoped web filters, exact totals and stable pages with sa
       ["--model", "not-a-filter"],
       ["--", "--status", "deleted"],
     ])
-      expect((await f.cli(["list", "--json", ...flags])).code).toBe(2);
+      expect((await f.cli(["ls", "--json", ...flags])).code).toBe(2);
     expect(f.requests).toHaveLength(before);
     const modal =
       page.sandboxes.find((s: { id: string }) => s.id === sid(38)) ??
       second.sandboxes.find((s: { id: string }) => s.id === sid(38));
     expect(modal).toMatchObject({ provider: "modal", providerSandboxId: "physical-38", boatId: null });
     await f.setActor(other);
-    const otherOwner = JSON.parse((await f.cli(["list", "--json", "--owner", "me", "--agent", "claude"])).out);
+    const otherOwner = JSON.parse((await f.cli(["ls", "--json", "--owner", "me", "--agent", "claude"])).out);
     expect(otherOwner.sandboxes.map((s: { id: string }) => s.id)).toEqual([sid(31), sid(34)]);
     await f.setActor(me);
     await f.db.query("delete from members where org_id=$1 and user_id=$2", [org, me]);
-    const revoked = await f.cli(["list", "--json", "--page-info"]);
+    const revoked = await f.cli(["ls", "--json", "--page-info"]);
     expect(revoked.code).not.toBe(0);
     expect(revoked.out).toBe("");
     expect((await f.cli(["org", "use", "none"])).code).toBe(0);
-    const stalePrincipal = JSON.parse((await f.cli(["list", "--json", "--page-info"])).out);
+    const stalePrincipal = JSON.parse((await f.cli(["ls", "--json", "--page-info"])).out);
     expect(stalePrincipal.total).toBe(1);
     expect(stalePrincipal.sandboxes.map((s: { id: string }) => s.id)).toEqual([sid(36)]);
   } finally {

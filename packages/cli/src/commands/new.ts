@@ -171,7 +171,7 @@ In an interactive terminal, bare armada new opens the launcher.
 Pass explicit arguments in scripts.
 A successful launch saves the sandbox ID to .armada/sandbox in the current directory.
 --json emits the launch response on stdout without human launch advice.
-After an uncertain launch, inspect armada list before retrying.
+After an uncertain launch, inspect armada ls before retrying.
 Example: armada new starter --provider modal --agent codex "Inspect the repository" --json
 Example: armada new "Inspect the repository" --provider docker --host workstation --agent codex --org ORG_UUID
 `,

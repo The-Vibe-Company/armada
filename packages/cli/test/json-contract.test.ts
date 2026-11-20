@@ -54,10 +54,10 @@ test("JSON clearing and logout emit only their stable success objects", async ()
 test("human and JSON diagnostics distinguish authentication, server and usage exits", async () => {
   for (const json of [false, true]) {
     for (const [argv, failure, code] of [
-      [["list"], undefined, 3],
-      [["list"], 401, 3],
+      [["ls"], undefined, 3],
+      [["ls"], 401, 3],
       [["template", "list", "--org", "11111111-1111-4111-8111-111111111111"], 401, 3],
-      [["list"], 503, 1],
+      [["ls"], 503, 1],
       [["stop", "sandbox", "--ttl", "4h"], undefined, 2],
     ] as const) {
       const result = await capture([...argv, ...(json ? ["--json"] : [])], failure);

@@ -1,6 +1,6 @@
 # Sandbox usage (#770)
 
-API/MCP status and list (including CLI `armada status` and `armada list --json`)
+API/MCP status and list (including CLI `armada status` and `armada ls --json`)
 include `usage`: `computeSeconds`, `turnCount`, and `turns` with reported
 `inputTokens`, `outputTokens`, `cachedTokens` and model. There are no server
 prices. Usage is interior data: organization metadata-only list readers receive

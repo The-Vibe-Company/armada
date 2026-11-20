@@ -26,7 +26,7 @@ Quick start / common examples:
   armada status --setup
   armada host add --name my-workstation
   armada new
-  armada list
+  armada ls
   armada status SANDBOX_ID
   armada prompt SANDBOX_ID "Continue the task"
   armada events SANDBOX_ID --tail 20
@@ -68,7 +68,7 @@ Usage:
                                            --repo selects the agent's initial working directory, including when idle.
                                            Defaults:
                                            claude claude-opus-5-5 medium, codex gpt-6.2-sol medium, opencode armada/deepseek-flash default
-  armada list [--status STATUS] [--agent|--harness claude|codex|opencode] [--golden UUID] [--owner UUID|me]
+  armada ls [--status STATUS] [--ref REF] [--agent|--harness claude|codex|opencode] [--golden UUID] [--owner UUID|me]
               [--page N] [--limit 1..200] [--org UUID] [--json] [--page-info]
                                            Default page size 25; --json keeps {sandboxes:[...]}; --page-info adds exact totals
   armada mcp sandbox-connections <sandbox-uuid> [--org UUID] [--json]
@@ -233,7 +233,7 @@ In an interactive terminal, bare armada new opens the launcher.
 Pass explicit arguments in scripts.
 A successful launch saves the sandbox ID to .armada/sandbox in the current directory.
 --json emits the launch response on stdout without human launch advice.
-After an uncertain launch, inspect armada list before retrying.
+After an uncertain launch, inspect armada ls before retrying.
 Example: armada new starter --provider modal --agent codex "Inspect the repository" --json
 Example: armada new "Inspect the repository" --provider docker --host workstation --agent codex --org ORG_UUID
 "
@@ -247,20 +247,21 @@ Piped output and --json emit one JSON object per event.
 "
 `;
 
-exports[`armada list help preserves its output 1`] = `
-"Usage: armada list [--status <status>] [--agent <harness> | --harness <harness>]
+exports[`armada ls help preserves its output 1`] = `
+"Usage: armada ls [--status <status>] [--ref REF] [--agent <harness> | --harness <harness>]
   [--golden UUID] [--owner UUID|me] [--page <N>] [--limit <N>] [--org UUID] [--json] [--page-info]
 List visible sandboxes after Armada login and server authorization.
 Status: starting, ready, running, stopping, stopped, failed or deleted.
 Deleted sandboxes are excluded by default; request --status deleted to include them.
 --agent and --harness are aliases; use only one (claude, codex or opencode).
+--ref matches the external reference supplied at launch.
 --golden filters by snapshot UUID. --owner accepts a user UUID or me.
 Page is 1–1000000; limit is 1–200 (default page size 25). This is one page, not all results.
 Human output is a table. --json returns {sandboxes:[...]}; --page-info returns full
 page metadata and exact totals as JSON even without --json.
-Use --org to override a saved selection. Reuse returned IDs with status/logs/send.
-Example: armada list --owner me --page 1 --limit 25 --json
-Example: armada list --org ORG_UUID --page 2 --page-info
+Use --org to override a saved selection. Reuse returned IDs with status, events, or prompt.
+Example: armada ls --owner me --page 1 --limit 25 --json
+Example: armada ls --org ORG_UUID --page 2 --page-info
 "
 `;
 
@@ -271,7 +272,7 @@ Collects one bounded sample and considers up to the last 10 comparable sessions.
 Missing or partial evidence can produce no recommendation; do not treat unknowns as measured headroom.
 This never resizes a running machine or changes defaults; recommendations concern future launches.
 Human output summarizes supported advice or the no-recommendation reason.
-Use --json to inspect the full evidence response. Use a sandbox ID from armada list.
+Use --json to inspect the full evidence response. Use a sandbox ID from armada ls.
 Example: armada advice SANDBOX_UUID --org ORG_UUID --json
 "
 `;
@@ -281,7 +282,7 @@ exports[`armada rm help preserves its output 1`] = `
 Permanently delete a stopped sandbox after Armada login and server authorization.
 Warning: deletion removes the disk AND recovery archives. --yes is required confirmation.
 This is not stop. Inspect status and preserve needed work before deleting.
-Use a sandbox UUID from armada list --json; names are not accepted.
+Use a sandbox UUID from armada ls --json; names are not accepted.
 Example: armada rm SANDBOX_UUID --yes --org ORG_UUID --json
 "
 `;
@@ -292,7 +293,7 @@ Request a sandbox lifetime extension after Armada login and server authorization
 TTL is measured from now, not added to the old deadline, and must extend it.
 Duration is a positive integer with optional s, m, h or d; a bare number is seconds.
 Examples: 90, 90s, 30m, 4h, 2d. Server/provider state and lifetime limits still apply.
-Use a sandbox UUID from armada list --json. Output is JSON even without --json.
+Use a sandbox UUID from armada ls --json. Output is JSON even without --json.
 Example: armada extend SANDBOX_UUID --ttl 30m --org ORG_UUID --json
 "
 `;
@@ -305,7 +306,7 @@ server, GitHub, hosts and model accounts. Use --setup to inspect setup from a
 sandbox workspace. Setup reports metadata and exits 1 if a check fails.
 An explicit ID, ARMADA_SANDBOX or .armada/sandbox selects sandbox status.
 Default: recorded state, without a provider probe. --live reads provider/prompt details.
-Use a sandbox ID from armada list --json. Output is JSON even without --json.
+Use a sandbox ID from armada ls --json. Output is JSON even without --json.
 Recorded state is not proof of current provider readiness.
 Example: armada status --setup --org ORG_UUID --json
 Example: armada status SANDBOX_UUID --org ORG_UUID --json
@@ -316,7 +317,7 @@ Example: armada status SANDBOX_UUID --live --org ORG_UUID
 exports[`armada detail help preserves its output 1`] = `
 "Usage: armada detail <sandbox-id> [--org UUID] [--json]
 Read detailed sandbox information after Armada login and server authorization.
-Use a sandbox ID from armada list --json. Output is JSON even without --json.
+Use a sandbox ID from armada ls --json. Output is JSON even without --json.
 For recorded status without a provider probe, use armada status instead.
 Example: armada detail SANDBOX_UUID --org ORG_UUID --json
 "
@@ -326,7 +327,7 @@ exports[`armada recovery help preserves its output 1`] = `
 "Usage: armada recovery <sandbox-id> [--org UUID] [--json]
 Read sandbox work-recovery information after Armada login and server authorization.
 Output is JSON even without --json. This is not credential-account rebinding.
-Use a sandbox ID from armada list --json.
+Use a sandbox ID from armada ls --json.
 Example: armada recovery SANDBOX_UUID --org ORG_UUID --json
 "
 `;
@@ -356,7 +357,7 @@ exports[`armada wait help preserves its output 1`] = `
 "Usage: armada wait <sandbox-id> [--timeout <seconds>] [--org UUID] [--json]
 Wait for sandbox activity through the server after Armada login and authorization.
 Timeout is an integer from 0 to 600 seconds (default 60); zero is accepted.
-Use a sandbox ID from armada list --json. Output is JSON even without --json.
+Use a sandbox ID from armada ls --json. Output is JSON even without --json.
 Inspect the returned state; a bounded wait is not proof that your task is complete.
 Example: armada wait SANDBOX_UUID --timeout 60 --org ORG_UUID --json
 "

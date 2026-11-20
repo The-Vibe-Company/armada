@@ -232,9 +232,9 @@ The exit code remains the script's success signal. Exit 2 means a usage/invalid-
 failure. Exit 3 means authentication is required: any command exits 3 with
 `unauthorized` when there is no valid session or service token (or the API
 answers HTTP 401) and no interactive sign-in took place. For example, signed-out
-`armada list` and `armada list --json` exit 3, and so does bare `armada`.
+`armada ls` and `armada ls --json` exit 3, and so does bare `armada`.
 Exit 1 means access denial, state, unsupported operation or service failure.
-Check `armada list --json` for visible IDs and state; verify your org selection
+Check `armada ls --json` for visible IDs and state; verify your org selection
 with `armada org current` or pass `--org UUID`.
 
 Sandbox mutations are not replayed after transport/server failures or state
@@ -242,7 +242,7 @@ conflicts. Existing authentication recovery may refresh a personal session and
 retry once after HTTP401. On a transport/server failure,
 check its outcome before retrying: a prompt or stop may already have been
 accepted. If status/detail cannot be read during a transition, inspect
-`armada list --json` instead; this guidance does not repair a stuck provider
+`armada ls --json` instead; this guidance does not repair a stuck provider
 lifecycle. `recovery --help` also works before login.
 
 Scripts sending a bearer directly to `/mcp` do not use the CLI session store or its refresh/retry path. They must manage their own credential lifecycle: refresh OAuth credentials or renew expiring credentials, and replace revoked service tokens.

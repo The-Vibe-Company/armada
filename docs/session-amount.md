@@ -50,7 +50,7 @@ with the sandbox ID from the launch receipt.
 armada new MODAL_SNAPSHOT --provider modal --agent claude "Reply OK"
 armada wait SANDBOX_UUID --json
 armada status SANDBOX_UUID --json | jq '{cost:.usage.cost, turns:.usage.turns}'
-armada list --json
+armada ls --json
 ```
 
 Repeat with `--agent codex`. Read the same IDs with MCP `status` and

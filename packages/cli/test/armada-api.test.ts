@@ -224,7 +224,7 @@ for (const failure of ["500", "502", "network", "timeout"] as const) {
     const client = await createArmadaApiClient(state);
     const error = await client.request(`/api/v1/sandbox/launch`, { method: "POST" }).catch((error) => error);
     expect(error).toBeInstanceOf(AuthError);
-    expect((error as Error).message).toContain("Run armada list to check before retrying.");
+    expect((error as Error).message).toContain("Run armada ls to check before retrying.");
     expect((error as Error).message).not.toContain(token);
     expect(attempts).toBe(1);
   });

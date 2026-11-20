@@ -132,10 +132,10 @@ export async function createArmadaApiClient(
             ? TEMPLATE_LAUNCH_UNKNOWN
             : result.timedOut
               ? `The server did not answer in time; the operation may have been accepted.${
-                  isSandboxLaunchPath(path) ? " Run armada list to check before retrying." : ""
+                  isSandboxLaunchPath(path) ? " Run armada ls to check before retrying." : ""
                 }`
               : isSandboxLaunchPath(path)
-                ? "Launch outcome unknown. Run armada list to check before retrying."
+                ? "Launch outcome unknown. Run armada ls to check before retrying."
                 : "Armada could not reach the server.",
           "unavailable",
         );
@@ -152,7 +152,7 @@ export async function createArmadaApiClient(
           throw new ArmadaApiError(
             "unavailable",
             response.status,
-            "Armada returned an invalid success receipt. The operation may have been accepted; inspect its state before retrying. For sandbox operations, run armada status <id> or armada list. Do not replay a mutation blindly.",
+            "Armada returned an invalid success receipt. The operation may have been accepted; inspect its state before retrying. For sandbox operations, run armada status <id> or armada ls. Do not replay a mutation blindly.",
           );
         return payload;
       }
@@ -271,7 +271,7 @@ export async function createArmadaApiClient(
           );
       }
       if (isSandboxLaunchPath(path) && response.status >= 500)
-        throw new AuthError("Launch outcome unknown. Run armada list to check before retrying.", "unavailable");
+        throw new AuthError("Launch outcome unknown. Run armada ls to check before retrying.", "unavailable");
       const sandboxError = sandboxFailure(path, response.status, failureCode, apiMessage(payload, ""));
       if (sandboxError)
         throw new ArmadaApiError(

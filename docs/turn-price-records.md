@@ -75,7 +75,7 @@ with the sandbox ID from the launch receipt.
 armada new MODAL_SNAPSHOT --provider modal --agent claude "Reply OK"
 armada wait SANDBOX_UUID
 armada status SANDBOX_UUID --json
-armada list --json
+armada ls --json
 ```
 
 Expect native counters retained and newly collected shares explicitly unpriced

@@ -10,7 +10,7 @@ export function sandboxFailure(path: string, status: number, serverCode: unknown
   )
     return undefined;
   if (status === 401) return undefined;
-  const inspect = "Run armada list --json to find a visible sandbox ID and check its state and selected organization.";
+  const inspect = "Run armada ls --json to find a visible sandbox ID and check its state and selected organization.";
   const help: Record<string, string> = {
     sandbox_terminal: `This sandbox cannot accept this operation. Start a new sandbox on the same branch. ${inspect}`,
     not_found: `Sandbox not found or not accessible. ${inspect}`,

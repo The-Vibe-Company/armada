@@ -47,6 +47,7 @@ The rehearsed 2.57.2 binary below uses `launch`.
 
 ```bash
 read -r -p 'Sandbox creation command from pinned CLI help: ' sandbox_create_command
+read -r -p 'Sandbox listing command from pinned CLI help: ' sandbox_list_command
 ```
 
 For the Modal path, use the listing verb shown by the pinned version's snapshot
@@ -77,7 +78,7 @@ command's output, then match the sandbox by launch start time.
 ```bash
 staging_armada snapshot "$snapshot_list_verb" --org "$staging_org" --provider modal --json
 read -r -p 'Staging Modal snapshot UUID: ' snapshot_id
-staging_armada list --org "$staging_org" --golden "$snapshot_id" --owner me --json
+staging_armada ls --org "$staging_org" --golden "$snapshot_id" --owner me --json
 ```
 
 ```bash
