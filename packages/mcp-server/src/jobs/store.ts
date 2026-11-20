@@ -6,6 +6,7 @@ import {
   NATIVE_DISPATCH_UNCERTAIN,
   QUEUED_DISPATCH_EVIDENCE,
   QUEUED_TURN_CANCELLED,
+  RUNTIME_LANE,
   resetAbandonedTurn,
 } from "../account-turn-dispatch.ts";
 import { deferTransactionWake, runtimeWakes } from "../wake-bus.ts";
@@ -121,7 +122,7 @@ export function createJobsStore(sql: Sql, encryptionKey?: string) {
           );
           if (rows.length) reset = await resetAbandonedTurn(tx, sandboxId, requestId);
         }
-        if (receipt.state === "queued" || (reset && sandbox?.generation !== job.generation)) {
+        if (receipt.state === "queued" || sandbox?.generation !== job.generation) {
           const {
             rows: [updated],
           } = await tx.query<{ generation: string }>(
@@ -132,9 +133,13 @@ export function createJobsStore(sql: Sql, encryptionKey?: string) {
                attempts = case when $7::boolean then j.attempts - 1 else j.attempts end
              from public.sandboxes s join public.account_turn_queue q on q.sandbox_id = s.id
              where ${fence} and (j.generation = $4 or $6) and q.request_id = $5 and s.id = j.sandbox_id
-               and s.lifecycle_generation > j.generation and s.status in ('ready','running')
+               and s.lifecycle_generation > j.generation
                and s.deleted_at is null and s.stop_requested_at is null and s.expires_at > now()
-               and not ${QUEUED_DISPATCH_EVIDENCE}
+               and ((q.state = 'queued' and s.status in ('ready','running') and not ${QUEUED_DISPATCH_EVIDENCE})
+                 or (q.state = 'dispatching' and ${RUNTIME_LANE}
+                   and q.dispatch_until <= clock_timestamp()
+                   and s.status in ('starting','ready','running') and s.activity_lease_id = q.request_id
+                   and q.dispatch_generation in (s.lifecycle_generation, s.lifecycle_generation - 1)))
              returning j.generation::text`,
             [...claim, requestId, retiring, phase === "before_handler"],
           );

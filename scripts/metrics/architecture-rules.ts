@@ -1,9 +1,9 @@
 // Shared definitions for the measurement and the architecture ratchets (#2855, #2859).
-export const sourceRoots = /^(?:packages|apps|scripts)\//;
-export const sourceExtensions = /\.(?:[cm]?[jt]sx?|swift|py|sh|css)$/;
+const sourceRoots = /^(?:packages|apps|scripts)\//;
+const sourceExtensions = /\.(?:[cm]?[jt]sx?|swift|py|sh|css)$/;
 export const testPaths =
   /(?:^|\/)(?:__tests__|Tests|[^/]+Tests|test|tests|e2e|fixtures|__fixtures__)(?:\/|$)|\.(?:test|spec|release)\./;
-export const generatedPaths =
+const generatedPaths =
   /(?:^|\/)(?:generated|Generated)\/|(?:^|\/)(?:database\.types\.ts|next-env\.d\.ts)$|\.generated\./;
 
 export function isNonTestSource(path: string) {

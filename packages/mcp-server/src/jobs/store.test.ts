@@ -165,6 +165,13 @@ test.each([
   ["native request started without a legacy window", 2, "request", null, false, true],
   ["native legacy window still open", 2, "request", "infinity", false, false],
   ["runtime request started", 2, "request", "-infinity", true, false],
+  ["runtime request advanced generation", 3, "request", "-infinity", true, false],
+  ["runtime request already at dispatch generation", 3, "request", "-infinity", true, false],
+  ["runtime request advanced after claim", 3, "request", "-infinity", true, false],
+  ["runtime retarget interrupted before commit", 3, "request", "-infinity", true, false],
+  ["runtime request advanced beyond dispatch generation", 4, "request", "-infinity", true, false],
+  ["runtime request advanced with an open window", 3, "request", "infinity", true, false],
+  ["different runtime request advanced generation", 3, "other", "-infinity", true, false],
   ["runtime command persisted", 2, "command", "-infinity", true, false],
   ["runtime legacy window still open", 2, null, "infinity", true, false],
   ["runtime dispatch has no evidence", 2, null, "-infinity", true, false],
@@ -194,13 +201,18 @@ test.each([
   await db.query(
     `update account_turn_queue set state='dispatching', dispatch_generation=$4, dispatch_until=$2,
        native_prompt_id=$3 where request_id=$1`,
-    [requestId, until, activity === "prompt" ? "prior-prompt" : null, scenario.startsWith("older job") ? 3 : 2],
+    [
+      requestId,
+      until,
+      activity === "prompt" ? "prior-prompt" : null,
+      scenario.startsWith("older job") || scenario === "runtime request already at dispatch generation" ? 3 : 2,
+    ],
   );
   await db.query(`update sandboxes set lifecycle_generation=$2, activity_lease_id=$3, activity_until=$4 where id=$1`, [
     sandboxId,
-    generation,
-    activity === "request" ? requestId : null,
-    activity === "request" ? "infinity" : null,
+    scenario === "runtime request advanced after claim" ? 2 : generation,
+    activity === "request" ? requestId : activity === "other" ? crypto.randomUUID() : null,
+    activity === "request" || activity === "other" ? "infinity" : null,
   ]);
   await db.query("insert into account_agent_reservations (sandbox_id, account_id) values ($1, $2)", [
     sandboxId,
@@ -221,19 +233,19 @@ test.each([
         [id],
       )
     ).rows;
-  const interrupted = scenario === "native reset interrupted before commit";
+  const interrupted = scenario.endsWith("interrupted before commit");
   if (interrupted) {
     const faultySql = sqlOver({
       unsafe: async (query, params) => (await db.query(query, params)).rows,
       begin: (work) =>
         db.transaction(async (tx) => {
           await work({ unsafe: async (query, params) => (await tx.query(query, params)).rows });
-          throw new Error("Interrupted before reset commit.");
+          throw new Error("Interrupted before reconciliation commit.");
         }),
     });
     await expect(
       createJobsStore(faultySql, btoa("\0".repeat(32))).claim("turn_dispatch", crypto.randomUUID(), 30, 1),
-    ).rejects.toThrow("Interrupted before reset commit.");
+    ).rejects.toThrow("Interrupted before reconciliation commit.");
     expect(await outcome()).toEqual([
       {
         job_state: "leased",
@@ -243,11 +255,20 @@ test.each([
         reserved: true,
       },
     ]);
+    expect((await db.query("select generation::text from jobs where id=$1", [id])).rows).toEqual([{ generation: "2" }]);
     await db.query("update jobs set lease_until='-infinity' where id=$1", [id]);
   }
   const owner = crypto.randomUUID();
-  const claim = await store.claim("turn_dispatch", owner, 30, 1);
-  const reset = interrupted || scenario.endsWith("dispatch has no evidence") || scenario.startsWith("older job");
+  let claim = await store.claim("turn_dispatch", owner, 30, 1);
+  if (scenario === "runtime request advanced after claim") {
+    await db.query("update sandboxes set lifecycle_generation=$2 where id=$1", [sandboxId, generation]);
+    expect(await store.inspect(claim!, owner)).toBe("stale");
+    await store.retireStale(claim!, owner, "before_handler");
+    claim = await store.claim("turn_dispatch", owner, 30, 1);
+    expect(claim?.attempts).toBe(1);
+  }
+  const reset =
+    (interrupted && !runtime) || scenario.endsWith("dispatch has no evidence") || scenario.startsWith("older job");
   expect(await outcome()).toEqual([
     {
       job_state: uncertain ? "failed" : "leased",
@@ -257,9 +278,17 @@ test.each([
       reserved: !reset,
     },
   ]);
-  if (reset) {
+  if (
+    reset ||
+    scenario === "runtime request advanced generation" ||
+    scenario === "runtime request already at dispatch generation" ||
+    scenario === "runtime request advanced after claim" ||
+    (interrupted && runtime)
+  ) {
     expect(claim).toMatchObject({ id, generation: String(generation), payload: { requestId } });
     expect(await store.inspect(claim!, owner)).toBe("dispatch");
+  } else if (runtime && generation > 2) {
+    expect(await store.inspect(claim!, owner)).toBe("stale");
   }
 });
 
