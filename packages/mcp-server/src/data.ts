@@ -818,7 +818,10 @@ export function createSqlData(
           if (
             patch.expectedGeneration === undefined ||
             reason === undefined ||
-            (patch.status !== "failed" && patch.status !== "stopped") ||
+            (patch.status !== "failed" &&
+              patch.status !== "stopped" &&
+              patch.status !== "ready" &&
+              patch.status !== "running") ||
             (patch.status === "stopped" && !patch.stoppedAt)
           )
             throw new DataError("Provider observation publication requires generation and state evidence.");

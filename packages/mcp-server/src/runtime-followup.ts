@@ -8,7 +8,7 @@ import { runtimeAgentFor } from "./runtime-agent.ts";
 import type { createRuntimeCommands } from "./runtime-commands.ts";
 import { createRuntimeEnrolments, runtimeTransaction } from "./runtime-enrolment.ts";
 import type { RuntimeMcp } from "./runtime-mcp.ts";
-import type { RuntimeResume, RuntimeWakeHandoff } from "./runtime-resume.ts";
+import type { RuntimeResume, RuntimeTurnClaim } from "./runtime-resume.ts";
 import { appendConversation } from "./sandbox-activity.ts";
 import type { RestoreScopedRuntimeAccess } from "./sandbox-armada-access.ts";
 import { refuseConversationSelector } from "./sandbox-conversation.ts";
@@ -37,7 +37,7 @@ export function createRuntimeFollowup(
 ) {
   const authority = createRuntimeEnrolments(sql, key);
   const environment = createGoldenRuntimeEnvironment(sql, key);
-  return async (caller: Caller, input: RuntimeFollowupInput, handoffWake?: RuntimeWakeHandoff) => {
+  return async (caller: Caller, input: RuntimeFollowupInput, claim?: RuntimeTurnClaim) => {
     refuseConversationSelector(input);
     const requestId = input.request_id?.toLowerCase();
     if (!requestId || !/^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/.test(requestId) || !input.prompt.trim())
@@ -72,11 +72,7 @@ export function createRuntimeFollowup(
       if (previous)
         throw new VaultError("conflict", "This request_id belongs to an earlier follow-up; use a new ID for new work.");
       if (!resume) throw new VaultError("unavailable", "Runtime wake-on-send is unavailable.");
-      return resume(
-        caller,
-        { id: found.id, request_id: requestId, runtimeVersion: 1, prompt: input.prompt },
-        handoffWake,
-      );
+      return resume(caller, { id: found.id, request_id: requestId, runtimeVersion: 1, prompt: input.prompt }, claim);
     }
     if (
       !found.model ||
@@ -100,6 +96,10 @@ export function createRuntimeFollowup(
       model: found.model,
       reasoningEffort: found.reasoningEffort,
     });
+    const assertClaim = async (tx: Sql) => {
+      if (claim && !(await claim.canDispatch(tx)))
+        throw new VaultError("conflict", "Queued runtime turn lease is no longer current.");
+    };
     // Read-only probe before admission. Runner still owns the final busy check.
     const previous = await commands.result(caller.userId, found.id, commandId);
     if (previous.state === "missing" && found.taskPromptId) {
@@ -108,7 +108,14 @@ export function createRuntimeFollowup(
     }
     const configuredEpoch =
       previous.state === "missing" && (found.provider === "modal" || found.provider === "boat")
-        ? await environment.deliver(found.provider, { userId: caller.userId, orgId: found.orgId }, found.id)
+        ? await environment.deliver(
+            found.provider,
+            { userId: caller.userId, orgId: found.orgId },
+            found.id,
+            undefined,
+            undefined,
+            claim ? assertClaim : undefined,
+          )
         : undefined;
     if (!sql.transaction) throw new VaultError("unavailable", "Runtime send requires transactional admission.");
     const admitted = await sql.transaction(async (tx) => {
@@ -116,6 +123,7 @@ export function createRuntimeFollowup(
       // Reuse this transaction; never hold its locks across a second connection or runtime I/O.
       const local = runtimeTransaction(tx);
       return createRuntimeEnrolments(local, key).withOwner(found.id, caller.userId, async (locked, scope) => {
+        await assertClaim(locked);
         const current = await createSqlData(locked)(caller).sandboxes.get(found.id);
         const lease = (
           await locked.query<{ activity_lease_id: string | null; reconciling: boolean }>(
@@ -178,6 +186,7 @@ export function createRuntimeFollowup(
             activityToken: requestId,
             expectedGeneration: current.lifecycleGeneration,
           });
+          await assertClaim(locked);
           return { current, epoch: scope.epoch, replay: false };
         }
         if (lease.activity_lease_id || saved)
@@ -191,6 +200,7 @@ export function createRuntimeFollowup(
         });
         const active = await createSqlData(locked)(caller).sandboxes.get(found.id);
         if (!active) throw new VaultError("not_found", "Runtime admission disappeared.");
+        await assertClaim(locked);
         return { current: active, epoch: scope.epoch, replay: false };
       });
     });

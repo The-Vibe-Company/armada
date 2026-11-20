@@ -7,6 +7,7 @@ const member = crypto.randomUUID();
 const org = crypto.randomUUID();
 const otherOrg = crypto.randomUUID();
 const account = crypto.randomUUID();
+const orgAccount = crypto.randomUUID();
 const fallback = crypto.randomUUID();
 const sandbox = crypto.randomUUID();
 
@@ -26,6 +27,11 @@ beforeAll(async () => {
     [account, fallback, owner],
   );
   await db.query(
+    `insert into public.credentials(id,scope,owner_id,created_by,kind,value_enc,is_default,version,max_agents,model_limits,name)
+     values($1,'org',$2,$3,'claude_oauth',decode('1234','hex'),true,7,3,'{"model":2}','Team Account')`,
+    [orgAccount, org, owner],
+  );
+  await db.query(
     `insert into public.agent_defaults(user_id,harness,credential_id,credential_ids,model)
      values($1,'codex',$2,array[$2::uuid,$3::uuid],'model')`,
     [owner, account, fallback],
@@ -40,16 +46,24 @@ function share(actor = owner) {
   return db.query("select public.share_model_account($1,$2,$3) as id", [actor, account, org]);
 }
 
-async function bindSandbox(orgId: string) {
+async function bindSandbox(orgId: string, { sandboxOwner = owner, credential = account, stopped = false } = {}) {
   const golden = crypto.randomUUID();
   await db.query(
     "insert into goldens(id,org_id,name,boat_snapshot_id,visibility,owner_id) values($1,$2,'fixture','snapshot','org',$3)",
     [golden, orgId, owner],
   );
   await db.query(
-    `insert into sandboxes(id,boat_id,golden_id,org_id,owner_id,harness,status,credential_id,credential_version)
-     values($1,'fixture',$2,$3,$4,'codex','ready',$5,7)`,
-    [sandbox, golden, orgId, owner, account],
+    `insert into sandboxes(id,boat_id,golden_id,org_id,owner_id,harness,status,credential_id,credential_version,stopped_at)
+     values($1,'fixture',$2,$3,$4,$5,$6,$7,7,case when $6::sandbox_status='stopped' then now() end)`,
+    [
+      sandbox,
+      golden,
+      orgId,
+      sandboxOwner,
+      credential === orgAccount ? "claude" : "codex",
+      stopped ? "stopped" : "ready",
+      credential,
+    ],
   );
 }
 
@@ -140,5 +154,109 @@ test("the service role cannot bypass the share transaction by updating the table
   `);
   await expect(
     db.query("update public.credentials set scope='org', owner_id=$2 where id=$1", [account, org]),
+  ).rejects.toMatchObject({ code: "23514" });
+});
+
+function makePrivate(actor = owner) {
+  return db.query("select public.make_model_account_private($1,$2,$3) as id", [actor, orgAccount, org]);
+}
+
+test("privatization preserves the creator's binding and clears organization account defaults", async () => {
+  await bindSandbox(org, { credential: orgAccount });
+  await db.query(
+    `insert into public.agent_defaults(user_id,harness,credential_id,credential_ids,model)
+     values($1,'claude',$3,array[$3::uuid],'model'),($2,'claude',null,array[$3::uuid],'model')`,
+    [owner, member, orgAccount],
+  );
+
+  expect((await makePrivate()).rows).toEqual([{ id: orgAccount }]);
+  expect(
+    (await db.query("select credential_id,credential_version from sandboxes where id=$1", [sandbox])).rows,
+  ).toEqual([{ credential_id: orgAccount, credential_version: 7 }]);
+  expect(
+    (
+      await db.query(
+        `select id,scope,owner_id,created_by,encode(value_enc,'hex') as ciphertext,version,max_agents,model_limits,name,is_default
+         from public.credentials where id=$1`,
+        [orgAccount],
+      )
+    ).rows,
+  ).toEqual([
+    {
+      id: orgAccount,
+      scope: "user",
+      owner_id: owner,
+      created_by: owner,
+      ciphertext: "1234",
+      version: 7,
+      max_agents: 3,
+      model_limits: { model: 2 },
+      name: "Team Account",
+      is_default: false,
+    },
+  ]);
+  expect(
+    (await db.query("select credential_id,credential_ids from public.agent_defaults where harness='claude'")).rows,
+  ).toEqual([
+    { credential_id: null, credential_ids: [] },
+    { credential_id: null, credential_ids: [] },
+  ]);
+});
+
+test("the verified creator needs current organization admin membership", async () => {
+  await db.query("update public.members set role='admin' where org_id=$1 and user_id=$2", [org, member]);
+  await db.query("update public.members set role='member' where org_id=$1 and user_id=$2", [org, owner]);
+  await expect(makePrivate()).rejects.toMatchObject({ code: "42501" });
+});
+
+test("an organization admin cannot make another creator's account private", async () => {
+  await db.query("update public.members set role='admin' where org_id=$1 and user_id=$2", [org, member]);
+  await expect(makePrivate(member)).rejects.toMatchObject({ code: "P0002" });
+});
+
+test("unknown provenance cannot authorize privatization", async () => {
+  await db.query("update public.credentials set created_by=null where id=$1", [orgAccount]);
+  await expect(makePrivate()).rejects.toMatchObject({ code: "P0002" });
+});
+
+test("a live same-kind personal account prevents privatization with an actionable conflict", async () => {
+  await db.query(
+    "insert into public.credentials(scope,owner_id,kind,value_enc) values('user',$1,'claude_oauth',decode('12','hex'))",
+    [owner],
+  );
+  await expect(makePrivate()).rejects.toMatchObject({
+    code: "23505",
+    message: expect.stringContaining("Remove the conflicting account"),
+  });
+});
+
+test("another member's stopped sandbox prevents privatization", async () => {
+  await bindSandbox(org, { sandboxOwner: member, credential: orgAccount, stopped: true });
+  await expect(makePrivate()).rejects.toMatchObject({ code: "55000" });
+});
+
+test("an unpublished reservation prevents privatization", async () => {
+  await db.query("insert into public.account_agent_reservations(account_id,sandbox_id) values($1,$2)", [
+    orgAccount,
+    sandbox,
+  ]);
+  await expect(makePrivate()).rejects.toMatchObject({ code: "55000" });
+});
+
+test.each(["anon", "authenticated", "service_role"])("the private function is ungranted for %s", async (role) => {
+  const { rows } = await db.query(
+    "select has_function_privilege($1, 'public.make_model_account_private(uuid,uuid,uuid)', 'execute') as granted",
+    [role],
+  );
+  expect(rows).toEqual([{ granted: false }]);
+});
+
+test("the service role cannot bypass privatization by updating the table", async () => {
+  await db.exec(`
+    set local role service_role;
+    set local armada.make_model_account_private = 'on';
+  `);
+  await expect(
+    db.query("update public.credentials set scope='user', owner_id=$2 where id=$1", [orgAccount, owner]),
   ).rejects.toMatchObject({ code: "23514" });
 });

@@ -33,7 +33,7 @@ export interface JobStore {
   complete(job: Job, owner: string, result: JobResult): Promise<boolean>;
 }
 
-interface JobContext {
+export interface JobContext {
   signal: AbortSignal;
   canDispatch(tx?: Sql): Promise<boolean>;
   handoffGeneration(handoff: GenerationHandoff): Promise<string>;

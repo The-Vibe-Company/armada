@@ -107,6 +107,34 @@ test("uncertain send reconciles the same durable identity/lease; changed input a
   }
 });
 
+test("losing the shared lease during follow-up admission rolls back activity before sending", async () => {
+  const f = await fixture(await sharedDatabase());
+  try {
+    const request = f.input();
+    await expect(
+      f.send(f.caller, request, {
+        async canDispatch(tx) {
+          const { rows } = await (tx ?? f.sql).query(
+            "select id from public.sandboxes where id=$1 and activity_lease_id=$2",
+            [request.id, request.request_id],
+          );
+          return rows.length === 0;
+        },
+        async handoffGeneration() {
+          throw new Error("A running follow-up never hands off its generation.");
+        },
+      }),
+    ).rejects.toThrow("Queued runtime turn lease is no longer current.");
+    expect(await f.bridge.result(f.caller.userId, request.id, `follow_${request.request_id}`)).toMatchObject({
+      state: "missing",
+    });
+    const { rows } = await f.sql.query("select activity_lease_id from public.sandboxes where id=$1", [request.id]);
+    expect(rows).toEqual([{ activity_lease_id: null }]);
+  } finally {
+    await f.close();
+  }
+});
+
 test("stop committing after runtime acceptance fences late turn publication and never rearms the sandbox", async () => {
   const f = await fixture(await sharedDatabase());
   try {

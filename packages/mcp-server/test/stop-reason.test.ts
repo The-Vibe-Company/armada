@@ -324,3 +324,54 @@ test.each([
     }
   },
 );
+
+test.each([
+  { from: "ready", to: "running", stale: false },
+  { from: "running", to: "ready", stale: false },
+  { from: "ready", to: "running", stale: true },
+] as const)("native turn observation $from -> $to (stale=$stale)", async ({ from, to, stale }) => {
+  const { db, people, sharedGoldenId } = await failureDatabase();
+  const boat = fakeBoat();
+  const machine = await boat.provider.fork({ from: "snapshot" });
+  const turn = await boat.provider.prompt({ sandboxId: machine.id, harness: "codex", text: "work" });
+  if (to === "ready") boat.finish(machine.id, turn.promptId, "finished");
+  const id = crypto.randomUUID();
+  await db.query(
+    `insert into sandboxes(id,provider,provider_sandbox_id,golden_id,org_id,owner_id,harness,status,task_prompt_id)
+     values ($1,'boat',$2,$3,$4,$5,'codex',$6,$7)`,
+    [id, machine.id, sharedGoldenId, people.org, people.owner, from, turn.promptId],
+  );
+  const store = createSqlData(db)({
+    userId: people.owner,
+    orgs: [{ orgId: people.org, role: "member" }],
+    via: "service",
+  }).sandboxes;
+  const sandbox = (await store.get(id))!;
+  if (stale)
+    await db.query("update sandboxes set status='failed', status_reason='Concurrent failure' where id=$1", [id]);
+
+  const status = stale ? "failed" : to;
+  const statusReason = stale ? "Concurrent failure" : null;
+  expect(await readStatus(boat.provider, store, sandbox, { now: new Date("2026-01-01") })).toMatchObject({
+    status,
+    statusReason,
+  });
+  expect(await store.get(id)).toMatchObject({ status, statusReason, lifecycleGeneration: sandbox.lifecycleGeneration });
+  const { rows } = await db.query(
+    "select from_status,to_status,actor,code,generation::int from sandbox_transitions where sandbox_id=$1",
+    [id],
+  );
+  expect(rows).toEqual(
+    stale
+      ? []
+      : [
+          {
+            from_status: from,
+            to_status: to,
+            actor: "native_turn",
+            code: to === "running" ? "native_turn_running" : "native_turn_settled",
+            generation: sandbox.lifecycleGeneration,
+          },
+        ],
+  );
+});
