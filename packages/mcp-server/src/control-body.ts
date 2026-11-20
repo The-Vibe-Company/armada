@@ -10,12 +10,15 @@ export async function readBody(request: Request, maxBytes = MAX_BODY_BYTES): Pro
 
 /** Both policies count bytes before decoding; vault bodies additionally require valid UTF-8. */
 export async function readControlBody(request: Request, route: string): Promise<Record<string, unknown>> {
-  if (!vaultControlRoute(route)) return readBody(request);
-  if (new URL(request.url).search) throw new VaultError("invalid", "Parameters must be in the request body.");
-  return readJsonBody(request, true);
+  return vaultControlRoute(route) ? readVaultControlBody(request) : readBody(request);
 }
 
-async function readJsonBody(request: Request, vault: boolean, maxBytes = MAX_BODY_BYTES) {
+export function readVaultControlBody(request: Request, maxBytes = VAULT_CONTROL_BODY_MAX_BYTES) {
+  if (new URL(request.url).search) throw new VaultError("invalid", "Parameters must be in the request body.");
+  return readJsonBody(request, true, maxBytes);
+}
+
+async function readJsonBody(request: Request, vault: boolean, maxBytes: number) {
   const invalid = (message: string) =>
     new VaultError("invalid", vault ? "Invalid application vault request." : message);
   const reader = vault ? request.body?.getReader() : undefined;
@@ -28,7 +31,7 @@ async function readJsonBody(request: Request, vault: boolean, maxBytes = MAX_BOD
         const chunk = await reader.read();
         if (chunk.done) break;
         bytes += chunk.value.byteLength;
-        if (bytes > (vault ? VAULT_CONTROL_BODY_MAX_BYTES : MAX_BODY_BYTES)) {
+        if (bytes > maxBytes) {
           // Do not drain an untrusted stream, or wait for its producer to finish cancellation.
           void reader.cancel().catch(() => {});
           throw invalid("The request is too large.");

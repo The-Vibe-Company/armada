@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { type EventsRequest, eventPageOptions, MAX_SANDBOX_EXTENSION_TTL_SECONDS } from "@armada/core";
 import { type ControlOptions, dispatchControlCommand } from "./control.ts";
+import { readVaultControlBody } from "./control-body.ts";
 import { controlFailureResponse } from "./control-errors.ts";
 import { controlRoutes } from "./modules.ts";
 import { defineRoutes, registerRoutes } from "./routes.ts";
@@ -302,4 +303,10 @@ test("REST logs leave out-of-range numbers to provider pagination validation", a
   const response = controlFailureResponse(error);
   expect(response.status).toBe(400);
   expect(await response.json()).toMatchObject({ error: { code: "invalid_request" } });
+});
+
+test("the strict control reader enforces the caller's byte limit", async () => {
+  const request = () => new Request("https://armada.test/api/v1/skillpack/catalog", { method: "POST", body: "{}" });
+  expect(await readVaultControlBody(request(), 2)).toEqual({});
+  await expect(readVaultControlBody(request(), 1)).rejects.toMatchObject({ code: "invalid" });
 });

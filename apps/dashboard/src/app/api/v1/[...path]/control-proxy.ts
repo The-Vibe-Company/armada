@@ -1,13 +1,10 @@
 import { CONTROL_BODY_MAX_BYTES } from "@armada/core";
 import {
-  accountOperations,
   controlRouteKey,
   operations,
   PUBLIC_CONTROL_ROUTES,
-  sandboxCheckOperations,
-  skillDefaultOperations,
+  skillpackOperations,
   streamSandboxEvents,
-  tokenOperations,
 } from "@armada/core/contract";
 
 const CONTROL_PREFIX = "/api/v1/";
@@ -28,21 +25,11 @@ export const PARAMETERIZED_CONTROL_ROUTES = [
 export const PRIVATE_POST_PATHS: ReadonlySet<string> = new Set([
   ...Object.values(operations)
     .filter(
-      (operation) =>
-        operation.audience !== "admin" &&
-        operation.route.method === "POST" &&
-        !("directServer" in operation) &&
-        !("anonymous" in operation),
+      (operation) => operation.route.method === "POST" && !("directServer" in operation) && !("anonymous" in operation),
     )
     .map(({ route }) => controlRouteKey(route)),
-  ...Object.values({ ...accountOperations, ...sandboxCheckOperations, ...skillDefaultOperations, ...tokenOperations })
-    .filter((operation) => operation.audience === "admin" && operation.route.method === "POST")
-    .map(({ route }) => controlRouteKey(route)),
-  "skillpack/connection",
   "creds/accounts/models",
   "creds/defaults/set",
-  "skillpack/catalog",
-  "skillpack/versions",
   "templates/create",
   "templates/list",
   "templates/get",
@@ -251,7 +238,12 @@ async function forwardRequest(
       : fail(400, "Invalid request body.");
   }
   const target = new URL(`${CONTROL_PREFIX}${relative}`, upstream);
-  if (method === "GET" || sandboxDeletion || relative === "skillpack/catalog" || relative === "skillpack/versions")
+  if (
+    method === "GET" ||
+    sandboxDeletion ||
+    relative === controlRouteKey(skillpackOperations.listSkillpackCatalog.route) ||
+    relative === controlRouteKey(skillpackOperations.listSkillpackVersions.route)
+  )
     target.search = new URL(request.url).search;
   let response: Response;
   try {
