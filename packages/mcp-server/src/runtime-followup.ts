@@ -1,4 +1,4 @@
-import { ProviderError, type Sql, sandboxActivity, VaultError } from "@armada/core/server";
+import { ProviderError, retainFailureDiagnostic, type Sql, sandboxActivity, VaultError } from "@armada/core/server";
 import type { Caller } from "./caller.ts";
 import { createSqlData } from "./data.ts";
 import { createGoldenRuntimeEnvironment } from "./golden-runtime-environment.ts";
@@ -278,9 +278,12 @@ export function createRuntimeFollowup(
     ).catch((error) => {
       // Unknown work retains its lease; only identical request_id/input can reconcile it.
       if (error instanceof ProviderError || error instanceof VaultError) throw error;
-      throw new VaultError(
-        "conflict",
-        "Runtime send outcome is uncertain; reuse the original request_id and identical input.",
+      throw retainFailureDiagnostic(
+        new VaultError(
+          "conflict",
+          "Runtime send outcome is uncertain; reuse the original request_id and identical input.",
+        ),
+        error,
       );
     });
   };
