@@ -48,23 +48,23 @@ const GOLDEN_OUTPUT = z.object({
     .int()
     .positive()
     .nullable()
-    .describe("The developer baseline version the golden's snapshot was verified against; null when not recorded."),
+    .describe("The developer baseline version used to verify this snapshot. Null when unrecorded."),
   baselineOutdated: z
     .boolean()
-    .describe("True when the golden has a snapshot built against an older developer baseline than this server's."),
+    .describe("True when the snapshot was built against an older developer baseline than this server's."),
   providerSandboxId: z.string().nullable(),
   modal: z
     .object({ workspace: z.string(), environment: z.string(), appId: z.string() })
     .nullable()
-    .describe("The Modal workspace, environment and App id a Modal golden is pinned to."),
+    .describe("The Modal workspace, environment and App ID this snapshot is pinned to."),
   boatSnapshotId: z
     .string()
     .nullable()
-    .describe("The same as providerSnapshotId on a Boat golden or sandbox; null on any other provider."),
+    .describe("The same as providerSnapshotId on a Boat snapshot or sandbox; null on any other provider."),
   boatSandboxId: z
     .string()
     .nullable()
-    .describe("The same as providerSandboxId on a Boat golden or sandbox; null on any other provider."),
+    .describe("The same as providerSandboxId on a Boat snapshot or sandbox; null on any other provider."),
   repos: z.number().int(),
   config: z.object({
     repos: z.array(z.object({ url: z.string(), branch: z.string(), dir: z.string() })),
@@ -75,7 +75,7 @@ const GOLDEN_OUTPUT = z.object({
 const GOLDEN_LIST_RESPONSE = z.object({
   goldens: z.array(
     GOLDEN_OUTPUT.extend({
-      buildWarnings: z.array(z.string()).describe("Non-blocking findings from the golden's last build."),
+      buildWarnings: z.array(z.string()).describe("Non-blocking findings from the snapshot's last build."),
     }),
   ),
 });
@@ -127,7 +127,7 @@ export const goldenOperations = {
     name: "listGoldens",
     route: { method: "POST", path: "/api/v1/golden/list" },
     description:
-      "List launch goldens visible to the caller. A golden without a providerSnapshotId cannot be launched yet.",
+      "List launch snapshots visible to the caller. A snapshot without a providerSnapshotId cannot be launched yet.",
     audience: "public",
     readOnly: true,
     destructive: false,
@@ -139,7 +139,7 @@ export const goldenOperations = {
     name: "readGoldenCapabilities",
     route: { method: "POST", path: "/api/v1/golden/capabilities" },
     description:
-      "Reads the selected provider adapter's golden capacity without creating an App or resource. Null is unknown or unbounded.",
+      "Reads the selected provider adapter's snapshot capacity without creating an App or resource. Null is unknown or unbounded.",
     audience: "public",
     readOnly: true,
     destructive: false,
@@ -151,7 +151,7 @@ export const goldenOperations = {
     name: "adoptGolden",
     route: { method: "POST", path: "/api/v1/golden/adopt" },
     description:
-      "Dry-run first: select an existing visible golden by id. Confirm with the returned receipt within ten minutes. Preserves all rows and ACLs.",
+      "Dry-run first: select an existing visible snapshot by ID. Confirm with the returned receipt within ten minutes. Preserves all rows and ACLs.",
     audience: "public",
     readOnly: false,
     destructive: false,
