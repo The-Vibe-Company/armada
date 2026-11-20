@@ -470,6 +470,25 @@ export async function deferAmbiguousBoatResume(
   );
 }
 
+export async function admitRetainedRuntimeResume(tx: Sql, sandboxId: string, generation: number, requestId: string) {
+  return transitionSandbox(tx, {
+    sandboxId,
+    expectedGeneration: generation,
+    fromStates: ["stopped"],
+    toState: "starting",
+    actor: "resume_admission",
+    code: "runtime_resume_admitted",
+    effects: [],
+    settlement: {
+      lease: null,
+      statusReason: null,
+      stopRequestedAt: null,
+      stoppedAt: null,
+      activityLease: requestId,
+    },
+  });
+}
+
 export async function confirmRuntimeResumeActivation(
   sql: Sql,
   sandboxId: string,

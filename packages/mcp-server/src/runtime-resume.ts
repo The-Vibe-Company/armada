@@ -15,6 +15,7 @@ import type { RuntimeMcp } from "./runtime-mcp.ts";
 import type { RestoreScopedRuntimeAccess } from "./sandbox-armada-access.ts";
 import { refuseConversationSelector, SINGLE_CONVERSATION_GUIDANCE } from "./sandbox-conversation.ts";
 import {
+  admitRetainedRuntimeResume,
   confirmRuntimeResumeActivation,
   deferAmbiguousBoatResume,
   publishRuntimeWake,
@@ -223,16 +224,11 @@ export function createRuntimeResume(
           op.empty_checkpoint,
         ],
       );
-      await createSqlData(tx)(caller).sandboxes.update(found.id, {
-        status: "starting",
-        stoppedAt: null,
-        stopRequested: false,
-        advanceGeneration: true,
-        queueRequestId: requestId,
-        activityToken: requestId,
-        clearTaskOutcome: true,
-        ...(current.lifecycleGeneration !== undefined ? { expectedGeneration: current.lifecycleGeneration } : {}),
-      });
+      if (
+        current.lifecycleGeneration === undefined ||
+        (await admitRetainedRuntimeResume(tx, found.id, current.lifecycleGeneration, requestId)).kind !== "applied"
+      )
+        throw new VaultError("conflict", "Runtime resume admission is stale.");
       await tx.query(
         `update public.sandbox_launch_stages l set at=least(l.at,r.created_at)
            from public.runtime_resumes r
