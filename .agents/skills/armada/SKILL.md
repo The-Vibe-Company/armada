@@ -61,7 +61,9 @@ any receipt UUID returned. On success, pass `sandbox.id` to subsequent tools.
   and harness. The server resolves model credentials during launch. Personal sessions can select the organization by slug or UUID. For a scoped token, omit `org` or send its org UUID.
   A malformed request returns HTTP 400 with error code `invalid`.
   For REST golden and Docker launches, read the Armada ID from `sandbox.id`.
-  The TypeScript SDK uses the same `LaunchResult` envelope for ordinary launches.
+  The TypeScript SDK infers its request, response and error types from the API contract.
+  Ordinary launches use `LaunchResult`. For template launches, check `"requestId" in result`
+  before reading the receipt. Use the shared `SendInput` for follow-up prompts.
   Docker returns `golden: null`. Docker REST launches require `idempotencyKey`.
   Save the key and replay the identical request after an uncertain launch.
   With `armada launch --provider docker`, pass the saved key as `--idempotency-key`.

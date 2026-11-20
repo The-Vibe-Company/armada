@@ -4,11 +4,12 @@ import {
   accountWaitingCountSql,
   accountWorkingCountSql,
   decryptSecret,
+  encryptSecret,
   type Sql,
   VaultError,
 } from "@armada/core/server";
 import { PGlite } from "@electric-sql/pglite";
-import { admitClaimedAccountTurn } from "./account-turn-dispatch.ts";
+import { admitClaimedAccountTurn, dispatchAccountTurn } from "./account-turn-dispatch.ts";
 import { createAccountTurnQueue } from "./account-turn-queue.ts";
 import type { Caller } from "./caller.ts";
 import type { Job } from "./jobs/runner.ts";
@@ -27,7 +28,7 @@ function database() {
 const org = "10000000-0000-4000-8000-000000000001";
 const owner = "10000000-0000-4000-8000-000000000002";
 const account = "10000000-0000-4000-8000-000000000003";
-const ids = [1, 2, 3].map((n) => `20000000-0000-4000-8000-${String(n).padStart(12, "0")}`);
+const ids = [1, 2, 3].map((n) => `2a000000-0000-4000-8000-${String(n).padStart(12, "0")}`);
 const requests = [1, 2].map((n) => `30000000-0000-4000-8000-${String(n).padStart(12, "0")}`);
 const caller: Caller = { userId: owner, via: "service", orgs: [{ orgId: org, role: "member" }] };
 const sql = {
@@ -142,9 +143,120 @@ async function claimTurn(requestId: string) {
   const store = createJobsStore(sql);
   return {
     job: { ...job, payload: { requestId } },
-    canDispatch: async (tx: Sql) => (await store.inspect(job, worker, tx)) === "dispatch",
+    canDispatch: async (tx?: Sql) => (await store.inspect(job, worker, tx)) === "dispatch",
   };
 }
+
+test.each(["provider replies", "provider refuses"])(
+  "an expired shared claim cannot settle when the %s",
+  async (outcome) => {
+    const input = { id: ids[0]!, request_id: requests[0]!, prompt: "next instruction" };
+    await queue.accept(caller, input);
+    const claim = await claimTurn(input.request_id);
+    const admitted = await admitClaimedAccountTurn(sql, claim);
+    if (!admitted) throw new Error("Expected the turn to be admitted.");
+    let sent = false;
+    await dispatchAccountTurn(
+      sql,
+      btoa("x".repeat(32)),
+      admitted.entry,
+      admitted.caller,
+      async () => {
+        sent = true;
+        await sql.query("update public.jobs set lease_until='-infinity' where id=$1", [claim.job.id]);
+        if (outcome === "provider refuses") throw new VaultError("conflict", "Account is busy.");
+        return { status: "running" };
+      },
+      claim,
+    );
+    expect(sent).toBe(true);
+    expect((await sql.query("select state,result_enc,failure_reason from public.account_turn_queue")).rows).toEqual([
+      { state: "dispatching", result_enc: null, failure_reason: null },
+    ]);
+    expect((await sql.query("select sandbox_id from public.account_agent_reservations")).rows).toEqual([
+      { sandbox_id: input.id },
+    ]);
+  },
+);
+
+test("the shared claim publishes an uppercase sandbox UUID receipt after a generation handoff", async () => {
+  const input = { id: ids[0]!.toUpperCase(), request_id: requests[0]!, prompt: "next instruction" };
+  await queue.accept(caller, input);
+  const claim = await claimTurn(input.request_id);
+  const admitted = await admitClaimedAccountTurn(sql, claim);
+  if (!admitted) throw new Error("Expected the turn to be admitted.");
+  const result = { status: "running" };
+  await dispatchAccountTurn(
+    sql,
+    btoa("x".repeat(32)),
+    admitted.entry,
+    admitted.caller,
+    async () => {
+      await sql.transaction!(async (tx) => {
+        await tx.query("update public.sandboxes set lifecycle_generation=2 where id=$1", [input.id]);
+        await tx.query("update public.jobs set generation=2 where id=$1", [claim.job.id]);
+      });
+      return result;
+    },
+    claim,
+  );
+  expect(await queue.accept(caller, input)).toEqual(result);
+  expect((await sql.query("select sandbox_id from public.account_agent_reservations")).rows).toEqual([]);
+});
+
+test("shared dispatch leaves the receipt untouched when encrypted input belongs to another sandbox", async () => {
+  const key = btoa("x".repeat(32));
+  const input = { id: ids[0]!, request_id: requests[0]!, prompt: "next instruction" };
+  await queue.accept(caller, input);
+  const claim = await claimTurn(input.request_id);
+  const admitted = await admitClaimedAccountTurn(sql, claim);
+  if (!admitted) throw new Error("Expected the turn to be admitted.");
+  const input_enc = await encryptSecret(JSON.stringify({ ...input, id: ids[1]! }), key);
+  const entry = { ...admitted.entry, input_enc };
+  const send = () => {
+    throw new Error("Provider must not be called for mismatched input.");
+  };
+  await expect(dispatchAccountTurn(sql, key, entry, admitted.caller, send, claim)).rejects.toThrow(
+    "Encrypted turn input does not match its receipt.",
+  );
+  expect((await sql.query("select state,result_enc,failure_reason from public.account_turn_queue")).rows).toEqual([
+    { state: "dispatching", result_enc: null, failure_reason: null },
+  ]);
+  expect((await sql.query("select sandbox_id from public.account_agent_reservations")).rows).toEqual([
+    { sandbox_id: input.id },
+  ]);
+});
+
+test("lease expiry during shared receipt publication rolls back settlement and capacity release", async () => {
+  const input = { id: ids[0]!, request_id: requests[0]!, prompt: "next instruction" };
+  await queue.accept(caller, input);
+  const claim = await claimTurn(input.request_id);
+  const admitted = await admitClaimedAccountTurn(sql, claim);
+  if (!admitted) throw new Error("Expected the turn to be admitted.");
+  const expiring = {
+    ...claim,
+    async canDispatch(tx?: Sql) {
+      if (tx && (await tx.query("select 1 from public.account_turn_queue where state='admitted'")).rows.length) {
+        await tx.query("update public.jobs set lease_until='-infinity' where id=$1", [claim.job.id]);
+      }
+      return claim.canDispatch(tx);
+    },
+  };
+  await dispatchAccountTurn(
+    sql,
+    btoa("x".repeat(32)),
+    admitted.entry,
+    admitted.caller,
+    async () => ({ status: "running" }),
+    expiring,
+  );
+  expect((await sql.query("select state,result_enc from public.account_turn_queue")).rows).toEqual([
+    { state: "dispatching", result_enc: null },
+  ]);
+  expect((await sql.query("select sandbox_id from public.account_agent_reservations")).rows).toEqual([
+    { sandbox_id: input.id },
+  ]);
+});
 
 test("a later shared claim cannot bypass the first eligible account receipt", async () => {
   const first = ids[0]!;

@@ -157,7 +157,12 @@ test("the SDK Docker launch type admits exactly the host and snapshot sources th
 });
 
 test("status exposes the selected prompt by its promptId", async () => {
-  const prompt = { promptId: "prompt_placeholder", conversationId: null, state: "queued", reason: null };
+  const prompt: SandboxStatus["prompt"] = {
+    promptId: "prompt_placeholder",
+    conversationId: null,
+    state: "queued",
+    reason: null,
+  };
   const client = new Armada({
     token: "service_placeholder",
     fetch: async () =>
@@ -214,6 +219,17 @@ test("retry policy replays only eligible reads and retains typed safe failures",
       code,
       serverCode: code,
     });
+  }
+
+  for (const [serverCode, code] of [
+    ["provider_mismatch", "provider_mismatch"],
+    ["future_failure", "unknown_response"],
+  ]) {
+    const client = new Armada({
+      token: "service_placeholder",
+      fetch: async () => Response.json({ error: { code: serverCode } }, { status: 400 }),
+    });
+    await expect(client.logs({ id: "sandbox_placeholder" })).rejects.toMatchObject({ code, serverCode });
   }
 });
 
@@ -421,9 +437,7 @@ test("template launch exposes the HTTP 200 pre-admission refusal without a reque
     id: "template_placeholder",
     requestKey: "request_placeholder",
   });
-  // @ts-expect-error A refusal has no durable request; callers must narrow first.
-  expect(() => result.requestId.toUpperCase()).toThrow(TypeError);
-  if (result.requestId !== undefined) throw new Error("Expected a refusal");
+  if ("requestId" in result) throw new Error("Expected a refusal");
   expect(result).toEqual({ state: "failed", reason: "conflict", message: "Golden has no snapshot." });
 });
 
