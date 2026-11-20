@@ -4,11 +4,11 @@ import { bindModalLaunchMachine } from "../sandbox-lifecycle.ts";
 import type { Job, JobContext } from "./runner.ts";
 import { createJobsStore, withJobLease } from "./store.ts";
 
-type LaunchInput = Omit<Parameters<Machine["create"]>[0], "sandboxId" | "generation" | "signal">;
+export type ModalLaunchAllocation = Omit<Parameters<Machine["create"]>[0], "sandboxId" | "generation" | "signal">;
 type DispatchContext = Pick<JobContext, "canDispatch" | "signal">;
 
 interface ModalLaunchPlan {
-  allocation: LaunchInput;
+  allocation: ModalLaunchAllocation;
   bindingRef: string;
   machine: Omit<ModalMachineOptions, "journal">;
 }

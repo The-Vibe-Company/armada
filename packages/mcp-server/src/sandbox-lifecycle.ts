@@ -1,6 +1,7 @@
 import type { SandboxPlacementProviderId, SandboxStatus } from "@armada/core";
 import {
   decryptSecret,
+  GoldenError,
   HOST_CAPABILITIES,
   isFinalPromptStatus,
   isSandboxProvider,
@@ -8,13 +9,16 @@ import {
   type OutputFailureReason,
   type Provider,
   ProviderError,
+  type SandboxStore,
   type Sql,
   VaultError,
 } from "@armada/core/server";
 import type { ModalProvider } from "@armada/provider-modal";
 import { releaseAccountCapacity } from "./account-capacity.ts";
 import { isDockerPromptRefusal } from "./docker-prompt-refusal.ts";
+import type { ModalLaunchAllocation } from "./jobs/modal-launch.ts";
 import type { Job } from "./jobs/runner.ts";
+import { ConflictingJobRequest, createJobsStore } from "./jobs/store.ts";
 import { mergedWorkProof } from "./merged-work.ts";
 import { nativeIdleDue, nativeQuiescent } from "./native-idle.ts";
 import { LIVE_OUTPUT_CANDIDATE } from "./output-transfers.ts";
@@ -23,6 +27,159 @@ import { SANDBOX_VISIBLE } from "./sandbox-visibility.ts";
 import { INTERRUPTED_LAUNCH_REASON } from "./turns.ts";
 import { deferTransactionWake, eventFeedWakeKey, runtimeWakes } from "./wake-bus.ts";
 import { preserveBeforeStop, purgeWorkRecovery, recordStopDispatch } from "./work-preservation.ts";
+
+export interface ModalLaunchAdmission {
+  orgId: string;
+  ownerId: string;
+  request?: { key: string; digest: string };
+  sandbox: Pick<
+    Parameters<SandboxStore["insert"]>[0],
+    | "goldenId"
+    | "harness"
+    | "model"
+    | "reasoningEffort"
+    | "repositoryDir"
+    | "requestedTtlSeconds"
+    | "credentialId"
+    | "credentialVersion"
+    | "visibility"
+    | "externalRef"
+    | "stopWhenWorkMerged"
+  >;
+  allocation: ModalLaunchAllocation;
+  initialPrompt?: string;
+  deadline: Date;
+  maxAttempts: number;
+}
+
+// WARNING: Activate only after the receipt backfill and launch runner integration.
+export async function admitModalLaunch(sql: Sql, encryptionKey: string, input: ModalLaunchAdmission) {
+  if (!sql.transaction) throw new Error("Modal admission requires a transaction.");
+  const { orgId, ownerId, sandbox, allocation, request } = input;
+  const sandboxId = crypto.randomUUID();
+  const generation = 1;
+  const store = createJobsStore(sql, encryptionKey);
+  const key = request ? JSON.stringify(["ordinary", request.key]) : JSON.stringify(["unkeyed", sandboxId]);
+
+  try {
+    return await sql.transaction(async (tx) => {
+      const {
+        rows: [golden],
+      } = await tx.query<{
+        visibility: "org" | "private";
+        provider_snapshot_id: string | null;
+        modal_workspace: string;
+        modal_environment: string;
+        modal_app_id: string;
+      }>(
+        `select g.visibility, g.provider_snapshot_id, g.modal_workspace, g.modal_environment, g.modal_app_id
+         from public.goldens g join public.members m on m.org_id=g.org_id and m.user_id=$3
+         where g.id=$1 and g.org_id=$2 and g.provider='modal' and g.removed_at is null
+           and (g.visibility='org' or g.owner_id=$3)
+         for share of g,m`,
+        [sandbox.goldenId, orgId, ownerId],
+      );
+      if (!golden) throw new GoldenError("not_found", "Modal golden not found.");
+
+      const jobId = await store.enqueue(
+        "launch",
+        sandboxId,
+        generation,
+        key,
+        {
+          allocation,
+          modal: {
+            workspace: golden.modal_workspace,
+            environment: golden.modal_environment,
+            appId: golden.modal_app_id,
+          },
+        },
+        {
+          orgId,
+          deadline: input.deadline,
+          maxAttempts: input.maxAttempts,
+          request: { ownerId, digest: request?.digest ?? sandboxId },
+        },
+        tx,
+      );
+      const {
+        rows: [receipt],
+      } = await tx.query<{ sandbox_id: string; status: SandboxStatus | null; golden_id: string | null }>(
+        `select j.sandbox_id, s.status, s.golden_id from public.jobs j
+         left join public.sandboxes s on s.id=j.sandbox_id and s.org_id=j.org_id and s.owner_id=j.request_owner_id
+         where j.id=$1 and j.kind='launch' and j.org_id=$2 and j.request_owner_id=$3`,
+        [jobId, orgId, ownerId],
+      );
+      if (!receipt) throw new Error("Modal launch receipt is missing.");
+      if (receipt.sandbox_id !== sandboxId) {
+        if (receipt.golden_id && receipt.golden_id !== sandbox.goldenId)
+          throw new GoldenError("conflict", "Launch key conflicts with an existing receipt.");
+        return { sandbox: { id: receipt.sandbox_id, status: receipt.status ?? "deleted" } };
+      }
+
+      if (allocation.source.kind === "snapshot") {
+        const snapshot = allocation.source.ref;
+        if (golden.provider_snapshot_id !== snapshot)
+          throw new GoldenError("conflict", "Golden snapshot changed during launch preparation.");
+        await tx.query("select public.lock_golden_snapshot('modal', $1)", [snapshot]);
+        const { rows } = await tx.query(
+          "select 1 from public.golden_snapshot_retirements where provider='modal' and old_snapshot=$1 and sealed",
+          [snapshot],
+        );
+        if (rows.length) throw new GoldenError("conflict", "Golden snapshot is being retired.");
+      }
+
+      await tx.query(
+        `insert into public.sandboxes
+           (id, org_id, owner_id, access_owner_id, golden_id, provider, status, runtime_transport, lifecycle_generation,
+            visibility, harness, model, reasoning_effort, repository_dir, requested_ttl_seconds, effective_ttl_seconds,
+            expires_at, credential_id, credential_version, external_ref, stop_when_work_merged)
+         values ($1,$2,$3,$3,$4,'modal','starting','dialout',$5,$6,$7,$8,$9,$10,$11,$12,
+                 now()+$12::integer*interval '1 second',$13,$14,$15,$16)`,
+        [
+          sandboxId,
+          orgId,
+          ownerId,
+          sandbox.goldenId,
+          generation,
+          sandbox.visibility === "private" ? "private" : golden.visibility,
+          sandbox.harness,
+          sandbox.model,
+          sandbox.reasoningEffort,
+          sandbox.repositoryDir ?? null,
+          sandbox.requestedTtlSeconds ?? null,
+          allocation.computeTtlSeconds,
+          sandbox.credentialId ?? null,
+          sandbox.credentialVersion ?? null,
+          sandbox.externalRef ?? null,
+          sandbox.stopWhenWorkMerged ?? true,
+        ],
+      );
+      if (allocation.source.kind === "snapshot") {
+        await tx.query("insert into public.sandbox_source_snapshots (sandbox_id,snapshot_id) values ($1,$2)", [
+          sandboxId,
+          allocation.source.ref,
+        ]);
+      }
+      if (input.initialPrompt !== undefined) {
+        await store.enqueue(
+          "launch_initial_turn",
+          sandboxId,
+          generation,
+          jobId,
+          { prompt: input.initialPrompt },
+          { orgId, maxAttempts: 1 },
+          tx,
+        );
+      }
+      return { sandbox: { id: sandboxId, status: "starting" as const } };
+    });
+  } catch (error) {
+    if (error instanceof ConflictingJobRequest)
+      throw new GoldenError("conflict", "Launch key conflicts with an existing receipt.");
+    throw error;
+  }
+}
 
 export async function bindModalLaunchMachine(tx: Sql, machine: MachineIdentity) {
   const { rows } = await tx.query(
