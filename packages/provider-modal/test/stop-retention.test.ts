@@ -10,7 +10,7 @@ import {
   settleDetachedModalCollections,
 } from "../src/index.ts";
 
-function fixture(stage: "scrub" | "snapshot", { productionDetach = false } = {}) {
+function fixture(stage: "scrub" | "snapshot" | "missing image", { productionDetach = false } = {}) {
   const scope: Scope = {
     orgId: "org",
     userId: "owner",
@@ -82,7 +82,7 @@ function fixture(stage: "scrub" | "snapshot", { productionDetach = false } = {})
     snapshotFilesystem: async () => {
       snapshots++;
       if (failing && stage === "snapshot") throw Error("snapshot outcome unknown");
-      return { imageId: "fresh-recovery" };
+      return { imageId: stage === "missing image" ? "" : "fresh-recovery" };
     },
     terminate: async () => {
       if (terminated) throw Error("terminated machine is unavailable for another stop");
@@ -261,6 +261,21 @@ test.each(["scrub", "snapshot"] as const)(
     }
   },
 );
+
+test.each(["native", "enrolled"] as const)("a missing Modal image receipt preserves the %s source", async (path) => {
+  const f = fixture("missing image");
+  if (path === "enrolled") f.state().commonRuntime = true;
+  const stop = () =>
+    path === "enrolled"
+      ? f.provider.stopRuntime({ sandboxId: "logical", physicalGeneration: "1", epoch: "1", watermark: 1 })
+      : f.provider.stop({ sandboxId: "logical", requireRetention: true });
+
+  await expect(stop()).rejects.toMatchObject({ code: "unavailable" });
+  await expect(stop()).rejects.toMatchObject({ code: "conflict" });
+  expect(f.terminated()).toBe(0);
+  expect(f.snapshots()).toBe(1);
+  expect(f.state()).toMatchObject({ phase: "snapshot", recoveryImageId: "prior-recovery" });
+});
 
 test.each(["common-runtime", "lost-workspace", "unretained-terminate"] as const)(
   "retention policy refuses compute-only state (%s)",
