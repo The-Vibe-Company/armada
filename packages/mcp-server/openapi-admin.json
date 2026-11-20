@@ -1,0 +1,1458 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Armada administrative control API",
+    "version": "4.0.0",
+    "description": "Generated dashboard administration REST contracts. Each operation enforces its own caller, role and resource access requirements."
+  },
+  "paths": {
+    "/api/v1/token/list": {
+      "post": {
+        "operationId": "token_list",
+        "description": "List the caller's service tokens in their current scope, without token values or hashes.",
+        "security": [
+          {
+            "serviceToken": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "$schema": "http://json-schema.org/draft-07/schema#",
+                  "type": "string",
+                  "const": "no-store"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$schema": "http://json-schema.org/draft-07/schema#",
+                  "type": "object",
+                  "properties": {
+                    "tokens": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string"
+                          },
+                          "label": {
+                            "type": "string"
+                          },
+                          "orgName": {
+                            "type": "string"
+                          },
+                          "createdAt": {
+                            "type": "string"
+                          },
+                          "revokedAt": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "label",
+                          "orgName",
+                          "createdAt",
+                          "revokedAt"
+                        ],
+                        "additionalProperties": false
+                      }
+                    }
+                  },
+                  "required": [
+                    "tokens"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Temporarily unavailable: a structured failure, or the bare refusal sent before dispatch while the server drains. Honor Retry-After when present.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/Failure"
+                    },
+                    {
+                      "$ref": "#/components/schemas/DrainRefusal"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Administrative API failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Failure"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/token/create": {
+      "post": {
+        "operationId": "token_create",
+        "description": "Create a service token for an organization in the caller's scope. The token value is returned only once.",
+        "security": [
+          {
+            "serviceToken": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "description": "Send at most 131072 bytes of serialized JSON. The dashboard endpoint refuses a larger body with HTTP 413 without forwarding it, and the server refuses a body over its own limit, which is never lower, with HTTP 413 before any handler runs.",
+          "x-max-body-bytes": 131072,
+          "x-oversized-body-status": 413,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$schema": "http://json-schema.org/draft-07/schema#",
+                "type": "object",
+                "properties": {
+                  "org": {
+                    "description": "Organization UUID or name. Required for scoped callers unless orgName is supplied.",
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "orgName": {
+                    "description": "Organization name or UUID. If both selectors are supplied, they must match.",
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "label": {
+                    "description": "Defaults to default when missing, null, or empty. A supplied label is trimmed and must then contain 1–80 characters and no ASCII control characters.",
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "$schema": "http://json-schema.org/draft-07/schema#",
+                  "type": "string",
+                  "const": "no-store"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$schema": "http://json-schema.org/draft-07/schema#",
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "label": {
+                      "type": "string"
+                    },
+                    "orgName": {
+                      "type": "string"
+                    },
+                    "token": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "label",
+                    "orgName",
+                    "token"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The serialized request body exceeds 131072 bytes. Nothing was dispatched.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Failure"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Temporarily unavailable: a structured failure, or the bare refusal sent before dispatch while the server drains. Honor Retry-After when present.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/Failure"
+                    },
+                    {
+                      "$ref": "#/components/schemas/DrainRefusal"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Administrative API failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Failure"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/token/revoke": {
+      "post": {
+        "operationId": "token_revoke",
+        "description": "Revoke an active service token owned by the caller and visible in their current scope.",
+        "security": [
+          {
+            "serviceToken": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "description": "Send at most 131072 bytes of serialized JSON. The dashboard endpoint refuses a larger body with HTTP 413 without forwarding it, and the server refuses a body over its own limit, which is never lower, with HTTP 413 before any handler runs.",
+          "x-max-body-bytes": 131072,
+          "x-oversized-body-status": 413,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$schema": "http://json-schema.org/draft-07/schema#",
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "format": "uuid",
+                    "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})$"
+                  }
+                },
+                "required": [
+                  "id"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "$schema": "http://json-schema.org/draft-07/schema#",
+                  "type": "string",
+                  "const": "no-store"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$schema": "http://json-schema.org/draft-07/schema#",
+                  "type": "object",
+                  "properties": {
+                    "ok": {
+                      "type": "boolean",
+                      "const": true
+                    }
+                  },
+                  "required": [
+                    "ok"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The serialized request body exceeds 131072 bytes. Nothing was dispatched.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Failure"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Temporarily unavailable: a structured failure, or the bare refusal sent before dispatch while the server drains. Honor Retry-After when present.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/Failure"
+                    },
+                    {
+                      "$ref": "#/components/schemas/DrainRefusal"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Administrative API failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Failure"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/account/status": {
+      "post": {
+        "operationId": "account_status",
+        "description": "Read the caller's identity, visible organization memberships, authentication kind and server version.",
+        "security": [
+          {
+            "serviceToken": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "$schema": "http://json-schema.org/draft-07/schema#",
+                  "type": "string",
+                  "const": "no-store"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$schema": "http://json-schema.org/draft-07/schema#",
+                  "type": "object",
+                  "properties": {
+                    "userId": {
+                      "type": "string"
+                    },
+                    "orgs": {
+                      "readOnly": true,
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "orgId": {
+                            "type": "string"
+                          },
+                          "role": {
+                            "type": "string",
+                            "enum": [
+                              "admin",
+                              "member"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "orgId",
+                          "role"
+                        ],
+                        "additionalProperties": false
+                      }
+                    },
+                    "authentication": {
+                      "type": "string",
+                      "enum": [
+                        "service",
+                        "mcp",
+                        "supabase"
+                      ]
+                    },
+                    "version": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "userId",
+                    "orgs",
+                    "authentication",
+                    "version"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Temporarily unavailable: a structured failure, or the bare refusal sent before dispatch while the server drains. Honor Retry-After when present.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/Failure"
+                    },
+                    {
+                      "$ref": "#/components/schemas/DrainRefusal"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Administrative API failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Failure"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/account/logout": {
+      "post": {
+        "operationId": "account_logout",
+        "description": "Sign out the current personal login session.",
+        "security": [
+          {
+            "serviceToken": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "$schema": "http://json-schema.org/draft-07/schema#",
+                  "type": "string",
+                  "const": "no-store"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$schema": "http://json-schema.org/draft-07/schema#",
+                  "type": "object",
+                  "properties": {
+                    "ok": {
+                      "type": "boolean",
+                      "const": true
+                    }
+                  },
+                  "required": [
+                    "ok"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Temporarily unavailable: a structured failure, or the bare refusal sent before dispatch while the server drains. Honor Retry-After when present.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/Failure"
+                    },
+                    {
+                      "$ref": "#/components/schemas/DrainRefusal"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Administrative API failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Failure"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/skills/defaults/get": {
+      "post": {
+        "operationId": "skills_defaults_get",
+        "description": "Read skill defaults for the caller, organization, or visible golden.",
+        "security": [
+          {
+            "serviceToken": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "description": "Send at most 65536 bytes of serialized JSON. The server reads this route with the vault body reader and refuses a larger body with HTTP 400 (code invalid); the dashboard endpoint refuses a body over 131072 bytes with HTTP 413. Nothing is dispatched in either case.",
+          "x-max-body-bytes": 65536,
+          "x-oversized-body-status": 400,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$schema": "http://json-schema.org/draft-07/schema#",
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "org": {
+                        "type": "string",
+                        "format": "uuid",
+                        "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})$"
+                      },
+                      "scope": {
+                        "type": "string",
+                        "enum": [
+                          "personal",
+                          "org"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "org",
+                      "scope"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "org": {
+                        "type": "string",
+                        "format": "uuid",
+                        "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})$"
+                      },
+                      "scope": {
+                        "type": "string",
+                        "const": "golden"
+                      },
+                      "goldenId": {
+                        "type": "string",
+                        "format": "uuid",
+                        "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})$"
+                      }
+                    },
+                    "required": [
+                      "org",
+                      "scope",
+                      "goldenId"
+                    ],
+                    "additionalProperties": false
+                  }
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "$schema": "http://json-schema.org/draft-07/schema#",
+                  "type": "string",
+                  "const": "no-store"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$schema": "http://json-schema.org/draft-07/schema#",
+                  "type": "object",
+                  "properties": {
+                    "skills": {
+                      "maxItems": 20,
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "maxLength": 256,
+                        "pattern": "^(?:[a-z0-9][a-z0-9-]*\\/)?[a-z0-9][a-z0-9-]*@[0-9]+\\.[0-9]+\\.[0-9]+(?:-[a-zA-Z0-9.-]+)?$"
+                      },
+                      "description": "Skills require distinct org/slug@exact-version or slug@exact-version pins (maximum 20)."
+                    }
+                  },
+                  "required": [
+                    "skills"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request, including a serialized body over 65536 bytes. Nothing was dispatched.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Failure"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The serialized request body exceeds 131072 bytes. Nothing was dispatched.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Failure"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Temporarily unavailable: a structured failure, or the bare refusal sent before dispatch while the server drains. Honor Retry-After when present.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/Failure"
+                    },
+                    {
+                      "$ref": "#/components/schemas/DrainRefusal"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Administrative API failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Failure"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/skills/defaults/set": {
+      "post": {
+        "operationId": "skills_defaults_set",
+        "description": "Replace skill defaults for the selected scope. An empty list clears the defaults.",
+        "security": [
+          {
+            "serviceToken": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "description": "Send at most 65536 bytes of serialized JSON. The server reads this route with the vault body reader and refuses a larger body with HTTP 400 (code invalid); the dashboard endpoint refuses a body over 131072 bytes with HTTP 413. Nothing is dispatched in either case.",
+          "x-max-body-bytes": 65536,
+          "x-oversized-body-status": 400,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$schema": "http://json-schema.org/draft-07/schema#",
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "org": {
+                        "type": "string",
+                        "format": "uuid",
+                        "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})$"
+                      },
+                      "scope": {
+                        "type": "string",
+                        "enum": [
+                          "personal",
+                          "org"
+                        ]
+                      },
+                      "skills": {
+                        "maxItems": 20,
+                        "type": "array",
+                        "items": {
+                          "type": "string",
+                          "maxLength": 256,
+                          "pattern": "^(?:[a-z0-9][a-z0-9-]*\\/)?[a-z0-9][a-z0-9-]*@[0-9]+\\.[0-9]+\\.[0-9]+(?:-[a-zA-Z0-9.-]+)?$"
+                        },
+                        "description": "Skills require distinct org/slug@exact-version or slug@exact-version pins (maximum 20)."
+                      }
+                    },
+                    "required": [
+                      "org",
+                      "scope",
+                      "skills"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "org": {
+                        "type": "string",
+                        "format": "uuid",
+                        "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})$"
+                      },
+                      "scope": {
+                        "type": "string",
+                        "const": "golden"
+                      },
+                      "goldenId": {
+                        "type": "string",
+                        "format": "uuid",
+                        "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})$"
+                      },
+                      "skills": {
+                        "maxItems": 20,
+                        "type": "array",
+                        "items": {
+                          "type": "string",
+                          "maxLength": 256,
+                          "pattern": "^(?:[a-z0-9][a-z0-9-]*\\/)?[a-z0-9][a-z0-9-]*@[0-9]+\\.[0-9]+\\.[0-9]+(?:-[a-zA-Z0-9.-]+)?$"
+                        },
+                        "description": "Skills require distinct org/slug@exact-version or slug@exact-version pins (maximum 20)."
+                      }
+                    },
+                    "required": [
+                      "org",
+                      "scope",
+                      "goldenId",
+                      "skills"
+                    ],
+                    "additionalProperties": false
+                  }
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "$schema": "http://json-schema.org/draft-07/schema#",
+                  "type": "string",
+                  "const": "no-store"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$schema": "http://json-schema.org/draft-07/schema#",
+                  "type": "object",
+                  "properties": {
+                    "skills": {
+                      "maxItems": 20,
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "maxLength": 256,
+                        "pattern": "^(?:[a-z0-9][a-z0-9-]*\\/)?[a-z0-9][a-z0-9-]*@[0-9]+\\.[0-9]+\\.[0-9]+(?:-[a-zA-Z0-9.-]+)?$"
+                      },
+                      "description": "Skills require distinct org/slug@exact-version or slug@exact-version pins (maximum 20)."
+                    }
+                  },
+                  "required": [
+                    "skills"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request, including a serialized body over 65536 bytes. Nothing was dispatched.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Failure"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The serialized request body exceeds 131072 bytes. Nothing was dispatched.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Failure"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Temporarily unavailable: a structured failure, or the bare refusal sent before dispatch while the server drains. Honor Retry-After when present.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/Failure"
+                    },
+                    {
+                      "$ref": "#/components/schemas/DrainRefusal"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Administrative API failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Failure"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/triggers": {
+      "post": {
+        "operationId": "triggers",
+        "description": "Create an inbound trigger in the selected organization and return its signing key once.",
+        "security": [
+          {
+            "serviceToken": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "org",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "$schema": "http://json-schema.org/draft-07/schema#",
+              "type": "string",
+              "pattern": "^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "description": "Send at most 131072 bytes of serialized JSON. The dashboard endpoint refuses a larger body with HTTP 413 without forwarding it, and the server refuses a body over its own limit, which is never lower, with HTTP 413 before any handler runs.",
+          "x-max-body-bytes": 131072,
+          "x-oversized-body-status": 413,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$schema": "http://json-schema.org/draft-07/schema#",
+                "type": "object",
+                "properties": {
+                  "templateId": {
+                    "type": "string",
+                    "pattern": "^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$"
+                  },
+                  "poolHarness": {
+                    "type": "string",
+                    "enum": [
+                      "claude",
+                      "codex",
+                      "opencode"
+                    ]
+                  },
+                  "ratePerMinute": {
+                    "type": "integer",
+                    "exclusiveMinimum": 0,
+                    "maximum": 2147483647
+                  },
+                  "concurrency": {
+                    "type": "integer",
+                    "exclusiveMinimum": 0,
+                    "maximum": 2147483647
+                  }
+                },
+                "required": [
+                  "templateId",
+                  "poolHarness",
+                  "ratePerMinute",
+                  "concurrency"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$schema": "http://json-schema.org/draft-07/schema#",
+                  "type": "object",
+                  "properties": {
+                    "triggerId": {
+                      "type": "string",
+                      "pattern": "^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$"
+                    },
+                    "signingSecret": {
+                      "type": "string",
+                      "pattern": "^[A-Za-z0-9+/]{43}=$"
+                    }
+                  },
+                  "required": [
+                    "triggerId",
+                    "signingSecret"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The serialized request body exceeds 131072 bytes. Nothing was dispatched.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Failure"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Temporarily unavailable: a structured failure, or the bare refusal sent before dispatch while the server drains. Honor Retry-After when present.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/Failure"
+                    },
+                    {
+                      "$ref": "#/components/schemas/DrainRefusal"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Administrative API failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Failure"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/sandbox/test-model-connection": {
+      "post": {
+        "operationId": "sandbox_test_model_connection",
+        "description": "Test a model on a running sandbox with its current bound API-key account. Owner only.",
+        "security": [
+          {
+            "serviceToken": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "description": "Send at most 131072 bytes of serialized JSON. The dashboard endpoint refuses a larger body with HTTP 413 without forwarding it, and the server refuses a body over its own limit, which is never lower, with HTTP 413 before any handler runs.",
+          "x-max-body-bytes": 131072,
+          "x-oversized-body-status": 413,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$schema": "http://json-schema.org/draft-07/schema#",
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "format": "uuid",
+                    "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})$"
+                  },
+                  "model": {
+                    "type": "string"
+                  },
+                  "org": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  }
+                },
+                "required": [
+                  "id",
+                  "model"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$schema": "http://json-schema.org/draft-07/schema#",
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "test": {
+                      "type": "object",
+                      "properties": {
+                        "ok": {
+                          "type": "boolean"
+                        },
+                        "status": {
+                          "anyOf": [
+                            {
+                              "type": "integer",
+                              "minimum": 100,
+                              "maximum": 599
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "error": {
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "enum": [
+                                "provider_rejected",
+                                "invalid_response",
+                                "connection_failed"
+                              ]
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "code": {
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "enum": [
+                                "invalid_api_key",
+                                "model_not_found",
+                                "DeploymentNotFound",
+                                "invalid_request_error",
+                                "authentication_error",
+                                "permission_error",
+                                "not_found_error",
+                                "rate_limit_error",
+                                "overloaded_error",
+                                "api_error",
+                                "server_error",
+                                "insufficient_quota"
+                              ]
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "retryAfterSeconds": {
+                          "type": "integer",
+                          "minimum": 0,
+                          "maximum": 31536000
+                        }
+                      },
+                      "required": [
+                        "ok",
+                        "status",
+                        "error",
+                        "code"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "test"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The serialized request body exceeds 131072 bytes. Nothing was dispatched.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Failure"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Temporarily unavailable: a structured failure, or the bare refusal sent before dispatch while the server drains. Honor Retry-After when present.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/Failure"
+                    },
+                    {
+                      "$ref": "#/components/schemas/DrainRefusal"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Administrative API failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Failure"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/sandbox/bind-credential": {
+      "post": {
+        "operationId": "sandbox_bind_credential",
+        "description": "Bind an owned sandbox to the selected account. A supported running sandbox must stop safely before its account changes.",
+        "security": [
+          {
+            "serviceToken": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "description": "Send at most 131072 bytes of serialized JSON. The dashboard endpoint refuses a larger body with HTTP 413 without forwarding it, and the server refuses a body over its own limit, which is never lower, with HTTP 413 before any handler runs.",
+          "x-max-body-bytes": 131072,
+          "x-oversized-body-status": 413,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$schema": "http://json-schema.org/draft-07/schema#",
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "format": "uuid",
+                    "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})$"
+                  },
+                  "credentialId": {
+                    "type": "string",
+                    "format": "uuid",
+                    "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})$"
+                  },
+                  "org": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  }
+                },
+                "required": [
+                  "id",
+                  "credentialId"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$schema": "http://json-schema.org/draft-07/schema#",
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "credentialId": {
+                      "type": "string"
+                    },
+                    "credentialVersion": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
+                    },
+                    "harness": {
+                      "type": "string"
+                    },
+                    "status": {
+                      "type": "string",
+                      "const": "bound"
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "credentialId",
+                    "credentialVersion",
+                    "harness",
+                    "status"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The serialized request body exceeds 131072 bytes. Nothing was dispatched.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Failure"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Temporarily unavailable: a structured failure, or the bare refusal sent before dispatch while the server drains. Honor Retry-After when present.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/Failure"
+                    },
+                    {
+                      "$ref": "#/components/schemas/DrainRefusal"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Administrative API failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Failure"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "serviceToken": {
+        "type": "http",
+        "scheme": "bearer"
+      },
+      "viewerGrant": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "A short-lived sandbox viewer grant."
+      },
+      "epochGrant": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "A scoped epoch grant for the required worker authority."
+      },
+      "finishGrant": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "A sandbox runtime grant that authorizes self-finish."
+      }
+    },
+    "schemas": {
+      "DrainRefusal": {
+        "type": "object",
+        "required": [
+          "error"
+        ],
+        "properties": {
+          "error": {
+            "type": "string",
+            "const": "temporarily_unavailable"
+          }
+        }
+      },
+      "Failure": {
+        "type": "object",
+        "required": [
+          "error"
+        ],
+        "properties": {
+          "error": {
+            "type": "object",
+            "required": [
+              "code",
+              "message"
+            ],
+            "properties": {
+              "code": {
+                "type": "string",
+                "description": "Public failure code; clients must tolerate future codes.",
+                "examples": [
+                  "docker_host_upgrade_required",
+                  "provider_routing_unavailable",
+                  "github_hydration_failed",
+                  "extension_not_found",
+                  "extension_not_allowed",
+                  "extension_state",
+                  "sandbox_retention_ended",
+                  "extension_maximum",
+                  "credential_refused",
+                  "provider_unavailable",
+                  "dependency_unavailable",
+                  "outcome_unknown"
+                ]
+              },
+              "message": {
+                "type": "string"
+              },
+              "details": {}
+            }
+          }
+        }
+      }
+    }
+  }
+}

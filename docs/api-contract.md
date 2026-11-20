@@ -37,7 +37,8 @@ limits. Streaming outputs describe their media type and event/item schema.
 
 #2775 generates OpenAPI from the table, including the REST surface for
 `agent` entries. Publish administrative schemas separately from the public
-integration description. #2776 exposes the agent set only, from #2716's tool
+integration description in [openapi-admin.json](../packages/mcp-server/openapi-admin.json).
+Regenerate both documents with `bun scripts/generate-openapi.ts`. #2776 exposes the agent set only, from #2716's tool
 inventory. Agent tool names, descriptions and permitted dispatch branches are metadata
 on those entries. The primary projection is `launch`, `launch_options`,
 `list`, `status`, `send`, `stop`, `logs` (events), `report`, `exec`,

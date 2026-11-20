@@ -1,18 +1,22 @@
 import { expect, test } from "bun:test";
+import { operations } from "@armada/core/contract";
 import { CONTROL_BODY_MAX_BYTES, VAULT_CONTROL_BODY_MAX_BYTES } from "@armada/core/server";
 import { z } from "zod";
 import releasePlease from "../../../release-please-config.json";
 import published from "../openapi.json";
+import adminPublished from "../openapi-admin.json";
 import { generateOpenApi } from "../src/openapi.ts";
 
 test("release version bumps update the published OpenAPI version with core", () => {
   const extraFiles = releasePlease.packages["."]["extra-files"];
   expect(extraFiles).toContainEqual({ type: "json", path: "packages/core/package.json", jsonpath: "$.version" });
-  expect(extraFiles).toContainEqual({
-    type: "json",
-    path: "packages/mcp-server/openapi.json",
-    jsonpath: "$.info.version",
-  });
+  for (const file of ["openapi.json", "openapi-admin.json"]) {
+    expect(extraFiles).toContainEqual({
+      type: "json",
+      path: `packages/mcp-server/${file}`,
+      jsonpath: "$.info.version",
+    });
+  }
 });
 
 test("published OpenAPI matches current server contracts and preserves REST field names", async () => {
@@ -93,8 +97,10 @@ test("every published operation states the body limit both public boundaries enf
 
 test("published OpenAPI keeps the plain JSON layout that release version bumps write", async () => {
   // Release Please rewrites extra JSON files with JSON.stringify(_, null, 2); any other layout breaks the release PR's checks.
-  const text = await Bun.file(new URL("../openapi.json", import.meta.url)).text();
-  expect(text).toBe(`${JSON.stringify(JSON.parse(text), null, 2)}\n`);
+  for (const file of ["openapi.json", "openapi-admin.json"]) {
+    const text = await Bun.file(new URL(`../${file}`, import.meta.url)).text();
+    expect(text).toBe(`${JSON.stringify(JSON.parse(text), null, 2)}\n`);
+  }
 });
 
 test("published 503 schema accepts the real drain refusal and a structured unavailable failure", async () => {
@@ -233,11 +239,13 @@ test("the integration projection merges methods on one path and excludes admin o
     errors: [],
     audience: "public",
   } as const;
-  const { paths } = generateOpenApi([
-    entry,
-    { ...entry, name: "deleteExample", route: { ...entry.route, method: "DELETE" } },
-    { ...entry, name: "adminExample", route: { ...entry.route, method: "PUT" }, audience: "admin" },
-  ]);
+  const { paths } = generateOpenApi({
+    table: [
+      entry,
+      { ...entry, name: "deleteExample", route: { ...entry.route, method: "DELETE" } },
+      { ...entry, name: "adminExample", route: { ...entry.route, method: "PUT" }, audience: "admin" },
+    ],
+  });
   expect(paths).toEqual({
     "/api/v1/sandboxes/{id}": {
       get: expect.objectContaining({
@@ -252,6 +260,17 @@ test("the integration projection merges methods on one path and excludes admin o
       delete: expect.objectContaining({ operationId: "sandbox_delete" }),
     },
   });
+});
+
+test("the published administrative document contains exactly the table's admin methods", () => {
+  expect(generateOpenApi({ projection: "admin" })).toEqual(adminPublished);
+  const publishedMethods = Object.entries(adminPublished.paths).flatMap(([path, methods]) =>
+    Object.keys(methods).map((method) => `${method.toUpperCase()} ${path}`),
+  );
+  const adminMethods = Object.values(operations)
+    .filter(({ audience }) => audience === "admin")
+    .map(({ route }) => `${route.method} ${route.path}`);
+  expect(publishedMethods.sort()).toEqual(adminMethods.sort());
 });
 
 test("scoped REST advertises the grants, idempotency headers and body refusal used on the server", () => {
