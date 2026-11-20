@@ -53,7 +53,7 @@ export function runtimeResumePlacement<H extends Provider>(
     );
     const host = await placement.host(caller, sandbox);
     return {
-      start: (signal, restoreCheckpoint, confirmActivation) =>
+      start: (signal, restoreCheckpoint, confirmActivation, assertDispatch) =>
         options.policy.start({
           host,
           actor,
@@ -86,6 +86,8 @@ export function runtimeResumePlacement<H extends Provider>(
             );
             const observe: ResumeStageObserver = (stage) =>
               recordLaunchStageQuietly(options.sql, sandbox.id, stage, sandbox.lifecycleGeneration);
+            await assertDispatch?.();
+            admission.throwIfAborted();
             await placement.restore(host, sandbox, ttlSeconds, admission, restoreCheckpoint, observe);
             await confirmActivation?.();
             // The provider restored the machine; the runtime ticket is issued only after this.
