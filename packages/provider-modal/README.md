@@ -673,9 +673,9 @@ tree so file imports resolve fixture assets without modifying the shared
 workspace artifact. The distribution test uses an incompressible payload to
 force multiple chunks and replays the captured installation commands in an
 isolated directory. It checks Linux's single-command size limit and verifies
-that a digest mismatch leaves the previously installed runtime intact. The
-bundle fixture checks that the executable can run with its embedded runtime
-after the workspace runtime files are removed.
+that a digest mismatch leaves the previously installed runtime intact. To
+verify the embedded runtime, compile `test/bundle.ts` and run the resulting
+executable without the workspace runtime files available.
 
 The provider lifecycle tests exercise the real adapter through injected ports.
 Golden cases create their own images, while worker lifecycle cases start with
