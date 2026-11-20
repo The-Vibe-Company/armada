@@ -3,8 +3,20 @@ import type { Operation } from "./index.ts";
 
 const position = z.string().regex(/^(0|[1-9][0-9]{0,18})$/);
 const maxId = "9223372036854775807";
-const cursor = position
-  .refine((value) => value.length < 19 || value <= maxId)
+
+const cursorAlternatives = ["0", `[1-9][0-9]{0,${maxId.length - 2}}`, maxId];
+for (const [index, digit] of Array.from(maxId).entries()) {
+  const lowestDigit = index === 0 ? 1 : 0;
+  const highestDigit = Number(digit) - 1;
+  if (highestDigit < lowestDigit) continue;
+
+  const remainingDigits = maxId.length - index - 1;
+  const suffix = remainingDigits > 0 ? `[0-9]{${remainingDigits}}` : "";
+  cursorAlternatives.push(`${maxId.slice(0, index)}[${lowestDigit}-${highestDigit}]${suffix}`);
+}
+const cursor = z
+  .string()
+  .regex(new RegExp(`^(?:${cursorAlternatives.join("|")})$`))
   .optional()
   .describe(`A decimal event ID from 0 through ${maxId}.`);
 
