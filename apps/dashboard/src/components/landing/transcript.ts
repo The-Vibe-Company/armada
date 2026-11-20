@@ -3,7 +3,7 @@ import type { TerminalCommand } from "./terminal-types";
 
 export const TRANSCRIPT: TerminalCommand[] = [
   {
-    command: "armada snapshot list",
+    command: "armada snapshot ls",
     output: "widgets  boat  org  snapshot  2 repos\ngadgets  modal  org  snapshot  1 repo",
   },
   {

@@ -21,7 +21,6 @@ export type UsageGroup =
   | "mcp-bindings"
   | "bind-credential"
   | "snapshots"
-  | "snapshot-admin"
   | "credential-setup"
   | "credential-accounts";
 

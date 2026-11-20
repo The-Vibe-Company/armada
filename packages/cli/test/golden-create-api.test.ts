@@ -9,8 +9,8 @@ test("golden create maps positional config to API with token-only auth", async (
   let warnings = "";
   const code = await run(
     [
-      "golden",
-      "create",
+      "snapshot",
+      "new",
       "web",
       "--repo",
       "https://github.com/acme/web.git@feature/login",
@@ -19,6 +19,7 @@ test("golden create maps positional config to API with token-only auth", async (
       "--init",
       "pnpm install",
       "--private",
+      "--wait",
       "--org",
       "team",
     ],
@@ -76,7 +77,7 @@ test("token-only golden create prints an actionable API conflict and exits nonze
   let output = "";
   let requests = 0;
   const code = await run(
-    ["golden", "create", "quota-probe", "--repo", "https://github.com/acme/web", "--json"],
+    ["snapshot", "new", "quota-probe", "--repo", "https://github.com/acme/web", "--json"],
     {
       out: (text) => {
         output += text;
@@ -124,13 +125,14 @@ for (const outcome of ["succeeded", "failed", "billing", "recovery", "disconnect
     let sleeps = 0;
     const code = await run(
       [
-        "golden",
-        "create",
+        "snapshot",
+        "new",
         "web",
         "--repo",
         "https://github.com/acme/web.git",
         "--idempotency-key",
         "stable-admission-key",
+        "--wait",
       ],
       {
         out: (text) => {
@@ -208,7 +210,7 @@ for (const state of ["succeeded", "queued"] as const) {
     const paths: string[] = [];
     let output = "";
     const code = await run(
-      ["golden", "create", "web", "--repo", "https://github.com/acme/web.git", "--timeout", "0", "--json"],
+      ["snapshot", "new", "web", "--repo", "https://github.com/acme/web.git", "--json"],
       {
         out: (text) => {
           output += text;
@@ -235,53 +237,7 @@ for (const state of ["succeeded", "queued"] as const) {
     );
     expect(code).toBe(0);
     expect(paths).toEqual(["/api/v1/golden/create"]);
-    expect(JSON.parse(output)).toEqual(state === "succeeded" ? result : job);
+    expect(JSON.parse(output)).toEqual(job);
     expect(output).not.toContain(token);
   });
 }
-
-test("golden build-cancel sends only job and org through authenticated API and prints cancellation", async () => {
-  const jobId = "11111111-1111-4111-8111-111111111111";
-  const calls: { path: string; body: unknown; auth: string | null }[] = [];
-  let output = "";
-  const code = await run(
-    ["golden", "build-cancel", jobId, "--org", "org-id"],
-    {
-      out: (text) => {
-        output += text;
-      },
-      err: () => {},
-    },
-    {
-      auth: {
-        out: () => {},
-        err: () => {},
-        env: { ARMADA_TOKEN: token },
-        session: memorySessionStore(),
-        now: () => new Date(),
-        open: () => {},
-        fetch: async (input, init) => {
-          calls.push({
-            path: new URL(String(input)).pathname,
-            body: JSON.parse(String(init?.body)),
-            auth: new Headers(init?.headers).get("authorization"),
-          });
-          return Response.json({
-            jobId,
-            state: "failed",
-            phase: "queued",
-            errorCode: "build_failed",
-            failureReason: "detail:Build cancelled by its owner before a builder started.",
-            result: null,
-          });
-        },
-      },
-    },
-  );
-  expect(code).toBe(0);
-  expect(calls).toEqual([
-    { path: "/api/v1/golden/build/cancel", body: { jobId, org: "org-id" }, auth: "Bearer " + token },
-  ]);
-  expect(output).toContain("cancelled by its owner");
-  expect(output).not.toContain(token);
-});

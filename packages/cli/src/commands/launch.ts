@@ -137,7 +137,7 @@ export default {
   help: `Usage: armada launch <snapshot> --provider boat|modal --agent claude|codex|opencode ["prompt"] [options]
 Fork a visible snapshot; a prompt starts the agent, otherwise wait for the first send.
 Sign in with armada login or set ARMADA_TOKEN for scripts.
-Find snapshots with armada snapshot list; select an organization with --org or armada org use.
+Find snapshots with armada snapshot ls; select an organization with --org or armada org use.
 
 Boat/Modal options:
   --provider boat|modal                  Select the snapshot provider.

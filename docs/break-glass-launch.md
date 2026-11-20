@@ -39,7 +39,7 @@ staging_armada() {
 staging_armada --version
 staging_armada login --url https://armada-mcp-staging.up.railway.app
 staging_armada org list
-staging_armada snapshot list --org "$staging_org" --provider modal
+staging_armada snapshot ls --org "$staging_org" --provider modal
 ```
 
 Once the version matches the pin and the org and snapshot are visible, launch
@@ -57,7 +57,7 @@ attempt before trying another launch. Find the snapshot UUID in the first
 command's output, then match the sandbox by launch start time.
 
 ```bash
-staging_armada snapshot list --org "$staging_org" --provider modal --json
+staging_armada snapshot ls --org "$staging_org" --provider modal --json
 read -r -p 'Staging Modal snapshot UUID: ' snapshot_id
 staging_armada list --org "$staging_org" --golden "$snapshot_id" --owner me --json
 ```

@@ -107,7 +107,7 @@ Once you are a member, check using your org name in place of `my-team`:
 ```sh
 armada org list                          # your orgs: name, your role, id
 armada org members list --org my-team
-armada snapshot list --org my-team           # the snapshots you can launch
+armada snapshot ls --org my-team           # the snapshots you can launch
 ```
 
 Admins also manage roles (`armada org members role <email> admin|member --org <org>`) and removal (`armada org members remove <email> --org <org>`). Anyone can create an org with `armada org create <name>` and becomes its first admin.
@@ -281,7 +281,7 @@ with an existing branch in each repository if different. `first-modal` is the ne
 name you choose, not an existing snapshot you must obtain.
 
 ```sh
-armada snapshot create first-modal --org my-team --provider modal \
+armada snapshot new first-modal --org my-team --provider modal \
   --repo https://github.com/your-owner/frontend.git@main \
   --repo https://github.com/your-owner/backend.git@main
 ```
@@ -303,8 +303,8 @@ build yields a snapshot; a queued/running build may instead print `Build is ...`
 next command. Replace `BUILD_JOB_ID` with that ID to read its status:
 
 ```sh
-armada snapshot build-status BUILD_JOB_ID
-armada snapshot list --org my-team --provider modal
+armada snapshot show --build BUILD_JOB_ID
+armada snapshot ls --org my-team --provider modal
 ```
 
 If still queued/running, check the same job later; do not submit another create. If failed
@@ -328,7 +328,7 @@ Omit the prompt to leave the sandbox waiting for your first `armada send` instea
 snapshot, by `owner/repo` or by its configured directory, and starts the agent there: the
 agent's real initial working directory, set after the pulls and init and before its first prompt,
 also for an idle launch. It is a starting directory, not confinement: the agent can still reach the
-other repositories. It is not a URL, and unlike `snapshot create --repo <url>[@branch]` it is given
+other repositories. It is not a URL, and unlike `snapshot new --repo <url>[@branch]` it is given
 only once. Unknown or ambiguous selectors are rejected before a machine is allocated. Without it,
 launch keeps its previous behavior. MCP `launch` and `POST /api/v1/sandbox/launch` accept the same
 optional `repo` string.

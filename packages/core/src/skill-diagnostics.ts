@@ -16,7 +16,7 @@ export function skillRefusalMessage(value: unknown): string {
     reason === "skillpack_download_unavailable"
       ? "The last golden build reported skillpack_download_unavailable: allow GitHub release egress, then rebuild; repeating an offline build will not help."
       : reason === "skillpack_cli_unavailable"
-        ? "Rebuild the golden with armada golden update to provision the native CLI."
+        ? "Rebuild the golden with armada snapshot update to provision the native CLI."
         : "Check the requested public pin, registry access and compatible CLI; see docs/private-skillpack.md.";
   return `Skillpack installation failed: ${reason}. ${action}`;
 }

@@ -32,7 +32,6 @@ async function invoke(argv: string[], token = false, response?: Response) {
 test("bare families share login-free successful discovery", async () => {
   for (const family of [
     "snapshot",
-    "golden",
     "host",
     "template",
     "routine",

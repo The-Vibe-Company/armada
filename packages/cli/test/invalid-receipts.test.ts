@@ -11,7 +11,7 @@ const commands = [
   ["wait", id],
   ["status", id],
   ["logs", id],
-  ["snapshot", "list"],
+  ["snapshot", "ls"],
   ["org", "list"],
 ];
 

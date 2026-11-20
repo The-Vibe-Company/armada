@@ -8,8 +8,8 @@ Set `ORG_UUID` to the organization ID from `armada org list --json` before runni
 
 ```sh
 armada org use "$ORG_UUID"
-armada snapshot capabilities --json
-armada snapshot capabilities --provider modal --org "$ORG_UUID" --json
+armada api golden/capabilities
+armada api golden/capabilities '{"provider":"modal","org":"ORG_UUID"}'
 ```
 
 This calls authenticated `POST /api/v1/golden/capabilities` with optional `provider` and `org`. It inherits `armada org use` selection; an explicit `--org` wins. The response is exactly `{provider,maxGoldens}` with `maxGoldens: number | null`. Null is unbounded/unknown, never zero or a locally assumed Boat limit. Text output labels that meaning. An unavailable backend or mismatched provider response fails; there is no Boat fallback, provider SDK or direct database access in CLI.

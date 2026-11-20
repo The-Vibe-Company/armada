@@ -100,9 +100,10 @@ After applying migration `20261110120400_golden_snapshot_retirement.sql`, use th
 API-only CLI against the normal Armada origin:
 
 ```sh
-armada snapshot retirement dry-run GOLDEN_UUID --org ORG_UUID --limit 20 --json > review.json
+armada api golden/retirement/dry-run '{"id":"GOLDEN_UUID","org":"ORG_UUID","limit":20}' > review.json
 # Review the exact proof/fingerprints in review.json before confirmation.
-armada snapshot retirement reconcile GOLDEN_UUID --org ORG_UUID --limit 20 --file review.json --json
+jq --arg id GOLDEN_UUID --arg org ORG_UUID '{id: $id, org: $org, limit: 20, receipts: [.results[].receipt]}' review.json |
+  armada api golden/retirement/reconcile -
 ```
 
 Equivalent authenticated POST routes are

@@ -12,7 +12,7 @@ async function invoke(
   let output = "",
     errors = "";
   const code = await run(
-    ["golden", "update", "web", ...args],
+    ["snapshot", "update", "web", ...args],
     {
       out: (text) => {
         output += text;
@@ -48,7 +48,7 @@ async function invoke(
 
 test("--add-repo sends only additions to its dedicated route and never reconstructs/replaces stored config", async () => {
   const result = await invoke(
-    ["--add-repo", "https://github.com/acme/new.git@develop", "--provider", "boat", "--org", "org", "--timeout", "0"],
+    ["--add-repo", "https://github.com/acme/new.git@develop", "--provider", "boat", "--org", "org"],
     () =>
       Response.json({ jobId: "job", state: "queued", phase: "queued", errorCode: null, result: null }, { status: 202 }),
   );
@@ -77,7 +77,7 @@ test.each(["--repo", "--config", "--init", "--setup"])("--add-repo refuses mixin
 });
 
 test.each([
-  [404, "unknown_route", "Unknown route.", "--add-repo. Upgrade the Armada server"],
+  [404, "unknown_route", "Unknown route.", "Check the update route"],
   [
     409,
     "conflict",
@@ -122,7 +122,7 @@ test("append and replacement cannot be requested together", async () => {
 });
 
 test("--repo is explicitly warned as replacement rather than silently advertised as additive", async () => {
-  const result = await invoke(["--replace", "--repo", "https://github.com/acme/new.git", "--timeout", "0"], () =>
+  const result = await invoke(["--replace", "--repo", "https://github.com/acme/new.git"], () =>
     Response.json({ jobId: "job", state: "queued", phase: "queued", errorCode: null, result: null }, { status: 202 }),
   );
   expect(result.code).toBe(0);
@@ -137,56 +137,9 @@ test("legacy synchronous update reply is treated as version-skew/unknown outcome
   expect(result.code).toBe(1);
   expect(result.calls).toHaveLength(1);
   expect(result.errors).toContain("did not return a durable build receipt");
-  expect(result.errors).toContain("inspect snapshot list before retrying");
+  expect(result.errors).toContain("inspect snapshot ls before retrying");
   expect(result.errors).not.toContain("Build undefined");
 });
-
-test.each([true, false])(
-  "build-find sends a scoped read-only lookup and does not imply capacity is free (found=%s)",
-  async (found) => {
-    let output = "";
-    const calls: { path: string; body: unknown }[] = [];
-    const code = await run(
-      ["golden", "build-find", "web", "--provider", "boat", "--org", "org"],
-      {
-        out: (text) => {
-          output += text;
-        },
-        err: () => {},
-      },
-      {
-        auth: {
-          out: () => {},
-          err: () => {},
-          env: { ARMADA_TOKEN: token },
-          session: memorySessionStore(),
-          now: () => new Date(),
-          open: () => {},
-          fetch: async (input, init) => {
-            calls.push({ path: new URL(String(input)).pathname, body: JSON.parse(String(init?.body)) });
-            return Response.json({
-              build: found
-                ? {
-                    jobId: "job",
-                    state: "recovery_required",
-                    phase: "snapshot",
-                    errorCode: "build_failed",
-                    failureReason: null,
-                    result: null,
-                  }
-                : null,
-            });
-          },
-        },
-      },
-    );
-    expect(code).toBe(0);
-    expect(calls).toEqual([{ path: "/api/v1/golden/build/find", body: { name: "web", provider: "boat", org: "org" } }]);
-    expect(output).toContain(
-      found ? "Build job: recovery_required (snapshot)" : "A reservation may still need administrator investigation",
-    );
-  },
-);
 
 test("update --config retains the explicit per-repository history and every other entry", async () => {
   const config = {
@@ -197,7 +150,7 @@ test("update --config retains the explicit per-repository history and every othe
     init: ["bun install"],
   };
   const result = await invoke(
-    ["--config", "golden.json", "--replace", "--timeout", "0"],
+    ["--config", "golden.json", "--replace"],
     () =>
       Response.json({ jobId: "job", state: "queued", phase: "queued", errorCode: null, result: null }, { status: 202 }),
     config,

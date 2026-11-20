@@ -157,10 +157,10 @@ commands (never credentials):
 ```
 
 ```sh
-armada snapshot create workspace --provider docker --host office --org ORG_UUID \
+armada snapshot new workspace --provider docker --host office --org ORG_UUID \
   --config workspace.json --private
-armada snapshot list --provider docker --org ORG_UUID
-armada snapshot get SNAPSHOT_UUID --provider docker --org ORG_UUID
+armada snapshot ls --provider docker --org ORG_UUID
+armada snapshot show SNAPSHOT_UUID --provider docker --org ORG_UUID
 # Wait for ready, then use the returned snapshot UUID:
 armada launch "Summarize both repositories" --provider docker \
   --golden SNAPSHOT_UUID --org ORG_UUID --agent codex
