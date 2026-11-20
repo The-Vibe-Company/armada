@@ -55,6 +55,7 @@ export type DockerHostResultRequest = {
 } | {
     outcome: "completed" | "failed";
     reason?: DockerJobFailureReason;
+    machineId?: string;
     baselineVersion?: number;
     baselineTool?: SnapshotBaselineTool;
     missingRefIndex?: number;
