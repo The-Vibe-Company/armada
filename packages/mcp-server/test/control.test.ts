@@ -508,7 +508,7 @@ describe("armada org and armada creds against the control API", () => {
     });
   });
 
-  test("armada logs resolves an Armada id through the authenticated server, without a local boat key", async () => {
+  test("armada events resolves an Armada id through the authenticated server, without a local boat key", async () => {
     await withServer(async ({ db, options }) => {
       const org = crypto.randomUUID();
       await db.query("insert into orgs (id, name) values ($1, 'Logs')", [org]);
@@ -573,7 +573,7 @@ describe("armada org and armada creds against the control API", () => {
           supabaseUrl: "https://supabase.test",
         }),
       };
-      expect(await run(["logs", armadaId], { out: auth.out, err: auth.err }, { auth })).toBe(0);
+      expect(await run(["events", armadaId], { out: auth.out, err: auth.err }, { auth })).toBe(0);
       expect(out).toBe("from server\n");
       expect(err).toBe("");
       expect(calls).toEqual([{ path: "bx_server_only", authorization: "server-resolved" }]);
@@ -1777,10 +1777,12 @@ test("CLI removal uses authorized API and returns only the retained-artifact rec
       ],
     );
     const id = result.rows[0]!.id;
-    const removed = await stan.run(["golden", "remove", id, "--org", org.id, "--json"]);
+    const removed = await stan.run(["snapshot", "rm", id, "--org", org.id, "--json"]);
     expect(removed).toMatchObject({ code: 0 });
     expect(JSON.parse(removed.out)).toEqual({ id, removedAt: expect.any(String), artifacts: "retained" });
-    expect((await stan.run(["golden", "list", "--json"])).out).not.toContain("remove-me");
+    const listed = await stan.run(["snapshot", "ls", "--org", org.id, "--json"]);
+    expect(listed.code).toBe(0);
+    expect(listed.out).not.toContain("remove-me");
     const unauthenticated = await handleControlRequest(
       new Request("http://armada.test/api/v1/golden/remove", {
         method: "POST",
@@ -1835,7 +1837,7 @@ test("public sandbox logs omit account-private native quota and auth records", a
       hasMore: false,
     });
     options.logs = async () => ({ provider: boat.provider, providerSandboxId: "bx_1" });
-    const result = await stan.run(["logs", STAN, "--json"]);
+    const result = await stan.run(["events", STAN, "--json"]);
     expect(result.code).toBe(0);
     expect(result.out).toContain("public work");
     expect(result.out).toContain("ordinary-native-init");
@@ -2473,7 +2475,7 @@ test("access launch resolves an omitted account and grants only its persisted bi
     expect(fake.forks).toHaveLength(0);
     expect((await db.query("select id from sandboxes where org_id=$1", [org.id])).rows).toHaveLength(0);
     const result = await cli(STAN).run([
-      "launch",
+      "new",
       "access",
       "--provider",
       "modal",
@@ -2549,7 +2551,7 @@ test("access launch resolves an omitted account and grants only its persisted bi
       sdk.mockRestore();
     }
     const ordinary = await cli(STAN).run([
-      "launch",
+      "new",
       "access",
       "--provider",
       "modal",

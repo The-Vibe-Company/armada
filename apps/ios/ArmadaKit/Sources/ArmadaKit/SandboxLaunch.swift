@@ -365,7 +365,7 @@ public enum SandboxLaunchDraftProblem: Error, Sendable, Equatable {
     }
 }
 
-/// The body of `POST /api/v1/sandbox/launch`, the route `armada launch --sized` and the
+/// The body of `POST /api/v1/sandbox/launch`, the route `armada new` and the
 /// dashboard use. Omitted optionals leave the server's defaults (golden size policy, account
 /// resolution, default TTL). The request carries the sizing policy version and is sent once.
 public struct SandboxLaunchRequest: Encodable, Sendable, Equatable {

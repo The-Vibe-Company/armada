@@ -28,7 +28,7 @@ for this path.
 In the dashboard's selected organization, look for **Setup → Machines → Docker hosts**.
 An org admin registers hosts. Hosts and new Docker placements are separate server
 opt-ins: a visible host list does not guarantee new launches are enabled.
-`armada host list --org ORG_UUID --json` reports `placement` and host states.
+`armada host ls --org ORG_UUID --json` reports `placement` and host states.
 
 If the Docker hosts section is missing or Docker launches are disabled, confirm
 your org and admin role, then ask the Armada server operator whether host registration and Docker
@@ -96,26 +96,23 @@ Wait for `connected` and for the exact host to appear **online** in the
 dashboard or CLI:
 
 ```sh
-armada host list --org ORG_UUID
-armada host show office --org ORG_UUID
+armada host ls --org ORG_UUID
+armada host ls office --org ORG_UUID
 ```
-
-The host installer sets up the daemon. For the commands below, make sure the
-[Armada CLI](dave-onboarding.md#1-install-the-cli) is installed on the Docker
-machine. The local host commands need no Armada login.
 
 On the Docker machine, check the local installation with:
 
 ```sh
-armada host status
+"$HOME/.local/bin/armada-docker-host" status
 ```
 
 Online means the daemon has polled, not that an agent is ready. If installation
 reports pending or an uncertain result, inspect status before trying again;
 do not blindly replay the registration command. To remove the managed installation
-later, run `armada host uninstall` on the Docker machine. The daemon drains and revokes
-the installation before removing it. If the machine is linked to multiple servers, add
-`--server HTTPS_ORIGIN` to either command to select the installation. See
+later, run `"$HOME/.local/bin/armada-docker-host" uninstall` on the Docker machine. The daemon drains and revokes
+the installation before removing it. If the machine is linked to multiple servers, use
+the corresponding `armada-docker-host@SHA256_SERVER_ORIGIN` binary and pass
+`--instance SHA256_SERVER_ORIGIN`. See
 [managed installation troubleshooting](docker-host-daemon.md#managed-owner-installation-1453).
 
 ## 3. First launch: fresh workspace
@@ -123,18 +120,18 @@ the installation before removing it. If the machine is linked to multiple server
 Replace `your-org/your-repo` with an accessible repository. No snapshot is needed:
 
 ```sh
-armada launch "Summarize this repository; do not change files" \
+armada new "Summarize this repository; do not change files" \
   --provider docker --host office --org ORG_UUID --agent codex \
   --repo your-org/your-repo@main
 armada status SANDBOX_ID
-armada logs SANDBOX_ID --follow
+armada events SANDBOX_ID -f
 armada stop SANDBOX_ID
 ```
 
 Use the returned sandbox ID, not the host ID. The server chooses the official
 Armada environment; no image flag is required. Preparation may still be running
 when launch returns: follow status/logs until the agent answers. An ambiguous
-host name requires the UUID from `host list`. See [driving a sandbox](dave-onboarding.md#6-launch-from-the-cli)
+host name requires the UUID from `host ls`. See [driving a sandbox](dave-onboarding.md#6-launch-from-the-cli)
 for follow-up commands.
 
 ## 4. Optional: a reusable two-repository snapshot
@@ -157,12 +154,12 @@ commands (never credentials):
 ```
 
 ```sh
-armada snapshot create workspace --provider docker --host office --org ORG_UUID \
+armada snapshot new workspace --provider docker --host office --org ORG_UUID \
   --config workspace.json --private
-armada snapshot list --provider docker --org ORG_UUID
-armada snapshot get SNAPSHOT_UUID --provider docker --org ORG_UUID
+armada snapshot ls --provider docker --org ORG_UUID
+armada snapshot show SNAPSHOT_UUID --provider docker --org ORG_UUID
 # Wait for ready, then use the returned snapshot UUID:
-armada launch "Summarize both repositories" --provider docker \
+armada new "Summarize both repositories" --provider docker \
   --golden SNAPSHOT_UUID --org ORG_UUID --agent codex
 ```
 

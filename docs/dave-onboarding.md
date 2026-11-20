@@ -107,7 +107,7 @@ Once you are a member, check using your org name in place of `my-team`:
 ```sh
 armada org list                          # your orgs: name, your role, id
 armada org members list --org my-team
-armada snapshot list --org my-team           # the snapshots you can launch
+armada snapshot ls --org my-team           # the snapshots you can launch
 ```
 
 Admins also manage roles (`armada org members role <email> admin|member --org <org>`) and removal (`armada org members remove <email> --org <org>`). Anyone can create an org with `armada org create <name>` and becomes its first admin.
@@ -186,10 +186,10 @@ actual IDs for "OpenAI API" and "Personal ChatGPT". After building `first-modal`
 choose the account for each launch by substituting its UUID below.
 
 ```sh
-armada launch first-modal --org my-team --provider modal --agent codex \
+armada new first-modal --org my-team --provider modal --agent codex \
   --credential-id OPENAI_API_ACCOUNT_UUID "Summarize the repositories"
 # OR use the subscription account:
-armada launch first-modal --org my-team --provider modal --agent codex \
+armada new first-modal --org my-team --provider modal --agent codex \
   --credential-id CHATGPT_ACCOUNT_UUID "Summarize the repositories"
 ```
 
@@ -244,7 +244,7 @@ Replace `ACCOUNT_UUID` with the ID returned by list. The same Morph account supp
 Claude Code, Codex and OpenCode. On a Modal snapshot, choose it explicitly:
 
 ```sh
-armada launch first-modal --org my-team --provider modal --agent codex   --credential-id ACCOUNT_UUID --model morph-kimik31 "Summarize the repositories"
+armada new first-modal --org my-team --provider modal --agent codex   --credential-id ACCOUNT_UUID --model morph-kimik31 "Summarize the repositories"
 ```
 
 Build `first-modal` below before running that launch. Morph also supports Docker
@@ -281,7 +281,7 @@ with an existing branch in each repository if different. `first-modal` is the ne
 name you choose, not an existing snapshot you must obtain.
 
 ```sh
-armada snapshot create first-modal --org my-team --provider modal \
+armada snapshot new first-modal --org my-team --provider modal \
   --repo https://github.com/your-owner/frontend.git@main \
   --repo https://github.com/your-owner/backend.git@main
 ```
@@ -298,13 +298,13 @@ are saved configuration executed at **every launch**, after repository pulls; th
 build-time setup. Neither should contain credentials. See [snapshot configuration](golden-create.md)
 for directory layout and project-specific initialization.
 
-Creation prints `Build job: <job-id>`. It normally waits up to 60 seconds. A completed
-build yields a snapshot; a queued/running build may instead print `Build is ...` with the
-next command. Replace `BUILD_JOB_ID` with that ID to read its status:
+Creation prints `Build job: <job-id>` and returns after admission. Add `--wait` to observe
+the build for up to 60 seconds by default. Replace `BUILD_JOB_ID` with the printed ID
+to read its status:
 
 ```sh
-armada snapshot build-status BUILD_JOB_ID
-armada snapshot list --org my-team --provider modal
+armada snapshot show --build BUILD_JOB_ID
+armada snapshot ls --org my-team --provider modal
 ```
 
 If still queued/running, check the same job later; do not submit another create. If failed
@@ -314,21 +314,21 @@ to step 6 only when the job is `succeeded` and `first-modal` is listed for Modal
 ## 6. Launch from the CLI
 
 ```sh
-armada launch first-modal --org my-team --provider modal --agent claude \
+armada new first-modal --org my-team --provider modal --agent claude \
   "Summarize the two repositories without changing files"
 # OR, if you stored Codex credentials in step 5:
-armada launch first-modal --org my-team --provider modal --agent codex \
+armada new first-modal --org my-team --provider modal --agent codex \
   "Summarize the two repositories without changing files"
 ```
 
-`armada launch` asks the server to resolve credentials and fork the snapshot. It prints the sandbox id
+`armada new` asks the server to resolve credentials and fork the snapshot. It prints the sandbox id
 (`--json` prints the full record). Use that ID for `armada status <sandbox-id>`,
-`armada logs <sandbox-id>` and, when finished, `armada stop <sandbox-id>` to stop charges.
+`armada events <sandbox-id>` and, when finished, `armada stop <sandbox-id>` to stop charges.
 Omit the prompt to leave the sandbox waiting for your first `armada send` instead. Optional `--repo` selects one repository already recorded in the
 snapshot, by `owner/repo` or by its configured directory, and starts the agent there: the
 agent's real initial working directory, set after the pulls and init and before its first prompt,
 also for an idle launch. It is a starting directory, not confinement: the agent can still reach the
-other repositories. It is not a URL, and unlike `snapshot create --repo <url>[@branch]` it is given
+other repositories. It is not a URL, and unlike `snapshot new --repo <url>[@branch]` it is given
 only once. Unknown or ambiguous selectors are rejected before a machine is allocated. Without it,
 launch keeps its previous behavior. MCP `launch` and `POST /api/v1/sandbox/launch` accept the same
 optional `repo` string.
@@ -616,6 +616,6 @@ JSON selection commands return `{"org":<organization>}` when selecting and
 authorizing the request and keep the process running. It writes
 `{"authenticated":true}` after saving the session. `armada logout --json`
 returns `{"authenticated":false}`. Host mutations
-accept `--json`: limits and retention return the host ID and requested policy,
-revoke returns the host ID and `revoked:true`, and add returns the registration
-receipt without waiting for check-in. Protect that short-lived installer receipt.
+accept `--json`. The `limits` verb returns the host ID and requested policy.
+The `rm` verb returns the host ID and `revoked:true`. The `add` verb returns
+the registration receipt without waiting for check-in. Protect that short-lived installer receipt.

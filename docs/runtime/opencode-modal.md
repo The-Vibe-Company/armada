@@ -16,7 +16,7 @@ an authenticated, loopback-only HTTP listener. Armada subscribes to that process
 retry waits into `armada/modelRateLimit`. Native retry events omit HTTP status;
 recognized rate-limit/overload messages use rate-limit wording, while every other
 retry remains visible as a generic model-provider request retry. It never starts another
-request or sleeps on behalf of an in-flight native retry. CLI status/logs and the
+request or sleeps on behalf of an in-flight native retry. CLI status/events and the
 sandbox page display the existing wait/count/total fields.
 
 The listener uses a fresh per-process password delivered only in the child
@@ -42,7 +42,7 @@ the retired `deepseek-chat` alias is not a launch default. API keys are stdin/fi
 armada creds set opencode --name deepseek --base-url https://api.deepseek.com \
   --models deepseek-flash --file /private/deepseek-key
 armada creds list --json
-armada launch MODAL_SNAPSHOT --provider modal --agent opencode \
+armada new MODAL_SNAPSHOT --provider modal --agent opencode \
   --credential-id ACCOUNT_UUID --model armada/deepseek-flash \
   --reasoning-effort default 'Reply with exactly: armada-opencode-ok'
 ```

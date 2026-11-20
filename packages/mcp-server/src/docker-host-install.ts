@@ -117,7 +117,7 @@ if [ -e "$HOME/.local/bin/armada-docker-host@$target_instance" ]; then
   service="armada-docker-host@$instance.service"
 elif [ -e "$binary" ]; then
 legacy_status=$("$tmp/host" status) || {
-  echo "Cannot safely identify the existing Docker host; the new token was not exchanged. Run armada host status before retrying." >&2; exit 1;
+  echo "Cannot safely identify the existing Docker host; the new token was not exchanged. Run $binary status before retrying." >&2; exit 1;
 }
 case "$legacy_status" in
   *'"registered":true'*)
@@ -145,7 +145,7 @@ if [ -e "$binary" ]; then
     *'"registered":true'*)
       host_cmd "$tmp/host" upgrade --server "$server"
       if ! printf '%s\\n' "$token" | host_cmd "$tmp/host" reuse-registration --server "$server"; then
-        echo 'This machine is already registered. Could not look up its name; use armada host list. The unused ticket expires automatically.'
+        echo 'This machine is already registered. Could not look up its name; use armada host ls. The unused ticket expires automatically.'
       fi
       unset token
       echo 'Keeping the existing registration. Ctrl-C stops host add waiting if the unused ticket could not be canceled.'

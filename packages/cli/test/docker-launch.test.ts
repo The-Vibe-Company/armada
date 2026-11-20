@@ -9,7 +9,7 @@ const requestId = "44444444-4444-4444-8444-444444444444";
 const idempotencyKey = "Launch_Key_With_Case";
 const image = `worker@sha256:${"a".repeat(64)}`;
 const args = [
-  "launch",
+  "new",
   "--provider",
   "docker",
   "--agent",
@@ -314,8 +314,8 @@ test("Docker snapshots build through the normal golden command and launch throug
   };
   const build = await capture(
     [
-      "golden",
-      "create",
+      "snapshot",
+      "new",
       "owned",
       "--provider",
       "docker",
@@ -348,13 +348,13 @@ test("Docker snapshots build through the normal golden command and launch throug
   expect(build.out).toContain("building");
   expect(build.out).toContain("Built on Armada: 2.28.0");
   for (const builtOnVersion of ["2.28.0", null]) {
-    const listed = await capture(["golden", "list", "--provider", "docker", "--org", org], async () =>
+    const listed = await capture(["snapshot", "ls", "--provider", "docker", "--org", org], async () =>
       Response.json({ snapshots: [{ ...snapshot, builtOnVersion }] }),
     );
     expect(listed.code).toBe(0);
     expect(listed.out).toContain(`Built on Armada ${builtOnVersion ?? "unknown version"}`);
   }
-  const offered = await capture(["golden", "list", "--provider", "docker", "--org", org], async () =>
+  const offered = await capture(["snapshot", "ls", "--provider", "docker", "--org", org], async () =>
     Response.json({
       currentVersion: "2.29.0",
       snapshots: [{ ...snapshot, status: "ready", image: `sha256:${"a".repeat(64)}` }],
@@ -362,7 +362,7 @@ test("Docker snapshots build through the normal golden command and launch throug
   );
   expect(offered.out).toContain(`armada snapshot rebuild ${id} --provider docker --org ${org}`);
   const rebuilt = await capture(
-    ["golden", "rebuild", id, "--provider", "docker", "--org", org, "--request-id", requestId],
+    ["snapshot", "rebuild", id, "--provider", "docker", "--org", org, "--request-id", requestId],
     async (request) => {
       expect(new URL(request.url).pathname).toBe("/api/v1/docker/snapshots/rebuild");
       expect(await request.json()).toEqual({ org, id, requestId });

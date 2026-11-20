@@ -25,13 +25,13 @@ Quick start / common examples:
   armada login
   armada org list
   armada org use my-team
-  armada doctor
+  armada status --setup
   armada host add --name my-workstation
-  armada launch
+  armada new
   armada list
   armada status SANDBOX_ID
   armada send SANDBOX_ID "Continue the task"
-  armada logs SANDBOX_ID --tail 20
+  armada events SANDBOX_ID --tail 20
   armada stop SANDBOX_ID
   eval "$(armada completion bash)"
 
@@ -44,15 +44,13 @@ ${sandboxUsage("setup")}
   armada skill install (--project <directory> | --global) --yes [--revision <commit>]
                                            Public GitHub Armada tool-knowledge skill; no login. See skill --help.
 ${sandboxUsage("snapshots")}
-${sandboxUsage("launch")}
+${sandboxUsage("new")}
 ${sandboxUsage("list")}
 ${sandboxUsage("mcp-bindings")}
 ${sandboxUsage("advice")}
 ${sandboxUsage("bind-credential")}
 ${sandboxUsage("sandbox")}
-${sandboxUsage("snapshot-admin")}
 ${sandboxUsage("mcp")}
-${sandboxUsage("logs")}
 ${sandboxUsage("session")}
 ${sandboxUsage("org")}
 ${sandboxUsage("account")}

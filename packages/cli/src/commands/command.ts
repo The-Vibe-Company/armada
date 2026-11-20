@@ -6,11 +6,10 @@ export type UsageGroup =
   | "org"
   | "host"
   | "docker-launch"
-  | "launch"
+  | "new"
   | "list"
   | "advice"
   | "sandbox"
-  | "logs"
   | "setup"
   | "session"
   | "account"
@@ -21,7 +20,6 @@ export type UsageGroup =
   | "mcp-bindings"
   | "bind-credential"
   | "snapshots"
-  | "snapshot-admin"
   | "credential-setup"
   | "credential-accounts";
 

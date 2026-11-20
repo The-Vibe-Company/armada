@@ -60,7 +60,7 @@ with its organization UUID, and use the returned build job UUID for `JOB_UUID`.
 armada snapshot update "SNAPSHOT_NAME" --provider boat --org ORG_UUID --replace --config snapshot.json
 armada snapshot update "SNAPSHOT_NAME" --provider modal --org ORG_UUID --replace --config snapshot.json
 # Add --setup "path/to/original-setup.sh" when the original build used one.
-armada snapshot build-status JOB_UUID
+armada snapshot show --build JOB_UUID
 ```
 
 Run only the command for each provider actually hosting that snapshot. Boat and
@@ -76,8 +76,8 @@ For Fable on Boat, follow the [provider check](fable-provider-check.md): the
 native path is expected to refuse it.
 
 ```sh
-armada launch "SNAPSHOT_NAME" --provider PROVIDER --org ORG_UUID --agent claude --credential-id CLAUDE_ACCOUNT_UUID --model claude-fable-5-2 "Which model are you running? Report your exact model ID."
-armada launch "SNAPSHOT_NAME" --provider PROVIDER --org ORG_UUID --agent claude --credential-id CLAUDE_ACCOUNT_UUID --model claude-opus-5-5 "Which model are you running? Report your exact model ID."
+armada new "SNAPSHOT_NAME" --provider PROVIDER --org ORG_UUID --agent claude --credential-id CLAUDE_ACCOUNT_UUID --model claude-fable-5-2 "Which model are you running? Report your exact model ID."
+armada new "SNAPSHOT_NAME" --provider PROVIDER --org ORG_UUID --agent claude --credential-id CLAUDE_ACCOUNT_UUID --model claude-opus-5-5 "Which model are you running? Report your exact model ID."
 ```
 
 Inspect turn/model metadata as well as the response. Test with an entitled account;

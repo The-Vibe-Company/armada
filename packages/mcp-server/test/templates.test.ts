@@ -1072,7 +1072,7 @@ test("template skills retain verified receipts and closed refusals without repla
           }
         : exec(r);
     for (const [reason, warnings, action] of [
-      ["skillpack_cli_unavailable", [], "armada golden update"],
+      ["skillpack_cli_unavailable", [], "armada snapshot update"],
       ["skillpack_download_unavailable", ["skillpack_download_unavailable"], "allow GitHub release egress"],
     ] as const) {
       await f.db.query("update goldens set build_warnings=$2::text[] where id=$1", [

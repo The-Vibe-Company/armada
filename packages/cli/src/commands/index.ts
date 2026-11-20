@@ -7,22 +7,20 @@ import type { Command, UsageGroup } from "./command.ts";
 import completion from "./completion.ts";
 import creds from "./creds.ts";
 import detail from "./detail.ts";
-import doctor from "./doctor.ts";
-import exec from "./exec.ts";
 import extend from "./extend.ts";
 import github from "./github.ts";
 import host from "./host.ts";
 import interrupt from "./interrupt.ts";
-import launch from "./launch.ts";
 import list from "./list.ts";
 import login from "./login.ts";
 import logout from "./logout.ts";
-import logs from "./logs.ts";
+import newSandbox from "./new.ts";
 import org from "./org.ts";
 import recovery from "./recovery.ts";
 import report from "./report.ts";
 import rm from "./rm.ts";
 import routine from "./routine.ts";
+import { sandboxInspectionCommands } from "./sandbox-inspection.ts";
 import send from "./send.ts";
 import snapshot from "./snapshot.ts";
 import status from "./status.ts";
@@ -33,7 +31,7 @@ import { tokenCommands } from "./token.ts";
 import wait from "./wait.ts";
 
 export const commands: readonly Command[] = [
-  launch,
+  newSandbox,
   list,
   advice,
   rm,
@@ -47,9 +45,7 @@ export const commands: readonly Command[] = [
   report,
   send,
   steer,
-  exec,
-  logs,
-  doctor,
+  ...sandboxInspectionCommands,
   completion,
   login,
   logout,
@@ -72,7 +68,7 @@ export const commands: readonly Command[] = [
 const byName = new Map(commands.map((command) => [command.name, command]));
 
 export function findCommand(name: string) {
-  return byName.get(name === "golden" ? "snapshot" : name);
+  return byName.get(name);
 }
 
 export function sandboxUsage(group: UsageGroup): string {
@@ -85,10 +81,6 @@ export function sandboxUsage(group: UsageGroup): string {
 export function focusedHelp(argv: readonly string[]) {
   if (!["--help", "-h"].includes(argv.at(-1) ?? "")) return undefined;
   const parts = argv.slice(0, -1);
-  if (parts[0] === "golden") {
-    if (parts.length > 1 && !Object.hasOwn(snapshot.subcommandHelp, `snapshot ${parts[1]}`)) return undefined;
-    parts[0] = "snapshot";
-  }
   const path = parts.join(" ");
   const command = byName.get(path);
   if (command) return command.help;

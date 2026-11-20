@@ -36,10 +36,10 @@ Open source, MIT. Sandboxes run on a connected Boat or Modal account or on a reg
 
 For your own compute, [register a Docker host and choose fresh launch or a host-local snapshot](docs/own-machine-quickstart.md) instead of the cloud path below.
 
-1. **Snapshot**: build once from your repositories (`armada snapshot create`).
-2. **Launch**: pick an agent, the model, the effort and the provider (`armada launch`).
+1. **Snapshot**: build once from your repositories (`armada snapshot new`).
+2. **Launch**: pick an agent, the model, the effort and the provider (`armada new`).
 3. **Sandbox**: a fresh, isolated fork where `git` and `gh` act as you.
-4. **Drive**: follow, steer, stop and resume (`armada logs --follow`, `armada send`).
+4. **Drive**: follow, steer, stop and resume (`armada events -f`, `armada send`).
 
 The dashboard, the `armada` CLI and Armada's MCP server all call the same Armada server, so a sandbox launched from one is visible and controllable from the others, under the same permissions.
 
@@ -115,23 +115,23 @@ armada github connect
 **5. Build a snapshot.** The server clones the repositories in a disposable sandbox, runs your optional `--setup` script, scans for leaked secrets and only then saves the snapshot. `--init` commands run at every launch, after the pull. Add `--provider modal` to build it for Modal. Only admins build organization snapshots; members add `--private` to build one for themselves.
 
 ```sh
-armada snapshot create web --repo https://github.com/acme/web@main --init "bun install" --org acme
-armada snapshot list
+armada snapshot new web --repo https://github.com/acme/web@main --init "bun install" --org acme --wait
+armada snapshot ls
 ```
 
-A long build keeps running on the server: `armada snapshot build-status <job-id>` reports it.
+A long build keeps running on the server. Check it with `armada snapshot show --build <job-id>` and wait for `succeeded` before launching.
 
 **6. Launch an agent.** With a prompt the agent starts at once; without one the sandbox waits, ready, for your first prompt. In a snapshot with several repositories, `--repo owner/repo` starts the agent in that one ([details](docs/dave-onboarding.md#6-launch-from-the-cli)).
 
 ```sh
-armada launch web --provider boat --agent claude --model claude-opus-5-5 --reasoning-effort high --ttl 4h \
+armada new web --provider boat --agent claude --model claude-opus-5-5 --reasoning-effort high --ttl 4h \
   "Find why the checkout test is flaky and fix it"
 ```
 
-**7. Drive it.** Replace `SANDBOX_ID` with the ID printed by launch. Run `steer` while the turn is active, from another terminal if `logs --follow` is still running. Send a follow-up after the turn settles. The effort override below applies to a new turn on native Boat. On runtime-backed Boat, keep the launch effort by omitting the override.
+**7. Drive it.** Replace `SANDBOX_ID` with the ID printed by launch. Run `steer` while the turn is active, from another terminal if `events -f` is still running. Send a follow-up after the turn settles. The effort override below applies to a new turn on native Boat. On runtime-backed Boat, keep the launch effort by omitting the override.
 
 ```sh
-armada logs SANDBOX_ID --follow
+armada events SANDBOX_ID -f
 armada steer SANDBOX_ID "Keep the public API unchanged"
 armada send SANDBOX_ID "Now add a regression test" --reasoning-effort xhigh   # this turn only
 armada extend SANDBOX_ID --ttl 270m              # extend the 4h launch to 4h30m from now
@@ -155,7 +155,7 @@ Register an MCP server once, connect it (the browser opens when it asks for OAut
 armada mcp add Docs https://mcp.example.com/mcp      # personal; --scope org shares it with your org
 armada mcp list
 armada mcp connect CONNECTION_ID
-armada launch private-web --provider boat --agent codex --connections CONNECTION_ID "Update the API reference"
+armada new private-web --provider boat --agent codex --connections CONNECTION_ID "Update the API reference"
 armada mcp sandbox-connections SANDBOX_ID
 ```
 
@@ -196,30 +196,22 @@ This repository used to hold Armada v1, a fleet coordinator (Linear, merge queue
 
 [MIT](LICENSE)
 
-### Reading event pages
+### Reading events and outputs
 
-`armada logs ID` reads one page; `--since CURSOR` continues from a saved cursor.
-`--all` drains available pages immediately. `--follow` also drains the backlog
-without a polling delay, then polls once per second while the agent is active.
-Ctrl-C stops the local reader, not the agent.
-
-With `--json`, stdout is a stream of page objects (not one JSON array): each
-contains `events`, `cursor`, `hasMore` and `settled`. Existing fields and pretty
-formatting are unchanged. For scripts:
+`armada events [ID]` reads one page. Use `--tail N` for recent events or
+`-f` to follow until the sandbox settles. Piping stdout or passing `--json`
+produces one JSON object per event.
 
 ```sh
-armada logs SANDBOX_ID --all --json | jq -c '.events[]'
+armada events SANDBOX_ID -f | jq -c 'select(.kind == "message")'
+armada outputs --id SANDBOX_ID
+armada outputs report.json --id SANDBOX_ID -o ./downloads
 ```
-
-Save the last page's `cursor` and pass it with `--since` to resume. Errors go to
-stderr and return a nonzero exit code.
 
 Command discovery works before signing in: use `armada COMMAND --help` (or
 `-h`) for sandbox, snapshot, authentication, organization, credential and MCP
 commands. These work without reading a session or contacting a server.
-Logs has a focused reader reference: `armada logs --help` explains cursor resume,
-tail constraints and the JSON pipe format. Other commands retain the shared
-reference; template, variable, secret and skill commands keep their dedicated help. Help is only intercepted when it is the sole argument after
+Help is only intercepted when it is the sole argument after
 the command; for example, `armada exec ID -- --help` remains remote command text.
 
 ### Sandbox errors and scripts

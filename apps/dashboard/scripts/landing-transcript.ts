@@ -75,19 +75,9 @@ const API: Record<string, unknown> = {
 };
 
 const SESSION = [
-  ["snapshot", "list"],
-  [
-    "launch",
-    "widgets",
-    "--provider",
-    "boat",
-    "--agent",
-    "codex",
-    "Fix the flaky checkout test in widgets",
-    "--ttl",
-    "4h",
-  ],
-  ["logs", SANDBOX],
+  ["snapshot", "ls"],
+  ["new", "widgets", "--provider", "boat", "--agent", "codex", "Fix the flaky checkout test in widgets", "--ttl", "4h"],
+  ["events", SANDBOX],
 ];
 
 const quote = (word: string) => (/\s/.test(word) ? `"${word}"` : word);

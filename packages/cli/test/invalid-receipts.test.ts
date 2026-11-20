@@ -7,11 +7,11 @@ const key = "22222222-2222-4222-8222-222222222222";
 const commands = [
   ["stop", id],
   ["send", id, "hello", "--request-id", key],
-  ["exec", id, "pwd"],
+  ["exec", id, "--", "pwd"],
   ["wait", id],
   ["status", id],
-  ["logs", id],
-  ["snapshot", "list"],
+  ["events", id],
+  ["snapshot", "ls"],
   ["org", "list"],
 ];
 
@@ -65,7 +65,7 @@ test("invalid success receipts fail operationally before output, without replayi
           return new Response(body, { status: 200 });
         },
       };
-      const exit = await run([...command, "--json"], auth, { auth });
+      const exit = await run(command, auth, { auth, stdoutIsTTY: false });
       expect(exit).toBe(1);
       expect(stdout).toBe("");
       expect(stderr).toContain('"code":"unavailable"');

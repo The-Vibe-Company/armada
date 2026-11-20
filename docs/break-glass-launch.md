@@ -38,8 +38,26 @@ staging_armada() {
 }
 staging_armada --version
 staging_armada login --url https://armada-mcp-staging.up.railway.app
+staging_armada --help
+```
+
+For both staging paths, set `sandbox_create_command` to the top-level sandbox creation command shown by
+`staging_armada --help` for the installed version. Current releases use `new`.
+The rehearsed 2.57.2 binary below uses `launch`.
+
+```bash
+read -r -p 'Sandbox creation command from pinned CLI help: ' sandbox_create_command
+```
+
+For the Modal path, use the listing verb shown by the pinned version's snapshot
+help. The rehearsed 2.57.2 binary uses `list`. The current snapshot family uses
+`ls`. Reuse the selected verb when recovering an uncertain launch.
+
+```bash
 staging_armada org list
-staging_armada snapshot list --org "$staging_org" --provider modal
+staging_armada snapshot --help
+read -r -p 'Snapshot listing verb from pinned CLI help: ' snapshot_list_verb
+staging_armada snapshot "$snapshot_list_verb" --org "$staging_org" --provider modal
 ```
 
 Once the version matches the pin and the org and snapshot are visible, launch
@@ -47,7 +65,7 @@ the rehearsal worker. During an incident, replace the prompt with the repair
 task and include the assigned branch and acceptance criteria.
 
 ```bash
-staging_armada launch "$staging_snapshot" --org "$staging_org" --provider modal \
+staging_armada "$sandbox_create_command" "$staging_snapshot" --org "$staging_org" --provider modal \
   --agent codex "Summarize the repository without changing any files."
 ```
 
@@ -57,7 +75,7 @@ attempt before trying another launch. Find the snapshot UUID in the first
 command's output, then match the sandbox by launch start time.
 
 ```bash
-staging_armada snapshot list --org "$staging_org" --provider modal --json
+staging_armada snapshot "$snapshot_list_verb" --org "$staging_org" --provider modal --json
 read -r -p 'Staging Modal snapshot UUID: ' snapshot_id
 staging_armada list --org "$staging_org" --golden "$snapshot_id" --owner me --json
 ```
@@ -65,8 +83,11 @@ staging_armada list --org "$staging_org" --golden "$snapshot_id" --owner me --js
 ```bash
 read -r -p 'Returned sandbox ID: ' sandbox_id
 staging_armada status "$sandbox_id" --org "$staging_org"
-staging_armada logs "$sandbox_id" --org "$staging_org" --follow
+staging_armada events "$sandbox_id" --org "$staging_org" -f
 ```
+
+For a pinned client released before the `events` command, use that client's
+`staging_armada logs "$sandbox_id" --org "$staging_org" --follow`.
 
 ### Coordinator rehearsal record
 
@@ -83,14 +104,17 @@ The coordinator ran `armada stop` and confirmed `stopped` with `armada status`.
 
 ## 2. Launch on the owner's Docker host through staging
 
-Use the same staging wrapper and login. Staging must already allow Docker
+Use the staging wrapper, login, and command selection from the common setup above. Staging must already allow Docker
 placement and the owner must have registered an online host in that staging org.
 The daemon uses its existing staging registration. Its credential stays on the
 host. Staging supplies the Codex account and authorized repository access as in
 path 1. See the [Docker host quickstart](own-machine-quickstart.md) for setup.
 
+Use the command supported by the pinned CLI. The verified 2.57.2 release below
+uses `host list`. Releases with the five-verb host family use `host ls`.
+
 ```bash
-staging_armada host list --org "$staging_org" --json
+staging_armada host list --org "$staging_org" --json  # Pinned CLI 2.57.2
 staging_armada creds list --org "$staging_org" --json
 read -r -p 'Owner staging Docker host UUID: ' staging_host
 read -r -p 'Staging Codex account UUID: ' docker_account
@@ -106,7 +130,7 @@ incident notes so you can recover the submission if you lose the terminal.
 Keep credentials out of the prompt and notes.
 
 ```bash
-staging_armada launch "$docker_prompt" \
+staging_armada "$sandbox_create_command" "$docker_prompt" \
   --provider docker --host "$staging_host" --org "$staging_org" \
   --agent codex --credential-id "$docker_account" --repo "$worker_repo" \
   --idempotency-key "$docker_launch_key"

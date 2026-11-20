@@ -7,16 +7,15 @@ import {
   type GoldenRecord,
   goldenBuildFailureText,
   goldenResponse,
-  isSandboxProvider,
   LaunchError,
   ProviderError,
   ProviderRoutingError,
   parseSnapshotConfig,
-  type SandboxProviderId,
   VaultError,
   VERSION,
 } from "@armada/core";
 import {
+  type Args,
   acceptedOptions,
   flag,
   jsonRequested,
@@ -24,6 +23,7 @@ import {
   parseArgs,
   providerFlag,
   single,
+  uuid,
   values,
   withJsonFlag,
 } from "./args.ts";
@@ -36,9 +36,9 @@ import { dockerSnapshotCommand } from "./docker-snapshots.ts";
 import { failureHint } from "./failure-hint.ts";
 import { type LocalHostIo, localHostCommand, productionLocalHostIo } from "./local-host.ts";
 import { profileStores, selectProfile } from "./profiles.ts";
-import { sizePolicyCommand } from "./size-policy-command.ts";
 import { skillCommand } from "./skill-install.ts";
 import { snapshotText } from "./snapshot-text.ts";
+import { waitForSnapshot } from "./snapshot-wait.ts";
 
 export interface Io {
   out(text: string): void;
@@ -76,10 +76,10 @@ export async function run(argv: readonly string[], io: Io, deps: Deps = {}): Pro
     (error.code === "unauthorized" || (error instanceof ArmadaApiError && error.status === 401));
   try {
     const localArgs = selectProfile(argv, {}).args;
-    if (localArgs[0] === "host" && ["install", "status", "uninstall"].includes(localArgs[1] ?? ""))
+    if (localArgs[0] === "host" && localArgs[1] === "install")
       return finish(
         await localHostCommand(
-          localArgs.slice(1),
+          localArgs.slice(2),
           io,
           deps.localHost ??
             productionLocalHostIo({
@@ -161,6 +161,8 @@ export async function run(argv: readonly string[], io: Io, deps: Deps = {}): Pro
       sessionFailure(caught) && argv[0] !== "login" && !signingIn && !auth?.env.ARMADA_TOKEN
         ? new AuthError("You are not signed in. Run armada login.", "unauthorized")
         : caught;
+    const renderMessage =
+      error instanceof AuthError && error.code === "usage" ? (message: string) => message : snapshotText;
     if (machineOutput) {
       const known =
         error instanceof GoldenError ||
@@ -171,14 +173,14 @@ export async function run(argv: readonly string[], io: Io, deps: Deps = {}): Pro
         error instanceof AuthError;
       writeFailure(
         error instanceof ArmadaApiError ? error.serverCode : known ? error.code : "internal_error",
-        known ? snapshotText(error.message) : "Armada could not complete the command.",
+        known ? renderMessage(error.message) : "Armada could not complete the command.",
         failureHint(known ? error : {}, argv, Boolean(auth?.env.ARMADA_TOKEN)).trim() || null,
       );
       return known ? failureExitCode(error) : 1;
     }
     const printFailure = (message: string) =>
       io.err(
-        `armada: ${snapshotText(message)}\n${(error instanceof ArmadaApiError && argv[0] === "launch") || (argv[0] === "host" && ["install", "status", "uninstall"].includes(argv[1] ?? "")) ? "" : failureHint(error, argv, Boolean(auth?.env.ARMADA_TOKEN))}`,
+        `armada: ${renderMessage(message)}\n${(error instanceof ArmadaApiError && argv[0] === "new") || (argv[0] === "host" && argv[1] === "install") ? "" : failureHint(error, argv, Boolean(auth?.env.ARMADA_TOKEN))}`,
       );
     if (error instanceof GoldenError) {
       printFailure(error.message);
@@ -259,253 +261,103 @@ async function dispatch(argv: readonly string[], io: Io, deps: Deps): Promise<nu
   }
 }
 
-export async function snapshotCommand(argv: readonly string[], io: Io, deps: Deps): Promise<number> {
-  const [subcommand, ...rest] = argv;
-  if (subcommand === undefined || subcommand === "--help" || subcommand === "-h") {
-    io.out(HELP);
-    return subcommand === undefined ? 2 : 0;
-  }
-  if (subcommand === "size-policy")
-    return sizePolicyCommand(rest, authOf(io, deps), (path) =>
-      path ? (deps.readFile ?? ((p) => Bun.file(p).text()))(path) : (deps.readStdin ?? (() => Bun.stdin.text()))(),
-    );
-  const snapshotOptions: Record<string, readonly string[]> = {
-    capabilities: ["--provider"],
-    retirement: ["--limit"],
-    remove: ["--provider"],
-    visibility: ["--visibility"],
-    "build-cancel": [],
-    "build-find": ["--provider"],
-    "build-status": ["--idempotency-key"],
-    create: ["--provider", "--private", "--config", "--repo", "--init", "--setup", "--idempotency-key", "--timeout"],
-    update: [
-      "--provider",
-      "--replace",
-      "--add-repo",
-      "--config",
-      "--repo",
-      "--init",
-      "--setup",
-      "--idempotency-key",
-      "--timeout",
-    ],
-    get: [],
-    rebuild: [],
-    list: ["--provider"],
-  };
-  if (!Object.hasOwn(snapshotOptions, subcommand))
-    throw new AuthError(`unknown command 'snapshot ${subcommand}'. Run 'armada --help'.`, "usage");
-  const args = parseArgs(
-    rest,
-    subcommand === "retirement" ? ["--limit"] : ["--host", "--request-id"],
-    subcommand === "update" ? ["--replace"] : [],
-  );
-  if (args.options.has("--add-repo") && subcommand !== "update")
-    throw new GoldenError("invalid_config", "--add-repo is only supported by snapshot update.");
+const configOptions = ["--config", "--repo", "--init"];
+const buildOptions = [...configOptions, "--setup", "--idempotency-key", "--wait", "--timeout"];
+const options = {
+  ls: [],
+  new: [...buildOptions, "--private"],
+  update: [...buildOptions, "--replace", "--add-repo"],
+  rebuild: [],
+  rm: [],
+  show: ["--build", "--idempotency-key"],
+} satisfies Record<string, readonly string[]>;
+type Verb = keyof typeof options;
+
+export async function snapshotCommand([verb, ...rest]: readonly string[], io: Io, deps: Deps) {
+  if (!verb || !Object.hasOwn(options, verb))
+    throw new AuthError(`unknown command 'snapshot ${verb}'. Run 'armada --help'.`, "usage");
+
+  const auth = authOf(io, deps);
+  const operation = verb as Verb;
+  const args = parseArgs(rest, ["--host", "--request-id", "--build"], ["--replace", "--wait"]);
   if (single(args, "--provider") === "docker") {
-    const auth = authOf(io, deps);
     return dockerSnapshotCommand(
-      subcommand,
+      operation,
       args,
       io,
       { ...auth, fetch: deps.fetch ?? auth.fetch },
-      subcommand === "create" ? await readConfig(args, deps) : undefined,
+      deps.sleep,
+      () => readConfig(args, deps),
+      () => buildWaitSeconds(args),
     );
   }
-  acceptedOptions(args, `snapshot ${subcommand}`, [
-    "--org",
-    "--json",
-    ...(snapshotOptions[subcommand] ?? []),
-    ...(subcommand === "retirement" && args.positionals[0] === "reconcile" ? ["--file"] : []),
-  ]);
+  acceptedOptions(args, `snapshot ${operation}`, ["--org", "--provider", "--json", ...options[operation]]);
   const provider = providerFlag(args);
-  switch (subcommand) {
-    case "capabilities": {
-      if (args.positionals.length) throw new GoldenError("invalid_config", "golden capabilities takes no name.");
-      const auth = authOf(io, deps);
-      const client = await createArmadaApiClient({
-        env: auth.env,
-        fetch: deps.fetch ?? auth.fetch,
-        session: auth.session,
-      });
-      const payload = await client.golden<unknown>("capabilities", {
-        ...(provider === undefined ? {} : { provider }),
-        ...(single(args, "--org") === undefined ? {} : { org: single(args, "--org") }),
-      });
-      const data =
-        payload && typeof payload === "object" && !Array.isArray(payload) ? (payload as Record<string, unknown>) : {};
-      if (
-        !isSandboxProvider(data.provider) ||
-        (provider !== undefined && provider !== data.provider) ||
-        (data.maxGoldens !== null &&
-          (typeof data.maxGoldens !== "number" || !Number.isSafeInteger(data.maxGoldens) || data.maxGoldens < 0))
-      ) {
-        throw new VaultError("unavailable", "Armada returned invalid or mismatched snapshot capabilities.");
-      }
-      const capabilities: { provider: SandboxProviderId; maxGoldens: number | null } = {
-        provider: data.provider,
-        maxGoldens: data.maxGoldens as number | null,
-      };
-      io.out(
-        flag(args, "--json")
-          ? `${JSON.stringify(capabilities)}\n`
-          : `${capabilities.provider}: max snapshots ${capabilities.maxGoldens === null ? "unbounded/unknown" : capabilities.maxGoldens}\n`,
+  if (operation === "rebuild") throw new GoldenError("invalid_config", "snapshot rebuild requires --provider docker.");
+  if (operation === "new") return create(args.positionals, args, io, deps);
+  if (operation === "update") return update(args.positionals, args, io, deps);
+  if (operation === "ls") return list(args, io, deps);
+
+  const org = single(args, "--org");
+  const jobId = single(args, "--build");
+  const idempotencyKey = single(args, "--idempotency-key");
+  if (jobId !== undefined || idempotencyKey !== undefined) {
+    if (
+      args.positionals.length ||
+      provider ||
+      (jobId !== undefined && (idempotencyKey !== undefined || org !== undefined)) ||
+      (idempotencyKey !== undefined && !org)
+    )
+      throw new GoldenError(
+        "invalid_config",
+        "Use snapshot show --build JOB_ID or --idempotency-key KEY --org ORG_UUID.",
       );
-      return 0;
-    }
-    case "retirement": {
-      const [action, id, ...extra] = args.positionals;
-      if ((action !== "dry-run" && action !== "reconcile") || !id || extra.length)
-        throw new GoldenError("invalid_config", "Use snapshot retirement dry-run|reconcile SNAPSHOT_UUID.");
-      const client = await createArmadaApiClient({
-        env: authOf(io, deps).env,
-        fetch: deps.fetch ?? authOf(io, deps).fetch,
-        session: authOf(io, deps).session,
-      });
-      let receipts: string[] = [];
-      if (action === "reconcile") {
-        try {
-          const path = single(args, "--file");
-          const text = path
-            ? await (deps.readFile ?? ((p: string) => Bun.file(p).text()))(path)
-            : await (
-                deps.readStdin ??
-                (() => (process.stdin.isTTY ? Promise.reject(new Error("stdin required")) : Bun.stdin.text()))
-              )();
-          const review = JSON.parse(text) as { results?: { receipt?: unknown }[] };
-          receipts = (review.results ?? []).flatMap((r) => (typeof r.receipt === "string" ? [r.receipt] : []));
-          if (!receipts.length || receipts.length > 50 || receipts.some((r) => !/^[a-f0-9]{64}$/.test(r)))
-            throw Error("missing receipts");
-        } catch {
-          throw new GoldenError("invalid_config", "Supply reviewed dry-run JSON on stdin or --file.");
-        }
-      }
-      const result = await client.golden(`retirement/${action}`, {
-        id,
-        org: single(args, "--org"),
-        limit: Number(single(args, "--limit") ?? 20),
-        ...(action === "reconcile" ? { receipts } : {}),
-      });
-      io.out(`${JSON.stringify(result)}\n`);
-      return 0;
-    }
-    case "remove": {
-      const auth = authOf(io, deps);
-      const client = await createArmadaApiClient({
-        env: auth.env,
-        fetch: deps.fetch ?? auth.fetch,
-        session: auth.session,
-      });
-      let id = oneName(args.positionals);
-      let org = single(args, "--org");
-      if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) {
-        const { goldens } = await client.golden<{ goldens: GoldenRecord[] }>("list", {
-          ...(org === undefined ? {} : { org }),
-        });
-        const matches = goldens.filter(
-          (row) => row.name === id && (provider === undefined || row.provider === provider),
-        );
-        const match = matches[0];
-        if (matches.length !== 1 || !match) {
-          throw new GoldenError(
-            matches.length ? "conflict" : "not_found",
-            matches.length
-              ? "More than one visible snapshot has this name. Select --provider and --org, or use the exact id from armada snapshot list --json. Nothing was removed."
-              : "No visible snapshot matches this name and provider. Run armada snapshot list --json to check its name, id and organization. Nothing was removed.",
-          );
-        }
-        id = match.id;
-        org ??= match.orgId;
-      }
-      const result = await client.golden("remove", { id, org });
-      io.out(`${JSON.stringify(result)}
-`);
-      return 0;
-    }
-    case "visibility": {
-      const visibility = single(args, "--visibility");
-      if (visibility !== "org" && visibility !== "private")
-        throw new GoldenError("invalid_config", "Pass --visibility private|org.");
-      const auth = authOf(io, deps);
-      const client = await createArmadaApiClient({
-        env: auth.env,
-        fetch: deps.fetch ?? auth.fetch,
-        session: auth.session,
-      });
-      const result = await client.golden("visibility", {
-        id: oneName(args.positionals),
-        visibility,
-        org: single(args, "--org"),
-      });
-      io.out(`${JSON.stringify(result)}\n`);
-      return 0;
-    }
-    case "build-cancel": {
-      const auth = authOf(io, deps);
-      const client = await createArmadaApiClient({
-        env: auth.env,
-        fetch: deps.fetch ?? auth.fetch,
-        session: auth.session,
-      });
-      const job = await client.golden<GoldenBuildStatus>(
-        "build/cancel",
-        { jobId: oneName(args.positionals), org: single(args, "--org") },
-        AbortSignal.timeout(10_000),
-      );
-      if (flag(args, "--json")) io.out(JSON.stringify(job) + "\n");
-      else io.out(`Build ${job.jobId}: ${snapshotText(goldenBuildFailureText(job))}\n`);
-      return 0;
-    }
-    case "build-find": {
-      const name = oneName(args.positionals);
-      const auth = authOf(io, deps);
-      const client = await createArmadaApiClient(
-        { env: auth.env, fetch: deps.fetch ?? auth.fetch, session: auth.session },
-        { preserveServerErrors: true },
-      );
-      const result = await client.golden<{ build: GoldenBuildStatus | null }>(
-        "build/find",
-        { name, provider, org: single(args, "--org") },
-        AbortSignal.timeout(10_000),
-      );
-      if (flag(args, "--json")) io.out(JSON.stringify(result) + "\n");
-      else if (result.build) {
-        io.out(
-          `Build ${result.build.jobId}: ${result.build.state} (${result.build.phase}).\nRead details with armada snapshot build-status ${result.build.jobId}. Only its owner can cancel a queued, never-started build with snapshot build-cancel.\n`,
-        );
-      } else io.out("No visible active build was found. A reservation may still need administrator investigation.\n");
-      return 0;
-    }
-    case "build-status": {
-      const auth = authOf(io, deps);
-      const client = await createArmadaApiClient({
-        env: auth.env,
-        fetch: deps.fetch ?? auth.fetch,
-        session: auth.session,
-      });
-      const job = await client.golden<GoldenBuildStatus>(
-        "build/status",
-        {
-          jobId: args.positionals[0],
-          idempotencyKey: single(args, "--idempotency-key"),
-          org: single(args, "--org"),
-        },
-        AbortSignal.timeout(10_000),
-      );
-      if (!flag(args, "--json") && (job.state === "failed" || job.state === "recovery_required"))
-        io.err(`Build ${job.jobId}: ${snapshotText(goldenBuildFailureText(job))}\n`);
-      io.out(JSON.stringify(job) + "\n");
-      return job.state === "failed" || job.state === "recovery_required" ? 1 : 0;
-    }
-    case "create":
-      return create(args.positionals, args, io, deps);
-    case "update":
-      return update(args.positionals, args, io, deps);
-    case "list":
-      return list(args, io, deps);
-    default:
-      throw new AuthError(`unknown command 'snapshot ${subcommand}'. Run 'armada --help'.`, "usage");
+    if (idempotencyKey !== undefined) uuid(org, "--org");
+    const client = await createArmadaApiClient({ ...auth, fetch: deps.fetch ?? auth.fetch });
+    const job = await client.golden<GoldenBuildStatus>("build/status", { jobId, idempotencyKey, org });
+    io.out(`${JSON.stringify(job)}\n`);
+    if (job.state === "failed" || job.state === "recovery_required")
+      throw new GoldenError("build_failed", `Build ${job.jobId}: ${goldenBuildFailureText(job)}`);
+    return 0;
   }
+
+  const selector = oneName(args.positionals);
+  const client = await createArmadaApiClient({ ...auth, fetch: deps.fetch ?? auth.fetch });
+  const isId = /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i.test(selector);
+  if (operation === "rm" && isId && !provider) {
+    io.out(`${JSON.stringify(await client.golden("remove", { id: selector, org }))}\n`);
+    return 0;
+  }
+  const { goldens } = await client.golden<{ goldens: GoldenRecord[] }>("list", { org });
+  const matches = goldens.filter(
+    (row) =>
+      (isId ? row.id.toLowerCase() === selector.toLowerCase() : row.name === selector) &&
+      (!provider || row.provider === provider),
+  );
+  const [row] = matches;
+  if (matches.length !== 1 || !row)
+    throw new GoldenError(
+      matches.length ? "conflict" : "not_found",
+      matches.length
+        ? "More than one visible snapshot has this name. Select --provider and --org, or use the exact id from armada snapshot ls --json. Nothing was removed."
+        : "No visible snapshot matches this selection. Run armada snapshot ls --json to check its name, id and organization. Nothing was removed.",
+    );
+  const result =
+    operation === "show" ? jsonGolden(row) : await client.golden("remove", { id: row.id, org: org ?? row.orgId });
+  io.out(`${JSON.stringify(result)}\n`);
+  return 0;
+}
+
+function buildWaitSeconds(args: Args) {
+  const timeout = single(args, "--timeout");
+  if (!flag(args, "--wait")) {
+    if (timeout !== undefined) throw new GoldenError("invalid_config", "Pass --wait to use --timeout.");
+    return 0;
+  }
+  const seconds = Number(timeout ?? "60");
+  if (!Number.isInteger(seconds) || seconds < 1 || seconds > 600)
+    throw new GoldenError("invalid_config", "Build --timeout must be 1–600 seconds.");
+  return seconds;
 }
 
 async function admitGoldenBuild(
@@ -515,12 +367,10 @@ async function admitGoldenBuild(
   deps: Deps,
   operation: "create" | "update" | "update-add-repos",
   body: Record<string, unknown>,
-): Promise<NonNullable<GoldenBuildStatus["result"]> | undefined> {
+): Promise<(NonNullable<GoldenBuildStatus["result"]> & { jobId: string }) | undefined> {
   const key = single(args, "--idempotency-key") ?? crypto.randomUUID();
-  const seconds = Number(single(args, "--timeout") ?? "60");
-  if (!Number.isInteger(seconds) || seconds < 0 || seconds > 600)
-    throw new GoldenError("invalid_config", "Build --timeout must be 0–600 seconds (local polling only).");
-  io.err(`Build admission key: ${key}. Recover with snapshot build-status --idempotency-key ${key} --org <org>.\n`);
+  const seconds = buildWaitSeconds(args);
+  io.err(`Build admission key: ${key}. Recover with snapshot show --idempotency-key ${key} --org ORG_UUID.\n`);
   const job = await client.golden<GoldenBuildStatus>(
     operation,
     { ...body, idempotencyKey: key },
@@ -535,48 +385,36 @@ async function admitGoldenBuild(
   )
     throw new GoldenError(
       "build_failed",
-      "The server did not return a durable build receipt; the CLI/server may be out of date and the operation may already have completed. Upgrade them together and inspect snapshot list before retrying; do not resubmit blindly.",
+      "The server did not return a durable build receipt; the CLI/server may be out of date and the operation may already have completed. Upgrade them together and inspect snapshot ls before retrying; do not resubmit blindly.",
     );
   if (!flag(args, "--json")) io.out(`Build job: ${job.jobId}\n`);
-  const deadline = AbortSignal.timeout(Math.max(1, seconds * 1000));
-  let current = job;
+  let current: GoldenBuildStatus;
   try {
-    for (let attempt = 0; attempt < Math.ceil(seconds / 2); attempt++) {
-      if (current.state === "succeeded") {
-        for (const warning of current.result?.warnings ?? [])
-          io.err(
-            `Warning: ${warning}. ${warning === "skillpack_download_unavailable" ? "Skillpack was not provisioned: allow GitHub release egress before rebuilding for skills use." : "Skillpack is installed in the user-local bin directory."}\n`,
-          );
-        return current.result ?? undefined;
-      }
-      if (current.state === "failed" || current.state === "recovery_required")
-        throw new GoldenError(
-          "build_failed",
-          `Build ${job.jobId}: ${current.state} (${goldenBuildFailureText(current)}).`,
-        );
-      deadline.throwIfAborted();
-      await (deps.sleep ?? ((ms) => new Promise<void>((resolve) => setTimeout(resolve, ms))))(2000);
-      current = await client.golden<GoldenBuildStatus>(
-        "build/status",
-        { jobId: job.jobId },
-        AbortSignal.any([deadline, AbortSignal.timeout(10_000)]),
-      );
-    }
+    current = await waitForSnapshot(
+      job,
+      seconds,
+      deps.sleep,
+      ({ state }) => state === "queued" || state === "running",
+      (signal) => client.golden<GoldenBuildStatus>("build/status", { jobId: job.jobId }, signal),
+    );
   } catch (error) {
     if (error instanceof GoldenError) throw error;
     throw new GoldenError(
       "build_failed",
-      `Polling stopped; build ${job.jobId} may still be running. Use snapshot build-status ${job.jobId}; do not resubmit.`,
+      `Polling stopped; build ${job.jobId} may still be running. Use snapshot show --build ${job.jobId}; do not resubmit.`,
     );
   }
-  if (current.state === "succeeded") {
-    for (const warning of current.result?.warnings ?? []) io.err(`Warning: ${warning}\n`);
-    return current.result ?? undefined;
+  if (seconds > 0 && current.state === "succeeded") {
+    for (const warning of current.result?.warnings ?? [])
+      io.err(
+        `Warning: ${warning}. ${warning === "skillpack_download_unavailable" ? "Skillpack was not provisioned: allow GitHub release egress before rebuilding for skills use." : "Skillpack is installed in the user-local bin directory."}\n`,
+      );
+    return current.result ? { ...current.result, jobId: job.jobId } : undefined;
   }
   if (current.state === "failed" || current.state === "recovery_required")
     throw new GoldenError("build_failed", `Build ${job.jobId}: ${current.state} (${goldenBuildFailureText(current)}).`);
   if (flag(args, "--json")) io.out(`${JSON.stringify(current)}\n`);
-  else io.out(`Build is ${current.state}. Resume with armada snapshot build-status ${job.jobId}.\n`);
+  else io.out(`Build is ${current.state}. Resume with armada snapshot show --build ${job.jobId}.\n`);
   return undefined;
 }
 
@@ -641,17 +479,17 @@ async function update(positionals: string[], args: ReturnType<typeof parseArgs>,
     if (error instanceof ArmadaApiError) {
       const help =
         additions.length && error.status === 404 && !/No golden named/i.test(error.message)
-          ? "This server does not support --add-repo. Upgrade the Armada server and CLI together, then retry. No replacement fallback was attempted."
+          ? "Check the update route with an administrator before retrying."
           : error.status === 404
-            ? "Run armada snapshot list --org <org> --json and select the exact name, organization and --provider."
+            ? "Run armada snapshot ls --org <org> --json and select the exact name, organization and --provider."
             : /idempotency/i.test(error.message)
-              ? "Recover the existing job with snapshot build-status --idempotency-key <key> --org <org>. Reuse a key only for the identical request."
+              ? "Recover the existing job with snapshot show --idempotency-key <key> --org ORG_UUID. Reuse a key only for the identical request."
               : /exists on boat and modal/i.test(error.message)
                 ? "Repeat the update with --provider boat or --provider modal; no build was admitted."
                 : error.status === 400
                   ? "Check the repository URL/branch and config. --repo replaces the full list; --add-repo preserves it. If required fields are rejected, upgrade the CLI and server together."
                   : /capacity or binding/i.test(error.message)
-                    ? "For a rebuild, an administrator must distinguish a missing backend binding from an active/stale reservation. Check the existing build ID with snapshot build-status; do not create a second Boat snapshot."
+                    ? "For a rebuild, an administrator must distinguish a missing backend binding from an active/stale reservation. Check the existing build ID with snapshot show --build; do not create a second Boat snapshot."
                     : error.status === 403
                       ? "Use the snapshot owner (private) or org admin (shared). For GitHub access, grant the caller and Armada GitHub App access to every requested repository."
                       : error.status >= 500
@@ -710,7 +548,7 @@ async function create(positionals: string[], args: ReturnType<typeof parseArgs>,
 }
 
 async function list(args: ReturnType<typeof parseArgs>, io: Io, deps: Deps): Promise<number> {
-  if (args.positionals.length > 0) throw new GoldenError("invalid_config", "golden list takes no name.");
+  if (args.positionals.length > 0) throw new GoldenError("invalid_config", "snapshot ls takes no name.");
   const auth = authOf(io, deps);
   const client = await createArmadaApiClient({
     env: auth.env,

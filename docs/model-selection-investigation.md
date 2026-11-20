@@ -91,7 +91,7 @@ or claim to have validated Boat subagent/retraction attribution. Distinct or
 ambiguous observed models remain neutral unknown rather than choosing a last
 response. Before asserting Boat nested-agent attribution, the coordinator must
 run a controlled Boat Claude turn spawning a different-model subagent, capture
-redacted `armada logs --all --json` plus status, and verify that only the main
+redacted `armada events ID -f --json` plus status, and verify that only the main
 response establishes observed model. No such provider check was run here.
 Native Modal Claude's SDK parent metadata is handled separately.
 

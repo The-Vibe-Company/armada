@@ -6,7 +6,7 @@ import {
   deleteModalCompute,
   deleteModalRecoveryImage,
   lookupModalCompute,
-  snapshotModalRecoveryImage,
+  stopModalCompute,
   terminateModalCompute,
 } from "./machine.ts";
 import type { createPhysicalLifecycle } from "./physical-lifecycle.ts";
@@ -85,26 +85,37 @@ export function createStopDeleteLifecycle(deps: {
       return;
     }
     const sb = await physical(row);
-    if (row.phase !== "terminate") {
-      if (!["active", "checkpoint"].includes(row.phase))
-        throw refusal("conflict", "Snapshot outcome unknown; source retained for reconciliation.");
-      row.phase = "checkpoint";
-      row.info.state = "stopping";
-      await save(row);
-      if (!row.quiesced) {
-        await lifecycleStep("modal_checkpoint_runner", () => checkpoint(row, save));
-        await lifecycleStep("modal_checkpoint_scrub", () => distribution.prepareSnapshot(sb, row));
-        row.quiesced = true;
-      }
-      row.phase = "snapshot";
-      await save(row);
-      const recoveryImageId = await lifecycleStep("modal_checkpoint_snapshot", () => snapshotModalRecoveryImage(sb));
-      if (row.recoveryImageId) row.retainedRecoveryIds = [...(row.retainedRecoveryIds ?? []), row.recoveryImageId];
-      row.recoveryImageId = recoveryImageId;
-      row.phase = "terminate";
-      await save(row);
-    }
-    await lifecycleStep("modal_checkpoint_terminate", () => terminateModalCompute(sb));
+    const needsSnapshot = row.phase !== "terminate";
+    if (needsSnapshot && !["active", "checkpoint"].includes(row.phase))
+      throw refusal("conflict", "Snapshot outcome unknown; source retained for reconciliation.");
+    await stopModalCompute(sb, {
+      runStep: lifecycleStep,
+      ...(needsSnapshot && {
+        checkpoint: {
+          async prepare() {
+            row.phase = "checkpoint";
+            row.info.state = "stopping";
+            await save(row);
+            if (!row.quiesced) {
+              await lifecycleStep("modal_checkpoint_runner", () => checkpoint(row, save));
+              await lifecycleStep("modal_checkpoint_scrub", () => distribution.prepareSnapshot(sb, row));
+              row.quiesced = true;
+            }
+          },
+          async recordIntent() {
+            row.phase = "snapshot";
+            await save(row);
+          },
+          async recordImage(recoveryImageId) {
+            if (row.recoveryImageId)
+              row.retainedRecoveryIds = [...(row.retainedRecoveryIds ?? []), row.recoveryImageId];
+            row.recoveryImageId = recoveryImageId;
+            row.phase = "terminate";
+            await save(row);
+          },
+        },
+      }),
+    });
     row.phase = "stopped";
     row.info.state = "stopped";
     row.info.providerState = "stopped";

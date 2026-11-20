@@ -5,7 +5,7 @@ A rejected snapshot build names the first available safe location, never the val
     repository armada, git object <object-id>, commit <commit-id>
 
 The build phase remains secret_scan. The curated location is persisted with the
-durable job and appears in snapshot build-status, the CLI failure line and the
+durable job and appears in snapshot show, the CLI failure line and the
 dashboard build error. Manual snapshot errors carry the same safe location.
 
 ## What is exposed
@@ -53,7 +53,7 @@ confirmation. To derive the owner's complete current config
 without dropping entries, replace `ORG_UUID` with the target organization UUID.
 
 ```sh
-armada snapshot list --provider boat --org ORG_UUID --json > goldens.json
+armada snapshot ls --provider boat --org ORG_UUID --json > goldens.json
 jq -e '
   [.[] | select(.name == "two-repos-prod-test")]
   | if length == 1 then .[0].config else error("Expected exactly one Boat snapshot") end

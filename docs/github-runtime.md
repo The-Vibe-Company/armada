@@ -242,7 +242,7 @@ It simulates cache expiry, not the actual passage of eight hours at GitHub.
    remain staging values):
 
    ```sh
-   armada launch "$SNAPSHOT" --org "$ORG" --provider modal \
+   armada new "$SNAPSHOT" --org "$ORG" --provider modal \
      --agent "$HARNESS" --model "$MODEL" --credential-id "$MODEL_ACCOUNT_ID" \
      --no-connections --ttl 1h --json
    ```
@@ -345,7 +345,7 @@ suffix is the first 16 hex characters of SHA-256 of the boot ID, as implemented 
    Boat exec send `kill -TERM "$BROKER_PID"`, release its marker, run the same
    bounded local Git check, and return. Authenticated Git may fail with a closed,
    bounded diagnostic; do not print stderr or socket responses. Now run an
-   authorized `armada exec "$ID" 'true' --org "$ORG"`: the existing Boat prepare
+   authorized `armada exec "$ID" --org "$ORG" -- true`: the existing Boat prepare
    path reconnects, handles `ENOENT`/`ECONNREFUSED`, and recreates the broker through
    private SSH/stdin. It does **not** replace the VM or harness. Require a new
    broker PID, unchanged boot/native identity and conversation, resumed native

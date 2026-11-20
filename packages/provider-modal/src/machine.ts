@@ -130,7 +130,7 @@ export function verifyModalComputeOwnership(
     throw conflict("Modal machine ownership does not match the incarnation; resource not modified.");
 }
 
-export async function snapshotModalRecoveryImage(sandbox: Sandbox, signal?: AbortSignal) {
+async function snapshotModalRecoveryImage(sandbox: Sandbox, signal?: AbortSignal) {
   signal?.throwIfAborted();
   const image = await sandbox.snapshotFilesystem({ ttlMs: null });
   if (!image.imageId) throw refusal("unavailable", "Modal checkpoint returned no image.");
@@ -155,6 +155,7 @@ export async function terminateModalCompute(
 export async function stopModalCompute(
   sandbox: Sandbox,
   options: NonNullable<Parameters<typeof terminateModalCompute>[1]> & {
+    runStep?<T>(stage: "modal_checkpoint_snapshot" | "modal_checkpoint_terminate", work: () => Promise<T>): Promise<T>;
     checkpoint?: {
       prepare(): Promise<void>;
       recordIntent(): Promise<void>;
@@ -162,14 +163,15 @@ export async function stopModalCompute(
     };
   },
 ) {
-  const { checkpoint, signal } = options;
+  const { checkpoint, signal, runStep = (_stage, work) => work() } = options;
   if (checkpoint) {
     await checkpoint.prepare();
     signal?.throwIfAborted();
     await checkpoint.recordIntent();
-    await checkpoint.recordImage(await snapshotModalRecoveryImage(sandbox, signal));
+    const imageId = await runStep("modal_checkpoint_snapshot", () => snapshotModalRecoveryImage(sandbox, signal));
+    await checkpoint.recordImage(imageId);
   }
-  await terminateModalCompute(sandbox, options);
+  await runStep("modal_checkpoint_terminate", () => terminateModalCompute(sandbox, options));
 }
 
 async function optional<T>(operation: () => Promise<T>) {
@@ -226,11 +228,23 @@ export function createModalMachine(options: ModalMachineOptions) {
     return verify(await lookupModalCompute(client, id.machineId, signal), id);
   }
 
-  async function current(id: MachineIdentity) {
+  async function current(id: MachineIdentity & { signal?: AbortSignal }, recovery?: "adopt-create") {
     const entry = await journal.read(key(id));
-    if (!entry || entry.machineId !== id.machineId)
-      throw conflict("Modal receipt does not match the addressed machine.");
-    return entry;
+    if (entry && entry.machineId === id.machineId) return entry;
+    if (
+      recovery === "adopt-create" &&
+      entry?.operation === "create" &&
+      entry.phase === "creating" &&
+      !entry.machineId
+    ) {
+      id.signal?.throwIfAborted();
+      await bound();
+      const sandbox = await named(id);
+      id.signal?.throwIfAborted();
+      if (sandbox?.sandboxId === id.machineId)
+        return save(id, entry, { ...entry, phase: "allocated", machineId: sandbox.sandboxId });
+    }
+    throw conflict("Modal receipt does not match the addressed machine.");
   }
 
   async function allocate(request: Create, operation: "create" | "resume", validateSource?: () => Promise<void>) {
@@ -277,7 +291,8 @@ export function createModalMachine(options: ModalMachineOptions) {
     create: (request) => allocate(request, "create"),
     async bootstrap(request) {
       request.signal?.throwIfAborted();
-      const entry = await current(request);
+      const entry = await current(request, "adopt-create");
+      request.signal?.throwIfAborted();
       const runtimeBinding = digest(request.bindingRef);
       if (entry.phase !== "allocated" || (entry.runtimeBinding && entry.runtimeBinding !== runtimeBinding))
         throw conflict("Modal machine conflicts with the runtime binding.");
@@ -349,7 +364,8 @@ export function createModalMachine(options: ModalMachineOptions) {
     },
     async delete(request) {
       request.signal?.throwIfAborted();
-      let entry = await current(request);
+      let entry = await current(request, "adopt-create");
+      request.signal?.throwIfAborted();
       if (entry.phase === "deleted") {
         if (entry.deleteScope === request.scope || entry.deleteScope === "physical-and-retained") return;
       } else if (entry.phase === "stopping" || (entry.phase === "deleting" && entry.deleteScope !== request.scope)) {

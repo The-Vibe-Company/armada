@@ -60,7 +60,7 @@ describe("launch through the Armada API", () => {
         let out = "";
         const code = await run(
           [
-            "launch",
+            "new",
             "web",
             "--provider",
             "boat",
@@ -131,7 +131,7 @@ describe("launch through the Armada API", () => {
     };
     let out = "";
     const code = await run(
-      ["launch", "web", "--provider", "modal", "--agent", "codex", "--armada-access", "--json"],
+      ["new", "web", "--provider", "modal", "--agent", "codex", "--armada-access", "--json"],
       { out: (text) => (out += text), err: () => undefined },
       {
         auth: {
@@ -152,7 +152,7 @@ describe("launch through the Armada API", () => {
   test("decodes serialized expiry for text output without hiding a created sandbox", async () => {
     let out = "";
     const code = await run(
-      ["launch", "web", "--provider", "boat", "--agent", "codex", "do it", "--ttl", "30m"],
+      ["new", "web", "--provider", "boat", "--agent", "codex", "do it", "--ttl", "30m"],
       { out: (text) => (out += text), err: () => undefined },
       {
         auth: {
@@ -181,7 +181,7 @@ describe("launch through the Armada API", () => {
         throw new Error("unexpected request");
       };
       const code = await run(
-        ["launch", "web", "--provider", "boat", "--agent", "codex", "--org", "org", option, ...values],
+        ["new", "web", "--provider", "boat", "--agent", "codex", "--org", "org", option, ...values],
         { out: () => undefined, err: (text) => (err += text) },
         {
           env: { ARMADA_TOKEN: token },
@@ -203,7 +203,7 @@ for (const visibility of [undefined, "private", "org"]) {
         err = "";
       const code = await run(
         [
-          "launch",
+          "new",
           "web",
           "--provider",
           "boat",
@@ -253,7 +253,7 @@ for (const visibility of [undefined, "private", "org"]) {
 test("repository authorization refusal keeps no_credentials and the reconnect remedy in CLI JSON", async () => {
   let errors = "";
   const code = await run(
-    ["launch", "web", "--provider", "boat", "--agent", "codex", "--json"],
+    ["new", "web", "--provider", "boat", "--agent", "codex", "--json"],
     { out: () => {}, err: (text) => (errors += text) },
     {
       auth: {

@@ -112,31 +112,30 @@ test("local host leaf help is focused and avoids all native or account I/O", asy
   const forbidden = () => {
     throw new Error("Help attempted native or account I/O");
   };
-  for (const command of ["install", "status", "uninstall"]) {
-    for (const option of ["--help", "-h"]) {
-      let out = "";
-      let err = "";
-      const code = await run(
-        ["--profile", "new-user", "host", command, option],
-        {
-          out: (text) => {
-            out += text;
-          },
-          err: (text) => {
-            err += text;
-          },
+  const command = "install";
+  for (const option of ["--help", "-h"]) {
+    let out = "";
+    let err = "";
+    const code = await run(
+      ["--profile", "new-user", "host", command, option],
+      {
+        out: (text) => {
+          out += text;
         },
-        {
-          localHost: new Proxy({} as LocalHostIo, { get: forbidden }),
-          get auth(): never {
-            return forbidden();
-          },
+        err: (text) => {
+          err += text;
         },
-      );
-      expect({ code, err }).toEqual({ code: 0, err: "" });
-      expect(out).toContain(`Usage: armada host ${command}`);
-      expect(out).toContain(`Example: armada host ${command}`);
-    }
+      },
+      {
+        localHost: new Proxy({} as LocalHostIo, { get: forbidden }),
+        get auth(): never {
+          return forbidden();
+        },
+      },
+    );
+    expect({ code, err }).toEqual({ code: 0, err: "" });
+    expect(out).toContain(`Usage: armada host ${command}`);
+    expect(out).toContain(`Example: armada host ${command}`);
   }
 });
 
@@ -221,14 +220,22 @@ test.each([true, false])(
   },
 );
 
-test("offline existing host wait ends at 60 seconds without consuming a replacement token", async () => {
+test("offline named host points to its own daemon and service after the check-in wait", async () => {
   const m = machine();
+  const server = "https://production.example";
+  const instance = createHash("sha256").update(server).digest("hex");
+  const namedBinary = `${binary}@${instance}`;
   m.existing({ ...registered, connected: false });
-  const result = await m.capture();
+  m.files.set(namedBinary, { directory: false, file: true, symlink: false });
+  m.native.listInstances = async () => [`armada-docker-host@${instance}`];
+  m.native.readServer = async (path) => (path.includes("@") ? server : "https://armada.example");
+  const result = await m.capture(["host", "install", "--server", server]);
   expect(result.code).toBe(1);
   expect(result.elapsed).toBe(60_000);
   expect(result.inputReads).toBe(1);
-  expect(result.err).toContain("registration preserved");
+  expect(result.err).toContain("Registration preserved");
+  expect(result.err).toContain(`'${namedBinary}' status --instance ${instance}`);
+  expect(result.err).toContain(`journalctl --user -u armada-docker-host@${instance}.service`);
 });
 
 test.each([
@@ -276,26 +283,7 @@ test("unreadable status preserves registration instead of consuming another toke
   expect(result.out + result.err).not.toContain(token);
 });
 
-test.each([
-  ["status", []],
-  ["uninstall", []],
-  ["status", ["--profile", "staging"]],
-  ["uninstall", ["--profile=staging"]],
-] as const)(
-  "host %s delegates locally without login or leaking subprocess output (global flags %j)",
-  async (operation, prefix) => {
-    const m = machine();
-    m.existing(registered);
-    const result = await m.capture([...prefix, "host", operation]);
-    expect(result.code).toBe(0);
-    expect(result.inputReads).toBe(0);
-    expect(m.requests).toEqual([]);
-    expect(m.calls.at(-1)?.args).toEqual([operation]);
-    expect(result.out + result.err).not.toContain("privateCredential");
-  },
-);
-
-test("another server installs independently; ambiguous uninstall lists without removing either instance", async () => {
+test("another server installs independently", async () => {
   const m = machine();
   m.existing(registered);
   const other = "https://production.example";
@@ -306,13 +294,6 @@ test("another server installs independently; ambiguous uninstall lists without r
   expect(install?.program).toBe(`${binary}@${suffix}`);
   expect(install?.args).toEqual(["install", "--server", other, "--instance", suffix]);
   expect(m.calls.some((c) => c.args[0] === "upgrade")).toBe(false);
-  m.native.listInstances = async () => [`armada-docker-host@${suffix}`];
-  m.native.readServer = async (path) => (path.includes("@") ? other : "https://armada.example");
-  const listed = await m.capture(["host", "uninstall"]);
-  expect(listed.code).toBe(0);
-  expect(m.calls.some((c) => c.args[0] === "uninstall")).toBe(false);
-  expect((await m.capture(["host", "uninstall", "--server", other])).code).toBe(0);
-  expect(m.calls.find((c) => c.args[0] === "uninstall")?.program).toBe(`${binary}@${suffix}`);
 });
 
 test("unknown existing origin refuses before reading or exchanging the token", async () => {
@@ -322,5 +303,5 @@ test("unknown existing origin refuses before reading or exchanging the token", a
   const result = await m.capture();
   expect(result.code).toBe(1);
   expect(m.requests).toEqual([]);
-  expect(result.err).not.toContain("run armada doctor");
+  expect(result.err).not.toContain("run armada status --setup");
 });

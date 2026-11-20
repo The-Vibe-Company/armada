@@ -17,12 +17,13 @@ IDs, and quote prompts as single arguments.
 Sandbox commands emit JSON when stdout is piped or redirected. On failure,
 parse the final stderr line for `error.code`, `error.message`, and `error.hint`.
 An explicit sandbox ID overrides `ARMADA_SANDBOX` and the local
-`.armada/sandbox` file written by a successful launch. Prefer explicit IDs in
+`.armada/sandbox` file written by a successful `armada new` in that directory. Prefer explicit IDs in
 coordinator scripts that manage several sandboxes from one directory.
 
 ## 1. Establish identity and scope
 
-Run `armada account status`, `armada org list` and `armada org current`.
+Run `armada status --setup --json` for identity, organization, server, GitHub,
+hosts and model accounts. Use `armada org list` to find organization IDs.
 For an interactive human, run `armada login` and authorize the request in the dashboard
 using the printed link and matching short code. For automation, use an authorized
 ARMADA_TOKEN through the environment, never pasted into a prompt or command.
@@ -49,11 +50,11 @@ any receipt UUID returned. On success, pass `sandbox.id` to subsequent tools.
 
 ## 2. Choose before launching
 
-- Inspect `armada snapshot list --json` and `armada template list --json`.
+- Inspect `armada snapshot ls --json` and `armada template list --json`.
   To refresh a shared snapshot, update its build configuration with the owner authorization.
   A golden is a provider-specific saved environment; a template is an immutable
   revision specifying a golden, harness and configuration. Use IDs if names clash.
-  Use `armada snapshot capabilities --json` for provider capacity and the
+  Use `armada api golden/capabilities` for provider capacity and the
   authenticated REST adoption endpoint for canonical Boat golden adoption.
 - Call MCP `launch_options` with `{}` for the server’s harnesses, models, sizes and TTL limits.
 - Call MCP `outputs_list` with `id` to list the stored output snapshot. Call `output_read` with `id` and `name` for base64 contents up to 32 KiB. Use the REST output download for larger files.
@@ -62,7 +63,7 @@ any receipt UUID returned. On success, pass `sandbox.id` to subsequent tools.
   For scoped tokens, omit `org` or use the scoped org UUID.
 - Choose the provider that owns the golden. A golden built on one provider
   is not automatically available on the other. Check
-  `armada snapshot capabilities --provider boat --json` (or substitute modal).
+  `armada api golden/capabilities '{"provider":"boat"}'` (or substitute modal).
 - All launches through `POST /api/v1/sandbox/launch` require an explicit provider
   and harness. The server resolves model credentials during launch. Personal sessions can select the organization by slug or UUID. For a scoped token, omit `org` or send its org UUID.
   A malformed request returns HTTP 400 with error code `invalid`.
@@ -72,7 +73,7 @@ any receipt UUID returned. On success, pass `sandbox.id` to subsequent tools.
   before reading the receipt. Use the shared `SendInput` for follow-up prompts.
   Docker returns `golden: null`. Docker REST launches require `idempotencyKey`.
   Save the key and replay the identical request after an uncertain launch.
-  With `armada launch --provider docker`, pass the saved key as `--idempotency-key`.
+  With `armada new --provider docker`, pass the saved key as `--idempotency-key`.
   For a pinned Modal template on `sandbox/launch`, supply `idempotencyKey` and
   read `sandbox.id`. With `templates/launch` or `armada template launch`, use
   `requestKey` or `--request-key` and read the template receipt.
@@ -92,11 +93,11 @@ any receipt UUID returned. On success, pass `sandbox.id` to subsequent tools.
 Example (replace the skill pin with an accessible, exact version):
 
 ```sh
-armada launch GOLDEN --agent codex "Implement the agreed change; push the branch and report tests" --provider boat --ttl 30m --skill review-helper@1.2.3 --json
+armada new GOLDEN --agent codex "Implement the agreed change; push the branch and report tests" --provider boat --ttl 30m --skill review-helper@1.2.3 --json
 ```
 
 Launch without a prompt creates an idle sandbox. Capture its returned sandbox
-ID from `sandbox.id` in `armada launch --json` output immediately. If the
+ID from `sandbox.id` in `armada new --json` output immediately. If the
 terminal disconnects before you capture the ID, inspect `armada list --owner me --json` and detail to avoid paid
 duplicates. Skill pins are repeatable, exact launch-time references, not floating
 latest versions. Private pins use bare slug@exact-version in the credential’s workspace; qualified
@@ -163,7 +164,7 @@ or orchestration are provided.
 ```sh
 armada send SANDBOX "Continue with the next agreed task"
 armada wait SANDBOX --timeout 120 --json
-armada logs SANDBOX --tail 50 --json
+armada events SANDBOX --tail 50 --json
 armada status SANDBOX --json
 ```
 
@@ -187,11 +188,12 @@ accepts 0–600 and defaults to 60; the example waits at most 120 seconds. A
 still-running result can be waited on again, not relaunched. A wait response is
 an observation, not proof tests passed or work was pushed; inspect outcome and
 logs. If a send times out ambiguously, inspect detail, status and logs before
-considering another send; do not replay a possibly accepted instruction. Logs
-read the history for the entire sandbox. For longer event inspection use
-`armada logs SANDBOX --follow --json`; `armada logs SANDBOX --all --json`
-drains available pages. Keep output bounded with tail for routine diagnostics.
-Preserve returned cursors/identifiers in reports; do not fabricate a cursor flag.
+considering another send; do not replay a possibly accepted instruction. Use
+`armada events SANDBOX -f` to follow until settled, or `armada events SANDBOX --tail N`
+for bounded diagnostics. Piped output is JSON
+Lines, with one event per line. Use `armada exec SANDBOX -- "git status --short"`
+to run a shell command inside the sandbox. Use `armada outputs --id SANDBOX` to
+list stored outputs and `armada outputs NAME --id SANDBOX -o DIR` to download one.
 
 For a viewer grant, subscribe to `GET /api/v1/events?sandbox=<UUID>` with
 the viewer bearer. Resume with the last processed SSE ID in `Last-Event-ID`.
@@ -227,8 +229,11 @@ use the owner REST route `POST /api/v1/sandbox/resume` with `id` and a
 
 A `docker_host_upgrade_required` refusal means the daemon must be upgraded.
 After the protocol-aware release ships, use `armada host add` and run its
-generated installer on the existing Docker host. Check `armada host list --json`
-for the reported protocol and `upgradeRequired: false`.
+generated installer on the existing Docker host. Check `armada host ls --json`
+for the reported protocol and `upgradeRequired: false`. Use `armada host ls HOST`
+for a particular machine, `armada host limits HOST` for resource settings, and
+`armada host rm UUID` for authorized registration revocation. The local Docker
+daemon binary handles status and uninstall on the Docker machine.
 
 ## 5. Several sandboxes, including a sandbox as caller
 

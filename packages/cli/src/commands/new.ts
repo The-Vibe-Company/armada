@@ -116,12 +116,12 @@ const run: Command["run"] = async (argv, { io, deps, auth }) => {
 };
 
 export default {
-  name: "launch",
+  name: "new",
   summary: "Launch an agent sandbox",
   usage: {
-    "docker-launch": `  armada launch [prompt] --provider docker [--host UUID|NAME | --golden snapshot-UUID] --agent claude|codex|opencode [--credential-id UUID] [--org NAME|UUID] [--repo owner/repo[@branch] ...] [--variable KEY:UUID:VERSION ...] [--secret KEY:UUID:VERSION ...] [--idempotency-key KEY] [--json]
+    "docker-launch": `  armada new [prompt] --provider docker [--host UUID|NAME | --golden snapshot-UUID] --agent claude|codex|opencode [--credential-id UUID] [--org NAME|UUID] [--repo owner/repo[@branch] ...] [--variable KEY:UUID:VERSION ...] [--secret KEY:UUID:VERSION ...] [--idempotency-key KEY] [--json]
                                            Docker launch through the normal Armada API using the official Armada environment.`,
-    launch: `  armada launch <snapshot> --agent ${HARNESSES.join("|")} ["prompt"] [--model <id>] [--reasoning-effort <level>]
+    new: `  armada new <snapshot> --agent ${HARNESSES.join("|")} ["prompt"] [--model <id>] [--reasoning-effort <level>]
                                            [--armada-access [--credential-id <id>] [--max-active-children <1..100>]]
                 --provider boat|modal [--repo <configured-dir|owner/repo>] [--ttl 4h] [--json]
                 [--skill org/slug@version|slug@version ...] [--connections <id,...> | --no-connections] [--org <org>]
@@ -134,10 +134,10 @@ export default {
                                            Defaults:
                                            ${modelDefaults()}`,
   },
-  help: `Usage: armada launch <snapshot> --provider boat|modal --agent claude|codex|opencode ["prompt"] [options]
+  help: `Usage: armada new <snapshot> --provider boat|modal --agent claude|codex|opencode ["prompt"] [options]
 Fork a visible snapshot; a prompt starts the agent, otherwise wait for the first send.
 Sign in with armada login or set ARMADA_TOKEN for scripts.
-Find snapshots with armada snapshot list; select an organization with --org or armada org use.
+Find snapshots with armada snapshot ls; select an organization with --org or armada org use.
 
 Boat/Modal options:
   --provider boat|modal                  Select the snapshot provider.
@@ -154,7 +154,7 @@ Boat/Modal options:
   --org <org> --json                     Organization selector and machine output.
 
 Docker form:
-  armada launch [prompt] --provider docker --agent claude|codex|opencode [--org NAME|UUID]
+  armada new [prompt] --provider docker --agent claude|codex|opencode [--org NAME|UUID]
     [--host UUID|NAME | --golden snapshot-UUID] [--credential-id UUID]
     [--repo owner/repo[@branch] ...] [--variable KEY:UUID:VERSION ...]
     [--secret KEY:UUID:VERSION ...] [--idempotency-key KEY] [--ttl <duration>] [--json]
@@ -167,12 +167,13 @@ OpenCode is also supported on Modal and Docker.
 --golden is the existing Docker snapshot selector, not a new snapshot command.
 Reuse a saved --idempotency-key with identical input after an uncertain Docker outcome.
 
-In an interactive terminal, bare armada launch opens the launcher.
-Use explicit arguments in scripts; bare noninteractive launch is not supported.
+In an interactive terminal, bare armada new opens the launcher.
+Pass explicit arguments in scripts.
+A successful launch saves the sandbox ID to .armada/sandbox in the current directory.
 --json emits the launch response on stdout without human launch advice.
 After an uncertain launch, inspect armada list before retrying.
-Example: armada launch starter --provider modal --agent codex "Inspect the repository" --json
-Example: armada launch "Inspect the repository" --provider docker --host workstation --agent codex --org ORG_UUID
+Example: armada new starter --provider modal --agent codex "Inspect the repository" --json
+Example: armada new "Inspect the repository" --provider docker --host workstation --agent codex --org ORG_UUID
 `,
   automaticJson: true,
   run,

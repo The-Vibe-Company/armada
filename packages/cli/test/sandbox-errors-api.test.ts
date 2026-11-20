@@ -4,7 +4,7 @@ import { memorySessionStore } from "../src/session.ts";
 
 const id = "11111111-1111-4111-8111-111111111111";
 const canary = "synthetic-private-provider-detail";
-async function capture(args: string[], status: number, serverCode: unknown, message = canary) {
+async function capture(args: string[], status: number, serverCode: unknown, message = canary, stdoutIsTTY?: boolean) {
   let out = "";
   let err = "";
   let calls = 0;
@@ -24,7 +24,7 @@ async function capture(args: string[], status: number, serverCode: unknown, mess
       return Response.json({ error: { code: serverCode, message, details: { reason: canary } } }, { status });
     },
   };
-  const exit = await run(args, auth, { auth });
+  const exit = await run(args, auth, { auth, ...(stdoutIsTTY === undefined ? {} : { stdoutIsTTY }) });
   expect(calls).toBe(1);
   expect(out).toBe("");
   expect(err).not.toContain(canary);
@@ -38,18 +38,18 @@ test.each(
     ["recovery", id],
     ["advice", id],
     ["wait", id],
-    ["logs", id],
+    ["events", id],
     ["stop", id],
     ["interrupt", id],
     ["send", id, "hello"],
     ["steer", id, "hello"],
-    ["exec", id, "printf audit"],
+    ["exec", id, "--", "printf audit"],
     ["rm", id, "--yes"],
     ["report", id, "blocked", "--prompt-id", id, "--reason", "audit"],
     ["bind-credential", id, "--credential-id", id],
   ].map((args) => ({ args })),
 )("missing sandbox gets actionable not_found: $args", async ({ args }) => {
-  const { exit, err } = await capture([...args, "--json"], 404, "not_found");
+  const { exit, err } = await capture(args, 404, "not_found", canary, false);
   expect(exit).toBe(1);
   const failure = JSON.parse(err).error;
   expect(failure.code).toBe("not_found");
@@ -113,7 +113,7 @@ test.each(["", canary])("binding refusal preserves only an exact fixed reason (s
 });
 
 test.each([
-  { args: ["launch", "web", "--provider", "boat", "--agent", "codex", "hello"] },
+  { args: ["new", "web", "--provider", "boat", "--agent", "codex", "hello"] },
   { args: ["send", id, "hello"] },
 ])("host_full remains actionable without relaying provider diagnostics: $args", async ({ args }) => {
   const result = await capture([...args, "--json"], 409, "host_full");

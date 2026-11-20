@@ -10,10 +10,10 @@ Use the affected user's Armada login. Replace `ORG_UUID` with the organization's
 UUID and `ADMISSION_KEY` and `JOB_UUID` with the key and job UUID printed by the CLI.
 
 ```sh
-armada snapshot capabilities --provider boat --org ORG_UUID
-armada snapshot list --provider boat --org ORG_UUID --json
-armada snapshot build-status --idempotency-key ADMISSION_KEY --org ORG_UUID
-armada snapshot build-status JOB_UUID
+armada api golden/capabilities '{"provider":"boat","org":"ORG_UUID"}'
+armada snapshot ls --provider boat --org ORG_UUID --json
+armada snapshot show --idempotency-key ADMISSION_KEY --org ORG_UUID
+armada snapshot show --build JOB_UUID
 ```
 
 “No such build” for an admission key means no visible durable admission exists.
@@ -40,7 +40,7 @@ Neither capacity nor a missing binding proves a GitHub authorization problem.
 You can find a rebuild without the original admission key or URL. Replace
 `SNAPSHOT_NAME` with the snapshot name.
 
-    armada snapshot build-find "SNAPSHOT_NAME" --provider boat --org ORG_UUID
+    armada api golden/build/find '{"name":"SNAPSHOT_NAME","provider":"boat","org":"ORG_UUID"}'
 
 On the Snapshots page, open the existing snapshot's Edit and rebuild form and
 choose Find active build. The latest visible queued, running or recovery-required
@@ -76,7 +76,7 @@ A timeout must not simply clear a reservation while a provider operation could
 still publish a snapshot. Owners can cancel a queued, never-started build using Cancel queued build beside
 its tracked status in the dashboard, or:
 
-    armada snapshot build-cancel JOB_UUID --org ORG_UUID
+    armada api golden/build/cancel '{"jobId":"JOB_UUID","org":"ORG_UUID"}'
 
 Cancellation is idempotent and only releases that admission's reservation. A
 rebuild keeps its existing snapshot binding and snapshot. If a worker has already

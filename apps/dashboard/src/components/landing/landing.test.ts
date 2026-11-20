@@ -69,7 +69,7 @@ describe("what the landing says", () => {
   test("installs the README's package and does not promise a fresh GitHub token lifetime", async () => {
     expect(read(join(REPO, "README.md"))).toContain(INSTALL.replace(" -g ", " --global "));
     expect(SETUP[0]?.command).toBe(INSTALL);
-    const launch = (await landingTranscript()).find((entry) => entry.command.startsWith("armada launch "));
+    const launch = (await landingTranscript()).find((entry) => entry.command.startsWith("armada new "));
     expect(launch?.output).toContain("launch token expires at 2026-11-09T17:30:00.000Z (~480 minutes remaining)");
     expect(launch?.output).toContain("armada github refresh");
   });
