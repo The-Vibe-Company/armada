@@ -1719,6 +1719,33 @@ test("a complete stopped Docker archive replaces the live sample, while a trunca
   expect((await upload())?.status).toBe(204);
 });
 
+test("an attached Docker restore can publish the replacement's retained outputs", async () => {
+  const a = await restoreFixture();
+  const {
+    rows: [claim],
+  } = await database().query<Job>(
+    `update jobs set state='leased',lease_owner=$2,lease_epoch=1,lease_until='infinity',attempts=1
+     where id=$1 returning id,sandbox_id,generation::text,lease_epoch::text`,
+    [a.selection.runnerJobId, randomUUID()],
+  );
+  if (!claim) throw new Error("Missing fixture runner claim.");
+  const { requestId } = a.restore;
+  expect(await a.poll()).toEqual(a.restore);
+  await store.complete(a.hostToken, a.installationId, { requestId, outcome: "completed" });
+  await store.attachMachineRestore(a.owner, claim, requestId);
+  await store.expired(a.hostToken, a.installationId, { requestId });
+  const signal = new AbortController().signal;
+  const outputs = (body: ReadableStream<Uint8Array> | null) =>
+    store.retainedOutputs(a.hostToken, a.installationId, requestId, body, signal);
+
+  expect(await outputs(null)).toBe(202);
+  expect(await outputs(new Response(await stoppedOutputArchive()).body)).toBe(204);
+  expect((await database().query("select name from sandbox_outputs where sandbox_id=$1", [a.sandboxId])).rows).toEqual([
+    { name: "late.txt" },
+  ]);
+  expect(await outputs(null)).toBe(204);
+});
+
 test("a mixed-release replica sees and can supersede a Docker upload before publication", async () => {
   const a = await boundStartup("create");
   await store.expired(a.hostToken, a.installationId, { requestId: a.startup.requestId });
