@@ -395,7 +395,7 @@ for (const outcome of [
               let admitted = false;
               const result = await work({
                 query: (statement, args) => {
-                  if (statement.includes("public.sandbox_transition(")) {
+                  if (statement.includes("public.sandbox_transition(") && args?.[3] === "stopping") {
                     admitted = true;
                     if (boundary === "transition") {
                       injected = true;
@@ -413,10 +413,10 @@ for (const outcome of [
             }),
         };
         await createSandboxLifecycle(faultingSql, async () => provider).reconcileOne();
+        expect(requests.some((request) => request.startsWith("POST"))).toBe(false);
         expect(injected).toBe(true);
         expect(await readStopIntent()).toEqual(before);
         expect((await db.query("select id from sandbox_transitions where sandbox_id=$1", [id])).rows).toEqual([]);
-        expect(requests.some((request) => request.startsWith("POST"))).toBe(false);
         await db.query("update sandboxes set reconcile_after=now()-interval '1 second' where id=$1", [id]);
       }
     }
@@ -454,6 +454,10 @@ for (const outcome of [
     expect(row.effective_ttl_seconds).toBe(60);
     expect(row.requested_ttl_seconds).toBe(60);
     if (outcome === "external-stop") expect(row.provider_stop_retained).toBe(true);
+    if (outcome === "stale") {
+      expect(await readStopIntent()).toMatchObject({ stop_requested_at: null, stop_generation: 0 });
+      expect(requests.some((request) => request.startsWith("POST"))).toBe(false);
+    }
     if (outcome === "snapshot-owner-removed" || outcome === "stale")
       expect((await db.query("select id from sandbox_transitions where sandbox_id=$1", [id])).rows).toEqual([]);
     if (waitingForRetention) {
