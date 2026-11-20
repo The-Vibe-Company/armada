@@ -60,7 +60,7 @@ begin
     if ((sandbox.provider = 'boat' and sandbox.boat_runtime)
         or (sandbox.provider = 'modal' and sandbox.runtime_transport = 'dialout')) is not true
       or sandbox.status <> 'stopped' or sandbox.stopped_at is null
-      or sandbox.expires_at <= now() or sandbox.application_secret_tainted
+      or sandbox.expires_at <= clock_timestamp() or sandbox.application_secret_tainted
       or sandbox.stop_requested_at is not null or sandbox.deleted_at is not null
       or sandbox.activity_lease_id is not null or sandbox.activity_until >= now()
       or sandbox.reconcile_lease_until >= now()

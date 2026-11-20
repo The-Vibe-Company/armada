@@ -279,7 +279,7 @@ describe.each([
   });
 });
 
-test("retained resume admission rolls back on a stale transition generation", async () => {
+test.each(["stale generation", "elapsed expiry"])("retained resume admission rolls back on %s", async (conflict) => {
   const f = await stopped();
   try {
     const request = input(f.row.id);
@@ -291,10 +291,18 @@ test("retained resume admission rolls back on a stale transition generation", as
         f.sql.transaction!((tx) =>
           work({
             ...tx,
-            query(statement, params) {
+            async query(statement, params) {
               if (statement.includes("from public.sandbox_transition(") && params?.[5] === "runtime_resume_admitted") {
-                const [id, generation, ...rest] = params;
-                return tx.query(statement, [id, Number(generation) - 1, ...rest]);
+                if (conflict === "stale generation") {
+                  const [id, generation, ...rest] = params;
+                  return tx.query(statement, [id, Number(generation) - 1, ...rest]);
+                }
+                const expiry = await tx.query<{ elapsed_after_begin: boolean }>(
+                  `update public.sandboxes set expires_at=clock_timestamp() where id=$1
+                   returning expires_at>now() as elapsed_after_begin`,
+                  [f.row.id],
+                );
+                expect(expiry.rows).toEqual([{ elapsed_after_begin: true }]);
               }
               return tx.query(statement, params);
             },
@@ -302,7 +310,7 @@ test("retained resume admission rolls back on a stale transition generation", as
         ),
     };
     const resume = createRuntimeResume(sql, ENCRYPTION_KEY, f.bridge, async () => {
-      throw Error("Stale admission must not prepare a provider activation");
+      throw Error("Refused admission must not prepare a provider activation");
     });
 
     await expect(resume(f.caller, request)).rejects.toMatchObject({
