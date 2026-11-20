@@ -39,12 +39,13 @@ configured Codex account:
 }
 ```
 
-The golden and Docker success bodies use the `launchEnvelope` schema in
-`@armada/core/contract`. The CLI emits the same body for `armada launch --json`
-on Boat, Modal and Docker. Read the sandbox ID, provider and status from
-`sandbox.id`, `sandbox.provider` and `sandbox.status`. The golden name is
-`golden.name` for golden launches, and Docker returns `golden: null`. Pinned
-template requests return a durable template receipt.
+Boat, Modal and Docker launch success responses use the `launchEnvelope`
+schema in `@armada/core/contract`. The CLI emits the same shape with `--json`,
+for example `armada launch review --provider modal --agent codex --json`.
+Read the sandbox ID, provider and status from `sandbox.id`, `sandbox.provider`
+and `sandbox.status`. For Boat and Modal, read the snapshot name from
+`golden.name`. Docker returns `golden: null` even when the launch uses a Docker
+snapshot. Pinned template requests return a durable template receipt.
 
 Omit `prompt` to launch without starting a turn. The first
 `sandbox/send` then opens the conversation. Save the returned Armada
@@ -183,7 +184,7 @@ Reconnect with the last processed ID in `Last-Event-ID` or `cursor`. The header 
 ## Drive a turn over MCP
 
 Call `launch_options` with `{}` to read the same server-wide launch catalog as
-`POST /api/v1/launch/options`. MCP `launch` accepts Boat and Modal goldens.
+`POST /api/v1/launch/options`. MCP `launch` accepts Boat and Modal snapshots.
 Call `outputs_list` with `id` to list the stored output snapshot. Call
 `output_read` with `id` and `name` to read a file up to 32 KiB as a JSON object
 with a `base64` field. Use `GET /api/v1/sandboxes/{id}/outputs/{name}` for
@@ -243,10 +244,12 @@ this order:
 2. HTTP 409 `credential_binding_required` for a Modal sandbox without a model
    account binding that could otherwise accept the send, including a stopped
    and retained one. A `request_id` does not bypass this check. The sandbox
-   owner must bind an account first, on the sandbox's dashboard page, with
-   `armada bind-credential`, or with `POST /api/v1/sandbox/bind-credential`
-   and `{"id":"<sandbox UUID>","credentialId":"<account UUID>"}`. The
-   workspace and conversations are retained.
+   owner must bind an account first. Use the sandbox's dashboard page,
+   `armada bind-credential SANDBOX_UUID --credential-id ACCOUNT_UUID`, or
+   `POST /api/v1/sandbox/bind-credential` with
+   `{"id":"<sandbox UUID>","credentialId":"<account UUID>"}`. Replace the UUID
+   placeholders with the sandbox and model account IDs. The workspace and
+   conversations are retained.
 3. HTTP 409 `sandbox_terminal` when the sandbox cannot take a send in its
    current state: it has expired, failed or been deleted, or it is stopped and
    a send cannot resume it. Stopped Boat and Modal sandboxes resume on send

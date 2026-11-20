@@ -38,7 +38,7 @@ A LaunchError with a recorded legacy code retains that code (no message guessing
 | sandbox_not_ready, no_running_turn | 409 via shared tool; 503 for direct ProviderError | Wait for readiness, or avoid steering an absent turn. |
 | invalid_request | 400 | Invalid provider/tool/launch request. |
 | no_credentials, start_failed, init_failed, prompt_failed | 400 | Launch refused or recorded failure; inspect existing sandbox before a new launch. |
-| setup_failed, snapshot_failed, build_failed | 502 | Golden build/setup failed. |
+| setup_failed, snapshot_failed, build_failed | 502 | Snapshot build or setup failed. |
 | provider_not_configured | 503 | Provider adapter/account unavailable. |
 | provider_mismatch | 503 direct control; 400 via shared tool | Persisted routing disagrees; do not switch providers. |
 | payment_required, rate_limited | 400 via shared tool; 402/429 respectively for direct ProviderError | Resolve billing/quota or back off; surface-dependent legacy status. |
@@ -51,7 +51,7 @@ A LaunchError with a recorded legacy code retains that code (no message guessing
 Vault/Invitation errors use invalid/forbidden/not_found/missing_credential/
 conflict/unavailable/credential_refused and credential binding codes. Invitation
 errors can additionally carry a closed `reason` and `retryAfterSeconds`.
-Golden errors use the explicit golden mappings above. The shared-tool adapter
+Snapshot errors use the explicit mappings above. The shared-tool adapter
 defaults unrecognized marker codes to 400; this is a fallback, not a new code.
 
 ## Auth and token routes under `/api/v1/`
