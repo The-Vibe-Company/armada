@@ -713,7 +713,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
     return requireCurrentMachine(tx, logical, delivered);
   }
 
-  async function callbackMachine(tx: Sql, job: StoredJob, host: Host, installationId: string) {
+  async function currentOrSupersededMachine(tx: Sql, job: StoredJob, host: Host, installationId: string) {
     const logical = await sandbox(tx, job.bound_sandbox_id ?? deny(), host, installationId);
     const delivered = await readJob(job);
     if (delivered.request.generation === logical.docker_generation)
@@ -1899,12 +1899,19 @@ export function createDockerHostStore(sql: Sql, key: string) {
         }
         if (row.bound_sandbox_id) {
           let verified: Sandbox | undefined;
+          let supersededPlacement = false;
           try {
             if (row.bound_operation === "restore") {
               if (!supportsRestore) return null;
               return await admitRestore(tx, row, host, installationId);
             }
-            const logical = await boundMachine(tx, row, host, installationId);
+            const logical = generationFenced(row.bound_operation)
+              ? await boundMachine(tx, row, host, installationId)
+              : await currentOrSupersededMachine(tx, row, host, installationId);
+            if (!logical) {
+              supersededPlacement = true;
+              deny();
+            }
             if (
               row.recovering_receipt &&
               (logical.status !== "starting" ||
@@ -1929,9 +1936,9 @@ export function createDockerHostStore(sql: Sql, key: string) {
             if (verified) await startupFailed(tx, verified, row);
             await tx.query(
               `update public.docker_host_jobs set outcome='failed',completed_at=now(),
-               cancelled_at=case when bound_operation in ('deletePhysical','restore') then now() else cancelled_at end
+               cancelled_at=case when $2 or bound_operation in ('deletePhysical','restore') then now() else cancelled_at end
                where request_id=$1 and outcome is null`,
-              [row.request_id],
+              [row.request_id, supersededPlacement],
             );
             return null;
           }
@@ -1985,7 +1992,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
           if (job.outcome !== "completed" || job.cancelled_at) deny();
           await requireRestoreBindings(tx, logical, restore, lifecycleGeneration);
         } else {
-          logical = await callbackMachine(tx, job, host, installationId);
+          logical = await currentOrSupersededMachine(tx, job, host, installationId);
           if (!logical) return;
         }
         // Status repeats across lifecycles; mailbox ordering identifies which
@@ -2048,7 +2055,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
             if (job.outcome !== "completed" || job.cancelled_at) deny();
             await requireRestoreBindings(tx, logical, restore, lifecycleGeneration);
           } else {
-            logical = await callbackMachine(tx, job, host, installationId);
+            logical = await currentOrSupersededMachine(tx, job, host, installationId);
             if (!logical) return;
           }
           if (await supersededLifecycle(tx, job, true)) return;
@@ -2131,7 +2138,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
             job.bound_operation !== "resume"
           )
             deny();
-          logical = await callbackMachine(tx, job, host, installationId);
+          logical = await currentOrSupersededMachine(tx, job, host, installationId);
           if (!logical) return;
           if (logical.status === "deleted" || (await supersededLifecycle(tx, job, true))) return;
         }
@@ -2215,7 +2222,7 @@ export function createDockerHostStore(sql: Sql, key: string) {
         if (hint.bound_sandbox_id) {
           if (generationFenced(hint.bound_operation)) await readJob(hint);
           else {
-            logical = await callbackMachine(tx, hint, host, installationId);
+            logical = await currentOrSupersededMachine(tx, hint, host, installationId);
             supersededPlacement = logical === undefined;
           }
         }
