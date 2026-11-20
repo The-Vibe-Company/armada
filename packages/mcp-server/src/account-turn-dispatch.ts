@@ -312,16 +312,16 @@ export function createTurnDispatchJob(sql: Sql, key: string, dispatch: DispatchT
           async commit(tx) {
             // WARNING: Waiting for the receipt here can deadlock with receipt-first claim reconciliation.
             await tx.query(
-              "select request_id from public.account_turn_queue where sandbox_id=$1 and request_id=$2 for update nowait",
-              [sandboxId, requestId],
-            );
-            await tx.query(
-              `update public.account_turn_queue q set state='failed', dispatch_until=null,
+              `with locked as materialized (
+                 select sandbox_id, request_id from public.account_turn_queue
+                 where sandbox_id=$1 and request_id=$2 and state in ('queued','dispatching') for update nowait
+               )
+               update public.account_turn_queue q set state='failed', dispatch_until=null,
                  failure_reason=case when q.state='dispatching' or ${QUEUED_DISPATCH_EVIDENCE}
                    then '${UNCERTAIN_DISPATCH_MESSAGE}'
                    else 'Queued prompt could not start before its dispatch budget expired.' end
-               from public.sandboxes s
-               where s.id=q.sandbox_id and q.sandbox_id=$1 and q.request_id=$2 and q.state in ('queued','dispatching')`,
+               from locked join public.sandboxes s on s.id=locked.sandbox_id
+               where q.sandbox_id=locked.sandbox_id and q.request_id=locked.request_id`,
               [sandboxId, requestId],
             );
           },
