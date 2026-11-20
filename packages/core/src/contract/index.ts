@@ -187,7 +187,25 @@ export type StopInput = z.input<typeof operations.stopSandbox.input.body>;
 export type StopResult = z.infer<typeof operations.stopSandbox.output>;
 export type LogsInput = z.infer<typeof operations.readLogs.input.body>;
 export type LogsResult = z.infer<typeof operations.readLogs.output>;
+export type ListInput = z.input<typeof operations.listSandboxes.input.body>;
+export type ListResult = z.infer<typeof operations.listSandboxes.output>;
+export type InterruptInput = z.input<typeof operations.interruptSandbox.input.body>;
+export type InterruptResult = z.infer<typeof operations.interruptSandbox.output>;
+export type SteerInput = z.input<typeof operations.steerSandbox.input.body>;
+export type SteerResult = z.infer<typeof operations.steerSandbox.output>;
+export type ExecInput = z.input<typeof operations.execSandbox.input.body>;
 export type ExecResult = z.infer<typeof operations.execSandbox.output>;
+export type ViewerTokenInput = z.input<typeof operations.createSandboxViewerToken.input.body>;
+export type ViewerTokenResult = z.infer<typeof operations.createSandboxViewerToken.output>;
+export type OutputsListInput = { id: z.input<typeof sandboxOutputOperations.listSandboxOutputs.input.path.id> };
+export type OutputsListResult = z.infer<typeof sandboxOutputOperations.listSandboxOutputs.output>;
+type OutputDownload = typeof sandboxOutputOperations.readSandboxOutput;
+export type OutputGetInput = {
+  id: z.input<OutputDownload["input"]["path"]["id"]>;
+  name: z.input<OutputDownload["input"]["path"]["name"]>;
+  range?: z.input<OutputDownload["input"]["headers"]["Range"]>;
+  ifRange?: z.input<OutputDownload["input"]["headers"]["If-Range"]>;
+};
 
 type SdkOperationName =
   | "launch"
@@ -197,7 +215,11 @@ type SdkOperationName =
   | "waitSandbox"
   | "stopSandbox"
   | "readLogs"
-  | "execSandbox";
+  | "execSandbox"
+  | "listSandboxes"
+  | "interruptSandbox"
+  | "steerSandbox"
+  | "createSandboxViewerToken";
 type UnmappedSdkError = Exclude<(typeof operations)[SdkOperationName]["errors"][number], ServerFailureCode>;
 const sdkErrorsCovered: UnmappedSdkError extends never ? true : never = true;
 void sdkErrorsCovered;

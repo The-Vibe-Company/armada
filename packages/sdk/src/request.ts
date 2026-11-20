@@ -15,6 +15,8 @@ export interface RequestPolicy {
   renewToken?: () => Promise<string>;
   readOnly?: boolean;
   readRetries?: number;
+  /** Leave a successful download body for the caller to consume. */
+  streamResponse?: boolean;
 }
 
 interface Failure {
@@ -72,7 +74,7 @@ export const requestApi: (
     try {
       const init = typeof requestInit === "function" ? requestInit() : requestInit;
       const headers = Object.fromEntries(new Headers(init.headers).entries());
-      headers.accept = "application/json";
+      headers.accept ??= "application/json";
       if (token !== undefined) headers.authorization = `Bearer ${token}`;
       response = await fetch(url, { ...init, headers, redirect: "error", signal });
     } catch (error) {
@@ -87,6 +89,8 @@ export const requestApi: (
       renewed = true;
       continue;
     }
+    if (response.ok && policy.streamResponse)
+      return { kind: "response", response, payload: null, bodyReadFailed: false };
     let payload: unknown = null;
     let bodyReadFailed = false;
     let text: string | undefined;
@@ -124,7 +128,11 @@ export const requestApi: (
     )
       continue;
     const rawCode =
-      error && typeof error === "object" && "code" in error && typeof error.code === "string" ? error.code : undefined;
+      typeof error === "string"
+        ? error
+        : error && typeof error === "object" && "code" in error && typeof error.code === "string"
+          ? error.code
+          : undefined;
     const code: FailureCode = rawCode && isServerFailureCode(rawCode) ? rawCode : "unknown_response";
     return {
       kind: "response",
