@@ -269,7 +269,7 @@ export const LOGS_OUTPUT = {
 
 export const sandboxListInput = z.object({
   harness: z.enum(HARNESSES).optional(),
-  golden: z.string().uuid().optional().describe("Golden UUID, not a name."),
+  golden: z.string().uuid().optional().describe("Filter by Boat or Modal snapshot UUID."),
   owner: z.union([z.string().uuid(), z.literal("me")]).optional(),
   page: z.number().int().min(1).max(1_000_000).optional().describe("1-based page, default 1."),
   status: z.array(z.enum(SANDBOX_STATUSES)).min(1).optional().describe("Only these statuses."),
