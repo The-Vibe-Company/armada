@@ -167,44 +167,11 @@ jobs:
             echo "::error::CLI device login configuration check failed; deployment was not started."
             exit 1
           fi
-      - name: Check previous staging reaper evidence
-        id: reaper
+      - name: Capture outgoing staging reaper failures
+        id: outgoing_reaper
         continue-on-error: true
-        shell: bash
         if: (steps.evidence.outputs.reused != 'true')
-        run: |
-          evidence="$RUNNER_TEMP/reaper-evidence.jsonl"
-          fail_preflight() {
-            jq -cn --arg phase "$1" --argjson status "$2" \
-              '{step:"smoke_reaper_evidence",pass:false,code:("reaper_" + $phase + "_failed"),phase:$phase,exitStatus:$status}' \
-              | tee "$evidence"
-            exit 1
-          }
-          [[ "$ARMADA_URL" == 'https://armada-mcp-staging.up.railway.app' ]] || fail_preflight staging_origin "$?"
-          scope=(--project "$RAILWAY_PROJECT_ID" --environment "$RAILWAY_ENVIRONMENT_ID" --service "$RAILWAY_SERVICE_ID")
-          deployments=$(timeout 15s railway deployment list --json --limit 20 "${scope[@]}") \
-            || fail_preflight deployment_list "$?"
-          ids=$(jq -er '
-            sort_by(.createdAt) | reverse
-            | (map(.status) | index("SUCCESS")) as $current | select($current != null) | .[$current:]
-            | map(select(.status == "SUCCESS" or .status == "REMOVED" or .status == "REMOVING"))
-            | .[:2][] | .id | if test("^[a-f0-9-]{36}$") then . else error("invalid deployment ID") end
-          ' <<< "$deployments") || fail_preflight deployment_selection "$?"
-          mapfile -t deployment_ids <<< "$ids"
-          filter='((@provider:modal OR @provider:docker) AND (@metric:reaper_unknown_machines OR @event:reaper_overdue_machines)) OR (@event:provider_reaper_retry AND @phase:discovery)'
-          read_logs() {
-            timeout 15s railway logs "$1" --deployment --json --since 15m --lines 500 "${scope[@]}" --filter "$filter"
-          }
-          current_logs=$(read_logs "${deployment_ids[0]}") || fail_preflight current_deployment_logs "$?"
-          previous_logs=
-          if [[ -n "${deployment_ids[1]:-}" ]]; then
-            previous_logs=$(read_logs "${deployment_ids[1]}") || fail_preflight previous_deployment_logs "$?"
-            previous_logs=$(jq -c '. + {previousDeployment: true}' <<< "$previous_logs") \
-              || fail_preflight previous_log_decode "$?"
-          fi
-          printf '%s\n' "$current_logs" "$previous_logs" \
-            | env -i PATH="$PATH" bun .release-tools/scripts/release/smoke-reaper-evidence.ts \
-            | jq -c 'if .pass then . else . + {code:"reaper_evidence_rejected"} end' | tee "$evidence"
+        run: bash .release-tools/scripts/release/staging-reaper-evidence.sh
       # Stamp the checked-out SHA in ordinary wakeup evidence. GitHub run metadata
       # can describe an older main tip than the source resolved under the lock.
       - name: Migrate then deploy pinned server and dashboard${{ github.event_name == 'workflow_run' && inputs.source_sha == '' && format(' ({0})', env.RELEASE_SHA) || '' }}
@@ -247,6 +214,13 @@ jobs:
             bun .release-tools/scripts/release/smoke-receipt.ts "$RUNNER_TEMP/receipt-run.json" "$GH_REPO" "${release_args[@]}"
             unzip -p "$RUNNER_TEMP/smoke-journal.zip" sandboxes.json > .smoke/sandboxes.json
           fi
+      - name: Check candidate staging reaper evidence
+        id: reaper
+        continue-on-error: true
+        if: (steps.evidence.outputs.reused != 'true' && steps.deployment.outputs.superseded != 'true' && steps.outgoing_reaper.outcome == 'success')
+        env:
+          CANDIDATE_DEPLOYMENT_ID: ${{ steps.deployment.outputs.railway_deployment_id }}
+        run: bash .release-tools/scripts/release/staging-reaper-evidence.sh "${CANDIDATE_DEPLOYMENT_ID:?Missing candidate deployment ID}"
       - name: Smoke pinned staging
         id: smoke
         shell: bash

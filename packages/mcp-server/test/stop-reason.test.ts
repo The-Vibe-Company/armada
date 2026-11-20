@@ -136,6 +136,9 @@ test.each([
   { runtime: false, outcome: "stale", confirmed: true },
   { runtime: false, outcome: "changed_state", confirmed: true },
   { runtime: false, outcome: "stopped_source", confirmed: true },
+  { runtime: false, outcome: "stopped_source", confirmed: false },
+  { runtime: false, outcome: "stopped_source_conflict", confirmed: false },
+  { runtime: false, outcome: "stopped_source_rollback", confirmed: false },
 ] as const)(
   "observed provider failure (runtime=$runtime, $outcome, exit confirmed=$confirmed)",
   async ({ runtime, outcome, confirmed }) => {
@@ -144,21 +147,13 @@ test.each([
     const machine = await boat.provider.fork({ from: "snapshot" });
     const id = crypto.randomUUID();
     const now = new Date("2026-01-01T00:00:00Z");
-    const from = outcome === "stopped_source" ? "stopped" : "ready";
+    const from = outcome.startsWith("stopped_source") ? "stopped" : "ready";
+    const previousStop = from === "stopped" ? "2025-12-31T00:00:00.000Z" : null;
     const applied = outcome === "applied" || outcome === "stopped_source";
     await db.query(
       `insert into sandboxes(id,provider,provider_sandbox_id,golden_id,org_id,owner_id,harness,status,boat_runtime,stopped_at)
      values ($1,'boat',$2,$3,$4,$5,'codex',$7,$6,$8)`,
-      [
-        id,
-        machine.id,
-        sharedGoldenId,
-        people.org,
-        people.owner,
-        runtime,
-        from,
-        from === "stopped" ? "2025-12-31" : null,
-      ],
+      [id, machine.id, sharedGoldenId, people.org, people.owner, runtime, from, previousStop],
     );
     const store = createSqlData(db)({
       userId: people.owner,
@@ -166,7 +161,7 @@ test.each([
       via: "service",
     }).sandboxes;
     const sandbox = (await store.get(id))!;
-    const diagnostic = confirmed ? "Provider reported a runtime failure. ".repeat(100) : "";
+    const diagnostic = confirmed || from === "stopped" ? "Provider reported a runtime failure. ".repeat(100) : "";
     await db.query(
       `insert into account_turn_queue(sandbox_id,request_id,account_id,owner_id,org_id,actor_epoch,credential_version,
       input_hash,input_enc,conversation_id,state,dispatch_generation)
@@ -186,7 +181,15 @@ test.each([
     if (outcome === "stale")
       await db.query("update sandboxes set lifecycle_generation=lifecycle_generation+1 where id=$1", [id]);
     if (outcome === "changed_state") await db.query("update sandboxes set status='running' where id=$1", [id]);
-    const existingStatus = outcome === "changed_state" ? "running" : "ready";
+    if (outcome === "stopped_source_conflict")
+      await db.query("update sandboxes set status='ready',stopped_at=null where id=$1", [id]);
+    const existingStatus =
+      outcome === "changed_state" ? "running" : outcome === "stopped_source_rollback" ? "stopped" : "ready";
+    if (outcome === "stopped_source_rollback")
+      await db.exec(`create function reject_failure_journal() returns trigger language plpgsql as $$
+      begin raise exception 'Failure journal rejected'; end $$;
+      create trigger reject_failure_journal before insert on sandbox_transitions
+      for each row execute function reject_failure_journal();`);
     if (outcome === "rollback")
       await db.exec("alter table sandboxes add constraint reject_observed_exit check (stopped_at is null)");
     if (outcome === "release_failed")
@@ -197,6 +200,7 @@ test.each([
     try {
       const read = readStatus(boat.provider, store, sandbox, { now });
       if (outcome === "rollback") await expect(read).rejects.toThrow("reject_observed_exit");
+      else if (outcome === "stopped_source_rollback") await expect(read).rejects.toThrow("Failure journal rejected");
       else if (outcome === "release_failed") await expect(read).rejects.toThrow("Reservation release failed");
       else expect(await read).toMatchObject({ status: applied ? "failed" : existingStatus });
 
@@ -207,27 +211,41 @@ test.each([
       const row = await store.get(id);
       const reservation = await db.query("select sandbox_id from account_agent_reservations where sandbox_id=$1", [id]);
       expect(reservation.rows).toEqual(applied && confirmed ? [] : [{ sandbox_id: id }]);
+      if (from === "stopped" && !confirmed) {
+        const { rows } = await db.query("select dispatch_generation::int from account_turn_queue where sandbox_id=$1", [
+          id,
+        ]);
+        expect(rows).toEqual([{ dispatch_generation: sandbox.lifecycleGeneration }]);
+      }
       if (applied) {
         expect(journal.rows).toEqual([
           {
             from_status: from,
             to_status: "failed",
-            actor: from === "stopped" ? "runtime_observation" : "lifecycle_runner",
+            actor: from === "stopped" && confirmed ? "runtime_observation" : "lifecycle_runner",
             code: runtime ? "runtime_provider_failure" : "native_provider_failure",
             generation: sandbox.lifecycleGeneration,
           },
         ]);
         expect(row).toMatchObject({
           status: "failed",
-          statusReason: confirmed ? diagnostic.slice(0, 2000) : null,
-          stoppedAt: confirmed ? now.toISOString() : null,
+          statusReason: diagnostic ? diagnostic.slice(0, 2000) : null,
+          stoppedAt: confirmed ? now.toISOString() : previousStop,
         });
       } else {
         expect(journal.rows).toEqual([]);
-        expect(row).toMatchObject({ status: existingStatus, stoppedAt: null });
+        expect(row).toMatchObject({
+          status: existingStatus,
+          statusReason: null,
+          stoppedAt: existingStatus === "stopped" ? previousStop : null,
+        });
       }
     } finally {
       if (outcome === "rollback") await db.exec("alter table sandboxes drop constraint reject_observed_exit");
+      if (outcome === "stopped_source_rollback")
+        await db.exec(
+          "drop trigger reject_failure_journal on sandbox_transitions; drop function reject_failure_journal()",
+        );
       if (outcome === "release_failed")
         await db.exec(
           "drop trigger reject_reservation_release on account_agent_reservations; drop function reject_reservation_release()",
@@ -338,6 +356,108 @@ test.each([
     }
   },
 );
+
+test.each([
+  { from: "stopped", to: "ready", outcome: "applied" },
+  { from: "stopped", to: "running", outcome: "applied" },
+  { from: "stopped", to: "running", outcome: "stale source" },
+  { from: "stopped", to: "ready", outcome: "journal failure" },
+  { from: "failed", to: "ready", outcome: "applied" },
+  { from: "failed", to: "running", outcome: "applied" },
+  { from: "failed", to: "running", outcome: "stale source" },
+  { from: "failed", to: "ready", outcome: "confirmed exit" },
+  { from: "stopped", to: "starting", outcome: "applied" },
+  { from: "running", to: "stopping", outcome: "applied" },
+  { from: "ready", to: "starting", outcome: "stale source" },
+  { from: "failed", to: "stopping", outcome: "confirmed exit" },
+  { from: "ready", to: "stopping", outcome: "journal failure" },
+  { from: "stopped", to: "starting", outcome: "commit failure" },
+] as const)("native provider observation $from -> $to ($outcome)", async ({ from, to, outcome }) => {
+  const { db, people, sharedGoldenId } = await failureDatabase();
+  const boat = fakeBoat();
+  const machine = await boat.provider.fork({ from: "snapshot" });
+  const turn = await boat.provider.prompt({ sandboxId: machine.id, harness: "codex", text: "work" });
+  const phase = to === "starting" || to === "stopping";
+  if (phase) boat.sandbox(machine.id).info.state = to;
+  if (to === "ready") boat.finish(machine.id, turn.promptId, "finished");
+  const stoppedAt = "2026-01-01T00:00:00.000Z";
+  const statusReason = from === "failed" ? "Previous provider failure" : null;
+  const id = crypto.randomUUID();
+  await db.query(
+    `insert into sandboxes(id,provider,provider_sandbox_id,golden_id,org_id,owner_id,harness,status,task_prompt_id,stopped_at,status_reason)
+     values ($1,'boat',$2,$3,$4,$5,'codex',$6,$7,$8,$9)`,
+    [
+      id,
+      machine.id,
+      sharedGoldenId,
+      people.org,
+      people.owner,
+      from,
+      turn.promptId,
+      from === "stopped" ? stoppedAt : null,
+      statusReason,
+    ],
+  );
+  const store = createSqlData(db)({
+    userId: people.owner,
+    orgs: [{ orgId: people.org, role: "member" }],
+    via: "service",
+  }).sandboxes;
+  const sandbox = (await store.get(id))!;
+  const staleState = from === "failed" ? "ready" : "failed";
+  if (outcome === "stale source")
+    await db.query("update sandboxes set status=$2,stopped_at=null,status_reason=null where id=$1", [id, staleState]);
+  if (outcome === "confirmed exit") await db.query("update sandboxes set stopped_at=$2 where id=$1", [id, stoppedAt]);
+  const commitFails = outcome === "commit failure";
+  const rollback = commitFails || outcome === "journal failure";
+  const rejected = commitFails ? "Observation commit rejected" : "Observation journal rejected";
+  if (rollback)
+    await db.exec(`create function reject_availability_journal() returns trigger language plpgsql as $$
+      begin raise exception '${rejected}'; end $$;
+      ${
+        commitFails
+          ? "create constraint trigger reject_availability_journal after insert on sandbox_transitions deferrable initially deferred"
+          : "create trigger reject_availability_journal before insert on sandbox_transitions"
+      }
+      for each row execute function reject_availability_journal();`);
+
+  const applied = outcome === "applied";
+  const status = applied ? to : outcome === "stale source" ? staleState : from;
+  try {
+    const observation = readStatus(boat.provider, store, sandbox, { now: new Date("2026-01-01") });
+    if (rollback) await expect(observation).rejects.toThrow(rejected);
+    else expect(await observation).toMatchObject({ status });
+    expect(await store.get(id)).toMatchObject({
+      status,
+      stoppedAt: status === "stopped" || outcome === "confirmed exit" ? stoppedAt : null,
+      statusReason: applied || outcome === "stale source" ? null : statusReason,
+      lifecycleGeneration: sandbox.lifecycleGeneration,
+      stopRequestedAt: null,
+    });
+    const { rows } = await db.query(
+      "select from_status,to_status,actor,code,generation::int from sandbox_transitions where sandbox_id=$1",
+      [id],
+    );
+    expect(rows).toEqual(
+      applied
+        ? [
+            {
+              from_status: from,
+              to_status: to,
+              actor: phase ? "lifecycle_runner" : "native_turn",
+              code: phase ? "native_provider_phase" : "native_provider_available",
+              generation: sandbox.lifecycleGeneration,
+            },
+          ]
+        : [],
+    );
+  } finally {
+    if (rollback)
+      await db.exec(
+        "drop trigger reject_availability_journal on sandbox_transitions; drop function reject_availability_journal()",
+      );
+  }
+});
 
 test.each([
   { from: "ready", to: "running", stale: false },

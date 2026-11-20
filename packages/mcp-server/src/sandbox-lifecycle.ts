@@ -695,7 +695,7 @@ export async function recordObservedProviderState(
     sandboxId: string;
     generation: number;
     fromState: SandboxStatus;
-    toState: "failed" | "stopped" | "ready" | "running";
+    toState: "failed" | "stopped" | "ready" | "running" | "starting" | "stopping";
     reason: string | null;
     stoppedAt: string | null;
     providerRunPlacement?: string;
@@ -707,10 +707,18 @@ export async function recordObservedProviderState(
   const nativeExit = providerRunPlacement !== undefined && stoppedAt !== null;
   const nativeFailure =
     !live && nativeExit && toState === "failed" && (fromState === "failed" || fromState === "stopped");
+  const nativeStoppedFailure =
+    providerRunPlacement !== undefined && stoppedAt === null && fromState === "stopped" && toState === "failed";
   const nativeStop = !live && nativeExit && toState === "stopped";
-  if (fromState === "deleted" || (!live && !nativeStop && !nativeFailure))
-    return { kind: "conflict" } satisfies SandboxTransitionResult;
   const nativeTurn = toState === "ready" || toState === "running";
+  const nativePhase = providerRunPlacement !== undefined && (toState === "starting" || toState === "stopping");
+  const nativeAvailability =
+    (fromState === "stopped" || fromState === "failed") && nativeTurn && providerRunPlacement !== undefined;
+  if (
+    fromState === "deleted" ||
+    (!live && !nativeStop && !nativeFailure && !nativeStoppedFailure && !nativeAvailability && !nativePhase)
+  )
+    return { kind: "conflict" } satisfies SandboxTransitionResult;
   if (nativeTurn && providerRunPlacement === undefined)
     throw new Error("Native turn observation requires the observed placement.");
   return sql.transaction(async (tx) => {
@@ -732,21 +740,25 @@ export async function recordObservedProviderState(
     const settlesExit = toState === "stopped" || nativeFailure;
     const providerActor = settlesExit ? "runtime_observation" : "lifecycle_runner";
     const providerCode = toState === "failed" ? "failure" : "stopped";
-    const turnCode = toState === "running" ? "native_turn_running" : "native_turn_settled";
+    const turnCode = nativeAvailability
+      ? "native_provider_available"
+      : toState === "running"
+        ? "native_turn_running"
+        : "native_turn_settled";
     const result = await transitionSandbox(tx, {
       sandboxId,
       expectedGeneration: generation,
       fromStates: [fromState],
       toState,
       actor: nativeTurn ? "native_turn" : providerActor,
-      code: nativeTurn ? turnCode : `${path}_provider_${providerCode}`,
+      code: nativePhase ? "native_provider_phase" : nativeTurn ? turnCode : `${path}_provider_${providerCode}`,
       effects: [],
-      ...(settlesExit || nativeTurn
+      ...(settlesExit || nativeTurn || nativeStoppedFailure || nativePhase
         ? { settlement: { lease: null, statusReason: reason, stopRequestedAt: null, stoppedAt } }
         : {}),
     });
     if (result.kind === "applied") {
-      if (toState === "failed" && !nativeFailure)
+      if (toState === "failed" && !nativeFailure && !nativeStoppedFailure)
         await tx.query(
           "update public.sandboxes set status_reason=$2,stopped_at=coalesce($3::timestamptz,stopped_at) where id=$1",
           [sandboxId, reason, stoppedAt],

@@ -1,11 +1,12 @@
 import { describe, expect, setSystemTime, spyOn, test } from "bun:test";
 import { createMemoryAuthStore } from "@armada/auth";
-import { createSqlVaultStore, DelegatedAuthority, type Provider } from "@armada/core/server";
+import { createSqlVaultStore, DelegatedAuthority, type Provider, type Sql } from "@armada/core/server";
 import { fakeBoat, retainedSandbox, sandbox as sdkSandbox } from "../../provider-boat/test/support.ts";
 import { createAccountTurnQueue } from "../src/account-turn-queue.ts";
 import { boatRuntimeResume } from "../src/boat-runtime-resume.ts";
 import { createQueuedSandboxDispatch, dispatchControlCommand } from "../src/control.ts";
 import { createSqlData } from "../src/data.ts";
+import { providerRegistry } from "../src/http.ts";
 import { createJobsStore } from "../src/jobs/store.ts";
 import { modalRuntimeLaunch } from "../src/modal-runtime-launch.ts";
 import { modalRuntimeResume } from "../src/modal-runtime-resume.ts";
@@ -66,9 +67,6 @@ describe("Modal user stop and wake-on-send", () => {
         async get() {
           return { id: f.row.providerSandboxId, state, providerState: state, physicalGeneration: "1" };
         },
-        async captureRuntimeWork() {
-          return { status: "clean" };
-        },
         async stop() {
           state = "stopped";
         },
@@ -80,7 +78,7 @@ describe("Modal user stop and wake-on-send", () => {
           retained = { epoch, watermark };
           state = "stopped";
         },
-      } as unknown as Provider;
+      };
       const serve = createRuntimeServing(f.sql, ENCRYPTION_KEY);
       const resume = createRuntimeResume(f.sql, ENCRYPTION_KEY, f.bridge, async () => ({
         async start(_signal, restore) {
@@ -95,13 +93,27 @@ describe("Modal user stop and wake-on-send", () => {
           throw Error("Unexpected cleanup of healthy resume");
         },
       }));
+      const store = createSqlVaultStore(f.sql);
+      const providers = providerRegistry({
+        vault: store,
+        encryptionKey: ENCRYPTION_KEY,
+        providerFor: () => {
+          throw Error("Unexpected Boat fallback");
+        },
+        modalTokensFor: async () => ({ tokenId: "id", tokenSecret: "secret", scope: "org" }),
+        modalProviderFor: () => ({
+          provider: host as unknown as Provider,
+          captureRuntimeWork: async () => ({ status: "clean" }),
+        }),
+        runtimeProviderFor: serve,
+      });
       const controls = {
         authStore: createMemoryAuthStore(),
         supabase: { supabaseUrl: "https://unused.test", anonKey: "fixture" },
-        store: createSqlVaultStore(f.sql),
+        store,
         encryptionKey: ENCRYPTION_KEY,
         data: createSqlData(f.sql),
-        providers: { resolve: (target: Parameters<typeof serve>[1]) => serve(host, target, f.caller) },
+        providers,
         runtimeStopCheckpoint: createRuntimeStopCheckpoint(
           f.sql,
           createRuntimeCheckpoint(f.sql, ENCRYPTION_KEY, f.bridge),
@@ -113,7 +125,7 @@ describe("Modal user stop and wake-on-send", () => {
         await expect(stop()).rejects.toThrow();
         await f.db.query("update sandboxes set activity_until=now()-interval '1 second' where id=$1", [f.row.id]);
         const target = (await controls.data(f.caller).sandboxes.get(f.row.id))!;
-        const provider = await serve(host, target, f.caller);
+        const provider = await providers.resolve(target, f.caller);
         const stopCall = spyOn(provider, "stop");
         const lifecycle = createSandboxLifecycle(f.sql, async () => provider);
         expect(await lifecycle.reconcileOne()).toBe(true);
@@ -357,146 +369,218 @@ describe("runtime resume admission rollback", () => {
   );
 });
 
-describe("queued runtime wake admission", () => {
-  const fixture = scopedRuntimeFixture(() => stopped(), { perTest: true });
+describe.each(["boat", "modal"] as const)("queued runtime wake admission (%s)", (provider) => {
+  const fixture = scopedRuntimeFixture(() => stopped("codex", provider), { perTest: true });
 
-  test.each(["current", "publication loss", "stale", "retarget failure", "wrong request"] as const)(
-    "fences queued wake admission and publication (%s)",
-    async (scenario) => {
-      const f = await fixture();
-      const request = input(f.row.id);
-      const before = (await createSqlData(f.sql)(f.caller).sandboxes.get(f.row.id))!.lifecycleGeneration!;
-      const store = createJobsStore(f.sql, ENCRYPTION_KEY);
-      const id = await store.enqueue(
-        "turn_dispatch",
-        f.row.id,
-        before,
-        request.request_id,
-        { requestId: request.request_id },
-        { orgId: f.row.orgId, maxAttempts: 2 },
-      );
-      await f.db.query(
-        `insert into account_turn_queue
-           (sandbox_id,request_id,account_id,owner_id,org_id,actor_epoch,credential_version,input_hash,input_enc,
-            conversation_id,queued_generation,state,dispatch_generation,dispatch_until)
-         select id,$2,credential_id,owner_id,org_id,1,credential_version,'fixture',''::bytea,$3,
-                lifecycle_generation,'dispatching',lifecycle_generation,'infinity'
-         from sandboxes where id=$1`,
-        [f.row.id, request.request_id, f.first.conversationId],
-      );
-      const owner = crypto.randomUUID();
-      const job = (await store.claim("turn_dispatch", owner, 30, 1))!;
-      expect(job.id).toBe(id);
-      if (scenario === "stale") await f.db.query("update jobs set lease_until='-infinity' where id=$1", [id]);
-      const read = async () =>
-        (
-          await f.db.query(
-            `select s.status,s.lifecycle_generation::text,j.generation::text,
-                exists(select 1 from runtime_resumes r where r.sandbox_id=s.id and r.request_id=$2) as intent
-             from jobs j join sandboxes s on s.id=j.sandbox_id where j.id=$1`,
-            [id, request.request_id],
-          )
-        ).rows[0];
-      let preparations = 0;
-      const resume = createRuntimeResume(f.sql, ENCRYPTION_KEY, f.bridge, async () => {
-        preparations++;
-        expect(await read()).toEqual({
-          status: "starting",
-          lifecycle_generation: String(before + 1),
-          generation: String(before + 1),
-          intent: true,
-        });
-        return {
-          async start(_signal, restore) {
-            f.deliverPromptEventsBeforeReply();
-            return f.reboot(restore);
-          },
-          async stop() {
-            throw Error("Unexpected stop during queued wake");
-          },
-        };
+  const scenarios = [
+    "current",
+    "health admission loss",
+    "verification loss",
+    "prompt admission loss",
+    "publication loss",
+    "scoped grant loss",
+    "stale",
+    "retarget failure",
+    "wrong request",
+    "replaced epoch",
+  ] as const;
+
+  const cases = scenarios.filter((scenario) => (scenario === "scoped grant loss") === (provider === "modal"));
+  test.each(cases)("fences queued wake admission and publication (%s)", async (scenario) => {
+    const scoped = scenario === "scoped grant loss";
+    const f = await fixture();
+    const access = scoped ? await scopedAccessFor(f) : undefined;
+    const request = input(f.row.id);
+    const before = (await createSqlData(f.sql)(f.caller).sandboxes.get(f.row.id))!.lifecycleGeneration!;
+    const store = createJobsStore(f.sql, ENCRYPTION_KEY);
+    const id = await store.enqueue(
+      "turn_dispatch",
+      f.row.id,
+      before,
+      request.request_id,
+      { requestId: request.request_id },
+      { orgId: f.row.orgId, maxAttempts: 2 },
+    );
+    await f.db.query(
+      `insert into account_turn_queue
+             (sandbox_id,request_id,account_id,owner_id,org_id,actor_epoch,credential_version,input_hash,input_enc,
+              conversation_id,queued_generation,state,dispatch_generation,dispatch_until)
+           select id,$2,credential_id,owner_id,org_id,1,credential_version,'fixture',''::bytea,$3,
+                  lifecycle_generation,'dispatching',lifecycle_generation,'infinity'
+           from sandboxes where id=$1`,
+      [f.row.id, request.request_id, f.first.conversationId],
+    );
+    const owner = crypto.randomUUID();
+    const job = (await store.claim("turn_dispatch", owner, 30, 1))!;
+    expect(job.id).toBe(id);
+    if (scenario === "stale") await f.db.query("update jobs set lease_until='-infinity' where id=$1", [id]);
+    const read = async () =>
+      (
+        await f.db.query(
+          `select s.status,s.lifecycle_generation::text,j.generation::text,
+                  exists(select 1 from runtime_resumes r where r.sandbox_id=s.id and r.request_id=$2) as intent
+               from jobs j join sandboxes s on s.id=j.sandbox_id where j.id=$1`,
+          [id, request.request_id],
+        )
+      ).rows[0];
+    let preparations = 0;
+    let replacementEpoch: string | undefined;
+    const prepare: NonNullable<Parameters<typeof createRuntimeResume>[3]> = async () => {
+      preparations++;
+      expect(await read()).toEqual({
+        status: "starting",
+        lifecycle_generation: String(before + 1),
+        generation: String(before + 1),
+        intent: true,
       });
-      const send = createRuntimeFollowup(f.sql, ENCRYPTION_KEY, f.bridge, undefined, resume);
-      const sentRequest = scenario === "wrong request" ? input(f.row.id) : request;
-      const claim = {
-        async canDispatch(tx?: Parameters<typeof store.inspect>[2]) {
-          if ((await store.inspect(job, owner, tx)) !== "dispatch") return false;
-          if (scenario !== "publication loss" || !tx) return true;
-          const { rows } = await tx.query(
-            "select 1 from runtime_resumes where sandbox_id=$1 and request_id=$2 and receipt is not null",
-            [f.row.id, request.request_id],
-          );
-          return rows.length === 0;
-        },
-        handoffGeneration: (handoff: Parameters<typeof store.handoffGeneration>[2]) =>
-          store.handoffGeneration(job, owner, handoff),
-      };
-      const attempt = () => send(f.caller, sentRequest, claim);
-      if (scenario === "current") {
-        const dispatch = createQueuedSandboxDispatch({
-          authStore: createMemoryAuthStore(),
-          supabase: { supabaseUrl: "https://unused.test", anonKey: "fixture" },
-          store: createSqlVaultStore(f.sql),
-          encryptionKey: ENCRYPTION_KEY,
-          data: createSqlData(f.sql),
-          providers: {
-            async resolve() {
-              throw new Error("Runtime send does not call a native provider.");
-            },
-          },
-          runtimeSend: send,
-        });
-        const { runtimeVersion: _version, ...sendInput } = sentRequest;
-        await expect(dispatch(f.caller, sendInput, claim)).resolves.toMatchObject({
-          resumed: true,
-          requestId: request.request_id,
-        });
-        expect(preparations).toBe(1);
-      } else if (scenario === "publication loss") {
-        await expect(attempt()).rejects.toMatchObject({ code: "conflict" });
-        expect(await read()).toMatchObject({ status: "starting", intent: true });
-        expect(f.starts).toHaveLength(2);
-        await f.db.query("update jobs set lease_until='-infinity' where id=$1", [id]);
-        const accepted = await f.bridge.result(f.caller.userId, f.row.id, `resume_${request.request_id}`, "2");
-        expect(accepted.state).toBe("finished");
-        const successor = crypto.randomUUID();
-        const retry = (await store.claim("turn_dispatch", successor, 30, 1))!;
-        expect(retry.id).toBe(id);
-        await expect(
-          send(f.caller, request, {
-            canDispatch: async (tx) => (await store.inspect(retry, successor, tx)) === "dispatch",
-            handoffGeneration: () => Promise.reject(Error("An enrolled wake cannot advance generation again.")),
-          }),
-        ).resolves.toMatchObject({ resumed: true, requestId: request.request_id });
-        expect(preparations).toBe(1);
-        expect(f.starts).toHaveLength(2);
-      } else {
-        if (scenario === "retarget failure") {
-          await f.db.exec(
-            `alter table jobs add constraint test_refuse_turn_retarget check (generation = ${before}) not valid`,
-          );
-          try {
-            await expect(attempt()).rejects.toThrow("test_refuse_turn_retarget");
-          } finally {
-            await f.db.exec("alter table jobs drop constraint test_refuse_turn_retarget");
+      return {
+        async start(_signal, restore) {
+          f.deliverPromptEventsBeforeReply();
+          const ready = await f.reboot(restore);
+          if (scenario === "replaced epoch") {
+            const ticket = await f.authority.issue({
+              sandboxId: f.row.id,
+              ownerId: f.caller.userId,
+              configuration: {},
+            });
+            replacementEpoch = (await f.authority.enrol(ticket.enrolmentToken)).epoch;
           }
-        } else {
-          await expect(attempt()).rejects.toThrow(
-            scenario === "stale"
-              ? "Turn job lease is no longer current"
-              : "Queued wake does not match the claimed turn job.",
-          );
+          return ready;
+        },
+        async stop() {
+          throw Error("Unexpected stop during queued wake");
+        },
+      };
+    };
+    const resume = createRuntimeResume(
+      f.sql,
+      ENCRYPTION_KEY,
+      f.bridge,
+      prepare,
+      undefined,
+      undefined,
+      access?.restoreEnrolled,
+    );
+    const send = createRuntimeFollowup(f.sql, ENCRYPTION_KEY, f.bridge, undefined, resume);
+    const sentRequest = scenario === "wrong request" ? input(f.row.id) : request;
+    const wakeEvidence = async (tx: Sql = f.sql) =>
+      (
+        await tx.query<{ health: boolean; verified: boolean; prompt: boolean; published: boolean }>(
+          `select
+                 exists(select 1 from runtime_commands where sandbox_id=$1 and epoch=r.target_epoch
+                   and request_id<>$3) as health,
+                 r.verified_at is not null as verified,
+                 exists(select 1 from runtime_commands where sandbox_id=$1 and epoch=r.target_epoch
+                   and request_id=$3) as prompt,
+                 r.receipt is not null as published
+               from runtime_resumes r where r.sandbox_id=$1 and r.request_id=$2`,
+          [f.row.id, request.request_id, `resume_${request.request_id}`],
+        )
+      ).rows[0];
+    const claim = {
+      async canDispatch(tx?: Parameters<typeof store.inspect>[2]) {
+        if ((await store.inspect(job, owner, tx)) !== "dispatch") return false;
+        if (!tx || !scenario.endsWith(" loss")) return true;
+        const evidence = await wakeEvidence(tx);
+        switch (scenario) {
+          case "health admission loss":
+            return !evidence?.health;
+          case "verification loss":
+            return !evidence?.verified;
+          case "prompt admission loss":
+            return !evidence?.prompt;
+          case "publication loss":
+            return !evidence?.published;
+          case "scoped grant loss":
+            return !(await acknowledgedScopedGrant(tx, f.row.id));
+          default:
+            return true;
         }
-        expect(preparations).toBe(0);
-        expect(await read()).toEqual({
-          status: "stopped",
-          lifecycle_generation: String(before),
-          generation: String(before),
-          intent: false,
-        });
+      },
+      handoffGeneration: (handoff: Parameters<typeof store.handoffGeneration>[2]) =>
+        store.handoffGeneration(job, owner, handoff),
+    };
+    const attempt = () => send(f.caller, sentRequest, claim);
+    if (scenario === "current") {
+      const dispatch = createQueuedSandboxDispatch({
+        authStore: createMemoryAuthStore(),
+        supabase: { supabaseUrl: "https://unused.test", anonKey: "fixture" },
+        store: createSqlVaultStore(f.sql),
+        encryptionKey: ENCRYPTION_KEY,
+        data: createSqlData(f.sql),
+        providers: {
+          async resolve() {
+            throw new Error("Runtime send does not call a native provider.");
+          },
+        },
+        runtimeSend: send,
+      });
+      const { runtimeVersion: _version, ...sendInput } = sentRequest;
+      await expect(dispatch(f.caller, sendInput, claim)).resolves.toMatchObject({
+        resumed: true,
+        requestId: request.request_id,
+      });
+      expect(preparations).toBe(1);
+    } else if (scenario === "replaced epoch") {
+      await expect(attempt()).rejects.toMatchObject({ code: "conflict" });
+      expect(replacementEpoch).toBe("3");
+      const { rows } = await f.db.query("select request_id from runtime_commands where sandbox_id=$1 and epoch=$2", [
+        f.row.id,
+        replacementEpoch,
+      ]);
+      expect(rows).toHaveLength(0);
+    } else if (scenario.endsWith(" loss")) {
+      await expect(attempt()).rejects.toThrow();
+      expect(await read()).toMatchObject({ status: "starting", intent: true });
+      expect(await wakeEvidence()).toEqual({
+        health: scenario !== "health admission loss",
+        verified: scoped || scenario === "prompt admission loss" || scenario === "publication loss",
+        prompt: scenario === "publication loss",
+        published: false,
+      });
+      expect(f.starts).toHaveLength(scenario === "publication loss" ? 2 : 1);
+      if (scoped) expect(await acknowledgedScopedGrant(f.sql, f.row.id)).toBe(false);
+      await f.db.query("update jobs set lease_until='-infinity' where id=$1", [id]);
+      const accepted = await f.bridge.result(f.caller.userId, f.row.id, `resume_${request.request_id}`, "2");
+      expect(accepted.state).toBe(scenario === "publication loss" ? "finished" : "missing");
+      const successor = crypto.randomUUID();
+      const retry = (await store.claim("turn_dispatch", successor, 30, 1))!;
+      expect(retry.id).toBe(id);
+      await expect(
+        send(f.caller, request, {
+          canDispatch: async (tx) => (await store.inspect(retry, successor, tx)) === "dispatch",
+          handoffGeneration: () => Promise.reject(Error("An enrolled wake cannot advance generation again.")),
+        }),
+      ).resolves.toMatchObject({ resumed: true, requestId: request.request_id });
+      expect(preparations).toBe(1);
+      expect(f.starts).toHaveLength(2);
+      if (scoped) expect(await acknowledgedScopedGrant(f.sql, f.row.id)).toBe(true);
+    } else {
+      if (scenario === "retarget failure") {
+        await f.db.exec(
+          `alter table jobs add constraint test_refuse_turn_retarget check (generation = ${before}) not valid`,
+        );
+        try {
+          await expect(attempt()).rejects.toThrow("test_refuse_turn_retarget");
+        } finally {
+          await f.db.exec("alter table jobs drop constraint test_refuse_turn_retarget");
+        }
+      } else {
+        await expect(attempt()).rejects.toThrow(
+          scenario === "stale"
+            ? "Turn job lease is no longer current"
+            : "Queued wake does not match the claimed turn job.",
+        );
       }
-    },
-  );
+      expect(preparations).toBe(0);
+      expect(await read()).toEqual({
+        status: "stopped",
+        lifecycle_generation: String(before),
+        generation: String(before),
+        intent: false,
+      });
+    }
+  });
 });
 
 test("an already enrolled uncertain resume reconciles on a fresh server without another activation or ticket", async () => {
@@ -1420,6 +1504,30 @@ test.each(boatResumeRecoveryCases)(
   },
 );
 
+async function scopedAccessFor(f: Awaited<ReturnType<typeof stopped>>) {
+  await f.db.query("update sandboxes set visibility='private',access_owner_id=owner_id where id=$1", [f.row.id]);
+  await f.db.query(
+    `insert into armada_access_parents(id,kind,org_id,owner_id,sandbox_id,state,golden_ids,credential_ids)
+     values($1,'sandbox',$2,$3,$1,'ready',array[$4::uuid],array[$5::uuid])`,
+    [f.row.id, f.people.org, f.people.owner, f.row.goldenId, f.account.id],
+  );
+  return createSandboxArmadaAccess({
+    sql: f.sql,
+    encryptionKey: ENCRYPTION_KEY,
+    publicUrl: PUBLIC_URL,
+    commands: f.bridge,
+  });
+}
+
+async function acknowledgedScopedGrant(tx: Sql, sandboxId: string) {
+  const { rows } = await tx.query(
+    `select 1 from orchestrator_delegations d join armada_access_parents p on p.id=d.orchestrator_id
+     where p.id=$1 and d.epoch=p.authority_epoch and d.acknowledged_at is not null and d.revoked_at is null`,
+    [sandboxId],
+  );
+  return rows.length > 0;
+}
+
 describe.each([
   ["boat", "codex"],
   ["boat", "claude"],
@@ -1433,12 +1541,7 @@ describe.each([
     expect(f.starts).toEqual([]);
     const scoped = provider === "modal" && harness === "codex";
     const authority = new DelegatedAuthority(f.sql, async () => {});
-    const access = createSandboxArmadaAccess({
-      sql: f.sql,
-      encryptionKey: ENCRYPTION_KEY,
-      publicUrl: PUBLIC_URL,
-      commands: f.bridge,
-    });
+    const access = scoped ? await scopedAccessFor(f) : undefined;
     const admit = (turn: number) => {
       const server = f.mcpSnapshots[turn]?.servers.armada_orchestrator;
       const bearer = server?.type === "http" ? server.headers?.Authorization : undefined;
@@ -1454,14 +1557,6 @@ describe.each([
         async (_tx, principal) => principal.ownerId,
       );
     };
-    if (scoped) {
-      await f.db.query("update sandboxes set visibility='private',access_owner_id=owner_id where id=$1", [f.row.id]);
-      await f.db.query(
-        `insert into armada_access_parents(id,kind,org_id,owner_id,sandbox_id,state,golden_ids,credential_ids)
-         values($1,'sandbox',$2,$3,$1,'ready',array[$4::uuid],array[$5::uuid])`,
-        [f.row.id, f.people.org, f.people.owner, f.row.goldenId, f.account.id],
-      );
-    }
     const old = f.active;
     let activations = 0,
       github = 0,
@@ -1488,9 +1583,9 @@ describe.each([
         github++;
         return { status: "not_connected", message: "offline" };
       },
-      access.restoreEnrolled,
+      access?.restoreEnrolled,
     );
-    const send = createRuntimeFollowup(f.sql, ENCRYPTION_KEY, f.bridge, undefined, resume, access.restoreEnrolled);
+    const send = createRuntimeFollowup(f.sql, ENCRYPTION_KEY, f.bridge, undefined, resume, access?.restoreEnrolled);
     const request = f.input("first instruction after empty stop");
     const accepted = await send(f.caller, request);
     expect(accepted).toMatchObject({
@@ -1508,8 +1603,18 @@ describe.each([
     expect(activations).toBe(1);
     expect(f.starts).toHaveLength(1);
     await expect(send(f.caller, { ...request, prompt: "changed" })).rejects.toThrow();
-    if (scoped) await authority.revoke(f.row.id);
-    const next = await send(f.caller, f.input("follow up"));
+    const followUp = f.input("follow up");
+    if (scoped) {
+      await authority.revoke(f.row.id);
+      await expect(
+        send(f.caller, followUp, {
+          canDispatch: async (tx) => !tx || !(await acknowledgedScopedGrant(tx, f.row.id)),
+          handoffGeneration: () => Promise.reject(Error("Running follow-up does not advance generation.")),
+        }),
+      ).rejects.toMatchObject({ code: "conflict" });
+      expect(await acknowledgedScopedGrant(f.sql, f.row.id)).toBe(false);
+    }
+    const next = await send(f.caller, followUp);
     if (scoped) {
       await expect(admit(0)).rejects.toThrow("denied");
       await expect(admit(1)).resolves.toBe(f.people.owner);

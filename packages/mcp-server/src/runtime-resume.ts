@@ -347,13 +347,21 @@ export function createRuntimeResume(
             const ready = await placement.start(signal, restore, confirmActivation);
             if (ready.epoch !== admitted.op.target_epoch) throw new VaultError("conflict", "Unexpected resume epoch.");
           }
-          await agent.health(signal, restore); // Also required on reconciliation; old binaries cannot echo an unverified restore.
+          const commandGuard = claim ? assertClaim : undefined;
+          // Reconciliation also needs live proof that the checkpoint was restored.
+          await agent.health(
+            signal,
+            restore,
+            commandGuard ? { expectedEpoch: admitted.op.target_epoch, assertClaim: commandGuard } : undefined,
+          );
           await authority.withOwner(found.id, caller.userId, async (tx, scope) => {
             if (scope.epoch !== admitted.op.target_epoch) throw new VaultError("conflict", "Resume epoch changed.");
+            await assertClaim(tx);
             await tx.query(
               "update public.runtime_resumes set verified_at=coalesce(verified_at,now()) where sandbox_id=$1 and request_id=$2",
               [found.id, requestId],
             );
+            await assertClaim(tx);
           });
           const existing = await commands.result(
             caller.userId,
@@ -371,10 +379,10 @@ export function createRuntimeResume(
                 found.id,
                 admitted.op.target_epoch,
                 signal,
-                claim ? assertClaim : undefined,
+                commandGuard,
               );
-            await prepareGitHub?.(caller, found.id, claim ? assertClaim : undefined);
-            await prepareMcp?.(caller, found.id, signal, claim ? assertClaim : undefined);
+            await prepareGitHub?.(caller, found.id, commandGuard);
+            await prepareMcp?.(caller, found.id, signal, commandGuard);
             if (found.runtimeTransport === "dialout")
               await restoreScopedAccess?.(
                 caller.userId,
@@ -382,6 +390,7 @@ export function createRuntimeResume(
                 admitted.op.target_epoch,
                 String(admitted.current.lifecycleGeneration),
                 signal,
+                commandGuard,
               );
           }
           // #2560: restored, verified and reauthorized; the resume prompt's dispatch is not launch time.
@@ -400,6 +409,7 @@ export function createRuntimeResume(
               if (receipt.conversationId !== conversation || !receipt.promptId)
                 throw new VaultError("conflict", "Runtime did not acknowledge the admitted conversation.");
             },
+            commandGuard,
           );
           receipt = {
             id: found.id,

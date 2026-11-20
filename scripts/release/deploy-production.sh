@@ -188,4 +188,7 @@ if [[ -n "${RELEASE_RECEIPT_DIR:-}" ]]; then
   printf '%s\n' "$pin_image" > "$RELEASE_RECEIPT_DIR/image"
   printf '%s\n' "$dashboard_id" > "$RELEASE_RECEIPT_DIR/dashboard"
 fi
+if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
+  printf 'railway_deployment_id=%s\n' "$deployment_id" >> "$GITHUB_OUTPUT"
+fi
 echo "Released server and dashboard $RELEASE_VERSION from $RELEASE_SHA" >> "${GITHUB_STEP_SUMMARY:-/dev/null}"

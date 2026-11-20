@@ -628,7 +628,7 @@ test.each([
         return scenario === "clean" ? { status: "clean" } : { status: "preserved", archive };
       },
     };
-    const runtime = createRuntimeProvider(host, physical, host);
+    const runtime = createRuntimeProvider(host, physical, host, undefined, host.captureRuntimeWork);
     const oldKey = process.env.ARMADA_ENCRYPTION_KEY;
     process.env.ARMADA_ENCRYPTION_KEY = ENCRYPTION_KEY;
     try {

@@ -37,6 +37,11 @@ export const HEALTH_PATH = "/healthz";
 /** A handler for some paths: null for every other one. */
 export type Route = (request: Request) => Promise<Response | null>;
 
+type ModalConnectionPorts = {
+  provider: Provider;
+  captureRuntimeWork?: import("@armada/provider-modal").ModalRuntimeCapture;
+};
+
 export interface HandlerOptions {
   readOutputSnapshot?: ToolContext["readOutputSnapshot"];
   sandboxBillingAccount?: (
@@ -51,6 +56,7 @@ export interface HandlerOptions {
     apiKey: string | Provider,
     target: ProviderTarget,
     caller: { userId: string },
+    captureRuntimeWork?: ModalConnectionPorts["captureRuntimeWork"],
   ) => Promise<Provider>;
   storedProviderFor?: (target: ProviderTarget, caller: { userId: string }) => Promise<Provider>;
   /** Runtime readiness of the serving database pool; no credentials in the result. */
@@ -93,7 +99,7 @@ export interface HandlerOptions {
       caller: { userId: string };
       credentialScope: "user" | "org";
     },
-  ) => Provider | Promise<Provider>;
+  ) => ModalConnectionPorts | Promise<ModalConnectionPorts>;
   /** Server-owned persisted credential provenance overrides fallback for an existing Modal binding. */
   modalTokensFor?: (
     target: ProviderTarget,
@@ -290,14 +296,18 @@ export function providerRegistry(
                   orgId: target.orgId,
                   visibility: target.sourceGoldenVisibility ?? target.visibility,
                 });
-            const host = await modal({ tokenId: tokens.tokenId, tokenSecret: tokens.tokenSecret }, target.modal, {
-              target,
-              caller,
-              credentialScope: tokens.scope,
-            });
+            const { provider: host, captureRuntimeWork } = await modal(
+              { tokenId: tokens.tokenId, tokenSecret: tokens.tokenSecret },
+              target.modal,
+              {
+                target,
+                caller,
+                credentialScope: tokens.scope,
+              },
+            );
             if (target.runtimeTransport === "dialout") {
               if (!options.runtimeProviderFor || !target.id) throw new Error("Runtime routing unavailable.");
-              return options.runtimeProviderFor(host, target, caller);
+              return options.runtimeProviderFor(host, target, caller, captureRuntimeWork);
             }
             return native(host, target);
           },
