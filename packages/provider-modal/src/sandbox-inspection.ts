@@ -2,7 +2,7 @@ import type { Provider, VmResourceReading } from "@armada/core";
 import type { ModalClient } from "modal";
 import { matchesManagementAuthority } from "./authority.ts";
 import { modalError, refusal } from "./errors.ts";
-import { observeModalCompute } from "./machine.ts";
+import { lookupModalCompute, observeModalCompute } from "./machine.ts";
 import type {
   Machine,
   ModalManagementProvenance,
@@ -90,7 +90,7 @@ export function createSandboxInspection({
       if (!row.physicalId) throw refusal("sandbox_not_ready", "No current physical machine.");
       const observation = await observeModalCompute(
         { sandboxId: id, generation: row.generation, machineId: row.physicalId },
-        await client.sandboxes.fromId(row.physicalId),
+        await lookupModalCompute(client, row.physicalId),
       );
       exited = observation.phase === "stopped";
     }
