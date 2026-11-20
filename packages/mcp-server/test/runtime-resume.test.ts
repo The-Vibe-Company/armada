@@ -1006,7 +1006,8 @@ test.each(boatResumeRecoveryCases)(
           async start(value) {
             if (taint) {
               const { rows } = await f.db.query<{ generation: number; stop_generation: number }>(
-                `update public.sandboxes set application_secret_tainted=true where id=$1
+                `update public.sandboxes
+                 set application_secret_tainted=true,reconcile_after='infinity'::timestamptz where id=$1
                  returning lifecycle_generation::int as generation, stop_generation::int`,
                 [f.row.id],
               );
