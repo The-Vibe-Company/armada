@@ -465,8 +465,10 @@ export function createJobsStore(sql: Sql, encryptionKey?: string) {
              case when $5 = 'failed' then jsonb_build_object('reason', $8::text, 'evidence', evidence)
                   else evidence end, $7) as completed
            from (
-             select case when kind = 'launch' and outcome ? 'modal_machine' and $6::jsonb is not null
-                         then jsonb_build_object('result', $6::jsonb, 'modal_machine', outcome->'modal_machine')
+             select case when kind = 'launch' and $6::jsonb is not null
+                         then jsonb_build_object('result', $6::jsonb) ||
+                           case when outcome->'modal_machine' is null then '{}'::jsonb
+                                else jsonb_build_object('modal_machine', outcome->'modal_machine') end
                          else coalesce($6::jsonb, outcome) end as evidence
              from public.jobs where id = $1
            ) data`,
