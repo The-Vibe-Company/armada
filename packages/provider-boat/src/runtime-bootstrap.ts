@@ -48,6 +48,29 @@ export function boatRuntimeBootstrapScript(
 ): string {
   return `set +x
 umask 077
-printf '%s' "$ARMADA_GIT_TOKEN" | node -e ${shellQuote(runtimeBootstrapScript(serverUrl, artifact, cacheDir))}
+find_runtime_node() (
+  unset ARMADA_GIT_TOKEN ARMADA_SSH_PUBLIC_KEY
+  for candidate in /usr/local/bin/node /usr/bin/node; do
+    if [ -x "$candidate" ] && "$candidate" -e 'if (typeof fetch !== "function" || typeof AbortSignal.timeout !== "function") process.exit(1)' >/dev/null 2>&1; then
+      printf '%s' "$candidate"
+      return 0
+    fi
+  done
+  return 1
+)
+install_runtime_node() (
+  unset ARMADA_GIT_TOKEN ARMADA_SSH_PUBLIC_KEY
+  export PATH=/usr/sbin:/usr/bin:/sbin:/bin DEBIAN_FRONTEND=noninteractive
+  if [ "$(id -u)" -eq 0 ]; then
+    /usr/bin/apt-get update && /usr/bin/apt-get install -y --no-install-recommends nodejs
+  else
+    /usr/bin/sudo -n /usr/bin/apt-get update && /usr/bin/sudo -n /usr/bin/env DEBIAN_FRONTEND=noninteractive /usr/bin/apt-get install -y --no-install-recommends nodejs
+  fi
+)
+if ! runtime_node=$(find_runtime_node); then
+  install_runtime_node >/dev/null 2>&1 || exit 1
+  runtime_node=$(find_runtime_node) || exit 1
+fi
+printf '%s' "$ARMADA_GIT_TOKEN" | (unset ARMADA_GIT_TOKEN ARMADA_SSH_PUBLIC_KEY; exec "$runtime_node" -e ${shellQuote(runtimeBootstrapScript(serverUrl, artifact, cacheDir))})
 `;
 }
