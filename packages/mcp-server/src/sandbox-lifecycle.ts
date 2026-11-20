@@ -708,9 +708,10 @@ export async function recordObservedProviderState(
   const nativeFailure =
     !live && nativeExit && toState === "failed" && (fromState === "failed" || fromState === "stopped");
   const nativeStop = !live && nativeExit && toState === "stopped";
-  if (fromState === "deleted" || (!live && !nativeStop && !nativeFailure))
-    return { kind: "conflict" } satisfies SandboxTransitionResult;
   const nativeTurn = toState === "ready" || toState === "running";
+  const nativeAvailability = fromState === "stopped" && nativeTurn && providerRunPlacement !== undefined;
+  if (fromState === "deleted" || (!live && !nativeStop && !nativeFailure && !nativeAvailability))
+    return { kind: "conflict" } satisfies SandboxTransitionResult;
   if (nativeTurn && providerRunPlacement === undefined)
     throw new Error("Native turn observation requires the observed placement.");
   return sql.transaction(async (tx) => {
@@ -732,7 +733,11 @@ export async function recordObservedProviderState(
     const settlesExit = toState === "stopped" || nativeFailure;
     const providerActor = settlesExit ? "runtime_observation" : "lifecycle_runner";
     const providerCode = toState === "failed" ? "failure" : "stopped";
-    const turnCode = toState === "running" ? "native_turn_running" : "native_turn_settled";
+    const turnCode = nativeAvailability
+      ? "native_provider_available"
+      : toState === "running"
+        ? "native_turn_running"
+        : "native_turn_settled";
     const result = await transitionSandbox(tx, {
       sandboxId,
       expectedGeneration: generation,

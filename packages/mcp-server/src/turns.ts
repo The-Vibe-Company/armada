@@ -316,10 +316,11 @@ export async function readStatus(
     } else if (sandbox.stoppedAt !== null && next !== "failed") patch.stoppedAt = null;
     if (
       nativeExit ||
-      ((sandbox.status === "ready" || sandbox.status === "running") &&
-        (next === "stopped" ||
-          next === "failed" ||
-          (!runtime && next !== sandbox.status && (next === "ready" || next === "running"))))
+      ((sandbox.status === "ready" || sandbox.status === "running") && (next === "stopped" || next === "failed")) ||
+      (!runtime &&
+        (sandbox.status === "stopped" || sandbox.status === "ready" || sandbox.status === "running") &&
+        next !== sandbox.status &&
+        (next === "ready" || next === "running"))
     )
       patch.providerObservation = {
         fromState: sandbox.status,
