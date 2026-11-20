@@ -34,8 +34,7 @@ Do not send activation reports, run tracking commands, or install hooks during t
 
 <!-- Modified by Armada: setup diagnostics and precise runtime requirements. -->
 
-`armada doctor` checks Python 3.9+, Git 2.41+ and the OCR cache without
-downloading or executing OCR. You can also run
+Check the OCR cache without downloading or executing OCR by running
 `python3 "$SKILL_DIR/scripts/ocr.py" check`: exit 0 means the cached binary
 matches its pinned checksum, exit 2 means a first download is needed, and
 exit 1 reports an unsupported platform, bad checksum or unusable cache.

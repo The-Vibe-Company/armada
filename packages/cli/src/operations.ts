@@ -4,7 +4,13 @@ import { invalidAgentMessage } from "./agent-validation.ts";
 import { acceptedOptions, flag, parseArgs, single, uuid } from "./args.ts";
 import { ArmadaApiError, type ArmadaCommandClient, createArmadaApiClient } from "./armada-api.ts";
 import type { AuthIo } from "./auth-commands.ts";
-import { type CurrentSandboxFile, resolveSandboxId } from "./current-sandbox.ts";
+import {
+  type CurrentSandboxFile,
+  readCurrentSandbox,
+  resolveSandboxId,
+  resolveSandboxReference,
+} from "./current-sandbox.ts";
+import { setupStatus } from "./devx.ts";
 import { mcpCommand } from "./mcp-commands.ts";
 import { resourceAdviceText } from "./resource-advice.ts";
 import { sandboxListText } from "./sandbox-list.ts";
@@ -27,7 +33,13 @@ export async function operation(
         : command === "list"
           ? ["--status", "--harness", "--golden", "--owner", "--page", "--limit"]
           : [],
-    command === "list" ? ["--page-info"] : command === "rm" ? ["--yes"] : command === "status" ? ["--live"] : [],
+    command === "list"
+      ? ["--page-info"]
+      : command === "rm"
+        ? ["--yes"]
+        : command === "status"
+          ? ["--live", "--setup"]
+          : [],
   );
   const end = argv.indexOf("--");
   if (command === "exec" && (end < 0 || end === argv.length - 1 || args.positionals.length > argv.length - end))
@@ -39,7 +51,7 @@ export async function operation(
   const [id, ...rest] = implicitWithPayload || implicitReport ? [undefined, ...args.positionals] : args.positionals;
   const options: Record<string, readonly string[]> = {
     list: ["--status", "--agent", "--harness", "--golden", "--owner", "--page", "--limit", "--page-info"],
-    status: ["--live", "--prompt-id"],
+    status: ["--live", "--prompt-id", "--setup"],
     detail: ["--prompt-id"],
     recovery: [],
     advice: [],
@@ -54,10 +66,23 @@ export async function operation(
   };
   acceptedOptions(args, command, ["--org", "--json", ...(options[command] ?? [])]);
   const org = single(args, "--org");
+  let current: string | undefined;
+  if (command === "status") {
+    const setup = flag(args, "--setup");
+    const sandboxRequested = id !== undefined || flag(args, "--live") || flag(args, "--prompt-id");
+    if (setup && sandboxRequested)
+      throw new GoldenError("invalid_config", "--setup cannot be combined with a sandbox ID, --live, or --prompt-id.");
+    if (!setup && id === undefined) current = await readCurrentSandbox(auth.env, sandboxFile);
+    if (setup || (!sandboxRequested && !current)) return setupStatus(org, flag(args, "--json"), auth);
+  }
   let api: Promise<ArmadaCommandClient> | undefined;
   const client = () => (api ??= createArmadaApiClient(auth));
+  const list = async (body: Parameters<ArmadaCommandClient["sandboxes"]["list"]>[0]) =>
+    (await client()).sandboxes.list(body);
   const resolveId = (id: string | undefined) =>
-    resolveSandboxId(id, auth.env, sandboxFile, org, async (body) => (await client()).sandboxes.list(body));
+    command === "status"
+      ? resolveSandboxReference(id, current, org, list)
+      : resolveSandboxId(id, auth.env, sandboxFile, org, list);
   if (command === "rm") {
     const [id, ...extra] = args.positionals;
     if (extra.length || [...args.options.keys()].some((key) => !["--yes", "--org", "--json"].includes(key)))

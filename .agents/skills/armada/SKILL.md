@@ -22,7 +22,8 @@ coordinator scripts that manage several sandboxes from one directory.
 
 ## 1. Establish identity and scope
 
-Run `armada account status`, `armada org list` and `armada org current`.
+Run `armada status --setup --json` for identity, organization, server, GitHub,
+hosts and model accounts. Use `armada org list` to find organization IDs.
 For an interactive human, run `armada login` and authorize the request in the dashboard
 using the printed link and matching short code. For automation, use an authorized
 ARMADA_TOKEN through the environment, never pasted into a prompt or command.

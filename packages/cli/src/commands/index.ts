@@ -7,7 +7,6 @@ import type { Command, UsageGroup } from "./command.ts";
 import completion from "./completion.ts";
 import creds from "./creds.ts";
 import detail from "./detail.ts";
-import doctor from "./doctor.ts";
 import extend from "./extend.ts";
 import github from "./github.ts";
 import host from "./host.ts";
@@ -47,7 +46,6 @@ export const commands: readonly Command[] = [
   send,
   steer,
   ...sandboxInspectionCommands,
-  doctor,
   completion,
   login,
   logout,

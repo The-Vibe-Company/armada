@@ -73,7 +73,7 @@ and a heartbeat within 60 seconds; otherwise offline, with revoked taking priori
 A host inside an active uninstall drain is `draining`, not online: it takes no new
 launch, snapshot create or rebuild, and a launch from a saved snapshot names the
 drain rather than "Snapshot is unavailable". The list, launch dialog, snapshots,
-CLI and doctor name the uninstall to finish or retry rather than reporting a
+CLI diagnostics name the uninstall to finish or retry rather than reporting a
 permission failure. A queued snapshot build interrupted by a drain fails with the
 same uninstall reason, not "authorization is no longer valid".
 Online is not scheduling eligibility, capacity or runtime readiness. SQL current

@@ -2,18 +2,22 @@ import { expect, test } from "bun:test";
 import { VERSION } from "@armada/core";
 import type { AuthIo } from "../src/auth-commands.ts";
 import { completion } from "../src/command-catalog.ts";
-import { doctor, prepareLaunch } from "../src/devx.ts";
+import { prepareLaunch } from "../src/devx.ts";
+import { run } from "../src/run.ts";
 import { memorySessionStore } from "../src/session.ts";
 
 function fixture(responses: Record<string, unknown>) {
   let out = "";
+  let err = "";
   const paths: string[] = [];
   let hostOrg: string | undefined;
   const auth: AuthIo = {
     out: (text) => {
       out += text;
     },
-    err: () => {},
+    err: (text) => {
+      err += text;
+    },
     env: { ARMADA_TOKEN: "test-only" },
     session: memorySessionStore(),
     now: () => new Date(0),
@@ -34,6 +38,8 @@ function fixture(responses: Record<string, unknown>) {
   return {
     auth,
     paths,
+    errors: () => err,
+    run: (argv: string[], options?: Parameters<typeof run>[2]) => run(argv, auth, { auth, ...options }),
     output: () => out,
     expectHostOrg: (org: string) => {
       hostOrg = org;
@@ -42,10 +48,15 @@ function fixture(responses: Record<string, unknown>) {
 }
 
 test.each([VERSION, "0.0.1", null])(
-  "doctor reports session, server, GitHub and host version diagnostics (%s) in one table",
+  "setup status reports session, server, GitHub and host version diagnostics (%s) in one table",
   async (hostVersion) => {
     const f = fixture({
-      "/api/v1/account/status": { version: "0.0.1", orgs: [{ orgId: "org", name: "Team" }] },
+      "/api/v1/account/status": {
+        userId: "user",
+        authentication: "service",
+        version: "0.0.1",
+        orgs: [{ orgId: "org", role: "member" }],
+      },
       "/api/v1/docker/hosts/list": {
         placement: true,
         hosts: [
@@ -73,8 +84,10 @@ test.each([VERSION, "0.0.1", null])(
         },
       },
     });
-    expect(await doctor([], f.auth)).toBe(0);
+    expect(await f.run(["status"])).toBe(0);
     expect(f.output()).toContain("CHECK\tSTATUS\tDETAIL / NEXT STEP");
+    expect(f.output()).toContain("Session\tok\tSigned in as user (service)");
+    expect(f.output()).toContain("Organization\tok\torg");
     expect(f.output()).toContain("npm i -g @the-vibe-company/armada");
     expect(f.output()).toContain(`online; daemon ${hostVersion ?? "unknown"}`);
     expect(f.output()).toContain(
@@ -89,9 +102,14 @@ test.each([VERSION, "0.0.1", null])(
   },
 );
 
-test("doctor names the uninstall for a draining host instead of telling the user to inspect the machine", async () => {
+test("setup status names the uninstall for a draining host instead of telling the user to inspect the machine", async () => {
   const f = fixture({
-    "/api/v1/account/status": { version: VERSION, orgs: [{ orgId: "org", name: "Team" }] },
+    "/api/v1/account/status": {
+      userId: "user",
+      authentication: "service",
+      version: VERSION,
+      orgs: [{ orgId: "org", role: "member" }],
+    },
     "/api/v1/docker/hosts/list": {
       placement: true,
       hosts: [
@@ -110,7 +128,7 @@ test("doctor names the uninstall for a draining host instead of telling the user
     "/api/v1/creds/list": { user: [{ id: "model", name: "Work", kind: "openai", status: "active" }], orgs: [] },
     "/api/v1/github/status": { connection: { status: "not_connected", login: null } },
   });
-  expect(await doctor(["--json"], f.auth)).toBe(0);
+  expect(await f.run(["status", "--json"])).toBe(0);
   const host = JSON.parse(f.output()).checks.find((row: { check: string }) => row.check === "Host desk");
   expect(host.detail).toContain("draining for uninstall");
   expect(host.detail).not.toContain("Check the host machine");
@@ -124,13 +142,13 @@ test.each([
   [{ status: "unavailable", login: null, configured: false }, "unknown", "server operator"],
   [{ status: "unavailable", login: "owner", configured: true }, "unknown", "Could not confirm GitHub access"],
 ] as const)(
-  "doctor reports actionable GitHub state %j without claiming repository proof",
+  "setup status reports actionable GitHub state %j without claiming repository proof",
   async (connection, status, detail) => {
     const f = fixture({
-      "/api/v1/account/status": { version: VERSION, orgs: [] },
+      "/api/v1/account/status": { userId: "user", authentication: "service", version: VERSION, orgs: [] },
       "/api/v1/github/status": { connection },
     });
-    expect(await doctor(["--json"], f.auth)).toBe(0);
+    expect(await f.run(["status", "--json"])).toBe(0);
     expect(JSON.parse(f.output()).checks.find((row: { check: string }) => row.check === "GitHub")).toMatchObject({
       status,
       detail: expect.stringContaining(detail),
@@ -138,12 +156,12 @@ test.each([
   },
 );
 
-test("doctor reports personal-login GitHub requirement when a service bearer is refused", async () => {
+test("setup status reports personal-login GitHub requirement when a service bearer is refused", async () => {
   const f = fixture({
-    "/api/v1/account/status": { version: VERSION, orgs: [] },
+    "/api/v1/account/status": { userId: "user", authentication: "service", version: VERSION, orgs: [] },
     "/api/v1/github/status": Response.json({ error: "forbidden" }, { status: 403 }),
   });
-  expect(await doctor(["--json"], f.auth)).toBe(0);
+  expect(await f.run(["status", "--json"])).toBe(0);
   expect(f.output()).toContain("unset ARMADA_TOKEN");
   expect(JSON.parse(f.output()).checks.find((row: { check: string }) => row.check === "GitHub")).toMatchObject({
     status: "unknown",
@@ -151,10 +169,10 @@ test("doctor reports personal-login GitHub requirement when a service bearer is 
   });
 });
 
-test.each([true, false])("doctor diagnoses failed session for token mode %s", async (token) => {
+test.each([true, false])("setup status diagnoses failed session for token mode %s", async (token) => {
   const f = fixture({});
   if (!token) f.auth.env = {};
-  expect(await doctor(["--json"], f.auth)).toBe(1);
+  expect(await f.run(["status", "--json"])).toBe(1);
   expect(JSON.parse(f.output()).checks).toEqual(
     expect.arrayContaining([
       expect.objectContaining({
@@ -165,6 +183,35 @@ test.each([true, false])("doctor diagnoses failed session for token mode %s", as
       expect.objectContaining({ check: "Hosts", status: "unknown" }),
     ]),
   );
+});
+
+test("status --setup skips the current sandbox and uses an explicit organization", async () => {
+  const f = fixture({
+    "/api/v1/account/status": {
+      userId: "user",
+      authentication: "service",
+      version: VERSION,
+      orgs: [{ orgId: "explicit", role: "member" }],
+    },
+    "/api/v1/github/status": { connection: { status: "not_connected", login: null } },
+    "/api/v1/docker/hosts/list": { placement: true, hosts: [] },
+    "/api/v1/creds/list": { user: [{ id: "model", kind: "openai" }], orgs: [] },
+  });
+  f.auth.env.ARMADA_SANDBOX = "11111111-1111-4111-8111-111111111111";
+  f.auth.preferences = { read: async () => "saved", write: async () => {} };
+  f.expectHostOrg("explicit");
+
+  expect(await f.run(["status", "--setup", "--org", "explicit"], { stdoutIsTTY: false })).toBe(0);
+  expect(JSON.parse(f.output()).checks).toContainEqual({ check: "Organization", status: "ok", detail: "explicit" });
+  expect(f.paths).toContain("/api/v1/docker/hosts/list");
+  expect(f.paths).not.toContain("/api/v1/sandbox/status");
+});
+
+test("doctor is an unknown command and performs no API calls", async () => {
+  const f = fixture({});
+  expect(await f.run(["doctor"])).toBe(2);
+  expect(f.errors()).toContain("unknown command 'doctor'");
+  expect(f.paths).toEqual([]);
 });
 
 test.each(["bash", "zsh", "fish"])(

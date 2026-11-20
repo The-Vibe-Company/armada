@@ -82,13 +82,13 @@ test("usage and authentication failures give relevant recovery", async () => {
     const invalid = await invoke(args);
     expect(invalid.code).toBe(2);
     expect(invalid.err).toContain(args[0] === "frobnicate" ? "armada --help" : `armada ${args[0]}`);
-    expect(invalid.err).not.toContain("armada doctor");
+    expect(invalid.err).not.toContain("armada status --setup");
     expect(invalid.err).not.toContain("frobnicate --help");
   }
   const auth = await invoke(["org", "list"]);
   expect(auth.code).toBe(3);
   expect(auth.err).toContain("armada login");
-  expect(auth.err).not.toContain("armada doctor");
+  expect(auth.err).not.toContain("armada status --setup");
 });
 
 test("invalid agents list the catalog for list and Docker launch", async () => {
@@ -131,15 +131,15 @@ test("token, deployment and uncertain launch errors retain appropriate recovery"
   );
   expect(token.code).toBe(3);
   expect(token.err).toContain("check or replace ARMADA_TOKEN");
-  expect(token.err).not.toContain("armada doctor");
+  expect(token.err).not.toContain("armada status --setup");
   const deployment = await invoke(
     ["org", "list"],
     true,
     Response.json({ error: { code: "unknown_route", message: "Unknown route." } }, { status: 404 }),
   );
   expect(deployment.err).toContain("Ask an administrator");
-  expect(deployment.err).not.toContain("armada doctor");
+  expect(deployment.err).not.toContain("armada status --setup");
   const launch = await invoke(["launch", "web", "--provider", "boat", "--agent", "codex"], true);
   expect(launch.err).toContain("Run armada list to check before retrying");
-  expect(launch.err).not.toContain("armada doctor");
+  expect(launch.err).not.toContain("armada status --setup");
 });

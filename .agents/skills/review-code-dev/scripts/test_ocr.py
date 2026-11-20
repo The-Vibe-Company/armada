@@ -16,7 +16,7 @@ spec.loader.exec_module(ocr)
 
 
 class BootstrapTests(unittest.TestCase):
-    # Armada addition: doctor must never install or execute OCR.
+    # Armada addition: check must never install or execute OCR.
     def test_check_is_read_only_and_verifies_cached_content(self):
         data = b"synthetic binary"
         with tempfile.TemporaryDirectory() as tmp, \
