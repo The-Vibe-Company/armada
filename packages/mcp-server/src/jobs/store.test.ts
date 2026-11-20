@@ -109,7 +109,6 @@ test.each(["deadline", "attempts"] as const)(
     const sent: string[] = [];
     const runner = f.runnerFor(async (_caller, input) => sent.push(input.id));
     if (uncertain) {
-      // Interrupt completion after the runner has written the job result.
       await f.db.exec("alter table account_turn_queue add constraint reject_budget_failure check (state <> 'failed')");
       try {
         expect(await runner.reconcileOne(signal)).toBe(true);

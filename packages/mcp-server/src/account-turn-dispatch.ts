@@ -310,7 +310,7 @@ export function createTurnDispatchJob(sql: Sql, key: string, dispatch: DispatchT
           reason: "dispatch_budget_expired",
           unattempted: true,
           async commit(tx) {
-            // Claim reconciliation can hold the receipt while taking the sandbox lock.
+            // WARNING: Waiting for the receipt here can deadlock with receipt-first claim reconciliation.
             await tx.query(
               "select request_id from public.account_turn_queue where sandbox_id=$1 and request_id=$2 for update nowait",
               [sandboxId, requestId],
