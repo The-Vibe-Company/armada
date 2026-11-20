@@ -496,6 +496,10 @@ async function captureAndStore(
   if (progress.checkedClean || defer) return "pending";
 }
 
+export async function purgeWorkRecovery(sql: Sql, id: string) {
+  await sql.query("delete from public.sandbox_work_recovery where sandbox_id=$1", [id]);
+}
+
 export async function readWorkRecovery(sql: Sql, id: string, recoveryId?: string): Promise<string | null> {
   const row = (
     await sql.query<{ archive_enc: Uint8Array<ArrayBuffer> }>(

@@ -7,6 +7,7 @@ import type { Caller } from "./caller.ts";
 import type { ControlOptions } from "./control.ts";
 import { selectedCaller } from "./control-caller.ts";
 import { optional } from "./control-input.ts";
+import type { ServerSandboxPatch } from "./data.ts";
 import { measureRequestPhase } from "./request-timing.ts";
 import { summarizeResourceHistory } from "./resource-advice.ts";
 import { type ControlRouteContext, defineRoutes } from "./routes.ts";
@@ -106,7 +107,6 @@ async function dispatchSandboxRestControl(
         const provider = found.providerSandboxId
           ? await options.providers.resolve(found, { userId: found.ownerId })
           : null;
-        const now = options.now ?? (() => new Date());
         const failurePatch = (error: unknown) => {
           if (found.provider === "modal" || isNonMutatingProviderRefusal(error)) return {};
           throw error;
@@ -129,14 +129,8 @@ async function dispatchSandboxRestControl(
                 if (!(error instanceof ProviderError && error.code === "not_found")) throw error;
               }
             }
-            return {
-              result: { id: found.id, status: "deleted" as const },
-              patch: {
-                status: "deleted",
-                deletedAt: now().toISOString(),
-                ...(found.stoppedAt === null ? { usageRuntimeUnknown: true } : {}),
-              },
-            };
+            const patch: ServerSandboxPatch = { deleteCompleted: true };
+            return { result: { id: found.id, status: "deleted" as const }, patch };
           },
           { failurePatch },
         );
