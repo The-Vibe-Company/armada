@@ -1,7 +1,6 @@
 import { z } from "zod";
 import { VaultError } from "./vault-error.ts";
 
-// Allow opaque provider credentials without accepting whitespace, control characters, or malformed Unicode.
 const secret = z
   .string()
   .min(1)
@@ -25,8 +24,7 @@ const credential = z.discriminatedUnion("method", [
 
 export type AntigravityCredential = z.infer<typeof credential>;
 
-/** Validate the credential value shared by the vault and the runtime. Errors never include the input. */
-export function parseAntigravityCredential(value: unknown): AntigravityCredential {
+export function parseAntigravityCredential(value: unknown) {
   const result = credential.safeParse(value);
   if (!result.success) {
     throw new VaultError("invalid", "Invalid Antigravity credential. Supply a Google token pair or a Gemini API key.");

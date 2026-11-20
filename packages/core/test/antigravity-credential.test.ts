@@ -2,10 +2,10 @@ import { expect, test } from "bun:test";
 import { parseAntigravityCredential } from "@armada/core/antigravity-credential";
 
 const google = {
-  method: "google",
+  method: "google" as const,
   token: { access_token: "access", refresh_token: "refresh" },
 };
-const gemini = { method: "gemini-api-key", apiKey: "key" };
+const gemini = { method: "gemini-api-key" as const, apiKey: "key" };
 
 test("accepts the Google token pair with or without a native expiry timestamp", () => {
   const withExpiry = { ...google, token: { ...google.token, expiry: "2026-11-20T18:00:00.123456789+00:00" } };
