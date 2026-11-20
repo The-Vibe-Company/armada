@@ -360,7 +360,7 @@ describe("runtime resume admission rollback", () => {
 describe("queued runtime wake admission", () => {
   const fixture = scopedRuntimeFixture(() => stopped(), { perTest: true });
 
-  test.each([
+  const scenarios = [
     "current",
     "health admission loss",
     "verification loss",
@@ -369,7 +369,10 @@ describe("queued runtime wake admission", () => {
     "stale",
     "retarget failure",
     "wrong request",
-  ] as const)("fences queued wake admission and publication (%s)", async (scenario) => {
+    "replaced epoch",
+  ] as const;
+
+  test.each(scenarios)("fences queued wake admission and publication (%s)", async (scenario) => {
     const f = await fixture();
     const request = input(f.row.id);
     const before = (await createSqlData(f.sql)(f.caller).sandboxes.get(f.row.id))!.lifecycleGeneration!;
@@ -384,11 +387,11 @@ describe("queued runtime wake admission", () => {
     );
     await f.db.query(
       `insert into account_turn_queue
-           (sandbox_id,request_id,account_id,owner_id,org_id,actor_epoch,credential_version,input_hash,input_enc,
-            conversation_id,queued_generation,state,dispatch_generation,dispatch_until)
-         select id,$2,credential_id,owner_id,org_id,1,credential_version,'fixture',''::bytea,$3,
-                lifecycle_generation,'dispatching',lifecycle_generation,'infinity'
-         from sandboxes where id=$1`,
+             (sandbox_id,request_id,account_id,owner_id,org_id,actor_epoch,credential_version,input_hash,input_enc,
+              conversation_id,queued_generation,state,dispatch_generation,dispatch_until)
+           select id,$2,credential_id,owner_id,org_id,1,credential_version,'fixture',''::bytea,$3,
+                  lifecycle_generation,'dispatching',lifecycle_generation,'infinity'
+           from sandboxes where id=$1`,
       [f.row.id, request.request_id, f.first.conversationId],
     );
     const owner = crypto.randomUUID();
@@ -399,12 +402,13 @@ describe("queued runtime wake admission", () => {
       (
         await f.db.query(
           `select s.status,s.lifecycle_generation::text,j.generation::text,
-                exists(select 1 from runtime_resumes r where r.sandbox_id=s.id and r.request_id=$2) as intent
-             from jobs j join sandboxes s on s.id=j.sandbox_id where j.id=$1`,
+                  exists(select 1 from runtime_resumes r where r.sandbox_id=s.id and r.request_id=$2) as intent
+               from jobs j join sandboxes s on s.id=j.sandbox_id where j.id=$1`,
           [id, request.request_id],
         )
       ).rows[0];
     let preparations = 0;
+    let replacementEpoch: string | undefined;
     const resume = createRuntimeResume(f.sql, ENCRYPTION_KEY, f.bridge, async () => {
       preparations++;
       expect(await read()).toEqual({
@@ -416,7 +420,16 @@ describe("queued runtime wake admission", () => {
       return {
         async start(_signal, restore) {
           f.deliverPromptEventsBeforeReply();
-          return f.reboot(restore);
+          const ready = await f.reboot(restore);
+          if (scenario === "replaced epoch") {
+            const ticket = await f.authority.issue({
+              sandboxId: f.row.id,
+              ownerId: f.caller.userId,
+              configuration: {},
+            });
+            replacementEpoch = (await f.authority.enrol(ticket.enrolmentToken)).epoch;
+          }
+          return ready;
         },
         async stop() {
           throw Error("Unexpected stop during queued wake");
@@ -429,13 +442,13 @@ describe("queued runtime wake admission", () => {
       (
         await tx.query<{ health: boolean; verified: boolean; prompt: boolean; published: boolean }>(
           `select
-               exists(select 1 from runtime_commands where sandbox_id=$1 and epoch=r.target_epoch
-                 and request_id<>$3) as health,
-               r.verified_at is not null as verified,
-               exists(select 1 from runtime_commands where sandbox_id=$1 and epoch=r.target_epoch
-                 and request_id=$3) as prompt,
-               r.receipt is not null as published
-             from runtime_resumes r where r.sandbox_id=$1 and r.request_id=$2`,
+                 exists(select 1 from runtime_commands where sandbox_id=$1 and epoch=r.target_epoch
+                   and request_id<>$3) as health,
+                 r.verified_at is not null as verified,
+                 exists(select 1 from runtime_commands where sandbox_id=$1 and epoch=r.target_epoch
+                   and request_id=$3) as prompt,
+                 r.receipt is not null as published
+               from runtime_resumes r where r.sandbox_id=$1 and r.request_id=$2`,
           [f.row.id, request.request_id, `resume_${request.request_id}`],
         )
       ).rows[0];
@@ -481,6 +494,14 @@ describe("queued runtime wake admission", () => {
         requestId: request.request_id,
       });
       expect(preparations).toBe(1);
+    } else if (scenario === "replaced epoch") {
+      await expect(attempt()).rejects.toMatchObject({ code: "conflict" });
+      expect(replacementEpoch).toBe("3");
+      const { rows } = await f.db.query("select request_id from runtime_commands where sandbox_id=$1 and epoch=$2", [
+        f.row.id,
+        replacementEpoch,
+      ]);
+      expect(rows).toHaveLength(0);
     } else if (scenario.endsWith(" loss")) {
       await expect(attempt()).rejects.toThrow();
       expect(await read()).toMatchObject({ status: "starting", intent: true });
