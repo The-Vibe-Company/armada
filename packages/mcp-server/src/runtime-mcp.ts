@@ -265,7 +265,7 @@ export function createRuntimeMcp(options: {
     const reply = await options.commands.call(s.ownerId, request, {
       expectedEpoch,
       accept,
-      assertClaim,
+      ...(assertClaim ? { assertClaim } : {}),
       ...(signal ? { signal } : {}),
     });
     if (
@@ -387,7 +387,7 @@ export function createRuntimeMcp(options: {
           request: prepared.wire,
           options: {
             expectedEpoch: prepared.epoch,
-            assertClaim,
+            ...(assertClaim ? { assertClaim } : {}),
             ...(signal ? { signal } : {}),
             accept: acknowledgesRevision,
           },
