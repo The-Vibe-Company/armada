@@ -169,6 +169,7 @@ export function configureTools(
     if (machine.state === "stopped" && found.stoppedAt === null) {
       await data.sandboxes.update(found.id, {
         status: "stopped",
+        ...(found.status === "ready" || found.status === "running" ? { providerObservationFrom: found.status } : {}),
         stoppedAt: (machine.stoppedAt ?? context.now()).toISOString(),
         ...(found.lifecycleGeneration === undefined ? {} : { expectedGeneration: found.lifecycleGeneration }),
       });
