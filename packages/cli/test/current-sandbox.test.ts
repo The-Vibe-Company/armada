@@ -84,11 +84,11 @@ test("a unique prefix from the directory file resolves to the full ID", async ()
   expect(JSON.parse(result.out).id).toBe(first);
 });
 
-test("launch saves the new sandbox ID in the invocation directory", async () => {
+test("new saves the new sandbox ID in the invocation directory", async () => {
   const cwd = await mkdtemp(join(tmpdir(), "armada-current-"));
   try {
     const cli = fixture(async () => Response.json({ sandbox: { id: first, status: "ready" } }));
-    const result = await cli.run(["launch", "web", "--provider", "modal", "--agent", "codex", "--json"], {
+    const result = await cli.run(["new", "web", "--provider", "modal", "--agent", "codex", "--json"], {
       sandboxFile: currentSandboxFile(cwd),
     });
     expect(result.exit).toBe(0);

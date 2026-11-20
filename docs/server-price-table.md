@@ -106,7 +106,7 @@ Replace `MODAL_SNAPSHOT` with the snapshot name, and `SANDBOX_UUID`
 with the sandbox ID from the launch receipt.
 
 ```sh
-armada launch MODAL_SNAPSHOT --provider modal --agent claude "Reply OK"
+armada new MODAL_SNAPSHOT --provider modal --agent claude "Reply OK"
 armada wait SANDBOX_UUID
 ```
 

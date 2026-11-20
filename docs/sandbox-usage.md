@@ -88,7 +88,7 @@ Replace `MODAL_SNAPSHOT` with the snapshot name, and `SANDBOX_UUID`
 with the sandbox ID from the launch receipt.
 
 ```sh
-armada launch MODAL_SNAPSHOT --provider modal --agent codex "Reply OK"
+armada new MODAL_SNAPSHOT --provider modal --agent codex "Reply OK"
 armada wait SANDBOX_UUID
 armada status SANDBOX_UUID --json
 armada events SANDBOX_UUID
@@ -112,7 +112,7 @@ provider transport change; storage/price integration remains a following slice.
 After normal runtime rollout, run on a Modal snapshot:
 
 ```sh
-armada launch MODAL_SNAPSHOT --provider modal --agent claude "Reply OK"
+armada new MODAL_SNAPSHOT --provider modal --agent claude "Reply OK"
 armada wait SANDBOX_UUID
 armada status SANDBOX_UUID --json
 armada send SANDBOX_UUID "Reply OK again"
@@ -146,7 +146,7 @@ resume_usage plus exact-turn counters, complete totals and computed cost.
 After normal server deployment, launch a Claude session on a Modal snapshot:
 
 ```sh
-armada launch MODAL_SNAPSHOT --provider modal --agent claude "Reply OK"
+armada new MODAL_SNAPSHOT --provider modal --agent claude "Reply OK"
 armada wait SANDBOX_UUID
 armada events SANDBOX_UUID
 armada status SANDBOX_UUID --json

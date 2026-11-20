@@ -143,7 +143,7 @@ The host automatically fetches a missing image. The dashboard shows preparation
 progress, and a failed fetch is reported in plain language.
 
 ```sh
-bun run armada launch --provider docker --org "$ARMADA_ORG" \
+bun run armada new --provider docker --org "$ARMADA_ORG" \
   --host "$DOCKER_HOST_ID" \
   --credential-id "$ARMADA_CREDENTIAL" --idempotency-key "$LAUNCH_KEY" \
   --agent codex --json 'Reply with exactly DOCKER_OK.'
@@ -881,7 +881,7 @@ Unreadable existing identity/state refuses installation rather than guessing.
 CLI: `armada host add [--name NAME] [--org UUID]` prints that command and waits
 boundedly for the exact host. `armada host ls [--json]` shows safe metadata;
 `armada host rm UUID` revokes through the admin API. Selected organization is
-reused. `armada launch --provider docker --agent codex --host UUID_OR_NAME`
+reused. `armada new --provider docker --agent codex --host UUID_OR_NAME`
 resolves names exactly among nonrevoked hosts in the selected org and refuses
 ambiguous names. Names are optional, nonempty trimmed display strings up to64
 characters, never identity or authority.
@@ -926,7 +926,7 @@ CLI follow-up. Existing `--service-install` real-host acceptance remains pending
 
 ### Default model accounts on normal Docker launch (#1579)
 
-Docker launches such as `armada launch --provider docker --agent codex --host HOST_UUID`
+Docker launches such as `armada new --provider docker --agent codex --host HOST_UUID`
 can omit `--credential-id`. With an account omitted, the server uses the same compatible
 personal-default policy as ordinary launches: a personal subscription marked as
 default wins over a personal API key. Explicit account choices still win; an

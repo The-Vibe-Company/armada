@@ -27,7 +27,7 @@ Quick start / common examples:
   armada org use my-team
   armada doctor
   armada host add --name my-workstation
-  armada launch
+  armada new
   armada list
   armada status SANDBOX_ID
   armada send SANDBOX_ID "Continue the task"
@@ -44,7 +44,7 @@ ${sandboxUsage("setup")}
   armada skill install (--project <directory> | --global) --yes [--revision <commit>]
                                            Public GitHub Armada tool-knowledge skill; no login. See skill --help.
 ${sandboxUsage("snapshots")}
-${sandboxUsage("launch")}
+${sandboxUsage("new")}
 ${sandboxUsage("list")}
 ${sandboxUsage("mcp-bindings")}
 ${sandboxUsage("advice")}

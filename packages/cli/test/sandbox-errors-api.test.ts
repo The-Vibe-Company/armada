@@ -113,7 +113,7 @@ test.each(["", canary])("binding refusal preserves only an exact fixed reason (s
 });
 
 test.each([
-  { args: ["launch", "web", "--provider", "boat", "--agent", "codex", "hello"] },
+  { args: ["new", "web", "--provider", "boat", "--agent", "codex", "hello"] },
   { args: ["send", id, "hello"] },
 ])("host_full remains actionable without relaying provider diagnostics: $args", async ({ args }) => {
   const result = await capture([...args, "--json"], 409, "host_full");

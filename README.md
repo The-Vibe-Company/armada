@@ -37,7 +37,7 @@ Open source, MIT. Sandboxes run on a connected Boat or Modal account or on a reg
 For your own compute, [register a Docker host and choose fresh launch or a host-local snapshot](docs/own-machine-quickstart.md) instead of the cloud path below.
 
 1. **Snapshot**: build once from your repositories (`armada snapshot new`).
-2. **Launch**: pick an agent, the model, the effort and the provider (`armada launch`).
+2. **Launch**: pick an agent, the model, the effort and the provider (`armada new`).
 3. **Sandbox**: a fresh, isolated fork where `git` and `gh` act as you.
 4. **Drive**: follow, steer, stop and resume (`armada events -f`, `armada send`).
 
@@ -124,7 +124,7 @@ A long build keeps running on the server. Check it with `armada snapshot show --
 **6. Launch an agent.** With a prompt the agent starts at once; without one the sandbox waits, ready, for your first prompt. In a snapshot with several repositories, `--repo owner/repo` starts the agent in that one ([details](docs/dave-onboarding.md#6-launch-from-the-cli)).
 
 ```sh
-armada launch web --provider boat --agent claude --model claude-opus-5-5 --reasoning-effort high --ttl 4h \
+armada new web --provider boat --agent claude --model claude-opus-5-5 --reasoning-effort high --ttl 4h \
   "Find why the checkout test is flaky and fix it"
 ```
 
@@ -155,7 +155,7 @@ Register an MCP server once, connect it (the browser opens when it asks for OAut
 armada mcp add Docs https://mcp.example.com/mcp      # personal; --scope org shares it with your org
 armada mcp list
 armada mcp connect CONNECTION_ID
-armada launch private-web --provider boat --agent codex --connections CONNECTION_ID "Update the API reference"
+armada new private-web --provider boat --agent codex --connections CONNECTION_ID "Update the API reference"
 armada mcp sandbox-connections SANDBOX_ID
 ```
 

@@ -2475,7 +2475,7 @@ test("access launch resolves an omitted account and grants only its persisted bi
     expect(fake.forks).toHaveLength(0);
     expect((await db.query("select id from sandboxes where org_id=$1", [org.id])).rows).toHaveLength(0);
     const result = await cli(STAN).run([
-      "launch",
+      "new",
       "access",
       "--provider",
       "modal",
@@ -2551,7 +2551,7 @@ test("access launch resolves an omitted account and grants only its persisted bi
       sdk.mockRestore();
     }
     const ordinary = await cli(STAN).run([
-      "launch",
+      "new",
       "access",
       "--provider",
       "modal",

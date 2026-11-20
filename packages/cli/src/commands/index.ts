@@ -12,10 +12,10 @@ import extend from "./extend.ts";
 import github from "./github.ts";
 import host from "./host.ts";
 import interrupt from "./interrupt.ts";
-import launch from "./launch.ts";
 import list from "./list.ts";
 import login from "./login.ts";
 import logout from "./logout.ts";
+import newSandbox from "./new.ts";
 import org from "./org.ts";
 import recovery from "./recovery.ts";
 import report from "./report.ts";
@@ -32,7 +32,7 @@ import { tokenCommands } from "./token.ts";
 import wait from "./wait.ts";
 
 export const commands: readonly Command[] = [
-  launch,
+  newSandbox,
   list,
   advice,
   rm,
