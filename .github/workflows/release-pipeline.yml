@@ -645,12 +645,10 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 24
-      - name: Install pinned deployment clients
-        run: npm install --global @railway/cli@5.71.0 vercel@65.14.0
-      - uses: ./.github/actions/setup-bun
-      - name: Validate candidate server configuration before migrations
+      - name: Install pinned deployment clients and validate candidate server configuration
         run: |
           set -euo pipefail
+          npm install --global @railway/cli@5.71.0 vercel@65.14.0
           test "$(git rev-parse HEAD)" = "$RELEASE_SHA"
           # Use the candidate's image defaults and installed manifests. No production
           # values enter the build, and the validator has no network or host mounts.
@@ -661,6 +659,7 @@ jobs:
             echo "::error::Could not validate production server configuration; migrations were not started."
             exit 1
           fi
+      - uses: ./.github/actions/setup-bun
       - name: Migrate, deploy server, wait healthy, then deploy prebuilt dashboard
         env:
           RELEASE_ENVIRONMENT: production

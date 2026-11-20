@@ -237,7 +237,7 @@ test.each(["intact", "tampered", "incomplete artifact"])("npm verifies tarballs 
 
 test("candidate configuration failure blocks production migrations", () => {
   const steps = workflow.jobs.production?.steps ?? [];
-  const validate = steps.findIndex((step) => step.name === "Validate candidate server configuration before migrations");
+  const validate = steps.findIndex((step) => step.run?.includes("armada-server --check-config"));
   const deploy = steps.findIndex((step) => step.run?.includes("/deploy-production.sh"));
   expect(validate).toBeGreaterThanOrEqual(0);
   expect(deploy).toBeGreaterThan(validate);
