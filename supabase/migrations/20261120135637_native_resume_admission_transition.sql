@@ -406,7 +406,7 @@ begin
           then 'Runtime resume failed before a restored worker was confirmed; cleanup requested.' end
         when extension_expiry then 'expired'
         when owner_stop_admission then coalesce(p_status_reason, s.status_reason)
-        when owner_stop_settlement or native_resume then s.status_reason
+        when owner_stop_settlement then s.status_reason
         when docker_refusal or interrupted_resume then null
         when p_code = 'docker_idle_paused' then 'idle_paused'
         when p_code = 'docker_work_merged' then 'work_merged'
