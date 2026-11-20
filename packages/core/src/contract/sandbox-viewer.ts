@@ -83,21 +83,4 @@ export const sandboxViewerOperations = {
     errors: [...viewerAccessErrors, ...sandboxOperations.sendPrompt.errors, ...providerDispatchErrors],
     errorOutput: viewerDispatchFailure,
   },
-  events: {
-    name: "streamViewerEvents",
-    directServer: true,
-    route: { method: "GET", path: "/api/v1/viewer/events" },
-    input: { body: z.undefined(), query: pageInput, headers: { "Last-Event-ID": cursor } },
-    output: z.discriminatedUnion("event", [
-      z.object({ event: z.literal("page"), data: readLogsOperation.output }),
-      z.object({ event: z.literal("access-ended"), data: z.strictObject({}) }),
-    ]),
-    outputMediaType: "text/event-stream",
-    readOnly: true,
-    destructive: false,
-    audience: "public",
-    description: "Stream log pages for a viewer grant. Resume with the cursor query parameter or Last-Event-ID.",
-    errors: [...viewerAccessErrors, ...readLogsOperation.errors],
-    errorOutput: viewerDispatchFailure,
-  },
 } as const satisfies Record<string, Operation<z.ZodType, z.ZodType>>;

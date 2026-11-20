@@ -138,8 +138,8 @@ Renew it through the same backend authorization flow.
 Minting needs only read access: the token's issuer must be able to read the
 sandbox's logs, which requires the sandbox owner or an organization admin,
 whatever the sandbox's visibility. Every viewer call then runs as that issuer.
-`viewer/status`, `viewer/logs` and `viewer/events` work for either, but
-`viewer/send` succeeds only when the issuing service token belongs to the
+Either issuer can read status, read logs and subscribe to the sandbox event
+stream. `viewer/send` succeeds only when the issuing service token belongs to the
 sandbox owner. Otherwise it returns HTTP 404 `not_found` ("No owned sandbox"),
 even for an organization admin.
 For an interactive embed, mint with a service token created by the sandbox
@@ -161,7 +161,7 @@ to mint for a view-only user, that user can send prompts with
   `credential_binding_required` or 409 `sandbox_terminal` instead (see the
   send checks below).
 - Keep the bearer on your backend and expose only proxy routes for
-  `viewer/status`, `viewer/logs` and `viewer/events`. Do not give the browser
+  `viewer/status`, `viewer/logs` and the sandbox event stream. Do not give the browser
   the viewer token or a route to `viewer/send`.
 
 | Viewer route | Input |
@@ -169,15 +169,8 @@ to mint for a view-only user, that user can send prompts with
 | `POST /api/v1/viewer/status` | `{}` |
 | `POST /api/v1/viewer/logs` | `{}` or `{"cursor":"<saved cursor>"}` |
 | `POST /api/v1/viewer/send` | `{"message":"Write a shorter summary","requestId":"<UUID>"}` |
-| `GET /api/v1/viewer/events` | Optional URL-encoded `cursor` query parameter |
 
-Use `fetch` with the viewer bearer to read the server-sent event stream through
-a same-origin proxy. Each `page` event contains a logs page. Save its JSON
-`cursor` and reuse it on reconnect. Pages request at most 100 events and a
-64 KiB provider byte budget. Existing events can be updated, so reconcile by
-event ID. On `access-ended` or stream closure, reconnect or reauthorize as
-appropriate. See [sandbox viewers](sandbox-viewer.md) for proxy and polling
-details.
+See [sandbox viewers](sandbox-viewer.md) for proxy and cursor handling.
 
 ## Stream sandbox events
 

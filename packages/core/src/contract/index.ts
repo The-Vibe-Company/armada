@@ -142,7 +142,6 @@ export const operations = {
   readViewerStatus: sandboxViewerOperations.status,
   sendViewerPrompt: sandboxViewerOperations.send,
   streamSandboxEvents,
-  streamViewerEvents: sandboxViewerOperations.events,
   scopedFinish: scopedRestOperations.finish,
   scopedLaunch: scopedRestOperations.launch,
   scopedRead: scopedRestOperations.read,
