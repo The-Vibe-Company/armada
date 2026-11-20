@@ -44,6 +44,7 @@ import {
   completeSandboxDeletion,
   expireAfterExtension,
   finishEnrolledRuntimeLaunch,
+  finishLaunchFailure,
   publishNativeResumeAdmission,
   publishNativeTurn,
   publishOwnerStop,
@@ -822,6 +823,16 @@ export function createSqlData(
         )
           throw new DataError("Owner stop requires its activity generation, token and phase.");
         const reason = statusReasonOf(patch);
+        if (patch.finishActivity && patch.status === "failed" && !patch.ownerStop && !patch.providerObservation) {
+          const { expectedGeneration, activityToken } = patch;
+          if (!sql.transaction || expectedGeneration === undefined || !activityToken || typeof reason !== "string")
+            throw new DataError("Launch failure requires its activity generation, token and diagnostic.");
+          const applied = await sql.transaction((tx) =>
+            finishLaunchFailure(tx, scope, id, expectedGeneration, activityToken, reason),
+          );
+          if (!applied) throw new DataError("Launch failure publication is stale.", "sandbox_not_ready");
+          return;
+        }
         if (patch.nativeDiagnostic && (patch.expectedGeneration === undefined || reason === undefined))
           throw new DataError("Native diagnostic refresh requires generation and diagnostic evidence.");
         if (patch.providerObservation !== undefined) {
