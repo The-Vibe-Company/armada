@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, beforeEach, expect, spyOn, test } from "bun:test";
+import type { RunnerRequest } from "@armada/agent-runtime";
 import {
   accountModelCountsSql,
   accountWaitingCountSql,
@@ -53,7 +54,6 @@ beforeAll(async () => {
       activity_lease_id uuid,activity_until timestamptz,task_prompt_id text,lifecycle_generation bigint default 1,reconcile_lease_until timestamptz,
       application_secret_tainted boolean not null default false,
       docker_host_id uuid,docker_installation_id uuid,docker_generation uuid);
-    create table runtime_commands(sandbox_id uuid,sequence bigint,request_id text,epoch bigint,result_enc bytea);
     create table runtime_enrolments(sandbox_id uuid,epoch bigint,runtime_hash text,lifecycle_generation bigint,enrolment_hash text,docker_issuer_fence text);
     create table runtime_checkpoints(sandbox_id uuid,epoch bigint,merge_stop boolean);
     create table docker_host_jobs(bound_sandbox_id uuid,position bigint,request_id uuid,
@@ -73,6 +73,9 @@ beforeAll(async () => {
   // Role grants are outside the admission contract and these roles do not exist in PGlite.
   await database().exec(migration.split("alter table")[0]!);
   await database().exec("create role anon; create role authenticated; create role service_role");
+  await database().exec(
+    await Bun.file(new URL("../../../supabase/migrations/20261112140924_runtime_commands.sql", import.meta.url)).text(),
+  );
   await database().exec(
     await Bun.file(
       new URL("../../../supabase/migrations/20261116060000_repair_account_turn_queue.sql", import.meta.url),
@@ -141,6 +144,25 @@ test("an accepted request creates one generation-fenced dispatch job across iden
     requestId: input.request_id,
   });
 });
+
+async function recordRuntimeCommand(command: RunnerRequest) {
+  const encrypted = await encryptSecret(JSON.stringify(command), btoa("x".repeat(32)));
+  await sql.query("insert into runtime_commands(sandbox_id,request_id,epoch,request_enc) values($1,$2,1,$3)", [
+    command.sandboxId,
+    command.requestId,
+    encrypted,
+  ]);
+}
+
+function recordFollowupCommand(input: { id: string; request_id: string; prompt: string }) {
+  return recordRuntimeCommand({
+    version: 1,
+    sandboxId: input.id,
+    requestId: `follow_${input.request_id}`,
+    op: "prompt",
+    input: { text: input.prompt, conversationId: "history", harness: "codex" },
+  });
+}
 
 async function claimTurn(requestId: string) {
   const worker = crypto.randomUUID();
@@ -1106,7 +1128,13 @@ test("a proven pre-dispatch rejection requeues without leaking the account reser
     expect(dispatched).toEqual(input);
     calls++;
     if (calls === 1) {
-      await database().query("insert into runtime_commands values($1,1,'readonly_get_prompt')", [input.id]);
+      await recordRuntimeCommand({
+        version: 1,
+        sandboxId: input.id,
+        requestId: "readonly_get_prompt",
+        op: "getPrompt",
+        promptId: "prior_prompt",
+      });
       const cause = new VaultError("conflict", "reconcile lease won admission after getPrompt probe");
       throw new ToolApiError("conflict", cause.message, undefined, { cause });
     }
@@ -1200,7 +1228,7 @@ test("a native request with its own durable mutating command stays uncertain rat
   let calls = 0;
   queue.setDispatch(async () => {
     calls++;
-    await database().query("insert into runtime_commands values($1,1,$2)", [input.id, `follow_${input.request_id}`]);
+    await recordFollowupCommand(input);
     throw Error("reply lost");
   });
   expect(await queue.reconcileOne(new AbortController().signal)).toBe(true);
@@ -1384,6 +1412,9 @@ test.each(["boat", "modal"])("native %s restart replays only a proven pre-dispat
   await queue.accept(caller, input);
   const original = await claimTurn(input.request_id);
   expect(await admitClaimedAccountTurn(sql, original)).not.toBeNull();
+  const next = { id: ids[2]!, request_id: requests[1]!, prompt: "wait behind recovered claim" };
+  expect(await queue.accept(caller, next)).toMatchObject({ status: "queued" });
+  await sql.query("update jobs set run_after='-infinity' where id=$1", [original.job.id]);
   await sql.query("update account_turn_queue set dispatch_until='-infinity' where sandbox_id=$1", [input.id]);
   await sql.query("update jobs set lease_until='-infinity' where id=$1", [original.job.id]);
 
@@ -1394,6 +1425,7 @@ test.each(["boat", "modal"])("native %s restart replays only a proven pre-dispat
   })();
 
   expect(sent).toEqual([input]);
+  expect(await queue.status(caller, next.id, next.request_id)).toMatchObject({ failed: false });
   expect(await queue.status(caller, input.id, input.request_id)).toEqual({ nativePromptId: "recovered_native" });
   expect((await sql.query("select sandbox_id from account_agent_reservations")).rows).toEqual([]);
 });
@@ -1542,7 +1574,7 @@ test.each(["boat", "modal", "docker"])(
       "update account_turn_queue set state='dispatching',dispatch_generation=1,dispatch_until=now()-interval '1 second' where sandbox_id=$1",
       [input.id],
     );
-    await database().query("insert into runtime_commands values($1,1,$2)", [input.id, `follow_${input.request_id}`]);
+    await recordFollowupCommand(input);
     await database().query(
       "update sandboxes set status='stopped',lifecycle_generation=2,activity_lease_id='30000000-0000-4000-8000-000000000001' where id=$1",
       [input.id],
@@ -1579,10 +1611,7 @@ test.each([
   const original = await claimTurn(input.request_id);
   expect(await admitClaimedAccountTurn(sql, original)).not.toBeNull();
   if (evidence === "matching mutating command") {
-    await sql.query("insert into runtime_commands(sandbox_id,sequence,request_id) values($1,1,$2)", [
-      input.id,
-      `follow_${input.request_id}`,
-    ]);
+    await recordFollowupCommand(input);
   } else {
     await sql.query("update sandboxes set lifecycle_generation=2 where id=$1", [input.id]);
   }
