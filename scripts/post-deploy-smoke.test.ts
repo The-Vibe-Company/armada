@@ -1850,18 +1850,45 @@ test("lifecycle records readiness and confirms extend/list, closed idle steer re
   expect(fake.lines.join("")).not.toContain("secret");
 });
 
-test("a lifecycle stop transport timeout leaves cleanup to confirm the original stop", async () => {
-  let stops = 0;
+test.each(["fetch", "error body"])(
+  "a lifecycle stop timeout during %s leaves cleanup to confirm the original stop",
+  async (phase) => {
+    let stops = 0;
+    const fake = lifecycleFixture("none", (call) => {
+      if (call.path === "sandbox/stop" && ++stops === 1) {
+        const timeout = (): never => {
+          fake.advance(deadlines.stop);
+          throw new DOMException("stop response timed out", "TimeoutError");
+        };
+        if (phase === "fetch") return timeout();
+        return Object.assign(json({ error: { code: "outcome_unknown" } }, 503), { json: async () => timeout() });
+      }
+      if (call.path === "sandbox/status" && stops > 0) return json({ status: "stopped", providerState: "stopped" });
+      return undefined;
+    });
+    expect(await fake.run()).toBe(false);
+    expect(stops).toBe(1);
+    expect(fake.receipts()).toContainEqual({ case: 0, step: "stop", pass: false, code: "poll_limit_exceeded" });
+    expect(fake.receipts()).toContainEqual({ case: 0, step: "cleanup_sandbox", pass: true });
+  },
+);
+
+test("lifecycle stop polling yields to cleanup at the measured deadline", async () => {
+  let stopStartedAt: number | undefined;
+  const statusTimes: number[] = [];
   const fake = lifecycleFixture("none", (call) => {
-    if (call.path === "sandbox/stop" && ++stops === 1) {
-      fake.advance(deadlines.stop);
-      throw new DOMException("stop response timed out", "TimeoutError");
+    if (call.path === "sandbox/stop") stopStartedAt = fake.io.now();
+    if (call.path === "sandbox/status" && stopStartedAt !== undefined) {
+      statusTimes.push(fake.io.now() - stopStartedAt);
+      if (statusTimes.length === 1) {
+        fake.advance(deadlines.stop - 1);
+        return json({ status: "stopping", providerState: "active" });
+      }
     }
-    if (call.path === "sandbox/status" && stops > 0) return json({ status: "stopped", providerState: "stopped" });
     return undefined;
   });
   expect(await fake.run()).toBe(false);
-  expect(stops).toBe(1);
+  expect(statusTimes).toEqual([0, deadlines.stop]);
   expect(fake.receipts()).toContainEqual({ case: 0, step: "stop", pass: false, code: "poll_limit_exceeded" });
   expect(fake.receipts()).toContainEqual({ case: 0, step: "cleanup_sandbox", pass: true });
 });
