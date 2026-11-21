@@ -95,6 +95,11 @@ const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 function invalid(): never {
   throw new VaultError("invalid", "Invalid template request.");
 }
+function usesHostPlacement(
+  definition: TemplateDefinition,
+): definition is Extract<TemplateDefinition, { goldenId: null }> {
+  return capabilities(definition.provider).launchSource === "host";
+}
 function unavailable(reason = "reference_unavailable"): never {
   throw new VaultError("conflict", `Template launch refused: ${reason}.`);
 }
@@ -251,7 +256,7 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
   ) {
     let g: GoldenRecord | null = null;
     let host: Manifest["host"];
-    if (def.goldenId === null) {
+    if (usesHostPlacement(def)) {
       // Issuer membership is observed here, not locked out of order after the actor.
       // The reservation rechecks this policy under its sorted actor/issuer prelocks.
       const row = (
@@ -560,7 +565,7 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
     });
     const def = selection.r.definition;
     // Host launches record no external reference; refuse rather than drop it.
-    if (input.externalRef !== undefined && def.goldenId === null) unavailable("external_ref_unavailable");
+    if (input.externalRef !== undefined && usesHostPlacement(def)) unavailable("external_ref_unavailable");
     await runtime.validateDefinition?.(def);
     let account = def.modelAccount;
     if (input.modelAccount !== undefined) {
@@ -682,112 +687,111 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
         ...(input.prompt === undefined ? {} : { prompt: input.prompt as string }),
         ...(input.ttlSeconds === undefined ? {} : { ttlSeconds: input.ttlSeconds as number }),
       });
-      const result =
-        def.goldenId === null
-          ? await (async () => {
-              if (!runtime.launchDocker || !m.host || input.repo !== undefined || size !== undefined)
-                unavailable("environment_admission_unavailable");
-              return runtime.launchDocker(
-                {
-                  ...launchRequest(),
-                  org,
-                  provider: "docker",
-                  hostId: def.hostId,
-                  ...(def.snapshotId === undefined ? {} : { snapshotId: def.snapshotId }),
-                  credentialVersion: m.account.version,
-                  requestId: request.sandbox_id,
-                  variables: def.variables,
-                  secrets: def.secrets ?? [],
+      const result = usesHostPlacement(def)
+        ? await (async () => {
+            if (!runtime.launchDocker || !m.host || input.repo !== undefined || size !== undefined)
+              unavailable("environment_admission_unavailable");
+            return runtime.launchDocker(
+              {
+                ...launchRequest(),
+                org,
+                provider: "docker",
+                hostId: def.hostId,
+                ...(def.snapshotId === undefined ? {} : { snapshotId: def.snapshotId }),
+                credentialVersion: m.account.version,
+                requestId: request.sandbox_id,
+                variables: def.variables,
+                secrets: def.secrets ?? [],
+              },
+              {
+                beforeReserve,
+                beforeStart: async () => {
+                  await revalidate(actor, org, m);
+                  await runtime.beforeDockerStart?.();
                 },
-                {
-                  beforeReserve,
-                  beforeStart: async () => {
-                    await revalidate(actor, org, m);
-                    await runtime.beforeDockerStart?.();
+              },
+            );
+          })()
+        : await (async () => {
+            const g = m.golden;
+            if (!g) unavailable("environment_admission_unavailable");
+            const provider = await runtime.provider(g);
+            if ((def.variables.length || def.secrets?.length) && !provider.configureReadableVariables)
+              unavailable(def.secrets?.length ? "secret_delivery_unavailable" : "variable_delivery_unavailable");
+            return launchSandbox(
+              provider,
+              {
+                ...runtime.stores,
+                goldens: {
+                  ...runtime.stores.goldens,
+                  findByName: async () => [g],
+                },
+              },
+              selection.a,
+              {
+                ...launchRequest(),
+                golden: g.name,
+                provider: g.provider,
+                ...(size === undefined ? {} : { size }),
+                ...(input.repo === undefined ? {} : { repo: input.repo as string }),
+                ...(input.externalRef === undefined ? {} : { externalRef: input.externalRef as string }),
+              },
+              {
+                ...runtime.options,
+                credentialVersion: m.account.version,
+                newId: () => request.sandbox_id,
+                beforeFork: async (sandboxId) => {
+                  await revalidate(actor, org, m);
+                  // Validate the full decrypted payload before any provider allocation.
+                  // Discard plaintext after this check; final start resolves current authority again.
+                  await resolveEnvironment(selection.a, m);
+                  await runtime.options?.beforeFork?.(sandboxId);
+                },
+                templateSnapshotAdmission: {
+                  admit: async () => {
+                    await transaction(async (tx) => {
+                      const current = await revalidateInTransaction(tx, actor, org, m);
+                      const snapshot = g.providerSnapshotId;
+                      if (
+                        !snapshot ||
+                        current?.id !== g.id ||
+                        current.providerSnapshotId !== snapshot ||
+                        current.providerSandboxId !== g.providerSandboxId
+                      )
+                        unavailable("environment_snapshot_unavailable");
+                      // The golden read holds FOR SHARE through commit. Take the
+                      // retirement lock too, since another golden can share this handle.
+                      await tx.query("select public.lock_golden_snapshot($1,$2)", [g.provider, snapshot]);
+                      if (await snapshotSealed(tx, g.provider, snapshot))
+                        unavailable("environment_snapshot_unavailable");
+                      await tx.query(
+                        "update public.template_launch_requests set state='allocating',updated_at=now() where id=$1",
+                        [request.id],
+                      );
+                    });
+                    allocating = true;
+                  },
+                  confirmAbsence: () => {
+                    allocating = false;
                   },
                 },
-              );
-            })()
-          : await (async () => {
-              const g = m.golden;
-              if (!g) unavailable("environment_admission_unavailable");
-              const provider = await runtime.provider(g);
-              if ((def.variables.length || def.secrets?.length) && !provider.configureReadableVariables)
-                unavailable(def.secrets?.length ? "secret_delivery_unavailable" : "variable_delivery_unavailable");
-              return launchSandbox(
-                provider,
-                {
-                  ...runtime.stores,
-                  goldens: {
-                    ...runtime.stores.goldens,
-                    findByName: async () => [g],
-                  },
-                },
-                selection.a,
-                {
-                  ...launchRequest(),
-                  golden: g.name,
-                  provider: g.provider,
-                  ...(size === undefined ? {} : { size }),
-                  ...(input.repo === undefined ? {} : { repo: input.repo as string }),
-                  ...(input.externalRef === undefined ? {} : { externalRef: input.externalRef as string }),
-                },
-                {
-                  ...runtime.options,
-                  credentialVersion: m.account.version,
-                  newId: () => request.sandbox_id,
-                  beforeFork: async (sandboxId) => {
-                    await revalidate(actor, org, m);
-                    // Validate the full decrypted payload before any provider allocation.
-                    // Discard plaintext after this check; final start resolves current authority again.
-                    await resolveEnvironment(selection.a, m);
-                    await runtime.options?.beforeFork?.(sandboxId);
-                  },
-                  templateSnapshotAdmission: {
-                    admit: async () => {
-                      await transaction(async (tx) => {
-                        const current = await revalidateInTransaction(tx, actor, org, m);
-                        const snapshot = g.providerSnapshotId;
-                        if (
-                          !snapshot ||
-                          current?.id !== g.id ||
-                          current.providerSnapshotId !== snapshot ||
-                          current.providerSandboxId !== g.providerSandboxId
-                        )
-                          unavailable("environment_snapshot_unavailable");
-                        // The golden read holds FOR SHARE through commit. Take the
-                        // retirement lock too, since another golden can share this handle.
-                        await tx.query("select public.lock_golden_snapshot($1,$2)", [g.provider, snapshot]);
-                        if (await snapshotSealed(tx, g.provider, snapshot))
-                          unavailable("environment_snapshot_unavailable");
-                        await tx.query(
-                          "update public.template_launch_requests set state='allocating',updated_at=now() where id=$1",
-                          [request.id],
-                        );
+                beforeStart: async (p, s) => {
+                  await revalidate(actor, org, m);
+                  await runtime.options?.beforeStart?.(p, s);
+                  if (def.variables.length || def.secrets?.length) {
+                    const variables = await resolveEnvironment(selection.a, m);
+                    // Enrolled runtimes receive frozen readables privately before their driver starts.
+                    if (s.runtimeTransport !== "dialout" && !s.boatRuntime)
+                      await p.configureReadableVariables!({
+                        sandboxId: s.providerSandboxId,
+                        harness: def.harness,
+                        variables,
                       });
-                      allocating = true;
-                    },
-                    confirmAbsence: () => {
-                      allocating = false;
-                    },
-                  },
-                  beforeStart: async (p, s) => {
-                    await revalidate(actor, org, m);
-                    await runtime.options?.beforeStart?.(p, s);
-                    if (def.variables.length || def.secrets?.length) {
-                      const variables = await resolveEnvironment(selection.a, m);
-                      // Enrolled runtimes receive frozen readables privately before their driver starts.
-                      if (s.runtimeTransport !== "dialout" && !s.boatRuntime)
-                        await p.configureReadableVariables!({
-                          sandboxId: s.providerSandboxId,
-                          harness: def.harness,
-                          variables,
-                        });
-                    }
-                  },
+                  }
                 },
-              );
-            })();
+              },
+            );
+          })();
       const output = {
         requestId: request.id,
         ...(runtime.pinnedLaunch && result.golden !== null ? { envelope: runtime.pinnedLaunch(result, m) } : {}),
