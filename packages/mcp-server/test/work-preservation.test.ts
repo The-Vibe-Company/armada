@@ -922,15 +922,14 @@ test("ordinary native exec excludes owner stop until workspace mutation finishes
   expect(stopDuringExec?.isError).toBe(true);
   expect(boat.stops).toHaveLength(0);
   expect(result.structuredContent).toMatchObject({ exitCode: 0 });
-  const ready = await context.data.sandboxes.controlState?.(sandboxId);
+  const preflightBeforeStop = await context.data.sandboxes.controlState?.(sandboxId);
   boat.setExecOutput({ stdout: '{"status":"clean"}' });
   const stopped = await invoke("stop", { id: sandboxId });
   expect(stopped.structuredContent).toMatchObject({ status: "stopped" });
   expect(boat.stops).toEqual([machine.id]);
 
-  // Replay the preflight read when stop settled before exec loaded its live row.
-  expect(ready?.status).toBe("ready");
-  context.data.sandboxes.controlState = async () => ready ?? null;
+  expect(preflightBeforeStop?.status).toBe("ready");
+  context.data.sandboxes.controlState = async () => preflightBeforeStop ?? null;
   const commands = boat.execs.length;
   expect((await invoke("exec", { id: sandboxId, command: "must not restore" })).isError).toBe(true);
   expect(boat.execs).toHaveLength(commands);
