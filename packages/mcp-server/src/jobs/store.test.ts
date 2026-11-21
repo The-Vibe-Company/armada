@@ -17,6 +17,7 @@ import { createRuntimeGitHub } from "../runtime-github.ts";
 import { createModalJobReader, createModalLogReader } from "../runtime-history.ts";
 import { createRuntimeMcp, type RuntimeMcp } from "../runtime-mcp.ts";
 import { createSandboxLifecycle } from "../sandbox-lifecycle.ts";
+import { deleteSandboxWithActivity } from "../sandbox-rest-controls.ts";
 import type { LaneFactory } from "../server-worker-modules.ts";
 import { sqlOver } from "../sql.ts";
 import { callSharedTool } from "../tool-api.ts";
@@ -1831,14 +1832,55 @@ async function failedModalLaunchFixture() {
   return fixture;
 }
 
-test("a replacement Modal cleanup claimant continues after client preparation fails", async () => {
+test("a replacement Modal cleanup claimant unblocks owner deletion after confirming exit", async () => {
   const { f, id, makeRunner, cleanupEffects } = await failedModalLaunchFixture();
+  const data = createSqlData(f.sql)({
+    via: "service",
+    userId: f.people.owner,
+    orgs: [{ orgId: f.people.org, role: "member" }],
+  });
+  const remove = () =>
+    deleteSandboxWithActivity(
+      data.sandboxes,
+      {
+        async resolve() {
+          throw new Error("A failed launch with confirmed exit needs no provider client.");
+        },
+      },
+      id,
+    );
+  await expect(remove()).rejects.toMatchObject({ code: "conflict", message: "Sandbox exit is unconfirmed." });
+
   const initial = makeRunner((step) => {
     if (step === "cleanup preparation") throw new Error("Modal credentials temporarily unavailable.");
   });
   expect(await initial.reconcileOne(signal)).toBe(true);
   await initial.drain();
   expect(cleanupEffects()).toEqual({ terminations: 0, cleanupPreparations: 1 });
+  await f.db.query("update jobs set lease_until='-infinity' where sandbox_id=$1 and kind='delete'", [id]);
+  const interruptedCompletion: Sql = {
+    ...f.sql,
+    transaction: (work) =>
+      f.sql.transaction!(async (tx) => {
+        let completed = false;
+        const result = await work({
+          ...tx,
+          async query<T>(query: string, params?: unknown[]) {
+            const result = await tx.query<T>(query, params);
+            if (query.includes("public.complete_job") && params?.[4] === "done") completed = true;
+            return result;
+          },
+        });
+        if (completed) throw new Error("Worker lost before cleanup commit");
+        return result;
+      }),
+  };
+  const interrupted = makeRunner(undefined, interruptedCompletion);
+  expect(await interrupted.reconcileOne(signal)).toBe(true);
+  await interrupted.drain();
+  expect(cleanupEffects()).toEqual({ terminations: 1, cleanupPreparations: 2 });
+  await expect(remove()).rejects.toMatchObject({ code: "conflict", message: "Sandbox exit is unconfirmed." });
+
   await f.db.query("update jobs set lease_until='-infinity' where sandbox_id=$1 and kind='delete'", [id]);
   const successor = makeRunner();
   expect(await successor.reconcileOne(signal)).toBe(true);
@@ -1847,6 +1889,7 @@ test("a replacement Modal cleanup claimant continues after client preparation fa
   expect((await f.db.query("select state from jobs where sandbox_id=$1 and kind='delete'", [id])).rows).toEqual([
     { state: "done" },
   ]);
+  expect(await remove()).toEqual({ id, status: "deleted" });
 });
 
 test("Modal cleanup does not use another user's registered App credentials", async () => {
