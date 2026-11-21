@@ -4,8 +4,8 @@ import { AuthError } from "@armada/auth";
 import { GoldenError } from "@armada/core";
 import { sandboxOutputOperations } from "@armada/core/contract/sandbox-outputs";
 import { acceptedOptions, flag, parseArgs, single, uuid } from "../args.ts";
-import { createArmadaSdkReader } from "../armada-api.ts";
 import { resolveSandboxId } from "../current-sandbox.ts";
+import { createArmadaSdkReader } from "../sdk-session.ts";
 import type { Command } from "./command.ts";
 
 const contract = sandboxOutputOperations.readSandboxOutput;

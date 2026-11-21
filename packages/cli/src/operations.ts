@@ -10,7 +10,7 @@ import {
 import { sandboxListInput } from "@armada/core/contract/sandbox";
 import { invalidAgentMessage } from "./agent-validation.ts";
 import { acceptedOptions, flag, parseArgs, single, uuid } from "./args.ts";
-import { ArmadaApiError, type ArmadaCommandClient, createArmadaApiClient } from "./armada-api.ts";
+import { type ArmadaCommandClient, createArmadaApiClient } from "./armada-api.ts";
 import type { AuthIo } from "./auth-commands.ts";
 import {
   type CurrentSandboxFile,
@@ -21,6 +21,7 @@ import {
 import { setupStatus } from "./devx.ts";
 import { mcpCommand } from "./mcp-commands.ts";
 import { sandboxListText } from "./sandbox-list.ts";
+import { ArmadaApiError } from "./sdk-session.ts";
 
 export async function operation(
   command:

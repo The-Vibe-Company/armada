@@ -3,7 +3,8 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AuthError } from "@armada/auth";
-import { ArmadaApiError, armadaApiUrl, createArmadaApiClient } from "../src/armada-api.ts";
+import { createArmadaApiClient } from "../src/armada-api.ts";
+import { ArmadaApiError, armadaApiUrl } from "../src/sdk-session.ts";
 import { fileSessionStore, memorySessionStore } from "../src/session.ts";
 
 const token = "secret-token-that-must-not-leak";
