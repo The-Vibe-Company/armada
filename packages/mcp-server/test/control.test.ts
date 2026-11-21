@@ -1276,6 +1276,7 @@ describe("control API", () => {
       const { sandbox: launched } = receipt;
       expect(launched.externalRef).toBe("tender:1");
       expect(receipt.sandbox).not.toHaveProperty("boatId");
+      if (!receipt.golden) throw Error("Expected a golden launch receipt.");
       expect(receipt.golden).not.toHaveProperty("boatSnapshotId");
       expect(receipt.golden).not.toHaveProperty("boatSandboxId");
       const oldReceipt = {
