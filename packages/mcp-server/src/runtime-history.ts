@@ -125,7 +125,8 @@ export function createModalJobReader(sql: Sql, key: string) {
           active_prompt: string | null;
         }>(
           `select exists(select 1 from public.jobs j where j.sandbox_id=s.id and j.kind='launch' and j.payload_enc is not null
-            and j.generation=s.lifecycle_generation and j.org_id=s.org_id and j.request_owner_id=s.owner_id) as job_owned,
+            and j.generation<=s.lifecycle_generation
+            and j.org_id=s.org_id and j.request_owner_id=s.owner_id) as job_owned,
           setup.state as setup_state,
           case
             when s.stop_requested_at is not null or s.status in ('starting','stopping') then false
@@ -212,10 +213,14 @@ export function createModalLogReader(
     if (sandbox.runtimeTransport !== "dialout") return resolveProvider(sandbox, caller);
 
     let observation: Promise<Provider> | undefined;
+    let followed: Awaited<ReturnType<typeof jobReader>> = null;
     const observe = () => (observation ??= resolveProvider(sandbox, caller));
     return {
-      events: ({ sandboxId: _placement, ...pagination }) => history(caller, sandbox.id, pagination),
-      followSettled: async () => (await jobReader(sandbox, caller))?.followSettled(),
+      events: (request) => followed?.events(request) ?? history(caller, sandbox.id, request),
+      async followSettled() {
+        followed = await jobReader(sandbox, caller);
+        return followed?.followSettled();
+      },
       get: async (...args) => (await observe()).get(...args),
       getPrompt: async (request) => (await observe()).getPrompt(request),
     };
