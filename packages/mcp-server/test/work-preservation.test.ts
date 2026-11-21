@@ -1414,7 +1414,7 @@ test.each(["not_found", "pending", "settlement failure"] as const)(
   },
 );
 
-test.each(["activity", "queue", "ordinary delete"] as const)(
+test.each(["activity", "queue", "provider observation", "ordinary delete"] as const)(
   "uncertain native drain refuses %s after its lease expires",
   async (attempt) => {
     const { db, people, sandboxId } = await seedNativeDrainReceipt();
@@ -1441,6 +1441,15 @@ test.each(["activity", "queue", "ordinary delete"] as const)(
           activityToken: crypto.randomUUID(),
           stopRequested: false,
           nativeResumeAdmission: `bx_${sandboxId}`,
+        }),
+      ).rejects.toMatchObject({ code: "sandbox_not_ready" });
+    } else if (attempt === "provider observation") {
+      await expect(
+        sandboxes.update(sandboxId, {
+          status: "ready",
+          statusReason: null,
+          expectedGeneration: 5,
+          providerObservation: { fromState: "stopped", providerRunPlacement: `bx_${sandboxId}` },
         }),
       ).rejects.toMatchObject({ code: "sandbox_not_ready" });
     } else if (attempt === "queue") {

@@ -1017,7 +1017,7 @@ export async function recordObservedProviderState(
          and case when $4::text is null then
            ((s.provider='boat' and s.boat_runtime) or (s.provider='modal' and s.runtime_transport='dialout'))
          else s.provider_sandbox_id=$4 and not s.boat_runtime and s.runtime_transport is distinct from 'dialout' end
-         and ($5::boolean or s.stop_requested_at is null) and s.deleted_at is null
+         and ($5::boolean or s.stop_requested_at is null) and s.deleted_at is null and not s.native_drain_pending
          and (s.activity_until is null or s.activity_until<now())
          and (s.reconcile_lease_until is null or s.reconcile_lease_until<now())
        for update of s`,
