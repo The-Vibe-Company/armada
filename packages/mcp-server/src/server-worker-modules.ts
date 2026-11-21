@@ -53,6 +53,7 @@ const jobsLane: LaneFactory = ({
   langfuse,
   control,
   modal,
+  modalLaunchJob,
   accountTurns,
 }) => {
   const prScan = githubApp
@@ -99,6 +100,7 @@ const jobsLane: LaneFactory = ({
     jobs,
     {
       delete: modal.launchCleanupJob,
+      ...(modalLaunchJob ? { launch: modalLaunchJob } : {}),
       [MODAL_INITIAL_TURN]: createModalInitialTurnJob(sql, accountTurns),
       golden_build: createGoldenBuildJob(goldenBuilds),
       langfuse_export: langfuse.exportJob,

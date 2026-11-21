@@ -95,7 +95,7 @@ test("the shared jobs lane claims only configured job kinds", async () => {
   const managed = new Map<string, LaneFactory>();
   jobsModule({ workers: { managed } } as Parameters<typeof jobsModule>[0]);
   const createLane = managed.get("jobs")!;
-  for (const { githubApp, encryptionKey, expected } of [
+  for (const { githubApp, encryptionKey, modalRuntime, expected } of [
     {
       githubApp: null,
       encryptionKey: undefined,
@@ -114,7 +114,8 @@ test("the shared jobs lane claims only configured job kinds", async () => {
     {
       githubApp: {},
       encryptionKey: "test",
-      expected: ["golden_build", "langfuse_export", "maintenance", "webhook", "pr_scan", "outputs_capture"],
+      modalRuntime: true,
+      expected: ["golden_build", "langfuse_export", "maintenance", "webhook", "pr_scan", "outputs_capture", "launch"],
     },
   ]) {
     const claimed = new Set<string>();
@@ -124,6 +125,7 @@ test("the shared jobs lane claims only configured job kinds", async () => {
       options: {},
       config: { encryptionKey },
       modal: modalCleanup,
+      modalLaunchJob: modalRuntime ? { concurrency: 1, run: neverCalled } : undefined,
       sql: { query: async () => ({ rows: [] }) },
       jobs: {
         async enqueue() {},

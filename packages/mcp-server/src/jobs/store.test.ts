@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { decryptSecret, encryptSecret, type Sql } from "@armada/core/server";
-import type { ModalMachineOptions } from "@armada/provider-modal";
+import { type ModalMachineOptions, scopeKey } from "@armada/provider-modal";
 import { rowOnlyDatabase } from "../../test/row-only-database.ts";
 import { createTurnDispatchJob, type DispatchTurn } from "../account-turn-dispatch.ts";
 import { createAccountTurnQueue } from "../account-turn-queue.ts";
@@ -12,10 +12,12 @@ import { runtimeWakes } from "../wake-bus.ts";
 import {
   admitModalLaunch,
   createModalLaunchCleanupJob,
+  createModalLaunchJob,
   type ModalLaunchAdmission,
+  modalLaunchTicketGuard,
   runModalLaunch,
 } from "./modal-launch.ts";
-import { createJobsRunner, type Job } from "./runner.ts";
+import { createJobsRunner, type Job, type JobContext } from "./runner.ts";
 import { createJobsStore, JOBS_WAKE, withJobLease } from "./store.ts";
 
 const database = rowOnlyDatabase();
@@ -126,6 +128,22 @@ async function modalAdmissionFixture() {
      values ($1,$2,$3,'modal-admission','private','modal','workspace','main','ap-test','snapshot')`,
     [goldenId, f.people.org, f.people.owner],
   );
+  const scope = scopeKey({
+    orgId: f.people.org,
+    userId: f.people.owner,
+    visibility: "private",
+    binding: { workspace: "workspace", environment: "main", appId: "ap-test" },
+  });
+  await f.db.query(
+    `insert into modal_machines(scope,org_id,owner_id,visibility,id,request_key,record)
+     values($1,$2,$3,'private','builder','builder','{}')`,
+    [scope, f.people.org, f.people.owner],
+  );
+  await f.db.query(
+    `insert into modal_images(scope,name,source_id,record)
+     values($1,'snapshot','builder','{"info":{"status":"ready"},"imageId":"im-snapshot"}')`,
+    [scope],
+  );
   const input: ModalLaunchAdmission = {
     orgId: f.people.org,
     ownerId: f.people.owner,
@@ -233,7 +251,8 @@ test("Modal admission commits an unbound sandbox, scoped job and encrypted turn 
     sandbox_id: sandbox.id,
     generation: "1",
     payload: {
-      allocation: input.allocation,
+      allocation: { ...input.allocation, source: { kind: "snapshot", ref: "im-snapshot" } },
+      snapshot: "snapshot",
       modal: { workspace: "workspace", environment: "main", appId: "ap-test" },
     },
   });
@@ -348,6 +367,7 @@ test("an unbound Modal launch can publish only its leased allocation receipt", a
 });
 
 type ModalLaunchStep =
+  | "open Modal"
   | "create response"
   | "bootstrap dispatch"
   | "bootstrap response"
@@ -386,6 +406,7 @@ async function modalLaunchFixture(initial?: Awaited<ReturnType<typeof modalAdmis
   let terminations = 0;
   let cleanupPreparations = 0;
   let closedClients = 0;
+  let modalCredentialCurrent = true;
   let tags: Record<string, string> = {};
   const bootstrapped: string[] = [];
   const enrolments = createRuntimeEnrolments(f.sql, launchEncryptionKey);
@@ -428,7 +449,8 @@ async function modalLaunchFixture(initial?: Awaited<ReturnType<typeof modalAdmis
     const client = {
       apps: { fromName: async () => ({ appId: "ap-test" }) },
       images: {
-        async fromId() {
+        async fromId(ref: string) {
+          expect(ref).toBe(initial ? "im-snapshot" : "image");
           await atStep?.("image lookup");
           return { imageId: "image" };
         },
@@ -455,6 +477,52 @@ async function modalLaunchFixture(initial?: Awaited<ReturnType<typeof modalAdmis
       resolveRuntimeTicket: async () => null,
       prepareCheckpoint: async () => {},
     };
+    const prepareRuntimeTicket = async () => {
+      await atStep?.("runtime ticket");
+      return {
+        ownerId: f.people.owner,
+        configuration: {},
+        serverUrl: "https://armada.invalid",
+        artifact: { sha256: "a".repeat(64), bytes: 1 },
+        cacheDir: "/home/user/runtime-cache",
+        async lockPrerequisites() {},
+        async checkAccountPin() {},
+      };
+    };
+    const launch = initial
+      ? createModalLaunchJob(
+          jobsSql,
+          launchEncryptionKey,
+          async (app) => {
+            await atStep?.("open Modal");
+            expect(app).toEqual({
+              binding: machine.binding,
+              appName: machine.appName,
+              credentialScope: "user",
+              credentialOwnerId: f.people.owner,
+            });
+            return {
+              ...machine,
+              canUseModalCredential: async () => modalCredentialCurrent,
+              close() {
+                closedClients++;
+              },
+            };
+          },
+          async (target) => ({ ...(await prepareRuntimeTicket()), ...modalLaunchTicketGuard(target) }),
+        )
+      : {
+          concurrency: 1,
+          run(job: Job, context: JobContext) {
+            return runModalLaunch(jobsSql, launchEncryptionKey, job, context, () => ({
+              allocation: { source: { kind: "image", ref: "image" }, size: null, computeTtlSeconds: 600 },
+              bindingRef: job.id,
+              machine,
+              canUseModalCredential: async () => modalCredentialCurrent,
+              prepareRuntimeTicket,
+            }));
+          },
+        };
     return createJobsRunner(
       createJobsStore(jobsSql, launchEncryptionKey),
       {
@@ -475,26 +543,7 @@ async function modalLaunchFixture(initial?: Awaited<ReturnType<typeof modalAdmis
             };
           },
         ),
-        launch: {
-          concurrency: 1,
-          async run(job, context) {
-            return runModalLaunch(jobsSql, launchEncryptionKey, job, context, {
-              allocation: { source: { kind: "image", ref: "image" }, size: null, computeTtlSeconds: 600 },
-              bindingRef: job.id,
-              machine,
-              async prepareRuntimeTicket() {
-                await atStep?.("runtime ticket");
-                return {
-                  ownerId: f.people.owner,
-                  configuration: {},
-                  serverUrl: "https://armada.invalid",
-                  artifact: { sha256: "a".repeat(64), bytes: 1 },
-                  cacheDir: "/home/user/runtime-cache",
-                };
-              },
-            });
-          },
-        },
+        launch,
       },
       () => {},
       () => () => {},
@@ -514,6 +563,9 @@ async function modalLaunchFixture(initial?: Awaited<ReturnType<typeof modalAdmis
     effects: () => ({ allocations, observed, bootstrapped }),
     cleanupEffects: () => ({ terminations, cleanupPreparations }),
     closedClients: () => closedClients,
+    revokeModalCredential: () => {
+      modalCredentialCurrent = false;
+    },
     enrolPending: (authority = enrolments) => authority.enrol(enrolmentToken),
   };
 }
@@ -871,10 +923,52 @@ test("an interrupted Modal failure handoff rolls back the failure and delete job
   expect(cleanupEffects()).toEqual({ terminations: 0, cleanupPreparations: 0 });
 });
 
+test.each(["before allocation", "after allocation"] as const)(
+  "an expired Modal launch settles with no App credential %s",
+  async (lostCredentialAt) => {
+    const { f, id, jobId, makeRunner, effects } = await modalLaunchFixture(await modalAdmissionFixture());
+    const allocated = lostCredentialAt === "after allocation";
+    let openCalls = 0;
+    const reconcile = async (firstClaim: boolean) => {
+      const runner = makeRunner((step) => {
+        if (step === "open Modal") {
+          openCalls++;
+          if (!firstClaim || !allocated) throw new Error("Modal credential removed");
+        }
+        if (step === "bootstrap dispatch") throw new Error("Worker interrupted before bootstrap");
+      });
+      expect(await runner.reconcileOne(signal)).toBe(true);
+      await runner.drain();
+    };
+    await reconcile(true);
+    expect((await f.db.query("select state from jobs where id=$1", [jobId])).rows).toEqual([{ state: "leased" }]);
+    await f.db.query("update jobs set deadline_at='-infinity',lease_until='-infinity' where id=$1", [jobId]);
+    if (allocated)
+      await f.db.query("update runtime_enrolments set enrolment_expires_at='-infinity' where sandbox_id=$1", [id]);
+    await reconcile(false);
+    expect(openCalls).toBe(allocated ? 2 : 1);
+    expect(effects().allocations).toBe(allocated ? 1 : 0);
+    expect((await f.db.query("select status from sandboxes where id=$1", [id])).rows).toEqual([{ status: "failed" }]);
+    expect(
+      (
+        await f.db.query(
+          "select kind,state from jobs where sandbox_id=$1 and kind in ('launch','delete') order by kind",
+          [id],
+        )
+      ).rows,
+    ).toEqual([
+      { kind: "delete", state: "queued" },
+      { kind: "launch", state: "failed" },
+    ]);
+    const cleanup = await f.store.claim("delete", crypto.randomUUID(), 30, 1);
+    expect(cleanup?.payload).toEqual({ launchJobId: jobId, machineId: allocated ? "physical" : null });
+  },
+);
+
 test.each(["create response", "bootstrap dispatch", "bootstrap response"] as const)(
   "a replacement Modal launch runner completes after losing the %s",
   async (failure) => {
-    const { f, id, jobId, makeRunner, effects } = await modalLaunchFixture();
+    const { f, id, jobId, makeRunner, effects } = await modalLaunchFixture(await modalAdmissionFixture());
     const first = makeRunner((step) => {
       if (step === failure) throw new Error("Lost worker");
     });
@@ -1005,17 +1099,41 @@ test("enrolment committed before Modal failure settlement prevents cleanup", asy
   expect(effects().bootstrapped).toEqual(["physical"]);
 });
 
-test.each(["image lookup", "runtime ticket"] as const)(
-  "a Modal launch whose job deadline expires during %s cannot dispatch the prepared operation",
-  async (expiredAt) => {
-    const { f, jobId, makeRunner, effects } = await modalLaunchFixture();
+test.each([
+  ["deadline expires", "image lookup"],
+  ["deadline expires", "runtime ticket"],
+  ["Modal credential is revoked", "image lookup"],
+] as const)(
+  "a Modal launch whose %s during %s cannot dispatch the prepared operation",
+  async (change, interruptedAt) => {
+    const { f, jobId, makeRunner, effects, revokeModalCredential } = await modalLaunchFixture();
     const runner = makeRunner(async (step) => {
-      if (step === expiredAt) await f.db.query("update jobs set deadline_at='-infinity' where id=$1", [jobId]);
+      if (step !== interruptedAt) return;
+      if (change === "Modal credential is revoked") revokeModalCredential();
+      else await f.db.query("update jobs set deadline_at='-infinity' where id=$1", [jobId]);
     });
     expect(await runner.reconcileOne(signal)).toBe(true);
     await runner.drain();
-    expect(effects().allocations).toBe(expiredAt === "image lookup" ? 0 : 1);
+    expect(effects().allocations).toBe(interruptedAt === "image lookup" ? 0 : 1);
     expect(effects().bootstrapped).toEqual([]);
+  },
+);
+
+test.each(["credential rotation", "sandbox account change"] as const)(
+  "Modal ticket issuance rejects %s after configuration",
+  async (change) => {
+    const { f, id, makeRunner, effects } = await modalLaunchFixture(await modalAdmissionFixture());
+    const runner = makeRunner(async (step) => {
+      if (step !== "runtime ticket") return;
+      if (change === "credential rotation")
+        await f.db.query("update credentials set value_enc=decode('00','hex') where id=$1", [f.openaiCredentialId]);
+      else await f.db.query("update sandboxes set credential_version=credential_version+1 where id=$1", [id]);
+    });
+    expect(await runner.reconcileOne(signal)).toBe(true);
+    await runner.drain();
+    expect(effects().allocations).toBe(1);
+    expect(effects().bootstrapped).toEqual([]);
+    expect((await f.db.query("select sandbox_id from runtime_enrolments where sandbox_id=$1", [id])).rows).toEqual([]);
   },
 );
 
