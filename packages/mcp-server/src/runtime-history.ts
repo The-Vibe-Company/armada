@@ -213,10 +213,14 @@ export function createModalLogReader(
     if (sandbox.runtimeTransport !== "dialout") return resolveProvider(sandbox, caller);
 
     let observation: Promise<Provider> | undefined;
+    let followed: Awaited<ReturnType<typeof jobReader>> = null;
     const observe = () => (observation ??= resolveProvider(sandbox, caller));
     return {
-      events: ({ sandboxId: _placement, ...pagination }) => history(caller, sandbox.id, pagination),
-      followSettled: async () => (await jobReader(sandbox, caller))?.followSettled(),
+      events: (request) => followed?.events(request) ?? history(caller, sandbox.id, request),
+      async followSettled() {
+        followed = await jobReader(sandbox, caller);
+        return followed?.followSettled();
+      },
       get: async (...args) => (await observe()).get(...args),
       getPrompt: async (request) => (await observe()).getPrompt(request),
     };

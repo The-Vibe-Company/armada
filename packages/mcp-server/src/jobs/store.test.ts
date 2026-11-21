@@ -1688,7 +1688,10 @@ test("enrolled Modal launch jobs report and settle turns from the runtime journa
       throw new Error("A finished turn must settle immediately.");
     },
   } satisfies Parameters<typeof callSharedTool>[0];
-  const follow = (cursor?: string, afterPage?: () => Promise<unknown>) =>
+  const follow = (
+    cursor?: string,
+    hooks?: { beforePage?: () => Promise<unknown>; afterPage?: () => Promise<unknown> },
+  ) =>
     readLogs(
       {
         logs: async (actor, id) => {
@@ -1698,8 +1701,9 @@ test("enrolled Modal launch jobs report and settle turns from the runtime journa
             provider: {
               ...provider,
               async events(request) {
+                await hooks?.beforePage?.();
                 const page = await provider.events(request);
-                await afterPage?.();
+                await hooks?.afterPage?.();
                 return page;
               },
             },
@@ -1762,7 +1766,10 @@ test("enrolled Modal launch jobs report and settle turns from the runtime journa
   expect(await follow(active.cursor!)).toMatchObject({ events: [], settled: false });
   await expect(report()).rejects.toMatchObject({ code: "conflict" });
 
-  expect(await follow(active.cursor!, () => append(2, "finished"))).toMatchObject({ events: [], settled: false });
+  expect(await follow(active.cursor!, { afterPage: () => append(2, "finished") })).toMatchObject({
+    events: [],
+    settled: false,
+  });
   expect(await callSharedTool(context, "wait", { id, prompt_id: publicPromptId })).toMatchObject({
     id,
     providerState: null,
@@ -1780,6 +1787,12 @@ test("enrolled Modal launch jobs report and settle turns from the runtime journa
     settled: true,
   });
   expect(await follow(active.cursor!)).toMatchObject({ events: [{ status: "finished" }], settled: true });
+  await expect(
+    follow(active.cursor!, {
+      beforePage: () =>
+        f.db.query("update sandboxes set lifecycle_generation=lifecycle_generation+1 where id=$1", [id]),
+    }),
+  ).rejects.toMatchObject({ code: "conflict" });
 });
 
 test("Modal read ownership survives a generation advance before the launch receipt settles", async () => {
