@@ -238,6 +238,65 @@ test("Modal backfill preserves accepted, refused and unresolved ordinary keys wi
   expect(await createModalJobReader(sql, launchEncryptionKey)(sandbox, caller)).toBeNull();
 });
 
+test("Modal backfill refuses unresolved predecessor allocations before archiving ordinary keys", async () => {
+  const { db, input } = await modalAdmissionFixture();
+  const { orgId, ownerId } = input;
+  const backfill = () =>
+    db.transaction(async (tx) => {
+      await tx.exec("set local role service_role");
+      return tx.query("select public.backfill_modal_launch_receipts()::int as verified");
+    });
+  await db.query(
+    `insert into ordinary_launch_receipts (id, org_id, owner_id, request_key, fingerprint)
+     values ($1,$2,$3,'historical-cutover-launch-key','historical-digest')`,
+    [crypto.randomUUID(), orgId, ownerId],
+  );
+  const { rows: reservations } = await db.query<{ id: string; client_key: string }>(
+    `with template as (
+       insert into launch_templates(org_id,owner_id,scope,name)
+       values($1,$2,'personal','pending-cutover') returning id
+     ), revision as (
+       insert into launch_template_revisions(template_id,revision,definition,digest,created_by)
+       select id,1,'{}',repeat('a',64),$2 from template returning id,template_id
+     )
+     insert into template_launch_requests(org_id,actor_id,client_key,digest,template_id,revision_id,manifest,sandbox_id)
+     select $1,$2,source.provider,repeat('a',64),template_id,id,
+       jsonb_build_object('golden',jsonb_build_object('provider',source.provider)),gen_random_uuid()
+     from revision cross join (values ('modal'), ('boat')) as source(provider)
+     returning id,client_key`,
+    [orgId, ownerId],
+  );
+  const modal = reservations.find((row) => row.client_key === "modal")!;
+  for (const [index, state] of ["claimed", "allocating", "reconciling"].entries()) {
+    if (index) await db.query("update template_launch_requests set state=$2 where id=$1", [modal.id, state]);
+    await expect(backfill()).rejects.toThrow("unresolved Modal predecessor work");
+  }
+  await db.query("update template_launch_requests set state='failed' where id=$1", [modal.id]);
+
+  const {
+    rows: [boatGolden],
+  } = await db.query<{ id: string }>("select id from goldens where owner_id=$1 and provider='boat'", [ownerId]);
+  await db.query(
+    `insert into ordinary_launch_snapshot_intents (sandbox_id,golden_id,provider,snapshot_id)
+     values ($1,$2,'modal','snapshot'), ($3,$4,'boat','boat-snapshot')`,
+    [crypto.randomUUID(), input.sandbox.goldenId, crypto.randomUUID(), boatGolden!.id],
+  );
+  await expect(backfill()).rejects.toThrow("unresolved Modal predecessor work");
+  expect((await db.query("select id from jobs")).rows).toEqual([]);
+  await db.query("delete from ordinary_launch_snapshot_intents where provider='modal'");
+  expect((await backfill()).rows).toEqual([{ verified: 1 }]);
+});
+
+test("Modal backfill refuses fixed transaction snapshots", async () => {
+  const { db } = await fixture();
+  await expect(
+    db.transaction(async (tx) => {
+      await tx.exec("set transaction isolation level repeatable read");
+      return tx.query("select public.backfill_modal_launch_receipts()");
+    }),
+  ).rejects.toThrow("Modal receipt backfill requires read committed isolation");
+});
+
 test("Modal backfill rolls back when a destination key belongs to a different receipt", async () => {
   const { db, sql, input } = await modalAdmissionFixture();
   await admitModalLaunch(sql, launchEncryptionKey, {
