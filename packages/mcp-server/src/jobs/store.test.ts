@@ -1771,6 +1771,16 @@ test("enrolled Modal launch jobs report and settle turns from the runtime journa
   });
   expect(await follow(active.cursor!)).toMatchObject({ events: [{ status: "finished" }], settled: true });
   expect(await report()).toMatchObject({ id, taskOutcome: { state: "ready" } });
+
+  // Lifecycle operations advance the sandbox fence without moving its launch receipt.
+  await f.db.query("update sandboxes set lifecycle_generation=lifecycle_generation+1 where id=$1", [id]);
+  expect(await callSharedTool(context, "wait", { id, prompt_id: publicPromptId })).toMatchObject({
+    id,
+    providerState: null,
+    prompt: { promptId: publicPromptId, state: "finished" },
+    settled: true,
+  });
+  expect(await follow(active.cursor!)).toMatchObject({ events: [{ status: "finished" }], settled: true });
 });
 
 async function failedModalLaunchFixture() {
