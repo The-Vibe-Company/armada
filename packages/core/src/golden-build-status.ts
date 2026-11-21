@@ -1,4 +1,5 @@
 import type { GoldenBuildWarning } from "./golden-build-warning.ts";
+import { isSandboxProvider, SANDBOX_PLACEMENT_LABELS } from "./sandbox-provider.ts";
 export interface GoldenBuildStatus {
   jobId: string;
   /** Provider of the admitted immutable target; absent only in older server replies. */
@@ -13,8 +14,8 @@ export interface GoldenBuildStatus {
 
 /** Closed provider names only; never interpolate an upstream error payload. */
 export function providerPaymentRequiredMessage(provider?: "boat" | "modal"): string {
-  const name = provider === "boat" ? "Boat" : provider === "modal" ? "Modal" : "the provider";
-  return `The ${name === "the provider" ? "provider" : name} account cannot create machines: add billing or credits on ${name}, then retry.`;
+  const name = isSandboxProvider(provider) ? SANDBOX_PLACEMENT_LABELS[provider] : undefined;
+  return `The ${name ?? "provider"} account cannot create machines: add billing or credits on ${name ?? "the provider"}, then retry.`;
 }
 
 /** Recovery retains capacity, so never advise a retry until the build is failed. */
