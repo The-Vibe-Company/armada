@@ -17,6 +17,7 @@ import { releaseAccountCapacity } from "./account-capacity.ts";
 import { isDockerPromptRefusal } from "./docker-prompt-refusal.ts";
 import type { Job } from "./jobs/runner.ts";
 import { mergedWorkProof } from "./merged-work.ts";
+import { withdrawExpiredModalDrainLease } from "./modal-drain-journal.ts";
 import { nativeIdleDue, nativeQuiescent } from "./native-idle.ts";
 import { LIVE_OUTPUT_CANDIDATE } from "./output-transfers.ts";
 import { recordNativeIdleTurn } from "./runtime-idle-evidence.ts";
@@ -978,19 +979,22 @@ export async function requestNativeDrainStop(
 
 export async function fencePreservedModalDrainIncarnation(tx: Sql, id: string, pending: boolean) {
   // WARNING: The journal lock must not wait while holding the sandbox lock because Modal ingest takes them in reverse order.
-  const { rows } = await tx.query<{ eligible: boolean }>(
+  const { rows } = await tx.query<{ eligible: boolean; scope: string; id: string; lease_id: string | null }>(
     `with journal as materialized (
-       select m.owner_id,m.record,m.lease_id,m.lease_until
+       select m.scope,m.id,m.owner_id,m.record,m.lease_id,m.lease_until
        from public.modal_machines m join public.sandboxes s
          on m.org_id=s.org_id and m.id=s.provider_sandbox_id
        where s.id=$1
        for update of m nowait
      )
-     select (
+     select j.scope,j.id,j.lease_id,(
        j.owner_id=s.owner_id
        and j.record->>'commonRuntime' is distinct from 'true'
        and case when $2 then j.record->>'phase' in ('stopped','deleting','deleted')
-         else j.record->>'phase'='stopped' and j.lease_id is null and j.lease_until is null end
+         else j.record->>'phase'='stopped' and (
+           (j.lease_id is null and j.lease_until is null)
+           or (j.lease_id is not null and j.lease_until<=clock_timestamp())
+         ) end
        and exists (
          select 1 from public.sandbox_native_preservation_receipts r
          where r.sandbox_id=s.id and ($2 or r.generation=s.lifecycle_generation)
@@ -1003,8 +1007,11 @@ export async function fencePreservedModalDrainIncarnation(tx: Sql, id: string, p
      from journal j cross join public.sandboxes s where s.id=$1`,
     [id, pending],
   );
-  if (rows.length !== 1 || rows[0]?.eligible !== true) return false;
-  if (!pending)
+  const [journal] = rows;
+  if (rows.length !== 1 || journal?.eligible !== true) return false;
+  if (!pending) {
+    // WARNING: A save started before expiry can still match unless admission withdraws the token under this lock.
+    if (journal.lease_id && !(await withdrawExpiredModalDrainLease(tx, journal, journal.lease_id))) return false;
     await tx.query(
       `update public.sandbox_native_preservation_receipts
        set capture_acknowledgements=jsonb_set(capture_acknowledgements,
@@ -1012,6 +1019,7 @@ export async function fencePreservedModalDrainIncarnation(tx: Sql, id: string, p
        where sandbox_id=$1`,
       [id],
     );
+  }
   return true;
 }
 
