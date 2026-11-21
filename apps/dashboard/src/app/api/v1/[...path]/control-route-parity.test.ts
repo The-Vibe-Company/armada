@@ -31,7 +31,6 @@ test("user POST operations reach the dashboard proxy and direct-server POSTs sta
       expect(forwarded, route.path).toEqual(direct ? [] : [`https://control.test${route.path}`]);
     }
 
-    // The host daemon polls outside the user operation catalog and the /api/v1 namespace.
     const response = await forwardControl(
       new Request("https://dashboard.test/api/v1/docker-host/poll", {
         method: "POST",
@@ -62,7 +61,7 @@ test("CLI MCP subcommands reach the dashboard proxy", async () => {
         rename: [id, "fixture"],
         default: [id, "on"],
       };
-      const forwarded: string[] = [];
+      let forwarded = 0;
       await operation(
         "mcp",
         [action, ...(parameters[action] ?? [id]), "--org", id],
@@ -76,15 +75,17 @@ test("CLI MCP subcommands reach the dashboard proxy", async () => {
           fetch: (input, init) => {
             const request = new Request(input, init);
             const path = new URL(request.url).pathname;
-            return forwardControl(request, path.slice("/api/v1/".length).split("/"), async (target) => {
-              forwarded.push(target.href);
+            expect(request.method, command).toBe("POST");
+            expect(path, command).toStartWith("/api/v1/");
+            return forwardControl(request, path.slice("/api/v1/".length).split("/"), async () => {
+              forwarded++;
               return Response.json({ connection: { id, status: "connected" } });
             });
           },
         },
         async () => "{}",
       );
-      expect(forwarded.length, command).toBeGreaterThan(0);
+      expect(forwarded, command).toBeGreaterThan(0);
     }
   } finally {
     if (previous === undefined) delete process.env.ARMADA_MCP_URL;
