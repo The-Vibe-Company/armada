@@ -426,18 +426,13 @@ export function createAccountTurnQueue(sql: Sql, key: string) {
     setDispatch(value: NonNullable<typeof dispatch>) {
       dispatch = value;
     },
+    backfillDispatchJobs,
     async drain() {
       await Promise.allSettled([...pending]);
     },
     async reconcileOne(signal: AbortSignal) {
       if (!dispatch || pending.size >= 32 || signal.aborted) return false;
       if (!sql.transaction) throw new VaultError("unavailable", "Transactional account admission unavailable.");
-      try {
-        await backfillDispatchJobs(signal);
-      } catch {
-        console.error("armada: queued turn job backfill unavailable; existing dispatch continues.");
-      }
-      if (signal.aborted) return false;
       const picked = await (async () => {
         // Older replicas could leave a queued receipt after publishing its request.
         // Never replay it (especially on native providers without idempotency).
