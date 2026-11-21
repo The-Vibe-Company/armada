@@ -2396,69 +2396,94 @@ test.each([
   },
 );
 
-test.each(["manifest refresh", "final credential recheck"] as const)(
-  "a transient %s leaves the last Modal bootstrap replay attempt available",
-  async (failure) => {
-    const { f, id, jobId, makeRunner, effects, activeRuntime } = await modalLaunchFixture(
-      await modalAdmissionFixture(),
-    );
-    await f.db.query("update jobs set max_attempts=2 where id=$1", [jobId]);
-    const interrupted = makeRunner((step) => {
-      if (step === "bootstrap dispatch") throw new Error("Worker lost before calling Modal");
-    });
-    expect(await interrupted.reconcileOne(signal)).toBe(true);
-    await interrupted.drain();
-    await f.db.query("update jobs set lease_until='-infinity' where id=$1", [jobId]);
+test.each([
+  "initial enrolment read",
+  "initial dispatch check",
+  "manifest refresh",
+  "final credential recheck",
+  "deferred enrolment read",
+  "deferred target read",
+] as const)("a transient %s leaves the last Modal bootstrap replay attempt available", async (failure) => {
+  const { f, id, jobId, makeRunner, effects, activeRuntime } = await modalLaunchFixture(await modalAdmissionFixture());
+  await f.db.query("update jobs set max_attempts=2 where id=$1", [jobId]);
+  const interrupted = makeRunner((step) => {
+    if (step === "bootstrap dispatch") throw new Error("Worker lost before calling Modal");
+  });
+  expect(await interrupted.reconcileOne(signal)).toBe(true);
+  await interrupted.drain();
+  await f.db.query("update jobs set lease_until='-infinity' where id=$1", [jobId]);
 
-    let refreshedManifest = false;
-    let injected = false;
-    const transientFailure = () => {
-      injected = true;
-      throw new Error("Replay preparation temporarily unavailable");
-    };
-    const faultySql = {
-      ...f.sql,
-      async transaction(work) {
-        let updatedManifest = false;
-        const result = await f.sql.transaction!((tx) =>
-          work({
-            ...tx,
-            async query<T>(query: string, params?: unknown[]) {
-              const rows = await tx.query<T>(query, params);
-              if (query.includes("update public.runtime_enrolments set configuration_enc=")) {
-                updatedManifest = true;
-                if (failure === "manifest refresh") transientFailure();
-              }
-              return rows;
-            },
-          }),
-        );
-        refreshedManifest ||= updatedManifest;
-        return result;
-      },
-    } satisfies Sql;
-    const replacement = makeRunner((step) => {
-      if (step === "dispatch credential" && refreshedManifest && failure === "final credential recheck")
+  let refreshedManifest = false;
+  let readInitialEnrolment = false;
+  let deferredDispatch = false;
+  let injected = false;
+  const transientFailure = () => {
+    injected = true;
+    throw new Error("Replay preparation temporarily unavailable");
+  };
+  const faultySql = {
+    ...f.sql,
+    async query<T>(query: string, params?: unknown[]) {
+      if (
+        failure === "initial dispatch check" &&
+        readInitialEnrolment &&
+        !injected &&
+        query.includes("else 'dispatch' end as state")
+      )
         transientFailure();
-    }, faultySql);
-    expect(await replacement.reconcileOne(signal)).toBe(true);
-    await replacement.drain();
-    expect(injected).toBe(true);
-    expect(effects().bootstrapped).toEqual([]);
-    expect((await f.db.query("select state,attempts from jobs where id=$1", [jobId])).rows).toEqual([
-      { state: "queued", attempts: 1 },
-    ]);
+      return f.sql.query<T>(query, params);
+    },
+    async transaction(work) {
+      let updatedManifest = false;
+      const result = await f.sql.transaction!((tx) =>
+        work({
+          ...tx,
+          async query<T>(query: string, params?: unknown[]) {
+            if (query.includes("as cancel_without_provider")) {
+              if (!readInitialEnrolment && failure === "initial enrolment read") transientFailure();
+              if (deferredDispatch && failure === "deferred enrolment read") transientFailure();
+              readInitialEnrolment = true;
+            }
+            if (deferredDispatch && failure === "deferred target read" && query.includes("as journaled_id"))
+              transientFailure();
+            const rows = await tx.query<T>(query, params);
+            if (query.includes("update public.runtime_enrolments set configuration_enc=")) {
+              updatedManifest = true;
+              if (failure === "manifest refresh") transientFailure();
+            }
+            return rows;
+          },
+        }),
+      );
+      refreshedManifest ||= updatedManifest;
+      return result;
+    },
+  } satisfies Sql;
+  const replacement = makeRunner((step) => {
+    if (step !== "dispatch credential" || !refreshedManifest) return;
+    if (failure === "final credential recheck") transientFailure();
+    if (failure === "deferred enrolment read" || failure === "deferred target read") {
+      deferredDispatch = true;
+      throw new Error("Final credential read temporarily unavailable");
+    }
+  }, faultySql);
+  expect(await replacement.reconcileOne(signal)).toBe(true);
+  await replacement.drain();
+  expect(injected).toBe(true);
+  expect(effects().bootstrapped).toEqual([]);
+  expect((await f.db.query("select state,attempts from jobs where id=$1", [jobId])).rows).toEqual([
+    { state: "queued", attempts: 1 },
+  ]);
 
-    await f.db.query("update jobs set run_after='-infinity' where id=$1", [jobId]);
-    const manifest = modalTestArtifactManifest("b");
-    const successor = makeRunner(undefined, f.sql, true, manifest);
-    expect(await successor.reconcileOne(signal)).toBe(true);
-    await successor.drain();
-    expect(effects()).toMatchObject({ allocations: 1, bootstrapped: ["physical"] });
-    expect(activeRuntime().configuration).toMatchObject({ artifactManifest: manifest });
-    expect((await f.db.query("select status from sandboxes where id=$1", [id])).rows).toEqual([{ status: "ready" }]);
-  },
-);
+  await f.db.query("update jobs set run_after='-infinity' where id=$1", [jobId]);
+  const manifest = modalTestArtifactManifest("b");
+  const successor = makeRunner(undefined, f.sql, true, manifest);
+  expect(await successor.reconcileOne(signal)).toBe(true);
+  await successor.drain();
+  expect(effects()).toMatchObject({ allocations: 1, bootstrapped: ["physical"] });
+  expect(activeRuntime().configuration).toMatchObject({ artifactManifest: manifest });
+  expect((await f.db.query("select status from sandboxes where id=$1", [id])).rows).toEqual([{ status: "ready" }]);
+});
 
 test("an unreadable Modal bootstrap replay ticket still consumes the dispatch attempt", async () => {
   const { f, jobId, makeRunner, effects } = await modalLaunchFixture(await modalAdmissionFixture());
