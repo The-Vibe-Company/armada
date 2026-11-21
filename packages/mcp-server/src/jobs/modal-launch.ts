@@ -327,6 +327,7 @@ export async function runFailedModalLaunchDelete(
     !payload ||
     typeof payload !== "object" ||
     !("launchJobId" in payload) ||
+    typeof payload.launchJobId !== "string" ||
     !z.uuid().safeParse(payload.launchJobId).success ||
     !("machineId" in payload) ||
     (payload.machineId !== null && typeof payload.machineId !== "string")
