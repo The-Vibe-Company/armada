@@ -61,7 +61,7 @@ export const CONFIRMED_WAKE_WITHOUT_TICKET = `(
       and r.phase='dispatched' and r.receipt is null and r.activated_at is not null
       and e.runtime_hash is null and e.enrolment_hash is null and e.lifecycle_generation<s.lifecycle_generation
   ))`;
-export const CURRENT_DOCKER_RESUME_JOB = `(s.provider = 'docker' and exists(
+const dockerResumeJob = (outcome: string) => `(s.provider = 'docker' and exists(
   select 1 from public.docker_resume_claims c
   join public.docker_host_jobs h_job on h_job.request_id = c.request_id
     and h_job.bound_sandbox_id = c.sandbox_id and h_job.bound_actor_id = c.actor_id and h_job.host_id = c.host_id
@@ -75,11 +75,17 @@ export const CURRENT_DOCKER_RESUME_JOB = `(s.provider = 'docker' and exists(
     and c.lifecycle_generation = q.dispatch_generation and c.lifecycle_generation + 1 = s.lifecycle_generation
     and h_job.bound_operation = 'resume' and h_job.bound_actor_epoch = a.epoch
     and h_job.cancelled_at is null and h_job.refused_resume_generation is null
-    and (h_job.outcome = 'completed' or (h_job.outcome is null and s.status = 'starting'))
+    and (${outcome})
     and h.hash is not null and h.registration_hash is null and h.revoked_at is null
     and not exists(select 1 from public.runtime_commands p
       where p.sandbox_id = s.id and p.request_id = 'docker_prompt_' || q.request_id::text)
 ))`;
+
+export const CURRENT_DOCKER_RESUME_JOB = dockerResumeJob(
+  "h_job.outcome = 'completed' or (h_job.outcome is null and s.status = 'starting')",
+);
+export const PENDING_READY_DOCKER_RESUME_ACK = `(s.status in ('ready','running')
+  and s.activity_lease_id is null and ${dockerResumeJob("h_job.outcome is null")})`;
 
 export const DOCKER_RESUME_WITHOUT_DISPATCH_DEADLINE = `(q.state='dispatching'
   and q.dispatch_until is null and s.status in ('ready','running')
