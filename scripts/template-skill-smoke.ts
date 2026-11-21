@@ -201,6 +201,7 @@ export async function runTemplateSkillCase(item: TemplateSkillCase, io: Template
         provider?: string;
         manifest?: { skillReceipts?: unknown };
       };
+      let recovered = false;
       const result = await io.step(`${label}_launch`, () =>
         io.trackLaunch<LaunchReceipt>(async (submit, claim) => {
           record.launchAttempted = true;
@@ -217,10 +218,11 @@ export async function runTemplateSkillCase(item: TemplateSkillCase, io: Template
             prompt: `Read the environment variable ${key} using your terminal tool. Reply with only its exact value, with no formatting or other text. Do not modify files.`,
           };
           const timeout = io.launchTimeout(`${label}_launch`);
-          async function observeAllocation(expectedId?: string) {
+          async function observeLaunch(requirePrompt: boolean) {
             if (item.provider !== "modal") return;
             const until = Math.min(io.deadline, io.now() + timeout);
-            await observeSmokeLaunch(until, io, async (remaining) => {
+            let claimed = false;
+            return observeSmokeLaunch(until, io, async (remaining) => {
               const inventory = await io
                 .request<{ sandboxes: { id: string; provider: string; externalRef: string }[] }>(
                   "sandbox/list",
@@ -237,13 +239,39 @@ export async function runTemplateSkillCase(item: TemplateSkillCase, io: Template
                 sandboxes?.length === 1 &&
                 sandbox?.provider === item.provider &&
                 sandbox.externalRef === record.requestKey &&
-                (expectedId === undefined || sandbox.id === expectedId) &&
+                (record.sandboxId === undefined || sandbox.id === record.sandboxId) &&
                 /^[a-f0-9]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(sandbox.id)
               ) {
-                record.sandboxId = sandbox.id;
-                claim(sandbox.id);
-                await io.recordSandbox?.(sandbox.id, record.requestKey);
-                return sandbox.id;
+                if (!claimed) {
+                  claimed = true;
+                  record.sandboxId = sandbox.id;
+                  claim(sandbox.id);
+                  await io.recordSandbox?.(sandbox.id, record.requestKey);
+                }
+                const left = until - io.now();
+                if (!requirePrompt) return { id: sandbox.id, provider: sandbox.provider, promptId: undefined };
+                if (left <= 0) return;
+                // The launch was the only operation that could submit a turn to this new sandbox.
+                const status = await api<{
+                  id: string;
+                  externalRef?: string;
+                  status: string;
+                  prompt?: { promptId?: string; state?: string } | null;
+                }>("sandbox/status", { id: sandbox.id }, Math.min(5_000, left)).catch((error: unknown) => {
+                  if (io.isAmbiguousLaunch(error)) return undefined;
+                  throw error;
+                });
+                const promptId = status?.prompt?.promptId;
+                if (
+                  status?.id === sandbox.id &&
+                  status.externalRef === record.requestKey &&
+                  ["ready", "running"].includes(status.status) &&
+                  typeof promptId === "string" &&
+                  promptId &&
+                  ["running", "finished", "failed", "interrupted"].includes(status.prompt?.state ?? "")
+                ) {
+                  return { id: sandbox.id, provider: sandbox.provider, promptId };
+                }
               }
             });
           }
@@ -251,14 +279,25 @@ export async function runTemplateSkillCase(item: TemplateSkillCase, io: Template
           try {
             result = await submit(body, timeout);
           } catch (error) {
-            if (io.isAmbiguousLaunch(error)) await observeAllocation();
-            throw error;
+            if (!io.isAmbiguousLaunch(error)) throw error;
+            const observed = await observeLaunch(true);
+            if (!observed?.promptId) throw error;
+            record.uncertain = false;
+            recovered = true;
+            return { ...observed, state: "succeeded" };
           }
           if (typeof result?.id === "string" && result.id) record.sandboxId = result.id;
           if (typeof result?.requestId === "string" && /^[A-Za-z0-9._:-]{1,128}$/.test(result.requestId))
             record.requestId = result.requestId;
           record.uncertain = result?.state !== "failed" && (result?.state !== "succeeded" || !record.sandboxId);
-          if (record.uncertain) await observeAllocation(record.sandboxId);
+          if (record.uncertain) {
+            const observed = await observeLaunch(["claimed", "allocating", "reconciling"].includes(result?.state));
+            if (observed?.promptId) {
+              record.uncertain = false;
+              recovered = true;
+              return { ...observed, state: "succeeded" };
+            }
+          }
           if (result?.state !== "succeeded") launchFailure(result?.state, result?.reason);
           if (
             typeof result.id !== "string" ||
@@ -273,9 +312,10 @@ export async function runTemplateSkillCase(item: TemplateSkillCase, io: Template
       );
       if (pin)
         await io.measuredStep(`${kind}_skill_receipt`, async () => {
-          verifyReceipts(result.manifest?.skillReceipts, [pin]);
+          if (!recovered) verifyReceipts(result.manifest?.skillReceipts, [pin]);
           const status = await api<{ skills?: unknown }>("sandbox/status", { id: record.sandboxId });
           verifyReceipts(status.skills, [pin]);
+          if (recovered) return;
           for (const field of ["reference", "version", "skillId", "checksum", "origin"] as const)
             if (result.manifest!.skillReceipts[0]?.[field] !== status.skills[0]?.[field]) fail("invalid_receipt");
         });
