@@ -997,6 +997,7 @@ test.each([
   "verified replacement",
   "failed admission",
   "failed publication",
+  "expired activity",
 ])("native steer handoff checks dispatch evidence after %s", async (outcome) => {
   const boat = fakeBoat();
   const machine = await boat.provider.fork({
@@ -1017,7 +1018,9 @@ test.each([
         harness: "codex",
         text: "edit workspace",
       });
-      if (outcome === "lost reply") throw new Error("Lost steer response");
+      if (outcome === "lost reply" && boat.prompts.length === 1) throw new Error("Lost steer response");
+      if (outcome === "expired activity")
+        await db.query("update sandboxes set activity_until=now()-interval '1 second' where id=$1", [sandboxId]);
       return {
         ...replacement,
         promptId: outcome === "unverified history fallback" ? "unverified-steer-id" : replacement.promptId,
@@ -1048,6 +1051,18 @@ test.each([
     expect(published.rows).toEqual([{ task_prompt_id: "prompt_1" }]);
   } else {
     expect(reply.isError).toBe(true);
+  }
+  if (outcome === "failed admission") {
+    const row = await db.query(
+      "select lifecycle_generation,activity_lease_id,task_prompt_id from sandboxes where id=$1",
+      [sandboxId],
+    );
+    expect(row.rows).toEqual([{ lifecycle_generation: 1, activity_lease_id: null, task_prompt_id: "previous" }]);
+  }
+  if (outcome === "lost reply") {
+    await db.query("update sandboxes set activity_until=now()-interval '1 second' where id=$1", [sandboxId]);
+    const later = await invoke("steer", { id: sandboxId, text: "inspect workspace" });
+    expect(later.structuredContent).toMatchObject({ promptId: "prompt_2" });
   }
   await db.query("update native_webhook_prompts set completed_at=now() where sandbox_id=$1", [sandboxId]);
   const handoff = await handoffWithLaterCleanCapture(sandboxId);
