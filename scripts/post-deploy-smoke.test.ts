@@ -2703,7 +2703,16 @@ test("GitHub refresh accepts the runtime receipt after proving launch access", a
         })
       : undefined,
   );
-  expect(await fake.run([selected], ["--github-refresh"])).toBe(true);
+  const timeout = spyOn(AbortSignal, "timeout");
+  try {
+    expect(await fake.run([selected], ["--github-refresh"])).toBe(true);
+    const signal = fake.calls.find((call) => call.path === "github/refresh")?.init.signal;
+    const timeoutIndex = timeout.mock.results.findIndex((result) => result.value === signal);
+    const budgets: Partial<Record<string, number>> = deadlines;
+    expect(timeout.mock.calls[timeoutIndex]?.[0]).toBe(budgets.github_refresh ?? 120_000);
+  } finally {
+    timeout.mockRestore();
+  }
   expect(fake.calls.filter((call) => call.path === "sandbox/launch")).toHaveLength(1);
   expect(fake.calls.filter((call) => call.path === "sandbox/send")).toHaveLength(2);
   expect(fake.calls.filter((call) => call.path === "github/refresh")).toHaveLength(1);
