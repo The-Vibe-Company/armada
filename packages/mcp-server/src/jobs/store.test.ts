@@ -398,6 +398,7 @@ test.each(["active secret", "revoked secret", "changed snapshot", "changed conne
             secrets: [{ key: "APP_TOKEN", secretId: secret!.id, version: 1 }],
           },
           connections: [{ id: connectionId, version: 1, generation: 1 }],
+          resolvedSkills: ["example/tool@1.0.0"],
           variables: {},
         },
         crypto.randomUUID(),
@@ -434,6 +435,8 @@ test.each(["active secret", "revoked secret", "changed snapshot", "changed conne
     const accepted = { sandbox: { id: sandboxId, status: "starting" } } as const;
     expect(await admit()).toEqual(accepted);
     expect(await admit()).toEqual(accepted);
+    const setup = await createJobsStore(sql, launchEncryptionKey).claim(MODAL_INITIAL_TURN, crypto.randomUUID(), 30, 1);
+    expect(setup?.payload).toMatchObject({ skills: ["example/tool@1.0.0"] });
     expect((await db.query("select sandbox_id,connection_id from mcp_bindings")).rows).toEqual([
       { sandbox_id: sandboxId, connection_id: connectionId },
     ]);
@@ -496,6 +499,7 @@ test("Modal admission commits an unbound sandbox, scoped job and encrypted turn 
     launchJobId: job!.id,
     prompt: input.initialPrompt,
     workspace: workspaceConfig,
+    skills: [],
   });
 });
 
@@ -1025,6 +1029,95 @@ test("a replacement Modal setup claimant replays workspace commands before admit
   expect(await turns()).toHaveLength(1);
 });
 
+test("Modal setup recovers private skill installation after credential rotation", async () => {
+  const admission = await modalAdmissionFixture();
+  const reference = "tool@1.0.0";
+  admission.input.resolvedSkills = [reference];
+  admission.input.sandbox.repositoryDir = "workspace";
+  const { f, id, makeRunner, activeRuntime } = await modalLaunchFixture(admission);
+  const { db, people, sql } = f;
+  const launch = makeRunner();
+  expect(await launch.reconcileOne(signal)).toBe(true);
+  await launch.drain();
+
+  const { runtimeToken, epoch } = activeRuntime();
+  const authority = createRuntimeEnrolments(sql, launchEncryptionKey);
+  const queue = createAccountTurnQueue(sql, launchEncryptionKey);
+  const turns = async () =>
+    (await db.query("select request_id from account_turn_queue where sandbox_id=$1", [id])).rows;
+  const receipts = [
+    {
+      reference,
+      version: "1.0.0",
+      skillId: crypto.randomUUID(),
+      workspaceId: crypto.randomUUID(),
+      checksum: `sha256:${"a".repeat(64)}`,
+      origin: "https://skillpack.app/v1",
+    },
+  ];
+  const initialKey = ["cmp", "pat", "a".repeat(48)].join("_");
+  const admittedKey = ["cmp", "pat", "b".repeat(48)].join("_");
+  const rotateKey = async (key: string) => {
+    await db.query("update credentials set value_enc=$1 where owner_id=$2 and kind='skillpack'", [
+      await encryptSecret(key, launchEncryptionKey),
+      people.owner,
+    ]);
+  };
+  await db.query("insert into credentials(scope,owner_id,kind,value_enc) values('user',$1,'skillpack',$2)", [
+    people.owner,
+    await encryptSecret(initialKey, launchEncryptionKey),
+  ]);
+  const installs: string[] = [];
+  const runSetup = async (interrupt: boolean) => {
+    const bridge = createRuntimeCommands(authority, launchEncryptionKey, {
+      now: () => 0,
+      async wait() {
+        const { command } = await bridge.next(runtimeToken, epoch);
+        if (!command) throw Error("Expected a runtime command.");
+        let result: unknown = { detached: false, exitCode: 0, stdout: "", stderr: "" };
+        if (command.op === "health") {
+          if (interrupt && command.requestId.startsWith("skills_")) await rotateKey(admittedKey);
+          result = { ready: true, generation: epoch, workspaceVersion: 1, skillsVersion: 1 };
+        }
+        if (command.op === "installSkills") {
+          expect(command.input.references).toEqual([reference]);
+          expect(command.input.cwd).toBe("/home/user/workspace");
+          expect(command.input.key === admittedKey).toBe(true);
+          installs.push(command.requestId);
+          expect(await turns()).toEqual([]);
+          if (interrupt) throw Error("Worker lost after skill command admission.");
+          result = { receipts };
+        }
+        await bridge.complete(runtimeToken, epoch, {
+          epoch,
+          requestId: command.requestId,
+          status: 200,
+          body: { version: 1, requestId: command.requestId, result },
+        });
+      },
+    });
+    const lane = await modalFirstTurnLane(f, queue, bridge, undefined, {
+      async prepare() {
+        expect((await db.query("select skills from sandboxes where id=$1", [id])).rows).toEqual([{ skills: receipts }]);
+        expect(await turns()).toEqual([]);
+        return undefined;
+      },
+    });
+    expect(await lane.reconcileOne(signal)).toBe(true);
+    await lane.drain();
+  };
+
+  await runSetup(true);
+  expect(installs).toHaveLength(1);
+  expect(await turns()).toEqual([]);
+  await rotateKey(["cmp", "pat", "c".repeat(48)].join("_"));
+  await db.query("update jobs set lease_until='-infinity' where sandbox_id=$1 and kind=$2", [id, MODAL_INITIAL_TURN]);
+
+  await runSetup(false);
+  expect(installs).toEqual([installs[0]!, installs[0]!]);
+  expect(await turns()).toHaveLength(1);
+});
+
 test("a replacement Modal setup claimant completes the admitted MCP revision before queueing the first turn", async () => {
   const { f, id, makeRunner, activeRuntime } = await modalLaunchFixture(await modalAdmissionFixture());
   const launch = makeRunner();
@@ -1164,6 +1257,7 @@ test.each(["acknowledgement lost", "promptless takeover", "secret revoked", "san
         {
           [MODAL_INITIAL_TURN]: createModalInitialTurnJob(
             sql,
+            launchEncryptionKey,
             queue,
             createGoldenRuntimeEnvironment(sql, launchEncryptionKey, { now: () => 0, wait }),
             fixtureWorkspaceCommands,

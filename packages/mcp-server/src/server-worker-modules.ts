@@ -108,6 +108,7 @@ const jobsLane: LaneFactory = ({
         ? {
             [MODAL_INITIAL_TURN]: createModalInitialTurnJob(
               sql,
+              config.encryptionKey,
               accountTurns,
               createGoldenRuntimeEnvironment(sql, config.encryptionKey),
               runtimeCommands,

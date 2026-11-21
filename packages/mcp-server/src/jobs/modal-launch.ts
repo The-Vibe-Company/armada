@@ -8,14 +8,18 @@ import {
   ProviderError,
   parseGoldenConfig,
   type SandboxStatus,
+  validateSkillPins,
 } from "@armada/core";
 import {
   assertLaunchSecretBindings,
+  createSqlSandboxStore,
+  createSqlVaultStore,
   GoldenError,
   LaunchError,
   type Machine,
   type MachineIdentity,
   type MachineIncarnation,
+  PrivateSkillError,
   type Sql,
   VaultError,
 } from "@armada/core/server";
@@ -24,11 +28,12 @@ import { z } from "zod";
 import type { AccountTurnQueue } from "../account-turn-queue.ts";
 import type { Caller } from "../caller.ts";
 import type { createGoldenRuntimeEnvironment } from "../golden-runtime-environment.ts";
+import { launchCredentials } from "../launch-credentials.ts";
 import { type OrdinaryLaunchFailure, replayOrdinaryLaunchFailure } from "../ordinary-launch-receipts.ts";
-import { createRuntimeAgent, workspaceCommandId } from "../runtime-agent.ts";
+import { runtimeAgentFor, workspaceCommandId } from "../runtime-agent.ts";
 import { RuntimeCommandRefused } from "../runtime-commands.ts";
 import type { RuntimeConfigurationTarget } from "../runtime-configuration.ts";
-import { createRuntimeEnrolments, type RuntimeTicketGuard } from "../runtime-enrolment.ts";
+import { createRuntimeEnrolments, type RuntimeTicketGuard, scopedRuntimeSql } from "../runtime-enrolment.ts";
 import type { RuntimeGitHub } from "../runtime-github.ts";
 import { pinnedMcpConnections, type RuntimeMcp } from "../runtime-mcp.ts";
 import { readRuntimeTemplateEnvironment } from "../runtime-readable-variables.ts";
@@ -55,6 +60,7 @@ export interface ModalLaunchAdmission {
   allocation: ModalLaunchAllocation & { source: { kind: "snapshot" } };
   initialPrompt?: string;
   connections?: string[];
+  resolvedSkills?: string[];
   deadline: Date;
   maxAttempts: number;
 }
@@ -77,9 +83,10 @@ async function lockPinnedModalReservation(sql: Sql, orgId: string, ownerId: stri
     frozen_golden: Pick<GoldenRecord, "id" | "providerSnapshotId" | "modal" | "config"> | null;
     sandbox_exists: boolean;
     frozen_connections: unknown;
+    frozen_skills: unknown;
   }>(
     `select r.id,r.sandbox_id,r.digest,r.state,t.scope as template_scope,r.manifest->'golden' as frozen_golden,
-            r.manifest->'connections' as frozen_connections,
+            r.manifest->'connections' as frozen_connections, r.manifest->'resolvedSkills' as frozen_skills,
             exists(select 1 from public.sandboxes s where s.id=r.sandbox_id) as sandbox_exists
      from public.template_launch_requests r
      join public.launch_templates t on t.id=r.template_id and t.org_id=r.org_id
@@ -267,13 +274,19 @@ export async function admitModalLaunch(
       } else {
         await bindLaunch(tx, actor, sandboxId, visibility, { requested: input.connections });
       }
+      const skills = reservation ? reservation.frozen_skills : (input.resolvedSkills ?? []);
+      try {
+        validateSkillPins(skills);
+      } catch {
+        throw new GoldenError(reservation ? "conflict" : "invalid_config", "Modal launch skill pins are invalid.");
+      }
       const workspace = parseGoldenConfig(reservation ? reservation.frozen_golden?.config : golden.config);
       await store.enqueue(
         MODAL_INITIAL_TURN,
         sandboxId,
         generation,
         sandboxId,
-        { launchJobId: jobId, prompt: input.initialPrompt, workspace },
+        { launchJobId: jobId, prompt: input.initialPrompt, workspace, skills },
         { orgId, maxAttempts: 3 },
         tx,
       );
@@ -288,19 +301,26 @@ export async function admitModalLaunch(
 
 export function createModalInitialTurnJob(
   sql: Sql,
+  encryptionKey: string,
   queue: Pick<AccountTurnQueue, "acceptInitialLaunch">,
   environment: Pick<ReturnType<typeof createGoldenRuntimeEnvironment>, "deliver">,
-  commands: Parameters<typeof createRuntimeAgent>[0],
+  commands: Parameters<typeof runtimeAgentFor>[0],
   prepareMcp: RuntimeMcp["prepare"],
   github?: Pick<RuntimeGitHub, "prepareLaunch">,
 ) {
+  const runtime = createRuntimeEnrolments(sql, encryptionKey);
   return {
     concurrency: 4,
     async run(job, context) {
       const sandboxId = job.sandbox_id;
       const generation = job.generation;
       const payload = z
-        .object({ launchJobId: z.string().uuid(), prompt: z.string().optional(), workspace: z.unknown() })
+        .object({
+          launchJobId: z.string().uuid(),
+          prompt: z.string().optional(),
+          workspace: z.unknown(),
+          skills: z.array(z.string()),
+        })
         .safeParse(job.payload);
       if (!sandboxId || !generation || !payload.success)
         return { status: "fail", reason: "invalid_modal_initial_turn" };
@@ -312,12 +332,13 @@ export function createModalInitialTurnJob(
         owner_id: string;
         role: MemberRole;
         provider_sandbox_id: string;
+        repository_dir: string | null;
         harness: Harness;
         state: string;
         epoch: string | null;
         accepted: boolean;
       }>(
-        `select s.org_id, s.owner_id, m.role, s.provider_sandbox_id, s.harness, launch.state, runtime.epoch::text as epoch,
+        `select s.org_id, s.owner_id, m.role, s.provider_sandbox_id, s.repository_dir, s.harness, launch.state, runtime.epoch::text as epoch,
                 exists(select 1 from public.account_turn_queue q
                        where q.sandbox_id=s.id and q.request_id=intent.id
                          and q.queued_generation=intent.generation and q.owner_id=s.owner_id and q.org_id=s.org_id
@@ -370,6 +391,47 @@ export function createModalInitialTurnJob(
         throw error;
       }
 
+      const { skills } = payload.data;
+      const needsSkillpackKey = skills.some((reference) => !reference.includes("/"));
+      const resolveSkillpackKey = async (tx: Sql) => {
+        const reader = {
+          ...createSqlVaultStore(tx),
+          async credentials(scope: "user" | "org", ownerId: string) {
+            const { rows } = await tx.query<{
+              status: string;
+              expiresAt: string | null;
+              valueEnc: Uint8Array<ArrayBuffer>;
+            }>(
+              `select status,expires_at as "expiresAt",value_enc as "valueEnc"
+               from public.credentials where scope=$1 and owner_id=$2 and kind='skillpack' for share`,
+              [scope, ownerId],
+            );
+            return rows.map((row) => ({ ...row, kind: "skillpack" as const }));
+          },
+        };
+        const key = await launchCredentials(reader, encryptionKey).skillpackKey?.(actor);
+        if (!key) throw new PrivateSkillError("skillpack_credential_missing", "credential");
+        return key;
+      };
+      const agent = runtimeAgentFor(
+        {
+          call: (owner, command, options) =>
+            commands.call(owner, command, {
+              ...options,
+              assertClaim,
+              ...(needsSkillpackKey && command.op === "installSkills" ? { resolveSkillpackKey } : {}),
+            }),
+        },
+        actor.userId,
+        {
+          id: sandboxId,
+          provider: "modal",
+          harness: target.harness,
+          repositoryDir: target.repository_dir,
+          providerSandboxId: target.provider_sandbox_id,
+        },
+        { model: "", reasoningEffort: "" },
+      );
       try {
         const config = parseModalLaunchWorkspace(payload.data);
         const workspaceStarted =
@@ -380,18 +442,6 @@ export function createModalInitialTurnJob(
               [sandboxId, epoch, workspaceCommandId(epoch, { phase: "repository", index: 0, attempt: 0 })],
             )
           ).rows.length > 0;
-        const agent = createRuntimeAgent(
-          { call: (owner, command, options) => commands.call(owner, command, { ...options, assertClaim }) },
-          {
-            provider: "modal",
-            harness: target.harness,
-            ownerId: actor.userId,
-            sandboxId,
-            providerSandboxId: target.provider_sandbox_id,
-            cwd: "/home/user",
-            defaults: { model: "", reasoningEffort: "" },
-          },
-        );
         const workspace = runtimeWorkspace(
           {
             actor,
@@ -418,6 +468,29 @@ export function createModalInitialTurnJob(
         )
           return { status: "fail", reason: "modal_initial_turn_workspace_refused" };
         throw error;
+      }
+
+      if (skills.length) {
+        try {
+          const receipts = await agent.installSkills(skills, null, epoch, context.signal, `skills_${job.id}_${epoch}`);
+          await runtime.withOwner(
+            sandboxId,
+            actor.userId,
+            async (tx, scope) => {
+              if (scope.epoch !== epoch) throw new GoldenError("conflict", "Modal setup runtime changed.");
+              await assertClaim(tx);
+              await createSqlSandboxStore(scopedRuntimeSql(tx)).recordSkills!(sandboxId, receipts);
+            },
+            generation,
+          );
+        } catch (error) {
+          if (
+            error instanceof PrivateSkillError ||
+            (error instanceof ProviderError && !error.details?.runtimeRequestId)
+          )
+            return { status: "fail", reason: "modal_initial_turn_skills_refused" };
+          throw error;
+        }
       }
 
       const caller: Caller = {
