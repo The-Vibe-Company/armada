@@ -869,7 +869,7 @@ async function seedNativeDrainReceipt(ciphertext = new Uint8Array([21, 34, 55]))
   return { db, people, sandboxId, archiveId, ciphertext, copy };
 }
 
-async function nativeExecFixture(provider: Provider, placement: string, onQuery?: (statement: string) => void) {
+async function nativeToolFixture(provider: Provider, placement: string, onQuery?: (statement: string) => void) {
   const { db, people, sharedGoldenId, modalGoldenId, openaiCredentialId } = sharedDatabase();
   const sandboxId = crypto.randomUUID();
   await db.query(
@@ -891,7 +891,7 @@ async function nativeExecFixture(provider: Provider, placement: string, onQuery?
     data: createSqlData(bunLikeSql(db, onQuery))(caller),
     launchCredentials: {
       async resolve() {
-        throw new Error("Exec does not launch a sandbox.");
+        throw new Error("Existing sandbox tools do not launch a sandbox.");
       },
     },
     exposedSecrets: async () => [],
@@ -931,7 +931,7 @@ test.each(["boat", "modal"])("ordinary native exec excludes owner stop on %s", a
       return boat.provider.exec(request);
     },
   };
-  const { invoke, context, sandboxId } = await nativeExecFixture(provider, machine.id);
+  const { invoke, context, sandboxId } = await nativeToolFixture(provider, machine.id);
 
   const result = await invoke("exec", { id: sandboxId, command: "edit workspace" });
   expect(stopDuringExec?.isError).toBe(true);
@@ -953,7 +953,7 @@ test.each(["boat", "modal"])("ordinary native exec excludes owner stop on %s", a
 test("ordinary native exec refuses newly tainted Modal workspaces before provider preparation", async () => {
   const fake = fakeBoat();
   const provider = { ...fake.provider, id: "modal" };
-  const { db, context, sandboxId, invoke } = await nativeExecFixture(provider, crypto.randomUUID());
+  const { db, context, sandboxId, invoke } = await nativeToolFixture(provider, crypto.randomUUID());
   const prepare = mock(async () => {});
   context.connections = {
     async validate() {},
@@ -972,7 +972,7 @@ test("ordinary native exec refuses newly tainted Modal workspaces before provide
   expect(exec).not.toHaveBeenCalled();
 });
 
-async function handoffWithCleanExecCapture(sandboxId: string) {
+async function handoffWithLaterCleanCapture(sandboxId: string) {
   const { db } = sharedDatabase();
   await db.query(
     `update sandboxes set status='stopped',stopped_at=now(),activity_lease_id=null,activity_until=null,
@@ -991,12 +991,70 @@ async function handoffWithCleanExecCapture(sandboxId: string) {
   ]);
 }
 
+test.each(["lost provider response", "acknowledged prompt", "admission write failure", "settlement write failure"])(
+  "native send handoff distinguishes unresolved work after %s",
+  async (outcome) => {
+    const boat = fakeBoat();
+    const machine = await boat.provider.fork({
+      from: "fixture-snapshot",
+      noEnv: true,
+      env: {},
+      labels: {},
+      ttlSeconds: 3600,
+    });
+    const placement = crypto.randomUUID();
+    const provider = {
+      ...boat.provider,
+      async get() {
+        return { ...(await boat.provider.get(machine.id)), id: placement };
+      },
+      async prompt(request: Parameters<typeof boat.provider.prompt>[0]) {
+        const receipt = await boat.provider.prompt({ ...request, sandboxId: machine.id });
+        if (outcome === "lost provider response") throw new Error("Lost response");
+        return receipt;
+      },
+    };
+    const { db, sandboxId, invoke } = await nativeToolFixture(provider, placement, (statement) => {
+      if (
+        outcome === "admission write failure" &&
+        statement.includes("insert into public.sandbox_native_send_attempts")
+      )
+        throw new Error(outcome);
+      if (
+        outcome === "settlement write failure" &&
+        statement.includes("delete from public.sandbox_native_send_attempts")
+      )
+        throw new Error(outcome);
+    });
+    await db.query("update sandboxes set credential_id=null where id=$1", [sandboxId]);
+
+    const reply = await invoke("send", { id: sandboxId, prompt: "edit workspace" });
+    expect(boat.prompts).toHaveLength(outcome === "admission write failure" ? 0 : 1);
+    if (outcome === "acknowledged prompt") {
+      expect(reply.structuredContent).toMatchObject({ promptId: "prompt_1" });
+    } else {
+      expect(reply.isError).toBe(true);
+    }
+    if (outcome === "admission write failure") {
+      const row = await db.query("select lifecycle_generation, activity_lease_id from sandboxes where id=$1", [
+        sandboxId,
+      ]);
+      expect(row.rows).toEqual([{ lifecycle_generation: 1, activity_lease_id: null }]);
+    }
+    await db.query("update native_webhook_prompts set completed_at=now() where sandbox_id=$1", [sandboxId]);
+
+    const handoff = await handoffWithLaterCleanCapture(sandboxId);
+    const safe = outcome === "acknowledged prompt" || outcome === "admission write failure";
+    expect(handoff.rows).toEqual([{ outcome: safe ? "clean" : "ineligible" }]);
+  },
+);
+
 test.each(["lost command response", "failed redaction", "failed evidence insert", "failed evidence delete"])(
   "ordinary native Modal exec preserves the admission and handoff invariants after %s",
   async (failure) => {
     const fake = fakeBoat();
     const provider = { ...fake.provider, id: "modal" };
-    const { db, context, sandboxId, invoke } = await nativeExecFixture(provider, crypto.randomUUID(), (statement) => {
+    const { db, context, sandboxId, invoke } = await nativeToolFixture(provider, crypto.randomUUID(), (statement) => {
       if (failure === "failed evidence insert" && statement.includes("insert into public.sandbox_native_exec_attempts"))
         throw new Error(failure);
       if (failure === "failed evidence delete" && statement.includes("delete from public.sandbox_native_exec_attempts"))
@@ -1029,7 +1087,7 @@ test.each(["lost command response", "failed redaction", "failed evidence insert"
       [sandboxId],
     );
     expect(lease.rows).toEqual([{ active: !beforeDispatch, generation: beforeDispatch ? 1 : 2 }]);
-    const handoff = await handoffWithCleanExecCapture(sandboxId);
+    const handoff = await handoffWithLaterCleanCapture(sandboxId);
     expect(handoff.rows).toEqual([{ outcome: beforeDispatch ? "clean" : "ineligible" }]);
   },
 );
@@ -1051,7 +1109,7 @@ test.each(["foreground", "detached", "timed out", "unknown exit", "expired settl
           : { ...result, timedOut: outcome === "timed out", exitCode: outcome === "unknown exit" ? null : 0 };
       },
     };
-    const { db, sandboxId, invoke } = await nativeExecFixture(provider, crypto.randomUUID());
+    const { db, sandboxId, invoke } = await nativeToolFixture(provider, crypto.randomUUID());
     const reply = await invoke("exec", { id: sandboxId, command: "edit workspace" });
     if (outcome === "foreground") expect(reply.structuredContent).toMatchObject({ exitCode: 0 });
     if (outcome === "detached") {
@@ -1060,7 +1118,7 @@ test.each(["foreground", "detached", "timed out", "unknown exit", "expired settl
       expect(next.structuredContent).toMatchObject({ exitCode: 0 });
     }
 
-    const observed = await handoffWithCleanExecCapture(sandboxId);
+    const observed = await handoffWithLaterCleanCapture(sandboxId);
     expect(observed.rows).toEqual([{ outcome: outcome === "foreground" ? "clean" : "ineligible" }]);
   },
 );
@@ -1076,7 +1134,7 @@ test("ordinary native exec skips post-command provider sampling after the activi
       return completed;
     },
   };
-  const { context, sandboxId, invoke } = await nativeExecFixture(provider, crypto.randomUUID());
+  const { context, sandboxId, invoke } = await nativeToolFixture(provider, crypto.randomUUID());
   const sampled: (string | undefined)[] = [];
   context.launchCredentials.nativeSecrets = async (_actor, _id, _provider, _placement, phase) => {
     sampled.push(phase);
