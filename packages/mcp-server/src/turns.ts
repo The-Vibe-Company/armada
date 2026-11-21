@@ -5,9 +5,9 @@ import {
   isSandboxProvider,
   type ModelRateLimit,
   modelRateLimit,
+  observedPromptOutcome,
   type PromptOutcome,
   type Provider,
-  promptOutcome,
   readPromptEvents,
   reportedTurnUsage,
   type SandboxInfo,
@@ -115,11 +115,13 @@ const hasReportedCounters = (row: TurnTokenUsage) =>
  * rewritten in place); a turn boat calls `finished` after a usage limit or an expired login is `failed`.
  * Runtime prompt activity is reported separately from the enrolled machine state.
  */
+type StatusReader = Pick<Provider, "id" | "get" | "getPrompt" | "events" | "collectTurnUsage">;
+
 export async function readStatus(
-  provider: Provider | null,
+  provider: StatusReader | null,
   store: ServerSandboxStore,
   sandbox: SandboxView,
-  options: { promptId?: string; now: Date; stored?: boolean },
+  options: { promptId?: string; now: Date; stored?: boolean; recordedCompute?: boolean },
 ): Promise<StatusReport> {
   if (isStatusReadFenced(sandbox)) return report(sandbox, sandbox.status, null, null, null);
 
@@ -127,8 +129,8 @@ export async function readStatus(
     return report({ ...sandbox, statusReason: null }, "deleted", null, null, null);
   }
 
-  const info = await provider.get(sandbox.providerSandboxId);
-  if (provider.id === "boat" && info.state === "stopped" && info.retainedSnapshot !== "usable")
+  const info = options.recordedCompute ? null : await provider.get(sandbox.providerSandboxId);
+  if (provider.id === "boat" && info?.state === "stopped" && info.retainedSnapshot !== "usable")
     return report(sandbox, "stopping", info, null, info.expiresAt ?? null);
   const target = options.promptId
     ? { promptId: options.promptId, conversationId: null }
@@ -208,7 +210,7 @@ export async function readStatus(
           /* Missing history cannot prove exact-model execution. */
         }
         rateLimit = modelRateLimit(events, target.promptId, options.now.getTime(), false);
-        outcome = await promptOutcome(provider, request, { state, events });
+        outcome = observedPromptOutcome(state.status, request.promptId, events);
         evidence = turnModelEvidence(events, {
           promptId: target.promptId,
           requestedModel: recorded?.requestedModel ?? null,
@@ -287,6 +289,8 @@ export async function readStatus(
     const refreshed = await store.get(sandbox.id);
     if (refreshed?.usage) sandbox = { ...sandbox, usage: refreshed.usage };
   }
+
+  if (!info) return report(sandbox, sandbox.status, null, prompt, null);
 
   const runtime = runtimeBridgeTarget(sandbox);
   const liveRuntime = runtime && (sandbox.status === "ready" || sandbox.status === "running");
@@ -455,7 +459,7 @@ function report(
 
 /** The newest turn of the sandbox, from its prompt events. */
 export async function latestPrompt(
-  provider: Provider,
+  provider: Pick<Provider, "events">,
   sandboxId: string,
   complete = false,
   signal?: AbortSignal,
@@ -518,7 +522,7 @@ export async function promptsAfter(
 }
 
 async function allEvents(
-  provider: Provider,
+  provider: Pick<Provider, "events">,
   sandboxId: string,
   complete = false,
   maxPages?: number,
@@ -560,7 +564,7 @@ export async function waitSettled<T extends StatusReport>(
 /** Best-effort, bounded usage pull shared by terminal observation and controlled stop.
  * Keep persisted rows when provider history or the guest is temporarily unavailable. */
 export async function collectSandboxUsage(
-  provider: Provider,
+  provider: StatusReader,
   store: ServerSandboxStore,
   sandbox: SandboxView,
   targetPromptId?: string,

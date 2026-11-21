@@ -14,7 +14,7 @@ import { createRuntimeCommands } from "../runtime-commands.ts";
 import { createRuntimeEnrolments, scopedRuntimeSql } from "../runtime-enrolment.ts";
 import { createRuntimeEvents } from "../runtime-events.ts";
 import { createRuntimeGitHub } from "../runtime-github.ts";
-import { createModalLogReader } from "../runtime-history.ts";
+import { createModalJobReader, createModalLogReader } from "../runtime-history.ts";
 import { createRuntimeMcp, type RuntimeMcp } from "../runtime-mcp.ts";
 import { createSandboxLifecycle } from "../sandbox-lifecycle.ts";
 import type { LaneFactory } from "../server-worker-modules.ts";
@@ -1583,6 +1583,83 @@ test("REST and MCP read job-owned Modal logs from the runtime journal without a 
       { id },
     ),
   ).toMatchObject(result);
+});
+
+test("enrolled Modal launch jobs report and settle turns from the runtime journal", async () => {
+  const { f, id, makeRunner, activeRuntime } = await modalLaunchFixture(await modalAdmissionFixture());
+  const runner = makeRunner();
+  expect(await runner.reconcileOne(signal)).toBe(true);
+  await runner.drain();
+
+  const { runtimeToken, epoch } = activeRuntime();
+  const promptId = crypto.randomUUID();
+  await f.db.query("update sandboxes set task_prompt_id=$2 where id=$1", [id, promptId]);
+  const journal = createRuntimeEvents(createRuntimeEnrolments(f.sql, launchEncryptionKey), launchEncryptionKey);
+  const append = (sequence: number, status: "running" | "finished") =>
+    journal.append(runtimeToken, epoch, {
+      sandboxId: id,
+      generation: epoch,
+      events: [
+        { sequence, event: { id: `turn-${sequence}`, at: sequence, kind: "prompt", text: "work", promptId, status } },
+      ],
+    });
+  const caller = {
+    via: "service" as const,
+    userId: f.people.owner,
+    orgs: [{ orgId: f.people.org, role: "member" as const }],
+  };
+  const data = createSqlData(f.sql)(caller);
+  const unavailable = async () => {
+    throw new Error("The legacy Modal provider has no record of this launch job.");
+  };
+  const jobReader = createModalJobReader(f.sql, launchEncryptionKey);
+  const logReader = createModalLogReader(f.sql, launchEncryptionKey, unavailable);
+  const context = {
+    caller,
+    data,
+    launchCredentials: launchCredentials(createSqlVaultStore(f.sql), launchEncryptionKey),
+    exposedSecrets: async () => [],
+    provider: unavailable,
+    storedProviders: { modal: unavailable },
+    modalJobReader: (sandbox) => jobReader(sandbox, caller),
+    now: () => new Date("2026-11-21T00:00:00Z"),
+    sleep: async () => {
+      throw new Error("A finished turn must settle immediately.");
+    },
+  } satisfies Parameters<typeof callSharedTool>[0];
+  const follow = () =>
+    readLogs(
+      {
+        logs: async (actor, id) => {
+          const sandbox = (await data.sandboxes.get(id))!;
+          return { provider: await logReader(sandbox, actor), providerSandboxId: sandbox.providerSandboxId };
+        },
+      },
+      caller,
+      id,
+      { follow: true },
+    );
+  const report = () => callSharedTool(context, "report", { id, prompt_id: promptId, outcome: { state: "ready" } });
+
+  await append(1, "running");
+  expect(await callSharedTool(context, "status", { id })).toMatchObject({
+    id,
+    providerState: null,
+    prompt: { promptId, state: "running" },
+    settled: false,
+  });
+  expect(await follow()).toMatchObject({ settled: false });
+  await expect(report()).rejects.toMatchObject({ code: "conflict" });
+
+  await append(2, "finished");
+  expect(await callSharedTool(context, "wait", { id, prompt_id: promptId })).toMatchObject({
+    id,
+    providerState: null,
+    prompt: { promptId, state: "finished" },
+    settled: true,
+  });
+  expect(await follow()).toMatchObject({ settled: true });
+  expect(await report()).toMatchObject({ id, taskOutcome: { state: "ready" } });
 });
 
 async function failedModalLaunchFixture() {

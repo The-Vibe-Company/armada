@@ -72,6 +72,7 @@ export interface ControlOptions {
   runtimeHostFor?: (apiKey: string) => Provider;
   skillCatalog?: ReturnType<typeof createSkillCatalog>;
   timing?: RequestTiming;
+  modalJobReader?: ReturnType<typeof import("./runtime-history.ts").createModalJobReader>;
   storedProviderFor?: (target: ProviderTarget, caller: { userId: string }) => Promise<Provider>;
   sandboxArmadaAccess?: ReturnType<typeof createSandboxArmadaAccess>;
   templates?: TemplateService;
