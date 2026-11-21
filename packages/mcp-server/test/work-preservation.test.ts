@@ -672,6 +672,8 @@ test.each([
 ] as const)("Modal runtime stop preserves work independently of journal retention: %s", async (scenario) => {
   await withPreservationRow(async ({ db, id, physical, sql, provider, activity, generation }) => {
     if (!activity) throw new Error("Missing Modal activity lease fixture");
+    const { people } = sharedDatabase();
+    const recoveryScope: [string[], string] = [[people.org], people.owner];
     const reconcile = crypto.randomUUID();
     const archive = Buffer.from("dirty Modal workspace fixture").toString("base64");
     const takeOver = () =>
@@ -741,7 +743,7 @@ test.each([
       const rejected = scenario === "quiescence_rejected";
       expect(outcome).toBe(takeover || rejected || scenario === "lost_receipt_response" ? "pending" : undefined);
       if (takeover) {
-        expect(await readWorkRecovery(sql, id)).toBeNull();
+        expect(await readWorkRecovery(sql, recoveryScope, id)).toBeNull();
         expect(captures).toBe(scenario === "takeover_before_capture" ? 0 : 1);
       } else {
         expect(captures).toBe(1);
@@ -749,7 +751,7 @@ test.each([
       }
       const nextOwner = { kind: "reconcile", token: reconcile, generation } as const;
       expect(await preserveBeforeStop(sql, runtime, id, physical, "lifecycle_stop", nextOwner)).toBeUndefined();
-      expect(await readWorkRecovery(sql, id)).toBe(scenario === "clean" ? null : archive);
+      expect(await readWorkRecovery(sql, recoveryScope, id)).toBe(scenario === "clean" ? null : archive);
       expect(captures).toBe((takeover && scenario !== "takeover_before_capture") || rejected ? 2 : 1);
       const receipt = (
         await db.query<{ preservation_note: string | null; complete: boolean; archives: number }>(
