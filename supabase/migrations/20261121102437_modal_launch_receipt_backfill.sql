@@ -11,6 +11,10 @@ declare
   verified_count bigint;
   source_count bigint;
 begin
+  -- A retry after a lost acknowledgement waits for the first invocation
+  -- before taking the read-committed snapshot used to verify the inserts.
+  perform pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtextextended('armada.backfill_modal_launch_receipts', 0));
+
   with source as materialized (
     select r.id, r.org_id, r.owner_id, r.fingerprint, r.created_at,
       pg_catalog.format('["request","%s","launch","%s",%s]', r.org_id, r.owner_id,

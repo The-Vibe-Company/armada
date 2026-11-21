@@ -147,7 +147,7 @@ test("Modal backfill preserves accepted, refused and unresolved ordinary keys wi
 
   const key = 'historical-launch-"\\雪\n';
   const requests = [
-    { key: `${key}accepted`, digest: "historical-accepted", id: accepted },
+    { key: `${key}accepted\ud800`, digest: "historical-accepted", id: accepted },
     { key: `${key}refused`, digest: "historical-refused", id: crypto.randomUUID() },
     { key: `${key}unknown`, digest: "historical-unknown", id: crypto.randomUUID() },
     { key: `${key}unattributed`, digest: "historical-unattributed", id: crypto.randomUUID() },
@@ -163,7 +163,7 @@ test("Modal backfill preserves accepted, refused and unresolved ordinary keys wi
         request.id,
         input.orgId,
         input.ownerId,
-        request.key,
+        request.key.toWellFormed(),
         request.digest,
         request === unattributed ? null : { target: { provider: request === boat ? "boat" : "modal" } },
         request === success ? { sandbox: { id: accepted, status: "ready" }, promptId: "prior-prompt" } : null,

@@ -43,7 +43,10 @@ export async function admitModalLaunch(sql: Sql, encryptionKey: string, input: M
   const sandboxId = crypto.randomUUID();
   const generation = 1;
   const store = createJobsStore(sql, encryptionKey);
-  const key = request ? JSON.stringify(["ordinary", request.key]) : JSON.stringify(["unkeyed", sandboxId]);
+  // Ordinary keys use the UTF-8 text representation stored by the old producer.
+  const key = request
+    ? JSON.stringify(["ordinary", request.key.toWellFormed()])
+    : JSON.stringify(["unkeyed", sandboxId]);
 
   try {
     return await sql.transaction(async (tx) => {
