@@ -30,7 +30,7 @@ import { helperProbe, skillpackProbe } from "./golden-runtime-smoke.ts";
 import { createScopedProbe, ScopedAccessSmokeFailure } from "./scoped-access-smoke.ts";
 import deadlines from "./smoke-deadlines.json";
 import { observeSmokeLaunch } from "./smoke-launch.ts";
-import { runTemplateSkillCase, TemplateSkillSmokeFailure } from "./template-skill-smoke.ts";
+import { runTemplateSkillCase, TemplateSkillSmokeFailure, verifyReceipts } from "./template-skill-smoke.ts";
 import { runVaultCase, VaultSmokeFailure } from "./vault-smoke.ts";
 
 type Code =
@@ -802,7 +802,7 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
     timeoutMs: number,
     request: ReturnType<typeof createLane>["request"],
     keepHandle: (id: string) => void,
-    requiresLaunchReceipt = false,
+    recover?: false | ((id: string, requestKey: string, until: number) => Promise<T | undefined>),
   ) {
     const path = "sandbox/launch";
     const requestKey = `post-deploy-smoke:${crypto.randomUUID()}`;
@@ -821,7 +821,8 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
         const lostReceipt = error.code === "invalid_response" && error.launchResponse !== undefined;
         if (lostReceipt || ["outcome_unknown", "request_failed"].includes(error.code) || (error.status ?? 0) >= 500) {
           let observedId: string | undefined;
-          const sandbox = await observeSmokeLaunch(Math.min(deadline, io.now() + timeoutMs), io, async (remaining) => {
+          const until = Math.min(deadline, io.now() + timeoutMs);
+          const recovered = await observeSmokeLaunch(until, io, async (remaining) => {
             const result = await request<{
               sandboxes: { id: string; provider: string; externalRef: string; status: string }[];
             }>(
@@ -848,10 +849,16 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
                 record({ sandbox: row });
                 await io.recordSandbox?.(launchBody.org, row.id, requestKey, item.provider);
               }
-              if (row.id === observedId && launch.ready.includes(row.status)) return row;
+              if (row.id !== observedId || !launch.ready.includes(row.status) || recover === false) return;
+              if (!recover) return { sandbox: row } as T;
+              return recover(row.id, requestKey, until).catch((readError: unknown) => {
+                if (readError instanceof SmokeFailure || readError instanceof TemplateSkillSmokeFailure)
+                  return undefined;
+                throw readError;
+              });
             }
           });
-          if (sandbox && !requiresLaunchReceipt) return { sandbox } as T;
+          if (recovered !== undefined) return recovered;
         }
         throw new SmokeFailure(error.code, error.status, undefined, {
           timeoutMs,
@@ -1247,7 +1254,43 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
           (id) => {
             sandboxId = id;
           },
-          requiresLaunchReceipt,
+          scope
+            ? false
+            : defaultSkills
+              ? async (id, requestKey, until) => {
+                  const goldenId = item.goldenId!;
+                  // The golden filter proves the source UUID. The unfiltered read above
+                  // has already retained the handle even if that source is wrong.
+                  const inventory = await sandbox<{ sandboxes: { id: string; externalRef: string }[] }>(
+                    "list",
+                    { owner: "me", externalRef: requestKey, golden: goldenId },
+                    Math.min(5_000, until - io.now()),
+                  );
+                  if (
+                    inventory?.sandboxes?.length !== 1 ||
+                    inventory.sandboxes[0]?.id !== id ||
+                    inventory.sandboxes[0].externalRef !== requestKey ||
+                    io.now() >= until
+                  )
+                    return;
+                  const status = await sandbox<{
+                    id: string;
+                    externalRef?: string;
+                    status: string;
+                    prompt: unknown;
+                    skills?: unknown;
+                  }>("status", { id }, Math.min(5_000, until - io.now()));
+                  if (
+                    status?.id !== id ||
+                    status.externalRef !== requestKey ||
+                    status.status !== "ready" ||
+                    status.prompt !== null
+                  )
+                    return;
+                  verifyReceipts(status.skills, dirty ? [] : defaultPins.get(index)!);
+                  return { sandbox: { id, provider: item.provider, skills: status.skills }, golden: { id: goldenId } };
+                }
+              : undefined,
         );
         // Retain the cleanup handle even if later response validation fails.
         if (typeof result?.sandbox?.id === "string" && result.sandbox.id) sandboxId = result.sandbox.id;
