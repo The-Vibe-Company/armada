@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import type { SandboxListMetadata } from "@armada/core";
+import type { SandboxListMetadata } from "./sandbox-access.ts";
 import {
   filterSandboxes,
   filtersToSearch,
@@ -16,7 +16,6 @@ function row(id: string, overrides: Partial<SandboxListMetadata> = {}) {
     ownerId: ALICE,
     provider: "boat",
     providerSandboxId: `bx_${id}`,
-    boatId: `bx_${id}`,
     harness: "claude",
     model: "opus",
     reasoningEffort: null,

@@ -48,7 +48,7 @@ private let optionsJSON = #"""
 
 private func golden(id: String, name: String, provider: String = "boat", org: String = "org-a", snapshot: Bool = true, dirs: [String] = ["web"]) -> String {
     let repos = dirs.map { #"{"url":"https://github.com/acme/\#($0)","branch":"main","dir":"\#($0)"}"# }.joined(separator: ",")
-    return #"{"id":"\#(id)","name":"\#(name)","provider":"\#(provider)","modal":null,"orgId":"\#(org)","visibility":"org","ownerId":"u1","providerSnapshotId":\#(snapshot ? #""snap""# : "null"),"providerSandboxId":null,"boatSnapshotId":null,"boatSandboxId":null,"repos":\#(dirs.count),"config":{"repos":[\#(repos)],"init":[]}}"#
+    return #"{"id":"\#(id)","name":"\#(name)","provider":"\#(provider)","modal":null,"orgId":"\#(org)","visibility":"org","ownerId":"u1","providerSnapshotId":\#(snapshot ? #""snap""# : "null"),"providerSandboxId":null,"repos":\#(dirs.count),"config":{"repos":[\#(repos)],"init":[]}}"#
 }
 
 private let goldensJSON = #"{"goldens":[\#(golden(id: "g-draft", name: "aaa", snapshot: false)),\#(golden(id: "g-web", name: "web", dirs: ["web", "api"])),\#(golden(id: "g-web-modal", name: "web", provider: "modal")),\#(golden(id: "g-other", name: "elsewhere", org: "org-b"))]}"#
@@ -224,7 +224,7 @@ private func json(_ request: URLRequest) throws -> [String: Any] {
 // MARK: Launching and refusals
 
 @Test func launchIsSentOnceOnTheSizedRouteAndReturnsTheNewSandbox() async throws {
-    let receipt = #"{"sandbox":{"id":"\#(newSandbox)","provider":"boat","providerSandboxId":"bx_1","goldenId":"g-web","orgId":"org-a","ownerId":"u1","harness":"claude","status":"running","conversationIds":["c1"],"createdAt":"2026-11-10T10:00:00.000Z","stoppedAt":null,"deletedAt":null,"statusReason":null,"repositoryDir":null,"model":"model-a","reasoningEffort":"medium","boatId":"bx_1"},"golden":{},"promptId":"p1","conversationId":"c1","ttlSeconds":14400,"expiresAt":"2026-11-10T14:00:00.000Z","github":{"status":"connected","login":null,"message":null}}"#
+    let receipt = #"{"sandbox":{"id":"\#(newSandbox)","provider":"boat","providerSandboxId":"bx_1","goldenId":"g-web","orgId":"org-a","ownerId":"u1","harness":"claude","status":"running","conversationIds":["c1"],"createdAt":"2026-11-10T10:00:00.000Z","stoppedAt":null,"deletedAt":null,"statusReason":null,"repositoryDir":null,"model":"model-a","reasoningEffort":"medium"},"golden":{},"promptId":"p1","conversationId":"c1","ttlSeconds":14400,"expiresAt":"2026-11-10T14:00:00.000Z","github":{"status":"connected","login":null,"message":null}}"#
     let (client, transport) = try await signedIn([.init(status: 200, body: receipt)])
     let catalog = try catalog()
     var draft = SandboxLaunchDraft(catalog: catalog)

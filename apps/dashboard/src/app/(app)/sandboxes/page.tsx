@@ -4,7 +4,6 @@ import {
   MACHINE_SIZES,
   SANDBOX_PLACEMENT_PROVIDERS,
   type SandboxCost,
-  type SandboxListMetadata,
   type SandboxPlacementProviderId,
 } from "@armada/core";
 import { BoxesIcon, LockIcon, SearchXIcon } from "lucide-react";
@@ -37,7 +36,12 @@ import { DOCKER_HOST_LABEL, HARNESS_LABELS } from "@/lib/labels";
 import { type LifecycleView, lifecycleView, readLifecycle } from "@/lib/lifecycle";
 import { preservationView, settledOutcome } from "@/lib/outcome";
 import { CLOUD_PROVIDERS_PATH } from "@/lib/provider-setup";
-import { machineSizeLabel, parseSandboxListMetadata, skippedRowsNote } from "@/lib/sandbox-access";
+import {
+  machineSizeLabel,
+  parseSandboxListMetadata,
+  type SandboxListMetadata,
+  skippedRowsNote,
+} from "@/lib/sandbox-access";
 import { sandboxActivityPage, sandboxNeedsViewer } from "@/lib/sandbox-activity";
 import {
   FACETS,
