@@ -694,6 +694,13 @@ test.each(["before", "after"] as const)(
     ]);
     await claim(await modalFirstTurnLane(f, interruptedQueue));
     expect(await intentState()).toEqual({ state: "leased", attempts: crash === "after" ? 3 : 1 });
+    if (crash === "before")
+      await expect(
+        queue.accept(
+          { userId: f.people.owner, orgs: [{ orgId: f.people.org, role: "member" }], via: "service" },
+          { id, prompt: "Follow up" },
+        ),
+      ).rejects.toThrow("Modal launch setup is still in progress.");
     expect((await turns()).rows).toHaveLength(crash === "after" ? 1 : 0);
     expect((await dispatchJobs()).rows).toHaveLength(crash === "after" ? 1 : 0);
 
