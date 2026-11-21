@@ -76,13 +76,15 @@ The coordinator owns the drain run. Existing turn, stop/resume, retention and de
 | --- | --- | --- | --- | --- |
 | Repository defaults | Native | Runtime | See server config and assembly above | Code-derived |
 | Staging | Unverified | Unverified | Unverified | Pending coordinator record |
-| Production | Unverified | Unverified | Unverified | Pending coordinator record |
+| Production | Unverified | Runtime | `/opt/armada/runtime-manifests/x64.json`, dial-out enabled | `dbdd1ec9bac0d040aca762f608913c61eae50e51` · 2026-11-21 08:23 UTC · Railway deployment `19d40232` ([coordinator record](https://github.com/The-Vibe-Company/armada/issues/2740#issuecomment-7059904959)) |
 
 Modal default-on release (#2740), to be completed by the coordinator after deployment:
 
 | Release | UTC date | Production checklist result |
 | --- | --- | --- |
-| Pending rollout | Pending | Pending coordinator verification |
+| [v5.0.0](https://github.com/The-Vibe-Company/armada/releases/tag/v5.0.0) | 2026-11-21 | Modal canary passed. Full production checklist evidence remains incomplete. |
+
+The coordinator recorded `ARMADA_MODAL_AGENT_PATH=runtime`, `ARMADA_MODAL_DIALOUT=1` and `ARMADA_MODAL_RUNTIME_MANIFEST=/opt/armada/runtime-manifests/x64.json`. On the Python-free `native-linear-modal` golden, the first turn ran Git in the repository, a follow-up answered, and a turn after stop and resume ran Git again. The canary sandbox was stopped after the check. The record confirms those actions. The enrolled runtime receipt, same-conversation history and retained conversation context, Docker server lifecycle and account-counter settlement still need explicit evidence in the ledger. The one-release-cycle and recoverable previous release requirements remain part of the drain gate.
 
 For #2737, the coordinator ran a read-only count from CLI source on main (`9773b5fad`). The inventory covered the single real user's personal credentials and every organization returned by `armada org list --json` for that owner. The coordinator used `armada creds list --json` for personal credentials and `armada creds list --org <id> --json` for each organization, then counted model-kind rows missing an ID or version. Credential identifiers, names and values were omitted from the record.
 
