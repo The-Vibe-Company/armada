@@ -992,6 +992,71 @@ async function handoffWithLaterCleanCapture(sandboxId: string) {
 }
 
 test.each([
+  "lost reply",
+  "unverified history fallback",
+  "verified replacement",
+  "failed admission",
+  "failed publication",
+])("native steer handoff checks dispatch evidence after %s", async (outcome) => {
+  const boat = fakeBoat();
+  const machine = await boat.provider.fork({
+    from: "fixture-snapshot",
+    noEnv: true,
+    env: {},
+    labels: {},
+    ttlSeconds: 3600,
+  });
+  const provider = {
+    ...boat.provider,
+    getPrompt: (request: Parameters<Provider["getPrompt"]>[0]) =>
+      boat.provider.getPrompt({ ...request, sandboxId: machine.id }),
+    events: (request: Parameters<Provider["events"]>[0]) => boat.provider.events({ ...request, sandboxId: machine.id }),
+    steer: mock(async () => {
+      const replacement = await boat.provider.prompt({
+        sandboxId: machine.id,
+        harness: "codex",
+        text: "edit workspace",
+      });
+      if (outcome === "lost reply") throw new Error("Lost steer response");
+      return {
+        ...replacement,
+        promptId: outcome === "unverified history fallback" ? "unverified-steer-id" : replacement.promptId,
+      };
+    }),
+  };
+  let settling = false;
+  const { db, sandboxId, invoke } = await nativeToolFixture(provider, crypto.randomUUID(), (statement) => {
+    if (statement.includes("delete from public.sandbox_native_send_attempts")) settling = true;
+    if (
+      (outcome === "failed admission" && statement.includes("insert into public.sandbox_native_send_attempts")) ||
+      (outcome === "failed publication" &&
+        settling &&
+        statement.includes("task_prompt_id") &&
+        statement.includes("update public.sandboxes"))
+    )
+      throw new Error(outcome);
+  });
+  await db.query("update sandboxes set credential_id=null,status='running',task_prompt_id='previous' where id=$1", [
+    sandboxId,
+  ]);
+
+  const reply = await invoke("steer", { id: sandboxId, text: "edit workspace" });
+  expect(provider.steer).toHaveBeenCalledTimes(outcome === "failed admission" ? 0 : 1);
+  if (outcome === "unverified history fallback" || outcome === "verified replacement") {
+    expect(reply.isError).not.toBe(true);
+    const published = await db.query("select task_prompt_id from sandboxes where id=$1", [sandboxId]);
+    expect(published.rows).toEqual([{ task_prompt_id: "prompt_1" }]);
+  } else {
+    expect(reply.isError).toBe(true);
+  }
+  // Isolate the attempt from pending prompt evidence and use a later clean receipt.
+  await db.query("update native_webhook_prompts set completed_at=now() where sandbox_id=$1", [sandboxId]);
+  const handoff = await handoffWithLaterCleanCapture(sandboxId);
+  const eligible = outcome === "verified replacement" || outcome === "failed admission";
+  expect(handoff.rows).toEqual([{ outcome: eligible ? "clean" : "ineligible" }]);
+});
+
+test.each([
   "lost provider response",
   "acknowledged prompt",
   "admission write failure",
