@@ -75,8 +75,9 @@ Run `bun scripts/ops/drain-native.ts --provider modal --dry-run` with
 access. Select `boat` for the Boat cohort.
 
 For a real pass, wait for the selected provider's release and checklist gate,
-disable new native admissions, and wait for any replicas that predate the
-native delete intent fence to drain. Prepare the checkout with
+disable new native admissions, and drain every replica that could still admit
+or finish a native launch from before the cutover. Include replicas that
+predate the native delete intent fence. Prepare the checkout with
 `bun scripts/prepare-runtime.ts`. Set the server's `ARMADA_DATABASE_URL`,
 `ARMADA_ENCRYPTION_KEY` and `ARMADA_PUBLIC_URL`, and set
 `ARMADA_DRAIN_ACTOR_ID` to a user authorized to delete each candidate.
