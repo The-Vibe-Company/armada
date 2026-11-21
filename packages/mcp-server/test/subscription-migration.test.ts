@@ -605,3 +605,60 @@ test("shared subscription admission and native turn repair never inspect an Arma
     "running",
   );
 });
+
+test.each(["boat", "modal"] as const)("subscription preparation leaves a strict native %s stop alone", async (kind) => {
+  const { db, people } = await database();
+  const actor: GoldenActor = { userId: people.owner, orgId: people.org, role: "member" };
+  const account = (
+    await db.query<{ id: string }>(
+      "insert into credentials(scope,owner_id,kind,value_enc) values('user',$1,'codex_auth',$2) returning id",
+      [people.owner, await encryptSecret(native(0), ENCRYPTION_KEY)],
+    )
+  ).rows[0]!;
+  const mock = fakeBoat();
+  const physical = await mock.provider.fork({ from: "legacy", noEnv: true, env: {}, labels: {}, ttlSeconds: 3600 });
+  const provider = { ...mock.provider, id: kind };
+  const golden = await createSqlGoldenStore(db).insert({
+    orgId: people.org,
+    ownerId: people.owner,
+    name: "strict-source",
+    visibility: "org",
+    provider: kind,
+    ...(kind === "modal" ? { modal: { workspace: "ws", environment: "main", appId: "app" } } : { boatId: "base" }),
+    config: { repos: [{ url: "https://github.com/example/web.git", branch: "main", dir: "web" }], init: [] },
+  });
+  const id = crypto.randomUUID();
+  await db.query(
+    `insert into sandboxes(id,org_id,owner_id,golden_id,harness,status,provider,provider_sandbox_id,
+       visibility,credential_id,credential_version,stop_requested_at,stop_generation)
+     values($1,$2,$3,$7,'codex','stopping',$4,$5,'org',$6,1,now(),1)`,
+    [id, people.org, people.owner, kind, physical.id, account.id, golden.id],
+  );
+  await db.query("insert into native_drain_stop_requests(sandbox_id,stop_generation) values($1,1)", [id]);
+  const resolved: string[] = [];
+  const unexpected = async (): Promise<never> => {
+    throw Error("subscription must leave the strict source alone");
+  };
+  const migration = createSubscriptionMigration(
+    db,
+    async (_sql, sandboxId) => {
+      resolved.push(sandboxId);
+      return { provider, providerSandboxId: physical.id };
+    },
+    unexpected,
+    {
+      configuration() {
+        throw Error("unexpected native capability");
+      },
+      transferLegacy: unexpected,
+    },
+  );
+
+  await migration.prepareAccount(actor, account.id, 1);
+  expect(resolved).toEqual([]);
+  expect(mock.stops).toEqual([]);
+  if (kind === "boat") {
+    await db.query("update sandboxes set status='stopped', stopped_at=now(), stop_requested_at=null where id=$1", [id]);
+    await expect(migration.prepareTurn(provider, physical.id, actor)).rejects.toMatchObject({ code: "conflict" });
+  }
+});

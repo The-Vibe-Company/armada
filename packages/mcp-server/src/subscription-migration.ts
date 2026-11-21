@@ -7,6 +7,7 @@ import {
   sshPrivateAuthState,
   VaultError,
 } from "@armada/core/server";
+import { hasStrictNativeDrainStop } from "./sandbox-lifecycle.ts";
 import { captureFinalOutputs } from "./sandbox-outputs.ts";
 import { configureBoatSubscription } from "./subscription-boat.ts";
 import { type SubscriptionConfiguration, SubscriptionTemporaryError } from "./subscription-broker.ts";
@@ -57,12 +58,12 @@ export function createSubscriptionMigration(
   },
 ) {
   const pending = new Map<string, Promise<void>>();
-  async function recheck(source: Source, tx: Sql = sql) {
+  async function recheckLocked(source: Source, tx: Sql) {
     const current = await tx.query(
       `select s.id from public.sandboxes s join public.credentials c on c.id=s.credential_id
        where s.id=$1 and s.org_id=$2 and s.owner_id=$3 and s.credential_id=$4
        and s.credential_version is not distinct from $5::integer and s.lifecycle_generation=$6
-       and not s.boat_runtime and s.provider::text=$7 and s.provider_sandbox_id=$8 and s.deleted_at is null
+       and not s.boat_runtime and s.provider::text=$7 and s.provider_sandbox_id=$8 and s.deleted_at is null and not s.native_drain_pending
        and ((c.scope='user' and c.owner_id=s.owner_id) or (c.scope='org' and c.owner_id=s.org_id))
        and exists(select 1 from public.members m where m.org_id=s.org_id and m.user_id=s.owner_id) for update of s`,
       [
@@ -77,6 +78,14 @@ export function createSubscriptionMigration(
       ],
     );
     if (!current.rows.length) throw new VaultError("conflict", "Subscription sandbox changed during native upgrade.");
+    // Read the marker after taking the sandbox lock so an admission that won
+    // the lock while this statement was waiting is visible.
+    if (await hasStrictNativeDrainStop(tx, source.id))
+      throw new VaultError("conflict", "Native sandbox preservation is pending.");
+  }
+  async function recheck(source: Source) {
+    if (!sql.transaction) throw new VaultError("unavailable", "Subscription native upgrade requires transactions.");
+    await sql.transaction((tx) => recheckLocked(source, tx));
   }
   async function upgradeBoat(source: Source, target: Target, version: number) {
     const actor: GoldenActor = { userId: source.owner_id, orgId: source.org_id, role: "member" };
@@ -89,11 +98,14 @@ export function createSubscriptionMigration(
     await transports.admission(target.provider, target.providerSandboxId, false);
     let transferError: unknown;
     if (mode !== "pending") {
+      await recheck(source);
       await observe(target.provider, target.providerSandboxId, actor, true);
       const latest = await transports.read(target.provider, target.providerSandboxId, {}, true, grant.capability);
       if (latest !== "null" && latest !== "pending") {
         try {
-          await authority.transferLegacy(actor, source.credential_id, version, latest, (tx) => recheck(source, tx));
+          await authority.transferLegacy(actor, source.credential_id, version, latest, (tx) =>
+            recheckLocked(source, tx),
+          );
         } catch (error) {
           transferError = error;
         }
@@ -104,12 +116,12 @@ export function createSubscriptionMigration(
     if (transferError instanceof SubscriptionTemporaryError) throw transferError;
     // Even an uncertain upstream renewal must not leave an independent native
     // refresh writer behind. Keep its observed leaves sealed, then remove raw auth.
-    await recheck(source);
     const account = await sql.query(
       "select id from public.credentials where id=$1 and version=$2 and status='active' and (expires_at is null or expires_at>now())",
       [source.credential_id, version],
     );
     if (!account.rows.length) throw new VaultError("conflict", "Subscription account changed during native upgrade.");
+    await recheck(source);
     await transports.configure(target.provider, target.providerSandboxId, grant);
     if ((await transports.read(target.provider, target.providerSandboxId, {}, false, grant.capability)) !== "null")
       throw new VaultError("unavailable", "Subscription native upgrade could not be confirmed.");
@@ -142,6 +154,7 @@ export function createSubscriptionMigration(
   async function upgrade(source: Source, target: Target, version: number) {
     if (target.provider.id !== source.provider || target.providerSandboxId !== source.provider_sandbox_id)
       throw new VaultError("conflict", "Subscription provider binding changed.");
+    await recheck(source);
     const physical = await target.provider.get(target.providerSandboxId, { signal: AbortSignal.timeout(10_000) });
     if (physical.id !== target.providerSandboxId)
       throw new VaultError("conflict", "Subscription provider identity changed.");
@@ -154,6 +167,7 @@ export function createSubscriptionMigration(
       await captureFinalOutputs(sql, target.provider, source.id, { signal: AbortSignal.timeout(10_000) }).catch(
         () => {},
       );
+      await recheck(source);
       try {
         await target.provider.stop({ sandboxId: target.providerSandboxId });
       } catch (error) {
@@ -179,13 +193,17 @@ export function createSubscriptionMigration(
     }
     if (target.provider.id === "boat") await upgradeBoat(source, target, version);
   }
-  function once(source: Source, target: Target, version: number) {
+  async function once(source: Source, resolve: () => Target | Promise<Target>, version: number) {
+    await recheck(source);
     const key = `${source.id}:${source.lifecycle_generation}:${version}`;
     const existing = pending.get(key);
     if (existing) return existing;
-    const work = upgrade(source, target, version).finally(() => {
-      if (pending.get(key) === work) pending.delete(key);
-    });
+    const work = Promise.resolve()
+      .then(resolve)
+      .then((target) => upgrade(source, target, version))
+      .finally(() => {
+        if (pending.get(key) === work) pending.delete(key);
+      });
     pending.set(key, work);
     return work;
   }
@@ -209,7 +227,7 @@ export function createSubscriptionMigration(
       );
       for (const source of sources.rows) {
         try {
-          await once(source, await resolveStoredSandbox(sql, source.id), version);
+          await once(source, () => resolveStoredSandbox(sql, source.id), version);
         } catch (error) {
           if (error instanceof SubscriptionTemporaryError) throw error;
           /* Unknown/absent history never becomes a new account admission refusal. */
@@ -231,7 +249,7 @@ export function createSubscriptionMigration(
       if (!sources.rows.length) return;
       if (sources.rows.length !== 1) throw new VaultError("conflict", "Subscription native source is ambiguous.");
       const source = sources.rows[0]!;
-      await once(source, { provider, providerSandboxId: id }, source.credential_version!);
+      await once(source, () => ({ provider, providerSandboxId: id }), source.credential_version!);
     },
   };
 }
