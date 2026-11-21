@@ -135,8 +135,8 @@ test("recovery receipts retain encrypted versions and only current interior owne
     });
     const handoff = (
       await db.query<{ current: boolean; lifecycle_generation: number }>(
-        `select lifecycle_generation, native_preservation_generation = lifecycle_generation as current
-         from sandboxes where id=$1`,
+        `select s.lifecycle_generation, r.generation = s.lifecycle_generation as current
+         from sandboxes s left join sandbox_native_preservation_receipts r on r.sandbox_id=s.id where s.id=$1`,
         [id],
       )
     ).rows[0];
@@ -166,9 +166,8 @@ test("recovery receipts retain encrypted versions and only current interior owne
     });
     const receipt = (
       await db.query(
-        `select status, native_preservation_generation = lifecycle_generation
-           and native_preservation_stop_generation = stop_generation as current
-         from sandboxes where id=$1`,
+        `select s.status, r.generation = s.lifecycle_generation and r.stop_generation = s.stop_generation as current
+         from sandboxes s left join sandbox_native_preservation_receipts r on r.sandbox_id=s.id where s.id=$1`,
         [id],
       )
     ).rows[0];
@@ -187,6 +186,9 @@ test("recovery receipts retain encrypted versions and only current interior owne
     await db.exec("set role authenticated");
     try {
       await expect(db.query("select archive_enc from sandbox_work_recovery")).rejects.toThrow("permission denied");
+      await expect(db.query("select generation from sandbox_native_preservation_receipts")).rejects.toThrow(
+        "permission denied",
+      );
     } finally {
       await db.exec("reset role");
     }

@@ -122,16 +122,18 @@ const NATIVE_WORK_ROUTE = `provider in ('boat','modal') and not boat_runtime
 
 export const COMPLETE_PRESERVATION = `stop_requested_at is not null
   and preservation_stop_generation is not distinct from stop_generation
-  and (not (${NATIVE_WORK_ROUTE}) or (
-    native_preservation_generation is not distinct from lifecycle_generation
-    and native_preservation_stop_generation is not distinct from stop_generation
+  and (not (${NATIVE_WORK_ROUTE}) or exists (
+    select 1 from public.sandbox_native_preservation_receipts r
+    where r.sandbox_id=sandboxes.id and r.generation=sandboxes.lifecycle_generation
+      and r.stop_generation=sandboxes.stop_generation
   ))`;
 
 export const NOTE_FENCE = `${STOP_EPOCH} and not (${COMPLETE_PRESERVATION})`;
 
-const NATIVE_PROVENANCE = `
-    native_preservation_generation=case when $2::text is not null and (${NATIVE_WORK_ROUTE}) then $4::bigint end,
-    native_preservation_stop_generation=case when $2::text is not null and (${NATIVE_WORK_ROUTE}) then $7::bigint end`;
+const RECORD_NATIVE_PRESERVATION = `
+  insert into public.sandbox_native_preservation_receipts(sandbox_id,generation,stop_generation)
+    select id,$4::bigint,$7::bigint from accepted where native and $2::text is not null
+  on conflict(sandbox_id) do update set generation=excluded.generation,stop_generation=excluded.stop_generation`;
 
 export function writePreservationNote(
   sql: Sql,
@@ -159,10 +161,10 @@ export function recordWorkRecovery(
 ) {
   return sql.query<{ id: string }>(
     `with accepted as (
-    update public.sandboxes set preservation_note=$8,preservation_stop_generation=$7::bigint,
-    ${NATIVE_PROVENANCE}
-    where ${NOTE_FENCE} and not application_secret_tainted returning id
-  ) insert into public.sandbox_work_recovery(id,sandbox_id,archive_enc)
+    update public.sandboxes set preservation_note=$8,preservation_stop_generation=$7::bigint
+    where ${NOTE_FENCE} and not application_secret_tainted returning id, (${NATIVE_WORK_ROUTE}) as native
+  ), native_receipt as (${RECORD_NATIVE_PRESERVATION})
+  insert into public.sandbox_work_recovery(id,sandbox_id,archive_enc)
     select $9::uuid,id,$10::bytea from accepted returning id`,
     [id, ...fence, stopToken, note, recoveryId, encrypted],
   );
@@ -170,9 +172,11 @@ export function recordWorkRecovery(
 
 export function recordCleanWork(sql: Sql, id: string, fence: StopFence, stopToken: string | null) {
   return sql.query<{ id: string }>(
-    `update public.sandboxes set preservation_note=null,
-    preservation_stop_generation=$7::bigint, ${NATIVE_PROVENANCE}
-    where ${NOTE_FENCE} and not application_secret_tainted returning id`,
+    `with accepted as (
+    update public.sandboxes set preservation_note=null,preservation_stop_generation=$7::bigint
+    where ${NOTE_FENCE} and not application_secret_tainted returning id, (${NATIVE_WORK_ROUTE}) as native
+  ), native_receipt as (${RECORD_NATIVE_PRESERVATION})
+  select id from accepted`,
     [id, ...fence, stopToken],
   );
 }
@@ -705,6 +709,19 @@ export async function recordNativeRetentionRefusal(
     },
   });
   return result.kind === "applied";
+}
+
+export async function carryNativePreservationAcrossStop(tx: Sql, sandboxId: string, generation: string) {
+  await tx.query(
+    `update public.sandbox_native_preservation_receipts r set generation=$2::bigint
+     from public.sandboxes
+     where sandboxes.id=$1 and sandboxes.lifecycle_generation=$2::bigint
+       and r.sandbox_id=sandboxes.id and r.generation=$2::bigint-1
+       and r.stop_generation=sandboxes.stop_generation
+       and sandboxes.preservation_stop_generation=sandboxes.stop_generation
+       and not sandboxes.application_secret_tainted and (${NATIVE_WORK_ROUTE})`,
+    [sandboxId, generation],
+  );
 }
 
 export async function publishOwnerStop(

@@ -4810,6 +4810,32 @@ export type Database = {
           },
         ];
       };
+      sandbox_native_preservation_receipts: {
+        Row: {
+          sandbox_id: string;
+          generation: number;
+          stop_generation: number;
+        };
+        Insert: {
+          sandbox_id: string;
+          generation: number;
+          stop_generation: number;
+        };
+        Update: {
+          sandbox_id?: string;
+          generation?: number;
+          stop_generation?: number;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "sandbox_native_preservation_receipts_sandbox_id_fkey";
+            columns: ["sandbox_id"];
+            isOneToOne: true;
+            referencedRelation: "sandboxes";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
       sandbox_output_chunks: {
         Row: {
           transfer_id: string;
@@ -5188,8 +5214,6 @@ export type Database = {
           transition_context: Json | null;
           outputs_retained_generation: number | null;
           outputs_attempt_count: number;
-          native_preservation_generation: number | null;
-          native_preservation_stop_generation: number | null;
         };
         Insert: {
           id?: string;
@@ -5267,8 +5291,6 @@ export type Database = {
           transition_context?: Json | null;
           outputs_retained_generation?: number | null;
           outputs_attempt_count?: number;
-          native_preservation_generation?: number | null;
-          native_preservation_stop_generation?: number | null;
         };
         Update: {
           id?: string;
@@ -5346,8 +5368,6 @@ export type Database = {
           transition_context?: Json | null;
           outputs_retained_generation?: number | null;
           outputs_attempt_count?: number;
-          native_preservation_generation?: number | null;
-          native_preservation_stop_generation?: number | null;
         };
         Relationships: [
           {

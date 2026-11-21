@@ -46,6 +46,7 @@ import { scopedOrg } from "./control-caller.ts";
 import { createResourceStore, type ResourceStore } from "./resource-store.ts";
 import { unsettledRuntimeCommands } from "./runtime-idle-evidence.ts";
 import {
+  carryNativePreservationAcrossStop,
   completeSandboxDeletion,
   expireAfterExtension,
   finishLaunchFailure,
@@ -945,18 +946,6 @@ export function createSqlData(
               "stop_generation = case when s.stop_requested_at is null then s.stop_generation + 1 else s.stop_generation end",
             );
         }
-        if (
-          patch.finishActivity &&
-          stopStatus !== undefined &&
-          (patch.stopRequested === true ||
-            (patch.stopRequested === false && stopStatus !== "stopping" && patch.stoppedAt))
-        )
-          sets.push(`native_preservation_generation = case
-            when s.stop_requested_at is not null and not s.application_secret_tainted
-              and s.native_preservation_generation = s.lifecycle_generation
-              and s.native_preservation_stop_generation = s.stop_generation
-              and s.preservation_stop_generation = s.stop_generation
-            then s.lifecycle_generation + 1 else s.native_preservation_generation end`);
         if (patch.renewActivity) sets.push("activity_until = now() + interval '2 minutes'");
         if (
           (patch.finishActivity || patch.turnActivity === "finish") &&
@@ -1148,6 +1137,12 @@ export function createSqlData(
             const row = updated.rows[0];
             if (stopStatus !== undefined && row?.id) {
               if (!row.status || !row.generation) throw new Error("Owner stop update did not return its fence.");
+              if (
+                patch.finishActivity &&
+                (patch.stopRequested === true ||
+                  (patch.stopRequested === false && stopStatus !== "stopping" && patch.stoppedAt))
+              )
+                await carryNativePreservationAcrossStop(tx, id, row.generation);
               await publishOwnerStop(tx, {
                 sandboxId: id,
                 generation: row.generation,

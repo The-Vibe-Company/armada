@@ -1,8 +1,13 @@
-alter table public.sandboxes
-  add column native_preservation_generation bigint,
-  add column native_preservation_stop_generation bigint;
+begin;
 
-comment on column public.sandboxes.native_preservation_generation is
-  'Lifecycle generation of a successful, lease-fenced native work preservation receipt.';
-comment on column public.sandboxes.native_preservation_stop_generation is
-  'Stop epoch of that same receipt, independent of receipt updates by older writers.';
+create table public.sandbox_native_preservation_receipts (
+  sandbox_id uuid primary key references public.sandboxes(id) on delete cascade,
+  generation bigint not null,
+  stop_generation bigint not null
+);
+
+alter table public.sandbox_native_preservation_receipts enable row level security;
+revoke all on public.sandbox_native_preservation_receipts from public, anon, authenticated;
+grant select, insert, update on public.sandbox_native_preservation_receipts to service_role;
+
+commit;
