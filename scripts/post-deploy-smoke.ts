@@ -1081,6 +1081,7 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
           now: io.now,
           sleep: io.sleep,
           deadline,
+          toolEvidenceTimeoutMs: (deadlines as Record<string, number>).scoped_tool_evidence,
           recordSandbox: (id, key) => io.recordSandbox?.(item.org, id, key, item.provider) ?? Promise.resolve(),
           poll: (read, done) => poll(read, done, { limit: 300 }),
           step,

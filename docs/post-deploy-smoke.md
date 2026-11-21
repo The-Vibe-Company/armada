@@ -1898,8 +1898,11 @@ ten-minute default when there are too few samples. Inventory can identify
 allocations for cleanup after an ambiguous response. Snapshot, default-skill,
 scoped-parent and template-install checks still require their launch-specific
 proof before they can pass. Scoped child evidence comes from the parent's
-keyed tool receipt when its delivery is delayed, and scheduled routine
-evidence comes from occurrence history. Lifecycle readiness, prompt admission,
+keyed tool receipt when its delivery is delayed. The `scoped_tool_evidence`
+budget covers the initial log read and subsequent observation. Without a
+measured entry, the initial read keeps its existing request timeout and
+subsequent observation keeps its ten-second window. Scheduled routine evidence
+comes from occurrence history. Lifecycle readiness, prompt admission,
 turn completion and token usage use their respective `ready`, `send`,
 `resume_send`, `wait`, `resume_wait`, `usage`, and `resume_usage` entries. Each
 request is capped at the time remaining for the step. Template prompt completion

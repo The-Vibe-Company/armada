@@ -21,7 +21,7 @@ import { nativeIdleDue, nativeQuiescent } from "./native-idle.ts";
 import { LIVE_OUTPUT_CANDIDATE } from "./output-transfers.ts";
 import { recordNativeIdleTurn } from "./runtime-idle-evidence.ts";
 import { SANDBOX_VISIBLE } from "./sandbox-visibility.ts";
-import { INTERRUPTED_LAUNCH_REASON } from "./turns.ts";
+import { INTERRUPTED_LAUNCH_REASON, MODAL_LAUNCH_FAILURE } from "./turns.ts";
 import { deferTransactionWake, eventFeedWakeKey, runtimeWakes } from "./wake-bus.ts";
 import { preserveBeforeStop, purgeWorkRecovery, recordStopDispatch } from "./work-preservation.ts";
 
@@ -284,7 +284,6 @@ export async function markOutputCollectorSupported(sql: Sql, id: string, generat
   return verified.rows.length > 0;
 }
 
-export const MODAL_LAUNCH_FAILURE = "modal_launch_failed";
 export const UNENROLLED_RESUME_STOP = "runtime_resume_unenrolled";
 const OPERATOR_CLEANUP_PREFIX = "Operator cleanup required:";
 

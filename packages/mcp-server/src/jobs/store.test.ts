@@ -4,7 +4,9 @@ import { type ModalMachineOptions, scopeKey } from "@armada/provider-modal";
 import { rowOnlyDatabase } from "../../test/row-only-database.ts";
 import { createTurnDispatchJob, type DispatchTurn } from "../account-turn-dispatch.ts";
 import { createAccountTurnQueue } from "../account-turn-queue.ts";
+import { createSqlData } from "../data.ts";
 import { createGoldenRuntimeEnvironment } from "../golden-runtime-environment.ts";
+import { launchCredentials } from "../launch-credentials.ts";
 import { createOrdinaryLaunchReceipts } from "../ordinary-launch-receipts.ts";
 import { retentionMaintenanceJob, seedRetentionMaintenance } from "../retention-maintenance.ts";
 import { createRuntimeCommands } from "../runtime-commands.ts";
@@ -14,6 +16,7 @@ import { createRuntimeMcp, type RuntimeMcp } from "../runtime-mcp.ts";
 import { createSandboxLifecycle } from "../sandbox-lifecycle.ts";
 import type { LaneFactory } from "../server-worker-modules.ts";
 import { sqlOver } from "../sql.ts";
+import { callSharedTool } from "../tool-api.ts";
 import { runtimeWakes } from "../wake-bus.ts";
 import {
   admitModalLaunch as admitModalLaunchWithMcp,
@@ -1471,6 +1474,48 @@ test.each(["allocated", "deleting", "deleted"] as const)(
     expect(cleanupEffects().cleanupPreparations).toBe(phase === "deleted" ? 1 : 2);
   },
 );
+
+test("status and wait return a failed Modal launch receipt before provider identity exists", async () => {
+  const { f, id, jobId, makeRunner } = await modalLaunchFixture(await modalAdmissionFixture());
+  await f.db.query("update jobs set deadline_at='-infinity' where id=$1", [jobId]);
+  const runner = makeRunner();
+  expect(await runner.reconcileOne(signal)).toBe(true);
+  await runner.drain();
+  const caller = {
+    via: "service" as const,
+    userId: f.people.owner,
+    orgs: [{ orgId: f.people.org, role: "member" as const }],
+  };
+  const unexpectedProvider = async () => {
+    throw new Error("Provider lookup requires a bound machine");
+  };
+  const context = {
+    caller,
+    data: createSqlData(f.sql)(caller),
+    launchCredentials: launchCredentials(createSqlVaultStore(f.sql), launchEncryptionKey),
+    exposedSecrets: async () => [],
+    provider: unexpectedProvider,
+    storedProviders: { modal: unexpectedProvider },
+    now: () => new Date("2026-11-21T00:00:00Z"),
+    sleep: async () => {
+      throw new Error("A failed launch must settle immediately");
+    },
+  } satisfies Parameters<typeof callSharedTool>[0];
+
+  for (const action of ["status", "wait"]) {
+    expect(await callSharedTool(context, action, { id })).toMatchObject({
+      id,
+      status: "failed",
+      statusReason: "modal_launch_failed",
+      providerState: null,
+      prompt: null,
+      settled: true,
+    });
+  }
+  await expect(
+    callSharedTool(context, "report", { id, prompt_id: "missing", outcome: { state: "ready" } }),
+  ).rejects.toMatchObject({ code: "conflict" });
+});
 
 async function failedModalLaunchFixture() {
   const fixture = await modalLaunchFixture();
