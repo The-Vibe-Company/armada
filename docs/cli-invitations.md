@@ -1,8 +1,5 @@
 # Organization invitations
 
-All commands use the authenticated Armada control API. No provider credentials,
-Supabase configuration, or database access is needed on the terminal.
-
 ## Admin management
 
 Use **Invite a teammate** on the organization dashboard to create an invitation.
@@ -19,12 +16,14 @@ of inbox delivery. After an uncertain request, list invitations before retrying.
 
 ## Accept an invitation
 
-First use `armada login` to sign in personally with the invitation recipient's
-verified email. A service token is not a substitute for that personal login;
-unset `ARMADA_TOKEN` if it overrides your saved login. The server checks identity.
+Open the invitation email link and sign in to the dashboard with the recipient's
+verified email. Review the organization and select **Accept and join**. Opening
+the link or previewing it leaves membership pending.
 
-The email link opens `/invitations/accept?token=...` on the dashboard; opening it
-or a link preview never joins an organization. Only explicit acceptance joins.
+For scripts, use a personal `armada login`. Unset `ARMADA_TOKEN` if a service key
+overrides that login. Supply the acceptance JSON through stdin as shown in
+the [administration API reference](cli-admin.md#organization-invitations).
+
 A wrong verified email, expired/revoked token, or replay is rejected by the server.
 Resending invalidates the previous token; use the new email's token.
 
