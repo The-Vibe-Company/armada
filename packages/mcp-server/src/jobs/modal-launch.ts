@@ -35,7 +35,12 @@ import { type OrdinaryLaunchFailure, replayOrdinaryLaunchFailure } from "../ordi
 import { runtimeAgentFor, workspaceCommandId } from "../runtime-agent.ts";
 import { RuntimeCommandRefused } from "../runtime-commands.ts";
 import type { RuntimeConfigurationTarget } from "../runtime-configuration.ts";
-import { createRuntimeEnrolments, type RuntimeTicketGuard, scopedRuntimeSql } from "../runtime-enrolment.ts";
+import {
+  createRuntimeEnrolments,
+  RuntimeEnrolmentDenied,
+  type RuntimeTicketGuard,
+  scopedRuntimeSql,
+} from "../runtime-enrolment.ts";
 import type { RuntimeGitHub } from "../runtime-github.ts";
 import { pinnedMcpConnections, type RuntimeMcp } from "../runtime-mcp.ts";
 import { readRuntimeTemplateEnvironment } from "../runtime-readable-variables.ts";
@@ -588,6 +593,8 @@ type OpenModalMachine = (
   signal: AbortSignal,
 ) => Promise<ModalMachineRuntime & { close(): void }>;
 
+class ModalBootstrapRefused extends Error {}
+
 export function modalLaunchTicketGuard(sandbox: RuntimeConfigurationTarget) {
   return {
     async lockPrerequisites(tx: Sql) {
@@ -595,7 +602,7 @@ export function modalLaunchTicketGuard(sandbox: RuntimeConfigurationTarget) {
         sandbox.orgId,
         sandbox.ownerId,
       ]);
-      if (!member.rows.length) throw new Error("Modal launch owner membership is unavailable.");
+      if (!member.rows.length) throw new ModalBootstrapRefused("Modal launch owner membership is unavailable.");
       const credential = await tx.query(
         `select 1 from public.credentials where id=$1 and version=$2 and kind=any($5::public.credential_kind[])
              and status='active' and (expires_at is null or expires_at>clock_timestamp())
@@ -608,14 +615,14 @@ export function modalLaunchTicketGuard(sandbox: RuntimeConfigurationTarget) {
           HARNESS_KINDS[sandbox.harness],
         ],
       );
-      if (!credential.rows.length) throw new Error("Modal launch account is unavailable.");
+      if (!credential.rows.length) throw new ModalBootstrapRefused("Modal launch account is unavailable.");
     },
     async checkAccountPin(tx: Sql) {
       const current = await tx.query(
         "select 1 from public.sandboxes where id=$1 and credential_id=$2 and credential_version=$3",
         [sandbox.id, sandbox.credentialId, sandbox.credentialVersion],
       );
-      if (!current.rows.length) throw new Error("Modal launch account pin changed.");
+      if (!current.rows.length) throw new ModalBootstrapRefused("Modal launch account pin changed.");
     },
   };
 }
@@ -806,8 +813,13 @@ export async function runModalLaunch(
 
   const enrolmentInProgress = new Error("Modal launch enrolment already issued.");
   const enrolments = createRuntimeEnrolments(sql, encryptionKey);
+  const targetIncarnation = {
+    sandboxId,
+    generation,
+    replayingTicket: Boolean(pending.check_after && pending.bootstrap_ticket_enc),
+  };
   const dispatch = plan
-    ? await dispatchModalLaunch(sql, job, context, plan, { sandboxId, generation }, async (request, preparation) => {
+    ? await dispatchModalLaunch(sql, job, context, plan, targetIncarnation, async (request, preparation) => {
         const { ownerId, configuration, commandGrantExpiresAt, lockPrerequisites, checkAccountPin, ...prepared } =
           preparation;
         if (pending.check_after && pending.bootstrap_ticket_enc) {
@@ -831,7 +843,7 @@ export async function runModalLaunch(
                 configuration.artifactManifest,
               );
               if (!(await context.canDispatch(locked)))
-                throw new Error("Modal bootstrap dispatch is no longer authorized.");
+                throw new ModalBootstrapRefused("Modal bootstrap dispatch is no longer authorized.");
               return refreshed;
             });
           });
@@ -948,7 +960,13 @@ async function dispatchModalLaunch(
   job: Job,
   context: DispatchContext,
   plan: ModalLaunchPlan,
-  { sandboxId, generation }: Pick<MachineIncarnation, "sandboxId" | "generation">,
+  {
+    sandboxId,
+    generation,
+    replayingTicket,
+  }: Pick<MachineIncarnation, "sandboxId" | "generation"> & {
+    replayingTicket: boolean;
+  },
   resolveRuntimeTicket: (
     request: Parameters<PrepareModalTicket>[0],
     preparation: Awaited<ReturnType<ModalLaunchPlan["prepareRuntimeTicket"]>>,
@@ -984,7 +1002,12 @@ async function dispatchModalLaunch(
       return await work();
     } catch (error) {
       signal.throwIfAborted();
-      if (canDefer && (!(error instanceof ProviderError) || error.retryable) && (await canDispatch()))
+      if (
+        canDefer &&
+        !(error instanceof ModalBootstrapRefused || error instanceof RuntimeEnrolmentDenied) &&
+        (!(error instanceof ProviderError) || error.retryable) &&
+        (await canDispatch())
+      )
         return "deferred" as const;
       throw error;
     }
@@ -1008,9 +1031,14 @@ async function dispatchModalLaunch(
         if (recoveredAllocation && (await canDeferPreparation(request.machineId))) throw preparationDeferred;
         throw error;
       });
-      const ticket = await resolveRuntimeTicket(request, preparation);
-      if (ticket && (await target())?.provider_sandbox_id !== request.machineId)
-        throw new Error("Modal bootstrap dispatch is no longer authorized.");
+      const canDeferReplay = recoveredAllocation && replayingTicket;
+      const ticket = await beforeProviderMutation(() => resolveRuntimeTicket(request, preparation), canDeferReplay);
+      if (ticket === "deferred") throw preparationDeferred;
+      if (!ticket) return null;
+      const authorized = await beforeProviderMutation(target, canDeferReplay);
+      if (authorized === "deferred") throw preparationDeferred;
+      if (authorized?.provider_sandbox_id !== request.machineId)
+        throw new ModalBootstrapRefused("Modal bootstrap dispatch is no longer authorized.");
       return ticket;
     },
   });
