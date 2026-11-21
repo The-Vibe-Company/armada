@@ -15,7 +15,7 @@ interface Case {
 interface Io {
   launch<T>(body: object, keepHandle: (id: string) => void): Promise<T>;
   request<T>(path: string, body: object, timeoutMs?: number): Promise<T>;
-  deadlineFor(step: "expiry_ready" | "expiry_as_stop"): number | undefined;
+  deadlineFor(step: "expiry_ready" | "expiry_deadline" | "expiry_as_stop"): number | undefined;
   step<T>(name: string, action: () => Promise<T>): Promise<T>;
   withCleanup<T>(action: () => Promise<T>): Promise<T>;
   sleep(ms: number): Promise<void>;
@@ -139,7 +139,7 @@ export async function runExpiryCase(item: Case, io: Io): Promise<boolean> {
     const expiresAt = ready.expiresAt;
     await io.step("expiry_deadline", async () => {
       // Receipt must be a short ordinary TTL, not a hard-provider-timeout or an unbounded wait.
-      const row = await metadata();
+      const row = await metadata(io.deadlineFor("expiry_deadline"));
       const deadline = typeof expiresAt === "string" ? Date.parse(expiresAt) : NaN;
       if (
         row.effectiveTtlSeconds !== TTL ||
