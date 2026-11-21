@@ -351,28 +351,35 @@ export async function transitionSandbox(tx: Sql, input: SandboxTransition) {
   return { kind: "applied", generation: Number(result.generation) } satisfies SandboxTransitionResult;
 }
 
-export async function publishDockerRuntimeReadiness(
+export async function publishRuntimeReadiness(
   tx: Sql,
   sandboxId: string,
   generation: string,
   enrolment: "bootstrap" | "retained",
 ) {
-  const {
-    rows: [starting],
-  } = await tx.query<{ generation: string }>(
-    `select s.lifecycle_generation::text as generation from public.sandboxes s
-     where s.id=$1 and s.provider='docker' and s.status='starting' and s.lifecycle_generation=$3
-     and $2::boolean = exists(
-       select 1 from public.docker_resume_claims c where c.sandbox_id=s.id
-       and c.lifecycle_generation=s.lifecycle_generation-1 and c.accepted
-     )
-     and ($2::boolean or exists(
-       select 1 from public.docker_host_jobs j where j.bound_sandbox_id=s.id
-       and j.bound_operation='create' and j.outcome='completed'
-     ))`,
+  const { rows } = await tx.query(
+    `select 1 from public.sandboxes s
+     where s.id=$1 and s.status='starting' and s.lifecycle_generation=$3
+       and (
+         (s.provider='docker' and $2::boolean = exists(
+           select 1 from public.docker_resume_claims c where c.sandbox_id=s.id
+           and c.lifecycle_generation=s.lifecycle_generation-1 and c.accepted
+         ) and ($2::boolean or exists(
+           select 1 from public.docker_host_jobs j where j.bound_sandbox_id=s.id
+           and j.bound_operation='create' and j.outcome='completed'
+         )))
+         or (s.provider='modal' and not $2::boolean and exists(
+           select 1 from public.jobs j
+           where j.sandbox_id=s.id and j.org_id=s.org_id and j.request_owner_id=s.owner_id
+             and j.generation=s.lifecycle_generation and j.kind='launch' and j.state in ('queued','leased')
+             and j.outcome #>> '{modal_machine,entry,operation}'='create'
+             and j.outcome #>> '{modal_machine,entry,phase}'='allocated'
+             and j.outcome #>> '{modal_machine,entry,machineId}'=s.provider_sandbox_id
+         ))
+       )`,
     [sandboxId, enrolment === "retained", generation],
   );
-  if (!starting) return "skipped";
+  if (!rows.length) return "skipped";
   const transition = await transitionSandbox(tx, {
     sandboxId,
     expectedGeneration: generation,
