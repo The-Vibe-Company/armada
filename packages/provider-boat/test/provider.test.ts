@@ -1468,6 +1468,11 @@ test("Boat does not publish an older snapshot without verification for the curre
       sandbox: sandbox({
         state: "archived",
         stoppedAt: "2026-11-18T10:01:00Z",
+        stop: {
+          id: "stop-1",
+          status: StopOperationStatusEnum.Completed,
+          endedAt: "2026-11-18T10:01:00Z",
+        },
         snapshotAvailable: true,
         snapshotCompletedAt: "2026-11-18T10:00:00Z",
         lastSnapshotStatus: "completed",
@@ -1477,26 +1482,6 @@ test("Boat does not publish an older snapshot without verification for the curre
   const snapshot = await boat.provider.openRetainedOutputs!({ sandboxId: ID, signal: new AbortController().signal });
   expect(snapshot).toBe("gone");
   expect(boat.requests).toHaveLength(1);
-});
-
-test("Boat leaves retained output collection pending when the stop proof lookup returns not found", async () => {
-  const stoppedAt = "2026-11-18T10:00:01Z";
-  const boat = fakeBoat(
-    {
-      body: {
-        sandbox: retainedSandbox({
-          stoppedAt,
-          snapshotVerifiedAt: "2026-11-18T10:00:00Z",
-          lastSnapshotStatus: SandboxLastSnapshotStatusEnum.Completed,
-          stop: { id: "stop-1", status: StopOperationStatusEnum.Completed, endedAt: stoppedAt },
-        }),
-      },
-    },
-    errorBody(404, "not_found", "Stop not found"),
-  );
-  expect(await boat.provider.openRetainedOutputs!({ sandboxId: ID, signal: new AbortController().signal })).toBe(
-    "pending",
-  );
 });
 
 test("Boat finishes retained collection if the sandbox disappears after its metadata lookup", async () => {
