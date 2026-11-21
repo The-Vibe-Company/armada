@@ -143,8 +143,6 @@ test("recovery receipts retain encrypted versions and only current interior owne
     expect(handoff?.current).toBe(true);
     authority.generation = handoff!.lifecycle_generation;
 
-    // A historical archive does not satisfy the current dirty receipt. If its
-    // exact archive is lost, the same stop must recapture before reusing proof.
     await db.query("delete from sandbox_work_recovery where id=$1", [captured.id]);
     await db.query("update sandboxes set activity_lease_id=$2, activity_until=now()+interval '2 minutes' where id=$1", [
       id,
