@@ -389,11 +389,13 @@ export function configureTools(
     const { sandbox: found, provider, enrolled } = await liveControl(args);
 
     await data.sandboxes.assertExecAllowed?.(found.id);
-    if (!enrolled)
-      await context.launchCredentials.assertExec?.(
+    const nativeBoat = !enrolled && found.provider === "boat";
+    const managedNative =
+      !enrolled &&
+      (await context.launchCredentials.assertExec?.(
         { userId: found.ownerId, orgId: found.orgId, role: "member" },
         found.id,
-      );
+      ));
     let acknowledged = false;
     const execute = async (signal?: AbortSignal) => {
       const membership = caller.orgs.find((member) => member.orgId === found.orgId);
@@ -443,18 +445,18 @@ export function configureTools(
         );
       }
     };
-    if (enrolled || (found.provider !== "boat" && found.provider !== "modal")) {
+    if (!nativeBoat && !managedNative) {
       return execute();
     }
 
-    const admission: ServerSandboxPatch = { nativeExecAdmission: true };
+    const admission: ServerSandboxPatch = nativeBoat ? { nativeBoatExecAdmission: true } : {};
     return sandboxActivity(
       data.sandboxes,
       found,
       admission,
       async (signal) => {
         signal.throwIfAborted();
-        const result = await execute(signal);
+        const result = await execute(nativeBoat ? signal : undefined);
         signal.throwIfAborted();
         return { result, patch: {} };
       },

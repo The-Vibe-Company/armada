@@ -255,6 +255,7 @@ export function launchCredentials(
     },
     async assertExec(actor, sandboxId) {
       if (ownership) await ownership.assertSandbox(actor, sandboxId, false, true);
+      return ownership ? ownership.managed(sandboxId) : false;
     },
     async assertTurn(actor, sandboxId, resuming) {
       if (ownership) {

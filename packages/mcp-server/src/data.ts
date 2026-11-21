@@ -76,7 +76,7 @@ export interface SandboxView extends SandboxRecord {
 export interface ServerSandboxPatch extends SandboxPatch {
   deleteCompleted?: true;
   expireAfterExtension?: true;
-  nativeExecAdmission?: true;
+  nativeBoatExecAdmission?: true;
   nativeRetentionRefusal?: string;
   nativeResumeAdmission?: string;
   nativeSendAdmission?: ServerSandboxPatch["nativeChildSend"];
@@ -124,7 +124,7 @@ export interface ServerSandboxStore extends SandboxStore {
   launchTiming?(id: string): Promise<LaunchTiming | null>;
   assertExtensionAllowed?(id: string): Promise<void>;
   assertDeletionAllowed?(id: string): Promise<void>;
-  /** Refuse taint and stop intent before any exec; native exec also claims the activity lease. */
+  /** Refuse taint and stop intent before any exec; native Boat exec also claims the activity lease. */
   assertExecAllowed?(id: string): Promise<void>;
   recordUsage?(
     id: string,
@@ -1055,8 +1055,8 @@ export function createSqlData(
         if (patch.deleteRequested)
           fence += ` and s.status in ('stopped','failed')
             and not ${SANDBOX_DELETION_MANAGED}`;
-        if (patch.nativeExecAdmission)
-          fence += ` and s.provider in ('boat','modal') and not s.boat_runtime
+        if (patch.nativeBoatExecAdmission)
+          fence += ` and s.provider='boat' and not s.boat_runtime
             and s.runtime_transport is distinct from 'dialout'
             and s.status in ('starting','ready','running') and s.deleted_at is null
             and s.expires_at>clock_timestamp() and s.stop_requested_at is null`;
