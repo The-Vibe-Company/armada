@@ -337,7 +337,7 @@ test.each(["active", "revoked"] as const)(
       expect((await db.query("select id from jobs where sandbox_id=$1", [sandboxId])).rows).toEqual([]);
       return;
     }
-    const accepted = { sandbox: { id: sandboxId, status: "starting" } };
+    const accepted = { sandbox: { id: sandboxId, status: "starting" } } as const;
     expect(await admit()).toEqual(accepted);
     expect(await admit()).toEqual(accepted);
     expect(
