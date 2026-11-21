@@ -4,12 +4,13 @@ import { PGlite } from "@electric-sql/pglite";
 import { parseNativeDrainArgs, runNativeDrain } from "./drain-native.ts";
 
 const db = new PGlite();
-const connection = (driver: Pick<PGlite, "query">): Sql => ({
-  query: async <T>(statement: string, params?: unknown[]) => {
-    const { rows } = await driver.query<T>(statement, params);
-    return { rows };
-  },
-});
+const connection = (driver: Pick<PGlite, "query">) =>
+  ({
+    query: async <T>(statement: string, params?: unknown[]) => {
+      const { rows } = await driver.query<T>(statement, params);
+      return { rows };
+    },
+  }) satisfies Sql;
 const sql: Sql = { ...connection(db), transaction: (work) => db.transaction((tx) => work(connection(tx))) };
 const run = (...args: string[]) => runNativeDrain(parseNativeDrainArgs(args), sql);
 

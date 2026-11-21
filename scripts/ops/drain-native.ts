@@ -33,7 +33,7 @@ const candidatesQuery = `
   order by s.id
 `;
 
-export function parseNativeDrainArgs(args: readonly string[]): NativeDrainRequest {
+export function parseNativeDrainArgs(args: readonly string[]) {
   const [flag, requestedProvider, mode] = args;
   const provider = nativeProviders.find((candidate) => candidate === requestedProvider);
   if (flag !== "--provider" || !provider || args.length > 3 || (mode !== undefined && mode !== "--dry-run"))
@@ -76,14 +76,13 @@ export async function runNativeDrain(
       await operation.remove(row);
       deleted++;
     } catch {
-      // Provider and database failures may include private IDs or sensitive upstream text.
       failed++;
     }
   }
   return { provider, mode: "drain" as const, total: rows.length, deleted, failed };
 }
 
-async function configureDelete(sql: Sql, provider: NativeProvider, actorId: string): Promise<DeleteNativeRow> {
+async function configureDelete(sql: Sql, provider: NativeProvider, actorId: string) {
   const { createSqlVaultStore } = await import("@armada/core/server");
   const { createSqlData } = await import("../../packages/mcp-server/src/data.ts");
   const { providerRegistry } = await import("../../packages/mcp-server/src/http.ts");
@@ -94,7 +93,6 @@ async function configureDelete(sql: Sql, provider: NativeProvider, actorId: stri
   const publicUrl = Bun.env.ARMADA_PUBLIC_URL;
   if (!encryptionKey || !publicUrl) throw new Error("Native drain provider configuration is incomplete.");
   const vault = createSqlVaultStore(sql);
-  // Lazy so a missing provider artifact fails only the applicable row.
   let modal: ReturnType<typeof createModalIntegration> | undefined;
   const modalIntegration = () => (modal ??= createModalIntegration({ sql, vault, encryptionKey, publicUrl }));
   const deploymentId = Bun.env.ARMADA_BOAT_DEPLOYMENT_ID?.trim();
@@ -107,7 +105,7 @@ async function configureDelete(sql: Sql, provider: NativeProvider, actorId: stri
       (await modalIntegration()).modalProviderFor(tokens, binding, context),
   });
   const data = createSqlData(sql);
-  return async (row) => {
+  const remove: DeleteNativeRow = async (row) => {
     if (!row.role) throw new Error("The operator has no organization membership.");
     const { sandboxes } = data({ userId: actorId, orgs: [{ orgId: row.org_id, role: row.role }], via: "service" });
     await deleteSandboxWithActivity(
@@ -123,6 +121,7 @@ async function configureDelete(sql: Sql, provider: NativeProvider, actorId: stri
       "native-drain",
     );
   };
+  return remove;
 }
 
 async function execute({ provider, dryRun }: NativeDrainRequest) {
@@ -138,8 +137,7 @@ async function execute({ provider, dryRun }: NativeDrainRequest) {
     return 1;
   }
   if (!dryRun) {
-    // This is a one-shot CLI process. Provider diagnostics, including detached
-    // cleanup logs, must never reach its shared report or error output.
+    // WARNING: Provider diagnostics can contain private IDs. Only print aggregate results from this CLI.
     globalThis.console = new Console(new Writable({ write: (_chunk, _encoding, done) => done() }));
   }
   const sql = bunSql(url, 1);
