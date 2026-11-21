@@ -1304,7 +1304,8 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
         io.out(JSON.stringify({ step: "scoped_access", mode: scope, model: "scripted" }));
         await scoped.prepare();
       }
-      await step(scoped ? "scoped_parent_launch" : "launch", async () => {
+      const launchStep = scoped ? "scoped_parent_launch" : "launch";
+      await step(launchStep, async () => {
         launchAttempted = true;
         type LaunchReceipt = {
           sandbox: {
@@ -1385,7 +1386,7 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
         const { result, recovered } = await launchWithObservation<LaunchReceipt>(
           item,
           body,
-          (deadlines as Record<string, number>).launch ?? 600_000,
+          (deadlines as Record<string, number>)[launchStep] ?? deadlines.launch ?? 600_000,
           request,
           (id) => {
             sandboxId = id;
