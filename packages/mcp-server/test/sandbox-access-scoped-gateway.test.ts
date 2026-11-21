@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { expect, mock, test } from "bun:test";
 import { ORCHESTRATOR_SCOPED_PATH } from "@armada/core/contract";
 import { observeRequest } from "../src/request-observability.ts";
 import { createSandboxScopedGateway } from "../src/sandbox-access-scoped-gateway.ts";
@@ -9,9 +9,22 @@ for (const transport of ["mcp", "rest"] as const) {
     const fail = async () => {
       throw Object.assign(new Error(privateMessage), { code: "ECONNRESET" });
     };
+    const configureMutationRequest = mock((_request: Request) => {});
     const route = createSandboxScopedGateway(
-      { message: fail, launch: fail, read: fail, extend: fail, stop: fail, reconcileOne: fail, drain: fail },
+      {
+        message: fail,
+        launch: fail,
+        read: fail,
+        extend: fail,
+        stop: fail,
+        reconcileOne: fail,
+        drain: fail,
+        stopAdmission() {},
+      },
       { catalogGrant: fail },
+      undefined,
+      undefined,
+      configureMutationRequest,
     );
     const args = { sandboxId: crypto.randomUUID(), text: "hello" };
     const key = "message-fixture";
@@ -42,6 +55,7 @@ for (const transport of ["mcp", "rest"] as const) {
       async () => (await route(request)) ?? new Response(null, { status: 404 }),
       (line) => logs.push(line),
     );
+    expect(configureMutationRequest).toHaveBeenCalledWith(request);
     const requestId = response?.headers.get("x-request-id");
     expect(requestId).toBeTruthy();
     expect(response?.status).toBe(transport === "mcp" ? 200 : 503);

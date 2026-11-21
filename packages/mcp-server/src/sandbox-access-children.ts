@@ -68,6 +68,7 @@ type ChildDispatch = {
   action: ChildOperation["action"];
 };
 export class ChildMessageNotDispatched extends Error {}
+class ChildAdmissionCancelled extends Error {}
 
 function blockedBeforeDispatch(error: unknown) {
   const cause = error instanceof DataError ? error.cause : error;
@@ -105,6 +106,7 @@ export interface SandboxChildExecutor {
 
 export function createSandboxChildren(sql: Sql, authority: ChildAuthority, executor: SandboxChildExecutor) {
   const operations = trackedOperations();
+  const shutdown = new AbortController();
   async function mutate(
     token: string,
     key: string,
@@ -265,8 +267,7 @@ export function createSandboxChildren(sql: Sql, authority: ChildAuthority, execu
       return { id: receipt.id, state: receipt.state, sandboxId: receipt.sandboxId };
     }
     const deadline = AbortSignal.timeout(120_000);
-    const admissionSignal = signal ? AbortSignal.any([signal, deadline]) : deadline;
-    let targetGeneration: string | undefined;
+    const admissionSignal = AbortSignal.any([shutdown.signal, deadline, ...(signal ? [signal] : [])]);
     async function admitDispatch(resumingAdmission: boolean) {
       const wake = runtimeWakes.watch(SANDBOX_ADMISSION_WAKE);
       try {
@@ -275,18 +276,15 @@ export function createSandboxChildren(sql: Sql, authority: ChildAuthority, execu
           const admission = await authority.admit(token, request, async (tx) => {
             if (input.action !== "launch") {
               const {
-                rows: [target],
-              } = await tx.query<{ generation: string; busy: boolean }>(
-                `select lifecycle_generation::text as generation,
-                    (coalesce(reconcile_lease_until>clock_timestamp(),false)
+                rows: [lease],
+              } = await tx.query<{ busy: boolean }>(
+                `select (coalesce(reconcile_lease_until>clock_timestamp(),false)
                       or ($2='stop' and runtime_transport is not distinct from 'dialout' and activity_lease_id is not null)) as busy
                   from public.sandboxes where id=$1`,
                 [receipt.sandboxId, input.action],
               );
-              if (!target || (targetGeneration !== undefined && targetGeneration !== target.generation))
-                throw new Error("Child generation changed during admission.");
-              targetGeneration = target.generation;
-              if (target.busy) return { busy: true as const };
+              if (!lease) throw new Error("Child sandbox disappeared during admission.");
+              if (lease.busy) return { busy: true as const };
             }
             admissionSignal.throwIfAborted();
             const {
@@ -355,6 +353,7 @@ export function createSandboxChildren(sql: Sql, authority: ChildAuthority, execu
     let phase: "execution" | "completion" = "execution";
     try {
       if (input.action === "launch") {
+        if (admissionSignal.aborted) throw new ChildAdmissionCancelled();
         const result = await executor.launch(operation, input.selection);
         phase = "completion";
         // Store the physical receipt even if a later membership/generation check fails.
@@ -412,6 +411,7 @@ export function createSandboxChildren(sql: Sql, authority: ChildAuthority, execu
         );
       } else {
         while (true) {
+          if (admissionSignal.aborted) throw new ChildAdmissionCancelled();
           try {
             if (input.action === "message") await executor.message(operation, input.text);
             else if (input.action === "extend") {
@@ -451,6 +451,7 @@ export function createSandboxChildren(sql: Sql, authority: ChildAuthority, execu
       const reconciliationRefused =
         !recovery && phase === "execution" && input.action !== "launch" && refusal !== undefined;
       const notDispatched =
+        error instanceof ChildAdmissionCancelled ||
         reconciliationRefused ||
         (input.action === "message" && (setupRefused || error instanceof ChildMessageNotDispatched));
       const state = noAllocation || notDispatched ? "failed" : "uncertain";
@@ -461,17 +462,20 @@ export function createSandboxChildren(sql: Sql, authority: ChildAuthority, execu
           : "child_outcome_unconfirmed";
       if (noAllocation) error.record(operation, code);
       else {
-        const refusalCode = reconciliationRefused
-          ? refusal.reason
-          : notDispatched
-            ? setupRefused
-              ? error.reason
-              : error instanceof ChildMessageNotDispatched &&
-                  error.cause instanceof DataError &&
-                  error.cause.code === "sandbox_not_ready"
-                ? "sandbox_not_ready"
-                : "native_admission_error"
-            : undefined;
+        const refusalCode =
+          error instanceof ChildAdmissionCancelled
+            ? "admission_cancelled"
+            : reconciliationRefused
+              ? refusal.reason
+              : notDispatched
+                ? setupRefused
+                  ? error.reason
+                  : error instanceof ChildMessageNotDispatched &&
+                      error.cause instanceof DataError &&
+                      error.cause.code === "sandbox_not_ready"
+                    ? "sandbox_not_ready"
+                    : "native_admission_error"
+                : undefined;
         const executionCause =
           error instanceof RuntimeFollowupConflict
             ? error.reason
@@ -504,6 +508,7 @@ export function createSandboxChildren(sql: Sql, authority: ChildAuthority, execu
   return {
     /** One bounded receipt-discovery batch, reusable in the existing server lane.
      * No provider create, prompt replay or globally frozen allocation queue. */
+    stopAdmission: () => shutdown.abort(),
     drain: operations.drain,
     async reconcileOne(signal?: AbortSignal): Promise<boolean> {
       signal?.throwIfAborted();

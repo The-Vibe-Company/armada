@@ -4,6 +4,7 @@ import { createBoatProvider } from "@armada/provider-boat";
 import { retainedSandbox } from "../../provider-boat/test/support.ts";
 import { createSandboxLifecycle } from "../src/sandbox-lifecycle.ts";
 import { startServerWorkers } from "../src/server-workers.ts";
+import { runtimeWakes, SANDBOX_ADMISSION_WAKE } from "../src/wake-bus.ts";
 import { rowOnlyConnection } from "./row-only-database.ts";
 import { bunLikeSql } from "./support.ts";
 
@@ -181,6 +182,8 @@ test("a ready ordinary backlog cannot starve orchestrator work and shutdown drai
     orchDrain = deferred<void>();
   let calls = 0,
     drains = 0;
+  let admissionWakes = 0;
+  const unsubscribe = runtimeWakes.subscribe(SANDBOX_ADMISSION_WAKE, () => admissionWakes++);
   const workers = startServerWorkers(
     [
       {
@@ -209,6 +212,7 @@ test("a ready ordinary backlog cannot starve orchestrator work and shutdown drai
   );
   try {
     expect(await Promise.race([ordinarySecond.promise, orchEntered.promise])).toBe("orchestrator");
+    expect(admissionWakes).toBeGreaterThan(0);
     workers.stop();
     held.resolve(false);
     await Promise.resolve();
@@ -225,6 +229,7 @@ test("a ready ordinary backlog cannot starve orchestrator work and shutdown drai
     expect(drains).toBe(2);
     expect(stopped).toBe(true);
   } finally {
+    unsubscribe();
     workers.stop();
     held.resolve(false);
     ordinaryDrain.resolve();

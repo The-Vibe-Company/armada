@@ -563,9 +563,11 @@ test("an uncertain scoped message records a correlated operator diagnostic", asy
   }
 });
 
-test.each(["message", "stop", "extend"] as const)(
-  "scoped %s waits for lease release and rechecks raced admission",
-  async (action) => {
+test.each(["message", "stop", "extend", "shutdown while waiting", "abort after commit"] as const)(
+  "scoped child admission handles %s",
+  async (scenario) => {
+    const action = scenario === "shutdown while waiting" || scenario === "abort after commit" ? "message" : scenario;
+    const requestAbort = new AbortController();
     const { close, db, sql, id, p, parent, golden, authority, token, selection } = await fixture(
       "running",
       "codex_auth",
@@ -588,7 +590,7 @@ test.each(["message", "stop", "extend"] as const)(
       await db.query("insert into orchestrator_children values($1,$2,$3,$4)", [child.id, id, p.org, p.owner]);
       const lease = action === "stop" ? crypto.randomUUID() : null;
       await db.query(
-        `update sandboxes set activity_lease_id=$2,
+        `update sandboxes set activity_lease_id=$2, activity_until=case when $2::uuid is not null then 'infinity'::timestamptz end,
         reconcile_lease_until=case when $2::uuid is null then 'infinity'::timestamptz end where id=$1`,
         [child.id, lease],
       );
@@ -609,6 +611,7 @@ test.each(["message", "stop", "extend"] as const)(
           async admit(secret, request, reserve) {
             const result = await authority.admit(secret, request, reserve);
             if (++dispatchAdmissions === 2) waiting.resolve();
+            if (dispatchAdmissions === 3 && scenario === "abort after commit") requestAbort.abort();
             return result;
           },
         },
@@ -629,7 +632,8 @@ test.each(["message", "stop", "extend"] as const)(
         },
       );
       const request = () => {
-        if (action === "message") return children.message(token, "busy", child.id, "synthetic child prompt");
+        if (action === "message")
+          return children.message(token, "busy", child.id, "synthetic child prompt", requestAbort.signal);
         if (action === "extend") return children.extend(token, "busy", child.id, 60);
         return children.stop(token, "busy", child.id);
       };
@@ -641,8 +645,31 @@ test.each(["message", "stop", "extend"] as const)(
           .rows,
       ).toEqual([{ state: "pending", dispatched_at: null }]);
 
-      await db.query("update sandboxes set activity_lease_id=null,reconcile_lease_until=null where id=$1", [child.id]);
+      if (scenario === "shutdown while waiting") {
+        children.stopAdmission();
+        expect(await pending).toMatchObject({ state: "failed", sandboxId: child.id });
+        expect(execute).not.toHaveBeenCalled();
+        return;
+      }
+      if (lease) {
+        await createSqlData(sql)({
+          userId: p.owner,
+          orgs: [{ orgId: p.org, role: "member" }],
+          via: "service",
+        }).sandboxes.update(child.id, {
+          finishActivity: true,
+          activityToken: lease,
+          expectedGeneration: child.lifecycleGeneration,
+        });
+      } else {
+        await db.query("update sandboxes set reconcile_lease_until=null where id=$1", [child.id]);
+      }
       runtimeWakes.notify(SANDBOX_ADMISSION_WAKE);
+      if (scenario === "abort after commit") {
+        expect(await pending).toMatchObject({ state: "failed", sandboxId: child.id });
+        expect(execute).not.toHaveBeenCalled();
+        return;
+      }
       await raced.promise;
       await db.query("select 1");
       runtimeWakes.notify(SANDBOX_ADMISSION_WAKE);

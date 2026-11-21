@@ -55,6 +55,7 @@ export async function startServer(env: Record<string, string | undefined>, optio
   // Only authenticated normal Docker launches opt out; their service deadline
   // remains bounded, and other providers/routes keep their existing timeouts.
   control.configureDockerLaunchRequest = (request) => server.timeout(ingressRequest(request), 0);
+  control.configureScopedMutationRequest = (request) => server.timeout(ingressRequest(request), 180);
   control.configureEventStreamRequest = (request) => server.timeout(ingressRequest(request), 30);
   // Archive validation and encrypted chunk publication have their own bounded deadline.
   configureDockerArchiveTimeout = (request) => server.timeout(ingressRequest(request), 45);

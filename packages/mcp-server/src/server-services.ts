@@ -584,6 +584,7 @@ export async function createServerServices(env: Record<string, string | undefine
     connections: mcp.connections,
     publicUrl: config.publicUrl,
     scopedMcpUrl: orchestratorScopedMcpUrl(config.publicUrl),
+    configureMutationRequest: (request: Request) => control.configureScopedMutationRequest?.(request),
   };
   const delegatedAccess = createSandboxAccessServices(sandboxAccessContext);
   control.eventFeed = createEventFeed(sql, delegatedAccess.authority);

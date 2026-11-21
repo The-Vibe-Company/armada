@@ -41,6 +41,7 @@ export interface ControlOptions {
   listCredentialMetadata?: ReturnType<typeof createSqlCredentialList>;
   eventStreamShutdown?: AbortSignal;
   eventFeed?: import("./event-feed.ts").EventFeed;
+  configureScopedMutationRequest?: (request: Request) => void;
   configureEventStreamRequest?: (request: Request) => void;
   scopedSandboxData?: (caller: Caller, ref: string) => ScopedData;
   listGoldenRecords?: (caller: Caller, ref: string | undefined) => Promise<GoldenRecord[]>;

@@ -34,8 +34,15 @@ export function createSandboxScopedGateway(
   authority: Pick<DelegatedAuthority, "catalogGrant">,
   finish?: (token: string) => Promise<unknown>,
   runtimeFinish?: (token: string) => Promise<unknown>,
+  configureMutationRequest?: (request: Request) => void,
 ): Route {
-  async function call(token: string, name: string, args: unknown, signal: AbortSignal): Promise<unknown> {
+  async function call(
+    token: string,
+    name: string,
+    args: unknown,
+    request: Request,
+    signal = request.signal,
+  ): Promise<unknown> {
     if (waitMethods.has(name)) throw new WaitAuthorityUnavailable();
     if (!isScopedMethod(name) || (token.startsWith("armada_finish_") && name !== "finish"))
       throw new InvalidScopedRequest();
@@ -66,6 +73,7 @@ export function createSandboxScopedGateway(
       const input = scopedOperations.read.input.parse(args);
       return children.read(token, input.sandboxId);
     }
+    configureMutationRequest?.(request);
     if (name === "message") {
       const input = scopedOperations.message.input.parse(args);
       return children.message(token, input.idempotencyKey, input.sandboxId, input.text, signal);
@@ -103,7 +111,7 @@ export function createSandboxScopedGateway(
           ? { ...input.data, idempotencyKey: headers["Idempotency-Key"].parse(request.headers.get("Idempotency-Key")) }
           : input.data;
         return Response.json(
-          { result: await call(token, suffix, args, request.signal) },
+          { result: await call(token, suffix, args, request) },
           { headers: { "cache-control": "no-store" } },
         );
       }
@@ -139,7 +147,9 @@ export function createSandboxScopedGateway(
           },
           async (args: unknown, extra: { signal: AbortSignal }): Promise<CallToolResult> => {
             try {
-              const result = { result: await call(token, name, args, AbortSignal.any([request.signal, extra.signal])) };
+              const result = {
+                result: await call(token, name, args, request, AbortSignal.any([request.signal, extra.signal])),
+              };
               return { structuredContent: result, content: [{ type: "text", text: JSON.stringify(result) }] };
             } catch (error) {
               if (error instanceof DelegatedAuthorityDenied)
