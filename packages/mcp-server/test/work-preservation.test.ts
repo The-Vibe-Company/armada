@@ -1487,58 +1487,81 @@ test.each([
   ]);
 });
 
-test.each(["lost delete reply", "unavailable cleanup"] as const)(
-  "scoped Modal drain recovers from %s without bypassing cleanup",
-  async (scenario) => {
-    const { db, people, sandboxId, archiveId } = await seedNativeDrainReceipt(undefined, "modal");
-    await db.query(
-      "insert into armada_access_parents(id,kind,org_id,owner_id,sandbox_id,state) values($1,'sandbox',$2,$3,$1,'ready')",
-      [sandboxId, people.org, people.owner],
+test.each([
+  "lost delete reply",
+  "unavailable cleanup",
+  "rolled back cleanup receipt",
+  "lost cleanup commit reply",
+] as const)("scoped Modal drain recovers from %s without bypassing cleanup", async (scenario) => {
+  const { db, people, sandboxId, archiveId } = await seedNativeDrainReceipt(undefined, "modal");
+  await db.query(
+    "insert into armada_access_parents(id,kind,org_id,owner_id,sandbox_id,state) values($1,'sandbox',$2,$3,$1,'ready')",
+    [sandboxId, people.org, people.owner],
+  );
+  const sql = bunLikeSql(db);
+  const transaction = sql.transaction;
+  if (!transaction) throw new Error("Missing transaction support");
+  const interruption = new Error(scenario);
+  let firstPass = true;
+  sql.transaction = async (work) => {
+    let recordedCleanup = false;
+    const result = await transaction((tx) =>
+      work({
+        ...tx,
+        query: async (statement, params) => {
+          const queried = await tx.query(statement, params);
+          if (statement.includes("set modal_drain_cleaned_placement")) {
+            recordedCleanup = true;
+            if (firstPass && scenario === "rolled back cleanup receipt") throw interruption;
+          }
+          return queried;
+        },
+      }),
     );
-    const sql = bunLikeSql(db);
-    const caller: Caller = { via: "service", userId: people.owner, orgs: [{ orgId: people.org, role: "member" }] };
-    const { sandboxes } = createSqlData(sql)(caller);
-    const access = createSandboxArmadaAccess({ sql, encryptionKey: ENCRYPTION_KEY, publicUrl: PUBLIC_URL });
-    const fake = fakeBoat().provider;
-    const info = await fake.fork({ from: "test", name: "parent", ttlSeconds: 3600, env: {}, noEnv: true });
-    let removed = false;
-    let firstPass = true;
-    const provider: Provider = {
-      ...fake,
-      id: "modal",
-      get: mock(async () => {
-        if (removed) throw new Error("Physical placement cannot be observed after deletion");
-        if (firstPass && scenario === "unavailable cleanup") throw new Error("Scoped cleanup unavailable");
-        return { ...info, state: "stopped" as const };
-      }),
-      delete: mock(async () => {
-        if (firstPass) {
-          removed = true;
-          throw new Error("Delete reply lost");
-        }
-        return { status: "deleted" };
-      }),
-    };
-    const drain = () =>
-      deleteSandboxWithActivity(
-        sandboxes,
-        { resolve: async () => access.wrap(provider, sandboxId) },
-        sandboxId,
-        "native-drain",
-      );
-    const lostReply = scenario === "lost delete reply";
-    await expect(drain()).rejects.toThrow(lostReply ? "Delete reply lost" : "Scoped cleanup unavailable");
-    expect(provider.delete).toHaveBeenCalledTimes(lostReply ? 1 : 0);
-    firstPass = false;
-    await db.query("update sandboxes set activity_until=now()-interval '1 second' where id=$1", [sandboxId]);
-    await expect(drain()).resolves.toEqual({ id: sandboxId, status: "deleted" });
-    expect(provider.get).toHaveBeenCalledTimes(lostReply ? 1 : 2);
-    expect(provider.delete).toHaveBeenLastCalledWith({ sandboxId: `bx_${sandboxId}`, generation: 6 });
-    expect(
-      (await db.query("select archive_id from native_drain_recovery where sandbox_id=$1", [sandboxId])).rows,
-    ).toEqual([{ archive_id: archiveId }]);
-  },
-);
+    if (recordedCleanup && firstPass && scenario === "lost cleanup commit reply") throw interruption;
+    return result;
+  };
+  const caller: Caller = { via: "service", userId: people.owner, orgs: [{ orgId: people.org, role: "member" }] };
+  const { sandboxes } = createSqlData(sql)(caller);
+  const access = createSandboxArmadaAccess({ sql, encryptionKey: ENCRYPTION_KEY, publicUrl: PUBLIC_URL });
+  const fake = fakeBoat().provider;
+  const info = await fake.fork({ from: "test", name: "parent", ttlSeconds: 3600, env: {}, noEnv: true });
+  let removed = false;
+  const provider: Provider = {
+    ...fake,
+    id: "modal",
+    get: mock(async () => {
+      if (removed) throw new Error("Physical placement cannot be observed after deletion");
+      if (firstPass && scenario === "unavailable cleanup") throw interruption;
+      return { ...info, state: "stopped" as const };
+    }),
+    delete: mock(async () => {
+      if (firstPass && scenario === "lost delete reply") {
+        removed = true;
+        throw interruption;
+      }
+      return { status: "deleted" };
+    }),
+  };
+  const drain = () =>
+    deleteSandboxWithActivity(
+      sandboxes,
+      { resolve: async () => access.wrap(provider, sandboxId) },
+      sandboxId,
+      "native-drain",
+    );
+  const lostReply = scenario === "lost delete reply";
+  await expect(drain()).rejects.toThrow(scenario);
+  expect(provider.delete).toHaveBeenCalledTimes(lostReply ? 1 : 0);
+  firstPass = false;
+  await db.query("update sandboxes set activity_until=now()-interval '1 second' where id=$1", [sandboxId]);
+  await expect(drain()).resolves.toEqual({ id: sandboxId, status: "deleted" });
+  expect(provider.get).toHaveBeenCalledTimes(lostReply || scenario === "lost cleanup commit reply" ? 1 : 2);
+  expect(provider.delete).toHaveBeenLastCalledWith({ sandboxId: `bx_${sandboxId}`, generation: 6 });
+  expect(
+    (await db.query("select archive_id from native_drain_recovery where sandbox_id=$1", [sandboxId])).rows,
+  ).toEqual([{ archive_id: archiveId }]);
+});
 
 test("pending native drain refuses scoped parent registration after lease expiry", async () => {
   const { db, people, sandboxId } = await seedNativeDrainReceipt(undefined, "modal");
