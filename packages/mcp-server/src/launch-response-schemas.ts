@@ -35,8 +35,7 @@ export function goldenLaunchResponse(result: LaunchResult) {
   } satisfies LaunchEnvelope;
 }
 
-/** Project stored receipts onto the current wire contract while preserving their launch metadata. */
-export function publicLaunchReceipt(receipt: LaunchEnvelope): LaunchEnvelope {
+export function publicLaunchReceipt(receipt: LaunchEnvelope) {
   const { boatId: _boatId, ...sandbox } = receipt.sandbox;
   if (receipt.golden === null) return { ...receipt, sandbox };
   const { boatSnapshotId: _boatSnapshotId, boatSandboxId: _boatSandboxId, ...golden } = receipt.golden;

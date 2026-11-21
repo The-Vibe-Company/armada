@@ -218,7 +218,7 @@ async function launchGolden(
     return {
       ...goldenLaunchResponse(result),
       ...(armadaAccess
-        ? { armadaAccess: { enabled: true, maxActiveChildren: armadaAccess.maxActiveChildren ?? 3 } }
+        ? { armadaAccess: { enabled: true as const, maxActiveChildren: armadaAccess.maxActiveChildren ?? 3 } }
         : {}),
     };
   };
