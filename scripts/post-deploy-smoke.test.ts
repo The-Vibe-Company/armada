@@ -3,8 +3,9 @@ import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createKeyedQueue, createLaunchTracker, postDeploySmoke } from "./post-deploy-smoke.ts";
-import deadlines from "./smoke-deadlines.json";
+import deadlineTable from "./smoke-deadlines.json";
 
+const deadlines = deadlineTable["modal/lifecycle"];
 const boatNotice = "boat: not part of the release gate";
 
 const selected = {
@@ -108,7 +109,10 @@ function fixture(handler?: (call: Call) => Response | undefined | Promise<Respon
         .filter((line) => line !== boatNotice)
         .map((line) => {
           const receipt = JSON.parse(line);
-          if (!receipt.step.endsWith("_summary") && receipt.step !== "time_to_ready") delete receipt.elapsedMs;
+          if (!receipt.step.endsWith("_summary") && receipt.step !== "time_to_ready") {
+            if (receipt.elapsedMs !== undefined && receipt.lane) delete receipt.provider;
+            delete receipt.elapsedMs;
+          }
           delete receipt.lane;
           return receipt;
         }),
@@ -1185,12 +1189,12 @@ describe("preservation checks", () => {
           for (const step of ["scoped_parent_configuration", "scoped_tool_evidence"])
             expect(scriptedSteps.filter((line) => line.step === step && line.pass)).toHaveLength(2);
           expect(scriptedSteps.filter((line) => line.step === "scoped_parent_launch" && line.pass)).toHaveLength(2);
-          const budgets: Partial<Record<string, number>> = deadlines;
+          const budgets: Partial<Record<string, number>> = deadlineTable["modal/scoped"];
           if (fault === "scoped_parent_timeout") {
-            const launchBudget = budgets.scoped_parent_launch ?? deadlines.launch;
+            const launchBudget = budgets.scoped_parent_launch ?? 600_000;
             expect(scopedLaunchTimeouts).toEqual([launchBudget, launchBudget]);
           } else {
-            const readyBudget = budgets.scoped_parent_ready ?? deadlines.ready;
+            const readyBudget = budgets.scoped_parent_ready ?? 120_000;
             const stopBudget = budgets.scoped_parent_stop ?? 120_000;
             expect([...scopedReadyTimeouts.values()]).toEqual([readyBudget, readyBudget]);
             expect(scopedStopTimeouts).toEqual([stopBudget, stopBudget]);
@@ -1251,7 +1255,8 @@ describe("default-skill measured deadlines", () => {
       const stopped = new Set<unknown>();
       const fake = fixture((call) => {
         if (call.path === "skills/defaults/get") {
-          if (step === "default_skills_golden" && call.body.scope === "golden") fake.advance(deadlines[step] + 1);
+          if (step === "default_skills_golden" && call.body.scope === "golden")
+            fake.advance(deadlineTable["modal/default-skills"][step] + 1);
           return json({ skills: [] });
         }
         if (call.path === "sandbox/launch") {
@@ -1324,7 +1329,7 @@ test.each([
   {
     mode: "timeout before headers",
     code: "request_failed",
-    credentialList: { phase: "headers", timeoutMs: deadlines.template_model_account },
+    credentialList: { phase: "headers", timeoutMs: deadlineTable["modal/templates"].template_model_account },
   },
   {
     mode: "server failure",
@@ -1334,7 +1339,11 @@ test.each([
   {
     mode: "timeout reading the body",
     code: "request_failed",
-    credentialList: { phase: "body", httpStatus: 200, timeoutMs: deadlines.template_model_account },
+    credentialList: {
+      phase: "body",
+      httpStatus: 200,
+      timeoutMs: deadlineTable["modal/templates"].template_model_account,
+    },
   },
 ])("template model account identifies $mode without logging response content", async (scenario) => {
   const fake = fixture(() => {
@@ -1362,6 +1371,7 @@ test.each([
   expect(fake.lines.filter((line) => line !== boatNotice).map((line) => JSON.parse(line))).toContainEqual({
     case: 0,
     lane: "templates",
+    provider: "modal",
     step: "template_model_account",
     elapsedMs: 0,
     pass: false,
@@ -1414,12 +1424,12 @@ test.each(["configured", "no_pins", "refused", "late_wait", "late_answer"])(
             manifest: { skillReceipts: [receipt] },
           });
         case "sandbox/wait":
-          if (mode === "late_wait") await fake.io.sleep(deadlines.template_wait + 1);
+          if (mode === "late_wait") await fake.io.sleep(deadlineTable["modal/templates"].template_wait + 1);
           return json({ prompt: { promptId: "prompt-id", state: "finished" } });
         case "logs/read":
           if (mode === "late_answer") {
             if (!call.body.cursor) {
-              fake.advance(deadlines.template_answer - 100);
+              fake.advance(deadlineTable["modal/templates"].template_answer - 100);
               return json({ events: [], cursor: "next", hasMore: true });
             }
             fake.advance(101);
@@ -1631,7 +1641,7 @@ test.each(["canary echo", "late create"] as const)("vault rejects %s and cleans 
           createdAt: "2026-11-11T00:00:00Z",
           updatedAt: "2026-11-11T00:00:00Z",
         };
-        if (fault === "late create") fake.advance(deadlines.vault_variable_set + 1);
+        if (fault === "late create") fake.advance(deadlineTable["modal/vault"].vault_variable_set + 1);
         return json({ item: variable });
       case "variables/list":
         return json({ items: variable && fault !== "late create" ? [variable] : [] });
@@ -2409,13 +2419,14 @@ test("an ambiguous expiry launch reports bounded HTTP correlation without replay
     expect(fake.lines.filter((line) => line !== boatNotice).map((line) => JSON.parse(line))).toContainEqual({
       case: 0,
       lane: "expiry",
+      provider: "modal",
       step: "expiry_launch",
       pass: false,
       code: status === 200 ? "request_failed" : "outcome_unknown",
-      elapsedMs: 112_848 + deadlines.expiry_launch,
+      elapsedMs: 112_848 + deadlineTable["modal/expiry"].expiry_launch,
       launchResponse: {
         httpStatus: status,
-        timeoutMs: deadlines.expiry_launch,
+        timeoutMs: deadlineTable["modal/expiry"].expiry_launch,
         requestKey: launches[0]?.body.idempotencyKey,
         ...(header === requestId ? { requestId } : {}),
       },

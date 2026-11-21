@@ -1,7 +1,8 @@
 import { expect, spyOn, test } from "bun:test";
 import { promptFailureReason } from "../packages/core/src/native-failure.ts";
 import { postDeploySmoke } from "./post-deploy-smoke.ts";
-import deadlines from "./smoke-deadlines.json";
+import deadlineTable from "./smoke-deadlines.json";
+import { deadlinesFor } from "./smoke-deadlines.ts";
 import { STAGING_ORIGIN } from "./smoke-sandbox-cleanup.ts";
 
 const id = (n: number) => `f0000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
@@ -30,7 +31,7 @@ test.each([
   { scenario: "wait request reaches the model deadline", state: "running", code: "model_timeout" },
   { scenario: "finished without complete text", state: "finished", code: "invalid_receipt" },
 ])("real-model staging smoke handles $scenario and stops both sandboxes", async ({ scenario, state, code }) => {
-  const budgets: Record<string, number | undefined> = deadlines;
+  const budgets = (provider: string) => deadlinesFor(deadlineTable, provider, "real-model");
   const timeouts = new Map<string, number[]>();
   const timeout = spyOn(AbortSignal, "timeout");
   let now = 0;
@@ -88,7 +89,7 @@ test.each([
           return Response.json({ promptId: body.id });
         case "/api/v1/sandbox/wait":
           if (scenario === "wait request reaches the model deadline") {
-            now += budgets.real_model_wait ?? deadlines.wait;
+            now += budgets(body.id === id(7) ? "docker" : "modal").real_model_wait ?? 120_000;
             throw new DOMException("Timed out", "TimeoutError");
           }
           return Response.json({
@@ -121,26 +122,25 @@ test.each([
     },
   }).finally(() => timeout.mockRestore());
   if (scenario === "finished with complete text") {
-    expect(timeouts.get("launch")).toEqual(
-      ["modal", "docker"].map(
-        (provider) => budgets.real_model_launch ?? budgets[`parity_${provider}_launch`] ?? 600_000,
-      ),
-    );
-    for (const [request, budget] of [
-      ["status", budgets.real_model_ready ?? 120_000],
-      ["send", budgets.real_model_send ?? 120_000],
-      ["wait", budgets.real_model_wait ?? deadlines.wait],
-      ["stop", budgets.real_model_stop ?? 120_000],
+    const providers = ["modal", "docker"];
+    for (const [request, step, fallback] of [
+      ["launch", "real_model_launch", 600_000],
+      ["status", "real_model_ready", 120_000],
+      ["send", "real_model_send", 120_000],
+      ["wait", "real_model_wait", 120_000],
+      ["stop", "real_model_stop", 120_000],
     ] as const) {
-      expect(timeouts.get(request)).toEqual([budget, budget]);
+      expect(timeouts.get(request)).toEqual(providers.map((provider) => budgets(provider)[step] ?? fallback));
     }
     const confirmations = timeouts.get("stop-confirmation")!;
     expect(confirmations).toHaveLength(2);
-    const stopBudget = budgets.real_model_stop;
-    if (stopBudget === undefined) {
-      expect(confirmations).toEqual([120_000, 120_000]);
-    } else {
-      expect(confirmations.every((budget) => budget > 0 && budget <= stopBudget - 100)).toBe(true);
+    for (const [index, provider] of providers.entries()) {
+      const stopBudget = budgets(provider).real_model_stop;
+      if (stopBudget === undefined) expect(confirmations[index]).toBe(120_000);
+      else {
+        expect(confirmations[index]).toBeGreaterThan(0);
+        expect(confirmations[index]).toBeLessThanOrEqual(stopBudget - 100);
+      }
     }
   }
   expect(passed).toBe(code === undefined);

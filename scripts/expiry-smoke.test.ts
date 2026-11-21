@@ -3,8 +3,9 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { postDeploySmoke } from "./post-deploy-smoke.ts";
-import deadlines from "./smoke-deadlines.json";
+import deadlineTable from "./smoke-deadlines.json";
 
+const deadlines = deadlineTable["modal/expiry"];
 const ownedWorker = "12345678-1234-1234-1234-123456789abc";
 const origin = "https://armada-mcp-staging.up.railway.app";
 type Fault =
@@ -197,7 +198,14 @@ test("Modal expires through the ordinary stop lane without a manual stop or mode
   expect(fake.calls.filter((call) => call.path === "sandbox/launch")).toHaveLength(1);
   expect(fake.calls.some((call) => ["sandbox/stop", "sandbox/send"].includes(call.path))).toBe(false);
   for (const step of ["expiry_launch", "expiry_ready", "expiry_deadline", "expiry_as_stop"])
-    expect(fake.reports).toContainEqual({ case: 0, lane: "expiry", step, pass: true, elapsedMs: expect.any(Number) });
+    expect(fake.reports).toContainEqual({
+      case: 0,
+      lane: "expiry",
+      provider,
+      step,
+      pass: true,
+      elapsedMs: expect.any(Number),
+    });
   expect(fake.reports).toContainEqual({
     case: 0,
     lane: "expiry",

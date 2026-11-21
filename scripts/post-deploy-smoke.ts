@@ -28,8 +28,8 @@ import { DefaultSkillSmokeFailure, readDefaultPins, verifyDefaultReceipts } from
 import { ExpirySmokeFailure, runExpiryCase } from "./expiry-smoke.ts";
 import { helperProbe, skillpackProbe } from "./golden-runtime-smoke.ts";
 import { createScopedProbe, ScopedAccessSmokeFailure } from "./scoped-access-smoke.ts";
-import deadlines from "./smoke-deadlines.json";
-import { SMOKE_POLL_INTERVAL_MS, USAGE_STATUS_MIN_REQUEST_MS } from "./smoke-deadlines.ts";
+import deadlineTable from "./smoke-deadlines.json";
+import { deadlinesFor, SMOKE_POLL_INTERVAL_MS, USAGE_STATUS_MIN_REQUEST_MS } from "./smoke-deadlines.ts";
 import { observeSmokeLaunch } from "./smoke-launch.ts";
 import { runTemplateSkillCase, TemplateSkillSmokeFailure, verifyReceipts } from "./template-skill-smoke.ts";
 import { runVaultCase, VaultSmokeFailure } from "./vault-smoke.ts";
@@ -163,7 +163,15 @@ const TEMPLATE_LAUNCH_TIMEOUT_MS = 600_000;
 const SIBLING_ATTRIBUTION_WAIT_MS = TEMPLATE_LAUNCH_TIMEOUT_MS;
 const SANDBOX_ID = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i;
 const LAUNCH_PATH = /^(?:sandbox\/launch|templates\/launch)$/;
-type Lane = "templates" | "expiry" | "lifecycle" | "scoped" | "real-model";
+type Lane =
+  | "templates"
+  | "expiry"
+  | "lifecycle"
+  | "scoped"
+  | "real-model"
+  | "github-runtime"
+  | "vault"
+  | "default-skills";
 
 /** Wait for every concurrent unit, so all cleanups finish before the journal sweep; a thrown unit still throws. */
 async function settled(units: Promise<boolean>[]): Promise<boolean> {
@@ -330,11 +338,18 @@ async function verifyRecovery(archive: string, repo: string, commit: string) {
 
 /** Operator entrypoint; injected I/O also permits fake-API validation without compute. */
 async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[], io: SmokeIo): Promise<boolean> {
-  function report(index: number, step: string, error?: unknown, elapsedMs?: number, lane?: Lane) {
+  function report(
+    index: number,
+    step: string,
+    error?: unknown,
+    elapsedMs?: number,
+    lane?: Lane,
+    provider?: RealModelCase["provider"],
+  ) {
     io.out(
       JSON.stringify({
         case: index,
-        ...(lane ? { lane } : {}),
+        ...(lane ? { lane, provider } : {}),
         step,
         ...(elapsedMs === undefined ? {} : { elapsedMs }),
         pass: error === undefined,
@@ -557,10 +572,14 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
     );
   }
   /** Each concurrent unit owns its cleanup flag; one unit's cleanup never moves another unit's deadline. */
-  function createLane() {
+  function createLane(provider: RealModelCase["provider"], lane: Lane) {
+    const budgets = deadlinesFor(deadlineTable, provider, lane);
     let cleaning = false;
     let stepUntil: number | undefined;
     return {
+      budgets,
+      poll: <T>(read: PollRead<T>, done: (value: T) => boolean, options: PollOptions = {}) =>
+        poll(read, done, options, options.step === undefined ? undefined : budgets[options.step]),
       request: <T>(path: string, body?: unknown, key?: string, timeoutMs?: number, usageRead?: UsageRead) => {
         if (stepUntil === undefined) return send<T>(cleaning, path, body, key, timeoutMs, usageRead);
         const remaining = stepUntil - io.now();
@@ -572,7 +591,7 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
         action: (until?: number) => Promise<T>,
         { measureCleanup = false } = {},
       ) => {
-        const budget = (deadlines as Record<string, number>)[name];
+        const budget = budgets[name];
         if ((cleaning && !measureCleanup) || budget === undefined) return action();
         stepUntil = Math.min(cleaning ? cleanupDeadline : deadline, io.now() + budget);
         try {
@@ -736,12 +755,14 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
       throw failure;
     }
   }
+  type PollRead<T> = (timeoutMs?: number, requestDeadline?: number) => Promise<T>;
+  type PollOptions = { limit?: number; step?: string; until?: number; minRequestMs?: number };
   async function poll<T>(
-    read: (timeoutMs?: number, requestDeadline?: number) => Promise<T>,
+    read: PollRead<T>,
     done: (value: T) => boolean,
-    options: { limit?: number; step?: string; until?: number; minRequestMs?: number } = {},
+    options: Omit<PollOptions, "step"> = {},
+    timeoutMs?: number,
   ): Promise<T> {
-    const timeoutMs = options.step === undefined ? undefined : (deadlines as Record<string, number>)[options.step];
     const until = options.until ?? (timeoutMs === undefined ? undefined : Math.min(deadline, io.now() + timeoutMs));
     const limit = options.limit ?? (until === undefined ? POLLS : Number.POSITIVE_INFINITY);
     const requestDeadline = until ?? (options.minRequestMs === undefined ? undefined : deadline);
@@ -776,8 +797,8 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
   }
   const defaultPins = new Map<number, string[]>();
   if (defaultSkills) {
-    const { request, withStepDeadline } = createLane();
     for (const [index, item] of cases.entries()) {
+      const { request, withStepDeadline } = createLane(item.provider, "default-skills");
       try {
         const pins = await readDefaultPins(item.org, item.goldenId!, {
           request,
@@ -785,7 +806,7 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
             timedSmokeStep(
               () => withStepDeadline(name, action),
               io.now,
-              (elapsedMs, error) => report(index, name, error, elapsedMs),
+              (elapsedMs, error) => report(index, name, error, elapsedMs, "default-skills", item.provider),
             ),
         });
         defaultPins.set(index, pins);
@@ -800,8 +821,8 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
   // against, so it completes before any sandbox unit starts.
   let vaultPassed = true;
   if (vault) {
-    const { request, withCleanup, withStepDeadline } = createLane();
     for (const [index, item] of cases.entries()) {
+      const { request, withCleanup, withStepDeadline } = createLane(item.provider, "vault");
       const ok = await runVaultCase(item.org, {
         request,
         protect: (value) => protectedCanaries.add(value),
@@ -811,7 +832,7 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
           timedSmokeStep(
             () => withStepDeadline(name, action),
             io.now,
-            (elapsedMs, error) => report(index, name, error, elapsedMs),
+            (elapsedMs, error) => report(index, name, error, elapsedMs, "vault", item.provider),
           ),
         out: (line) => io.out(JSON.stringify({ ...JSON.parse(line), case: index })),
         withCleanup,
@@ -821,18 +842,22 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
     if (args.every((arg) => arg === "--vault")) return vaultPassed;
   }
   /** One concurrent sandbox unit; every receipt carries its case and lane so interleaved output stays attributable. */
-  function unit(index: number, lane: Lane) {
+  function unit(index: number, provider: RealModelCase["provider"], lane: Lane) {
     const out = (line: string) => io.out(JSON.stringify({ ...JSON.parse(line), case: index, lane }));
     return {
-      ...createLane(),
+      ...createLane(provider, lane),
       out,
       step: <T>(name: string, action: () => Promise<T>): Promise<T> =>
-        timedSmokeStep(action, io.now, (elapsedMs, error) => report(index, name, error, elapsedMs, lane)),
+        timedSmokeStep(action, io.now, (elapsedMs, error) => report(index, name, error, elapsedMs, lane, provider)),
       io: { ...io, out } satisfies SmokeIo,
     };
   }
   function templateUnit(index: number, item: SmokeCase): Promise<boolean> {
-    const { request, withCleanup, withStepDeadline, out, step } = unit(index, "templates");
+    const { request, withCleanup, withStepDeadline, out, step, budgets, poll } = unit(
+      index,
+      item.provider,
+      "templates",
+    );
     return runTemplateSkillCase(
       { ...item, goldenId: item.goldenId! },
       {
@@ -840,7 +865,7 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
         now: io.now,
         sleep: io.sleep,
         deadline,
-        launchTimeout: (name) => (deadlines as Record<string, number>)[name] ?? TEMPLATE_LAUNCH_TIMEOUT_MS,
+        launchTimeout: (name) => budgets[name] ?? TEMPLATE_LAUNCH_TIMEOUT_MS,
         trackLaunch: (action) =>
           launches.track("templates/launch", (record) =>
             action(
@@ -952,8 +977,8 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
     });
   }
   function expiryUnit(index: number, item: SmokeCase): Promise<boolean> {
-    const { request, withCleanup, out, step } = unit(index, "expiry");
-    const timeoutMs = (deadlines as Record<string, number>).expiry_launch ?? 120_000;
+    const { request, withCleanup, out, step, budgets } = unit(index, item.provider, "expiry");
+    const timeoutMs = budgets.expiry_launch ?? 120_000;
     // A ready sandbox with no task no longer counts against its model account, so the expiry
     // lane gives the account back before its TTL wait, which then overlaps the other lanes.
     return accountSlot(item.modelAccountId.toLowerCase(), (release) =>
@@ -964,7 +989,7 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
         },
         request: (path, body, remaining = 120_000) => request(path, body, undefined, Math.min(120_000, remaining)),
         deadlineFor: (name) => {
-          const budget = (deadlines as Record<string, number>)[name];
+          const budget = budgets[name];
           return budget === undefined ? undefined : Math.min(deadline, io.now() + budget);
         },
         now: io.now,
@@ -1019,7 +1044,7 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
           modelAccountId: item.scriptedModelAccountId!.toLowerCase(),
           model: "scripted",
         };
-        const lane = unit(index, "scoped");
+        const lane = unit(index, item.provider, "scoped");
         let passed = true;
         for (const mode of ["enabled", "no_option"] as const) {
           const ok = await scopedWindow(`${item.org}\n${item.goldenId}`, () =>
@@ -1031,7 +1056,7 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
       })
     : [];
   const lifecycleUnits = cases.map(async (item, index) => {
-    const lane = unit(index, "lifecycle");
+    const lane = unit(index, item.provider, github ? "github-runtime" : "lifecycle");
     let passed = true;
     for (const dirty of preservation ? [false, true] : [false]) {
       if (!(await accountSlot(item.modelAccountId.toLowerCase(), () => lifecycleUnit(index, item, dirty, lane))))
@@ -1043,8 +1068,11 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
     (await settled([...modelUnits, ...templateUnits, ...expiryUnits, ...scopedUnits, ...lifecycleUnits])) && vaultPassed
   );
   async function realModelUnit(index: number, item: RealModelCase, source: RealModelLaunchSource) {
-    const { request, withCleanup, withStepDeadline, step, out } = unit(index, "real-model");
-    const budgets: Record<string, number | undefined> = deadlines;
+    const { request, withCleanup, withStepDeadline, step, out, budgets, poll } = unit(
+      index,
+      item.provider,
+      "real-model",
+    );
     const isAuthRefusal = (reason?: string) =>
       typeof reason === "string" &&
       (reason.startsWith("Authentication failed. ") ||
@@ -1070,7 +1098,7 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
             ttlSeconds: 1800,
             ...source,
           },
-          budgets.real_model_launch ?? budgets[`parity_${item.provider}_launch`] ?? TEMPLATE_LAUNCH_TIMEOUT_MS,
+          budgets.real_model_launch ?? TEMPLATE_LAUNCH_TIMEOUT_MS,
           request,
           (handle) => {
             id = handle;
@@ -1100,7 +1128,7 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
         }),
       );
       await step("real_model_wait", async () => {
-        const until = Math.min(deadline, io.now() + (budgets.real_model_wait ?? deadlines.wait));
+        const until = Math.min(deadline, io.now() + (budgets.real_model_wait ?? POLLS * SMOKE_POLL_INTERVAL_MS));
         let finished = false;
         await poll(
           async (timeoutMs) => {
@@ -1199,7 +1227,7 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
     index: number,
     item: SmokeCase,
     dirty: boolean,
-    { request, withCleanup, withStepDeadline, step, io }: ReturnType<typeof unit>,
+    { request, withCleanup, withStepDeadline, step, io, budgets, poll }: ReturnType<typeof unit>,
     scope?: "enabled" | "no_option",
   ): Promise<boolean> {
     let passed = true;
@@ -1214,7 +1242,7 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
           now: io.now,
           sleep: io.sleep,
           deadline,
-          stepTimeouts: deadlines,
+          stepTimeouts: budgets,
           recordSandbox: (id, key) => io.recordSandbox?.(item.org, id, key, item.provider) ?? Promise.resolve(),
           poll: (read, done, until) => poll(read, done, until === undefined ? { limit: 300 } : { until }),
           step,
@@ -1407,7 +1435,7 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
         const { result, recovered } = await launchWithObservation<LaunchReceipt>(
           item,
           body,
-          (deadlines as Record<string, number>)[launchStep] ?? deadlines.launch ?? 600_000,
+          budgets[launchStep] ?? 600_000,
           request,
           (id) => {
             sandboxId = id;
@@ -1460,7 +1488,7 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
               if (status === "failed" || status === "stopped") fail("sandbox_not_ready");
               return status === "ready";
             },
-            { step: Object.hasOwn(deadlines, readinessStep) ? readinessStep : "ready" },
+            { step: readinessStep },
           );
         } catch (error) {
           if (error instanceof SmokeFailure) {
