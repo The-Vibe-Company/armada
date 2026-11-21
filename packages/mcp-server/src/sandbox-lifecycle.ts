@@ -240,6 +240,7 @@ export async function markOutputCollectorSupported(sql: Sql, id: string, generat
   return verified.rows.length > 0;
 }
 
+export const MODAL_LAUNCH_FAILURE = "modal_launch_failed";
 export const UNENROLLED_RESUME_STOP = "runtime_resume_unenrolled";
 const OPERATOR_CLEANUP_PREFIX = "Operator cleanup required:";
 
@@ -1378,9 +1379,13 @@ export function createSandboxLifecycle(
             )) as modal_resume) recovery
           where candidate.provider = $2 and candidate.status not in ('stopped','deleted')
           -- The launch job owns recovery across retries and worker replacement.
+          -- A failed launch hands off cleanup to the delete job in the same commit.
           and not (candidate.provider='modal' and exists(
             select 1 from public.jobs launch
-            where launch.kind='launch' and launch.state in ('queued','leased')
+            where launch.kind='launch' and (
+              launch.state in ('queued','leased')
+              or (candidate.status='failed' and launch.state='failed' and launch.outcome->>'reason'=$5)
+            )
               and launch.sandbox_id=candidate.id and launch.generation=candidate.lifecycle_generation
               and launch.org_id=candidate.org_id and launch.request_owner_id=candidate.owner_id
           ))
@@ -1412,7 +1417,7 @@ export function createSandboxLifecycle(
               and r.phase='dispatched' and r.receipt is null
           )) as interrupted_resume,
           exists(select 1 from public.members m where m.org_id=s.org_id and m.user_id=s.owner_id) as owner_is_member`,
-          [token, providerId, UNENROLLED_RESUME_STOP, `${OPERATOR_CLEANUP_PREFIX}%`],
+          [token, providerId, UNENROLLED_RESUME_STOP, `${OPERATOR_CLEANUP_PREFIX}%`, MODAL_LAUNCH_FAILURE],
         )
       ).rows[0];
       if (!row) return false;

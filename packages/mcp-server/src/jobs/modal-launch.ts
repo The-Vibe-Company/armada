@@ -17,6 +17,7 @@ import { createRuntimeEnrolments, type RuntimeTicketGuard } from "../runtime-enr
 import {
   bindModalLaunchMachine,
   insertStartingModalSandbox,
+  MODAL_LAUNCH_FAILURE,
   type ModalLaunchSandbox,
   transitionSandbox,
 } from "../sandbox-lifecycle.ts";
@@ -365,7 +366,6 @@ export function createModalLaunchJob(
   } satisfies JobKind;
 }
 
-const LAUNCH_FAILURE = "modal_launch_failed";
 const RECONCILING_ALLOCATION = "modal_launch_reconciling";
 const RECONCILE_DELAY_MS = 30_000;
 const ENROLMENT_RETRY_DELAY_MS = 1_000;
@@ -515,7 +515,7 @@ export async function runModalLaunch(
 
   return {
     status: "fail",
-    reason: LAUNCH_FAILURE,
+    reason: MODAL_LAUNCH_FAILURE,
     async commit(tx) {
       if ((await readEnrolment(tx)).enrolled || !(await startingTarget(tx)))
         throw new Error("Modal launch settlement target changed.");
@@ -525,7 +525,7 @@ export async function runModalLaunch(
         fromStates: ["starting"],
         toState: "failed",
         actor: "lifecycle_runner",
-        code: LAUNCH_FAILURE,
+        code: MODAL_LAUNCH_FAILURE,
         effects: [],
       });
       if (transition.kind !== "applied") throw new Error("Modal launch failure lost its generation.");
@@ -716,7 +716,7 @@ async function runFailedModalLaunchDelete(
              and (launch.outcome #>> '{evidence,modal_machine,entry,machineId}'=$4
                or (launch.outcome #>> '{evidence,modal_machine,entry,phase}'='creating' and $4 is not null)))
          )`,
-      [sandboxId, job.id, launchJobId, machineId, LAUNCH_FAILURE],
+      [sandboxId, job.id, launchJobId, machineId, MODAL_LAUNCH_FAILURE],
     );
     return rows[0];
   };

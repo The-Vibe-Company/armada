@@ -759,6 +759,11 @@ test.each(["create response", "bootstrap dispatch"] as const)(
       rows: [cleanup],
     } = await f.db.query<{ id: string }>("select id from jobs where kind='delete' and sandbox_id=$1", [id]);
     expect(cleanup).toBeDefined();
+    const lifecycle = createSandboxLifecycle(f.sql, async () => {
+      throw new Error("Failed launch cleanup must use the job-owned allocation.");
+    });
+    await f.db.query("update sandboxes set reconcile_after='-infinity' where id=$1", [id]);
+    expect(await lifecycle.reconcileOne()).toBe(false);
     const lost = makeRunner((step) => {
       if (step === "termination response") throw new Error("Worker lost the termination response");
     });
@@ -771,12 +776,14 @@ test.each(["create response", "bootstrap dispatch"] as const)(
     if (failure === "bootstrap dispatch") {
       await f.db.query("update jobs set deadline_at='-infinity' where id=$1", [cleanup!.id]);
     }
+    expect(await lifecycle.reconcileOne()).toBe(false);
     const cleanupSuccessor = makeRunner();
     expect(await cleanupSuccessor.reconcileOne(signal)).toBe(true);
     await cleanupSuccessor.drain();
     expect(closedClients()).toBe(2);
     expect((await f.db.query("select state from jobs where id=$1", [cleanup!.id])).rows).toEqual([{ state: "done" }]);
     expect(cleanupEffects().terminations).toBe(1);
+    expect(await lifecycle.reconcileOne()).toBe(false);
   },
 );
 
