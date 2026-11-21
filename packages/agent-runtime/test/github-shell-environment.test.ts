@@ -45,7 +45,9 @@ test("runtime GitHub shims and credential helper invoke Bun without a golden int
 test("privileged GitHub setup preserves Git if provisioning leaves system Python unusable", async () => {
   const directory = await mkdtemp(join(tmpdir(), "github-python-"));
   const git = join(directory, "git");
+  // oxlint-disable-next-line landmines-testing/no-test-doubles -- Exercise the privileged installer without requiring the test runner to be root.
   const uid = spyOn(process, "getuid").mockReturnValue(0);
+  // oxlint-disable-next-line landmines-testing/no-test-doubles -- Simulate an unavailable guest interpreter without invoking host APT.
   const spawn = spyOn(Bun, "spawn").mockImplementation((args) => {
     const packageRepair = Array.isArray(args) && args[0] === "/bin/sh";
     return { exited: Promise.resolve(packageRepair ? 0 : 1) } as unknown as ReturnType<typeof Bun.spawn>;

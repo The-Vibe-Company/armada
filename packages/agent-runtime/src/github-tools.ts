@@ -183,7 +183,7 @@ async function installGitHubTools(input: {
     directory.mode & 0o077
   )
     throw Error("github_tools_denied");
-  async function preserve(path: string): Promise<string> {
+  async function preserve(path: string) {
     const original = `${path}.armada-original`;
     const saved = await lstat(original).catch(() => undefined);
     if (saved) {
