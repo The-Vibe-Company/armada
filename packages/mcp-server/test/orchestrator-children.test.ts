@@ -1659,7 +1659,8 @@ test("managed child stop clears its epoch only after physical confirmation", asy
 
 // Scoped child messages share ordinary send's native receipt registration, so the
 // shared settlement boundary admits the turn to Langfuse export.
-test.each(["accepted", "stale", "abort"] as const)("native child send (%s)", async (scenario) => {
+const childSendScenarios = ["accepted", "stale", "abort", "lost response", "settlement abort"];
+test.each(childSendScenarios)("native child send (%s)", async (scenario) => {
   const { close, db, sql, p, id, token, golden } = await fixture(
     "running",
     "anthropic",
@@ -1668,10 +1669,18 @@ test.each(["accepted", "stale", "abort"] as const)("native child send (%s)", asy
   );
   try {
     const fake = fakeBoat();
+    const provider = {
+      ...fake.provider,
+      async prompt(request: Parameters<typeof fake.provider.prompt>[0]) {
+        const receipt = await fake.provider.prompt(request);
+        if (scenario === "lost response") throw Error("Lost child prompt response");
+        return receipt;
+      },
+    };
     const credentials = launchCredentials(createSqlVaultStore(sql), ENCRYPTION_KEY);
     const services = createSandboxAccessServices({
       sql,
-      providers: { resolve: async () => fake.provider },
+      providers: { resolve: async () => provider },
       credentials:
         scenario !== "stale"
           ? credentials
@@ -1700,7 +1709,7 @@ test.each(["accepted", "stale", "abort"] as const)("native child send (%s)", asy
       orgId: p.org,
       ownerId: p.owner,
       harness: "codex",
-      status: "ready",
+      status: scenario === "lost response" ? "running" : "ready",
       model: "m",
       reasoningEffort: "high",
     });
@@ -1718,6 +1727,27 @@ test.each(["accepted", "stale", "abort"] as const)("native child send (%s)", asy
       "insert into outbound_webhook_endpoints(org_id,url,secret_enc) values($1,'https://receiver.example/events',$2)",
       [p.org, new Uint8Array([1])],
     );
+    if (scenario === "settlement abort")
+      await db.exec("alter table sandboxes add constraint reject_child_prompt check (task_prompt_id <> 'prompt_1')");
+    async function laterPreservationHandoff() {
+      await db.query("update native_webhook_prompts set completed_at=now() where sandbox_id=$1", [child.id]);
+      await db.query(
+        `update sandboxes set status='stopped',stopped_at=now(),stop_requested_at=null,activity_lease_id=null,activity_until=null,
+         lifecycle_generation=lifecycle_generation+1,stop_generation=1,preservation_stop_generation=1
+       where id=$1`,
+        [child.id],
+      );
+      await db.query(
+        `insert into sandbox_native_preservation_receipts
+         (sandbox_id,generation,stop_generation,capture_generation,capture_stop_generation)
+       select id,lifecycle_generation,1,lifecycle_generation,1 from sandboxes where id=$1`,
+        [child.id],
+      );
+      return db.query(
+        "select copy_native_drain_recovery(id,lifecycle_generation) as outcome from sandboxes where id=$1",
+        [child.id],
+      );
+    }
     const lines: string[] = [];
     let receipt: Awaited<ReturnType<typeof services.childWorker.message>> | undefined;
     await observeRequest(
@@ -1728,6 +1758,12 @@ test.each(["accepted", "stale", "abort"] as const)("native child send (%s)", asy
       (line) => lines.push(line),
     );
     if (!receipt) throw Error("Missing child receipt.");
+    if (scenario === "lost response" || scenario === "settlement abort") {
+      expect(receipt.state).toBe("uncertain");
+      expect(fake.prompts).toHaveLength(1);
+      expect((await laterPreservationHandoff()).rows).toEqual([{ outcome: "ineligible" }]);
+      return;
+    }
     if (scenario !== "accepted") {
       expect(receipt.state).toBe("failed");
       expect(lines.map((line) => JSON.parse(line))).toContainEqual(
@@ -1757,6 +1793,7 @@ test.each(["accepted", "stale", "abort"] as const)("native child send (%s)", asy
         },
       ]);
       expect((await db.query("select 1 from sandbox_transitions where sandbox_id=$1", [child.id])).rows).toEqual([]);
+      expect((await laterPreservationHandoff()).rows).toEqual([{ outcome: "clean" }]);
       return;
     }
     expect(receipt.state).toBe("succeeded");
@@ -1801,7 +1838,10 @@ test.each(["accepted", "stale", "abort"] as const)("native child send (%s)", asy
         )
       ).rows,
     ).toEqual([{ terminal_status: "finished" }]);
+    expect((await laterPreservationHandoff()).rows).toEqual([{ outcome: "clean" }]);
   } finally {
+    if (scenario === "settlement abort")
+      await db.exec("alter table sandboxes drop constraint if exists reject_child_prompt");
     await close();
   }
 });
