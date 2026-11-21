@@ -706,6 +706,7 @@ test.each(["after settlement", "before settlement"])(
     await database().exec("update credentials set max_agents=null,model_limits='{\"gpt-5.4\":1}'::jsonb");
     await queue.accept(caller, first);
     await queue.accept(caller, second);
+    await sql.query("update jobs set run_after='-infinity' where sandbox_id=$1", [first.id]);
     const dispatched: string[] = [];
     const dispatchNext = sharedDispatcher(async (_caller, input, claim) => {
       dispatched.push(input.id);
@@ -742,6 +743,9 @@ test.each(["after settlement", "before settlement"])(
       failed: true,
       message: "Dispatch outcome uncertain; inspect sandbox history before resending.",
     });
+    expect((await sql.query("select state,generation::text from jobs where sandbox_id=$1", [first.id])).rows).toEqual([
+      { state: "done", generation: "2" },
+    ]);
     if (stopTiming === "after settlement") {
       const usage = await database().query<{ total: number; default_model: number; override_model: number }>(
         `select ${accountWorkingCountSql("$1")} as total,
