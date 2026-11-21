@@ -1178,6 +1178,8 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
     let passed = true;
     const sandbox = <T>(action: string, body: object, timeoutMs?: number) =>
       request<T>(`sandbox/${action}`, { org: item.org, ...body }, undefined, timeoutMs);
+    const measuredStep = <T>(name: keyof typeof deadlines, action: () => Promise<T>) =>
+      step(name, () => withStepDeadline(name, action));
     let parentCredentialVersion: number | undefined;
     const scoped = scope
       ? createScopedProbe({ ...item, goldenId: item.goldenId! }, scope === "enabled", {
@@ -1723,8 +1725,8 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
         );
       await nativeTurn(false);
       if (lifecycle && !dirty) {
-        await step("list_ready", () => consistent("ready"));
-        await step("steer_refused", async () => {
+        await measuredStep("list_ready", () => consistent("ready"));
+        await measuredStep("steer_refused", async () => {
           try {
             await sandbox("steer", { id: sandboxId, text: "Smoke: no turn should be running." });
           } catch (error) {
@@ -1733,7 +1735,7 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
           }
           fail("steer_not_refused");
         });
-        await step("extend", async () => {
+        await measuredStep("extend", async () => {
           const before = await sandbox<{ expiresAt: string }>("status", { id: sandboxId });
           const previous = Date.parse(before.expiresAt);
           if (!Number.isFinite(previous)) fail("invalid_response");
@@ -1893,16 +1895,16 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
         });
       }
       if (lifecycle && !dirty) {
-        await step("list_stopped", () => consistent("stopped"));
+        await measuredStep("list_stopped", () => consistent("stopped"));
         // send is the existing resume operation. Invalidate the old stop handle
         // BEFORE dispatch, so a lost response still requires cleanup.
         stopped = false;
         stopRequested = false;
         preservationNote = undefined;
         await nativeTurn(true, "resume");
-        await step("list_resumed", () => consistent("ready"));
+        await measuredStep("list_resumed", () => consistent("ready"));
         await step("stop_resumed", stopSandbox);
-        await step("list_stopped_final", () => consistent("stopped"));
+        await measuredStep("list_stopped_final", () => consistent("stopped"));
       }
     }
     try {
