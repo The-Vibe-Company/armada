@@ -4,6 +4,7 @@ import { type ModalMachineOptions, scopeKey } from "@armada/provider-modal";
 import { rowOnlyDatabase } from "../../test/row-only-database.ts";
 import { createTurnDispatchJob, type DispatchTurn } from "../account-turn-dispatch.ts";
 import { createAccountTurnQueue } from "../account-turn-queue.ts";
+import { readLogs } from "../control-logs.ts";
 import { createSqlData } from "../data.ts";
 import { createGoldenRuntimeEnvironment } from "../golden-runtime-environment.ts";
 import { launchCredentials } from "../launch-credentials.ts";
@@ -11,7 +12,9 @@ import { createOrdinaryLaunchReceipts } from "../ordinary-launch-receipts.ts";
 import { retentionMaintenanceJob, seedRetentionMaintenance } from "../retention-maintenance.ts";
 import { createRuntimeCommands } from "../runtime-commands.ts";
 import { createRuntimeEnrolments, scopedRuntimeSql } from "../runtime-enrolment.ts";
+import { createRuntimeEvents } from "../runtime-events.ts";
 import { createRuntimeGitHub } from "../runtime-github.ts";
+import { createModalLogReader } from "../runtime-history.ts";
 import { createRuntimeMcp, type RuntimeMcp } from "../runtime-mcp.ts";
 import { createSandboxLifecycle } from "../sandbox-lifecycle.ts";
 import type { LaneFactory } from "../server-worker-modules.ts";
@@ -1515,6 +1518,71 @@ test("status and wait return a failed Modal launch receipt before provider ident
   await expect(
     callSharedTool(context, "report", { id, prompt_id: "missing", outcome: { state: "ready" } }),
   ).rejects.toMatchObject({ code: "conflict" });
+});
+
+test("REST and MCP read job-owned Modal logs from the runtime journal without a provider", async () => {
+  const { f, id, makeRunner, activeRuntime } = await modalLaunchFixture(await modalAdmissionFixture());
+  const runner = makeRunner();
+  expect(await runner.reconcileOne(signal)).toBe(true);
+  await runner.drain();
+
+  const { runtimeToken, epoch } = activeRuntime();
+  await createRuntimeEvents(createRuntimeEnrolments(f.sql, launchEncryptionKey), launchEncryptionKey).append(
+    runtimeToken,
+    epoch,
+    {
+      sandboxId: id,
+      generation: epoch,
+      events: [
+        {
+          sequence: 1,
+          event: { id: "journal", at: 1, kind: "message", text: "Job-owned output", partial: false, tools: [] },
+        },
+      ],
+    },
+  );
+  const caller = {
+    via: "service" as const,
+    userId: f.people.owner,
+    orgs: [{ orgId: f.people.org, role: "member" as const }],
+  };
+  const data = createSqlData(f.sql)(caller);
+  const resolveProvider = async () => {
+    throw new Error("A job-owned log read must not resolve a Modal provider.");
+  };
+  const resolveLogs = createModalLogReader(f.sql, launchEncryptionKey, resolveProvider);
+  const result = { source: "armada-runtime", events: [{ text: "Job-owned output" }] };
+  expect(
+    await readLogs(
+      {
+        logs: async (actor, id) => {
+          const sandbox = (await data.sandboxes.get(id))!;
+          return { provider: await resolveLogs(sandbox, actor), providerSandboxId: sandbox.providerSandboxId };
+        },
+      },
+      caller,
+      id,
+      {},
+    ),
+  ).toMatchObject(result);
+  expect(
+    await callSharedTool(
+      {
+        caller,
+        data,
+        launchCredentials: launchCredentials(createSqlVaultStore(f.sql), launchEncryptionKey),
+        exposedSecrets: async () => [],
+        provider: resolveProvider,
+        logProvider: (sandbox) => resolveLogs(sandbox, caller),
+        now: () => new Date(),
+        sleep: async () => {
+          throw new Error("Logs must not wait.");
+        },
+      },
+      "logs",
+      { id },
+    ),
+  ).toMatchObject(result);
 });
 
 async function failedModalLaunchFixture() {

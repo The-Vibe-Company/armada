@@ -32,6 +32,7 @@ import type { RequestTiming } from "./request-timing.ts";
 import type { RuntimeCheckpoint } from "./runtime-checkpoint.ts";
 import type { RuntimeFollowup } from "./runtime-followup.ts";
 import type { RuntimeGitHub } from "./runtime-github.ts";
+import type { SandboxLogReader } from "./runtime-history.ts";
 import type { RuntimeMcp } from "./runtime-mcp.ts";
 import type { RuntimeResume } from "./runtime-resume.ts";
 import type { createSandboxArmadaAccess } from "./sandbox-armada-access.ts";
@@ -99,7 +100,7 @@ export interface ControlOptions {
   store: VaultStore;
   encryptionKey: string | undefined;
   github?: { app: GitHubApp | null; fetch?: typeof fetch; now?: () => Date };
-  logs?: (caller: Caller, sandboxId: string) => Promise<{ provider: Provider; providerSandboxId: string }>;
+  logs?: (caller: Caller, sandboxId: string) => Promise<{ provider: SandboxLogReader; providerSandboxId: string }>;
   goldenBuilds?: GoldenBuildJobs;
   goldenAdoption?: import("@armada/core/server").GoldenAdoption;
   providers?: ProviderRegistry;
