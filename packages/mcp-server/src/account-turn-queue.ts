@@ -166,11 +166,19 @@ export function createAccountTurnQueue(sql: Sql, key: string) {
           credential_id: string | null;
           credential_version: number;
           org_id: string;
+          launch_setup_state: string | null;
         }>(
-          `select s.status,s.status_reason,s.preservation_note,s.expires_at,s.harness,s.provider,s.boat_runtime,s.runtime_transport,s.model,s.reasoning_effort,s.credential_id,s.credential_version,s.org_id from public.sandboxes s
-         join public.members m on m.org_id=s.org_id and m.user_id=$2
-         where s.id=$1 and s.owner_id=$2 and s.deleted_at is null`,
-          [input.id, caller.userId],
+          `select s.status,s.status_reason,s.preservation_note,s.expires_at,s.harness,s.provider,s.boat_runtime,
+                  s.runtime_transport,s.model,s.reasoning_effort,s.credential_id,s.credential_version,s.org_id,
+                  case when s.provider='modal' and not $3::boolean then (
+                    select j.state from public.jobs j where j.idem_key=
+                      format('["internal","%s","launch_initial_turn","%s",%s,"%s"]',
+                             s.org_id,s.id,s.lifecycle_generation,s.id)
+                  ) end as launch_setup_state
+           from public.sandboxes s
+           join public.members m on m.org_id=s.org_id and m.user_id=$2
+           where s.id=$1 and s.owner_id=$2 and s.deleted_at is null`,
+          [input.id, caller.userId, initialLaunch !== undefined],
         )
       ).rows[0];
       if (!target || !caller.orgs.some((org) => org.orgId === target.org_id))
@@ -187,6 +195,9 @@ export function createAccountTurnQueue(sql: Sql, key: string) {
         new Date(),
       );
       if (refusal) throw new VaultError("conflict", refusal);
+      if (target.launch_setup_state === "queued" || target.launch_setup_state === "leased")
+        throw new VaultError("conflict", "Modal launch setup is still in progress.");
+      if (target.launch_setup_state === "failed") throw new VaultError("conflict", "Modal launch setup failed.");
       // Docker admission rules apply to the normalized request before anything is persisted. A keyless
       // send keeps its server-generated request_id, as installed clients (earlier iOS builds) rely on.
       if (target.provider === "docker" && !DOCKER_SEND_REQUEST.safeParse(normalized).success)

@@ -161,8 +161,8 @@ export async function admitModalLaunch(sql: Sql, encryptionKey: string, input: M
         MODAL_INITIAL_TURN,
         sandboxId,
         generation,
-        jobId,
-        { prompt: input.initialPrompt },
+        sandboxId,
+        { launchJobId: jobId, prompt: input.initialPrompt },
         { orgId, maxAttempts: 3 },
         tx,
       );
@@ -185,7 +185,9 @@ export function createModalInitialTurnJob(
     async run(job, context) {
       const sandboxId = job.sandbox_id;
       const generation = job.generation;
-      const payload = z.object({ prompt: z.string().optional() }).safeParse(job.payload);
+      const payload = z
+        .object({ launchJobId: z.string().uuid(), prompt: z.string().optional() })
+        .safeParse(job.payload);
       if (!sandboxId || !generation || !payload.success)
         return { status: "fail", reason: "invalid_modal_initial_turn" };
 
@@ -209,14 +211,13 @@ export function createModalInitialTurnJob(
            and s.org_id=intent.org_id and s.provider='modal'
          join public.jobs launch on launch.sandbox_id=s.id and launch.generation=intent.generation
            and launch.org_id=s.org_id and launch.request_owner_id=s.owner_id and launch.kind='launch'
-           and intent.idem_key=format('["internal","%s","launch_initial_turn","%s",%s,"%s"]',
-                                      s.org_id,s.id,intent.generation,launch.id)
+           and launch.id=$2
          join public.members m on m.org_id=s.org_id and m.user_id=s.owner_id
          left join public.runtime_enrolments runtime on runtime.sandbox_id=s.id
            and runtime.lifecycle_generation=s.lifecycle_generation and runtime.runtime_hash is not null
            and s.status in ('ready','running') and s.stop_requested_at is null and s.deleted_at is null
          where intent.id=$1`,
-        [job.id],
+        [job.id, payload.data.launchJobId],
       );
       if (target?.accepted) return { status: "done" };
       if (!target || target.state === "failed") return { status: "fail", reason: "modal_initial_turn_unavailable" };
