@@ -58,6 +58,7 @@ import {
   publishNativeResumeAdmission,
   publishNativeTurn,
   publishOwnerStop,
+  recordNativeBoatDrainOperation,
   recordNativeRetentionRefusal,
   recordObservedProviderState,
   requestStartingModalStop,
@@ -829,18 +830,15 @@ export function createSqlData(
           const { expectedGeneration, activityToken, nativeBoatDrainOperation: operation } = patch;
           if (expectedGeneration === undefined || !activityToken)
             throw new DataError("Boat drain operation evidence requires its activity generation and token.");
-          const { rows } = await sql.query(
-            `update public.sandboxes s set native_boat_drain_operation_id=$7
-             where s.id=$3::uuid and ${SANDBOX_VISIBLE}
-               and s.lifecycle_generation=$4 and s.activity_lease_id=$5
-               and s.activity_until>clock_timestamp() and s.native_drain_pending
-               and s.provider='boat' and s.provider_sandbox_id=$6 and not s.boat_runtime
-               and s.runtime_transport is distinct from 'dialout' and s.deleted_at is null
-               and s.native_boat_drain_operation_id is null
-             returning s.id`,
-            [...scope, id, expectedGeneration, activityToken, operation.placement, operation.id],
+          const recorded = await recordNativeBoatDrainOperation(
+            sql,
+            scope,
+            id,
+            expectedGeneration,
+            activityToken,
+            operation,
           );
-          if (!rows.length) throw new DataError("Boat drain operation evidence is stale.", "sandbox_not_ready");
+          if (!recorded) throw new DataError("Boat drain operation evidence is stale.", "sandbox_not_ready");
           return;
         }
         if (patch.deleteCompleted) {

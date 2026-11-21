@@ -196,7 +196,7 @@ export async function deleteSandboxWithActivity(
             signal.throwIfAborted();
             await sandboxes.update(id, {
               nativeBoatDrainOperation: { placement: target.sandboxId, id: receipt.operationId },
-              expectedGeneration: target.generation,
+              ...(target.generation === undefined ? {} : { expectedGeneration: target.generation }),
               activityToken,
             });
           }

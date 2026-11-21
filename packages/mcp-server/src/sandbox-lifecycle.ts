@@ -878,6 +878,28 @@ export async function publishOwnerStop(
   if (result.kind === "conflict") throw new Error("Locked owner stop could not transition.");
 }
 
+export async function recordNativeBoatDrainOperation(
+  sql: Sql,
+  scope: [string[], string],
+  sandboxId: string,
+  generation: number,
+  activityToken: string,
+  operation: { placement: string; id: string },
+) {
+  const { rows } = await sql.query(
+    `update public.sandboxes s set native_boat_drain_operation_id=$7
+     where s.id=$3::uuid and ${SANDBOX_VISIBLE}
+       and s.lifecycle_generation=$4 and s.activity_lease_id=$5
+       and s.activity_until>clock_timestamp() and s.native_drain_pending
+       and s.provider='boat' and s.provider_sandbox_id=$6 and not s.boat_runtime
+       and s.runtime_transport is distinct from 'dialout' and s.deleted_at is null
+       and s.native_boat_drain_operation_id is null
+     returning s.id`,
+    [...scope, sandboxId, generation, activityToken, operation.placement, operation.id],
+  );
+  return rows.length > 0;
+}
+
 export async function completeSandboxDeletion(
   tx: Sql,
   scope: [string[], string],
