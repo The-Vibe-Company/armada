@@ -2,6 +2,8 @@ import { createHash } from "node:crypto";
 import type { ProviderTarget, Sql } from "@armada/core";
 import { GoldenError, isNonMutatingProviderRefusal, LaunchError, ProviderError, VaultError } from "@armada/core/server";
 
+const SHARED_KEY_CONFLICT_SQLSTATE = "A2760";
+
 interface Scope {
   orgId: string;
   userId: string;
@@ -38,11 +40,22 @@ export function createOrdinaryLaunchReceipts(sql: Sql) {
     ): Promise<T> {
       const fingerprint = createHash("sha256").update(canonical(payload)).digest("hex");
       const id = crypto.randomUUID();
-      const inserted = await sql.query<Receipt>(
-        `INSERT INTO public.ordinary_launch_receipts (id, org_id, owner_id, request_key, fingerprint, authority)
-         VALUES ($1,$2,$3,$4,$5,$6::jsonb) ON CONFLICT (org_id, owner_id, request_key) DO NOTHING RETURNING id`,
-        [id, actor.orgId, actor.userId, key, fingerprint, JSON.stringify(authority)],
-      );
+      let inserted: { rows: Receipt[] };
+      try {
+        inserted = await sql.query<Receipt>(
+          `INSERT INTO public.ordinary_launch_receipts (id, org_id, owner_id, request_key, fingerprint, authority)
+           VALUES ($1,$2,$3,$4,$5,$6::jsonb) ON CONFLICT (org_id, owner_id, request_key) DO NOTHING RETURNING id`,
+          [id, actor.orgId, actor.userId, key, fingerprint, JSON.stringify(authority)],
+        );
+      } catch (error) {
+        if (
+          error instanceof Error &&
+          (("errno" in error && error.errno === SHARED_KEY_CONFLICT_SQLSTATE) ||
+            ("code" in error && error.code === SHARED_KEY_CONFLICT_SQLSTATE))
+        )
+          throw new GoldenError("conflict", "Launch key conflicts with an existing receipt.");
+        throw error;
+      }
       if (!inserted.rows.length) {
         const { rows } = await sql.query<Receipt>(
           `SELECT id, fingerprint, response, failure FROM public.ordinary_launch_receipts

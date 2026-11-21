@@ -691,9 +691,7 @@ test("send replay keeps the original receipt while new sends target the current 
   const input = { id: ids[0]!, request_id: requests[0]!, prompt: "Original instruction" };
   const receipt = { id: input.id, promptId: "original_turn", conversationId: "history", status: "running" };
   await queue.accept(caller, input);
-  queue.setDispatch(async () => receipt);
-  expect(await queue.reconcileOne(new AbortController().signal)).toBe(true);
-  await queue.drain();
+  await sharedDispatcher(async () => receipt)();
   await database().query("update sandboxes set conversation_ids=array['history','current'] where id=$1", [input.id]);
   try {
     await expect(queue.accept(caller, input)).resolves.toMatchObject(receipt);
@@ -1043,35 +1041,48 @@ test("queued public receipts remain usable across server reads, evidence, outcom
   });
 });
 
-test("bounded queue scans advance past full accounts without starving another account", async () => {
-  const targets: string[] = [];
-  for (let i = 1; i <= 21; i++) {
-    const suffix = String(i).padStart(12, "0");
-    const accountId = `80000000-0000-4000-8000-${suffix}`;
-    const sandboxId = `90000000-0000-4000-8000-${suffix}`;
-    const requestId = `70000000-0000-4000-8000-${suffix}`;
-    await database().query("insert into credentials values($1,$2,$3,1,'active',null,'user',$4)", [
-      accountId,
-      `Account ${i}`,
-      i === 21 ? 1 : 0,
-      owner,
-    ]);
-    await database().query(
-      "insert into sandboxes(id,credential_id,credential_version,org_id,owner_id,conversation_ids,status,expires_at) values($1,$2,1,$3,$4,array['history'],'ready',now()+interval '1 day')",
-      [sandboxId, accountId, org, owner],
-    );
-    await queue.accept(caller, { id: sandboxId, request_id: requestId, prompt: `instruction ${i}` });
-    targets.push(sandboxId);
-  }
+test("a full account defers its turn without starving another account", async () => {
+  const blocked = { id: ids[0]!, request_id: requests[0]!, prompt: "blocked instruction" };
+  const available = {
+    id: "90000000-0000-4000-8000-000000000001",
+    request_id: requests[1]!,
+    prompt: "next instruction",
+  };
+  const availableAccount = "80000000-0000-4000-8000-000000000001";
+  await database().query("update sandboxes set status='running',task_prompt_id='active_turn' where id=$1", [ids[1]]);
+  await database().query("insert into credentials values($1,'Available account',1,1,'active',null,'user',$2)", [
+    availableAccount,
+    owner,
+  ]);
+  await database().query(
+    "insert into sandboxes(id,credential_id,credential_version,org_id,owner_id,conversation_ids,status,expires_at) values($1,$2,1,$3,$4,array['history'],'ready',now()+interval '1 day')",
+    [available.id, availableAccount, org, owner],
+  );
+  await queue.accept(caller, blocked);
+  await queue.accept(caller, available);
+  await database().query("update jobs set run_after='-infinity' where sandbox_id=$1 and kind='turn_dispatch'", [
+    blocked.id,
+  ]);
   const dispatched: string[] = [];
-  queue.setDispatch(async (_caller, input) => {
+  const dispatch = sharedDispatcher(async (_caller, input) => {
     dispatched.push(input.id);
     return { promptId: "actual", conversationId: "history", status: "running" };
   });
-  expect(await queue.reconcileOne(new AbortController().signal)).toBe(false);
-  expect(await queue.reconcileOne(new AbortController().signal)).toBe(true);
-  await queue.drain();
-  expect(dispatched).toEqual([targets[20]!]);
+
+  await dispatch();
+  expect(dispatched).toEqual([]);
+  expect(await queue.accept(caller, blocked)).toMatchObject({ status: "queued" });
+  const {
+    rows: [deferred],
+  } = await database().query(
+    "select state, attempts, run_after > clock_timestamp() as deferred from jobs where sandbox_id=$1",
+    [blocked.id],
+  );
+  expect(deferred).toEqual({ state: "queued", attempts: 0, deferred: true });
+
+  await dispatch();
+  expect(dispatched).toEqual([available.id]);
+  expect(await queue.accept(caller, available)).toMatchObject({ promptId: "actual", status: "running" });
 });
 
 test("a proven pre-dispatch rejection requeues without leaking the account reservation", async () => {
