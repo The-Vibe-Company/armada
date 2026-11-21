@@ -1486,6 +1486,52 @@ test.each([
   ]);
 });
 
+test("a late Modal delete receipt cannot settle the retry owner's generation", async () => {
+  const { db, people, sandboxId } = await seedNativeDrainReceipt(undefined, "modal");
+  const caller: Caller = { via: "service", userId: people.owner, orgs: [{ orgId: people.org, role: "member" }] };
+  const { sandboxes } = createSqlData(bunLikeSql(db))(caller);
+  const firstDispatched = Promise.withResolvers<void>();
+  const retryDispatched = Promise.withResolvers<void>();
+  const firstReceipt = Promise.withResolvers<void>();
+  const retryReceipt = Promise.withResolvers<void>();
+  const provider: Provider = {
+    ...fakeBoat().provider,
+    id: "modal",
+    delete: async ({ generation }) => {
+      if (generation === 5) {
+        firstDispatched.resolve();
+        await firstReceipt.promise;
+      } else {
+        retryDispatched.resolve();
+        await retryReceipt.promise;
+      }
+      return { status: "deleted" };
+    },
+  };
+  const drain = () =>
+    deleteSandboxWithActivity(sandboxes, { resolve: async () => provider }, sandboxId, "native-drain");
+  const first = drain();
+  try {
+    await Promise.race([first, firstDispatched.promise]);
+    await db.query("update sandboxes set activity_until=now()-interval '1 second' where id=$1", [sandboxId]);
+    const retry = drain();
+    try {
+      await Promise.race([retry, retryDispatched.promise]);
+      firstReceipt.resolve();
+      await expect(first).rejects.toThrow("Sandbox deletion receipt is stale.");
+      expect((await db.query("select status from sandboxes where id=$1", [sandboxId])).rows).toEqual([
+        { status: "stopped" },
+      ]);
+    } finally {
+      retryReceipt.resolve();
+      await expect(retry).resolves.toEqual({ id: sandboxId, status: "deleted" });
+    }
+  } finally {
+    firstReceipt.resolve();
+    await first.catch(() => undefined);
+  }
+});
+
 test.each(["activity", "queue", "provider observation", "owner row update", "ordinary delete"] as const)(
   "uncertain native drain refuses %s after its lease expires",
   async (attempt) => {
