@@ -100,6 +100,7 @@ export function createSubscriptionMigration(
     if (mode !== "pending") {
       await recheck(source);
       await observe(target.provider, target.providerSandboxId, actor, true);
+      await recheck(source);
       const latest = await transports.read(target.provider, target.providerSandboxId, {}, true, grant.capability);
       if (latest !== "null" && latest !== "pending") {
         try {
@@ -123,6 +124,7 @@ export function createSubscriptionMigration(
     if (!account.rows.length) throw new VaultError("conflict", "Subscription account changed during native upgrade.");
     await recheck(source);
     await transports.configure(target.provider, target.providerSandboxId, grant);
+    await recheck(source);
     if ((await transports.read(target.provider, target.providerSandboxId, {}, false, grant.capability)) !== "null")
       throw new VaultError("unavailable", "Subscription native upgrade could not be confirmed.");
     await recheck(source);
