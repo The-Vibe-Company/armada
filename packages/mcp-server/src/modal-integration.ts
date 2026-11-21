@@ -7,6 +7,7 @@ import {
   EncryptionKeyError,
   type ModalBinding,
   type Provider,
+  ProviderError,
   type ProviderTarget,
   parseModalTokenPair,
   resolveModalTokens,
@@ -273,15 +274,29 @@ export async function createModalIntegration(options: {
       ingestUrl,
       artifact,
       ...(options.resumeRefused ? { resumeRefused: options.resumeRefused } : {}),
-      ...(options.beforeResume
-        ? {
-            beforeResume: (provider: Provider, sandboxId: string) =>
-              options.beforeResume!(provider, sandboxId, {
-                userId: context.caller.userId,
-                orgId: context.target.orgId,
-              }),
-          }
-        : {}),
+      async beforeResume(provider, sandboxId) {
+        const blocked = await options.sql.query(
+          `select 1 from public.sandboxes s
+           where s.org_id=$1 and s.provider='modal' and s.provider_sandbox_id=$2
+             and s.runtime_transport is distinct from 'dialout' and s.deleted_at is null
+             and (s.native_drain_pending or exists (
+               select 1 from public.native_drain_stop_requests r
+               where r.sandbox_id=s.id and r.stop_generation=s.stop_generation
+             )) limit 1`,
+          [scope.orgId, sandboxId],
+        );
+        if (blocked.rows.length)
+          throw new ProviderError({
+            provider: provider.id,
+            code: "sandbox_not_ready",
+            message: "Native drain preservation blocks restoring this workspace.",
+            retryable: false,
+          });
+        await options.beforeResume?.(provider, sandboxId, {
+          userId: context.caller.userId,
+          orgId: context.target.orgId,
+        });
+      },
       ...(options.beforePrompt
         ? {
             beforePrompt: (provider, sandboxId) =>

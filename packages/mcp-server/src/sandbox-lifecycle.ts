@@ -916,7 +916,9 @@ export async function requestNativeDrainStop(
       `update public.sandboxes s set activity_lease_id=$6, activity_until=clock_timestamp()+interval '2 minutes',
          lifecycle_generation=lifecycle_generation+1, stop_generation=stop_generation+1,
          stop_requested_at=clock_timestamp(), reconcile_after=clock_timestamp(), status_reason=null
-       where s.id=$1 and s.lifecycle_generation=$2 and s.provider_sandbox_id=$3 and s.provider=$4 and s.provider='boat'
+       where s.id=$1 and s.lifecycle_generation=$2 and s.provider_sandbox_id=$3 and s.provider=$4 and s.provider in ('boat','modal')
+         and (s.provider='boat' or exists(select 1 from public.goldens g where g.id=s.golden_id
+           and g.modal_workspace is not null and g.modal_environment is not null and g.modal_app_id is not null))
          and ${NATIVE_WORK_ROUTE} and s.status in ('ready','running') and s.stop_requested_at is null
          and s.stopped_at is null and s.deleted_at is null and not s.application_secret_tainted
          and not s.native_drain_pending and s.expires_at>clock_timestamp()
