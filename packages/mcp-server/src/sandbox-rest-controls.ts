@@ -209,9 +209,14 @@ export async function deleteSandboxWithActivity(
           };
           let operationId: string | null = null;
           if (nativeDrain) {
-            if (!sandboxes.nativeDrainOperation || target.generation === undefined)
+            if (!sandboxes.claimNativeDrainDispatch || target.generation === undefined)
               throw new ToolError("unavailable", "Native drain deletion evidence is unavailable.");
-            operationId = await sandboxes.nativeDrainOperation(id, target.sandboxId, target.generation, activityToken);
+            operationId = await sandboxes.claimNativeDrainDispatch(
+              id,
+              target.sandboxId,
+              target.generation,
+              activityToken,
+            );
             signal.throwIfAborted();
           }
           const boat = provider as Partial<BoatProvider>;

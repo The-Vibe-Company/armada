@@ -896,6 +896,50 @@ export async function publishOwnerStop(
   if (result.kind === "conflict") throw new Error("Locked owner stop could not transition.");
 }
 
+export async function markNativeDrainDispatchUnclaimed(tx: Sql, id: string) {
+  await tx.query(
+    `insert into public.native_drain_unclaimed_dispatches (sandbox_id)
+     select id from public.sandboxes where id=$1 and provider='boat'`,
+    [id],
+  );
+}
+
+export async function claimNativeDrainDispatch(
+  sql: Sql,
+  scope: [string[], string],
+  id: string,
+  placement: string,
+  generation: number,
+  activityToken: string,
+) {
+  const {
+    rows: [owned],
+  } = await sql.query<{ operation_id: string | null }>(
+    `with locked as materialized (
+       select s.id, s.activity_until
+       from public.sandboxes s
+       where s.id=$3::uuid and ${SANDBOX_VISIBLE} and s.provider in ('boat','modal')
+         and s.provider_sandbox_id=$4 and s.lifecycle_generation=$5 and s.activity_lease_id=$6
+         and s.native_drain_pending and not s.boat_runtime and s.runtime_transport is distinct from 'dialout'
+         and s.deleted_at is null
+       for update of s
+     ), owned as materialized (
+       select * from locked where activity_until>clock_timestamp()
+     ), claimed as (
+       delete from public.native_drain_unclaimed_dispatches d using owned
+       where d.sandbox_id=owned.id returning d.sandbox_id
+     )
+     select o.operation_id from public.sandboxes s
+     join owned on owned.id=s.id
+     left join claimed on claimed.sandbox_id=s.id
+     left join public.native_drain_delete_operations o on o.sandbox_id=s.id
+     where (claimed.sandbox_id is not null or s.provider='modal' or o.sandbox_id is not null)
+       and (o.sandbox_id is null or (o.provider=s.provider and o.placement=$4))`,
+    [...scope, id, placement, generation, activityToken],
+  );
+  return owned;
+}
+
 export async function recordNativeDrainDeleteOperation(
   sql: Sql,
   scope: [string[], string],
