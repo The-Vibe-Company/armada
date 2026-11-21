@@ -1089,6 +1089,106 @@ test.each(["clean", "failed", "wrong-placement"] as const)(
   },
 );
 
+test.each([
+  "retained",
+  "no recovery image",
+  "unreleased restore",
+  "generation mismatch",
+  "lost stop reply",
+  "lost checkpoint read",
+] as const)("active native Modal drain respects journal and retained checkpoint evidence (%s)", async (scenario) => {
+  const placement = `modal-active-${crypto.randomUUID()}`;
+  const { provider: fake, setExecOutput } = fakeBoat();
+  setExecOutput({ stdout: JSON.stringify({ status: "clean" }) });
+  let stopped = false;
+  let observed = false;
+  const stop = mock(async () => {
+    stopped = true;
+    await db.query(`update modal_machines set record=record || $2::jsonb where id=$1`, [
+      placement,
+      JSON.stringify({
+        phase: "stopped",
+        ...(scenario === "no recovery image" ? {} : { recoveryImageId: "saved-image" }),
+      }),
+    ]);
+    if (scenario === "lost stop reply") throw new Error("Provider stopped but the reply was lost.");
+  });
+  const provider: Provider = {
+    ...fake,
+    id: "modal",
+    supportsExecPhysicalGeneration: true,
+    async quiesce() {},
+    async get() {
+      const generation = !observed && scenario === "generation mismatch" ? "2" : "1";
+      observed = true;
+      return {
+        id: placement,
+        name: "Modal fixture",
+        labels: {},
+        state: stopped ? "stopped" : "ready",
+        providerState: stopped ? "stopped" : "active",
+        physicalGeneration: generation,
+      };
+    },
+    stop,
+  };
+  const { db, context, sandboxId } = await nativeToolFixture(provider, placement);
+  const caller = context.caller;
+  const orgId = caller.orgs[0]!.orgId;
+  const lease = scenario === "unreleased restore" ? crypto.randomUUID() : null;
+  await db.query(
+    `insert into modal_machines(scope,org_id,owner_id,visibility,id,request_key,record,lease_id,lease_until)
+       values('drain-fixture',$1,$2,'private',$3,$3,'{"phase":"active","generation":1}',$4,
+         case when $4::uuid is not null then '-infinity'::timestamptz end)`,
+    [orgId, caller.userId, placement, lease],
+  );
+  let rejectCheckpointRead = scenario === "lost checkpoint read";
+  const sql = bunLikeSql(db, (statement) => {
+    if (rejectCheckpointRead && stopped && statement.includes("m.record->>'recoveryImageId'")) {
+      rejectCheckpointRead = false;
+      throw new Error("Checkpoint evidence could not be read.");
+    }
+  });
+  const drain = configureNativeDrain(sql, "modal", caller.userId, {
+    ARMADA_ENCRYPTION_KEY: ENCRYPTION_KEY,
+    ARMADA_PUBLIC_URL: PUBLIC_URL,
+  });
+  const candidate = { id: sandboxId, org_id: orgId, role: "admin" as const };
+  const inventory = () => context.data.sandboxes.get(sandboxId);
+  if (lease) {
+    await expect(drain.remove(candidate)).rejects.toThrow("could not admit strict preservation");
+    expect((await inventory())?.status).toBe("ready");
+    expect(stop).not.toHaveBeenCalled();
+    return;
+  }
+  await expect(drain.remove(candidate)).rejects.toThrow("before preservation and stop are confirmed");
+  expect((await inventory())?.status).toBe("stopping");
+  expect(stop).not.toHaveBeenCalled();
+  await db.query(
+    "update sandboxes set reconcile_after=case when id=$1 then '-infinity'::timestamptz else 'infinity' end",
+    [sandboxId],
+  );
+  const worker = createSandboxLifecycle(sql, async (id) => {
+    expect(id).toBe(sandboxId);
+    return provider;
+  });
+  expect(await worker.reconcileOne()).toBe(true);
+  expect(observed).toBe(true);
+  if (scenario === "generation mismatch") {
+    expect(stop).not.toHaveBeenCalled();
+    expect((await inventory())?.status).toBe("stopping");
+    return;
+  }
+  expect(stop).toHaveBeenCalledWith(expect.objectContaining({ sandboxId: placement, requireRetention: true }));
+  if (scenario === "lost stop reply" || scenario === "lost checkpoint read") {
+    expect((await inventory())?.status).toBe("stopping");
+    await db.query("update sandboxes set reconcile_after='-infinity' where id=$1", [sandboxId]);
+    expect(await worker.reconcileOne()).toBe(true);
+    expect(stop).toHaveBeenCalledTimes(1);
+  }
+  expect((await inventory())?.status).toBe(scenario === "no recovery image" ? "stopping" : "stopped");
+});
+
 test("active native drain retains an expired historical activity with unknown outcome", async () => {
   const { db, context, sandboxId } = await nativeToolFixture(fakeBoat().provider, "bx_drain_historical_activity");
   const token = crypto.randomUUID();

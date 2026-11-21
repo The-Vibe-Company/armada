@@ -17,7 +17,7 @@ import { releaseAccountCapacity } from "./account-capacity.ts";
 import { isDockerPromptRefusal } from "./docker-prompt-refusal.ts";
 import type { Job } from "./jobs/runner.ts";
 import { mergedWorkProof } from "./merged-work.ts";
-import { withdrawExpiredModalDrainLease } from "./modal-drain-journal.ts";
+import { strictNativeDrainJournals, withdrawExpiredModalDrainLease } from "./modal-drain-journal.ts";
 import { nativeIdleDue, nativeQuiescent } from "./native-idle.ts";
 import { LIVE_OUTPUT_CANDIDATE } from "./output-transfers.ts";
 import { recordNativeIdleTurn } from "./runtime-idle-evidence.ts";
@@ -962,6 +962,8 @@ export async function requestNativeDrainStop(
   return sql.transaction(async (tx) => {
     const locked = await tx.query(`select id from public.sandboxes where id=$1 for update`, [id]);
     if (!locked.rows.length) return false;
+    const journal = strictNativeDrainJournals[provider];
+    if (journal && !(await journal.lockActive(tx, id))) return false;
     const token = crypto.randomUUID();
     const {
       rows: [admitted],
@@ -969,7 +971,7 @@ export async function requestNativeDrainStop(
       `update public.sandboxes s set activity_lease_id=$6, activity_until=clock_timestamp()+interval '2 minutes',
          lifecycle_generation=lifecycle_generation+1, stop_generation=stop_generation+1,
          stop_requested_at=clock_timestamp(), reconcile_after=clock_timestamp(), status_reason=null
-       where s.id=$1 and s.lifecycle_generation=$2 and s.provider_sandbox_id=$3 and s.provider=$4 and s.provider='boat'
+       where s.id=$1 and s.lifecycle_generation=$2 and s.provider_sandbox_id=$3 and s.provider=$4
          and ${NATIVE_WORK_ROUTE} and s.status in ('ready','running') and s.stop_requested_at is null
          and s.stopped_at is null and s.deleted_at is null and not s.application_secret_tainted
          and not s.native_drain_pending and s.expires_at>clock_timestamp()
@@ -2261,8 +2263,14 @@ export function createSandboxLifecycle(
                    and r.stop_generation=s.stop_generation)
                  and exists(select 1 from public.native_drain_work_proof(s.id,s.lifecycle_generation)
                    where outcome in ('clean','archived'))
+                 and (s.provider<>'modal' or exists(
+                   select 1 from public.sandbox_native_preservation_receipts r
+                   where r.sandbox_id=s.id and r.generation=s.lifecycle_generation
+                     and r.stop_generation=s.stop_generation
+                     and r.capture_acknowledgements->>'physicalGeneration'=nullif($5::text,'')
+                 ))
                  and s.reconcile_lease_until>clock_timestamp()`,
-              [row.id, token, row.lifecycle_generation, row.provider_sandbox_id],
+              [row.id, token, row.lifecycle_generation, row.provider_sandbox_id, info.physicalGeneration ?? null],
             );
             if (!verified.rows.length) {
               error = "Strict native stop is waiting for verified work preservation.";
@@ -2290,6 +2298,18 @@ export function createSandboxLifecycle(
         }
         signal?.throwIfAborted();
         physicalExit = info.physicalExitConfirmed === true || info.stopNote === "checkpoint_failed_disk_not_retained";
+        const journal = strictNativeStop && strictNativeDrainJournals[providerId];
+        if (journal && (physicalExit || ["stopped", "deleted"].includes(info.state))) {
+          const retained =
+            !physicalExit &&
+            info.state === "stopped" &&
+            (await journal.hasRetainedCheckpoint(sql, row.id, row.lifecycle_generation, info.physicalGeneration));
+          if (!retained) {
+            physicalExit = false;
+            error = "Strict native stop is waiting for a verified retained Modal checkpoint.";
+            return settle();
+          }
+        }
         stoppedAt = info.stoppedAt;
         waitingForRetention =
           providerId === "boat" &&
