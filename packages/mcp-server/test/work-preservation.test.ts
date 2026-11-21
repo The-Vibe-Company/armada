@@ -1456,10 +1456,9 @@ test.each(["activity", "queue", "provider observation", "owner row update", "ord
       await db.transaction(async (tx) => {
         await tx.query("select set_config('request.jwt.claim.sub', $1, true)", [people.owner]);
         await tx.exec("set local role authenticated");
-        const updated = await tx.query(
-          "update sandboxes set status='ready',stopped_at=null where id=$1 returning id",
-          [sandboxId],
-        );
+        const updated = await tx.query("update sandboxes set status='ready',stopped_at=null where id=$1 returning id", [
+          sandboxId,
+        ]);
         expect(updated.rows).toEqual([]);
       });
     } else if (attempt === "queue") {
