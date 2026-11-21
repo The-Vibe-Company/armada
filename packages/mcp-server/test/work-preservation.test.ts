@@ -833,11 +833,10 @@ test.each(["observe", "capture"] as const)(
   },
 );
 
-async function seedNativeDrainReceipt() {
+async function seedNativeDrainReceipt(ciphertext = new Uint8Array([21, 34, 55])) {
   const { db, people, sharedGoldenId } = sharedDatabase();
   const sandboxId = crypto.randomUUID();
   const archiveId = crypto.randomUUID();
-  const ciphertext = new Uint8Array([21, 34, 55]);
   await db.query(
     `insert into sandboxes(id,golden_id,org_id,owner_id,provider,provider_sandbox_id,harness,status,
        stopped_at,lifecycle_generation,stop_generation,preservation_stop_generation)
@@ -865,38 +864,49 @@ async function seedNativeDrainReceipt() {
   return { db, people, sandboxId, archiveId, ciphertext, copy };
 }
 
-test("the exact native recovery survives normal sandbox deletion and a handoff retry does not duplicate it", async () => {
-  const { db, people, sandboxId, archiveId, ciphertext, copy } = await seedNativeDrainReceipt();
-  expect(await copy()).toBe("archived");
-  expect(await copy()).toBe("archived");
+test("owners and admins can recover the exact native archive after normal deletion and handoff replay", async () => {
+  const archive = Buffer.from("detached work fixture").toString("base64");
+  const previousKey = process.env.ARMADA_ENCRYPTION_KEY;
+  process.env.ARMADA_ENCRYPTION_KEY = ENCRYPTION_KEY;
+  try {
+    const { db, people, sandboxId, archiveId, ciphertext, copy } = await seedNativeDrainReceipt(
+      await encryptSecret(archive),
+    );
+    expect(await copy()).toBe("archived");
+    expect(await copy()).toBe("archived");
+    const data = (userId: string) =>
+      createSqlData(bunLikeSql(db))({ via: "service", userId, orgs: [{ orgId: people.org, role: "admin" }] }).sandboxes;
+    const owner = data(people.owner);
+    const token = crypto.randomUUID();
+    await db.query("update sandboxes set activity_lease_id=$2,activity_until=now()+interval '1 day' where id=$1", [
+      sandboxId,
+      token,
+    ]);
+    await owner.update(sandboxId, {
+      deleteCompleted: true,
+      expectedGeneration: 4,
+      activityToken: token,
+      finishActivity: true,
+    });
 
-  const token = crypto.randomUUID();
-  await db.query("update sandboxes set activity_lease_id=$2,activity_until=now()+interval '1 day' where id=$1", [
-    sandboxId,
-    token,
-  ]);
-  const { sandboxes } = createSqlData(bunLikeSql(db))({
-    via: "service",
-    userId: people.owner,
-    orgs: [{ orgId: people.org, role: "admin" }],
-  });
-  await sandboxes.update(sandboxId, {
-    deleteCompleted: true,
-    expectedGeneration: 4,
-    activityToken: token,
-    finishActivity: true,
-  });
-
-  expect((await sandboxes.get(sandboxId))?.status).toBe("deleted");
-  expect((await db.query("select id from sandbox_work_recovery where sandbox_id=$1", [sandboxId])).rows).toEqual([]);
-  expect(await copy(5)).toBe("ineligible");
-  expect(
-    (
-      await db.query("select archive_id,org_id,owner_id,archive_enc from native_drain_recovery where sandbox_id=$1", [
-        sandboxId,
-      ])
-    ).rows,
-  ).toEqual([{ archive_id: archiveId, org_id: people.org, owner_id: people.owner, archive_enc: ciphertext }]);
+    expect((await owner.get(sandboxId))?.status).toBe("deleted");
+    expect((await db.query("select id from sandbox_work_recovery where sandbox_id=$1", [sandboxId])).rows).toEqual([]);
+    expect(await copy(5)).toBe("ineligible");
+    expect(
+      (
+        await db.query("select archive_id,org_id,owner_id,archive_enc from native_drain_recovery where sandbox_id=$1", [
+          sandboxId,
+        ])
+      ).rows,
+    ).toEqual([{ archive_id: archiveId, org_id: people.org, owner_id: people.owner, archive_enc: ciphertext }]);
+    expect(await owner.readWorkRecovery?.(sandboxId, archiveId)).toBe(archive);
+    expect(await data(people.admin).readWorkRecovery?.(sandboxId)).toBe(archive);
+    expect(await owner.readWorkRecovery?.(sandboxId, crypto.randomUUID())).toBeNull();
+    await expect(data(people.member).readWorkRecovery?.(sandboxId, archiveId)).rejects.toThrow("No such sandbox.");
+  } finally {
+    if (previousKey === undefined) delete process.env.ARMADA_ENCRYPTION_KEY;
+    else process.env.ARMADA_ENCRYPTION_KEY = previousKey;
+  }
 });
 
 test("native handoff refuses stale and missing proof even with a historical archive", async () => {
