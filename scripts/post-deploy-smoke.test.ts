@@ -1883,6 +1883,33 @@ test.each([
   expect(fake.calls.at(-1)?.path).toBe("sandbox/status");
 });
 
+test.each(["preservation_clean_checkout", "preservation_clean_stop"] as const)(
+  "a late %s receipt fails while the clean worker is stopped",
+  async (step) => {
+    const fake = lifecycleFixture("none", (call) => {
+      if (call.path === "sandbox/exec" && String(call.body.command).includes("rev-list HEAD")) {
+        if (step === "preservation_clean_checkout" && call.body.id === lifecycleId(1))
+          fake.advance(deadlines[step] + 1);
+        return json({ exitCode: 0, timedOut: false });
+      }
+      if (call.path === "sandbox/recovery" && call.body.id === lifecycleId(1)) {
+        fake.advance(deadlines[step] + 1);
+        return json({ archive: null });
+      }
+    });
+    await fake.run([selected], ["--work-preservation"]);
+    expect(fake.receipts()).toContainEqual({ case: 0, step, pass: false, code: "poll_limit_exceeded" });
+    expect(fake.receipts()).toContainEqual(
+      expect.objectContaining({
+        step: "preservation_cleanup_summary",
+        phase: "clean",
+        pass: true,
+        leftoverSandboxIds: [],
+      }),
+    );
+  },
+);
+
 test("a resumed send admitted after its measured deadline fails without replay and still cleans up", async () => {
   const fake = lifecycleFixture("none", (call) => {
     if (call.path !== "sandbox/send" || !fake.calls.some((entry) => entry.path === "sandbox/stop")) return;
