@@ -818,6 +818,9 @@ export async function runModalLaunch(
   const target = await withJobLease(sql, job, startingTarget);
   context.signal.throwIfAborted();
   if (!target) return done;
+  if (dispatch?.kind === "observation_pending" && !target.stop_requested) {
+    return { status: "retry", after: new Date(Date.now() + ENROLMENT_RETRY_DELAY_MS) } satisfies JobResult;
+  }
   if (dispatch?.kind === "bootstrapped" && !target.stop_requested) {
     return {
       status: "retry",
@@ -927,12 +930,19 @@ async function dispatchModalLaunch(
   const current = reconciliationOnly ? undefined : await target();
   if (!current) return reconcile();
 
+  const machineId = current.provider_sandbox_id;
+  const observed =
+    job.attempts > 1 ? await machine.observe({ ...incarnation, ...(machineId ? { machineId } : {}) }) : undefined;
+  if (observed) {
+    if (!(await target()) || (observed.kind === "present" && observed.phase === "stopped"))
+      return { kind: "reconcile", observation: observed } as const;
+    if (machineId && observed.kind !== "present") return { kind: "observation_pending" } as const;
+  }
+
   let allocated: MachineIdentity;
-  if (current.provider_sandbox_id) {
-    allocated = { sandboxId, generation, machineId: current.provider_sandbox_id };
+  if (machineId) {
+    allocated = { sandboxId, generation, machineId };
   } else {
-    const observed = job.attempts > 1 ? await machine.observe(incarnation) : undefined;
-    if (observed && !(await target())) return reconcile();
     signal.throwIfAborted();
     allocated = await machine.create({ ...plan.allocation, ...incarnation });
     if (

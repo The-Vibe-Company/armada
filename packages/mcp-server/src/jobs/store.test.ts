@@ -688,6 +688,7 @@ async function modalLaunchFixture(initial?: Awaited<ReturnType<typeof modalAdmis
       });
   let allocations = 0;
   let observed = 0;
+  let exited = false;
   let visible = true;
   let terminations = 0;
   let cleanupPreparations = 0;
@@ -705,7 +706,7 @@ async function modalLaunchFixture(initial?: Awaited<ReturnType<typeof modalAdmis
       poll: async () => {
         observed++;
         await atStep?.("machine poll");
-        return terminations ? 0 : null;
+        return exited || terminations ? 0 : null;
       },
       async terminate() {
         terminations++;
@@ -846,6 +847,9 @@ async function modalLaunchFixture(initial?: Awaited<ReturnType<typeof modalAdmis
     },
     revealAllocation: () => {
       visible = true;
+    },
+    exitAllocation: () => {
+      exited = true;
     },
     effects: () => ({ allocations, observed, bootstrapped }),
     cleanupEffects: () => ({ terminations, cleanupPreparations }),
@@ -2090,7 +2094,7 @@ test.each(["create response", "bootstrap dispatch", "bootstrap response"] as con
     await successor.drain();
     expect(effects().allocations).toBe(1);
     expect(effects().bootstrapped).toEqual(["physical"]);
-    if (failure === "create response") expect(effects().observed).toBe(1);
+    expect(effects().observed).toBe(failure === "bootstrap response" ? 0 : 1);
     expect(
       (
         await f.db.query("select s.status, j.state from sandboxes s join jobs j on j.sandbox_id=s.id where j.id=$1", [
@@ -2098,6 +2102,46 @@ test.each(["create response", "bootstrap dispatch", "bootstrap response"] as con
         ])
       ).rows,
     ).toEqual([{ status: "ready", state: "done" }]);
+  },
+);
+
+test.each(["stopped", "unknown"] as const)(
+  "a replacement Modal launch claimant does not bootstrap a bound allocation observed as %s",
+  async (observation) => {
+    const { f, id, jobId, makeRunner, effects, exitAllocation } = await modalLaunchFixture(
+      await modalAdmissionFixture(),
+    );
+    const interrupted = makeRunner((step) => {
+      if (step === "runtime ticket") throw new Error("Worker lost after binding");
+    });
+    expect(await interrupted.reconcileOne(signal)).toBe(true);
+    await interrupted.drain();
+    expect((await f.db.query("select provider_sandbox_id from sandboxes where id=$1", [id])).rows).toEqual([
+      { provider_sandbox_id: "physical" },
+    ]);
+    if (observation === "stopped") exitAllocation();
+    await f.db.query("update jobs set lease_until='-infinity' where id=$1", [jobId]);
+
+    const replacement = makeRunner((step) => {
+      if (observation === "unknown" && step === "machine poll") throw new Error("Modal poll unavailable");
+    });
+    expect(await replacement.reconcileOne(signal)).toBe(true);
+    await replacement.drain();
+    expect(effects()).toEqual({ allocations: 1, observed: 1, bootstrapped: [] });
+    const status = observation === "stopped" ? "failed" : "starting";
+    expect((await f.db.query("select status from sandboxes where id=$1", [id])).rows).toEqual([{ status }]);
+    const cleanup = await f.store.claim("delete", crypto.randomUUID(), 30, 1);
+    if (observation === "stopped") {
+      expect(cleanup?.payload).toEqual({ launchJobId: jobId, machineId: "physical" });
+    } else {
+      expect(cleanup).toBeUndefined();
+      await f.db.query("update jobs set run_after='-infinity' where id=$1", [jobId]);
+      const next = makeRunner();
+      expect(await next.reconcileOne(signal)).toBe(true);
+      await next.drain();
+      expect(effects()).toEqual({ allocations: 1, observed: 2, bootstrapped: ["physical"] });
+      expect((await f.db.query("select state from jobs where id=$1", [jobId])).rows).toEqual([{ state: "done" }]);
+    }
   },
 );
 
