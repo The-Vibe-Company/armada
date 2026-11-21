@@ -962,6 +962,20 @@ export async function requestNativeDrainStop(
   return sql.transaction(async (tx) => {
     const locked = await tx.query(`select id from public.sandboxes where id=$1 for update`, [id]);
     if (!locked.rows.length) return false;
+    if (provider === "modal") {
+      // WARNING: Modal ingest can lock the journal before the sandbox. Refuse contention without waiting.
+      const journal = await tx.query<{ eligible: boolean }>(
+        `select (m.owner_id=s.owner_id and m.record->>'phase'='active'
+           and m.record->>'commonRuntime' is distinct from 'true'
+           and m.lease_id is null and m.lease_until is null) as eligible
+         from public.modal_machines m join public.sandboxes s
+           on m.org_id=s.org_id and m.id=s.provider_sandbox_id
+         where s.id=$1 and s.provider='modal'
+         for update of m nowait`,
+        [id],
+      );
+      if (journal.rows.length !== 1 || journal.rows[0]?.eligible !== true) return false;
+    }
     const token = crypto.randomUUID();
     const {
       rows: [admitted],
@@ -969,7 +983,7 @@ export async function requestNativeDrainStop(
       `update public.sandboxes s set activity_lease_id=$6, activity_until=clock_timestamp()+interval '2 minutes',
          lifecycle_generation=lifecycle_generation+1, stop_generation=stop_generation+1,
          stop_requested_at=clock_timestamp(), reconcile_after=clock_timestamp(), status_reason=null
-       where s.id=$1 and s.lifecycle_generation=$2 and s.provider_sandbox_id=$3 and s.provider=$4 and s.provider='boat'
+       where s.id=$1 and s.lifecycle_generation=$2 and s.provider_sandbox_id=$3 and s.provider=$4
          and ${NATIVE_WORK_ROUTE} and s.status in ('ready','running') and s.stop_requested_at is null
          and s.stopped_at is null and s.deleted_at is null and not s.application_secret_tainted
          and not s.native_drain_pending and s.expires_at>clock_timestamp()
@@ -2261,8 +2275,14 @@ export function createSandboxLifecycle(
                    and r.stop_generation=s.stop_generation)
                  and exists(select 1 from public.native_drain_work_proof(s.id,s.lifecycle_generation)
                    where outcome in ('clean','archived'))
+                 and (s.provider<>'modal' or exists(
+                   select 1 from public.sandbox_native_preservation_receipts r
+                   where r.sandbox_id=s.id and r.generation=s.lifecycle_generation
+                     and r.stop_generation=s.stop_generation
+                     and r.capture_acknowledgements->>'physicalGeneration'=nullif($5::text,'')
+                 ))
                  and s.reconcile_lease_until>clock_timestamp()`,
-              [row.id, token, row.lifecycle_generation, row.provider_sandbox_id],
+              [row.id, token, row.lifecycle_generation, row.provider_sandbox_id, info.physicalGeneration ?? null],
             );
             if (!verified.rows.length) {
               error = "Strict native stop is waiting for verified work preservation.";
@@ -2290,6 +2310,33 @@ export function createSandboxLifecycle(
         }
         signal?.throwIfAborted();
         physicalExit = info.physicalExitConfirmed === true || info.stopNote === "checkpoint_failed_disk_not_retained";
+        if (
+          strictNativeStop &&
+          providerId === "modal" &&
+          (physicalExit || ["stopped", "deleted"].includes(info.state))
+        ) {
+          const retained =
+            !physicalExit &&
+            info.state === "stopped" &&
+            (
+              await sql.query(
+                `select 1 from public.sandboxes s join public.modal_machines m
+               on m.org_id=s.org_id and m.owner_id=s.owner_id and m.id=s.provider_sandbox_id
+             join public.sandbox_native_preservation_receipts r on r.sandbox_id=s.id
+             where s.id=$1 and s.lifecycle_generation=$2 and r.generation=s.lifecycle_generation
+               and r.stop_generation=s.stop_generation
+               and m.record->>'phase'='stopped' and nullif(m.record->>'recoveryImageId','') is not null
+               and m.record->>'generation'=nullif($3::text,'')
+               and r.capture_acknowledgements->>'physicalGeneration'=m.record->>'generation'`,
+                [row.id, row.lifecycle_generation, info.physicalGeneration ?? null],
+              )
+            ).rows.length === 1;
+          if (!retained) {
+            physicalExit = false;
+            error = "Strict native stop is waiting for a verified retained Modal checkpoint.";
+            return settle();
+          }
+        }
         stoppedAt = info.stoppedAt;
         waitingForRetention =
           providerId === "boat" &&
