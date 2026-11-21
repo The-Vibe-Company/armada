@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
-import type { Sql } from "@armada/core";
 import { PGlite } from "@electric-sql/pglite";
+import type { Sql } from "../../packages/core/src/golden-store.ts";
 import { parseNativeDrainArgs, runNativeDrain } from "./drain-native.ts";
 
 const db = new PGlite();

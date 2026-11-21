@@ -1,6 +1,7 @@
 import { Console } from "node:console";
 import { Writable } from "node:stream";
-import type { MemberRole, Sql } from "@armada/core";
+import type { MemberRole } from "../../packages/core/src/database.types.ts";
+import type { Sql } from "../../packages/core/src/golden-store.ts";
 import { SANDBOX_STATES, type SandboxState } from "../../packages/core/src/provider.ts";
 import { bunSql } from "../../packages/mcp-server/src/sql.ts";
 
@@ -83,7 +84,7 @@ export async function runNativeDrain(
 }
 
 async function configureDelete(sql: Sql, provider: NativeProvider, actorId: string) {
-  const { createSqlVaultStore } = await import("@armada/core/server");
+  const { createSqlVaultStore } = await import("../../packages/core/src/server.ts");
   const { createSqlData } = await import("../../packages/mcp-server/src/data.ts");
   const { providerRegistry } = await import("../../packages/mcp-server/src/http.ts");
   const { createModalIntegration } = await import("../../packages/mcp-server/src/modal-integration.ts");
@@ -138,7 +139,9 @@ async function execute({ provider, dryRun }: NativeDrainRequest) {
   }
   if (!dryRun) {
     // WARNING: Provider diagnostics can contain private IDs. Only print aggregate results from this CLI.
-    globalThis.console = new Console(new Writable({ write: (_chunk, _encoding, done) => done() }));
+    Object.defineProperty(globalThis, "console", {
+      value: new Console(new Writable({ write: (_chunk, _encoding, done) => done() })),
+    });
   }
   const sql = bunSql(url, 1);
   try {
@@ -149,7 +152,7 @@ async function execute({ provider, dryRun }: NativeDrainRequest) {
     return report.mode === "drain" && report.failed > 0 ? 1 : 0;
   } finally {
     try {
-      if (!dryRun) await (await import("@armada/provider-modal")).settleDetachedModalCollections();
+      if (!dryRun) await (await import("../../packages/provider-modal/src/index.ts")).settleDetachedModalCollections();
     } finally {
       await sql.close();
     }
