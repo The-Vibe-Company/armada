@@ -44,11 +44,11 @@ function fixture(initial: Session | null = null) {
       }
       if (path.endsWith("/auth/device/poll")) return loginAuthorized();
       if (path.endsWith("/auth/refresh")) return Response.json({ msg: "private provider diagnostic" }, { status: 401 });
-      if (path.endsWith("/token/list") || path.endsWith("/token/whoami") || path.endsWith("/account/status")) {
+      if (path.endsWith("/token/whoami") || path.endsWith("/account/status")) {
         commands++;
         expect(init?.method).toBe("POST");
         return !rejectNewSession && new Headers(init?.headers).get("authorization") === "Bearer new-access"
-          ? Response.json({ tokens: [] })
+          ? Response.json({ auth: "login", userId: "user" })
           : Response.json({ msg: "private provider diagnostic" }, { status: 401 });
       }
       throw new Error(`Unexpected path ${path}`);
@@ -71,12 +71,12 @@ for (const [name, initial, commands] of [
 ] as const) {
   test(`interactive ${name} session invites login and completes the original command`, async () => {
     const state = fixture(initial);
-    expect(await state.run(["token", "ls"])).toBe(0);
+    expect(await state.run(["whoami"])).toBe(0);
     expect(state.output()).toMatchObject({
       invitations: 1,
       logins: 1,
       commands,
-      out: "Signed in as user@example.test.\nNo API keys.\n",
+      out: "Signed in as user@example.test.\nuser (saved login)\n",
     });
     expect(state.output().err).not.toContain("private provider diagnostic");
   });
@@ -85,7 +85,7 @@ for (const [name, initial, commands] of [
 test("a failed retried command never starts another login", async () => {
   const state = fixture();
   state.rejectRetry();
-  expect(await state.run(["token", "ls"])).toBe(3);
+  expect(await state.run(["whoami"])).toBe(3);
   expect(state.output()).toMatchObject({ invitations: 1, logins: 1, commands: 1 });
   expect(state.output().err).toContain("Run armada login.");
 });
@@ -94,7 +94,7 @@ for (const json of [false, true]) {
   test(`noninteractive authentication failure gives safe login instructions (${json ? "JSON" : "text"})`, async () => {
     const state = fixture(saved);
     state.auth.interactive = false;
-    expect(await state.run(["token", "ls", ...(json ? ["--json"] : [])])).toBe(3);
+    expect(await state.run(["whoami", ...(json ? ["--json"] : [])])).toBe(3);
     expect(state.output()).toMatchObject({ invitations: 0, logins: 0, out: "" });
     if (json)
       expect(JSON.parse(state.output().err)).toEqual({
@@ -112,7 +112,7 @@ for (const json of [false, true]) {
 test("declining the invitation leaves the command unexecuted", async () => {
   const state = fixture();
   state.auth.confirmSignIn = async () => false;
-  expect(await state.run(["token", "ls"])).toBe(3);
+  expect(await state.run(["whoami"])).toBe(3);
   expect(state.output()).toMatchObject({ logins: 0, commands: 0 });
 });
 
@@ -136,7 +136,7 @@ for (const initial of [null, { ...saved, expiresAt: "2000-01-01" }, saved]) {
   });
 }
 
-for (const args of [["--help"], ["--version"], ["token", "--help"]]) {
+for (const args of [["--help"], ["--version"], ["whoami", "--help"]]) {
   test(`${args.join(" ")} stays available without authentication`, async () => {
     const state = fixture();
     expect(await state.run(args)).toBe(0);
@@ -149,7 +149,7 @@ test("invited login preserves browser denial guidance", async () => {
   const original = state.auth.fetch;
   state.auth.fetch = async (input, init) =>
     String(input).endsWith("/device/poll") ? Response.json({ status: "access_denied" }) : original(input, init);
-  expect(await state.run(["token", "ls"])).toBe(3);
+  expect(await state.run(["whoami"])).toBe(3);
   expect(state.output().err).toContain("denied in the browser");
 });
 

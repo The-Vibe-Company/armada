@@ -18,14 +18,13 @@ import prompt from "./prompt.ts";
 import recovery from "./recovery.ts";
 import report from "./report.ts";
 import rm from "./rm.ts";
-import routine from "./routine.ts";
 import { sandboxInspectionCommands } from "./sandbox-inspection.ts";
 import snapshot from "./snapshot.ts";
 import status from "./status.ts";
 import stop from "./stop.ts";
 import template from "./template.ts";
-import { tokenCommands } from "./token.ts";
 import wait from "./wait.ts";
+import whoami from "./whoami.ts";
 
 export const commands: readonly Command[] = [
   newSandbox,
@@ -45,12 +44,11 @@ export const commands: readonly Command[] = [
   completion,
   login,
   logout,
-  ...tokenCommands,
+  whoami,
   account,
   api,
   org,
   host,
-  routine,
   template,
   vars,
   secrets,

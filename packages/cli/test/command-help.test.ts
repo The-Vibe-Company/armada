@@ -21,7 +21,6 @@ for (const command of [
   "prompt",
   "exec",
   "outputs",
-  "routine",
   "template",
   "snapshot",
   "snapshot new",
