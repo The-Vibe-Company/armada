@@ -97,6 +97,16 @@ export async function withJobLease<T>(sql: Sql, job: Job, write: (tx: Sql) => Pr
   });
 }
 
+// WARNING: Record the replay token inside the fenced ticket issuance transaction.
+export async function recordModalBootstrapTicket(tx: Sql, jobId: string, token: string, encryptionKey: string) {
+  const sealed = await encryptSecret(token, encryptionKey);
+  await tx.query(
+    `update public.jobs set outcome=coalesce(outcome,'{}'::jsonb) ||
+       jsonb_build_object('bootstrap_ticket_enc',$2::text) where id=$1`,
+    [jobId, Buffer.from(sealed).toString("base64")],
+  );
+}
+
 // WARNING: Only call inside a fenced job completion after requeueing the job.
 export async function rescheduleRecurringJob(tx: Sql, job: Job, after: Date) {
   await tx.query("update public.jobs set attempts=0,run_after=$2 where id=$1", [job.id, after]);
@@ -297,7 +307,8 @@ export function createJobsStore(sql: Sql, encryptionKey?: string) {
   ) {
     const { rows } = await tx.query(
       `update public.jobs j set state = 'failed', lease_owner = null, lease_until = null,
-         outcome = coalesce(outcome, '{}'::jsonb) || jsonb_build_object('reason', $6::text)
+         outcome = coalesce(case when kind='launch' and jsonb_typeof(outcome)='object'
+                                 then outcome - 'bootstrap_ticket_enc' else outcome end, '{}'::jsonb) || jsonb_build_object('reason', $6::text)
        where ${fence} and (j.kind = 'turn_dispatch' or j.generation = $4)
          and (j.generation is distinct from $5 or $6 <> 'stale_generation') returning j.id`,
       [...claimKey(job, owner), generation, reason],
@@ -562,6 +573,8 @@ export function createJobsStore(sql: Sql, encryptionKey?: string) {
                          then jsonb_build_object('result', $6::jsonb) ||
                            case when outcome->'modal_machine' is null then '{}'::jsonb
                                 else jsonb_build_object('modal_machine', outcome->'modal_machine') end
+                         when kind = 'launch' and $5 <> 'queued' and jsonb_typeof(outcome) = 'object'
+                           then outcome - 'bootstrap_ticket_enc'
                          else coalesce($6::jsonb, outcome) end as evidence
              from public.jobs where id = $1
            ) data`,

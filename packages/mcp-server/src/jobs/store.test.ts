@@ -722,6 +722,13 @@ type ModalLaunchStep =
   | "machine poll"
   | "cleanup preparation";
 
+function modalTestArtifactManifest(digit: string) {
+  return {
+    runtime: { sha256: digit.repeat(64), bytes: 1 },
+    harnesses: { codex: { archive: { sha256: digit.repeat(63) + "0", bytes: 2 } } },
+  };
+}
+
 async function modalLaunchFixture(initial?: Awaited<ReturnType<typeof modalAdmissionFixture>>) {
   const f = initial ?? (await fixture());
   const id = initial
@@ -758,7 +765,12 @@ async function modalLaunchFixture(initial?: Awaited<ReturnType<typeof modalAdmis
   const enrolments = createRuntimeEnrolments(f.sql, launchEncryptionKey);
   let enrolmentToken: string;
   let activeRuntime: Awaited<ReturnType<typeof enrolments.enrol>> | undefined;
-  const makeRunner = (atStep?: (step: ModalLaunchStep) => void | Promise<void>, jobsSql = f.sql, enrol = true) => {
+  const makeRunner = (
+    atStep?: (step: ModalLaunchStep) => void | Promise<void>,
+    jobsSql = f.sql,
+    enrol = true,
+    artifactManifest = modalTestArtifactManifest("a"),
+  ) => {
     const sandbox = {
       sandboxId: "physical",
       getTags: async () => tags,
@@ -828,9 +840,9 @@ async function modalLaunchFixture(initial?: Awaited<ReturnType<typeof modalAdmis
       await atStep?.("runtime ticket");
       return {
         ownerId: f.people.owner,
-        configuration: {},
+        configuration: { artifactManifest },
         serverUrl: "https://armada.invalid",
-        artifact: { sha256: "a".repeat(64), bytes: 1 },
+        artifact: artifactManifest.runtime,
         cacheDir: "/home/user/runtime-cache",
         async lockPrerequisites() {},
         async checkAccountPin() {},
@@ -2125,7 +2137,9 @@ test.each(["before allocation", "after allocation"] as const)(
 test.each(["create response", "bootstrap dispatch", "bootstrap response"] as const)(
   "a replacement Modal launch runner completes after losing the %s",
   async (failure) => {
-    const { f, id, jobId, makeRunner, effects } = await modalLaunchFixture(await modalAdmissionFixture());
+    const { f, id, jobId, makeRunner, effects, activeRuntime } = await modalLaunchFixture(
+      await modalAdmissionFixture(),
+    );
     const lifecycle = createSandboxLifecycle(f.sql, async () => {
       throw new Error("Generic provider resolution cannot handle a job-owned Modal allocation.");
     });
@@ -2143,24 +2157,64 @@ test.each(["create response", "bootstrap dispatch", "bootstrap response"] as con
     if (failure === "bootstrap response") {
       await f.db.query("update jobs set deadline_at='-infinity' where id=$1", [jobId]);
     }
-    if (failure === "bootstrap dispatch") {
-      await f.db.query("update runtime_enrolments set enrolment_expires_at='-infinity' where sandbox_id=$1", [id]);
-    }
+    const pendingTicket =
+      failure === "bootstrap dispatch"
+        ? (
+            await f.db.query<{ enrolment_hash: string }>(
+              "select enrolment_hash from runtime_enrolments where sandbox_id=$1 and enrolment_expires_at>now()",
+              [id],
+            )
+          ).rows[0]
+        : undefined;
+    if (failure === "bootstrap dispatch") expect(pendingTicket).toBeDefined();
 
     expect(await lifecycle.reconcileOne()).toBe(false);
-    const successor = makeRunner();
+    if (pendingTicket) {
+      const interruptedReplay = makeRunner(
+        (step) => {
+          if (step === "bootstrap dispatch") throw new Error("Replacement lost after manifest refresh");
+        },
+        f.sql,
+        true,
+        modalTestArtifactManifest("b"),
+      );
+      expect(await interruptedReplay.reconcileOne(signal)).toBe(true);
+      await interruptedReplay.drain();
+      expect(effects().bootstrapped).toEqual([]);
+      await f.db.query("update jobs set lease_until='-infinity' where id=$1", [jobId]);
+    }
+    const replacementManifest = modalTestArtifactManifest("c");
+    const successor = makeRunner(
+      async (step) => {
+        if (pendingTicket && step === "bootstrap dispatch") {
+          expect(
+            (
+              await f.db.query(
+                "select enrolment_hash=$2 as same_ticket from runtime_enrolments where sandbox_id=$1 and enrolment_expires_at>now()",
+                [id, pendingTicket.enrolment_hash],
+              )
+            ).rows,
+          ).toEqual([{ same_ticket: true }]);
+        }
+      },
+      f.sql,
+      true,
+      replacementManifest,
+    );
     expect(await successor.reconcileOne(signal)).toBe(true);
     await successor.drain();
+    if (pendingTicket) expect(activeRuntime().configuration).toMatchObject({ artifactManifest: replacementManifest });
     expect(effects().allocations).toBe(1);
     expect(effects().bootstrapped).toEqual(["physical"]);
-    expect(effects().observed).toBe(failure === "bootstrap response" ? 0 : 1);
+    expect(effects().observed).toBe(failure === "bootstrap response" ? 0 : pendingTicket ? 2 : 1);
     expect(
       (
-        await f.db.query("select s.status, j.state from sandboxes s join jobs j on j.sandbox_id=s.id where j.id=$1", [
-          jobId,
-        ])
+        await f.db.query(
+          "select s.status, j.state, j.outcome ? 'bootstrap_ticket_enc' as has_ticket from sandboxes s join jobs j on j.sandbox_id=s.id where j.id=$1",
+          [jobId],
+        )
       ).rows,
-    ).toEqual([{ status: "ready", state: "done" }]);
+    ).toEqual([{ status: "ready", state: "done", has_ticket: false }]);
   },
 );
 
@@ -2243,6 +2297,41 @@ test.each([
     }
   },
 );
+
+test("interrupted Modal bootstrap ticket issuance rolls back the ticket and its replay material", async () => {
+  const { f, id, jobId, makeRunner, effects } = await modalLaunchFixture(await modalAdmissionFixture());
+  const interrupted: Sql = {
+    ...f.sql,
+    transaction: (work) =>
+      f.sql.transaction!(async (tx) =>
+        work({
+          ...tx,
+          async query<T>(query: string, params?: unknown[]) {
+            const result = await tx.query<T>(query, params);
+            if (query.includes("jsonb_build_object('bootstrap_ticket_enc'"))
+              throw new Error("Launch worker lost before ticket commit");
+            return result;
+          },
+        }),
+      ),
+  };
+  const first = makeRunner(undefined, interrupted);
+  expect(await first.reconcileOne(signal)).toBe(true);
+  await first.drain();
+  expect((await f.db.query("select sandbox_id from runtime_enrolments where sandbox_id=$1", [id])).rows).toEqual([]);
+  expect(
+    (await f.db.query("select outcome ? 'bootstrap_ticket_enc' as has_ticket from jobs where id=$1", [jobId])).rows,
+  ).toEqual([{ has_ticket: false }]);
+  expect(effects().bootstrapped).toEqual([]);
+
+  await f.db.query("update jobs set lease_until='-infinity' where id=$1", [jobId]);
+  const replacement = makeRunner();
+  expect(await replacement.reconcileOne(signal)).toBe(true);
+  await replacement.drain();
+  expect(effects().allocations).toBe(1);
+  expect(effects().bootstrapped).toEqual(["physical"]);
+  expect((await f.db.query("select status from sandboxes where id=$1", [id])).rows).toEqual([{ status: "ready" }]);
+});
 
 test("interrupted Modal enrolment rolls back readiness and leaves its ticket usable", async () => {
   const { f, id, makeRunner, enrolPending } = await modalLaunchFixture();
