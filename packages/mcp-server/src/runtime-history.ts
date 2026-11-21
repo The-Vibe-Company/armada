@@ -124,7 +124,7 @@ export function createModalJobReader(sql: Sql, key: string) {
           settled: boolean;
           active_prompt: string | null;
         }>(
-          `select exists(select 1 from public.jobs j where j.sandbox_id=s.id and j.kind='launch'
+          `select exists(select 1 from public.jobs j where j.sandbox_id=s.id and j.kind='launch' and j.payload_enc is not null
             and j.generation=s.lifecycle_generation and j.org_id=s.org_id and j.request_owner_id=s.owner_id) as job_owned,
           setup.state as setup_state,
           case

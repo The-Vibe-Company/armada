@@ -105,12 +105,14 @@ export function createSandboxAccessServices(input: {
     if (admitRecovery && (!retained || !["ready", "running"].includes(saved.status) || saved.stopRequestedAt))
       throw new DelegatedAccessError("conflict");
     if (saved.status === "stopped" || (saved.status === "failed" && saved.stoppedAt)) return;
-    const provider = await resolveProvider();
     const caller = {
       via: "service" as const,
       userId: operation.ownerId,
       orgs: [{ orgId: operation.orgId, role: "member" as const }],
     };
+    const scoped = createSqlData(sql)(caller).sandboxes;
+    if (!admitRecovery && (await scoped.requestStartingModalStop?.(saved))) return;
+    const provider = await resolveProvider();
     let checkpoint: Awaited<ReturnType<RuntimeCheckpoint>> | undefined;
     if (retained) {
       if (!input.runtimeCheckpoint) throw new DelegatedAccessError("unavailable");
@@ -130,7 +132,6 @@ export function createSandboxAccessServices(input: {
       if (admitRecovery && (checkpoint.requestId !== operation.id || checkpoint.runtime.epoch !== prior?.epoch))
         throw new DelegatedAccessError("conflict");
     }
-    const scoped = createSqlData(sql)(caller).sandboxes;
     const stoppingStatus = saved.status === "failed" ? "failed" : "stopping";
     const statusReason = stoppingStatus === "failed" ? (saved.statusReason ?? null) : retained ? "idle_paused" : null;
     const epoch = checkpoint?.runtime.epoch;
