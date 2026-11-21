@@ -2083,7 +2083,11 @@ describe("tools", () => {
       expect(rows.find(({ prompt_id }) => prompt_id === "unrelated-steer")?.acknowledged_request_id).toBeNull();
       const acknowledged = rows.find(({ prompt_id }) => prompt_id !== "unrelated-steer");
       expect(acknowledged?.acknowledged_request_id).toBe(phase === "current" ? requestId : null);
-      if (phase === "current") expect(acknowledged?.prompt_id).toBe(sent.data.promptId);
+      if (phase === "current") {
+        const promptId = sent.data.promptId;
+        if (typeof promptId !== "string") throw new Error("Native send response is missing its prompt ID.");
+        expect(acknowledged?.prompt_id).toBe(promptId);
+      }
     },
   );
 
