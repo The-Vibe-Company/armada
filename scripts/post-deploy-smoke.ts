@@ -1246,6 +1246,42 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
           ttlSeconds: 1800,
         };
         const requiresLaunchReceipt = defaultSkills || scope !== undefined;
+        const recoverDefaultSkillLaunch = defaultSkills
+          ? async (id: string, requestKey: string, until: number) => {
+              const inventoryRemaining = until - io.now();
+              if (inventoryRemaining <= 0) return;
+              const goldenId = item.goldenId!;
+              const inventory = await sandbox<{ sandboxes: { id: string; externalRef: string }[] }>(
+                "list",
+                { owner: "me", externalRef: requestKey, golden: goldenId },
+                Math.min(5_000, inventoryRemaining),
+              );
+              if (
+                inventory?.sandboxes?.length !== 1 ||
+                inventory.sandboxes[0]?.id !== id ||
+                inventory.sandboxes[0].externalRef !== requestKey
+              )
+                return;
+              const remaining = until - io.now();
+              if (remaining <= 0) return;
+              const status = await sandbox<{
+                id: string;
+                externalRef?: string;
+                status: string;
+                prompt: unknown;
+                skills?: unknown;
+              }>("status", { id }, Math.min(5_000, remaining));
+              if (
+                status?.id !== id ||
+                status.externalRef !== requestKey ||
+                status.status !== "ready" ||
+                status.prompt !== null
+              )
+                return;
+              verifyReceipts(status.skills, dirty ? [] : defaultPins.get(index)!);
+              return { sandbox: { id, provider: item.provider, skills: status.skills }, golden: { id: goldenId } };
+            }
+          : undefined;
         const result = await launchWithObservation<LaunchReceipt>(
           item,
           body,
@@ -1254,43 +1290,7 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
           (id) => {
             sandboxId = id;
           },
-          scope
-            ? false
-            : defaultSkills
-              ? async (id, requestKey, until) => {
-                  const goldenId = item.goldenId!;
-                  // The golden filter proves the source UUID. The unfiltered read above
-                  // has already retained the handle even if that source is wrong.
-                  const inventory = await sandbox<{ sandboxes: { id: string; externalRef: string }[] }>(
-                    "list",
-                    { owner: "me", externalRef: requestKey, golden: goldenId },
-                    Math.min(5_000, until - io.now()),
-                  );
-                  if (
-                    inventory?.sandboxes?.length !== 1 ||
-                    inventory.sandboxes[0]?.id !== id ||
-                    inventory.sandboxes[0].externalRef !== requestKey ||
-                    io.now() >= until
-                  )
-                    return;
-                  const status = await sandbox<{
-                    id: string;
-                    externalRef?: string;
-                    status: string;
-                    prompt: unknown;
-                    skills?: unknown;
-                  }>("status", { id }, Math.min(5_000, until - io.now()));
-                  if (
-                    status?.id !== id ||
-                    status.externalRef !== requestKey ||
-                    status.status !== "ready" ||
-                    status.prompt !== null
-                  )
-                    return;
-                  verifyReceipts(status.skills, dirty ? [] : defaultPins.get(index)!);
-                  return { sandbox: { id, provider: item.provider, skills: status.skills }, golden: { id: goldenId } };
-                }
-              : undefined,
+          scope ? false : recoverDefaultSkillLaunch,
         );
         // Retain the cleanup handle even if later response validation fails.
         if (typeof result?.sandbox?.id === "string" && result.sandbox.id) sandboxId = result.sandbox.id;

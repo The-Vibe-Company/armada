@@ -718,6 +718,7 @@ describe("preservation checks", () => {
       "default_opt_out_ignored",
       "default_wrong_golden",
       "default_recovery_wrong_golden",
+      "default_recovery_expired",
       "scoped_pair",
       "scoped_unsupported",
       "missing",
@@ -759,6 +760,7 @@ describe("preservation checks", () => {
         let stopping = false;
         let recoveryKey: string | undefined;
         let recoverySandboxId: string | undefined;
+        const attemptedRecoveries = new Map<string, string>();
         let statusReady = false;
 
         let sandboxId = "";
@@ -948,10 +950,15 @@ describe("preservation checks", () => {
               if (launches === 2) expect(call.body.skipSkillDefaults).toBe(true);
               else expect(call.body).not.toHaveProperty("skipSkillDefaults");
             }
-            if (launches === 1 && (fault === "default_policy" || fault === "default_recovery_wrong_golden")) {
+            if (
+              fault === "default_policy" ||
+              (launches === 1 && (fault === "default_recovery_wrong_golden" || fault === "default_recovery_expired"))
+            ) {
               expect(call.body.externalRef).toBe(call.body.idempotencyKey);
               recoveryKey = String(call.body.externalRef);
               recoverySandboxId = sandboxId;
+              attemptedRecoveries.set(recoveryKey, sandboxId);
+              statusReady = false;
               if (fault === "default_policy") throw new DOMException("timeout", "TimeoutError");
               return Response.json(
                 { error: { code: "outcome_unknown" } },
@@ -1060,6 +1067,10 @@ describe("preservation checks", () => {
               : ["--work-preservation"],
           {
             ...fake.io,
+            recordSandbox: async (_org, id, key) => {
+              if (fault === "default_recovery_expired" && attemptedRecoveries.get(key) === id)
+                fake.advance(deadlines.launch + 1);
+            },
             fetch: (url, init) => fake.io.fetch(url.replace(staging, env.ARMADA_URL), init),
           },
         );
@@ -1067,30 +1078,33 @@ describe("preservation checks", () => {
           fault,
         );
         expect(result).toBe(success);
-        if (recoverySandboxId) {
-          const posts = fake.calls.filter((call) => call.path === "sandbox/launch");
-          expect(posts.filter((call) => call.body.idempotencyKey === recoveryKey)).toHaveLength(1);
-          expect(fake.calls.some((call) => call.path === "sandbox/stop" && call.body.id === recoverySandboxId)).toBe(
-            true,
-          );
+        if (attemptedRecoveries.size) {
+          expect(attemptedRecoveries.size).toBe(success ? 2 : 1);
+          for (const [key, id] of attemptedRecoveries) {
+            expect(
+              fake.calls.filter((call) => call.path === "sandbox/launch" && call.body.idempotencyKey === key),
+            ).toHaveLength(1);
+            expect(fake.calls.some((call) => call.path === "sandbox/stop" && call.body.id === id)).toBe(true);
+            const goldenLookup = fake.calls.some(
+              (call) =>
+                call.path === "sandbox/list" && call.body.externalRef === key && call.body.golden === defaultGolden,
+            );
+            expect(goldenLookup).toBe(fault !== "default_recovery_expired");
+          }
           const launch = fake.lines
             .filter((line) => line !== boatNotice)
             .map((line) => JSON.parse(line))
-            .find((line) => line.step === "launch");
-          if (success) expect(launch).toMatchObject({ pass: true, elapsedMs: 1_000 });
-          else {
-            expect(fake.calls.map((call) => call.body)).toContainEqual({
-              org: defaultOrg,
-              owner: "me",
-              externalRef: recoveryKey,
-              golden: defaultGolden,
-            });
-            expect(launch).toMatchObject({
+            .filter((line) => line.step === "launch");
+          if (success)
+            expect(launch).toEqual(
+              Array.from({ length: 2 }, () => expect.objectContaining({ pass: true, elapsedMs: 1_000 })),
+            );
+          else
+            expect(launch[0]).toMatchObject({
               pass: false,
               code: "outcome_unknown",
               launchResponse: { requestKey: recoveryKey, requestId: recoveryId },
             });
-          }
         }
         const stops = fake.calls.filter((call) => call.path === "sandbox/stop" && call.body.id !== childId).length;
         expect(stops).toBeGreaterThanOrEqual(2);
@@ -1154,20 +1168,18 @@ describe("preservation checks", () => {
         }
         expect(fake.lines.join("")).not.toContain(commit);
         expect(fake.lines.join("")).not.toContain("secret");
-        if (!success)
+        if (!success && !attemptedRecoveries.size)
           expect(fake.receipts()).toContainEqual(
             expect.objectContaining({
               pass: false,
               code:
                 fault === "recovery_wakes"
                   ? "provider_not_stopped"
-                  : fault === "default_recovery_wrong_golden"
-                    ? "outcome_unknown"
-                    : fault === "default_wrong_golden"
-                      ? "invalid_response"
-                      : fault.startsWith("default_")
-                        ? "invalid_receipt"
-                        : "preservation_failed",
+                  : fault === "default_wrong_golden"
+                    ? "invalid_response"
+                    : fault.startsWith("default_")
+                      ? "invalid_receipt"
+                      : "preservation_failed",
             }),
           );
       });
