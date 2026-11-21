@@ -115,6 +115,30 @@ describe("Docker plain-image sandbox schema", () => {
     ).toEqual([]);
   });
 
+  test("a registered Docker host accepts an Antigravity sandbox row", async () => {
+    await insert(record({ harness: "antigravity" }));
+  });
+
+  test("a Modal golden accepts an Antigravity dial-out sandbox row", async () => {
+    const golden = crypto.randomUUID();
+    await database().query(
+      `insert into goldens(id,org_id,owner_id,name,visibility,provider,modal_workspace,modal_environment,modal_app_id)
+       values ($1,$2,$3,'Modal Antigravity','private','modal','workspace','environment','app')`,
+      [golden, org, owner],
+    );
+    await insert({
+      id: crypto.randomUUID(),
+      org_id: org,
+      owner_id: owner,
+      provider: "modal",
+      golden_id: golden,
+      provider_sandbox_id: "modal-antigravity",
+      harness: "antigravity",
+      runtime_transport: "dialout",
+      status: "ready",
+    });
+  });
+
   test("admission rejects unavailable hosts, absent members and malformed Docker bindings", async () => {
     const db = database();
     for (const [override, error] of [
