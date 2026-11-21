@@ -1039,20 +1039,22 @@ export async function fencePreservedModalDrainIncarnation(tx: Sql, id: string, p
        and j.record->>'commonRuntime' is distinct from 'true'
        and r.capture_acknowledgements->>'physicalGeneration'=j.record->>'generation'
        and case
-         when not $2 then j.record->>'phase'='stopped' and (
-           (j.lease_id is null and j.lease_until is null)
-           or (j.lease_id is not null and j.lease_until<=clock_timestamp())
-         )
-         when r.capture_acknowledgements ? 'drainAdmissionGeneration' then
+         when $2 and r.capture_acknowledgements ? 'drainAdmissionGeneration' then
            j.record->>'phase' in ('stopped','deleting','deleted')
            and r.capture_acknowledgements->>'drainAdmissionGeneration'=j.record->>'generation'
-         else j.record->>'phase'='stopped' and j.lease_id is null and j.lease_until is null
-           and r.generation=s.lifecycle_generation-1
-           and (r.archive_id is null or exists (
-             select 1 from public.native_drain_recovery a
-             where a.archive_id=r.archive_id and a.sandbox_id=s.id
-               and a.org_id=s.org_id and a.owner_id=s.owner_id
-             for share of a
+         else j.record->>'phase'='stopped'
+           and (
+             (j.lease_id is null and j.lease_until is null)
+             or (j.lease_id is not null and j.lease_until<=clock_timestamp())
+           )
+           and (not $2 or (
+             r.generation=s.lifecycle_generation-1
+             and (r.archive_id is null or exists (
+               select 1 from public.native_drain_recovery a
+               where a.archive_id=r.archive_id and a.sandbox_id=s.id
+                 and a.org_id=s.org_id and a.owner_id=s.owner_id
+               for share of a
+             ))
            ))
        end
      ) as eligible
