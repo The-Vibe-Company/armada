@@ -1,4 +1,4 @@
-import type { MemberRole, ModalBinding, SandboxStatus } from "@armada/core";
+import { MACHINE_SIZES, type MemberRole, type ModalBinding, type SandboxStatus } from "@armada/core";
 import {
   GoldenError,
   LaunchError,
@@ -12,6 +12,7 @@ import { createModalMachine, type ModalMachineOptions } from "@armada/provider-m
 import { z } from "zod";
 import type { AccountTurnQueue } from "../account-turn-queue.ts";
 import { type OrdinaryLaunchFailure, replayOrdinaryLaunchFailure } from "../ordinary-launch-receipts.ts";
+import type { RuntimeConfigurationTarget } from "../runtime-configuration.ts";
 import { createRuntimeEnrolments } from "../runtime-enrolment.ts";
 import {
   bindModalLaunchMachine,
@@ -235,6 +236,84 @@ interface ModalLaunchPlan {
   >;
 }
 
+type OpenModalMachine = (
+  app: { binding: ModalBinding; appName: string; credentialScope: "org" | "user"; credentialOwnerId: string },
+  signal: AbortSignal,
+) => Promise<ModalMachineRuntime & { close(): void }>;
+
+const launchPayload = z.object({
+  allocation: z.object({
+    source: z.object({ kind: z.literal("snapshot"), ref: z.string().min(1) }),
+    size: z.enum(MACHINE_SIZES).nullable(),
+    computeTtlSeconds: z.number().int().positive(),
+  }),
+  modal: z.object({ workspace: z.string().min(1), environment: z.string().min(1), appId: z.string().min(1) }),
+});
+
+export function createModalLaunchJob(
+  sql: Sql,
+  encryptionKey: string,
+  openMachine: OpenModalMachine,
+  prepareRuntimeTicket: (sandbox: RuntimeConfigurationTarget) => ReturnType<ModalLaunchPlan["prepareRuntimeTicket"]>,
+) {
+  return {
+    concurrency: 4,
+    async run(job, context) {
+      let machine: Awaited<ReturnType<OpenModalMachine>> | undefined;
+      try {
+        return await runModalLaunch(sql, encryptionKey, job, context, async () => {
+          const payload = launchPayload.safeParse(job.payload);
+          if (!payload.success) throw new Error("Invalid Modal launch payload.");
+          const { allocation, modal: binding } = payload.data;
+          const target = await withJobLease(sql, job, async (tx) => {
+            const {
+              rows: [row],
+            } = await tx.query<
+              RuntimeConfigurationTarget & {
+                appName: string;
+                credentialScope: "org" | "user";
+                credentialOwnerId: string;
+              }
+            >(
+              `select s.id, s.org_id as "orgId", s.owner_id as "ownerId", s.provider, s.harness, s.status,
+                      s.deleted_at as "deletedAt", s.stop_requested_at as "stopRequestedAt",
+                      s.expires_at as "expiresAt", s.credential_id as "credentialId",
+                      s.credential_version as "credentialVersion", s.repository_dir as "repositoryDir",
+                      s.visibility, a.app_name as "appName", a.authority_scope as "credentialScope",
+                      a.authority_owner_id as "credentialOwnerId"
+               from public.sandboxes s
+               join public.jobs j on j.id=$2 and j.sandbox_id=s.id and j.generation=s.lifecycle_generation
+                 and j.org_id=s.org_id and j.request_owner_id=s.owner_id
+               join public.sandbox_source_snapshots snap on snap.sandbox_id=s.id and snap.snapshot_id=$3
+               join public.modal_server_apps a on a.org_id=s.org_id and a.environment=$4 and a.app_id=$5
+               join public.goldens g on g.id=s.golden_id and g.org_id=s.org_id
+                 and g.modal_workspace=$6 and g.modal_environment=a.environment and g.modal_app_id=a.app_id
+               where s.id=$1 and s.provider='modal' and s.runtime_transport='dialout'
+                 and ((a.authority_scope='org' and a.authority_owner_id=s.org_id)
+                   or (a.authority_scope='user' and a.authority_owner_id=s.owner_id))`,
+              [job.sandbox_id, job.id, allocation.source.ref, binding.environment, binding.appId, binding.workspace],
+            );
+            if (!row) throw new Error("Modal launch App or snapshot authority is unavailable.");
+            return row;
+          });
+          if (!target) return;
+          context.signal.throwIfAborted();
+          const { appName, credentialScope, credentialOwnerId, ...sandbox } = target;
+          machine = await openMachine({ binding, appName, credentialScope, credentialOwnerId }, context.signal);
+          return {
+            allocation,
+            bindingRef: job.id,
+            machine,
+            prepareRuntimeTicket: () => prepareRuntimeTicket(sandbox),
+          };
+        });
+      } finally {
+        machine?.close();
+      }
+    },
+  } satisfies JobKind;
+}
+
 const LAUNCH_FAILURE = "modal_launch_failed";
 const RECONCILING_ALLOCATION = "modal_launch_reconciling";
 const RECONCILE_DELAY_MS = 30_000;
@@ -246,7 +325,7 @@ export async function runModalLaunch(
   encryptionKey: string,
   job: Job,
   context: DispatchContext,
-  plan: ModalLaunchPlan,
+  preparePlan: () => ModalLaunchPlan | undefined | Promise<ModalLaunchPlan | undefined>,
 ) {
   const sandboxId = job.sandbox_id;
   const generation = Number(job.generation);
@@ -280,6 +359,10 @@ export async function runModalLaunch(
   if (beforeDispatch.check_after) {
     return { status: "retry", after: new Date(beforeDispatch.check_after), unattempted: true } satisfies JobResult;
   }
+
+  const plan = await preparePlan();
+  context.signal.throwIfAborted();
+  if (!plan) return done;
 
   const enrolmentInProgress = new Error("Modal launch enrolment already issued.");
   const enrolments = createRuntimeEnrolments(sql, encryptionKey);
@@ -470,13 +553,7 @@ async function dispatchModalLaunch(
   return { kind: "bootstrapped" } as const;
 }
 
-export function createModalLaunchCleanupJob(
-  sql: Sql,
-  openMachine: (
-    app: { binding: ModalBinding; appName: string; credentialScope: "org" | "user"; credentialOwnerId: string },
-    signal: AbortSignal,
-  ) => Promise<ModalMachineRuntime & { close(): void }>,
-) {
+export function createModalLaunchCleanupJob(sql: Sql, openMachine: OpenModalMachine) {
   return {
     concurrency: 4,
     async run(job, context) {

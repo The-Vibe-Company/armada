@@ -12,10 +12,11 @@ import { runtimeWakes } from "../wake-bus.ts";
 import {
   admitModalLaunch,
   createModalLaunchCleanupJob,
+  createModalLaunchJob,
   type ModalLaunchAdmission,
   runModalLaunch,
 } from "./modal-launch.ts";
-import { createJobsRunner, type Job } from "./runner.ts";
+import { createJobsRunner, type Job, type JobContext } from "./runner.ts";
 import { createJobsStore, JOBS_WAKE, withJobLease } from "./store.ts";
 
 const database = rowOnlyDatabase();
@@ -455,6 +456,47 @@ async function modalLaunchFixture(initial?: Awaited<ReturnType<typeof modalAdmis
       resolveRuntimeTicket: async () => null,
       prepareCheckpoint: async () => {},
     };
+    const prepareRuntimeTicket = async () => {
+      await atStep?.("runtime ticket");
+      return {
+        ownerId: f.people.owner,
+        configuration: {},
+        serverUrl: "https://armada.invalid",
+        artifact: { sha256: "a".repeat(64), bytes: 1 },
+        cacheDir: "/home/user/runtime-cache",
+      };
+    };
+    const launch = initial
+      ? createModalLaunchJob(
+          jobsSql,
+          launchEncryptionKey,
+          async (app) => {
+            expect(app).toEqual({
+              binding: machine.binding,
+              appName: machine.appName,
+              credentialScope: "user",
+              credentialOwnerId: f.people.owner,
+            });
+            return {
+              ...machine,
+              close() {
+                closedClients++;
+              },
+            };
+          },
+          prepareRuntimeTicket,
+        )
+      : {
+          concurrency: 1,
+          run(job: Job, context: JobContext) {
+            return runModalLaunch(jobsSql, launchEncryptionKey, job, context, () => ({
+              allocation: { source: { kind: "image", ref: "image" }, size: null, computeTtlSeconds: 600 },
+              bindingRef: job.id,
+              machine,
+              prepareRuntimeTicket,
+            }));
+          },
+        };
     return createJobsRunner(
       createJobsStore(jobsSql, launchEncryptionKey),
       {
@@ -475,26 +517,7 @@ async function modalLaunchFixture(initial?: Awaited<ReturnType<typeof modalAdmis
             };
           },
         ),
-        launch: {
-          concurrency: 1,
-          async run(job, context) {
-            return runModalLaunch(jobsSql, launchEncryptionKey, job, context, {
-              allocation: { source: { kind: "image", ref: "image" }, size: null, computeTtlSeconds: 600 },
-              bindingRef: job.id,
-              machine,
-              async prepareRuntimeTicket() {
-                await atStep?.("runtime ticket");
-                return {
-                  ownerId: f.people.owner,
-                  configuration: {},
-                  serverUrl: "https://armada.invalid",
-                  artifact: { sha256: "a".repeat(64), bytes: 1 },
-                  cacheDir: "/home/user/runtime-cache",
-                };
-              },
-            });
-          },
-        },
+        launch,
       },
       () => {},
       () => () => {},
@@ -874,7 +897,7 @@ test("an interrupted Modal failure handoff rolls back the failure and delete job
 test.each(["create response", "bootstrap dispatch", "bootstrap response"] as const)(
   "a replacement Modal launch runner completes after losing the %s",
   async (failure) => {
-    const { f, id, jobId, makeRunner, effects } = await modalLaunchFixture();
+    const { f, id, jobId, makeRunner, effects } = await modalLaunchFixture(await modalAdmissionFixture());
     const first = makeRunner((step) => {
       if (step === failure) throw new Error("Lost worker");
     });
