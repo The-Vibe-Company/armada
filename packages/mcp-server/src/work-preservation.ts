@@ -23,6 +23,7 @@ import {
   writePreservationNote,
 } from "./sandbox-lifecycle.ts";
 import { captureFinalOutputs, recordOutputFailure } from "./sandbox-outputs.ts";
+import { SANDBOX_VISIBLE } from "./sandbox-visibility.ts";
 
 function closedFailure(stage: string, reason: string, diagnostic?: ReturnType<typeof workPreservationError>): string {
   return `${stage}_${reason}${diagnostic ? `_${diagnostic.errorClass === reason ? "" : `${diagnostic.errorClass}_`}${diagnostic.providerStatus === null ? "no_status" : `http_${diagnostic.providerStatus}`}` : ""}`;
@@ -506,12 +507,39 @@ export async function purgeWorkRecovery(sql: Sql, id: string) {
   await sql.query("delete from public.sandbox_work_recovery where sandbox_id=$1", [id]);
 }
 
-export async function readWorkRecovery(sql: Sql, id: string, recoveryId?: string): Promise<string | null> {
+export async function readWorkRecovery(
+  sql: Sql,
+  scope: [string[], string],
+  id: string,
+  recoveryId?: string,
+): Promise<string | null | undefined> {
   const row = (
-    await sql.query<{ archive_enc: Uint8Array<ArrayBuffer> }>(
-      "select r.archive_enc from public.sandbox_work_recovery r join public.sandboxes s on s.id=r.sandbox_id where r.sandbox_id=$1::uuid and not s.application_secret_tainted and ($2::uuid is null or r.id=$2::uuid) order by r.created_at desc limit 1",
-      [id, recoveryId ?? null],
+    await sql.query<{ archive_enc: Uint8Array<ArrayBuffer> | null }>(
+      `with visible as (
+         select s.id, s.org_id, s.owner_id, s.application_secret_tainted,
+           (s.status='deleted' and s.provider in ('boat','modal')
+           and not s.boat_runtime and s.runtime_transport is distinct from 'dialout') as detached
+         from public.sandboxes s join public.goldens g on g.id=s.golden_id
+         where s.id=$3::uuid and ${SANDBOX_VISIBLE}
+       )
+       select recovery.archive_enc
+       from visible s
+       left join lateral (
+         select r.archive_enc, r.created_at, r.id
+         from public.sandbox_work_recovery r
+         where not s.detached and not s.application_secret_tainted
+           and r.sandbox_id=s.id and ($4::uuid is null or r.id=$4)
+         union all
+         select r.archive_enc, r.created_at, r.archive_id
+         from public.native_drain_recovery r
+         where s.detached and not s.application_secret_tainted
+           and r.sandbox_id=s.id and r.org_id=s.org_id and r.owner_id=s.owner_id
+           and ($4::uuid is null or r.archive_id=$4)
+         order by created_at desc, id desc limit 1
+       ) recovery on true`,
+      [...scope, id, recoveryId ?? null],
     )
   ).rows[0];
-  return row ? decryptSecret(row.archive_enc) : null;
+  if (!row) return undefined;
+  return row.archive_enc ? decryptSecret(row.archive_enc) : null;
 }
