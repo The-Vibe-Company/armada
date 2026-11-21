@@ -194,8 +194,6 @@ export async function createArmadaApiClient(
         throw new ArmadaApiError("unavailable", response.status, TEMPLATE_LAUNCH_UNKNOWN);
       if (path.startsWith("/api/v1/templates/")) {
         const known: Record<string, string> = {
-          "Template revision changed.":
-            "Template revision changed. Get the current revision and retry with --expected-revision.",
           "Template revision unavailable.":
             "Template revision unavailable. Get the template and choose an existing revision.",
           ...Object.fromEntries(
