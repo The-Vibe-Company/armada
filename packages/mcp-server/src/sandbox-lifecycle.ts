@@ -835,18 +835,20 @@ export async function completeSandboxDeletion(
   sandboxId: string,
   generation: number,
   activityToken: string,
+  nativeDrain: boolean,
 ) {
   const { rows } = await tx.query<{ generation: string }>(
     `update public.sandboxes s set
-       lifecycle_generation=s.lifecycle_generation+1,
+       lifecycle_generation=s.lifecycle_generation+1, native_drain_pending=false,
        activity_lease_id=null, activity_until=null, preservation_note=null,
        usage_runtime_seconds=case when s.stopped_at is null then null else s.usage_runtime_seconds end,
        usage_running_since=case when s.stopped_at is null then null else s.usage_running_since end,
        stopped_at=coalesce(s.stopped_at, clock_timestamp())
      where s.id=$3 and ${SANDBOX_VISIBLE} and s.status in ('stopped','failed')
        and s.lifecycle_generation=$4 and s.activity_lease_id=$5
+       and s.native_drain_pending=$6::boolean and (not $6::boolean or s.activity_until>clock_timestamp())
      returning s.lifecycle_generation::text as generation`,
-    [...scope, sandboxId, generation, activityToken],
+    [...scope, sandboxId, generation, activityToken, nativeDrain],
   );
   const receipt = rows[0];
   if (!receipt) return false;

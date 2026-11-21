@@ -5320,6 +5320,7 @@ export type Database = {
           transition_context: Json | null;
           outputs_retained_generation: number | null;
           outputs_attempt_count: number;
+          native_drain_pending: boolean;
         };
         Insert: {
           id?: string;
@@ -5397,6 +5398,7 @@ export type Database = {
           transition_context?: Json | null;
           outputs_retained_generation?: number | null;
           outputs_attempt_count?: number;
+          native_drain_pending?: boolean;
         };
         Update: {
           id?: string;
@@ -5474,6 +5476,7 @@ export type Database = {
           transition_context?: Json | null;
           outputs_retained_generation?: number | null;
           outputs_attempt_count?: number;
+          native_drain_pending?: boolean;
         };
         Relationships: [
           {
