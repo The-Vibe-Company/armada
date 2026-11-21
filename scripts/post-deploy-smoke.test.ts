@@ -1866,6 +1866,23 @@ test.each([
   expect(fake.calls.at(-1)?.path).toBe("sandbox/status");
 });
 
+test.each([
+  ["git_status", "git status -sb", []],
+  ["git_remote", "git ls-remote origin HEAD", []],
+  ["github_launch_access", "ls-remote origin HEAD", ["--github-refresh"]],
+  ["golden_helper_integrity", "armada-helper", ["--golden-runtime"]],
+  ["golden_skillpack_integrity", "skillpack-runtime", ["--golden-runtime"]],
+] as const)("a late %s exec receipt fails and the sandbox is stopped", async (step, command, args) => {
+  const fake = lifecycleFixture("none", (call) => {
+    if (call.path === "sandbox/exec" && String(call.body.command).includes(command)) fake.advance(deadlines[step] + 1);
+    return undefined;
+  });
+  expect(await fake.run([selected], [...args])).toBe(false);
+  expect(fake.receipts()).toContainEqual({ case: 0, step, pass: false, code: "poll_limit_exceeded" });
+  expect(fake.calls.at(-2)?.path).toBe("sandbox/stop");
+  expect(fake.calls.at(-1)?.path).toBe("sandbox/status");
+});
+
 test("a resumed send admitted after its measured deadline fails without replay and still cleans up", async () => {
   const fake = lifecycleFixture("none", (call) => {
     if (call.path !== "sandbox/send" || !fake.calls.some((entry) => entry.path === "sandbox/stop")) return;
@@ -2736,7 +2753,7 @@ test("readiness timing excludes slow integrity probes and survives either probe 
     const fake = lifecycleFixture("none", (call) => {
       if (call.path !== "sandbox/exec") return;
       execs++;
-      fake.advance(30_000);
+      if (execs <= 2) fake.advance(1_000);
       if (execs === failedExec) return json({ exitCode: 1, timedOut: false });
     });
     expect(await fake.run([selected], ["--golden-runtime"])).toBe(failedExec === 0);
