@@ -317,49 +317,88 @@ export function createJobsStore(sql: Sql, encryptionKey?: string) {
     });
   }
 
+  function modalMachineJournal(
+    job: Job,
+    journalJobId: string,
+    isCurrent: (tx: Sql) => Promise<boolean> | boolean,
+    mayWrite: (
+      tx: Sql,
+      revision: number | undefined,
+      next: Parameters<ModalMachineJournal["compareAndSet"]>[2],
+    ) => Promise<boolean>,
+    checkpointPath = "{modal_machine}",
+  ) {
+    return {
+      async read(key) {
+        const checkpoint = await withJobLease(sql, job, async (tx) => {
+          if (!(await isCurrent(tx))) return;
+          const { rows } = await tx.query<{
+            checkpoint: { key: string; entry: Awaited<ReturnType<ModalMachineJournal["read"]>> } | null;
+          }>(
+            `select outcome #> $2::text[] as checkpoint from public.jobs where id=$1
+           and exists (select 1 from public.jobs claim where claim.id=$3 and claim.lease_until>clock_timestamp())`,
+            [journalJobId, checkpointPath, job.id],
+          );
+          return rows[0]?.checkpoint;
+        });
+        if (checkpoint === undefined) throw new Error("Modal machine journal claim is no longer current.");
+        if (checkpoint && checkpoint.key !== key) throw new Error("Modal launch journal key changed.");
+        return checkpoint?.entry;
+      },
+      async compareAndSet(key, revision, next) {
+        if (next.revision !== (revision ?? 0) + 1) return false;
+        return (
+          (await withJobLease(sql, job, async (tx) => {
+            if (!(await isCurrent(tx)) || !(await mayWrite(tx, revision, next))) return false;
+            const { rows } = await tx.query(
+              `update public.jobs set outcome=jsonb_set(
+               case when outcome is null then '{}'::jsonb
+                    when jsonb_typeof(outcome) = 'object' then outcome
+                    else jsonb_build_object('result', outcome) end,
+               $6::text[], $2::jsonb)
+             where id=$1
+               and exists (select 1 from public.jobs claim where claim.id=$5 and claim.lease_until>clock_timestamp())
+               and (outcome #> $6::text[] is null or (outcome #> $6::text[])->>'key' = $3)
+               and ((outcome #> $6::text[])->'entry'->>'revision')::integer is not distinct from $4::integer
+             returning id`,
+              [journalJobId, JSON.stringify({ key, entry: next }), key, revision ?? null, job.id, checkpointPath],
+            );
+            return rows.length > 0;
+          })) ?? false
+        );
+      },
+    } satisfies ModalMachineJournal;
+  }
+
   return {
     modalLaunchJournal(job: Job, canCreate?: (tx: Sql) => Promise<boolean>) {
       if (job.kind !== "launch" || !job.sandbox_id || !job.generation) {
         throw new Error("Modal machine journal requires a launch claim.");
       }
-      return {
-        async read(key) {
-          const checkpoint = await withJobLease(sql, job, async (tx) => {
-            const { rows } = await tx.query<{
-              checkpoint: { key: string; entry: Awaited<ReturnType<ModalMachineJournal["read"]>> } | null;
-            }>(
-              "select outcome->'modal_machine' as checkpoint from public.jobs where id=$1 and lease_until > clock_timestamp()",
-              [job.id],
-            );
-            return rows[0]?.checkpoint;
-          });
-          if (checkpoint === undefined) throw new Error("Modal launch claim is no longer current.");
-          if (checkpoint && checkpoint.key !== key) throw new Error("Modal launch journal key changed.");
-          return checkpoint?.entry;
-        },
-        async compareAndSet(key, revision, next) {
-          if (next.revision !== (revision ?? 0) + 1) return false;
-          return (
-            (await withJobLease(sql, job, async (tx) => {
-              if (next.phase === "creating" && revision === undefined && canCreate && !(await canCreate(tx)))
-                return false;
-              const { rows } = await tx.query(
-                `update public.jobs set outcome=jsonb_set(
-                   case when outcome is null then '{}'::jsonb
-                        when jsonb_typeof(outcome) = 'object' then outcome
-                        else jsonb_build_object('result', outcome) end,
-                   '{modal_machine}', $2::jsonb)
-                 where id=$1 and lease_until > clock_timestamp()
-                   and (outcome->'modal_machine' is null or outcome->'modal_machine'->>'key' = $3)
-                   and (outcome->'modal_machine'->'entry'->>'revision')::integer is not distinct from $4::integer
-                 returning id`,
-                [job.id, JSON.stringify({ key, entry: next }), key, revision ?? null],
-              );
-              return rows.length > 0;
-            })) ?? false
-          );
-        },
-      } satisfies ModalMachineJournal;
+      return modalMachineJournal(
+        job,
+        job.id,
+        () => true,
+        async (tx, revision, next) =>
+          next.phase !== "creating" || revision !== undefined || !canCreate || canCreate(tx),
+      );
+    },
+    modalFailedLaunchJournal(
+      job: Job,
+      launchJobId: string,
+      isCurrent: (tx: Sql) => Promise<boolean>,
+      canDispatch: (tx: Sql) => Promise<boolean>,
+    ) {
+      if (job.kind !== "delete" || !job.sandbox_id || !job.generation) {
+        throw new Error("Modal failed launch journal requires a delete claim.");
+      }
+      return modalMachineJournal(
+        job,
+        launchJobId,
+        isCurrent,
+        async (tx, _revision, next) => next.phase === "deleted" || canDispatch(tx),
+        "{evidence,modal_machine}",
+      );
     },
     async enqueue(
       kind: string,
