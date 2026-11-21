@@ -1024,7 +1024,7 @@ test("ordinary native exec skips post-command provider sampling after the activi
     },
   };
   const { context, sandboxId, invoke } = await nativeExecFixture(provider, crypto.randomUUID());
-  const sampled: string[] = [];
+  const sampled: (string | undefined)[] = [];
   context.launchCredentials.nativeSecrets = async (_actor, _id, _provider, _placement, phase) => {
     sampled.push(phase);
     return [];
