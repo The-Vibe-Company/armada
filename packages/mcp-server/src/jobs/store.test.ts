@@ -1701,7 +1701,7 @@ test.each([
   }
 });
 
-test.each(["boat", "docker", "docker with a current prompt"] as const)(
+test.each(["boat", "docker", "docker with a current prompt", "docker with an obsolete prompt"] as const)(
   "a stale %s turn preserves its open dispatch window across an interrupted requeue",
   async (provider) => {
     const f = await turnFixture();
@@ -1713,7 +1713,8 @@ test.each(["boat", "docker", "docker with a current prompt"] as const)(
     };
     const { sandboxId, requestId } = provider === "boat" ? await setup() : await interruptedDockerTurn("running", f);
     const currentPrompt = provider === "docker with a current prompt";
-    if (currentPrompt) {
+    const obsoletePrompt = provider === "docker with an obsolete prompt";
+    if (currentPrompt || obsoletePrompt) {
       await f.db.query(
         `insert into runtime_enrolments (sandbox_id,lifecycle_generation,epoch,runtime_hash,docker_issuer_fence)
          select $1,3,2,repeat('c',64),user_id::text || ':' || epoch::text
@@ -1722,8 +1723,8 @@ test.each(["boat", "docker", "docker with a current prompt"] as const)(
       );
       await f.db.query(
         `insert into runtime_commands (sandbox_id,request_id,epoch,request_enc)
-         values ($1,$2,2,''::bytea)`,
-        [sandboxId, `docker_prompt_${requestId}`],
+         values ($1,$2,$3,''::bytea)`,
+        [sandboxId, `docker_prompt_${requestId}`, obsoletePrompt ? 1 : 2],
       );
     }
     await f.makeDue(sandboxId);
@@ -1770,6 +1771,8 @@ test.each(["boat", "docker", "docker with a current prompt"] as const)(
       { job: "queued", receipt: "dispatching", attempts: 1, generation: "2", waits_for_receipt: true },
     ]);
     expect(await runner.reconcileOne(signal)).toBe(false);
+    expect(dispatches).toBe(0);
+    if (obsoletePrompt) return;
     await f.db.query("update account_turn_queue set dispatch_until='-infinity' where request_id=$1", [requestId]);
     await f.makeDue(sandboxId);
     if (currentPrompt) {
