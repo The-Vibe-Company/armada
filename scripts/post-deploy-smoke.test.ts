@@ -2874,6 +2874,10 @@ test.each([
   expect(await fake.run([{ ...selected, provider: "modal" }])).toBe(false);
   expect(fake.receipts()).toContainEqual({ case: 0, step, pass: false, code: "poll_limit_exceeded" });
   expect(attempts).toBe(1);
+  expect(fake.receipts().find((receipt) => receipt.step === "usage_request_diagnostic")).toMatchObject({
+    usageStep: step,
+    attempts,
+  });
 });
 
 test.each(["fetch", "body"])(
