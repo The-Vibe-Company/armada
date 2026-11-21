@@ -1184,7 +1184,7 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
     let passed = true;
     const sandbox = <T>(action: string, body: object, timeoutMs?: number) =>
       request<T>(`sandbox/${action}`, { org: item.org, ...body }, undefined, timeoutMs);
-    const measuredStep = <T>(name: keyof typeof deadlines, action: (until?: number) => Promise<T>) =>
+    const measuredStep = <T>(name: string, action: (until?: number) => Promise<T>) =>
       step(name, () => withStepDeadline(name, action));
     let parentCredentialVersion: number | undefined;
     const scoped = scope

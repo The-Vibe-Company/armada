@@ -1185,14 +1185,15 @@ describe("preservation checks", () => {
           for (const step of ["scoped_parent_configuration", "scoped_tool_evidence"])
             expect(scriptedSteps.filter((line) => line.step === step && line.pass)).toHaveLength(2);
           expect(scriptedSteps.filter((line) => line.step === "scoped_parent_launch" && line.pass)).toHaveLength(2);
+          const budgets: Partial<Record<string, number>> = deadlines;
           if (fault === "scoped_parent_timeout") {
-            expect(scopedLaunchTimeouts).toEqual([deadlines.scoped_parent_launch, deadlines.scoped_parent_launch]);
+            const launchBudget = budgets.scoped_parent_launch ?? deadlines.launch;
+            expect(scopedLaunchTimeouts).toEqual([launchBudget, launchBudget]);
           } else {
-            expect([...scopedReadyTimeouts.values()]).toEqual([
-              deadlines.scoped_parent_ready,
-              deadlines.scoped_parent_ready,
-            ]);
-            expect(scopedStopTimeouts).toEqual([deadlines.scoped_parent_stop, deadlines.scoped_parent_stop]);
+            const readyBudget = budgets.scoped_parent_ready ?? deadlines.ready;
+            const stopBudget = budgets.scoped_parent_stop ?? 120_000;
+            expect([...scopedReadyTimeouts.values()]).toEqual([readyBudget, readyBudget]);
+            expect(scopedStopTimeouts).toEqual([stopBudget, stopBudget]);
           }
           expect(
             fake.receipts().filter((line) => line.step === "scoped_access" && line.model === "scripted"),
