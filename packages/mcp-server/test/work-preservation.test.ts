@@ -143,11 +143,14 @@ test("recovery receipts retain encrypted versions and only current interior owne
     expect(handoff?.current).toBe(true);
     authority.generation = handoff!.lifecycle_generation;
 
-    await db.query("delete from sandbox_work_recovery where id=$1", [captured.id]);
     await db.query("update sandboxes set activity_lease_id=$2, activity_until=now()+interval '2 minutes' where id=$1", [
       id,
       token,
     ]);
+    await preserveBeforeStop(sql, provider, id, "bx_recovery", "user_stop", authority);
+    expect((await db.query("select id from sandbox_work_recovery where sandbox_id=$1", [id])).rows).toHaveLength(2);
+
+    await db.query("delete from sandbox_work_recovery where id=$1", [captured.id]);
     await preserveBeforeStop(sql, provider, id, "bx_recovery", "user_stop", authority);
     expect(await owner.readWorkRecovery?.(id)).toBe(archive);
     expect(await owner.readWorkRecovery?.(id, captured.id)).toBeNull();
