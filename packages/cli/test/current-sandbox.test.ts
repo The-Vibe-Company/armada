@@ -41,7 +41,7 @@ test("ARMADA_SANDBOX takes precedence over the directory selection", async () =>
     const body = JSON.parse(String(init?.body));
     return Response.json({ id: body.id, status: "ready", prompt: null, settled: false });
   }, first);
-  const result = await cli.run(["status"], {
+  const result = await cli.run(["info"], {
     sandboxFile: { read: async () => second, write: async () => {} },
   });
   expect(result.exit).toBe(0);
@@ -60,7 +60,7 @@ test("sandbox prefixes must be unique across visible pages", async () => {
       nextPage: page === 1 ? 2 : null,
     });
   });
-  const result = await cli.run(["status", "12345678", "--org", "team", "--json"]);
+  const result = await cli.run(["info", "12345678", "--org", "team", "--json"]);
   expect(result.exit).toBe(2);
   expect(JSON.parse(result.err).error.message).toContain("ambiguous");
   expect(paths).toEqual(["/api/v1/sandbox/list", "/api/v1/sandbox/list"]);
@@ -77,7 +77,7 @@ test("a unique prefix from the directory file resolves to the full ID", async ()
       settled: false,
     });
   });
-  const result = await cli.run(["status"], {
+  const result = await cli.run(["info"], {
     sandboxFile: { read: async () => "12345678-0000\n", write: async () => {} },
   });
   expect(result.exit).toBe(0);
@@ -109,7 +109,7 @@ test("machine failures end with one JSON line with code, message and hint", asyn
   const cli = fixture(async () => {
     throw new Error("unexpected fetch");
   });
-  const result = await cli.run(["status", "--bad-option"], { stdoutIsTTY: false });
+  const result = await cli.run(["info", "--bad-option"], { stdoutIsTTY: false });
   expect(result.exit).toBe(2);
   expect(result.out).toBe("");
   expect(result.err.trim().split("\n")).toHaveLength(1);
@@ -117,7 +117,7 @@ test("machine failures end with one JSON line with code, message and hint", asyn
     error: {
       code: "invalid_config",
       message: "Unknown option '--bad-option'.",
-      hint: "Next step: run armada status --help.",
+      hint: "Next step: run armada info --help.",
     },
   });
 });
@@ -131,7 +131,7 @@ test("a symlink cannot select a sandbox from outside the invocation directory", 
     const cli = fixture(async () => {
       throw new Error("unexpected fetch");
     });
-    const result = await cli.run(["status", "--json"], { sandboxFile: currentSandboxFile(cwd) });
+    const result = await cli.run(["info", "--json"], { sandboxFile: currentSandboxFile(cwd) });
     expect(result.exit).toBe(2);
     expect(JSON.parse(result.err).error.message).toContain("Could not read .armada/sandbox");
   } finally {
@@ -151,4 +151,29 @@ test("report accepts an outcome without an explicit sandbox ID", async () => {
   }, first);
   const result = await cli.run(["report", "blocked", "--prompt-id", second, "--reason", "Needs input", "--json"]);
   expect(result.exit).toBe(0);
+});
+
+test("info --wait reads activity for the current sandbox and selected prompt", async () => {
+  const receipt = { id: first, status: "running", prompt: null, settled: false, timedOut: true };
+  const cli = fixture(async (input, init) => {
+    expect(new URL(String(input)).pathname).toBe("/api/v1/sandbox/wait");
+    expect(JSON.parse(String(init?.body))).toEqual({ id: first, org: "team", prompt_id: second, timeout_seconds: 0 });
+    return Response.json(receipt);
+  }, first);
+  const result = await cli.run(["info", "--wait", "--org", "team", "--prompt-id", second, "--timeout", "0"]);
+  expect(result.exit).toBe(0);
+  expect(JSON.parse(result.out)).toEqual(receipt);
+});
+
+test.each(
+  [
+    ["--wait", "--live"],
+    ["--wait", "--setup"],
+    ["--timeout", "0"],
+  ].map((options) => ({ options })),
+)("info rejects incompatible options $options before I/O", async ({ options }) => {
+  const cli = fixture(async () => {
+    throw new Error("unexpected fetch");
+  }, first);
+  expect((await cli.run(["info", ...options])).exit).toBe(2);
 });

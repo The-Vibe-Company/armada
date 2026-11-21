@@ -73,8 +73,8 @@ with the sandbox ID from the launch receipt.
 
 ```sh
 armada new MODAL_SNAPSHOT --provider modal --agent claude "Reply OK"
-armada wait SANDBOX_UUID
-armada status SANDBOX_UUID --json
+armada info --wait SANDBOX_UUID
+armada info SANDBOX_UUID --json
 armada ls --json
 ```
 

@@ -74,8 +74,8 @@ with the sandbox ID from the launch receipt.
 
 ```sh
 armada new MODAL_SNAPSHOT --provider modal --agent codex --model gpt-6.1-sol "Reply OK"
-armada wait SANDBOX_UUID --json
-armada status SANDBOX_UUID --json | jq '{cost:.usage.cost, turns:.usage.turns}'
+armada info --wait SANDBOX_UUID --json
+armada info SANDBOX_UUID --json | jq '{cost:.usage.cost, turns:.usage.turns}'
 ```
 
 Hand-price its actual counters from the returned frozen rates using the formula

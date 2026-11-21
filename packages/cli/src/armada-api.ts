@@ -151,7 +151,7 @@ export async function createArmadaApiClient(
           throw new ArmadaApiError(
             "unavailable",
             response.status,
-            "Armada returned an invalid success receipt. The operation may have been accepted; inspect its state before retrying. For sandbox operations, run armada status <id> or armada ls. Do not replay a mutation blindly.",
+            "Armada returned an invalid success receipt. The operation may have been accepted; inspect its state before retrying. For sandbox operations, run armada info <id> or armada ls. Do not replay a mutation blindly.",
           );
         return payload;
       }

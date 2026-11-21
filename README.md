@@ -104,7 +104,7 @@ or `--unlimited` when adding an account, or change it with
 before allocating a machine; lowering it does not stop existing agents.
 Follow-up sends to existing sandboxes can return a durable queued prompt receipt
 when the account is full; they dispatch FIFO per account after capacity frees.
-Queued is not running or completed: use wait/logs for that sandbox and correlate the returned prompt ID.
+Queued is not running or completed: use `armada info --wait` or `armada events` for that sandbox and correlate the returned prompt ID.
 
 **4. Connect GitHub.** Snapshots are cloned over your own GitHub connection, and sandboxes use it so commits and pull requests come from you.
 
@@ -235,7 +235,7 @@ answers HTTP 401) and no interactive sign-in took place. For example, signed-out
 `armada ls` and `armada ls --json` exit 3, and so does bare `armada`.
 Exit 1 means access denial, state, unsupported operation or service failure.
 Check `armada ls --json` for visible IDs and state; verify your org selection
-with `armada status --setup` or pass `--org UUID`.
+with `armada info --setup` or pass `--org UUID`.
 
 Sandbox mutations are not replayed after transport/server failures or state
 conflicts. Existing authentication recovery may refresh a personal session and

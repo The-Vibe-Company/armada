@@ -72,7 +72,7 @@ from `models`, and `SANDBOX_UUID` with the sandbox ID from the launch receipt.
 armada account add openai --name priced-connection --file /private/priced-connection.json
 armada account ls --json
 armada new MODAL_SNAPSHOT --provider modal --agent codex --credential-id MODEL_ACCOUNT_UUID --model CODEX_DEPLOYMENT "Reply OK"
-armada wait SANDBOX_UUID
+armada info --wait SANDBOX_UUID
 ```
 
 Repeat with `armada account add anthropic --name priced-gateway --file /private/priced-gateway.json`.

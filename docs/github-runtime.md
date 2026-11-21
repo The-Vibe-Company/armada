@@ -251,7 +251,7 @@ It simulates cache expiry, not the actual passage of eight hours at GitHub.
    for `git status -sb` and `git ls-remote origin HEAD` in the disposable checkout,
    with stdout/stderr redirected and only numeric exit codes reported. Save its
    `conversationId` as `CONVERSATION` and `promptId`; use
-   `armada wait "$ID" --org "$ORG" --prompt-id "$PROMPT_ID" --timeout 600 --json`.
+   `armada info --wait "$ID" --org "$ORG" --prompt-id "$PROMPT_ID" --timeout 600 --json`.
    Keep this same worker and conversation throughout; never stop/resume/relaunch
    until the experiment finishes. Record server/runtime SHAs and gate assertion.
 2. Record VM and native identity before expiry and after every fault/recovery.
