@@ -1537,7 +1537,7 @@ test.each(["create response", "bootstrap dispatch"] as const)(
   },
 );
 
-test.each(["allocated", "deleting", "deleted"] as const)(
+test.each(["deleting", "deleted"] as const)(
   "Modal cleanup resumes after a crash at the durable %s checkpoint",
   async (phase) => {
     const { f, id, jobId, makeRunner, cleanupEffects } = await modalLaunchFixture();
@@ -1600,7 +1600,9 @@ test.each(["allocated", "deleting", "deleted"] as const)(
 );
 
 test("owner stop after a lost Modal create reply leaves the exact allocation for replacement cleanup", async () => {
-  const { f, id, jobId, makeRunner, effects, cleanupEffects } = await modalLaunchFixture(await modalAdmissionFixture());
+  const { f, id, jobId, makeRunner, effects, cleanupEffects, hideAllocation } = await modalLaunchFixture(
+    await modalAdmissionFixture(),
+  );
   const interrupted = makeRunner((step) => {
     if (step === "create response") throw new Error("Lost create response");
   });
@@ -1631,6 +1633,27 @@ test("owner stop after a lost Modal create reply leaves the exact allocation for
   const stopped = await data.sandboxes.get(id);
   expect(stopped?.status).toBe("starting");
   expect(stopped?.stopRequestedAt).toBeTruthy();
+
+  await f.db.query("update jobs set lease_until='-infinity' where id=$1", [jobId]);
+  const beforeSettlement: Sql = {
+    ...f.sql,
+    transaction: (work) =>
+      f.sql.transaction!((tx) =>
+        work({
+          ...tx,
+          async query<T>(query: string, params?: unknown[]) {
+            if (query.includes("select public.complete_job")) throw new Error("Worker lost before failure settlement");
+            return tx.query<T>(query, params);
+          },
+        }),
+      ),
+  };
+  const recovering = makeRunner((step) => {
+    if (step === "machine poll") hideAllocation();
+  }, beforeSettlement);
+  expect(await recovering.reconcileOne(signal)).toBe(true);
+  await recovering.drain();
+  expect((await data.sandboxes.get(id))?.status).toBe("starting");
 
   await f.db.query("update jobs set lease_until='-infinity' where id=$1", [jobId]);
   const successor = makeRunner();
@@ -2134,10 +2157,27 @@ test.each(["before allocation", "after allocation"] as const)(
   },
 );
 
+function interruptModalBinding(sql: Sql): Sql {
+  return {
+    ...sql,
+    transaction: (work) =>
+      sql.transaction!((tx) =>
+        work({
+          ...tx,
+          async query<T>(query: string, params?: unknown[]) {
+            if (query.includes("update public.sandboxes set provider_sandbox_id="))
+              throw new Error("Worker lost before binding the allocation");
+            return tx.query<T>(query, params);
+          },
+        }),
+      ),
+  };
+}
+
 test.each(["create response", "bootstrap dispatch", "bootstrap response"] as const)(
   "a replacement Modal launch runner completes after losing the %s",
   async (failure) => {
-    const { f, id, jobId, makeRunner, effects, activeRuntime } = await modalLaunchFixture(
+    const { f, id, jobId, makeRunner, effects, activeRuntime, hideAllocation } = await modalLaunchFixture(
       await modalAdmissionFixture(),
     );
     const lifecycle = createSandboxLifecycle(f.sql, async () => {
@@ -2169,6 +2209,19 @@ test.each(["create response", "bootstrap dispatch", "bootstrap response"] as con
     if (failure === "bootstrap dispatch") expect(pendingTicket).toBeDefined();
 
     expect(await lifecycle.reconcileOne()).toBe(false);
+    if (failure === "create response") {
+      const interruptedBinding = makeRunner(undefined, interruptModalBinding(f.sql));
+      expect(await interruptedBinding.reconcileOne(signal)).toBe(true);
+      await interruptedBinding.drain();
+      expect(
+        (
+          await f.db.query("select outcome #>> '{modal_machine,entry,machineId}' as machine_id from jobs where id=$1", [
+            jobId,
+          ])
+        ).rows,
+      ).toEqual([{ machine_id: null }]);
+      await f.db.query("update jobs set lease_until='-infinity' where id=$1", [jobId]);
+    }
     if (pendingTicket) {
       const interruptedReplay = makeRunner(
         (step) => {
@@ -2186,6 +2239,7 @@ test.each(["create response", "bootstrap dispatch", "bootstrap response"] as con
     const replacementManifest = modalTestArtifactManifest("c");
     const successor = makeRunner(
       async (step) => {
+        if (failure === "create response" && step === "machine poll") hideAllocation();
         if (pendingTicket && step === "bootstrap dispatch") {
           expect(
             (
@@ -2206,7 +2260,7 @@ test.each(["create response", "bootstrap dispatch", "bootstrap response"] as con
     if (pendingTicket) expect(activeRuntime().configuration).toMatchObject({ artifactManifest: replacementManifest });
     expect(effects().allocations).toBe(1);
     expect(effects().bootstrapped).toEqual(["physical"]);
-    expect(effects().observed).toBe(failure === "bootstrap response" ? 0 : pendingTicket ? 2 : 1);
+    expect(effects().observed).toBe(failure === "bootstrap response" ? 0 : 2);
     expect(
       (
         await f.db.query(
@@ -2229,25 +2283,11 @@ test.each([
     const { f, id, jobId, makeRunner, effects, exitAllocation, hideAllocation } = await modalLaunchFixture(
       await modalAdmissionFixture(),
     );
-    const beforeBinding: Sql = {
-      ...f.sql,
-      transaction: (work) =>
-        f.sql.transaction!(async (tx) =>
-          work({
-            ...tx,
-            async query<T>(query: string, params?: unknown[]) {
-              if (query.includes("update public.sandboxes set provider_sandbox_id="))
-                throw new Error("Worker lost before binding the allocation");
-              return tx.query<T>(query, params);
-            },
-          }),
-        ),
-    };
     const interrupted = makeRunner(
       (step) => {
         if (step === lostAt) throw new Error("Worker lost");
       },
-      lostAt === "sandbox binding" ? beforeBinding : f.sql,
+      lostAt === "sandbox binding" ? interruptModalBinding(f.sql) : f.sql,
     );
     expect(await interrupted.reconcileOne(signal)).toBe(true);
     await interrupted.drain();

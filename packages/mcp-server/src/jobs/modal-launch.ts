@@ -53,6 +53,7 @@ import { MODAL_LAUNCH_FAILURE } from "../turns.ts";
 import { parseModalLaunchWorkspace } from "./modal-launch-setup.ts";
 import type { Job, JobContext, JobKind, JobResult } from "./runner.ts";
 import {
+  adoptObservedModalAllocation,
   ConflictingJobRequest,
   createJobsStore,
   jobRequestKey,
@@ -873,21 +874,24 @@ export async function runModalLaunch(
     } satisfies JobResult;
   }
 
-  const observed =
-    dispatch?.kind === "reconcile" && dispatch.observation.kind === "present"
-      ? dispatch.observation.machine.machineId
-      : null;
+  const observation = dispatch?.kind === "reconcile" ? dispatch.observation : undefined;
+  const observed = observation?.kind === "present" ? observation.machine.machineId : null;
   const known = target.provider_sandbox_id ?? target.journaled_id;
   if (
     (target.provider_sandbox_id && target.journaled_id && target.provider_sandbox_id !== target.journaled_id) ||
     (known && observed && known !== observed) ||
-    (!known && (target.has_intent ? !observed : observed !== null))
+    (!known && (target.has_intent ? !observed || observation?.receipt?.operation !== "create" : observed !== null))
   ) {
     return {
       status: "retry",
       after: new Date(Date.now() + RECONCILE_DELAY_MS),
       outcome: RECONCILING_ALLOCATION,
     } satisfies JobResult;
+  }
+
+  if (!known && observed) {
+    const adopted = await withJobLease(sql, job, (tx) => adoptObservedModalAllocation(tx, job, observed));
+    if (!adopted) throw new Error("Modal launch observation could not be adopted before cleanup.");
   }
 
   return {
@@ -987,15 +991,16 @@ async function dispatchModalLaunch(
     allocated = { sandboxId, generation, machineId };
   } else {
     signal.throwIfAborted();
-    allocated = await machine.create({ ...plan.allocation, ...incarnation });
-    if (
-      allocated.sandboxId !== sandboxId ||
-      allocated.generation !== generation ||
-      (observed?.kind === "present" && observed.machine.machineId !== allocated.machineId)
-    )
-      throw new Error("Modal launch changed the observed machine identity.");
+    if (observed?.kind === "present" && observed.receipt?.operation !== "create")
+      return { kind: "observation_pending" } as const;
+    allocated =
+      observed?.kind === "present" ? observed.machine : await machine.create({ ...plan.allocation, ...incarnation });
+    if (allocated.sandboxId !== sandboxId || allocated.generation !== generation)
+      throw new Error("Modal launch changed the machine incarnation.");
     const bound = await withJobLease(sql, job, async (tx) => {
       if ((await dispatchTarget(tx))?.provider_sandbox_id !== null) return false;
+      if (observed?.kind === "present" && !(await adoptObservedModalAllocation(tx, job, allocated.machineId)))
+        return false;
       return bindModalLaunchMachine(tx, allocated);
     });
     if (!bound) return reconcile();

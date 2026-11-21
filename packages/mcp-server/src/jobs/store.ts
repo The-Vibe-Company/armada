@@ -97,6 +97,26 @@ export async function withJobLease<T>(sql: Sql, job: Job, write: (tx: Sql) => Pr
   });
 }
 
+export async function adoptObservedModalAllocation(tx: Sql, job: Job, machineId: string) {
+  const { rows } = await tx.query(
+    `update public.jobs set outcome=case
+       when outcome #>> '{modal_machine,entry,phase}'='allocated' then outcome
+       else jsonb_set(outcome,'{modal_machine,entry}',outcome #> '{modal_machine,entry}' ||
+         jsonb_build_object('phase','allocated','machineId',$3::text,
+           'revision',(outcome #>> '{modal_machine,entry,revision}')::int+1))
+       end
+     where id=$1 and kind='launch' and lease_epoch=$2 and lease_until>clock_timestamp()
+       and outcome #>> '{modal_machine,entry,operation}'='create'
+       and ((outcome #>> '{modal_machine,entry,phase}'='creating'
+             and outcome #>> '{modal_machine,entry,machineId}' is null)
+         or (outcome #>> '{modal_machine,entry,phase}'='allocated'
+             and outcome #>> '{modal_machine,entry,machineId}'=$3))
+     returning id`,
+    [job.id, job.lease_epoch, machineId],
+  );
+  return rows.length > 0;
+}
+
 // WARNING: Record the replay token inside the fenced ticket issuance transaction.
 export async function recordModalBootstrapTicket(tx: Sql, jobId: string, token: string, encryptionKey: string) {
   const sealed = await encryptSecret(token, encryptionKey);
