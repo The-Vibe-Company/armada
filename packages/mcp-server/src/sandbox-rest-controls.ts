@@ -7,7 +7,7 @@ import type { Caller } from "./caller.ts";
 import type { ControlOptions } from "./control.ts";
 import { selectedCaller } from "./control-caller.ts";
 import { optional } from "./control-input.ts";
-import type { ServerSandboxPatch } from "./data.ts";
+import type { ServerSandboxPatch, ServerSandboxStore } from "./data.ts";
 import { measureRequestPhase } from "./request-timing.ts";
 import { summarizeResourceHistory } from "./resource-advice.ts";
 import { type ControlRouteContext, defineRoutes } from "./routes.ts";
@@ -98,42 +98,7 @@ async function dispatchSandboxRestControl(
         const args = { id, request_id: requestId?.toLowerCase() };
         const routed = await options.dockerControls?.invoke(caller, "delete", args);
         if (routed?.handled) return routed.result;
-        if (!data.sandboxes.assertDeletionAllowed)
-          throw new ToolError("unavailable", "Sandbox deletion is not configured.");
-        await data.sandboxes.assertDeletionAllowed(args.id);
-        const found = await data.sandboxes.get(args.id);
-        if (!found) throw new ToolError("not_found", `No sandbox with id '${args.id}' that you can see.`);
-        if (found.status === "deleted") return { id: found.id, status: "deleted" as const };
-        const provider = found.providerSandboxId
-          ? await options.providers.resolve(found, { userId: found.ownerId })
-          : null;
-        const failurePatch = (error: unknown) => {
-          if (found.provider === "modal" || isNonMutatingProviderRefusal(error)) return {};
-          throw error;
-        };
-        return sandboxActivity(
-          data.sandboxes,
-          found,
-          { deleteRequested: true },
-          async (signal) => {
-            signal.throwIfAborted();
-            if (provider) {
-              try {
-                const receipt = await provider.delete({ sandboxId: found.providerSandboxId });
-                if (!["deleted", "completed"].includes(receipt.status))
-                  throw new ToolError(
-                    "conflict",
-                    "Provider deletion is pending. Retry deletion to confirm completion; do not resume this sandbox.",
-                  );
-              } catch (error) {
-                if (!(error instanceof ProviderError && error.code === "not_found")) throw error;
-              }
-            }
-            const patch: ServerSandboxPatch = { deleteCompleted: true };
-            return { result: { id: found.id, status: "deleted" as const }, patch };
-          },
-          { failurePatch },
-        );
+        return deleteSandboxWithActivity(data.sandboxes, options.providers, args.id);
       }
       case "postSandboxCheckpointRuntimeV1": {
         const { org: _org, ...args } = parse(contracts[name].input.body);
@@ -189,6 +154,55 @@ async function dispatchSandboxRestControl(
       }
     }
   }
+}
+
+export async function deleteSandboxWithActivity(
+  sandboxes: ServerSandboxStore,
+  providers: Pick<NonNullable<ControlOptions["providers"]>, "resolve">,
+  id: string,
+  mode?: "native-drain",
+) {
+  const admission: ServerSandboxPatch = {
+    deleteRequested: true,
+    ...(mode === "native-drain" ? { requireNativeDrainRecovery: true } : {}),
+  };
+  if (!sandboxes.assertDeletionAllowed) throw new ToolError("unavailable", "Sandbox deletion is not configured.");
+  await sandboxes.assertDeletionAllowed(id);
+  const found = await sandboxes.get(id);
+  if (!found) throw new ToolError("not_found", `No sandbox with id '${id}' that you can see.`);
+  if (found.status === "deleted") return { id: found.id, status: "deleted" as const };
+  const provider = found.providerSandboxId ? await providers.resolve(found, { userId: found.ownerId }) : null;
+  const failurePatch = (error: unknown) => {
+    if (found.provider === "modal" || isNonMutatingProviderRefusal(error)) return {};
+    throw error;
+  };
+  return sandboxActivity(
+    sandboxes,
+    found,
+    admission,
+    async (signal) => {
+      signal.throwIfAborted();
+      if (provider) {
+        try {
+          const target = {
+            sandboxId: found.providerSandboxId,
+            ...(found.lifecycleGeneration !== undefined ? { generation: found.lifecycleGeneration + 1 } : {}),
+          };
+          const receipt = await provider.delete(target);
+          if (!["deleted", "completed"].includes(receipt.status))
+            throw new ToolError(
+              "conflict",
+              "Provider deletion is pending. Retry deletion to confirm completion; do not resume this sandbox.",
+            );
+        } catch (error) {
+          if (!(error instanceof ProviderError && error.code === "not_found")) throw error;
+        }
+      }
+      const patch: ServerSandboxPatch = { deleteCompleted: true };
+      return { result: { id: found.id, status: "deleted" as const }, patch };
+    },
+    { failurePatch },
+  );
 }
 
 const { deleteSandbox, ...postOperations } = sandboxRestOperations;

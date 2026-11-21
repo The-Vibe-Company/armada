@@ -5,6 +5,7 @@ import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import type { Caller } from "../src/caller.ts";
 import { createSqlData } from "../src/data.ts";
 import { createRuntimeProvider, type RuntimeWorkProvider } from "../src/runtime-provider.ts";
+import { deleteSandboxWithActivity } from "../src/sandbox-rest-controls.ts";
 import { bindRestTool, type ToolContext } from "../src/tools.ts";
 import { preserveBeforeStop, readWorkRecovery } from "../src/work-preservation.ts";
 import { closeableFixture } from "./closeable.fixture.ts";
@@ -1276,6 +1277,81 @@ test("ordinary native exec skips post-command provider sampling after the activi
     jest.useRealTimers();
   }
 });
+
+test.each(["missing proof", "rolled-back admission", "lost commit response", "verified proof"])(
+  "native drain deletion commits preservation and admission together with %s",
+  async (scenario) => {
+    const { db, people, sandboxId, archiveId } = await seedNativeDrainReceipt();
+    const caller: Caller = { via: "service", userId: people.owner, orgs: [{ orgId: people.org, role: "member" }] };
+    const sql = bunLikeSql(db);
+    if (scenario === "lost commit response") {
+      const transaction = sql.transaction;
+      if (!transaction) throw new Error("Missing transaction support");
+      sql.transaction = async (work) => {
+        await transaction(work);
+        throw new Error("Delete admission commit response lost");
+      };
+    }
+    const { sandboxes } = createSqlData(sql)(caller);
+    const provider = fakeBoat().provider;
+    const detached = () => db.query("select archive_id from native_drain_recovery where sandbox_id=$1", [sandboxId]);
+    const state = async () =>
+      (await db.query("select status, lifecycle_generation::int as generation from sandboxes where id=$1", [sandboxId]))
+        .rows[0];
+    const remove = mock(async () => {
+      if (scenario === "verified proof") {
+        expect((await detached()).rows).toEqual([{ archive_id: archiveId }]);
+        expect(await state()).toEqual({ status: "stopped", generation: 5 });
+      }
+      return { status: "deleted" as const };
+    });
+    provider.delete = remove;
+    if (scenario === "missing proof")
+      await db.query("delete from sandbox_native_preservation_receipts where sandbox_id=$1", [sandboxId]);
+    if (scenario === "rolled-back admission") {
+      await db.exec(`
+        create function refuse_drain_admission() returns trigger language plpgsql as $$
+        begin
+          if new.activity_lease_id is not null then return null; end if;
+          return new;
+        end;
+        $$;
+        create trigger refuse_drain_admission before update on sandboxes
+          for each row execute function refuse_drain_admission();
+      `);
+    }
+    try {
+      const deletion = deleteSandboxWithActivity(
+        sandboxes,
+        { resolve: async () => provider },
+        sandboxId,
+        "native-drain",
+      );
+      if (scenario === "verified proof") {
+        expect(await deletion).toEqual({ id: sandboxId, status: "deleted" });
+        expect(remove).toHaveBeenCalledTimes(1);
+        expect(await state()).toEqual({ status: "deleted", generation: 6 });
+        expect((await detached()).rows).toEqual([{ archive_id: archiveId }]);
+      } else if (scenario === "lost commit response") {
+        await expect(deletion).rejects.toThrow("Delete admission commit response lost");
+        expect(remove).not.toHaveBeenCalled();
+        expect(await state()).toEqual({ status: "stopped", generation: 5 });
+        expect((await detached()).rows).toEqual([{ archive_id: archiveId }]);
+        expect((await db.query("select activity_lease_id from sandboxes where id=$1", [sandboxId])).rows[0]).toEqual({
+          activity_lease_id: expect.any(String),
+        });
+      } else {
+        await expect(deletion).rejects.toMatchObject({ code: "sandbox_not_ready" });
+        expect(remove).not.toHaveBeenCalled();
+        expect(await state()).toEqual({ status: "stopped", generation: 4 });
+        expect((await detached()).rows).toEqual([]);
+      }
+    } finally {
+      if (scenario === "rolled-back admission")
+        await db.exec("drop trigger refuse_drain_admission on sandboxes; drop function refuse_drain_admission()");
+    }
+  },
+);
 
 test("owners and admins can recover the exact native archive after normal deletion and handoff replay", async () => {
   const archive = Buffer.from("detached work fixture").toString("base64");
