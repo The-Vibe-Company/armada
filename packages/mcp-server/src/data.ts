@@ -81,6 +81,27 @@ import { preserveBeforeStop, readWorkRecovery, type StopAuthority } from "./work
 const currentNativeExec = `exists(select 1 from public.sandbox_native_exec_attempts e
   where e.sandbox_id=s.id and e.generation=s.lifecycle_generation)`;
 
+/** Caller holds the sandbox row lock and has validated the command's source. */
+export async function recordNativeWorkspaceCommand(tx: Sql, sandboxId: string, generation: number) {
+  const { rows } = await tx.query(
+    `insert into public.sandbox_native_exec_attempts(sandbox_id,generation)
+     select $1,$2 where not exists (
+       select 1 from public.sandbox_native_exec_attempts where sandbox_id=$1
+     ) returning sandbox_id`,
+    [sandboxId, generation],
+  );
+  return rows.length === 1;
+}
+
+export async function settleNativeWorkspaceCommand(tx: Sql, sandboxId: string, generation: number) {
+  const { rows } = await tx.query(
+    `delete from public.sandbox_native_exec_attempts
+     where sandbox_id=$1 and generation=$2 returning sandbox_id`,
+    [sandboxId, generation],
+  );
+  return rows.length === 1;
+}
+
 /** A sandbox with what the caller needs to know about its golden. */
 export interface SandboxView extends SandboxRecord {
   golden: string;
@@ -1382,12 +1403,8 @@ export function createSqlData(
                 expectedGeneration + 1,
               ]);
             } else {
-              const settled = await tx.query(
-                `delete from public.sandbox_native_exec_attempts
-                 where sandbox_id=$1 and generation=$2 returning sandbox_id`,
-                [id, expectedGeneration],
-              );
-              if (!settled.rows.length) throw new DataError("Native exec evidence changed before completion.");
+              if (!(await settleNativeWorkspaceCommand(tx, id, expectedGeneration)))
+                throw new DataError("Native exec evidence changed before completion.");
             }
             return updated;
           });

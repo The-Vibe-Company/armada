@@ -833,3 +833,97 @@ test.each([
   expect(boat.stops).toEqual([physical.id]);
   await migration.prepareAccount(actor, account.id, 1);
 });
+
+test.each([
+  "acknowledged",
+  "configured after probe",
+  "lost admission reply",
+  "lost pause reply",
+  "lost configuration reply",
+] as const)("Boat subscription workspace commands fence strict drain: %s", async (outcome) => {
+  const { db, people } = await database();
+  const actor: GoldenActor = { userId: people.owner, orgId: people.org, role: "member" };
+  const account = (
+    await db.query<{ id: string }>(
+      "insert into credentials(scope,owner_id,kind,value_enc) values('user',$1,'codex_auth',$2) returning id",
+      [people.owner, await encryptSecret(native(0), ENCRYPTION_KEY)],
+    )
+  ).rows[0]!;
+  const golden = (await createSqlGoldenStore(db).findByName(people.org, "shared"))[0]!;
+  const { provider } = fakeBoat();
+  const physical = await provider.fork({ from: "legacy", noEnv: true, env: {}, labels: {}, ttlSeconds: 3600 });
+  const sandbox = await createSqlSandboxStore(db).insert({
+    id: crypto.randomUUID(),
+    provider: "boat",
+    providerSandboxId: physical.id,
+    goldenId: golden.id,
+    orgId: actor.orgId,
+    ownerId: actor.userId,
+    harness: "codex",
+    status: "ready",
+    model: "gpt-6.1-sol",
+    reasoningEffort: "high",
+    credentialId: account.id,
+    credentialVersion: 1,
+    expiresAt: new Date(Date.now() + 60_000).toISOString(),
+  });
+  const tryDrain = () => requestNativeDrainStop(db, sandbox, "boat", actor.userId);
+  const calls: string[] = [];
+  let configured = false;
+  let probed = false;
+  const sql: Sql = {
+    query: db.query.bind(db),
+    async transaction(run) {
+      const result = await db.transaction!(run);
+      if (outcome === "lost admission reply" && !calls.length) {
+        const { rows } = await db.query<{ id: string }>(
+          "select sandbox_id as id from sandbox_native_exec_attempts where sandbox_id=$1",
+          [sandbox.id],
+        );
+        if (rows.length) throw Error("Synthetic lost admission reply");
+      }
+      return result;
+    },
+  };
+  const migration = createSubscriptionMigration(
+    sql,
+    async () => ({ provider, providerSandboxId: physical.id }),
+    async () => [],
+    {
+      configuration: () => ({ url: "https://armada.example", capability: "test" }),
+      transferLegacy: async () => {},
+    },
+    {
+      read: async () => {
+        if (configured || (probed && outcome === "configured after probe")) return "null";
+        probed = true;
+        return native(0);
+      },
+      admission: async () => {
+        calls.push("pause");
+        expect(await tryDrain()).toBe(false);
+        if (outcome === "lost pause reply") throw Error("Synthetic lost pause reply");
+      },
+      configure: async () => {
+        calls.push("configure");
+        expect(await tryDrain()).toBe(false);
+        configured = true;
+        if (outcome === "lost configuration reply") throw Error("Synthetic lost configuration reply");
+      },
+    },
+  );
+
+  const preparing = migration.prepareTurn(provider, physical.id, actor);
+  const success = outcome === "acknowledged" || outcome === "configured after probe";
+  if (success) await preparing;
+  else await expect(preparing).rejects.toThrow(/Synthetic lost/);
+  const expectedCalls = {
+    acknowledged: ["pause", "configure"],
+    "configured after probe": [],
+    "lost admission reply": [],
+    "lost pause reply": ["pause"],
+    "lost configuration reply": ["pause", "configure"],
+  }[outcome];
+  expect(calls).toEqual(expectedCalls);
+  expect(await tryDrain()).toBe(success);
+});
