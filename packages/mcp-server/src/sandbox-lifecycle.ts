@@ -1048,12 +1048,12 @@ export async function fencePreservedModalDrainIncarnation(tx: Sql, id: string, p
            and r.capture_acknowledgements->>'drainAdmissionGeneration'=j.record->>'generation'
          else j.record->>'phase'='stopped' and j.lease_id is null and j.lease_until is null
            and r.generation=s.lifecycle_generation-1
-           and exists (
+           and (r.archive_id is null or exists (
              select 1 from public.native_drain_recovery a
              where a.archive_id=r.archive_id and a.sandbox_id=s.id
                and a.org_id=s.org_id and a.owner_id=s.owner_id
              for share of a
-           )
+           ))
        end
      ) as eligible
      from journal j cross join public.sandboxes s

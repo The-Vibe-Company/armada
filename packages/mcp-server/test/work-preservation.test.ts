@@ -978,11 +978,26 @@ test.each([
   ).toEqual(previouslyPending ? [{ archive_id: archiveId }] : []);
 });
 
-test.each(["confirmed", "admission rollback", "lost commit reply", "missing detached archive", "deleting journal"])(
+const unstampedDrainScenarios = [
+  "archived",
+  "clean",
+  "admission rollback",
+  "lost commit reply",
+  "missing detached archive",
+  "deleting journal",
+] as const;
+
+test.each(unstampedDrainScenarios)(
   "unstamped native Modal drain reconciles only a preserved stopped incarnation with %s",
   async (scenario) => {
     const { db, people, sandboxId, archiveId, copy } = await seedNativeDrainReceipt(undefined, "modal");
-    expect(await copy()).toBe("archived");
+    if (scenario === "clean") {
+      await db.query("update sandbox_native_preservation_receipts set archive_id=null where sandbox_id=$1", [
+        sandboxId,
+      ]);
+      await db.query("delete from sandbox_work_recovery where id=$1", [archiveId]);
+    }
+    expect(await copy()).toBe(scenario === "clean" ? "clean" : "archived");
     await db.query("update sandboxes set native_drain_pending=true,lifecycle_generation=5 where id=$1", [sandboxId]);
     if (scenario === "missing detached archive")
       await db.query("delete from native_drain_recovery where archive_id=$1", [archiveId]);
@@ -1019,7 +1034,7 @@ test.each(["confirmed", "admission rollback", "lost commit reply", "missing deta
     const providers = { resolve: async () => ({ ...fakeBoat().provider, id: "modal" as const, delete: remove }) };
     const drain = () => deleteSandboxWithActivity(sandboxes, providers, sandboxId, "native-drain");
 
-    if (scenario === "confirmed") {
+    if (scenario === "archived" || scenario === "clean") {
       await expect(drain()).resolves.toEqual({ id: sandboxId, status: "deleted" });
       expect(remove).toHaveBeenCalledTimes(1);
       return;
