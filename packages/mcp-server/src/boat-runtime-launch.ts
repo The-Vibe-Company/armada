@@ -15,6 +15,7 @@ export function boatRuntimeLaunch(
   const manifest = structuredClone(options.manifest);
   const { architecture, modelAuth } = options;
   return {
+    supportsScopedAccess: true,
     async start(input) {
       const { host, actor, sandbox, credentials } = input;
       if (sandbox.boatRuntime !== true || host.id !== "boat") throw Error("runtime_selection_required");

@@ -130,10 +130,10 @@ async function launchGolden(
       launchOptions,
     );
     timing.checkpoint("account_resolution");
-    const scopedModalDefault =
+    const scopedRuntimeDefault =
       armadaAccess && account.runtimeDefault?.policy.supportsScopedAccess ? account.runtimeDefault : undefined;
-    if (scopedModalDefault) {
-      const provider = await scopedModalDefault.provider(actor, target);
+    if (scopedRuntimeDefault) {
+      const provider = await scopedRuntimeDefault.provider(actor, target);
       if (provider.id !== golden.provider)
         throw new LaunchError(
           "invalid_request",
@@ -142,9 +142,9 @@ async function launchGolden(
       timing.checkpoint("provider_resolution");
       return {
         provider,
-        credentials: scopedModalDefault.credentials,
-        options: { ...account.options, runtime: scopedModalDefault.policy },
-        connections: scopedModalDefault.connections,
+        credentials: scopedRuntimeDefault.credentials,
+        options: { ...account.options, runtime: scopedRuntimeDefault.policy },
+        connections: scopedRuntimeDefault.connections,
       };
     }
     const provider = modalRuntime

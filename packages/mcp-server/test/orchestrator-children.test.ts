@@ -1675,7 +1675,14 @@ test.each(["golden lookup failure", "placement refusal", "parent revocation duri
 
 // Real delegated stop and SQL fences: a completed stop must remain live-readable.
 test("managed child stop clears its epoch only after physical confirmation", async () => {
-  let scenario: "confirmed" | "pending" | "stale" | "failed exit" | "admission abort" | "settlement abort";
+  let scenario:
+    | "confirmed"
+    | "pending"
+    | "stale"
+    | "failed exit"
+    | "admission abort"
+    | "settlement abort"
+    | "runtime admitted";
   const { close, db, sql, p, id, token, golden } = await fixture(
     "running",
     "anthropic",
@@ -1703,6 +1710,7 @@ test("managed child stop clears its epoch only after physical confirmation", asy
       sql,
       providers: {
         async resolve() {
+          if (scenario === "runtime admitted") throw Error("The existing reconciler owns the admitted runtime stop.");
           if (scenario === "stale")
             await db.query("update sandboxes set lifecycle_generation=lifecycle_generation+1 where id=$1", [childId]);
           return provider;
@@ -1713,7 +1721,15 @@ test("managed child stop clears its epoch only after physical confirmation", asy
       encryptionKey: ENCRYPTION_KEY,
       scopedMcpUrl: "https://armada.example/mcp",
     });
-    for (scenario of ["confirmed", "pending", "stale", "failed exit", "admission abort", "settlement abort"] as const) {
+    for (scenario of [
+      "confirmed",
+      "pending",
+      "stale",
+      "failed exit",
+      "admission abort",
+      "settlement abort",
+      "runtime admitted",
+    ] as const) {
       const physical = await fake.provider.fork({
         from: "test",
         name: "child",
@@ -1730,10 +1746,13 @@ test("managed child stop clears its epoch only after physical confirmation", asy
         ownerId: p.owner,
         harness: "codex",
         status: scenario === "failed exit" ? "failed" : "ready",
+        ...(scenario === "runtime admitted" ? { boatRuntime: true } : {}),
         model: "m",
         reasoningEffort: "high",
       });
       await db.query("insert into orchestrator_children values($1,$2,$3,$4)", [child.id, id, p.org, p.owner]);
+      if (scenario === "runtime admitted")
+        await db.query("update sandboxes set status='stopping',stop_requested_at=now() where id=$1", [child.id]);
       childId = child.id;
       const calls = fake.stops.length;
       const receipt = await services.childWorker.stop(token, crypto.randomUUID(), child.id);
@@ -1752,6 +1771,14 @@ test("managed child stop clears its epoch only after physical confirmation", asy
           child.id,
         ])
       ).rows;
+      if (scenario === "runtime admitted") {
+        expect(receipt.state).toBe("succeeded");
+        expect(fake.stops).toHaveLength(calls);
+        expect(saved).toMatchObject({ status: "stopping", lifecycleGeneration: 1 });
+        expect(lease).toBeNull();
+        expect(journal.rows).toEqual([]);
+        continue;
+      }
       if (scenario === "stale" || scenario === "admission abort") {
         expect(receipt.state).toBe("uncertain");
         expect(fake.stops).toHaveLength(calls);
