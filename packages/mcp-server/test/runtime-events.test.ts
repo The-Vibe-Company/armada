@@ -1525,25 +1525,26 @@ test("a mid-turn provider retry leaves the account binding and health intact", a
   const readHealth = async () => (await f.db.query("select * from account_exhaustion")).rows;
   const before = await readHealth();
   expect(before).toHaveLength(1);
+  const at = Date.now();
   await expect(
     f.send([
       {
         sequence: 2,
         event: {
           id: "retry",
-          at: 201,
+          at,
           kind: "other",
           type: "armada/modelRateLimit",
           promptId: "p",
           data: {
             retryCount: 1,
-            delayMs: 1000,
-            totalWaitMs: 1000,
-            message: "Rate limited by the model provider, retrying in 1 s",
+            delayMs: 60000,
+            totalWaitMs: 60000,
+            message: "Rate limited by the model provider, retrying in 60 s",
           },
         },
       },
-      exhaustion(3, 202, { code: "rate_limited" }),
+      exhaustion(3, at + 1, { code: "rate_limited" }),
     ]),
   ).resolves.toEqual({ acknowledgedSequence: 3 });
   expect(await readHealth()).toEqual(before);
