@@ -235,10 +235,11 @@ describe("native harness cwd preparation", () => {
 
 describe("sandboxes", () => {
   test.each([
-    ["verification during the current stop", "2026-11-21T19:42:24Z", 1795290158322, "usable"],
-    ["verification before the stop was requested", "2026-11-21T19:42:35Z", 1795290158322, "unconfirmed"],
-    ["a previous completed stop", "2026-11-21T19:42:24Z", 1795290150657, "unconfirmed"],
-  ])("get checks archived retention with %s", async (_name, requestedAt, endedAt, expected) => {
+    ["verification during the current stop", "2026-11-21T19:42:24Z", 1795290158322, null, "usable"],
+    ["verification before the stop was requested", "2026-11-21T19:42:35Z", 1795290158322, null, "unconfirmed"],
+    ["a previous completed stop", "2026-11-21T19:42:24Z", 1795290150657, null, "unconfirmed"],
+    ["a newer snapshot attempt", "2026-11-21T19:42:24Z", 1795290158322, "2026-11-21T19:42:35Z", "unconfirmed"],
+  ])("get checks archived retention with %s", async (_name, requestedAt, endedAt, lastSnapshotAttemptAt, expected) => {
     const stop = {
       id: "stop-1",
       status: StopOperationStatusEnum.Completed,
@@ -252,6 +253,7 @@ describe("sandboxes", () => {
           sandbox: retainedSandbox({
             stoppedAt: new Date(1795290158322).toISOString(),
             snapshotVerifiedAt: new Date(1795290150656).toISOString(),
+            lastSnapshotAttemptAt,
             lastSnapshotStatus: SandboxLastSnapshotStatusEnum.Completed,
             stop: { ...stop, requestedAt: null },
           }),
@@ -1475,6 +1477,26 @@ test("Boat does not publish an older snapshot without verification for the curre
   const snapshot = await boat.provider.openRetainedOutputs!({ sandboxId: ID, signal: new AbortController().signal });
   expect(snapshot).toBe("gone");
   expect(boat.requests).toHaveLength(1);
+});
+
+test("Boat leaves retained output collection pending when the stop proof lookup returns not found", async () => {
+  const stoppedAt = "2026-11-18T10:00:01Z";
+  const boat = fakeBoat(
+    {
+      body: {
+        sandbox: retainedSandbox({
+          stoppedAt,
+          snapshotVerifiedAt: "2026-11-18T10:00:00Z",
+          lastSnapshotStatus: SandboxLastSnapshotStatusEnum.Completed,
+          stop: { id: "stop-1", status: StopOperationStatusEnum.Completed, endedAt: stoppedAt },
+        }),
+      },
+    },
+    errorBody(404, "not_found", "Stop not found"),
+  );
+  expect(await boat.provider.openRetainedOutputs!({ sandboxId: ID, signal: new AbortController().signal })).toBe(
+    "pending",
+  );
 });
 
 test("Boat finishes retained collection if the sandbox disappears after its metadata lookup", async () => {

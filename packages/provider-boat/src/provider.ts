@@ -356,6 +356,14 @@ export function createBoatProvider(options: BoatProviderOptions): BoatProvider &
       return "unconfirmed";
     if (verifiedAt >= stoppedAt) return "usable";
 
+    const lastSnapshotAttemptAt = sandbox.lastSnapshotAttemptAt?.getTime();
+    if (
+      snapshotStatus !== SandboxLastSnapshotStatusEnum.Completed ||
+      (lastSnapshotAttemptAt !== undefined &&
+        (!Number.isFinite(lastSnapshotAttemptAt) || lastSnapshotAttemptAt > verifiedAt))
+    )
+      return "unconfirmed";
+
     const stop = sandbox.stop;
     const endedAt = stop?.endedAt?.getTime();
     if (
@@ -373,9 +381,10 @@ export function createBoatProvider(options: BoatProviderOptions): BoatProvider &
         throw error;
       },
     );
-    const operation = observed?.stop;
+    if (!observed) return "pending";
+    const operation = observed.stop;
     const requestedAt = operation?.requestedAt?.getTime();
-    return observed?.ok === true &&
+    return observed.ok === true &&
       observed.id === sandbox.id &&
       operation?.id === stop.id &&
       operation.status === StopOperationStatusEnum.Completed &&
