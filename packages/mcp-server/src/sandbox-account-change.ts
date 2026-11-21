@@ -11,6 +11,7 @@ import { VaultError } from "@armada/core/server";
 import type { Caller } from "./caller.ts";
 import type { CredentialBindingRecovery } from "./credential-binding-recovery.ts";
 import { runtimeBridgeTarget } from "./provider-runtime-admission.ts";
+import { hasStrictNativeDrainStop } from "./sandbox-lifecycle.ts";
 
 const bindingIds = sandboxCheckOperations.bindSandboxCredential.input.body.pick({ id: true, credentialId: true });
 export const ACCOUNT_CHANGE_BUSY =
@@ -71,6 +72,9 @@ export function createSandboxAccountChange(
         ...(row.runtime_transport ? { runtimeTransport: row.runtime_transport } : {}),
       });
     if (row.native_drain_pending) throw new VaultError("conflict", "Native sandbox deletion is pending.");
+    // WARNING: Read the marker after the locking SELECT to see a strict stop admitted while waiting.
+    if (await hasStrictNativeDrainStop(db, row.id))
+      throw new VaultError("conflict", "Native sandbox preservation is pending.");
     if (row.deleted_at || (!["ready", "stopped"].includes(row.status) && !runtimeRunning) || row.leased)
       throw new VaultError("credential_binding_unsafe", ACCOUNT_CHANGE_BUSY);
     return row;
