@@ -754,13 +754,24 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
             if (!id) await claim(row.id);
             if (row.id !== id || (row.status !== "ready" && !(provider === "docker" && row.status === "running")))
               return;
+            if (provider !== "docker") return row;
+            const readBudget = () => Math.min(5_000, remainingMs - (io.now() - readStarted));
+            const statusBudget = readBudget();
+            if (statusBudget <= 0) return;
+            // Docker machine readiness can precede completion of launch setup.
+            const status = await request<{ id: string; status: string }>(
+              "sandbox/status",
+              { org: c.org, id: row.id },
+              statusBudget,
+            ).catch(() => undefined);
+            if (status?.id !== row.id || (status.status !== "ready" && status.status !== "running")) return;
             if (!dockerSnapshot) return row;
-            const receiptBudget = remainingMs - (io.now() - readStarted);
+            const receiptBudget = readBudget();
             if (receiptBudget <= 0) return;
             const receipt = await request<LaunchSandbox & { status: string }>(
               "docker/sandboxes/get",
               { org: dockerSnapshot.orgId, sandboxId: row.id },
-              Math.min(5_000, receiptBudget),
+              receiptBudget,
             ).catch(() => undefined);
             if (!receipt) return;
             if (receipt.id !== row.id || receipt.provider !== provider || !matchesSnapshot(receipt, dockerSnapshot))

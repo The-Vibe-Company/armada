@@ -205,6 +205,7 @@ for (const mode of [
     const dockerLaunchScenario = mode.startsWith("docker_launch_");
     let dockerLaunchKey: string | undefined;
     let dockerInventoryReads = 0;
+    let snapshotStatusReads = 0;
     const modalLaunchScenario = mode.startsWith("modal_launch_");
     const ordinaryDockerId = "30000000-0000-4000-8000-000000000005";
     const ordinaryModalId = "30000000-0000-4000-8000-000000000004";
@@ -1182,6 +1183,10 @@ for (const mode of [
               result = { exitCode: 0, timedOut: false, stdout: "PARITY_EXEC_OK" };
               break;
             case "sandbox/status":
+              if (mode === "snapshot_lost_receipt" && p === "docker" && snapshotStatusReads++ === 0) {
+                result = { id: sandboxId(p), provider: p, status: "starting" };
+                break;
+              }
               if (mode.startsWith("idle_")) {
                 const n = (idleReads.get(p) ?? 0) + 1;
                 idleReads.set(p, n);
@@ -1824,7 +1829,7 @@ for (const mode of [
                   step: "parity_docker_snapshot_launch",
                   provider: "docker",
                   pass: true,
-                  elapsedMs: 1_500,
+                  elapsedMs: 2_500,
                 }),
               );
             } else {
