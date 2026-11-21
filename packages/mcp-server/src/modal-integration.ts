@@ -7,6 +7,7 @@ import {
   EncryptionKeyError,
   type ModalBinding,
   type Provider,
+  ProviderError,
   type ProviderTarget,
   parseModalTokenPair,
   resolveModalTokens,
@@ -45,6 +46,7 @@ import { diagnosticSandboxId } from "./provider-sandbox-target.ts";
 import { observeProvider, observeProviderCall } from "./request-observability.ts";
 import { measureProviderPhase } from "./request-timing.ts";
 import { createRuntimeServing } from "./runtime-serving.ts";
+import { STRICT_NATIVE_DRAIN_STOP } from "./sandbox-lifecycle.ts";
 
 export type { ModalManagementAuthority } from "@armada/provider-modal";
 export const MODAL_INGEST_PATH = "/api/internal/modal/events";
@@ -273,15 +275,25 @@ export async function createModalIntegration(options: {
       ingestUrl,
       artifact,
       ...(options.resumeRefused ? { resumeRefused: options.resumeRefused } : {}),
-      ...(options.beforeResume
-        ? {
-            beforeResume: (provider: Provider, sandboxId: string) =>
-              options.beforeResume!(provider, sandboxId, {
-                userId: context.caller.userId,
-                orgId: context.target.orgId,
-              }),
-          }
-        : {}),
+      async beforeResume(provider, sandboxId) {
+        const blocked = await options.sql.query(
+          `select 1 from public.sandboxes s
+           where s.org_id=$1 and s.provider='modal' and s.provider_sandbox_id=$2
+             and (s.native_drain_pending or ${STRICT_NATIVE_DRAIN_STOP})`,
+          [scope.orgId, sandboxId],
+        );
+        if (blocked.rows.length)
+          throw new ProviderError({
+            provider: "modal",
+            code: "conflict",
+            message: "Native drain has reserved this sandbox for preservation and deletion.",
+            retryable: false,
+          });
+        await options.beforeResume?.(provider, sandboxId, {
+          userId: context.caller.userId,
+          orgId: scope.orgId,
+        });
+      },
       ...(options.beforePrompt
         ? {
             beforePrompt: (provider, sandboxId) =>
