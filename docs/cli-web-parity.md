@@ -10,9 +10,9 @@ Commands below start with `armada`. Select an organization with `login --org NAM
 |---|---|---|
 | Sign in / local sign out | Sign-in page and logout | `login [--url URL]`, `logout`; email links/codes and enabled social providers |
 | Account identity / session invalidation | Signed-in account and logout | `account status`, `account logout` invalidates the current login session, then clears local auth |
-| Organizations and members | Organization selection and admin management | `org create/list/use/current`, `org members list/add/remove/role` |
-| Personal and org credentials | Write-only model/hosting forms; org writes require admin | `creds list`, `creds set KIND`, `creds remove ACCOUNT_UUID`; legacy `creds rm KIND` only when unambiguous; values from stdin or `--file` |
-| Modal credentials | Separate token ID and token-secret fields, stored together | `creds set modal --file /secure/modal-token.json`; canonical JSON uses `token_id` and `token_secret` |
+| Organizations and members | Organization selection and admin management | `org create/list`, `login --org NAME\|UUID`, `status --setup`, `org members list/add/remove/role` |
+| Personal and org credentials | Write-only model/hosting forms; org writes require admin | `account ls`, `account add KIND`, `account rm ACCOUNT_UUID`; legacy `account rm --kind KIND` only when unambiguous; values from stdin or `--file` |
+| Modal credentials | Separate token ID and token-secret fields, stored together | `account add modal --file /secure/modal-token.json`; canonical JSON uses `token_id` and `token_secret` |
 | Service tokens | Token management | `token create/ls/revoke`; optional organization scope |
 | GitHub connection | Connect, reconnect, disconnect and installation settings | `account ls github`, `account login github`, `account rm github`, `account add github`; authorization waits for its own completion. Manage existing installations in GitHub settings. |
 | Snapshot list and identity | Separate Boat/Modal rows under private/shared sections | `snapshot ls [--provider boat\|modal] [--json]`; JSON includes safe `id` and `orgId` |
@@ -37,7 +37,7 @@ See [sandbox list and JSON output](cli-web-parity-556.md) for filter limits, tot
 
 ## Model accounts and limits
 
-Use `armada creds presets --json` to discover named model connections shared with
+Use `armada account ls --presets --json` to discover named model connections shared with
 the dashboard. Morph is a model-account kind, not a compute provider; one account
 supports Claude Code, Codex and OpenCode on supported runtime-backed placements.
 Select an account explicitly with `--credential-id ACCOUNT_UUID` at launch, or
@@ -49,9 +49,9 @@ do not count. A busy selected account refuses admission rather than silently
 switching billing. Lowering a cap leaves existing running agents alone.
 
 ```sh
-armada creds connect morph --name shared --file /private/morph-key --max-agents 2
-armada creds limits ACCOUNT_UUID --max-agents 2
-armada creds limits ACCOUNT_UUID --unlimited
+armada account add --preset morph --name shared --file /private/morph-key --max-agents 2
+armada account limits ACCOUNT_UUID --max-agents 2
+armada account limits ACCOUNT_UUID --unlimited
 ```
 
 These account caps are distinct from snapshot build capacity and Docker host

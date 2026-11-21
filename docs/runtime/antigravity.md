@@ -1,12 +1,11 @@
 # Antigravity runtime artifact
 
 Armada pins the Google Antigravity CLI **1.5.13** Linux glibc tarballs for x64 and arm64.
-Both archives are published by SHA-256 to the Armada runtime artifact store.
-Docker and Modal prewarm their shared cache from a separate manifest
-projection. Antigravity is served on demand and omitted from that projection.
-Preparation verifies the archive before extracting the executable and checks the
-executable's own SHA-256 and length on every cache hit. Launch integration is
-tracked in #3674.
+On Modal and Docker, the runtime downloads the tarball directly from the Google
+release URL in the pin when it first prepares Antigravity. Cold starts need
+HTTPS access to `storage.googleapis.com`. The runtime checks the tarball's SHA-256
+and length before extracting it, then verifies the executable on every cache hit.
+The official sandbox image and Armada runtime artifact store omit these tarballs.
 
 ## Bump the pin
 

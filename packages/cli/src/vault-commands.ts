@@ -169,12 +169,14 @@ async function members(argv: readonly string[], io: VaultIo): Promise<number> {
   }
 }
 
-export async function credsCommand(argv: readonly string[], io: VaultIo): Promise<number> {
-  const [sub, ...rest] = argv;
-  const priceOptions = ["--price-model", "--price-input", "--price-cached-input", "--price-output"];
-  const args = parseArgs(
-    rest,
+const priceOptions = ["--price-model", "--price-input", "--price-cached-input", "--price-output"];
+
+export function parseAccountArgs(argv: readonly string[]) {
+  return parseArgs(
+    argv,
     [
+      "--preset",
+      "--kind",
       "--max-agents",
       "--id",
       "--expected-version",
@@ -184,25 +186,36 @@ export async function credsCommand(argv: readonly string[], io: VaultIo): Promis
       "--endpoint-auth",
       ...priceOptions,
     ],
-    ["--unlimited"],
+    ["--unlimited", "--presets"],
   );
+}
+
+export async function modelAccountCommand(
+  sub: string | undefined,
+  args: ReturnType<typeof parseArgs>,
+  io: VaultIo,
+): Promise<number> {
   const org = single(args, "--org");
   const scope = org === undefined ? "user" : "org";
   const maxAgents = agentLimit(args);
+  if (flag(args, "--presets") && sub !== "ls") throw usage("--presets requires account ls.");
+  if (args.options.has("--preset") && sub !== "add") throw usage("--preset requires account add.");
+  if (args.options.has("--kind") && sub !== "rm") throw usage("--kind requires account rm.");
   if (
-    sub !== "set" &&
-    sub !== "connect" &&
+    sub !== "add" &&
     (args.options.has("--base-url") ||
       args.options.has("--models") ||
       args.options.has("--api-version") ||
       args.options.has("--endpoint-auth") ||
       priceOptions.some((name) => args.options.has(name)))
   )
-    throw usage("Endpoint options are only supported by creds set openai, anthropic or opencode.");
-  switch (sub) {
-    case "presets": {
-      expect(args.positionals, 0, "armada creds presets [--json]");
-      if ([...args.options.keys()].some((key) => key !== "--json")) throw usage("Presets accepts only --json.");
+    throw usage("Endpoint options are only supported by account add openai, anthropic or opencode.");
+  const presetId = single(args, "--preset");
+  switch (true) {
+    case sub === "ls" && flag(args, "--presets"): {
+      expect(args.positionals, 0, "armada account ls --presets [--json]");
+      if ([...args.options.keys()].some((key) => key !== "--json" && key !== "--presets"))
+        throw usage("Account preset discovery accepts only --presets and --json.");
       const presets = CONNECTION_PRESETS.map((preset) => ({
         ...preset,
         harness: harnessForCredential(preset.kind),
@@ -215,11 +228,12 @@ export async function credsCommand(argv: readonly string[], io: VaultIo): Promis
       );
       return 0;
     }
-    case "connect": {
-      const id = one(args.positionals, "armada creds connect <preset> --name NAME [--file PATH] [--org NAME]");
-      const preset = connectionPreset(id);
-      if (!preset) throw usage("Choose a provider from armada creds presets.");
+    case sub === "add" && presetId !== undefined: {
+      expect(args.positionals, 0, "armada account add --preset <id> --name NAME [--file PATH] [--org NAME]");
+      const preset = connectionPreset(presetId);
+      if (!preset) throw usage("Choose a provider from armada account ls --presets.");
       const allowed = [
+        "--preset",
         "--name",
         "--org",
         "--file",
@@ -231,7 +245,9 @@ export async function credsCommand(argv: readonly string[], io: VaultIo): Promis
         "--unlimited",
       ];
       if ([...args.options.keys()].some((key) => !allowed.includes(key)))
-        throw usage("Connect accepts a provider preset, name, key file, org, models and address options only.");
+        throw usage(
+          "Account add with --preset accepts a provider preset, name, key file, org, models and address options only.",
+        );
       const name = single(args, "--name");
       if (!name?.trim()) throw usage("Give this account a --name.");
       const baseUrl = single(args, "--base-url");
@@ -274,12 +290,12 @@ export async function credsCommand(argv: readonly string[], io: VaultIo): Promis
       );
       return 0;
     }
-    case "login":
-    case "import": {
+    case sub === "login":
+    case sub === "import": {
       const [harness] = expect(
         args.positionals,
         1,
-        "armada creds import claude|codex --name <name> [--file <path>] [--org <name>]",
+        `armada account ${sub} ${sub === "login" ? "codex" : "claude|codex"} --name <name> [--org <name>]`,
       );
       if (harness !== "claude" && harness !== "codex") throw usage("Native import supports claude or codex.");
       const id = single(args, "--id");
@@ -291,7 +307,7 @@ export async function credsCommand(argv: readonly string[], io: VaultIo): Promis
       if (!id && !name?.trim()) throw usage("Creating an account requires --name.");
       if (sub === "login" && harness !== "codex")
         throw usage(
-          "For Claude, run claude setup-token locally and import its token securely with armada creds import claude.",
+          "For Claude, run claude setup-token locally and import its token securely with armada account import claude.",
         );
       const kind = harness === "claude" ? "claude_oauth" : "codex_auth";
       let raw: string;
@@ -332,10 +348,10 @@ export async function credsCommand(argv: readonly string[], io: VaultIo): Promis
       io.auth.out("Imported native credential account, encrypted. Allowance may be unavailable.\n");
       return 0;
     }
-    case "test": {
+    case sub === "test": {
       const id = one(
         args.positionals,
-        "armada creds test <sandbox-id> --model <deployment-model> [--org <name>] [--json]",
+        "armada account test <sandbox-id> --model <deployment-model> [--org <name>] [--json]",
       );
       if ([...args.options.keys()].some((key) => !["--org", "--model", "--json"].includes(key)))
         throw usage("Connection tests accept only --model, --org and --json; keys and URLs are never accepted.");
@@ -376,8 +392,8 @@ export async function credsCommand(argv: readonly string[], io: VaultIo): Promis
         );
       return result.ok ? 0 : 1;
     }
-    case "set": {
-      const [name] = expect(args.positionals, 1, "armada creds set <kind> [--org <name>] [--file <path>]");
+    case sub === "add": {
+      const [name] = expect(args.positionals, 1, "armada account add <kind> [--org <name>] [--file <path>]");
       const kind = parseCredentialKind(name ?? "");
       const baseUrl = single(args, "--base-url");
       const apiVersion = single(args, "--api-version");
@@ -385,7 +401,7 @@ export async function credsCommand(argv: readonly string[], io: VaultIo): Promis
       if ((kind === "openai" || kind === "opencode") && baseUrl !== undefined && !rawModels?.trim())
         throw usage("Custom Codex/OpenCode endpoints require --models with exact deployment/model IDs.");
       if (rawModels !== undefined && ((kind !== "openai" && kind !== "opencode") || baseUrl === undefined))
-        throw usage("--models requires creds set openai or opencode --base-url.");
+        throw usage("--models requires account add openai or opencode --base-url.");
       let models: string[] | undefined;
       if (kind === "openai" && rawModels !== undefined) {
         try {
@@ -397,7 +413,7 @@ export async function credsCommand(argv: readonly string[], io: VaultIo): Promis
       const endpointAuth = single(args, "--endpoint-auth");
       if (apiVersion !== undefined && baseUrl === undefined) throw usage("--api-version requires --base-url.");
       if (endpointAuth !== undefined && (baseUrl === undefined || kind !== "anthropic"))
-        throw usage("--endpoint-auth requires creds set anthropic --base-url.");
+        throw usage("--endpoint-auth requires account add anthropic --base-url.");
       if (apiVersion !== undefined && kind !== "openai") throw usage("--api-version supports openai (Codex) only.");
       if (baseUrl !== undefined && kind !== "openai" && kind !== "anthropic" && kind !== "opencode")
         throw usage("--base-url supports openai (Codex), anthropic (Claude Code) or opencode.");
@@ -432,7 +448,7 @@ export async function credsCommand(argv: readonly string[], io: VaultIo): Promis
       }
       let prices: ReturnType<typeof parseModelPriceOverrides> | undefined;
       if (priceOptions.some((name) => args.options.has(name))) {
-        if (!endpoint) throw usage("Price options require creds set openai, anthropic or opencode --base-url.");
+        if (!endpoint) throw usage("Price options require account add openai, anthropic or opencode --base-url.");
         const model = single(args, "--price-model");
         const input = single(args, "--price-input");
         const output = single(args, "--price-output");
@@ -492,8 +508,8 @@ export async function credsCommand(argv: readonly string[], io: VaultIo): Promis
       );
       return 0;
     }
-    case "list": {
-      expect(args.positionals, 0, "armada creds list [--org <name>]");
+    case sub === "ls": {
+      expect(args.positionals, 0, "armada account ls [--org <name>]");
       const listed = await control<{
         user: ListedCredential[];
         orgs: (Omit<OrgCredentials, "credentials"> & { credentials: ListedCredential[] })[];
@@ -507,8 +523,8 @@ export async function credsCommand(argv: readonly string[], io: VaultIo): Promis
       io.auth.out(`${out.join("\n")}\n`);
       return 0;
     }
-    case "limits": {
-      const id = one(args.positionals, "armada creds limits <account-id> --max-agents N | --unlimited");
+    case sub === "limits": {
+      const id = one(args.positionals, "armada account limits <account-id> --max-agents N | --unlimited");
       if (maxAgents === undefined) throw usage("Choose --max-agents N or --unlimited.");
       const model = single(args, "--model");
       const result = await control(io.auth, "creds/accounts/limits", {
@@ -521,21 +537,18 @@ export async function credsCommand(argv: readonly string[], io: VaultIo): Promis
       io.auth.out(`${JSON.stringify(result)}\n`);
       return 0;
     }
-    case "rename":
-    case "default":
-    case "remove": {
-      const [id, name] = expect(
-        args.positionals,
-        sub === "rename" ? 2 : 1,
-        `armada creds ${sub} <id>${sub === "rename" ? " <name>" : ""}`,
-      );
-      const result = await control(io.auth, `creds/accounts/${sub}`, { scope, org, id, name });
-      io.auth.out(`${JSON.stringify(result)}\n`);
-      return 0;
-    }
-    case "rm": {
-      const [name] = expect(args.positionals, 1, "armada creds rm <kind> [--org <name>]");
-      const kind = parseCredentialKind(name ?? "");
+    case sub === "default":
+    case sub === "rm": {
+      const kindInput = single(args, "--kind");
+      if (kindInput === undefined) {
+        const id = one(args.positionals, `armada account ${sub} <id>`);
+        const action = sub === "rm" ? "remove" : "default";
+        const result = await control(io.auth, `creds/accounts/${action}`, { scope, org, id });
+        io.auth.out(`${JSON.stringify(result)}\n`);
+        return 0;
+      }
+      expect(args.positionals, 0, "armada account rm --kind <kind> [--org <name>]");
+      const kind = parseCredentialKind(kindInput);
       await control(io.auth, "creds/rm", { scope, org, kind: credentialName(kind) });
       if (flag(args, "--json")) {
         io.auth.out(`${JSON.stringify({ ok: true })}\n`);
@@ -545,9 +558,7 @@ export async function credsCommand(argv: readonly string[], io: VaultIo): Promis
       return 0;
     }
     default:
-      throw usage(
-        "Run armada creds presets, connect, login, import, set, list, limits, rename, default, remove or rm.",
-      );
+      throw usage("See armada account --help for account commands.");
   }
 }
 

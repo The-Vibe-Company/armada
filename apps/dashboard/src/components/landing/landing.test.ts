@@ -44,6 +44,14 @@ async function help() {
         usage.set(name, `${usage.get(name) ?? ""}${block}\n`);
       }
   }
+  let accountAdd = "";
+  expect(
+    await run(["account", "add", "--help"], {
+      out: (chunk) => (accountAdd += chunk),
+      err: () => undefined,
+    }),
+  ).toBe(0);
+  if (usage.has("account")) usage.set("account add", accountAdd);
   return usage;
 }
 
@@ -55,7 +63,7 @@ describe("what the landing says", () => {
     expect(shown.length).toBeGreaterThan(5);
     const unknown = shown.flatMap((line) => {
       const [, first = "", second = ""] = line.split(" ");
-      const command = first === "snapshot" ? `snapshot ${second}` : first;
+      const command = first === "snapshot" || first === "account" ? `${first} ${second}` : first;
       const own = usage.get(command);
       if (own === undefined) return [`${line}: no command ${command}`];
       const flags = line.match(/(?<=\s)--[a-z][a-z-]*/g) ?? [];

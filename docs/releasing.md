@@ -199,7 +199,7 @@ count. Existing account caps also apply to smoke admission: refusal is not a
 provider pass, and the runner must not silently choose a different billing
 account. Do not raise limits or reset bindings merely to bypass a failed smoke.
 For deliberate owner-authorized account configuration, use
-`armada creds limits ACCOUNT_UUID --max-agents N` or `--unlimited`, as documented
+`armada account limits ACCOUNT_UUID --max-agents N` or `--unlimited`, as documented
 in [model accounts](named-model-credentials.md).
 
 These are existing product constraints, not new release inputs or a requirement

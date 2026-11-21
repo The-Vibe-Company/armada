@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
+import { accountCommand } from "../src/account-commands.ts";
 import { productionAuthIo } from "../src/auth-commands.ts";
-import { credsCommand } from "../src/vault-commands.ts";
 
 test.each([
   ["claude", "claude-oauth", "synthetic-model-only-token", ""],
@@ -23,7 +23,7 @@ test.each([
     return Response.json({ account: { id: "account-id", kind, name: "Personal" } });
   }) as typeof fetch;
   expect(
-    await credsCommand(["import", harness, "--name", "Personal", ...(org ? ["--org", org] : [])], {
+    await accountCommand(["import", harness, "--name", "Personal", ...(org ? ["--org", org] : [])], {
       auth,
       readFile: async () => {
         throw Error("not used");
@@ -51,7 +51,7 @@ test("native import requires a version when replacing an existing account before
   let reads = 0;
   const auth = productionAuthIo({ out: () => {}, err: () => {} }, {});
   await expect(
-    credsCommand(["import", "codex", "--id", "account-id"], {
+    accountCommand(["import", "codex", "--id", "account-id"], {
       auth,
       readFile: async () => "",
       readStdin: async () => {
@@ -71,7 +71,7 @@ test("incomplete native Codex authentication never reaches the Armada publicatio
     return Response.json({});
   };
   await expect(
-    credsCommand(["import", "codex", "--name", "Rejected", "--org", "staging"], {
+    accountCommand(["import", "codex", "--name", "Rejected", "--org", "staging"], {
       auth,
       readFile: async () => "",
       readStdin: async () =>

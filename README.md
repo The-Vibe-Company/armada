@@ -86,13 +86,13 @@ armada org setup --org acme
 **3. Store your model credentials.** Your own credentials win over the organization's. Values are encrypted and never shown again.
 
 ```sh
-printenv CLAUDE_CODE_OAUTH_TOKEN | armada creds set claude-oauth   # Claude Code (from `claude setup-token`); or kind `anthropic`
-armada creds set codex-auth --file ~/.codex/auth.json              # Codex; or kind `openai`
-armada creds list
+printenv CLAUDE_CODE_OAUTH_TOKEN | armada account add claude-oauth   # Claude Code (from `claude setup-token`); or kind `anthropic`
+armada account add codex-auth --file ~/.codex/auth.json              # Codex; or kind `openai`
+armada account ls
 ```
 
 Morph is another model-account option for Claude Code, Codex and OpenCode:
-`armada creds connect morph --name shared --file /private/morph-key`.
+`armada account add --preset morph --name shared --file /private/morph-key`.
 Select its account ID with `--credential-id ACCOUNT_UUID` and a Morph model such as
 `--model morph-kimik31`; use Modal, Docker or runtime-backed Boat, not native Boat.
 See [Morph accounts](docs/morph.md) for supported models and restrictions.
@@ -100,7 +100,7 @@ See [Morph accounts](docs/morph.md) for supported models and restrictions.
 Model accounts have a per-account simultaneous-agent limit across sandbox providers.
 Morph defaults to **2**; other accounts default to unlimited. Set `--max-agents N`
 or `--unlimited` when adding an account, or change it with
-`armada creds limits ACCOUNT_UUID --max-agents 2`. Starts beyond the cap are refused
+`armada account limits ACCOUNT_UUID --max-agents 2`. Starts beyond the cap are refused
 before allocating a machine; lowering it does not stop existing agents.
 Follow-up sends to existing sandboxes can return a durable queued prompt receipt
 when the account is full; they dispatch FIFO per account after capacity frees.

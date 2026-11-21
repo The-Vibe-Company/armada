@@ -5,7 +5,6 @@ import api from "./api.ts";
 import { secrets, vars } from "./application-vault.ts";
 import type { Command, UsageGroup } from "./command.ts";
 import completion from "./completion.ts";
-import creds from "./creds.ts";
 import detail from "./detail.ts";
 import extend from "./extend.ts";
 import host from "./host.ts";
@@ -58,7 +57,6 @@ export const commands: readonly Command[] = [
   mcp,
   bindCredential,
   snapshot,
-  creds,
 ];
 
 const byName = new Map(commands.map((command) => [command.name, command]));

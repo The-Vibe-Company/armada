@@ -13,8 +13,8 @@ small billable request per deployment before storing the account. Read the
 API key from stdin or a private file.
 
 ```sh
-armada creds set openai --name foundry --base-url 'https://RESOURCE.services.ai.azure.com/api/projects/PROJECT/openai/v1/responses' --models my-deployment --file /path/to/private-key
-armada creds list --json
+armada account add openai --name foundry --base-url 'https://RESOURCE.services.ai.azure.com/api/projects/PROJECT/openai/v1/responses' --models my-deployment --file /path/to/private-key
+armada account ls --json
 ```
 
 For services that require an API version, pass `--api-version VERSION`. Leave
@@ -29,7 +29,7 @@ omit `--base-url`. Include the deployment names in the `models` array and keep
 the key out of command arguments.
 
 ```sh
-armada creds set openai --name foundry --file /path/to/private-connection.json
+armada account add openai --name foundry --file /path/to/private-connection.json
 ```
 
 ```json

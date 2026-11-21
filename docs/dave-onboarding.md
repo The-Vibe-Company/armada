@@ -154,9 +154,9 @@ in a private file outside your repository (for example `~/.config/armada/model-k
 `600`), then use the matching command:
 
 ```sh
-armada creds set anthropic --name "Claude API" --file ~/.config/armada/model-key
+armada account add anthropic --name "Claude API" --file ~/.config/armada/model-key
 # OR, for an OpenAI API key:
-armada creds set openai --name "OpenAI API" --file ~/.config/armada/model-key
+armada account add openai --name "OpenAI API" --file ~/.config/armada/model-key
 ```
 
 API keys use the key's provider billing account; subscription credentials use the
@@ -169,15 +169,15 @@ The Boat/Modal machine is billed separately through the connected sandbox provid
 For Codex, keep the OpenAI API account above and add an eligible ChatGPT account:
 
 ```sh
-armada creds login codex --name "Personal ChatGPT"
-armada creds list
+armada account login codex --name "Personal ChatGPT"
+armada account ls
 ```
 
 Approve the native Codex device login in your browser and **keep the terminal/session
 open until Armada confirms import**. This creates another account; it does not replace
 the API account or automatically switch its billing. If native login is unavailable,
 import an existing private Codex login file instead (not in addition to a successful
-import): `armada creds import codex --name "Personal ChatGPT" --file ~/.codex/auth.json`.
+import): `armada account import codex --name "Personal ChatGPT" --file ~/.codex/auth.json`.
 See [native subscription authentication](native-subscription-auth.md) for prerequisites,
 file-based login and recovery.
 
@@ -197,15 +197,15 @@ For Claude, keep "Claude API" and run `claude setup-token` locally. Save the
 output token alone in a private file outside your repository, mode `600`, then:
 
 ```sh
-armada creds import claude --name "Personal Claude" --file ~/.config/armada/claude-token
-armada creds list
+armada account import claude --name "Personal Claude" --file ~/.config/armada/claude-token
+armada account ls
 ```
 
-There is no `armada creds login claude` device flow. Launch with `--agent claude`
+There is no `armada account login claude` device flow. Launch with `--agent claude`
 and `--credential-id <claude-api-account-uuid>` or `<claude-subscription-account-uuid>`
 to choose the API or eligible Claude subscription account, respectively.
 
-Optionally run `armada creds default <chosen-account-uuid>` to choose the default
+Optionally run `armada account default <chosen-account-uuid>` to choose the default
 for future launches of that agent. Without an explicit ID, your personal compatible
 accounts take precedence over the org's; within that scope, a default wins, or a sole
 compatible account is used. Multiple compatible accounts without one default require
@@ -217,7 +217,7 @@ These examples create personal accounts. Org admins can add `--org my-team` to a
 creation/import, listing and default commands to manage org accounts instead; passing
 `--org` to launch alone does not override personal-account precedence.
 
-**Previously used unnamed commands?** Legacy `creds set openai`, `anthropic`,
+**Previously used unnamed commands?** Legacy `account add openai`, `anthropic`,
 `codex-auth` or `claude-oauth` without `--name` update the sole account of that
 kind in that scope, or create one if absent; ambiguous multiple accounts are rejected.
 Different kinds coexist rather than replace each other. In an all-legacy "Default"
@@ -235,9 +235,9 @@ Morph is a model account, not a sandbox provider. In the dashboard use
 **What agents have → Models → Add account → Morph**, or store its API key from a private file:
 
 ```sh
-armada creds connect morph --name shared --file ~/.config/armada/morph-key
-armada creds list
-armada creds limits ACCOUNT_UUID --max-agents 2
+armada account add --preset morph --name shared --file ~/.config/armada/morph-key
+armada account ls
+armada account limits ACCOUNT_UUID --max-agents 2
 ```
 
 Replace `ACCOUNT_UUID` with the ID returned by list. The same Morph account supports
@@ -253,8 +253,8 @@ and runtime-backed Boat; native Boat Claude gateways are refused. See
 
 Every model account can cap agents running simultaneously across sandbox providers.
 Morph defaults to **2** and other account kinds to unlimited. Set `--max-agents N`
-or `--unlimited` on `creds connect`, `import`, `login` or `set`; use
-`creds limits ACCOUNT_UUID --max-agents N` (or `--unlimited`) to change an existing
+or `--unlimited` on `account add`, `account import`, or `account login`; use
+`account limits ACCOUNT_UUID --max-agents N` (or `--unlimited`) to change an existing
 account. Org accounts require an org admin and `--org my-team`.
 Stopped and idle-paused sandboxes do not count. Starts beyond the cap are refused
 before allocation, and lowering a cap does not stop existing running agents.
@@ -512,7 +512,7 @@ Do not paste session files or tokens into diagnostics or shared logs.
 
 ### Credential command discovery
 
-`armada creds --help` (or `-h`) shows a focused index of native subscription
+`armada account --help` (or `-h`) shows a focused index of native subscription
 accounts, preset/custom API connections and account metadata operations.
 Use leaf help for exact flags. Model/provider credentials are separate from
 application vars/secrets. List returns metadata/IDs, not credential values;

@@ -259,11 +259,11 @@ private func json(_ request: URLRequest) throws -> [String: Any] {
     }
     #expect(invalid.detail == "That reasoning effort is not available for model-b. Use one of: low, high.")
     // Status and code pairs as the control API answers them (VaultError STATUS, ProviderError).
-    guard case .refused(let missing) = classify(404, #"{"error":{"code":"missing_credential","message":"Run 'armada creds set claude-oauth'."}}"#) else {
+    guard case .refused(let missing) = classify(404, #"{"error":{"code":"missing_credential","message":"Run 'armada account add claude-oauth'."}}"#) else {
         Issue.record("Expected a refusal"); return
     }
     #expect(missing.title == "No model account for this agent")
-    #expect(missing.detail == "Run 'armada creds set claude-oauth'.")
+    #expect(missing.detail == "Run 'armada account add claude-oauth'.")
     // Credential-resolution messages are authored by Armada, not provider or init output.
     // A provider credential failure must not be explained as merely a missing model account.
     let credentialCases: [(String, String, String?)] = [

@@ -8,15 +8,15 @@ user authorization are distinct: ensure the App can access the requested repo.
 `armada api github/refresh '{"id":"SANDBOX"}'` refreshes sandbox GitHub access after connection
 repair; it is not a model-account refresh or a way around repository permissions.
 
-Inspect `armada creds list`. Model credentials resolve personal over org defaults;
+Inspect `armada account ls`. Model credentials resolve personal over org defaults;
 select an account explicitly with `armada new GOLDEN --provider boat --agent codex --credential-id ACCOUNT`.
-For native subscription login use `armada creds login codex --name ACCOUNT_NAME`;
-Claude/native imports use `armada creds import claude --name ACCOUNT_NAME --file TOKEN_FILE`.
-API credentials use `armada creds set openai --file KEY_FILE`.
+For native subscription login use `armada account login codex --name ACCOUNT_NAME`;
+Claude/native imports use `armada account import claude --name ACCOUNT_NAME --file TOKEN_FILE`.
+API credentials use `armada account add openai --file KEY_FILE`.
 Values arrive only via stdin or files, never argv. Files should be locally secured;
 do not read them into agent output. Org credential mutation needs appropriate
 admin rights. Skillpack is a credential kind:
-`armada creds set skillpack --file KEY_FILE`. Use the credential with access to
+`armada account add skillpack --file KEY_FILE`. Use the credential with access to
 the exact private skill versions you intend to pin.
 
 ## Goldens

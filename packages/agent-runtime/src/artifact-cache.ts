@@ -8,6 +8,9 @@ export interface RuntimeArtifact {
   sha256: string;
   bytes: number;
 }
+type ArtifactCache = { cacheDir: string; artifact: RuntimeArtifact; sharedDir?: string };
+export type ArtifactFetcher = (url: URL, options: RequestInit) => Promise<Response>;
+
 const MAX_BYTES = 512 * 1024 * 1024;
 
 /**
@@ -50,10 +53,9 @@ async function copyShared(sharedDir: string, artifact: RuntimeArtifact, temporar
 
 /** Content-addressed cache; never changes the running executable or follows a mutable version alias. */
 export async function installRuntimeArtifact(
-  input: { serverUrl: string; cacheDir: string; artifact: RuntimeArtifact; sharedDir?: string },
-  fetcher: (url: URL, options: RequestInit) => Promise<Response> = fetch,
+  input: ArtifactCache & { serverUrl: string },
+  fetcher: ArtifactFetcher = fetch,
 ): Promise<string> {
-  const { artifact, cacheDir } = input;
   const server = new URL(input.serverUrl);
   if (
     server.protocol !== "https:" ||
@@ -61,7 +63,24 @@ export async function installRuntimeArtifact(
     server.password ||
     server.search ||
     server.hash ||
-    server.pathname !== "/" ||
+    server.pathname !== "/"
+  )
+    throw Error("invalid_runtime_artifact");
+  return installRuntimeArtifactFromUrl(
+    new URL(`/api/runtime/artifacts/${input.artifact.sha256}`, server),
+    input,
+    fetcher,
+  );
+}
+
+export async function installRuntimeArtifactFromUrl(url: URL, input: ArtifactCache, fetcher: ArtifactFetcher = fetch) {
+  const { artifact, cacheDir } = input;
+  if (
+    url.protocol !== "https:" ||
+    url.username ||
+    url.password ||
+    url.search ||
+    url.hash ||
     !isAbsolute(cacheDir) ||
     (input.sharedDir !== undefined && !isAbsolute(input.sharedDir)) ||
     !/^[a-f0-9]{64}$/.test(artifact.sha256) ||
@@ -102,7 +121,7 @@ export async function installRuntimeArtifact(
   await rm(temporary, { force: true });
   let step = "download";
   try {
-    const response = await fetcher(new URL(`/api/runtime/artifacts/${artifact.sha256}`, server), {
+    const response = await fetcher(url, {
       redirect: "error",
       credentials: "omit",
       signal: AbortSignal.timeout(120000),

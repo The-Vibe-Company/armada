@@ -135,7 +135,7 @@ test("URL/JSON MCP creation use canonical authenticated HTTP bodies and persiste
     });
     const beforeInvalid = requests.length;
     for (const args of [
-      ["creds", "list", "--scope", "org"],
+      ["account", "ls", "--scope", "org"],
       ["mcp", "add", "Name", "https://mcp.example.com", "--file", "definition.json"],
       ["mcp", "add", "Name", "https://user:private@host.example/mcp"],
       ["mcp", "add", "Name", "https://host.example/mcp?access_token=private"],

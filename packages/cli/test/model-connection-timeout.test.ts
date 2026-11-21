@@ -23,7 +23,7 @@ test("CLI receives the runtime's 15-second outcome rather than timing out at the
     ).rejects.toThrow();
     expect(
       await run(
-        ["creds", "test", "sandbox", "--model", "deployment", "--json"],
+        ["account", "test", "sandbox", "--model", "deployment", "--json"],
         { out: auth.out, err: auth.err },
         { auth },
       ),

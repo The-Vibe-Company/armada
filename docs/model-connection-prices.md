@@ -1,11 +1,11 @@
 # Prices on custom model connections
 
 Codex and Claude custom connections accept exact per-model prices through
-`armada creds set`. Rates are decimal **USD per million tokens**, not a total
+`armada account add`. Rates are decimal **USD per million tokens**, not a total
 bill. Use the exact model ID the harness reports (for Azure, the deployment ID):
 
 ```sh
-armada creds set openai --name foundry --base-url 'https://RESOURCE.services.ai.azure.com/api/projects/PROJECT/openai/v1/responses' \
+armada account add openai --name foundry --base-url 'https://RESOURCE.services.ai.azure.com/api/projects/PROJECT/openai/v1/responses' \
   --price-model DEPLOYMENT --price-input 2.5 --price-cached-input 0.25 --price-output 15 \
   --file /path/to/private-key
 ```
