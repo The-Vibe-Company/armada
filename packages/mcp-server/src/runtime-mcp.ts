@@ -8,9 +8,11 @@ import {
   createSqlMcpLeasePort,
   createSqlMcpRegistry,
   decryptSecret,
+  resolveLaunchConnections,
   type Sql,
   VaultError,
 } from "@armada/core/server";
+import { z } from "zod";
 import type { Caller } from "./caller.ts";
 import { createSqlData } from "./data.ts";
 import { runtimeBridgeTarget } from "./provider-runtime-admission.ts";
@@ -23,6 +25,17 @@ const deny = (): never => {
   throw new VaultError("forbidden", "Runtime MCP access is unavailable.");
 };
 const serverName = (id: string) => `armada_${id.replaceAll("-", "_")}`;
+const launchConnectionIds = z.array(z.guid()).max(MAX_MCP_CONNECTIONS);
+export const pinnedMcpConnections = z
+  .array(
+    z.object({
+      id: z.guid(),
+      version: z.number().int().positive(),
+      generation: z.number().int().positive(),
+    }),
+  )
+  .max(MAX_MCP_CONNECTIONS);
+
 type ConnectionDefinition = { command: string | null; args: string[] };
 function pinnedServer(definition: ConnectionDefinition) {
   try {
@@ -77,22 +90,31 @@ export function createRuntimeMcp(options: {
   const gatewayServer = (id: string, token: string) => httpServer(`/mcp/gateway/${id}`, token);
   const selfServer = (binding: Parameters<typeof selfFinishToken>[1]) =>
     httpServer("/api/v1/orchestrator-tools/mcp", selfFinishToken(key, binding));
-  async function connections(db: Sql, caller: Pick<Caller, "userId">, org: string, selected: string[]) {
+  async function connections(
+    db: Sql,
+    caller: Pick<Caller, "userId">,
+    org: string,
+    selected: string[],
+    lockForAdmission = false,
+  ) {
     const { rows: result } = await db.query<
       ConnectionDefinition & {
         id: string;
         transport: "http" | "sse" | "stdio";
         value_enc: Uint8Array<ArrayBuffer> | null;
         connected: boolean;
+        scope: string;
+        version: number;
+        generation: number;
       }
     >(
-      `select c.id,c.transport,c.command,c.args,
+      `select c.id,c.transport,c.command,c.args,c.scope,g.version,g.generation,
         case when c.transport='stdio' then g.value_enc end as value_enc,
         not c.disabled and public.mcp_grant_effective_status(g.status,g.revoked_at,g.refresh_consumed,g.refresh_until)='connected' as connected
       from public.mcp_connections c join public.mcp_grants g on g.connection_id=c.id
       join public.members m on m.org_id=c.org_id and m.user_id=$1
       where c.org_id=$2 and c.id=any($3::uuid[]) and (c.scope='org' or c.owner_id=$1)
-      order by c.id`,
+      order by c.id${lockForAdmission ? " for share of c,g nowait" : ""}`,
       [caller.userId, org, selected],
     );
     if (result.length !== selected.length) throw new VaultError("not_found", "No such MCP connection.");
@@ -113,7 +135,13 @@ export function createRuntimeMcp(options: {
       });
       validateConfiguration({ revision: "0".repeat(64), servers });
     }
-    return result.map(({ id, transport }) => ({ id, transport }));
+    return result.map(({ id, transport, scope, version, generation }) => ({
+      id,
+      transport,
+      scope,
+      version,
+      generation,
+    }));
   }
   async function preflight(caller: Caller, input: { org: string; connections: unknown; toolInventory?: boolean }) {
     if (!caller.orgs.some((m) => m.orgId === input.org)) return deny();
@@ -455,5 +483,47 @@ export function createRuntimeMcp(options: {
       );
     },
   };
-  return { prepare, preflight, connections: connectionLifecycle };
+  async function bindLaunch(
+    tx: Sql,
+    actor: { userId: string; orgId: string },
+    sandboxId: string,
+    visibility: "private" | "org",
+    selection:
+      | { requested: string[] | undefined }
+      | { pins: z.infer<typeof pinnedMcpConnections>; orgTemplate: boolean },
+  ) {
+    const launch = createSqlMcpLaunchPort(tx, createSqlMcpRegistry(tx, key));
+    const requested = "pins" in selection ? selection.pins.map(({ id }) => id) : selection.requested;
+    const parsed = launchConnectionIds.optional().safeParse(requested);
+    if (!parsed.success) throw new VaultError("invalid", `Select at most ${MAX_MCP_CONNECTIONS} MCP connections.`);
+    const ids = await resolveLaunchConnections(
+      parsed.data?.map((id) => id.toLowerCase()),
+      () => launch.defaults(actor, visibility),
+      async (ids) => {
+        if (ids.length > MAX_MCP_CONNECTIONS)
+          throw new VaultError("invalid", `Select at most ${MAX_MCP_CONNECTIONS} MCP connections.`);
+        if (!ids.length) return;
+        const live = await connections(tx, actor, actor.orgId, ids, true).catch((error: unknown) => {
+          const fields = error as { errno?: string; code?: string } | null;
+          if ((fields?.errno ?? fields?.code) === "55P03")
+            throw new VaultError("conflict", "A selected MCP connection is being updated. Retry the launch.");
+          throw error;
+        });
+        if ("pins" in selection) {
+          const byId = new Map(live.map((row) => [row.id, row]));
+          for (const pin of selection.pins) {
+            const row = byId.get(pin.id.toLowerCase());
+            if (
+              row?.version !== pin.version ||
+              row.generation !== pin.generation ||
+              (selection.orgTemplate && row.scope !== "org")
+            )
+              throw new VaultError("conflict", "A pinned MCP connection changed.");
+          }
+        }
+      },
+    );
+    await launch.bind(sandboxId, ids);
+  }
+  return { prepare, preflight, connections: connectionLifecycle, bindLaunch };
 }

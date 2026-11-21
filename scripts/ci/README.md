@@ -22,15 +22,18 @@ from json import dumps, loads
 from statistics import median
 from subprocess import check_output
 
-def api(path):
-    return loads(check_output(["gh", "api", path]))
+def api(path, *fields):
+    command = ["gh", "api", path, "--method", "GET"]
+    for field in fields:
+        command.extend(["-f", field])
+    return loads(check_output(command))
 
 repo = "repos/The-Vibe-Company/armada/actions"
-runs = api(f"{repo}/workflows/ci.yml/runs?event=merge_group&status=success&per_page=6")["workflow_runs"]
+runs = api(f"{repo}/workflows/ci.yml/runs", "event=merge_group", "status=success", "per_page=6")["workflow_runs"]
 assert len(runs) == 6, "Expected six green queue runs"
 samples = {}
 for run in runs:
-    jobs = api(f"{repo}/runs/{run['id']}/attempts/{run['run_attempt']}/jobs?per_page=100")["jobs"]
+    jobs = api(f"{repo}/runs/{run['id']}/attempts/{run['run_attempt']}/jobs", "per_page=100")["jobs"]
     for job in jobs:
         if not job["name"].startswith("Unit tests ("):
             continue

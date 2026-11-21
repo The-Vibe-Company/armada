@@ -16,7 +16,7 @@ import type { LaneFactory } from "../server-worker-modules.ts";
 import { sqlOver } from "../sql.ts";
 import { runtimeWakes } from "../wake-bus.ts";
 import {
-  admitModalLaunch,
+  admitModalLaunch as admitModalLaunchWithMcp,
   createModalInitialTurnJob,
   createModalLaunchCleanupJob,
   createModalLaunchJob,
@@ -276,11 +276,78 @@ test.each(["boat", "modal"] as const)("a %s reservation excludes the competing l
   expect((await db.query("select id from sandboxes")).rows).toEqual([{ id: sandbox.id }]);
 });
 
-test.each(["active secret", "revoked secret", "changed snapshot"] as const)(
+function admitModalLaunch(sql: Sql, key: string, input: ModalLaunchAdmission) {
+  const commands = createRuntimeCommands(createRuntimeEnrolments(sql, key), key);
+  const mcp = createRuntimeMcp({ sql, key, origin: "https://armada.example", commands });
+  return admitModalLaunchWithMcp(sql, key, input, mcp);
+}
+
+async function launchConnection(
+  db: Awaited<ReturnType<typeof fixture>>["db"],
+  people: Awaited<ReturnType<typeof fixture>>["people"],
+) {
+  const id = crypto.randomUUID();
+  await db.query(
+    `with definition as (
+       insert into mcp_connections(id,org_id,owner_id,scope,name,transport,url,auth_type,default_for_launch)
+       values($1,$2,$3,'personal','launch test','http','https://example.com/mcp','none',true) returning id
+     )
+     insert into mcp_grants(connection_id,status) select id,'connected' from definition`,
+    [id, people.org, people.owner],
+  );
+  return id;
+}
+
+test("ordinary Modal admission freezes defaults and honors explicit opt-out", async () => {
+  const { db, sql, people, input } = await modalAdmissionFixture();
+  const connectionId = await launchConnection(db, people);
+  const admitted = await admitModalLaunch(sql, launchEncryptionKey, input);
+  await db.query("update mcp_connections set default_for_launch=false where id=$1", [connectionId]);
+  const disconnected = await launchConnection(db, people);
+  await db.query("update mcp_grants set status='not_connected' where connection_id=$1", [disconnected]);
+  expect(await admitModalLaunch(sql, launchEncryptionKey, input)).toEqual(admitted);
+  await admitModalLaunch(sql, launchEncryptionKey, {
+    ...input,
+    request: { key: "no-connections", digest: "explicit-empty" },
+    connections: [],
+  });
+  expect((await db.query("select sandbox_id,connection_id from mcp_bindings")).rows).toEqual([
+    { sandbox_id: admitted.sandbox.id, connection_id: connectionId },
+  ]);
+});
+
+test("Modal admission rolls back and returns a conflict when a selected MCP row is locked", async () => {
+  const { db, sql, people, input } = await modalAdmissionFixture();
+  await launchConnection(db, people);
+  const contended: Sql = {
+    ...sql,
+    transaction: (work) =>
+      sql.transaction!((tx) =>
+        work({
+          ...tx,
+          query: (statement, params) => {
+            if (statement.includes("for share of c,g")) {
+              if (!statement.includes("nowait")) throw new Error("MCP admission would wait for a row lock");
+              throw Object.assign(new Error("MCP row is locked"), { code: "55P03" });
+            }
+            return tx.query(statement, params);
+          },
+        }),
+      ),
+  };
+  await expect(admitModalLaunch(contended, launchEncryptionKey, input)).rejects.toMatchObject({ code: "conflict" });
+  expect((await db.query("select id from sandboxes")).rows).toEqual([]);
+  expect((await db.query("select id from jobs")).rows).toEqual([]);
+  expect((await admitModalLaunch(sql, launchEncryptionKey, input)).sandbox.status).toBe("starting");
+});
+
+test.each(["active secret", "revoked secret", "changed snapshot", "changed connection"] as const)(
   "pinned Modal admission handles %s before dispatch",
   async (status) => {
     const { sql, db, people, input, openaiCredentialId } = await modalAdmissionFixture();
     const sandboxId = crypto.randomUUID();
+    const connectionId = await launchConnection(db, people);
+    await db.query("update mcp_connections set default_for_launch=false where id=$1", [connectionId]);
     const {
       rows: [actor],
     } = await db.query<{ epoch: number }>("select epoch::int from mcp_actor_epochs where org_id=$1 and user_id=$2", [
@@ -330,6 +397,7 @@ test.each(["active secret", "revoked secret", "changed snapshot"] as const)(
             variables: [],
             secrets: [{ key: "APP_TOKEN", secretId: secret!.id, version: 1 }],
           },
+          connections: [{ id: connectionId, version: 1, generation: 1 }],
           variables: {},
         },
         crypto.randomUUID(),
@@ -347,6 +415,9 @@ test.each(["active secret", "revoked secret", "changed snapshot"] as const)(
       if (status === "revoked secret") {
         await db.query("update application_secrets set status='revoked',value_enc=null where id=$1", [secret!.id]);
         await expect(admit()).rejects.toMatchObject({ code: "conflict", reason: "secret_unavailable" });
+      } else if (status === "changed connection") {
+        await db.query("update mcp_grants set version=version+1 where connection_id=$1", [connectionId]);
+        await expect(admit()).rejects.toMatchObject({ code: "conflict" });
       } else {
         await db.query("update goldens set provider_snapshot_id='replacement' where id=$1", [pinned.sandbox.goldenId]);
         await db.query(
@@ -363,6 +434,9 @@ test.each(["active secret", "revoked secret", "changed snapshot"] as const)(
     const accepted = { sandbox: { id: sandboxId, status: "starting" } } as const;
     expect(await admit()).toEqual(accepted);
     expect(await admit()).toEqual(accepted);
+    expect((await db.query("select sandbox_id,connection_id from mcp_bindings")).rows).toEqual([
+      { sandbox_id: sandboxId, connection_id: connectionId },
+    ]);
     expect(
       (
         await db.query(

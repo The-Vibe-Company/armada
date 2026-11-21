@@ -380,7 +380,8 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
       body &&
       (body as { provider?: unknown }).provider === "docker" &&
       "externalRef" in body;
-    const requestId = modalLaunch || keyedDockerLaunch ? response.headers.get("x-request-id") : null;
+    const trackedLaunch = modalLaunch || keyedDockerLaunch || path === "templates/launch";
+    const requestId = trackedLaunch ? response.headers.get("x-request-id") : null;
     const correlation = requestId && UUID.test(requestId) ? { requestId } : {};
     if (!response.ok) {
       const body = (await response.json().catch(() => null)) as {
@@ -411,7 +412,7 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
       });
     }
     const result = (await response.json().catch((error: unknown) => {
-      if (!modalLaunch && !keyedDockerLaunch) throw error;
+      if (!trackedLaunch) throw error;
       throw new ParityError({
         code: "launch_response_unreadable",
         httpStatus: response.status,
@@ -1988,86 +1989,94 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
                         };
                       };
                     };
-                    const receipt = await poll(
-                      async () => {
-                        let value: Receipt;
-                        try {
-                          value = await api<Receipt>("templates/launch", input);
-                        } catch (error) {
-                          const detail = diagnostic(error);
-                          if (
-                            !detail.quota &&
-                            ([
-                              "transport_or_receipt_failed",
-                              "outcome_unknown",
-                              "unavailable",
-                              "provider_unavailable",
-                              "dependency_unavailable",
-                              "sandbox_not_ready",
-                            ].includes(detail.code) ||
-                              [408, 425, 500, 502, 503, 504].includes(detail.httpStatus ?? 0))
-                          ) {
-                            uncertain = true;
-                            return { state: "reconciling" };
-                          }
-                          const refusedBeforeAdmission =
-                            detail.quota ||
-                            ([400, 422].includes(detail.httpStatus ?? 0) &&
-                              ["invalid", "invalid_request"].includes(detail.code)) ||
-                            (detail.httpStatus === 401 && detail.code === "unauthorized") ||
-                            (detail.httpStatus === 403 && detail.code === "forbidden") ||
-                            ([404, 405].includes(detail.httpStatus ?? 0) &&
-                              ["not_found", "unknown_route", "method_not_allowed"].includes(detail.code));
-                          if (!uncertain && refusedBeforeAdmission) templateIntentUnknown = false;
-                          throw error;
-                        }
-                        if (value.state !== "succeeded" && value.state !== "failed") uncertain = true;
-                        // Journal the durable claimed sandbox before waiting for allocation acknowledgement.
-                        const ownProvider =
-                          value.provider === c.provider ||
-                          (value.provider === undefined && value.manifest?.definition?.provider === c.provider);
-                        if (value.id && ownProvider) {
-                          templateIntentUnknown = false;
-                          if (!templateClaims.has(value.id)) {
-                            templateClaims.add(value.id);
-                            id ??= value.id;
-                            if (c.provider !== "boat")
-                              await io.recordSandbox?.(
-                                c.org,
-                                value.id,
-                                `post-deploy-smoke:${crypto.randomUUID()}`,
-                                c.provider,
-                              );
-                          }
-                          if (value.id !== id) throw new Error("invalid_template_receipt");
-                        }
-                        return value;
-                      },
-                      // This durable requestKey is replayed unchanged; never a new launch intent.
-                      (value) => value.state === "succeeded" || value.state === "failed",
-                      [
-                        "readable-variables",
-                        "skills",
-                        "skills-resume",
-                        "application-secrets",
-                        "mcp",
-                        "mcp-resume",
-                        "subscription-account",
-                      ].includes(feature ?? "")
-                        ? 110
-                        : 600,
-                      [
-                        "readable-variables",
-                        "skills",
-                        "skills-resume",
-                        "application-secrets",
-                        "mcp",
-                        "mcp-resume",
-                        "subscription-account",
-                      ].includes(feature ?? "")
-                        ? readableUntil
-                        : Math.min(deadline, io.now() + OBSERVATION_MS),
+                    const timingStep = `parity_${c.provider}_${feature}_launch`;
+                    const started = io.now();
+                    const featureDeadline = feature === "templates" ? deadline : readableUntil;
+                    const until = Math.min(
+                      featureDeadline,
+                      requestDeadline ?? Number.POSITIVE_INFINITY,
+                      started + (launchTimeouts[timingStep] ?? OBSERVATION_MS),
                     );
+                    let lastDiagnostic: Diagnostic | undefined;
+                    let polls = 0;
+                    // The template contract exposes the existing receipt through the original keyed request.
+                    const receipt = await observeSmokeLaunch(until, io, async (remaining) => {
+                      polls++;
+                      let value: Receipt;
+                      try {
+                        value = await request<Receipt>("templates/launch", { org: c.org, ...input }, remaining);
+                      } catch (error) {
+                        const detail = diagnostic(error);
+                        if (
+                          !detail.quota &&
+                          ([
+                            "transport_or_receipt_failed",
+                            "launch_response_unreadable",
+                            "outcome_unknown",
+                            "unavailable",
+                            "provider_unavailable",
+                            "dependency_unavailable",
+                            "sandbox_not_ready",
+                          ].includes(detail.code) ||
+                            [408, 425, 500, 502, 503, 504].includes(detail.httpStatus ?? 0))
+                        ) {
+                          uncertain = true;
+                          if (
+                            detail.requestId ||
+                            lastDiagnostic === undefined ||
+                            (!lastDiagnostic.requestId && detail.httpStatus !== undefined)
+                          )
+                            lastDiagnostic = detail;
+                          return;
+                        }
+                        const refusedBeforeAdmission =
+                          detail.quota ||
+                          ([400, 422].includes(detail.httpStatus ?? 0) &&
+                            ["invalid", "invalid_request"].includes(detail.code)) ||
+                          (detail.httpStatus === 401 && detail.code === "unauthorized") ||
+                          (detail.httpStatus === 403 && detail.code === "forbidden") ||
+                          ([404, 405].includes(detail.httpStatus ?? 0) &&
+                            ["not_found", "unknown_route", "method_not_allowed"].includes(detail.code));
+                        if (!uncertain && refusedBeforeAdmission) templateIntentUnknown = false;
+                        throw error;
+                      }
+                      if (value.state !== "succeeded" && value.state !== "failed") uncertain = true;
+                      // Journal the durable claimed sandbox before waiting for allocation acknowledgement.
+                      const ownProvider =
+                        value.provider === c.provider ||
+                        (value.provider === undefined && value.manifest?.definition?.provider === c.provider);
+                      if (value.id && ownProvider) {
+                        templateIntentUnknown = false;
+                        if (!templateClaims.has(value.id)) {
+                          templateClaims.add(value.id);
+                          id ??= value.id;
+                          if (c.provider !== "boat")
+                            await io.recordSandbox?.(
+                              c.org,
+                              value.id,
+                              `post-deploy-smoke:${crypto.randomUUID()}`,
+                              c.provider,
+                            );
+                        }
+                        if (value.id !== id) throw new Error("invalid_template_receipt");
+                      }
+                      if (value.state === "succeeded" || value.state === "failed") return value;
+                    }).catch((error: unknown) => {
+                      throw new ParityError({
+                        ...diagnostic(error),
+                        requestKey: input.requestKey,
+                        elapsedMs: io.now() - started,
+                        polls,
+                      });
+                    });
+                    if (!receipt)
+                      throw new ParityError({
+                        ...diagnostic(new Error("poll_limit_exceeded")),
+                        ...lastDiagnostic,
+                        elapsedMs: io.now() - started,
+                        polls,
+                        requestKey: input.requestKey,
+                      });
                     if (
                       receipt.state === "failed" &&
                       receipt.reason &&
@@ -2076,6 +2085,7 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
                       throw new ParityError({
                         code: receipt.reason,
                         message: TEMPLATE_REFUSAL_HELP[receipt.reason as keyof typeof TEMPLATE_REFUSAL_HELP],
+                        requestKey: input.requestKey,
                       });
                     const manifest = receipt.manifest;
                     if (
@@ -2102,6 +2112,14 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
                     skills?.verifyManifest(manifest);
                     secret?.verifyManifest(manifest);
                     mcp?.verifyManifest(manifest);
+                    io.out(
+                      JSON.stringify({
+                        step: timingStep,
+                        provider: c.provider,
+                        pass: true,
+                        elapsedMs: io.now() - started,
+                      }),
+                    );
                     return { sandbox: { id, provider: receipt.provider } };
                   })()
                 : c.provider === "modal" || c.provider === "docker"

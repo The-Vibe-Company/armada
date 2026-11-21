@@ -1,5 +1,5 @@
 {
-  "static": { "1": 37, "2": 1 },
+  "static": { "1": 44 },
   "files": {
     "apps/dashboard/src/app/.well-known/armada.json/route.test.ts": 0.007,
     "apps/dashboard/src/app/api/v1/[...path]/control-route-parity.test.ts": 1.189,

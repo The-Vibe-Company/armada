@@ -58,7 +58,7 @@ export interface ControlOptions {
     normalSend?: boolean;
     normalResume?: boolean;
   };
-  runtimeMcp?: RuntimeMcp;
+  runtimeMcp?: Pick<RuntimeMcp, "prepare" | "preflight" | "connections">;
   runtimeGitHub?: RuntimeGitHub;
   runtimeResume?: RuntimeResume;
   runtimeCheckpoint?: RuntimeCheckpoint;
