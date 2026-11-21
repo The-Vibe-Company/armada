@@ -18,6 +18,9 @@ import { createDelegatedTransport, createEnrolledDelegatedTransport } from "./sa
 
 type NativeModalDrainDelete = Parameters<Provider["delete"]>[0] & { generation?: number };
 
+const enrolledPlacement =
+  "((s.provider='boat' and s.boat_runtime) or (s.provider='modal' and s.runtime_transport='dialout'))";
+
 const workerScopes = ["worker:launch", "worker:read", "worker:message", "worker:stop", "worker:extend"] as const;
 
 export interface SandboxArmadaAccessOptions {
@@ -51,13 +54,13 @@ export function createSandboxArmadaAccess(input: {
         lifecycle_generation: string;
         golden_ids: string[];
         credential_ids: string[];
-        runtime_transport: "dialout" | null;
+        enrolled: boolean;
         stop_requested: boolean;
         terminal: boolean;
         modal_drain_cleaned_placement: string | null;
       }>(
         `select p.id,p.sandbox_id,p.owner_id,p.org_id,s.lifecycle_generation,p.golden_ids,p.credential_ids,
-          p.modal_drain_cleaned_placement,s.runtime_transport,s.stop_requested_at is not null as stop_requested,
+          p.modal_drain_cleaned_placement,${enrolledPlacement} is true as enrolled,s.stop_requested_at is not null as stop_requested,
           s.status in ('stopped','failed','deleted') as terminal from public.armada_access_parents p
        join public.sandboxes s on s.id=p.sandbox_id where p.kind='sandbox' and s.provider=$1 and s.provider_sandbox_id=$2
          and ($3::uuid is null or s.id=$3)`,
@@ -68,6 +71,7 @@ export function createSandboxArmadaAccess(input: {
   async function install(provider: Provider, id: string) {
     const parent = await scope(provider, id);
     if (!parent) return;
+    if (parent.enrolled) throw new VaultError("conflict", "Scoped runtime access requires enrolled delivery.");
     const target = native(provider);
     const physical = await target.get(id);
     if (!physical.physicalGeneration || !["ready", "running"].includes(physical.state))
@@ -118,7 +122,7 @@ export function createSandboxArmadaAccess(input: {
         `select p.id,p.golden_ids,p.credential_ids from public.armada_access_parents p
          join public.sandboxes s on s.id=p.sandbox_id
          where p.sandbox_id=$1 and p.owner_id=$2 and p.kind='sandbox'
-         and s.provider='modal' and s.runtime_transport='dialout'`,
+         and ${enrolledPlacement}`,
         [sandboxId, ownerId],
       )
     ).rows[0];
@@ -216,7 +220,7 @@ export function createSandboxArmadaAccess(input: {
       harness: sandbox.harness,
       skillRevision: "0".repeat(40),
     };
-    if (sandbox.runtimeTransport === "dialout") {
+    if (sandbox.boatRuntime || sandbox.runtimeTransport === "dialout") {
       if (!input.commands || !runtime) throw new VaultError("unavailable", "Scoped runtime delivery is unavailable.");
       await bootstrapSandboxAccess(provider, {
         ...bootstrap,
@@ -226,8 +230,8 @@ export function createSandboxArmadaAccess(input: {
             if (scope.epoch !== runtime.epoch) throw new VaultError("conflict", "Scoped runtime epoch changed.");
             const row = (
               await tx.query<{ generation: string }>(
-                `select lifecycle_generation::text as generation from public.sandboxes
-                 where id=$1 and org_id=$2 and provider=$3 and provider_sandbox_id=$4 and runtime_transport='dialout'
+                `select lifecycle_generation::text as generation from public.sandboxes s
+                 where id=$1 and org_id=$2 and provider=$3 and provider_sandbox_id=$4 and ${enrolledPlacement}
                  and visibility='private' and golden_id=$5 and credential_id=$6`,
                 [sandbox.id, actor.orgId, provider.id, sandbox.providerSandboxId, sandbox.goldenId, credentialId],
               )
@@ -241,7 +245,6 @@ export function createSandboxArmadaAccess(input: {
       });
       return;
     }
-    if (sandbox.boatRuntime) throw new VaultError("invalid", "Scoped access requires supported runtime placement.");
     if (!sql.transaction) throw new VaultError("unavailable", "Scoped access requires a transaction.");
     await sql.transaction(async (tx) => {
       const eligible = await tx.query(
@@ -267,8 +270,8 @@ export function createSandboxArmadaAccess(input: {
     parent: NonNullable<Awaited<ReturnType<typeof scope>>>,
     cleanup?: "stop" | "delete",
   ) {
-    if (cleanup && parent.runtime_transport === "dialout") {
-      if (parent.terminal || (cleanup === "stop" && parent.stop_requested)) return;
+    if (parent.enrolled) {
+      if (cleanup && (parent.terminal || (cleanup === "stop" && parent.stop_requested))) return;
       throw new VaultError("conflict", "Scoped runtime cleanup requires a lifecycle stop or terminal state.");
     }
     await authority.revoke(parent.id);

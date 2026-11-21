@@ -431,7 +431,7 @@ export function createRuntimeResume(
               );
             await prepareGitHub?.(caller, found.id, commandGuard);
             await prepareMcp?.(caller, found.id, signal, commandGuard);
-            if (found.runtimeTransport === "dialout")
+            if (found.boatRuntime || found.runtimeTransport === "dialout")
               await restoreScopedAccess?.(
                 caller.userId,
                 found.id,

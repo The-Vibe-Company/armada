@@ -8,6 +8,7 @@ import {
   HARNESS_CAPABILITIES,
   HARNESS_KINDS,
   HARNESSES,
+  type LaunchOptions,
   type LaunchOptionsResponse,
   MACHINE_SIZES,
   MODEL_CATALOG,
@@ -27,6 +28,7 @@ import type { PGlite } from "@electric-sql/pglite";
 import { AppService } from "modal";
 import type { AuthIo } from "../../cli/src/auth-commands.ts";
 import { run } from "../../cli/src/run.ts";
+import { boatRuntimeLaunch } from "../src/boat-runtime-launch.ts";
 import { createCredentialBindingRecovery } from "../src/credential-binding-recovery.ts";
 import { type ControlOptions, controlOptionsFromEnv, createSqlData, handleControlRequest } from "../src/index.ts";
 import { launchCredentials } from "../src/launch-credentials.ts";
@@ -3208,12 +3210,16 @@ test.each([
   { harness: "codex" as const, fromDefaults: true, entry: "ordinary-mcp" },
   { harness: "codex" as const, fromDefaults: true, entry: "ordinary-scoped" },
   { harness: "codex" as const, fromDefaults: true, entry: "ordinary-scoped-idle" },
+  { harness: "codex" as const, fromDefaults: true, entry: "ordinary-scoped-boat" },
 ])(
-  "Modal runtime launch prepares explicit/default MCP and skills before its first prompt ($harness defaults=$fromDefaults entry=$entry)",
+  "Enrolled golden launch prepares explicit/default MCP and skills before its first prompt ($harness defaults=$fromDefaults entry=$entry)",
   async ({ harness, fromDefaults, entry }) => {
     const ordinary = entry.startsWith("ordinary");
     const scoped = entry.startsWith("ordinary-scoped");
     const idle = entry === "ordinary-scoped-idle";
+    const boat = entry === "ordinary-scoped-boat";
+    const provider = boat ? "boat" : "modal";
+    const runtimeFields = boat ? { boatRuntime: true } : { runtimeTransport: "dialout" };
     await withServer(async ({ db, options }) => {
       const org = await options.store.createOrg("Modal runtime", STAN);
       options.authStore.addMembership(STAN, { orgId: org.id, name: org.name, role: "admin" });
@@ -3230,6 +3236,12 @@ test.each([
        values($1,$2,'modal-runtime','org','modal','master','image','workspace','main','app','{"repos":[{"url":"https://github.com/example/web.git","branch":"main","dir":"web"}],"init":["must not run"]}')`,
         [org.id, STAN],
       );
+      if (boat)
+        await db.query(
+          `insert into goldens(org_id,name,visibility,owner_id,boat_snapshot_id,config)
+           values($1,'boat-runtime','org',$2,$3,'{"repos":[{"url":"https://github.com/example/web.git","branch":"main","dir":"web"}]}')`,
+          [org.id, STAN, `a${"b".repeat(62)}`],
+        );
       const bearer = `eyJhbGciOiJIUzI1NiJ9.${btoa(JSON.stringify({ sub: STAN })).replace(/=+$/, "")}.sig`;
       const request = (body: object) =>
         handleControlRequest(
@@ -3242,8 +3254,8 @@ test.each([
         );
       const body = {
         org: org.id,
-        golden: "modal-runtime",
-        provider: "modal",
+        golden: `${provider}-runtime`,
+        provider,
         harness,
         ...(harness === "opencode" ? { model: "opencode/fixture", reasoningEffort: "default" } : {}),
         ...(idle ? {} : { prompt: "reply" }),
@@ -3255,7 +3267,7 @@ test.each([
       const fake = fakeBoat();
       const host = {
         ...fake.provider,
-        id: "modal" as const,
+        id: provider,
         harnesses: [...fake.provider.harnesses, "opencode" as const],
         capabilities: { ...fake.provider.capabilities, opencode: HARNESS_CAPABILITIES.opencode },
       };
@@ -3314,6 +3326,7 @@ test.each([
       });
       const connection = crypto.randomUUID();
       options.providerFor = () => {
+        if (boat) return native;
         throw Error("No Boat provider for Modal");
       };
       if (!ordinary) expect((await request(body))?.status).toBe(503);
@@ -3330,13 +3343,20 @@ test.each([
         },
       };
       if (ordinary) options.providers = { resolve: async () => native };
-      options.modalRuntimeLaunch = {
-        supportsScopedAccess: true,
+      const runtimePolicy: NonNullable<ControlOptions["modalRuntimeLaunch"]> = {
+        ...(boat
+          ? boatRuntimeLaunch({
+              sql,
+              encryptionKey: KEY,
+              serverUrl: "https://armada.test",
+              manifest: {},
+              architecture: "x64",
+            })
+          : { supportsScopedAccess: true }),
         async start(input) {
           starts++;
-          expect(input.sandbox.provider).toBe("modal");
-          expect(input.sandbox.runtimeTransport).toBe("dialout");
-          expect(input.sandbox.boatRuntime).toBeUndefined();
+          expect(input.sandbox).toMatchObject({ provider, ...runtimeFields });
+          if (scoped) expect(input.sandbox.visibility).toBe("private");
           await enrolments.enrol(
             (await enrolments.issue({ sandboxId: input.sandbox.id, ownerId: STAN, configuration: {} })).enrolmentToken,
           );
@@ -3372,6 +3392,7 @@ test.each([
           };
         },
       };
+      options.modalRuntimeLaunch = runtimePolicy;
       if (!ordinary)
         for (const bad of [
           { ...body, skipSkillDefaults: "invalid" },
@@ -3403,25 +3424,31 @@ test.each([
           },
           async prepare(_provider, sandbox) {
             expect(starts).toBe(1);
-            expect(sandbox).toMatchObject({ runtimeTransport: "dialout", provider: "modal", skills: [receipt] });
+            expect(sandbox).toMatchObject({ ...runtimeFields, provider, skills: [receipt] });
             mcpPrepared = true;
           },
         },
       };
+      let boatPlacementTarget: unknown;
       if (ordinary) {
         if (!options.runtimeMcp.connections) throw Error("Missing runtime connection policy");
         options.launch = {
           ...options.launch,
-          modalRuntimeDefault: {
-            policy: options.modalRuntimeLaunch,
+          [boat ? "boatRuntimeDefault" : "modalRuntimeDefault"]: {
+            policy: runtimePolicy,
             credentials: launchCredentials(options.store, KEY, undefined, options.modelAuth),
             connections: options.runtimeMcp.connections,
-            provider: (actor, golden) =>
-              options.modalRuntimeHostFor!(
+            provider: async (actor, golden) => {
+              if (boat) {
+                boatPlacementTarget = golden;
+                return host;
+              }
+              return options.modalRuntimeHostFor!(
                 { ...golden, runtimeTransport: "dialout" },
                 { userId: actor.userId, orgs: [{ orgId: actor.orgId, role: actor.role }], via: "service" },
-              ),
-          },
+              );
+            },
+          } satisfies NonNullable<LaunchOptions["boatRuntimeDefault"]>,
         };
       }
       const input = {
@@ -3467,11 +3494,12 @@ test.each([
       const launched = launchEnvelope.parse(await response?.json());
       expect(launched).toMatchObject({
         runtime: { kind: "armada", epoch: "1" },
-        sandbox: { provider: "modal", runtimeTransport: "dialout", skills: [receipt] },
+        sandbox: { provider, ...runtimeFields, skills: [receipt] },
         promptId: idle ? null : "modal-initial",
         ...(scoped ? { armadaAccess: { enabled: true, maxActiveChildren: 1 } } : {}),
       });
       if (scoped) await expect(admit()).resolves.toBe(STAN);
+      if (boat) expect(boatPlacementTarget).toMatchObject({ visibility: "private", sourceGoldenVisibility: "org" });
       expect(starts).toBe(1);
       expect(fake.forks).toHaveLength(1);
       expect(fake.prompts).toHaveLength(0);
@@ -3499,17 +3527,13 @@ test.each([
           encryptionKey: KEY,
           scopedMcpUrl: "https://armada.test",
           runtimePlacements: {
-            modal: {
+            [provider]: {
               credentials,
               connections: { async validate() {}, async bind() {} },
-              provider: async (_actor, target) =>
-                options.modalRuntimeHostFor!(
-                  { ...target, runtimeTransport: "dialout" },
-                  { userId: STAN, orgs: [{ orgId: org.id, role: "admin" }], via: "service" },
-                ),
+              provider: async () => host,
               policy: {
                 async start({ sandbox }) {
-                  expect(sandbox).toMatchObject({ visibility: "private", runtimeTransport: "dialout" });
+                  expect(sandbox).toMatchObject({ visibility: "private", ...runtimeFields });
                   const ticket = await enrolments.issue({ sandboxId: sandbox.id, ownerId: STAN, configuration: {} });
                   const active = await enrolments.enrol(ticket.enrolmentToken);
                   return {
@@ -3523,7 +3547,7 @@ test.each([
                   };
                 },
               },
-            },
+            } satisfies NonNullable<LaunchOptions["boatRuntimeDefault"]>,
           },
         });
         const child = await children.childWorker.launch(token, "enrolled-child", {

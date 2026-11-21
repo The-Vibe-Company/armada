@@ -280,7 +280,8 @@ export function createSandboxChildren(sql: Sql, authority: ChildAuthority, execu
                 rows: [lease],
               } = await tx.query<{ busy: boolean }>(
                 `select (coalesce(reconcile_lease_until>clock_timestamp(),false)
-                      or ($2='stop' and runtime_transport is not distinct from 'dialout' and activity_lease_id is not null)) as busy
+                      or ($2='stop' and (boat_runtime or runtime_transport is not distinct from 'dialout')
+                        and activity_lease_id is not null)) as busy
                   from public.sandboxes where id=$1`,
                 [receipt.sandboxId, input.action],
               );

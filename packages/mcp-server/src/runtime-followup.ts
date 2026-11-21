@@ -312,7 +312,7 @@ export function createRuntimeFollowup(
         const existing = await commands.result(caller.userId, found.id, commandId, admitted.epoch);
         if (existing.state === "missing") {
           await prepareMcp?.(caller, found.id, signal, commandGuard);
-          if (found.runtimeTransport === "dialout")
+          if (found.boatRuntime || found.runtimeTransport === "dialout")
             await restoreScopedAccess?.(
               caller.userId,
               found.id,
