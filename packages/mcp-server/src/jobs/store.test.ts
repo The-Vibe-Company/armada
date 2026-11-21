@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { decryptSecret, type Sql } from "@armada/core/server";
+import { decryptSecret, encryptSecret, type Sql } from "@armada/core/server";
 import type { ModalMachineOptions } from "@armada/provider-modal";
 import { rowOnlyDatabase } from "../../test/row-only-database.ts";
 import { createTurnDispatchJob, type DispatchTurn } from "../account-turn-dispatch.ts";
@@ -1519,6 +1519,8 @@ test.each([
   ["obsolete prompt with only a pending host job", "running", null, false],
   ["obsolete prompt with only a resume claim", "running", null, false],
   ["completed before prompt", "running", "completed", true],
+  ["completed without a deadline", "running", "completed", true],
+  ["pending without a deadline", "running", null, false],
   ["failed", "starting", "failed", false],
   ["refused", "starting", null, false],
   ["revoked host", "starting", null, false],
@@ -1530,8 +1532,11 @@ test.each([
 ] as const)(
   "a stale turn resumes only from its live Docker host job (%s)",
   async (scenario, status, outcome, recover) => {
-    const { f, sandboxId, requestId, hostId, installationId, dockerGeneration, id } =
-      await interruptedDockerTurn(status);
+    const turn = await turnFixture();
+    const { f, sandboxId, requestId, hostId, installationId, dockerGeneration, id } = await interruptedDockerTurn(
+      status,
+      turn,
+    );
     const { db, people, store } = f;
     const resumeId = scenario === "unrelated request" ? crypto.randomUUID() : requestId;
     const hostJobOnly = scenario === "obsolete prompt with only a pending host job";
@@ -1589,6 +1594,57 @@ test.each([
         `insert into runtime_commands (sandbox_id,request_id,epoch,request_enc) values ($1,$2,1,''::bytea)`,
         [sandboxId, `docker_prompt_${requestId}`],
       );
+    }
+    if (scenario.endsWith("without a deadline"))
+      await db.query("update account_turn_queue set dispatch_until=null where request_id=$1", [requestId]);
+    if (scenario === "completed without a deadline") {
+      await db.query("update sandboxes set credential_id=$2,credential_version=1 where id=$1", [
+        sandboxId,
+        f.openaiCredentialId,
+      ]);
+      await db.query("update account_turn_queue set input_enc=$2 where request_id=$1", [
+        requestId,
+        await encryptSecret(
+          JSON.stringify({ id: sandboxId, request_id: requestId, prompt: "queued" }),
+          btoa("\0".repeat(32)),
+        ),
+      ]);
+      const interrupted = createJobsStore(
+        {
+          ...f.sql,
+          transaction: (work) =>
+            f.sql.transaction!(async (tx) => {
+              await work(tx);
+              throw new Error("Connection lost before Docker retarget committed.");
+            }),
+        },
+        btoa("\0".repeat(32)),
+      );
+      await expect(interrupted.claim("turn_dispatch", crypto.randomUUID(), 30, 1)).rejects.toThrow("Connection lost");
+      expect((await db.query("select generation::text,state from jobs where id=$1", [id])).rows).toEqual([
+        { generation: "2", state: "leased" },
+      ]);
+      await db.query("update jobs set lease_until='-infinity' where id=$1", [id]);
+
+      const sent: string[] = [];
+      const runner = turn.runnerFor(async (_caller, input) => {
+        sent.push(input.request_id!);
+        return { status: "accepted" };
+      });
+      expect(await runner.reconcileOne(signal)).toBe(true);
+      await runner.drain();
+      expect(sent).toEqual([requestId]);
+      expect(
+        (
+          await db.query(
+            `select j.generation::text,j.state as job_state,q.state as receipt_state
+           from jobs j join account_turn_queue q on q.sandbox_id=j.sandbox_id
+           where j.id=$1 and q.request_id=$2`,
+            [id, requestId],
+          )
+        ).rows,
+      ).toEqual([{ generation: "3", job_state: "done", receipt_state: "admitted" }]);
+      return;
     }
     if (recover) {
       await db.query("update account_turn_queue set dispatch_until='2100-01-01T00:00:00Z' where request_id=$1", [
