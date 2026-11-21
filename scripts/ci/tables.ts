@@ -10,7 +10,7 @@ const owners = [
     [`${core}/sandbox.ts`, `${server}/sandbox-lifecycle.ts`, `${server}/sandbox-finish.ts`],
   ],
   ["ordinary_launch_snapshot_intents", [`${core}/golden-store.ts`, `${core}/sandbox.ts`, `${server}/data.ts`]],
-  ["sandbox_source_snapshots", [`${core}/sandbox.ts`, `${server}/data.ts`]],
+  ["sandbox_source_snapshots", [`${core}/sandbox.ts`, `${server}/data.ts`, `${server}/sandbox-lifecycle.ts`]],
   ["triggers", [`${server}/inbound-trigger-store.ts`, `${server}/inbound-trigger-admin.ts`]],
   ["trigger_deliveries", [`${server}/inbound-trigger-store.ts`]],
   ["trigger_admin_audit", [`${server}/inbound-trigger-admin.ts`]],

@@ -8,6 +8,7 @@ import {
   type OutputFailureReason,
   type Provider,
   ProviderError,
+  type SandboxStore,
   type Sql,
   VaultError,
 } from "@armada/core/server";
@@ -23,6 +24,66 @@ import { SANDBOX_VISIBLE } from "./sandbox-visibility.ts";
 import { INTERRUPTED_LAUNCH_REASON } from "./turns.ts";
 import { deferTransactionWake, eventFeedWakeKey, runtimeWakes } from "./wake-bus.ts";
 import { preserveBeforeStop, purgeWorkRecovery, recordStopDispatch } from "./work-preservation.ts";
+
+export type ModalLaunchSandbox = Pick<
+  Parameters<SandboxStore["insert"]>[0],
+  | "goldenId"
+  | "harness"
+  | "model"
+  | "reasoningEffort"
+  | "repositoryDir"
+  | "requestedTtlSeconds"
+  | "credentialId"
+  | "credentialVersion"
+  | "visibility"
+  | "externalRef"
+  | "stopWhenWorkMerged"
+> & { effectiveTtlSeconds: number };
+
+export async function insertStartingModalSandbox(
+  tx: Sql,
+  target: {
+    sandboxId: string;
+    orgId: string;
+    ownerId: string;
+    generation: number;
+    visibility: "org" | "private";
+    snapshot: string;
+  },
+  sandbox: ModalLaunchSandbox,
+) {
+  const { sandboxId, orgId, ownerId, generation, visibility, snapshot } = target;
+  await tx.query(
+    `insert into public.sandboxes
+       (id, org_id, owner_id, access_owner_id, golden_id, provider, status, runtime_transport, lifecycle_generation,
+        visibility, harness, model, reasoning_effort, repository_dir, requested_ttl_seconds, effective_ttl_seconds,
+        expires_at, credential_id, credential_version, external_ref, stop_when_work_merged)
+     values ($1,$2,$3,$3,$4,'modal','starting','dialout',$5,$6,$7,$8,$9,$10,$11,$12,
+             now()+$12::integer*interval '1 second',$13,$14,$15,$16)`,
+    [
+      sandboxId,
+      orgId,
+      ownerId,
+      sandbox.goldenId,
+      generation,
+      visibility,
+      sandbox.harness,
+      sandbox.model,
+      sandbox.reasoningEffort,
+      sandbox.repositoryDir ?? null,
+      sandbox.requestedTtlSeconds ?? null,
+      sandbox.effectiveTtlSeconds,
+      sandbox.credentialId ?? null,
+      sandbox.credentialVersion ?? null,
+      sandbox.externalRef ?? null,
+      sandbox.stopWhenWorkMerged ?? true,
+    ],
+  );
+  await tx.query("insert into public.sandbox_source_snapshots (sandbox_id,snapshot_id) values ($1,$2)", [
+    sandboxId,
+    snapshot,
+  ]);
+}
 
 export async function bindModalLaunchMachine(tx: Sql, machine: MachineIdentity) {
   const { rows } = await tx.query(

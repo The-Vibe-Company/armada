@@ -18,6 +18,12 @@ import type { Job, JobStore } from "./runner.ts";
 
 export const JOBS_WAKE = "jobs";
 
+export class ConflictingJobRequest extends Error {
+  constructor() {
+    super("Conflicting job request.");
+  }
+}
+
 type JobRow = Omit<Job, "payload"> & { payload_enc: string | null };
 
 const fence = "j.id = $1 and j.lease_owner = $2 and j.lease_epoch = $3 and j.lease_until > clock_timestamp()";
@@ -390,7 +396,7 @@ export function createJobsStore(sql: Sql, encryptionKey?: string) {
         `select id from public.jobs where idem_key = $1 and request_digest is not distinct from $2`,
         [key, request?.digest ?? null],
       );
-      if (!existingRows[0]) throw new Error("Conflicting job request.");
+      if (!existingRows[0]) throw new ConflictingJobRequest();
       return existingRows[0].id;
     },
     async claim(kind, owner, seconds, concurrency) {

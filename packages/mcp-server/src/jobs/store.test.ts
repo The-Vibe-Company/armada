@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import type { Sql } from "@armada/core/server";
+import { decryptSecret, type Sql } from "@armada/core/server";
 import type { ModalMachineOptions } from "@armada/provider-modal";
 import { rowOnlyDatabase } from "../../test/row-only-database.ts";
 import { createTurnDispatchJob, type DispatchTurn } from "../account-turn-dispatch.ts";
@@ -9,7 +9,7 @@ import { scopedRuntimeSql } from "../runtime-enrolment.ts";
 import type { LaneFactory } from "../server-worker-modules.ts";
 import { sqlOver } from "../sql.ts";
 import { runtimeWakes } from "../wake-bus.ts";
-import { dispatchModalLaunch } from "./modal-launch.ts";
+import { admitModalLaunch, dispatchModalLaunch, type ModalLaunchAdmission } from "./modal-launch.ts";
 import { createJobsRunner, type Job } from "./runner.ts";
 import { createJobsStore, JOBS_WAKE, withJobLease } from "./store.ts";
 
@@ -109,6 +109,135 @@ async function unboundModalSandbox(f: Awaited<ReturnType<typeof fixture>>) {
   );
   return id;
 }
+
+const launchEncryptionKey = btoa("\0".repeat(32));
+
+async function modalAdmissionFixture() {
+  const f = await fixture();
+  const goldenId = crypto.randomUUID();
+  await f.db.query(
+    `insert into goldens
+       (id, org_id, owner_id, name, visibility, provider, modal_workspace, modal_environment, modal_app_id, provider_snapshot_id)
+     values ($1,$2,$3,'modal-admission','private','modal','workspace','main','ap-test','snapshot')`,
+    [goldenId, f.people.org, f.people.owner],
+  );
+  const input: ModalLaunchAdmission = {
+    orgId: f.people.org,
+    ownerId: f.people.owner,
+    request: { key: "launch-key", digest: "launch-digest" },
+    sandbox: { goldenId, harness: "codex", model: "gpt-5", reasoningEffort: "medium", effectiveTtlSeconds: 1800 },
+    allocation: { source: { kind: "snapshot", ref: "snapshot" }, size: null, computeTtlSeconds: 3600 },
+    initialPrompt: "initial instructions",
+    deadline: new Date("2100-01-01T00:00:00Z"),
+    maxAttempts: 3,
+  };
+  return { ...f, input };
+}
+
+test("Modal admission commits an unbound sandbox, scoped job and encrypted turn intent before a claim", async () => {
+  const { sql, db, input, store } = await modalAdmissionFixture();
+  const { sandbox } = await admitModalLaunch(sql, launchEncryptionKey, input);
+  expect(sandbox).toEqual({ id: expect.any(String), status: "starting" });
+  expect(
+    (
+      await db.query(
+        `select s.provider_sandbox_id, s.lifecycle_generation::text as generation, s.status, p.snapshot_id,
+              s.effective_ttl_seconds, extract(epoch from (s.expires_at-s.created_at))::int as expiry_seconds
+       from sandboxes s join sandbox_source_snapshots p on p.sandbox_id=s.id where s.id=$1`,
+        [sandbox.id],
+      )
+    ).rows,
+  ).toEqual([
+    {
+      provider_sandbox_id: null,
+      generation: "1",
+      status: "starting",
+      snapshot_id: "snapshot",
+      effective_ttl_seconds: 1800,
+      expiry_seconds: 1800,
+    },
+  ]);
+  const job = await store.claim("launch", crypto.randomUUID(), 30, 1);
+  expect(job).toMatchObject({
+    sandbox_id: sandbox.id,
+    generation: "1",
+    payload: {
+      allocation: input.allocation,
+      modal: { workspace: "workspace", environment: "main", appId: "ap-test" },
+    },
+  });
+  const {
+    rows: [turn],
+  } = await db.query<{ idem_key: string; payload_enc: Uint8Array<ArrayBuffer> }>(
+    `select idem_key,payload_enc from jobs
+     where sandbox_id=$1 and generation=1 and kind='launch_initial_turn' and state='queued'`,
+    [sandbox.id],
+  );
+  expect(JSON.parse(turn!.idem_key).at(-1)).toBe(job!.id);
+  expect(JSON.parse(await decryptSecret(turn!.payload_enc, launchEncryptionKey))).toEqual({
+    prompt: input.initialPrompt,
+  });
+});
+
+test("a stale Modal snapshot cannot leave a launch receipt behind", async () => {
+  const { sql, db, input } = await modalAdmissionFixture();
+  await db.query("update goldens set provider_snapshot_id='replacement' where id=$1", [input.sandbox.goldenId]);
+  await expect(admitModalLaunch(sql, launchEncryptionKey, input)).rejects.toMatchObject({ code: "conflict" });
+  expect((await db.query("select id from jobs")).rows).toEqual([]);
+  expect((await db.query("select id from sandboxes where golden_id=$1", [input.sandbox.goldenId])).rows).toEqual([]);
+});
+
+test("Modal keyed replay returns the current status and refuses a changed request", async () => {
+  const { sql, db, input } = await modalAdmissionFixture();
+  const { sandbox } = await admitModalLaunch(sql, launchEncryptionKey, input);
+  await db.query("update sandboxes set status='failed' where id=$1", [sandbox.id]);
+  expect(await admitModalLaunch(sql, launchEncryptionKey, input)).toEqual({
+    sandbox: { id: sandbox.id, status: "failed" },
+  });
+  await expect(
+    admitModalLaunch(sql, launchEncryptionKey, {
+      ...input,
+      request: { key: input.request!.key, digest: "different" },
+    }),
+  ).rejects.toMatchObject({ code: "conflict" });
+  expect((await db.query("select kind from jobs order by kind")).rows).toEqual([
+    { kind: "launch" },
+    { kind: "launch_initial_turn" },
+  ]);
+});
+
+test("Modal keyed replay checks current authorization after membership revocation", async () => {
+  const { sql, db, input } = await modalAdmissionFixture();
+  await admitModalLaunch(sql, launchEncryptionKey, input);
+  await db.query("delete from members where org_id=$1 and user_id=$2", [input.orgId, input.ownerId]);
+  await expect(admitModalLaunch(sql, launchEncryptionKey, input)).rejects.toMatchObject({ code: "not_found" });
+});
+
+test("an interrupted Modal admission rolls back the sandbox and both jobs without a wake", async () => {
+  const { sql, db, input } = await modalAdmissionFixture();
+  const interrupted: Sql = {
+    ...sql,
+    transaction: (work) =>
+      sql.transaction!(async (tx) => {
+        await work(tx);
+        throw new Error("interrupted before commit");
+      }),
+  };
+  let wakes = 0;
+  const unsubscribe = runtimeWakes.subscribe(JOBS_WAKE, () => wakes++);
+  try {
+    await expect(admitModalLaunch(interrupted, launchEncryptionKey, input)).rejects.toThrow(
+      "interrupted before commit",
+    );
+    expect((await db.query("select id from sandboxes where golden_id=$1", [input.sandbox.goldenId])).rows).toEqual([]);
+    expect((await db.query("select id from jobs")).rows).toEqual([]);
+    expect(wakes).toBe(0);
+    await admitModalLaunch(sql, launchEncryptionKey, input);
+    expect(wakes).toBe(1);
+  } finally {
+    unsubscribe();
+  }
+});
 
 test("an unbound Modal launch can publish only its leased allocation receipt", async () => {
   const f = await fixture();
