@@ -86,7 +86,6 @@ export function createModalReaperOwnership(sql: Sql, binding: ModalBinding, forD
     }
     if (!evidence.status) return { kind: "absent" };
     if (evidence.canonical_tag) {
-      // Create can be visible in inventory before the launch claimant binds the physical ID.
       if (evidence.canonical_physical_id !== machine.machineId || evidence.logical_id !== null)
         return { kind: "unresolved" };
       const generation = evidence.canonical_generation;
