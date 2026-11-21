@@ -1029,7 +1029,6 @@ test("native handoff refuses a failed receipt even when an unrelated prompt was 
      where s.id=$1 limit 1`,
     [sandboxId, new Uint8Array([1])],
   );
-  // The sandbox trigger aliases the next published task even without a matching queue request.
   await db.query("update sandboxes set task_prompt_id='unrelated-turn' where id=$1", [sandboxId]);
   await db.query(
     "update native_webhook_prompts set completed_at=now() where sandbox_id=$1 and prompt_id='unrelated-turn'",
