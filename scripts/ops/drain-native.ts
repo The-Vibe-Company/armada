@@ -83,48 +83,6 @@ export async function runNativeDrain(
   return { provider, mode: "drain" as const, total: rows.length, deleted, failed };
 }
 
-async function configureDelete(sql: Sql, provider: NativeProvider, actorId: string) {
-  const { createSqlVaultStore } = await import("../../packages/core/src/server.ts");
-  const { createSqlData } = await import("../../packages/mcp-server/src/data.ts");
-  const { providerRegistry } = await import("../../packages/mcp-server/src/http.ts");
-  const { createModalIntegration } = await import("../../packages/mcp-server/src/modal-integration.ts");
-  const { createObservedBoatProvider } = await import("../../packages/mcp-server/src/observed-boat.ts");
-  const { deleteSandboxWithActivity } = await import("../../packages/mcp-server/src/sandbox-rest-controls.ts");
-  const encryptionKey = Bun.env.ARMADA_ENCRYPTION_KEY;
-  const publicUrl = Bun.env.ARMADA_PUBLIC_URL;
-  if (!encryptionKey || !publicUrl) throw new Error("Native drain provider configuration is incomplete.");
-  const vault = createSqlVaultStore(sql);
-  let modal: ReturnType<typeof createModalIntegration> | undefined;
-  const modalIntegration = () => (modal ??= createModalIntegration({ sql, vault, encryptionKey, publicUrl }));
-  const deploymentId = Bun.env.ARMADA_BOAT_DEPLOYMENT_ID?.trim();
-  const providers = providerRegistry({
-    vault,
-    encryptionKey,
-    providerFor: (apiKey) => createObservedBoatProvider({ apiKey, ...(deploymentId ? { deploymentId } : {}) }),
-    modalTokensFor: async (target, caller) => (await modalIntegration()).modalTokensFor(target, caller),
-    modalProviderFor: async (tokens, binding, context) =>
-      (await modalIntegration()).modalProviderFor(tokens, binding, context),
-  });
-  const data = createSqlData(sql);
-  const remove: DeleteNativeRow = async (row) => {
-    if (!row.role) throw new Error("The operator has no organization membership.");
-    const { sandboxes } = data({ userId: actorId, orgs: [{ orgId: row.org_id, role: row.role }], via: "service" });
-    await deleteSandboxWithActivity(
-      sandboxes,
-      {
-        resolve(target, caller) {
-          if (target.provider !== provider || target.boatRuntime || target.runtimeTransport === "dialout")
-            throw new Error("The sandbox route changed after inventory.");
-          return providers.resolve(target, caller);
-        },
-      },
-      row.id,
-      "native-drain",
-    );
-  };
-  return remove;
-}
-
 async function execute({ provider, dryRun }: NativeDrainRequest) {
   const variable = dryRun ? "ARMADA_DRAIN_READ_ONLY_DATABASE_URL" : "ARMADA_DATABASE_URL";
   const url = Bun.env[variable];
@@ -145,17 +103,23 @@ async function execute({ provider, dryRun }: NativeDrainRequest) {
   }
   const sql = bunSql(url, 1);
   try {
-    const operation =
-      !dryRun && actorId ? { actorId, remove: await configureDelete(sql, provider, actorId) } : undefined;
-    const report = await runNativeDrain({ provider, dryRun }, sql, operation);
+    const request = { provider, dryRun };
+    const report =
+      dryRun || !actorId ? await runNativeDrain(request, sql) : await executeDeletion(request, sql, actorId);
     process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
     return report.mode === "drain" && report.failed > 0 ? 1 : 0;
   } finally {
-    try {
-      if (!dryRun) await (await import("../../packages/provider-modal/src/index.ts")).settleDetachedModalCollections();
-    } finally {
-      await sql.close();
-    }
+    await sql.close();
+  }
+}
+
+async function executeDeletion(request: NativeDrainRequest, sql: Sql, actorId: string) {
+  const { configureNativeDrain } = await import("../../packages/mcp-server/src/native-drain.ts");
+  const { remove, settle } = configureNativeDrain(sql, request.provider, actorId, Bun.env);
+  try {
+    return await runNativeDrain(request, sql, { actorId, remove });
+  } finally {
+    await settle();
   }
 }
 

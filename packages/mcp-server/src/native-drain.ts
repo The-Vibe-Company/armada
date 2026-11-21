@@ -1,0 +1,49 @@
+import type { MemberRole, Sql } from "@armada/core";
+import { createSqlVaultStore } from "@armada/core/server";
+import { settleDetachedModalCollections } from "@armada/provider-modal";
+import { createSqlData } from "./data.ts";
+import { providerRegistry } from "./http.ts";
+import { createModalIntegration } from "./modal-integration.ts";
+import { createObservedBoatProvider } from "./observed-boat.ts";
+import { deleteSandboxWithActivity } from "./sandbox-rest-controls.ts";
+
+export function configureNativeDrain(
+  sql: Sql,
+  provider: "modal" | "boat",
+  actorId: string,
+  env: Record<string, string | undefined>,
+) {
+  const encryptionKey = env.ARMADA_ENCRYPTION_KEY;
+  const publicUrl = env.ARMADA_PUBLIC_URL;
+  if (!encryptionKey || !publicUrl) throw new Error("Native drain provider configuration is incomplete.");
+  const vault = createSqlVaultStore(sql);
+  let modal: ReturnType<typeof createModalIntegration> | undefined;
+  const modalIntegration = () => (modal ??= createModalIntegration({ sql, vault, encryptionKey, publicUrl }));
+  const deploymentId = env.ARMADA_BOAT_DEPLOYMENT_ID?.trim();
+  const providers = providerRegistry({
+    vault,
+    encryptionKey,
+    providerFor: (apiKey) => createObservedBoatProvider({ apiKey, ...(deploymentId ? { deploymentId } : {}) }),
+    modalTokensFor: async (target, caller) => (await modalIntegration()).modalTokensFor(target, caller),
+    modalProviderFor: async (tokens, binding, context) =>
+      (await modalIntegration()).modalProviderFor(tokens, binding, context),
+  });
+  const data = createSqlData(sql);
+  const remove = async (row: { id: string; org_id: string; role: MemberRole | null }) => {
+    if (!row.role) throw new Error("The operator has no organization membership.");
+    const { sandboxes } = data({ userId: actorId, orgs: [{ orgId: row.org_id, role: row.role }], via: "service" });
+    await deleteSandboxWithActivity(
+      sandboxes,
+      {
+        resolve(target, caller) {
+          if (target.provider !== provider || target.boatRuntime || target.runtimeTransport === "dialout")
+            throw new Error("The sandbox route changed after inventory.");
+          return providers.resolve(target, caller);
+        },
+      },
+      row.id,
+      "native-drain",
+    );
+  };
+  return { remove, settle: settleDetachedModalCollections };
+}
