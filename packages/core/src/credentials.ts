@@ -106,6 +106,8 @@ export const MAX_AUTH_FILE_LENGTH = 65536;
 export const CODEX_AUTH_PATH = "/home/user/.codex/auth.json";
 
 interface KindInfo {
+  readonly singleton?: true;
+  readonly orgStorage?: "org-boat-key";
   /** The name `armada account add <name>` takes. */
   name?: string;
   label: string;
@@ -121,9 +123,9 @@ export const CREDENTIAL_KINDS: Readonly<Record<CredentialKind, KindInfo>> = {
   opencode: { name: "opencode", label: "OpenCode API key or custom endpoint", env: "OPENCODE_API_KEY" },
   openai: { name: "openai", label: "OpenAI API key for Codex", env: "OPENAI_API_KEY" },
   codex_auth: { name: "codex-auth", label: "Codex auth.json" },
-  boat: { name: "boat", label: "boat.dev API key" },
-  modal: { name: "modal", label: "Modal token pair (id and secret)" },
-  skillpack: { name: "skillpack", label: "Skillpack personal access token" },
+  boat: { name: "boat", label: "boat.dev API key", singleton: true, orgStorage: "org-boat-key" },
+  modal: { name: "modal", label: "Modal token pair (id and secret)", singleton: true },
+  skillpack: { name: "skillpack", label: "Skillpack personal access token", singleton: true },
   antigravity: { label: "Antigravity" },
 };
 

@@ -2,7 +2,7 @@ import type { Harness } from "./contract.ts";
 import type { MachineSize } from "./machine-size.ts";
 import type { ModelConnectionTestResult } from "./model-connection-test.ts";
 import type { PlanLimit } from "./plan-limit.ts";
-import type { ProviderTarget } from "./sandbox-provider.ts";
+import { HOST_CAPABILITIES, isSandboxProvider, type ProviderTarget } from "./sandbox-provider.ts";
 
 /**
  * The contract between Armada and a placement: the machines agents run on.
@@ -584,7 +584,9 @@ export class ProviderError extends Error {
 
 /** The provider's known pre-admission start-limit signal, not an ambiguous transport failure. */
 export function isProviderStartRateLimit(error: ProviderError): boolean {
-  return error.provider === "boat" && error.code === "rate_limited" && error.status === 429;
+  if (!isSandboxProvider(error.provider) || error.code !== "rate_limited") return false;
+  const status = HOST_CAPABILITIES[error.provider].startRateLimitStatus;
+  return status !== undefined && error.status === status;
 }
 
 /** Explicit non-mutating provider refusals, not transport failures or ambiguous conflicts. */
@@ -605,6 +607,9 @@ export function isNonMutatingProviderRefusal(error: unknown): boolean {
       "provider_routing_unavailable",
     ].includes(error.code) ||
       isProviderStartRateLimit(error) ||
-      (error.provider === "modal" && error.code === "conflict" && error.providerCode === "snapshot_source_busy"))
+      (error.code === "conflict" &&
+        error.providerCode !== undefined &&
+        isSandboxProvider(error.provider) &&
+        error.providerCode === HOST_CAPABILITIES[error.provider].snapshotSourceBusyCode))
   );
 }

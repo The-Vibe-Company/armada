@@ -397,8 +397,9 @@ export class GoldenCreateService {
         !builder &&
         phase === "builder" &&
         error instanceof ProviderError &&
-        error.provider === "modal" &&
-        error.providerCode === "modal_builder_image_failed" &&
+        isSandboxProvider(error.provider) &&
+        error.providerCode !== undefined &&
+        error.providerCode === HOST_CAPABILITIES[error.provider].builderImageFailureCode &&
         !error.details?.resourceReceipt &&
         !error.details?.keepSource
           ? error.message

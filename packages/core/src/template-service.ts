@@ -26,7 +26,12 @@ import { PRIVATE_SKILL_FAILURES } from "./private-skill-error.ts";
 import { isNonMutatingProviderRefusal, type Provider, ProviderError } from "./provider.ts";
 import { parseReadableVariableBindings, validateReadableVariables } from "./readable-variables.ts";
 import { isExternalRef } from "./sandbox.ts";
-import { isSandboxPlacementProvider, ProviderRoutingError } from "./sandbox-provider.ts";
+import {
+  HOST_CAPABILITIES,
+  isSandboxPlacementProvider,
+  isSandboxProvider,
+  ProviderRoutingError,
+} from "./sandbox-provider.ts";
 import { createSkillDefaultsService } from "./skill-defaults.ts";
 import { skillRefusalMessage } from "./skill-diagnostics.ts";
 import { mergeSkillPins } from "./skill-merge.ts";
@@ -792,6 +797,10 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
               },
             );
           })();
+      const { sandbox } = result;
+      const receiptTransport = isSandboxProvider(sandbox.provider)
+        ? HOST_CAPABILITIES[sandbox.provider].templateReceiptTransport
+        : undefined;
       const output = {
         requestId: request.id,
         ...(runtime.pinnedLaunch && result.golden !== null ? { envelope: runtime.pinnedLaunch(result, m) } : {}),
@@ -799,10 +808,8 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
         state: "succeeded",
         id: result.sandbox.id,
         provider: result.sandbox.provider,
-        ...(result.sandbox.provider === "modal" &&
-        "runtimeTransport" in result.sandbox &&
-        result.sandbox.runtimeTransport === "dialout"
-          ? { runtimeTransport: "dialout" as const }
+        ...(receiptTransport && "runtimeTransport" in sandbox && sandbox.runtimeTransport === receiptTransport
+          ? { runtimeTransport: receiptTransport }
           : {}),
         providerSandboxId: result.sandbox.providerSandboxId,
         ...(input.externalRef === undefined ? {} : { externalRef: input.externalRef as string }),
