@@ -26,7 +26,7 @@ import { ToolError } from "./tool-error.ts";
 import { errorResult, publicationFailure, unknownMutationOutcome } from "./tool-failure.ts";
 import { createToolRegistration, type ToolBinding } from "./tool-registration.ts";
 import type { ToolContext } from "./tools.ts";
-import { collectSandboxUsage, latestPrompt, readStatus } from "./turns.ts";
+import { collectSandboxUsage, isFailedModalLaunch, latestPrompt, readStatus } from "./turns.ts";
 import { stopAndObserve } from "./work-preservation.ts";
 
 const OUTPUT_LIMIT = 20_000;
@@ -99,6 +99,7 @@ export function configureTools(
     const provider =
       found.status === "deleted" ||
       found.status === "starting" ||
+      isFailedModalLaunch(found) ||
       (found.status === "failed" && found.stoppedAt !== null)
         ? null
         : await context.provider(found);

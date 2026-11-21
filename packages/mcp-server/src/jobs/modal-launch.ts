@@ -41,11 +41,11 @@ import { runtimeWorkspace } from "../runtime-workspace.ts";
 import {
   bindModalLaunchMachine,
   insertStartingModalSandbox,
-  MODAL_LAUNCH_FAILURE,
   type ModalLaunchSandbox,
   taintStartingModalSandbox,
   transitionSandbox,
 } from "../sandbox-lifecycle.ts";
+import { MODAL_LAUNCH_FAILURE } from "../turns.ts";
 import { parseModalLaunchWorkspace } from "./modal-launch-setup.ts";
 import type { Job, JobContext, JobKind, JobResult } from "./runner.ts";
 import { ConflictingJobRequest, createJobsStore, jobRequestKey, withJobLease } from "./store.ts";
