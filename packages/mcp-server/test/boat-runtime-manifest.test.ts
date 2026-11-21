@@ -28,13 +28,17 @@ test("runtime default requires installed artifacts, while native rollback surviv
       opencode: { sha256: "d".repeat(64), bytes: 5 },
     };
     await writeFile(path, JSON.stringify(manifest));
-    const expected = { manifest, architecture: "x64" };
+    const expected = { manifest, architecture: "x64" } as const;
     expect(await readBoatRuntimeManifest(path, "native", undefined)).toEqual(expected);
     await expect(readBoatRuntimeManifest(path, "runtime", undefined)).rejects.toThrow("ARMADA_RUNTIME_ARTIFACT_DIR");
+    await writeFile(join(root, manifest.harnesses.codex.archive.sha256), "12345");
+    await writeFile(join(root, manifest.harnesses.claude.archive.sha256), "12345");
+    await writeFile(join(root, manifest.opencode.sha256), "12345");
     await expect(readBoatRuntimeManifest(path, "runtime", root)).rejects.toThrow(
       "requires valid installed runtime artifacts",
     );
     await writeFile(join(root, manifest.runtime.sha256), "0123456789");
+    await rm(join(root, manifest.harnesses.codex.archive.sha256));
     await expect(readBoatRuntimeManifest(path, "runtime", root)).rejects.toThrow(
       "requires valid installed runtime artifacts",
     );
@@ -43,8 +47,6 @@ test("runtime default requires installed artifacts, while native rollback surviv
       "requires valid installed runtime artifacts",
     );
     await writeFile(join(root, manifest.harnesses.codex.archive.sha256), "12345");
-    await writeFile(join(root, manifest.harnesses.claude.archive.sha256), "12345");
-    await writeFile(join(root, manifest.opencode.sha256), "12345");
     expect(await readBoatRuntimeManifest(path, "runtime", root)).toEqual(expected);
     await writeFile(path, JSON.stringify({ ...manifest, opencode: undefined }));
     await expect(readBoatRuntimeManifest(path, "runtime", root)).rejects.toThrow(

@@ -42,7 +42,7 @@ export async function readStartupConfiguration(env: Record<string, string | unde
   const boat = await readBoatRuntimeManifest(
     env.ARMADA_BOAT_RUNTIME_MANIFEST ?? `/opt/armada/runtime-manifests/${process.arch}.json`,
     config.boatAgentPath,
-    env.ARMADA_RUNTIME_ARTIFACT_DIR,
+    config.boatAgentPath === "runtime" ? env.ARMADA_RUNTIME_ARTIFACT_DIR : undefined,
   );
 
   let modalRuntime: { manifest: Awaited<ReturnType<typeof readManifest>>; artifactDir: string } | undefined;
