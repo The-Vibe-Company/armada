@@ -4,6 +4,7 @@ import { type ModalMachineOptions, scopeKey } from "@armada/provider-modal";
 import { rowOnlyDatabase } from "../../test/row-only-database.ts";
 import { createTurnDispatchJob, type DispatchTurn } from "../account-turn-dispatch.ts";
 import { createAccountTurnQueue } from "../account-turn-queue.ts";
+import { createOrdinaryLaunchReceipts } from "../ordinary-launch-receipts.ts";
 import { retentionMaintenanceJob, seedRetentionMaintenance } from "../retention-maintenance.ts";
 import { createRuntimeEnrolments, scopedRuntimeSql } from "../runtime-enrolment.ts";
 import type { LaneFactory } from "../server-worker-modules.ts";
@@ -221,6 +222,44 @@ test("Modal backfill rolls back when a destination key belongs to a different re
     "Modal launch receipt backfill conflicts",
   );
   expect((await db.query("select count(*)::int as count from jobs where kind='launch'")).rows).toEqual([{ count: 1 }]);
+});
+
+test.each(["boat", "modal"] as const)("a %s reservation excludes the competing launch producer", async (first) => {
+  const { db, input, sql } = await modalAdmissionFixture();
+  const key = 'shared-launch-key-"\\雪\n';
+  const actor = { orgId: input.orgId, userId: input.ownerId };
+  const receipts = createOrdinaryLaunchReceipts(sql);
+  const boat = (dispatch: (id: string) => Promise<string>) =>
+    receipts.run(actor, key, { golden: "boat-golden" }, dispatch, {
+      target: { provider: "boat", orgId: actor.orgId, visibility: "org", modal: null },
+      backendId: "boat",
+      management: { scope: "org", ownerId: actor.orgId },
+    });
+  const modal = (digest: string) => admitModalLaunch(sql, launchEncryptionKey, { ...input, request: { key, digest } });
+
+  if (first === "boat") {
+    const boatId = await boat(async (id) => id);
+    const {
+      rows: [receipt],
+    } = await db.query<{ fingerprint: string }>("select fingerprint from ordinary_launch_receipts where id=$1", [
+      boatId,
+    ]);
+    await expect(modal(receipt!.fingerprint)).rejects.toMatchObject({ code: "outcome_unknown" });
+    expect((await db.query("select id from sandboxes")).rows).toEqual([]);
+    expect((await db.query("select backfill_modal_launch_receipts()::int as verified")).rows).toEqual([
+      { verified: 1 },
+    ]);
+    return;
+  }
+
+  const { sandbox } = await modal("modal-digest");
+  await expect(
+    boat(async () => {
+      throw new Error("Competing Boat provider must never be called");
+    }),
+  ).rejects.toMatchObject({ code: "conflict" });
+  expect((await db.query("select id from ordinary_launch_receipts")).rows).toEqual([]);
+  expect((await db.query("select id from sandboxes")).rows).toEqual([{ id: sandbox.id }]);
 });
 
 test("Modal admission commits an unbound sandbox, scoped job and encrypted turn intent before a claim", async () => {
