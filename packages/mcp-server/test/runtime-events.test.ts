@@ -20,8 +20,14 @@ import { ENCRYPTION_KEY } from "./support.ts";
 
 const sharedDatabase = rowOnlyDatabase();
 
-async function fixture({ provider = "boat" }: { provider?: "boat" | "modal" } = {}) {
-  const { db, people } = await sharedDatabase();
+async function fixture({
+  provider = "boat",
+  pinAccount = false,
+}: {
+  provider?: "boat" | "modal";
+  pinAccount?: boolean;
+} = {}) {
+  const { db, people, openaiCredentialId } = await sharedDatabase();
   const id = crypto.randomUUID();
   if (provider === "modal") {
     const golden = (
@@ -44,6 +50,13 @@ async function fixture({ provider = "boat" }: { provider?: "boat" | "modal" } = 
       [id, people.owner],
     );
   }
+  const account = { id: openaiCredentialId, version: 1 };
+  if (pinAccount)
+    await db.query("update sandboxes set credential_id=$2, credential_version=$3 where id=$1", [
+      id,
+      account.id,
+      account.version,
+    ]);
   const queries: string[] = [];
   const sql = sqlOver({
     unsafe: async (q, v) => (await db.query(q, v)).rows,
@@ -115,6 +128,7 @@ async function fixture({ provider = "boat" }: { provider?: "boat" | "modal" } = 
     sql,
     people,
     id,
+    account,
     authority,
     enrol,
     route,
@@ -1480,4 +1494,77 @@ test("runtime batches survive a deploy handover exactly once in event_log and th
     replacement.drain();
     await f.close();
   }
+});
+
+async function accountEventFixture() {
+  const f = await fixture({ pinAccount: true });
+  const active = await f.enrol();
+  const { append } = createRuntimeEvents(f.authority, ENCRYPTION_KEY);
+  const send = (events: { sequence: number; event: AgentEvent }[]) =>
+    append(active.runtimeToken, active.epoch, { sandboxId: f.id, generation: active.epoch, events });
+  return { ...f, send };
+}
+
+function exhaustion(sequence: number, at: number, data: Record<string, unknown>) {
+  return {
+    sequence,
+    event: { id: String(sequence), at, kind: "other" as const, type: "usage_limit", promptId: "p", data },
+  };
+}
+
+test("runtime ACK persists provider exhaustion for the pinned revision and ignores a late older fact", async () => {
+  const f = await accountEventFixture();
+  const resetsAt = "2027-01-01T14:00:00.000Z";
+  const code = "usage_limit_exceeded";
+  await expect(f.send([exhaustion(1, 200, { code, resetsAt })])).resolves.toEqual({ acknowledgedSequence: 1 });
+  await expect(f.send([exhaustion(2, 100, { code })])).resolves.toEqual({ acknowledgedSequence: 2 });
+  expect((await f.db.query("select account_id,account_version,code,resets_at from account_exhaustion")).rows).toEqual([
+    { account_id: f.account.id, account_version: f.account.version, code, resets_at: new Date(resetsAt) },
+  ]);
+});
+
+test("a mid-turn provider retry leaves the account binding and health intact", async () => {
+  const f = await accountEventFixture();
+  const code = "usage_limit_exceeded";
+  await expect(f.send([exhaustion(1, 200, { code, resetsAt: "2027-01-01T14:00:00.000Z" })])).resolves.toEqual({
+    acknowledgedSequence: 1,
+  });
+  const readHealth = async () => (await f.db.query("select * from account_exhaustion")).rows;
+  const before = await readHealth();
+  expect(before).toHaveLength(1);
+  await expect(
+    f.send([
+      {
+        sequence: 2,
+        event: {
+          id: "retry",
+          at: 201,
+          kind: "other",
+          type: "armada/modelRateLimit",
+          promptId: "p",
+          data: {
+            retryCount: 1,
+            delayMs: 1000,
+            totalWaitMs: 1000,
+            message: "Rate limited by the model provider, retrying in 1 s",
+          },
+        },
+      },
+      exhaustion(3, 202, { code: "rate_limited" }),
+    ]),
+  ).resolves.toEqual({ acknowledgedSequence: 3 });
+  expect(await readHealth()).toEqual(before);
+  expect((await f.db.query("select credential_id,credential_version from sandboxes where id=$1", [f.id])).rows).toEqual(
+    [{ credential_id: f.account.id, credential_version: f.account.version }],
+  );
+});
+
+test("a provider reset outside PostgreSQL's ISO calendar still acknowledges the journal", async () => {
+  const f = await accountEventFixture();
+  await expect(
+    f.send([exhaustion(1, 300, { code: "usage_limit_exceeded", resetsAt: "0000-01-01T00:00:00.000Z" })]),
+  ).resolves.toEqual({ acknowledgedSequence: 1 });
+  expect(
+    (await f.db.query("select resets_at from account_exhaustion where account_id=$1", [f.account.id])).rows,
+  ).toEqual([{ resets_at: null }]);
 });

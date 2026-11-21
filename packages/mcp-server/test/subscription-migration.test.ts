@@ -403,210 +403,211 @@ test("first shared launch drains known writers, keeps their latest auth and upgr
 
 test("Modal subscription replicas wait for the worker to publish its checkpoint before adopting auth", async () => {
   const { db, people } = await database();
-  const actor: GoldenActor = { userId: people.owner, orgId: people.org, role: "member" };
-  const account = (
-    await db.query<{ id: string }>(
-      "insert into credentials(scope,owner_id,kind,value_enc) values('user',$1,'codex_auth',$2) returning id",
-      [actor.userId, await encryptSecret(native(0), ENCRYPTION_KEY)],
-    )
-  ).rows[0]!;
-  const scope: Scope = {
-    orgId: actor.orgId,
-    userId: actor.userId,
-    visibility: "org",
-    binding: { workspace: "ws", environment: "main", appId: "app" },
-  };
-  const golden = await createSqlGoldenStore(db).insert({
-    orgId: actor.orgId,
-    ownerId: actor.userId,
-    name: "stopping-modal",
-    visibility: "org",
-    provider: "modal",
-    modal: scope.binding,
-    config: { repos: [{ url: "https://github.com/example/web.git", branch: "main", dir: "web" }], init: [] },
-  });
-  const id = crypto.randomUUID(),
-    physical = "stopping-native";
-  await createSqlSandboxStore(db).insert({
-    id,
-    provider: "modal",
-    providerSandboxId: physical,
-    goldenId: golden.id,
-    orgId: actor.orgId,
-    ownerId: actor.userId,
-    harness: "codex",
-    status: "ready",
-    visibility: "org",
-    model: "gpt-6.1-sol",
-    reasoningEffort: "high",
-    credentialId: account.id,
-    credentialVersion: 1,
-  });
-  await db.query(
-    "insert into modal_machines(scope,id,org_id,owner_id,visibility,request_key,record) values($1,$2,$3,$4,'org','stopping-migration',$5::jsonb)",
-    [
-      scopeKey(scope),
-      physical,
-      actor.orgId,
-      actor.userId,
-      JSON.stringify({ generation: 1, launchUserId: actor.userId }),
-    ],
-  );
-  let complete = false;
-  const retryRetention: (boolean | undefined)[] = [];
-  let firstMigration!: ReturnType<typeof createSubscriptionMigration>,
-    secondMigration!: ReturnType<typeof createSubscriptionMigration>;
-  const first = createModelAuthOwnership(db, ENCRYPTION_KEY, undefined, undefined, {
-    origin: "https://armada.example",
-    prepareAccount: (...args) => firstMigration.prepareAccount(...args),
-  });
-  const second = createModelAuthOwnership(db, ENCRYPTION_KEY, undefined, undefined, {
-    origin: "https://armada.example",
-    prepareAccount: (...args) => secondMigration.prepareAccount(...args),
-  });
-  const provider = {
-    ...fakeBoat().provider,
-    id: "modal" as const,
-    get: async () => ({
-      id: physical,
-      name: physical,
-      state: complete ? ("stopped" as const) : ("running" as const),
-      providerState: complete ? "stopped" : "active",
-      labels: {},
-    }),
-    stop: async ({ requireRetention }: { requireRetention?: boolean }) => {
-      retryRetention.push(requireRetention);
-      if (retryRetention.length === 1)
-        throw new ProviderError({
-          provider: "modal",
-          code: "unavailable",
-          message: "Synthetic checkpoint failure",
-          retryable: true,
-        });
-      expect(
-        await first.publishFromModal(
-          scope,
-          { sandboxId: physical, generation: "1", expiresAt: Date.now() + 60000 },
-          native(1),
-          0,
-        ),
-      ).toEqual({ authRevision: 1, committed: true });
-      complete = true;
-    },
-  };
-  firstMigration = createSubscriptionMigration(
-    db,
-    async () => ({ provider, providerSandboxId: physical }),
-    (...args) => first.capture(...args),
-    first.broker!,
-  );
-  secondMigration = createSubscriptionMigration(
-    db,
-    async () => ({ provider, providerSandboxId: physical }),
-    (...args) => second.capture(...args),
-    second.broker!,
-  );
-  await expect(first.broker!.enroll(actor, account.id, 1)).rejects.toMatchObject({ code: "unavailable" });
-  await expect(second.broker!.enroll(actor, account.id, 1)).rejects.toMatchObject({ code: "unavailable" });
-  expect(retryRetention).toEqual([]);
-  const worker = createSandboxLifecycle(db, async () => provider);
-  expect(await worker.reconcileOne()).toBe(true);
-  await worker.drain();
-  await expect(second.broker!.enroll(actor, account.id, 1)).rejects.toMatchObject({ code: "unavailable" });
-  await db.query("update sandboxes set reconcile_after=now(), expires_at=now() where id=$1", [id]);
-  expect(await worker.reconcileOne()).toBe(true);
-  await worker.drain();
-  await Promise.all([first.broker!.enroll(actor, account.id, 1), second.broker!.enroll(actor, account.id, 1)]);
-  expect(retryRetention).toEqual([true, true]);
-  expect(await first.broker!.access(actor, account.id, 1)).toMatchObject({
-    accessToken: "migration-access-1",
-    revision: 1,
-  });
-  expect(await second.broker!.access(actor, account.id, 1)).toMatchObject({
-    accessToken: "migration-access-1",
-    revision: 1,
-  });
-});
-
-test.each(["boat", "modal"] as const)(
-  "subscription migration never inspects an Armada runtime %s guest",
-  async (kind) => {
-    const { db, people } = await database();
+  try {
     const actor: GoldenActor = { userId: people.owner, orgId: people.org, role: "member" };
     const account = (
       await db.query<{ id: string }>(
         "insert into credentials(scope,owner_id,kind,value_enc) values('user',$1,'codex_auth',$2) returning id",
-        [people.owner, await encryptSecret(native(0), ENCRYPTION_KEY)],
+        [actor.userId, await encryptSecret(native(0), ENCRYPTION_KEY)],
       )
     ).rows[0]!;
-    const boat = fakeBoat();
-    const physical = await boat.provider.fork({ from: "runtime", noEnv: true, env: {}, labels: {}, ttlSeconds: 3600 });
-    const id = crypto.randomUUID();
-    const goldens = createSqlGoldenStore(db);
-    const golden =
-      kind === "boat"
-        ? (await goldens.findByName(people.org, "shared"))[0]!
-        : await goldens.insert({
-            orgId: people.org,
-            ownerId: people.owner,
-            name: "runtime-modal",
-            visibility: "org",
-            provider: "modal",
-            modal: { workspace: "ws", environment: "main", appId: "app" },
-            config: { repos: [{ url: "https://github.com/example/web.git", branch: "main", dir: "web" }], init: [] },
-          });
+    const scope: Scope = {
+      orgId: actor.orgId,
+      userId: actor.userId,
+      visibility: "org",
+      binding: { workspace: "ws", environment: "main", appId: "app" },
+    };
+    const golden = await createSqlGoldenStore(db).insert({
+      orgId: actor.orgId,
+      ownerId: actor.userId,
+      name: "stopping-modal",
+      visibility: "org",
+      provider: "modal",
+      modal: scope.binding,
+      config: { repos: [{ url: "https://github.com/example/web.git", branch: "main", dir: "web" }], init: [] },
+    });
+    const id = crypto.randomUUID(),
+      physical = "stopping-native";
+    await createSqlSandboxStore(db).insert({
+      id,
+      provider: "modal",
+      providerSandboxId: physical,
+      goldenId: golden.id,
+      orgId: actor.orgId,
+      ownerId: actor.userId,
+      harness: "codex",
+      status: "ready",
+      visibility: "org",
+      model: "gpt-6.1-sol",
+      reasoningEffort: "high",
+      credentialId: account.id,
+      credentialVersion: 1,
+    });
     await db.query(
-      `insert into sandboxes(id,org_id,owner_id,golden_id,harness,status,provider,provider_sandbox_id,boat_id,visibility,credential_id,credential_version,boat_runtime,runtime_transport)
-     values($1,$2,$3,$6,'codex','running',$7,$4,$8,'org',$5,1,$9,$10)`,
+      "insert into modal_machines(scope,id,org_id,owner_id,visibility,request_key,record) values($1,$2,$3,$4,'org','stopping-migration',$5::jsonb)",
       [
-        id,
-        people.org,
-        people.owner,
-        physical.id,
-        account.id,
-        golden.id,
-        kind,
-        kind === "boat" ? physical.id : null,
-        kind === "boat",
-        kind === "modal" ? "dialout" : null,
+        scopeKey(scope),
+        physical,
+        actor.orgId,
+        actor.userId,
+        JSON.stringify({ generation: 1, launchUserId: actor.userId }),
       ],
     );
-    const resolved: string[] = [];
-    const inspected: string[] = [];
+    let complete = false;
+    const retryRetention: (boolean | undefined)[] = [];
+    let firstMigration!: ReturnType<typeof createSubscriptionMigration>,
+      secondMigration!: ReturnType<typeof createSubscriptionMigration>;
+    const first = createModelAuthOwnership(db, ENCRYPTION_KEY, undefined, undefined, {
+      origin: "https://armada.example",
+      prepareAccount: (...args) => firstMigration.prepareAccount(...args),
+    });
+    const second = createModelAuthOwnership(db, ENCRYPTION_KEY, undefined, undefined, {
+      origin: "https://armada.example",
+      prepareAccount: (...args) => secondMigration.prepareAccount(...args),
+    });
     const provider = {
-      ...boat.provider,
-      id: kind,
-      async get(...args: Parameters<typeof boat.provider.get>) {
-        inspected.push(args[0]);
-        return boat.provider.get(...args);
+      ...fakeBoat().provider,
+      id: "modal" as const,
+      get: async () => ({
+        id: physical,
+        name: physical,
+        state: complete ? ("stopped" as const) : ("running" as const),
+        providerState: complete ? "stopped" : "active",
+        labels: {},
+      }),
+      stop: async ({ requireRetention }: { requireRetention?: boolean }) => {
+        retryRetention.push(requireRetention);
+        if (retryRetention.length === 1)
+          throw new ProviderError({
+            provider: "modal",
+            code: "unavailable",
+            message: "Synthetic checkpoint failure",
+            retryable: true,
+          });
+        expect(
+          await first.publishFromModal(
+            scope,
+            { sandboxId: physical, generation: "1", expiresAt: Date.now() + 60000 },
+            native(1),
+            0,
+          ),
+        ).toEqual({ authRevision: 1, committed: true });
+        complete = true;
       },
     };
-    const unexpected = async (): Promise<never> => {
-      throw Error("native transport must not reach a runtime guest");
-    };
-    const migration = createSubscriptionMigration(
+    firstMigration = createSubscriptionMigration(
       db,
-      async (_sql, sandboxId) => {
-        resolved.push(sandboxId);
-        return { provider, providerSandboxId: physical.id };
-      },
-      unexpected,
-      {
-        configuration() {
-          throw Error("unexpected native capability");
-        },
-        transferLegacy: unexpected,
-      },
+      async () => ({ provider, providerSandboxId: physical }),
+      (...args) => first.capture(...args),
+      first.broker!,
     );
-    await migration.prepareAccount(actor, account.id, 1);
-    await migration.prepareTurn(provider, physical.id, actor);
-    expect(resolved).toEqual([]);
-    expect(inspected).toEqual([]);
-    expect((await db.query<{ status: string }>("select status from sandboxes where id=$1", [id])).rows[0]?.status).toBe(
-      "running",
+    secondMigration = createSubscriptionMigration(
+      db,
+      async () => ({ provider, providerSandboxId: physical }),
+      (...args) => second.capture(...args),
+      second.broker!,
     );
-  },
-);
+    await expect(first.broker!.enroll(actor, account.id, 1)).rejects.toMatchObject({ code: "unavailable" });
+    await expect(second.broker!.enroll(actor, account.id, 1)).rejects.toMatchObject({ code: "unavailable" });
+    expect(retryRetention).toEqual([]);
+    const worker = createSandboxLifecycle(db, async () => provider);
+    expect(await worker.reconcileOne()).toBe(true);
+    await worker.drain();
+    await expect(second.broker!.enroll(actor, account.id, 1)).rejects.toMatchObject({ code: "unavailable" });
+    await db.query("update sandboxes set reconcile_after=now(), expires_at=now() where id=$1", [id]);
+    expect(await worker.reconcileOne()).toBe(true);
+    await worker.drain();
+    await Promise.all([first.broker!.enroll(actor, account.id, 1), second.broker!.enroll(actor, account.id, 1)]);
+    expect(retryRetention).toEqual([true, true]);
+    expect(await first.broker!.access(actor, account.id, 1)).toMatchObject({
+      accessToken: "migration-access-1",
+      revision: 1,
+    });
+    expect(await second.broker!.access(actor, account.id, 1)).toMatchObject({
+      accessToken: "migration-access-1",
+      revision: 1,
+    });
+  } finally {
+    await db.close();
+  }
+});
+
+test.each(["boat", "modal"] as const)("subscription skips %s runtime guests", async (kind) => {
+  const { db, people } = await database();
+  const actor: GoldenActor = { userId: people.owner, orgId: people.org, role: "member" };
+  const account = (
+    await db.query<{ id: string }>(
+      "insert into credentials(scope,owner_id,kind,value_enc) values('user',$1,'codex_auth',$2) returning id",
+      [people.owner, await encryptSecret(native(0), ENCRYPTION_KEY)],
+    )
+  ).rows[0]!;
+  const boat = fakeBoat();
+  const physical = await boat.provider.fork({ from: "runtime", noEnv: true, env: {}, labels: {}, ttlSeconds: 3600 });
+  const id = crypto.randomUUID();
+  const goldens = createSqlGoldenStore(db);
+  const golden =
+    kind === "boat"
+      ? (await goldens.findByName(people.org, "shared"))[0]!
+      : await goldens.insert({
+          orgId: people.org,
+          ownerId: people.owner,
+          name: "runtime-modal",
+          visibility: "org",
+          provider: "modal",
+          modal: { workspace: "ws", environment: "main", appId: "app" },
+          config: { repos: [{ url: "https://github.com/example/web.git", branch: "main", dir: "web" }], init: [] },
+        });
+  await db.query(
+    `insert into sandboxes(id,org_id,owner_id,golden_id,harness,status,provider,provider_sandbox_id,boat_id,visibility,credential_id,credential_version,boat_runtime,runtime_transport)
+     values($1,$2,$3,$6,'codex','running',$7,$4,$8,'org',$5,1,$9,$10)`,
+    [
+      id,
+      people.org,
+      people.owner,
+      physical.id,
+      account.id,
+      golden.id,
+      kind,
+      kind === "boat" ? physical.id : null,
+      kind === "boat",
+      kind === "modal" ? "dialout" : null,
+    ],
+  );
+  const resolved: string[] = [];
+  const inspected: string[] = [];
+  const provider = {
+    ...boat.provider,
+    id: kind,
+    async get(...args: Parameters<typeof boat.provider.get>) {
+      inspected.push(args[0]);
+      return boat.provider.get(...args);
+    },
+  };
+  const unexpected = async (): Promise<never> => {
+    throw Error("native transport must not reach a runtime guest");
+  };
+  const migration = createSubscriptionMigration(
+    db,
+    async (_sql, sandboxId) => {
+      resolved.push(sandboxId);
+      return { provider, providerSandboxId: physical.id };
+    },
+    unexpected,
+    {
+      configuration() {
+        throw Error("unexpected native capability");
+      },
+      transferLegacy: unexpected,
+    },
+  );
+  await migration.prepareAccount(actor, account.id, 1);
+  await migration.prepareTurn(provider, physical.id, actor);
+  expect(resolved).toEqual([]);
+  expect(inspected).toEqual([]);
+  expect((await db.query<{ status: string }>("select status from sandboxes where id=$1", [id])).rows[0]?.status).toBe(
+    "running",
+  );
+});
 
 test.each(["boat", "modal"] as const)("subscription preparation leaves a strict native %s stop alone", async (kind) => {
   const { db, people } = await database();
