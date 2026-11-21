@@ -135,11 +135,11 @@ test.each([
     }
     const confirmations = timeouts.get("stop-confirmation")!;
     expect(confirmations).toHaveLength(2);
-    if (budgets.real_model_stop === undefined) {
+    const stopBudget = budgets.real_model_stop;
+    if (stopBudget === undefined) {
       expect(confirmations).toEqual([120_000, 120_000]);
     } else {
-      // Each stop request consumed time from its confirmation budget.
-      expect(confirmations.every((budget) => budget > 0 && budget <= budgets.real_model_stop! - 100)).toBe(true);
+      expect(confirmations.every((budget) => budget > 0 && budget <= stopBudget - 100)).toBe(true);
     }
   }
   expect(passed).toBe(code === undefined);
