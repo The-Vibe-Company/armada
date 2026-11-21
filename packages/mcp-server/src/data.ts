@@ -79,6 +79,7 @@ export interface SandboxView extends SandboxRecord {
 export interface ServerSandboxPatch extends SandboxPatch {
   deleteCompleted?: true;
   nativeDrain?: true;
+  nativeDrainAdmission?: { provider: SandboxRecord["provider"]; placement: string };
   expireAfterExtension?: true;
   nativeExecAdmission?: { provider: SandboxRecord["provider"]; placement: string };
   nativeExecCompleted?: true;
@@ -939,9 +940,10 @@ export function createSqlData(
         };
         if ((patch.advanceGeneration || patch.turnActivity === "claim") && patch.activityToken) {
           set("activity_lease_id", patch.activityToken, "::uuid");
-          sets.push("activity_until = now() + interval '2 minutes'");
+          const clock = patch.nativeDrainAdmission ? "clock_timestamp()" : "now()";
+          sets.push(`activity_until = ${clock} + interval '2 minutes'`);
         }
-        if (patch.nativeDrain && patch.deleteRequested) sets.push("native_drain_pending = true");
+        if (patch.nativeDrainAdmission) sets.push("native_drain_pending = true");
         if (patch.rearmDeadline) sets.push("expires_at = now() + s.effective_ttl_seconds * interval '1 second'");
         if (patch.stopRequested !== undefined) {
           // Retries of an in-flight stop share one epoch; send/resume clears it.
@@ -986,9 +988,12 @@ export function createSqlData(
         const stopAdmissionReason = stopStatus === "stopping" && !patch.finishActivity ? reason : undefined;
         if (reason !== undefined && stopAdmissionReason === undefined) set("status_reason", reason, "::text");
         if (sets.length === 0) return;
-        let fence = patch.renewActivity
-          ? " and (not s.native_drain_pending or s.activity_until > clock_timestamp())"
-          : " and not s.native_drain_pending";
+        let fence = "";
+        if (!patch.nativeDrainAdmission) {
+          fence = patch.renewActivity
+            ? " and (not s.native_drain_pending or s.activity_until > clock_timestamp())"
+            : " and not s.native_drain_pending";
+        }
         if (patch.nativeDiagnostic) {
           const { state, placement, previousReason } = patch.nativeDiagnostic;
           params.push(state, placement, previousReason);
@@ -1176,26 +1181,39 @@ export function createSqlData(
           ]);
         };
         let result: Awaited<ReturnType<typeof applyUpdate>>;
-        if (patch.nativeDrain) {
+        if (patch.nativeDrainAdmission) {
+          const { provider, placement } = patch.nativeDrainAdmission;
           const { expectedGeneration } = patch;
           if (!sql.transaction || !patch.deleteRequested || !admission || expectedGeneration === undefined)
             throw new DataError("Native drain requires its delete admission fence.");
           result = await sql.transaction(async (tx) => {
-            const locked = await tx.query<{ id: string }>(
-              `select s.id from public.sandboxes s where s.id=$3::uuid and ${SANDBOX_VISIBLE}
+            const {
+              rows: [locked],
+            } = await tx.query<{ native_drain_pending: boolean }>(
+              `select s.native_drain_pending from public.sandboxes s where s.id=$3::uuid and ${SANDBOX_VISIBLE}
+                 and s.provider=$4::public.sandbox_provider and s.provider_sandbox_id=$5
+                 and s.provider in ('boat','modal') and not s.boat_runtime and s.runtime_transport is distinct from 'dialout'
+                 and s.stopped_at is not null and s.stop_requested_at is null
+                 and s.deleted_at is null and not s.application_secret_tainted
                  and exists(select 1 from public.members m where m.org_id=s.org_id and m.user_id=$2::uuid
                    and (s.owner_id=$2::uuid or m.role='admin')) for update of s`,
-              [...scope, id],
+              [...scope, id, provider, placement],
             );
-            if (!locked.rows.length) throw new DataError("Sandbox deletion access denied.", "sandbox_not_ready");
-            const {
-              rows: [recovery],
-            } = await tx.query<{ outcome: string }>(
-              "select public.copy_native_drain_recovery($1::uuid,$2::bigint) as outcome",
-              [id, expectedGeneration],
-            );
-            if (recovery?.outcome !== "clean" && recovery?.outcome !== "archived")
-              throw new DataError("Native sandbox work preservation could not be verified.", "sandbox_not_ready");
+            if (!locked) throw new DataError("Sandbox is not eligible for native drain deletion.", "sandbox_not_ready");
+            if (locked.native_drain_pending) {
+              // The committed intent already owns the recovery handoff. Only Modal
+              // can replay an uncertain delete through its durable provider journal.
+              if (provider !== "modal") throw new DataError("Native sandbox deletion is pending.", "sandbox_not_ready");
+            } else {
+              const {
+                rows: [recovery],
+              } = await tx.query<{ outcome: string }>(
+                "select public.copy_native_drain_recovery($1::uuid,$2::bigint) as outcome",
+                [id, expectedGeneration],
+              );
+              if (recovery?.outcome !== "clean" && recovery?.outcome !== "archived")
+                throw new DataError("Native sandbox work preservation could not be verified.", "sandbox_not_ready");
+            }
             const updated = await applyUpdate(tx);
             if (!updated.rows[0]?.id)
               throw new DataError("Sandbox deletion admission changed during recovery handoff.", "sandbox_not_ready");

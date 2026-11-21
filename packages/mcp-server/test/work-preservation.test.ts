@@ -1414,6 +1414,78 @@ test.each(["not_found", "pending", "settlement failure"] as const)(
   },
 );
 
+test.each([
+  "lost admission reply",
+  "lost provider reply",
+  "lost settlement",
+  "unavailable provider",
+  "Boat pending",
+] as const)("native drain replay handles %s without repeating work preservation", async (scenario) => {
+  const providerId = scenario === "Boat pending" ? "boat" : "modal";
+  const { db, people, sandboxId, archiveId } = await seedNativeDrainReceipt(undefined, providerId);
+  const caller: Caller = { via: "service", userId: people.owner, orgs: [{ orgId: people.org, role: "member" }] };
+  const sql = bunLikeSql(db);
+  const transaction = sql.transaction;
+  if (!transaction) throw new Error("Missing transaction support");
+  let retry = false;
+  let providerCalled = false;
+  sql.transaction = async (work) => {
+    if (!retry && scenario === "lost settlement" && providerCalled) throw new Error("Settlement unavailable");
+    const result = await transaction(work);
+    if (!retry && scenario === "lost admission reply") throw new Error("Admission reply lost");
+    return result;
+  };
+  const provider: Provider = {
+    ...fakeBoat().provider,
+    id: providerId,
+    delete: mock(async () => {
+      providerCalled = true;
+      if (!retry && scenario === "lost provider reply") throw new Error("Provider reply lost");
+      if (retry && scenario === "unavailable provider")
+        throw new ProviderError({
+          provider: providerId,
+          code: "not_found",
+          message: "App unavailable",
+          retryable: true,
+        });
+      return {
+        status: scenario === "Boat pending" || (!retry && scenario === "unavailable provider") ? "pending" : "deleted",
+      };
+    }),
+  };
+  const { sandboxes } = createSqlData(sql)(caller);
+  const drain = () =>
+    deleteSandboxWithActivity(sandboxes, { resolve: async () => provider }, sandboxId, "native-drain");
+  await expect(drain()).rejects.toThrow();
+  retry = true;
+  const callsBeforeRetry = scenario === "lost admission reply" ? 0 : 1;
+  await expect(drain()).rejects.toMatchObject({ code: "sandbox_not_ready" });
+  expect(provider.delete).toHaveBeenCalledTimes(callsBeforeRetry);
+  await db.query("update sandboxes set activity_until=now()-interval '1 second' where id=$1", [sandboxId]);
+  if (scenario === "Boat pending") {
+    await expect(drain()).rejects.toMatchObject({ code: "sandbox_not_ready" });
+    expect(provider.delete).toHaveBeenCalledTimes(callsBeforeRetry);
+  } else if (scenario === "unavailable provider") {
+    await expect(drain()).rejects.toThrow("App unavailable");
+  } else {
+    await expect(drain()).resolves.toEqual({ id: sandboxId, status: "deleted" });
+    await expect(drain()).resolves.toEqual({ id: sandboxId, status: "deleted" });
+  }
+  if (scenario !== "Boat pending") {
+    expect(provider.delete).toHaveBeenCalledTimes(callsBeforeRetry + 1);
+    expect(provider.delete).toHaveBeenLastCalledWith({ sandboxId: `bx_${sandboxId}`, generation: 6 });
+  }
+  const { rows } = await db.query(
+    `select s.status,s.native_drain_pending,r.archive_id
+       from sandboxes s join native_drain_recovery r on r.sandbox_id=s.id where s.id=$1`,
+    [sandboxId],
+  );
+  const pending = scenario === "Boat pending" || scenario === "unavailable provider";
+  expect(rows).toEqual([
+    { status: pending ? "stopped" : "deleted", native_drain_pending: pending, archive_id: archiveId },
+  ]);
+});
+
 test.each(["activity", "queue", "provider observation", "owner row update", "ordinary delete"] as const)(
   "uncertain native drain refuses %s after its lease expires",
   async (attempt) => {
