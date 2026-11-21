@@ -238,7 +238,7 @@ export function createHandler(options: HandlerOptions): (request: Request) => Pr
     }
   };
   const bodyLimit = options.maxRequestBodyBytes ?? REQUEST_BODY_LIMIT_BYTES;
-  return (request) => observeRequest(() => withRequestBodyCeiling(request, bodyLimit, routeRequest), log);
+  return (request) => observeRequest(() => withRequestBodyCeiling(request, bodyLimit, routeRequest), options.log);
 }
 
 /**
