@@ -277,7 +277,13 @@ export function createRuntimeMcp(options: {
       throw new VaultError("unavailable", failure);
     return reply;
   };
-  async function prepare(caller: Caller, id: string, signal?: AbortSignal, assertClaim?: (tx: Sql) => Promise<void>) {
+  async function prepare(
+    caller: Caller,
+    id: string,
+    signal?: AbortSignal,
+    assertClaim?: (tx: Sql) => Promise<void>,
+    healthRequestId?: string,
+  ) {
     signal?.throwIfAborted();
     const s = await owner(caller, id);
     const initial = await authority.withOwner(s.id, s.ownerId, async (tx, live) => {
@@ -301,7 +307,12 @@ export function createRuntimeMcp(options: {
     });
     if (!initial || initial.cached) return initial?.cached;
     // Feature evidence is bound to this epoch before any private configuration.
-    const healthCommand = { version: 1 as const, sandboxId: s.id, requestId: randomUUID(), op: "health" as const };
+    const healthCommand = {
+      version: 1 as const,
+      sandboxId: s.id,
+      requestId: healthRequestId ?? randomUUID(),
+      op: "health" as const,
+    };
     const health = await call(
       s,
       healthCommand,

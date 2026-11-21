@@ -667,6 +667,7 @@ export async function createServerServices(env: Record<string, string | undefine
     runtimeCommands,
     runtimeEvents,
     runtimeGitHub,
+    runtimeMcp,
     runtimeSockets,
     langfuse,
     delegatedAccess,
