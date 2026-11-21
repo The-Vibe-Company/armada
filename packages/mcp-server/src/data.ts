@@ -992,7 +992,7 @@ export function createSqlData(
             and (s.status<>'failed' or s.stopped_at is null)
             and s.stop_requested_at is null and s.deleted_at is null and s.status<>'deleted'`;
         }
-        if (patch.nativeSteerReceipt) fence += " and s.activity_until>clock_timestamp()";
+        if (nativeReceipt) fence += " and s.activity_until>clock_timestamp()";
         if (patch.turnActivity !== undefined)
           fence += " and s.status in ('ready','running') and s.stop_requested_at is null and s.deleted_at is null";
         if (patch.turnActivity === "claim") fence += " and s.activity_lease_id is null";
@@ -1072,6 +1072,9 @@ export function createSqlData(
           fence += ` and (s.activity_until>clock_timestamp() or not exists(
             select 1 from public.sandbox_native_exec_attempts e
             where e.sandbox_id=s.id and e.generation=s.lifecycle_generation
+            union all
+            select 1 from public.sandbox_native_send_attempts a
+            where a.sandbox_id=s.id and a.generation=s.lifecycle_generation
           ))`;
         // A read-only reconciler may overlap list readiness. Admission can supersede
         // that observation, but never a claimed stop or an expired/starting sandbox.
@@ -1145,6 +1148,12 @@ export function createSqlData(
               : `${wrapped ? "with updated as (" : ""}${update}${wrapped ? `)${cancelTurns ? ", refused as (update public.account_turn_queue q set state='failed',failure_reason='Dispatch refused by owner stop.' from updated u where q.sandbox_id=u.id and q.state in ('queued','dispatching'))" : ""}${releaseReservation ? ", released as (delete from public.account_agent_reservations r using updated u where r.sandbox_id=u.id)" : ""} select ${returning} from updated` : ""}`,
             params,
           );
+        const recordNativeSendAttempt = async (tx: Sql, generation: string) => {
+          await tx.query("insert into public.sandbox_native_send_attempts(sandbox_id,generation) values($1,$2)", [
+            id,
+            generation,
+          ]);
+        };
         let result: Awaited<ReturnType<typeof applyUpdate>>;
         if (stopStatus !== undefined || patch.modalRuntimeExtensionTarget !== undefined) {
           if (!sql.transaction) throw new Error("Fenced sandbox admission requires a transaction.");
@@ -1216,7 +1225,17 @@ export function createSqlData(
             if (row?.id) {
               if (!row.status || !row.generation) throw new Error("Native resume update did not return its fence.");
               await publishNativeResumeAdmission(tx, id, row.status, row.generation, activityToken);
+              if (admission) await recordNativeSendAttempt(tx, row.generation);
             }
+            return updated;
+          });
+        } else if (patch.nativeSendAdmission) {
+          if (!sql.transaction || !admission || patch.expectedGeneration === undefined)
+            throw new DataError("Native send requires its activity generation and token.");
+          const generation = String(patch.expectedGeneration + 1);
+          result = await sql.transaction(async (tx) => {
+            const updated = await applyUpdate(tx);
+            if (updated.rows[0]?.id) await recordNativeSendAttempt(tx, generation);
             return updated;
           });
         } else if (nativeReceipt && receiptGeneration !== undefined && receiptToken) {
@@ -1225,6 +1244,7 @@ export function createSqlData(
             const locked = await tx.query<{ id: string }>(
               `select s.id from public.sandboxes s where s.id=$3::uuid and ${SANDBOX_VISIBLE}
                 and s.lifecycle_generation=$4 and s.activity_lease_id=$5::uuid
+                and s.activity_until>clock_timestamp()
                 and s.status=$6::public.sandbox_status and s.provider_sandbox_id=$7
                 and s.provider in ('boat','modal') and not s.boat_runtime and s.runtime_transport is null
                 and s.deleted_at is null and s.status<>'deleted' and s.stop_requested_at is null
@@ -1233,7 +1253,20 @@ export function createSqlData(
             );
             if (!locked.rows.length) return { rows: [] };
             const requestId = patch.nativeSendReceipt?.requestId;
-            if (requestId && patch.taskPromptId) await bindNativePromptRequest(tx, id, patch.taskPromptId, requestId);
+            if (patch.nativeSendReceipt) {
+              const settled = await tx.query(
+                `delete from public.sandbox_native_send_attempts a
+                   using public.native_webhook_prompts p, public.sandboxes s
+                   where a.sandbox_id=$1 and a.generation=$2
+                     and s.id=a.sandbox_id and p.sandbox_id=s.id and p.prompt_id=$3
+                     and p.provider=s.provider and p.provider_sandbox_id=s.provider_sandbox_id
+                     and p.org_id=s.org_id and p.owner_id=s.owner_id and p.created_at>=a.created_at
+                   returning a.sandbox_id`,
+                [id, receiptGeneration, patch.taskPromptId],
+              );
+              if (!settled.rows.length) throw new DataError("Native send acknowledgement was not recorded.");
+              if (requestId && patch.taskPromptId) await bindNativePromptRequest(tx, id, patch.taskPromptId, requestId);
+            }
             if (nativeReceipt.fromState !== "running")
               await publishNativeTurn(
                 tx,

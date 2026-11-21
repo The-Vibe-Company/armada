@@ -23,6 +23,7 @@ const owners = [
   ["sandbox_output*", [`${server}/sandbox-outputs.ts`, `${server}/output-transfers.ts`]],
   ["sandbox_*_pricing sandbox_turn_models", [`${core}/sandbox.ts`, `${server}/turn-pricing.ts`]],
   ["sandbox_native_exec_attempts", [`${server}/data.ts`]],
+  ["sandbox_native_send_attempts", [`${server}/data.ts`]],
   ["sandbox_native_preservation_receipts", [`${server}/sandbox-lifecycle.ts`]],
   ["sandbox_work_recovery", [`${server}/sandbox-lifecycle.ts`, `${server}/work-preservation.ts`]],
   [
