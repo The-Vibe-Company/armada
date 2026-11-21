@@ -78,7 +78,7 @@ export interface SandboxView extends SandboxRecord {
 
 export interface ServerSandboxPatch extends SandboxPatch {
   deleteCompleted?: true;
-  requireNativeDrainRecovery?: true;
+  nativeDrain?: true;
   expireAfterExtension?: true;
   nativeExecAdmission?: { provider: SandboxRecord["provider"]; placement: string };
   nativeExecCompleted?: true;
@@ -819,7 +819,7 @@ export function createSqlData(
           if (!sql.transaction || expectedGeneration === undefined || !activityToken || !patch.finishActivity)
             throw new DataError("Sandbox deletion completion requires its activity generation and token.");
           const applied = await sql.transaction((tx) =>
-            completeSandboxDeletion(tx, scope, id, expectedGeneration, activityToken),
+            completeSandboxDeletion(tx, scope, id, expectedGeneration, activityToken, patch.nativeDrain === true),
           );
           if (!applied) throw new DataError("Sandbox deletion receipt is stale.", "sandbox_not_ready");
           return;
@@ -941,6 +941,7 @@ export function createSqlData(
           set("activity_lease_id", patch.activityToken, "::uuid");
           sets.push("activity_until = now() + interval '2 minutes'");
         }
+        if (patch.nativeDrain && patch.deleteRequested) sets.push("native_drain_pending = true");
         if (patch.rearmDeadline) sets.push("expires_at = now() + s.effective_ttl_seconds * interval '1 second'");
         if (patch.stopRequested !== undefined) {
           // Retries of an in-flight stop share one epoch; send/resume clears it.
@@ -985,7 +986,9 @@ export function createSqlData(
         const stopAdmissionReason = stopStatus === "stopping" && !patch.finishActivity ? reason : undefined;
         if (reason !== undefined && stopAdmissionReason === undefined) set("status_reason", reason, "::text");
         if (sets.length === 0) return;
-        let fence = "";
+        let fence = patch.renewActivity
+          ? " and (not s.native_drain_pending or s.activity_until > clock_timestamp())"
+          : " and not s.native_drain_pending";
         if (patch.nativeDiagnostic) {
           const { state, placement, previousReason } = patch.nativeDiagnostic;
           params.push(state, placement, previousReason);
@@ -1173,7 +1176,7 @@ export function createSqlData(
           ]);
         };
         let result: Awaited<ReturnType<typeof applyUpdate>>;
-        if (patch.requireNativeDrainRecovery) {
+        if (patch.nativeDrain) {
           const { expectedGeneration } = patch;
           if (!sql.transaction || !patch.deleteRequested || !admission || expectedGeneration === undefined)
             throw new DataError("Native drain requires its delete admission fence.");

@@ -41,6 +41,7 @@ export function createCredentialBindingRecovery(
         credential_version: number | null;
         /** An activity or reconciliation lease that has not expired; an expired one is released, as everywhere else. */
         leased: boolean;
+        native_drain_pending: boolean;
         modal_workspace: string;
         modal_environment: string;
         modal_app_id: string;
@@ -59,6 +60,7 @@ export function createCredentialBindingRecovery(
         caller.userId,
       ]);
       if (!member.rows.length) throw new VaultError("forbidden", "Organization membership is required.");
+      if (sandbox.native_drain_pending) throw new VaultError("conflict", "Native sandbox deletion is pending.");
       if (sandbox.credential_id !== null || sandbox.credential_version !== null)
         throw new VaultError("conflict", "This sandbox is already bound; its account cannot change.");
       const policies = await tx.query<{
