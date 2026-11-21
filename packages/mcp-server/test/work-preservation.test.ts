@@ -499,21 +499,19 @@ test("a late failed pass cannot overwrite a concurrent successful stop receipt",
     });
     const late = {
       ...provider,
-      get: () =>
-        new Promise<Awaited<ReturnType<typeof provider.get>>>((resolve) => {
-          release = () => {
-            void provider.get(physical).then(resolve);
-          };
+      exec: () =>
+        new Promise<Awaited<ReturnType<typeof provider.exec>>>((_, reject) => {
+          release = () =>
+            reject(
+              new ProviderError({
+                provider: "boat",
+                code: "sandbox_not_ready",
+                retryable: false,
+                message: "Archiving",
+              }),
+            );
           entered?.();
         }),
-      exec: async () => {
-        throw new ProviderError({
-          provider: "boat",
-          code: "sandbox_not_ready",
-          retryable: false,
-          message: "Archiving",
-        });
-      },
     };
     const failed = preserveBeforeStop(sql, late, id, physical, "user_stop", authority);
     await ready;
