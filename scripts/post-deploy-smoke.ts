@@ -878,7 +878,7 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
     timeoutMs: number,
     request: ReturnType<typeof createLane>["request"],
     keepHandle: (id: string) => void,
-    recover?: false | ((id: string, requestKey: string, until: number) => Promise<T | undefined>),
+    recover?: (id: string, requestKey: string, until: number) => Promise<T | undefined>,
   ) {
     const path = "sandbox/launch";
     const requestKey = `post-deploy-smoke:${crypto.randomUUID()}`;
@@ -891,7 +891,10 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
         externalRef: requestKey,
       };
       try {
-        return await transport<T>(false, path, launchBody, undefined, timeoutMs, record, true);
+        return {
+          result: await transport<T>(false, path, launchBody, undefined, timeoutMs, record, true),
+          recovered: false,
+        };
       } catch (error) {
         if (!(error instanceof SmokeFailure)) throw error;
         const lostReceipt = error.code === "invalid_response" && error.launchResponse !== undefined;
@@ -925,7 +928,7 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
                 record({ sandbox: row });
                 await io.recordSandbox?.(launchBody.org, row.id, requestKey, item.provider);
               }
-              if (row.id !== observedId || !launch.ready.includes(row.status) || recover === false) return;
+              if (row.id !== observedId || !launch.ready.includes(row.status)) return;
               if (!recover) return { sandbox: row } as T;
               return recover(row.id, requestKey, until).catch((readError: unknown) => {
                 if (readError instanceof SmokeFailure || readError instanceof TemplateSkillSmokeFailure)
@@ -934,7 +937,7 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
               });
             }
           });
-          if (recovered !== undefined) return recovered;
+          if (recovered !== undefined) return { result: recovered, recovered: true };
         }
         throw new SmokeFailure(error.code, error.status, undefined, {
           timeoutMs,
@@ -1048,7 +1051,7 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
     out(JSON.stringify({ step: "real_model", model: "real", provider: item.provider }));
     try {
       await step("real_model_launch", async () => {
-        const result = await launchWithObservation<{ sandbox: { id: string } }>(
+        const { result } = await launchWithObservation<{ sandbox: { id: string } }>(
           item,
           {
             provider: item.provider,
@@ -1316,6 +1319,15 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
           golden?: { id: string };
           promptId?: string;
         };
+        const matchesParentConfiguration = (parent: LaunchReceipt["sandbox"]) =>
+          parent.harness === item.harness &&
+          parent.model === item.model &&
+          (!item.reasoningEffort || parent.reasoningEffort === item.reasoningEffort) &&
+          parent.credentialId === item.modelAccountId &&
+          typeof parent.credentialVersion === "number" &&
+          Number.isSafeInteger(parent.credentialVersion) &&
+          parent.credentialVersion >= 1 &&
+          (scope !== "enabled" || parent.visibility === "private");
         const body = {
           ...(scope === "enabled" ? { armadaAccessVersion: 1, armadaAccess: { maxActiveChildren: 1 } } : {}),
           golden: item.golden,
@@ -1329,7 +1341,7 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
           ttlSeconds: 1800,
         };
         const requiresLaunchReceipt = defaultSkills || scope !== undefined;
-        const recoverDefaultSkillLaunch = defaultSkills
+        const recoverLaunch = requiresLaunchReceipt
           ? async (id: string, requestKey: string, until: number) => {
               const inventoryRemaining = until - io.now();
               if (inventoryRemaining <= 0) return;
@@ -1347,13 +1359,13 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
                 return;
               const remaining = until - io.now();
               if (remaining <= 0) return;
-              const status = await sandbox<{
-                id: string;
-                externalRef?: string;
-                status: string;
-                prompt: unknown;
-                skills?: unknown;
-              }>("status", { id }, Math.min(5_000, remaining));
+              const status = await sandbox<
+                Omit<LaunchReceipt["sandbox"], "provider"> & {
+                  externalRef?: string;
+                  status: string;
+                  prompt: unknown;
+                }
+              >("status", { id }, Math.min(5_000, remaining));
               if (
                 status?.id !== id ||
                 status.externalRef !== requestKey ||
@@ -1361,11 +1373,13 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
                 status.prompt !== null
               )
                 return;
-              verifyReceipts(status.skills, dirty ? [] : defaultPins.get(index)!);
-              return { sandbox: { id, provider: item.provider, skills: status.skills }, golden: { id: goldenId } };
+              const observed = { ...status, provider: item.provider };
+              if (scope && !matchesParentConfiguration(observed)) return;
+              if (defaultSkills) verifyReceipts(status.skills, dirty ? [] : defaultPins.get(index)!);
+              return { sandbox: observed, golden: { id: goldenId } };
             }
           : undefined;
-        const result = await launchWithObservation<LaunchReceipt>(
+        const { result, recovered } = await launchWithObservation<LaunchReceipt>(
           item,
           body,
           (deadlines as Record<string, number>).launch ?? 600_000,
@@ -1373,31 +1387,26 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
           (id) => {
             sandboxId = id;
           },
-          scope ? false : recoverDefaultSkillLaunch,
+          recoverLaunch,
         );
+        const parent = result?.sandbox;
         // Retain the cleanup handle even if later response validation fails.
-        if (typeof result?.sandbox?.id === "string" && result.sandbox.id) sandboxId = result.sandbox.id;
-        if (!sandboxId || result.sandbox.provider !== item.provider || result.promptId) fail("invalid_response");
+        if (typeof parent?.id === "string" && parent.id) sandboxId = parent.id;
+        if (!sandboxId || parent?.provider !== item.provider || result.promptId) fail("invalid_response");
         if (requiresLaunchReceipt && result.golden?.id !== item.goldenId) fail("invalid_response");
         if (scope)
           await step("scoped_parent_configuration", async () => {
+            if (!matchesParentConfiguration(parent)) fail("invalid_response");
             if (
-              result.sandbox.harness !== item.harness ||
-              result.sandbox.model !== item.model ||
-              (item.reasoningEffort && result.sandbox.reasoningEffort !== item.reasoningEffort) ||
-              result.sandbox.credentialId !== item.modelAccountId ||
-              !Number.isSafeInteger(result.sandbox.credentialVersion) ||
-              Number(result.sandbox.credentialVersion) < 1 ||
+              !recovered &&
               (scope === "no_option"
                 ? result.armadaAccess?.enabled === true
-                : result.armadaAccess?.enabled !== true ||
-                  result.armadaAccess.maxActiveChildren !== 1 ||
-                  result.sandbox.visibility !== "private")
+                : result.armadaAccess?.enabled !== true || result.armadaAccess.maxActiveChildren !== 1)
             )
               fail("invalid_response");
-            parentCredentialVersion = result.sandbox.credentialVersion;
+            parentCredentialVersion = parent.credentialVersion;
           });
-        launchSkills = result.sandbox.skills;
+        launchSkills = parent.skills;
       });
       const readinessStep = scoped ? "scoped_parent_ready" : "ready";
       await step(readinessStep, async () => {
@@ -2038,7 +2047,6 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
     io.out(JSON.stringify({ step: "smoke_cleanup_journal", pass: false }));
     return false;
   }
-  // Historical receipts did not record provider. Never contact Boat to classify them.
   const deferred = rows.filter((row) => row.provider !== "modal" && row.provider !== "docker");
   rows = rows.filter((row) => row.provider === "modal" || row.provider === "docker");
   if (deferred.length)
