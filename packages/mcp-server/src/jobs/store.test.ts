@@ -2290,8 +2290,9 @@ test.each([
   ["unknown", "runtime ticket"],
   ["unknown", "sandbox binding"],
   ["stopped", "create response"],
+  ["plan unavailable", "create response"],
 ] as const)(
-  "a replacement Modal launch claimant skips bootstrap when observation is %s after losing the %s",
+  "a replacement Modal launch claimant defers bootstrap for %s after losing the %s",
   async (observation, lostAt) => {
     const { f, id, jobId, makeRunner, effects, exitAllocation, hideAllocation } = await modalLaunchFixture(
       await modalAdmissionFixture(),
@@ -2322,10 +2323,13 @@ test.each([
 
     const replacement = makeRunner((step) => {
       if (observation === "unknown" && step === "machine poll") throw new Error("Modal poll unavailable");
+      if (observation === "plan unavailable" && step === "open Modal")
+        throw new Error("Modal credential read unavailable");
     });
     expect(await replacement.reconcileOne(signal)).toBe(true);
     await replacement.drain();
-    expect(effects()).toEqual({ allocations: 1, observed: 1, bootstrapped: [] });
+    const reads = observation === "plan unavailable" ? 0 : 1;
+    expect(effects()).toEqual({ allocations: 1, observed: reads, bootstrapped: [] });
     if (lostAt === "sandbox binding") {
       expect((await f.db.query("select provider_sandbox_id from sandboxes where id=$1", [id])).rows).toEqual([
         { provider_sandbox_id: null },
@@ -2341,12 +2345,15 @@ test.each([
         (await f.db.query("select stopped_at is not null as confirmed from sandboxes where id=$1", [id])).rows,
       ).toEqual([{ confirmed: true }]);
     } else {
+      expect((await f.db.query("select state, attempts from jobs where id=$1", [jobId])).rows).toEqual([
+        { state: "queued", attempts: 1 },
+      ]);
       expect(await f.store.claim("delete", crypto.randomUUID(), 30, 1)).toBeUndefined();
       await f.db.query("update jobs set run_after='-infinity' where id=$1", [jobId]);
       const next = makeRunner();
       expect(await next.reconcileOne(signal)).toBe(true);
       await next.drain();
-      expect(effects()).toEqual({ allocations: 1, observed: 2, bootstrapped: ["physical"] });
+      expect(effects()).toEqual({ allocations: 1, observed: reads + 1, bootstrapped: ["physical"] });
       expect((await f.db.query("select state, attempts from jobs where id=$1", [jobId])).rows).toEqual([
         { state: "done", attempts: 2 },
       ]);
