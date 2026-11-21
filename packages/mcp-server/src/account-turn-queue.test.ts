@@ -1342,18 +1342,20 @@ test("unlimited accounts dispatch three turns without waiting for another dispat
       workers.push(worker);
       expect(await worker.reconcileOne(signal)).toBe(true);
       expect(await Promise.race([entered.promise, worker.drain().then(() => "settled without sending")])).toBe("sent");
+      if (id === waiting.id) {
+        expect(await queue.accept(caller, waiting)).toMatchObject({ status: "queued" });
+        const competingSends: string[] = [];
+        await sharedDispatcher(async (_caller, input) => {
+          competingSends.push(input.id);
+        })();
+        expect(competingSends).toEqual([]);
+        expect(await queue.status(caller, waiting.id, waiting.request_id)).toMatchObject({
+          failed: false,
+          message: "Prompt accepted; waiting for the current sandbox turn or dispatch to finish.",
+        });
+      }
     }
     expect(started).toEqual(ids);
-    expect(await queue.accept(caller, waiting)).toMatchObject({ status: "queued" });
-    const competingSends: string[] = [];
-    await sharedDispatcher(async (_caller, input) => {
-      competingSends.push(input.id);
-    })();
-    expect(competingSends).toEqual([]);
-    expect(await queue.status(caller, waiting.id, waiting.request_id)).toMatchObject({
-      failed: false,
-      message: "Prompt accepted; waiting for the current sandbox turn or dispatch to finish.",
-    });
   } finally {
     release.resolve();
     await Promise.all(workers.map((worker) => worker.drain()));
