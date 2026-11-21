@@ -109,6 +109,44 @@ test("uncertain send reconciles the same durable identity/lease; changed input a
   }
 });
 
+describe("direct Modal runtime admission", () => {
+  const modalSetupFixture = scopedRuntimeFixture(async () => fixture(await sharedDatabase(), "modal", "codex"), {
+    timeout: 20_000,
+  });
+
+  test("direct Modal sends wait for the current setup receipt before claiming runtime activity", async () => {
+    const f = await modalSetupFixture();
+    const request = f.input();
+    const { lifecycleGeneration } = (await createSqlData(f.sql)(f.caller).sandboxes.get(request.id))!;
+    const jobs = createJobsStore(f.sql, ENCRYPTION_KEY);
+    const setupId = await jobs.enqueue(
+      "launch_initial_turn",
+      request.id,
+      lifecycleGeneration!,
+      request.id,
+      {},
+      { orgId: f.row.orgId, maxAttempts: 1 },
+    );
+
+    const refused = async (message: string) => {
+      await expect(f.send(f.caller, request)).rejects.toMatchObject({ code: "conflict", message });
+      expect(await f.bridge.result(f.caller.userId, request.id, `follow_${request.request_id}`)).toMatchObject({
+        state: "missing",
+      });
+      expect(
+        (await f.sql.query("select activity_lease_id from public.sandboxes where id=$1", [request.id])).rows,
+      ).toEqual([{ activity_lease_id: null }]);
+    };
+    await refused("Modal launch setup is still in progress.");
+    await f.db.query("update public.jobs set state='failed' where id=$1", [setupId]);
+    await refused("Modal launch setup failed.");
+    await f.db.query("update public.jobs set state='done' where id=$1", [setupId]);
+    const receipt = await f.send(f.caller, request);
+    expect(receipt.promptId).not.toBe(f.first.promptId);
+    expect(f.starts).toHaveLength(2);
+  });
+});
+
 test("runtime follow-up preserves the operator cause behind an uncertain send", async () => {
   const f = await fixture(await sharedDatabase(), "modal", "codex");
   try {

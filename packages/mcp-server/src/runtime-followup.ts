@@ -2,6 +2,7 @@ import { ProviderError, retainFailureDiagnostic, type Sql, sandboxActivity, Vaul
 import type { Caller } from "./caller.ts";
 import { createSqlData } from "./data.ts";
 import { createGoldenRuntimeEnvironment } from "./golden-runtime-environment.ts";
+import { assertModalLaunchSetup, MODAL_LAUNCH_SETUP_STATE } from "./jobs/modal-launch-setup.ts";
 import { runtimeBridgeTarget } from "./provider-runtime-admission.ts";
 import { lockRuntimeAccount } from "./runtime-account-admission.ts";
 import { runtimeAgentFor } from "./runtime-agent.ts";
@@ -123,6 +124,16 @@ export function createRuntimeFollowup(
     const commandGuard = claim ? assertClaim : undefined;
     // Read-only probe before admission. Runner still owns the final busy check.
     const previous = await commands.result(caller.userId, found.id, commandId);
+    if (!claim && found.provider === "modal" && previous.state === "missing") {
+      const {
+        rows: [setup],
+      } = await sql.query<{ state: string | null }>(
+        `select ${MODAL_LAUNCH_SETUP_STATE} as state from public.sandboxes s
+         where s.id=$1 and s.owner_id=$2 and s.org_id=$3 and s.lifecycle_generation=$4`,
+        [found.id, caller.userId, found.orgId, found.lifecycleGeneration],
+      );
+      assertModalLaunchSetup(setup?.state);
+    }
     if (previous.state === "missing" && found.taskPromptId) {
       const last = await agent.getPrompt({ sandboxId: found.providerSandboxId, promptId: found.taskPromptId });
       if (!last.done)
