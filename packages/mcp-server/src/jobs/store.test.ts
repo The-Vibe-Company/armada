@@ -1,6 +1,12 @@
 import { expect, test } from "bun:test";
 import { createSqlVaultStore, decryptSecret, encryptSecret, type Sql } from "@armada/core/server";
-import { type ModalMachineOptions, scopeKey } from "@armada/provider-modal";
+import {
+  createModalProvider,
+  createSqlModalStore,
+  type ModalMachineOptions,
+  prepareFilesystemSnapshot,
+  scopeKey,
+} from "@armada/provider-modal";
 import { rowOnlyDatabase } from "../../test/row-only-database.ts";
 import { createTurnDispatchJob, type DispatchTurn } from "../account-turn-dispatch.ts";
 import { createAccountTurnQueue } from "../account-turn-queue.ts";
@@ -10,12 +16,14 @@ import { createGoldenRuntimeEnvironment } from "../golden-runtime-environment.ts
 import { launchCredentials } from "../launch-credentials.ts";
 import { createOrdinaryLaunchReceipts } from "../ordinary-launch-receipts.ts";
 import { retentionMaintenanceJob, seedRetentionMaintenance } from "../retention-maintenance.ts";
+import { createRuntimeCheckpoint, createRuntimeStopCheckpoint } from "../runtime-checkpoint.ts";
 import { createRuntimeCommands } from "../runtime-commands.ts";
 import { createRuntimeEnrolments, scopedRuntimeSql } from "../runtime-enrolment.ts";
 import { createRuntimeEvents } from "../runtime-events.ts";
 import { createRuntimeGitHub } from "../runtime-github.ts";
 import { createModalJobReader, createModalLogReader } from "../runtime-history.ts";
 import { createRuntimeMcp, type RuntimeMcp } from "../runtime-mcp.ts";
+import { createRuntimeServing } from "../runtime-serving.ts";
 import { createSandboxLifecycle } from "../sandbox-lifecycle.ts";
 import { deleteSandboxWithActivity } from "../sandbox-rest-controls.ts";
 import type { LaneFactory } from "../server-worker-modules.ts";
@@ -719,6 +727,7 @@ type ModalLaunchStep =
   | "bootstrap response"
   | "image lookup"
   | "runtime ticket"
+  | "baseline capture response"
   | "exact machine ownership"
   | "termination response"
   | "machine poll"
@@ -759,6 +768,9 @@ async function modalLaunchFixture(initial?: Awaited<ReturnType<typeof modalAdmis
   let exited = false;
   let visible = true;
   let terminations = 0;
+  let checkpoints = 0;
+  let baselineCaptures = 0;
+  let modalClient: ModalMachineOptions["client"] | undefined;
   let cleanupPreparations = 0;
   let closedClients = 0;
   let modalCredentialCurrent = true;
@@ -785,7 +797,58 @@ async function modalLaunchFixture(initial?: Awaited<ReturnType<typeof modalAdmis
         terminations++;
         await atStep?.("termination response");
       },
-      async exec() {
+      async snapshotFilesystem() {
+        checkpoints++;
+        return { imageId: "im-retained" };
+      },
+      async exec(args: string[]) {
+        if (args.includes("/usr/sbin/runuser")) {
+          return {
+            stdin: { writeText: async () => {}, close: async () => {} },
+            stdout: {
+              async readText() {
+                return JSON.stringify({
+                  detached: false,
+                  exitCode: 0,
+                  stdout: '{"status":"clean"}',
+                  stderr: "",
+                  timedOut: false,
+                  truncated: false,
+                });
+              },
+            },
+            wait: async () => 0,
+          };
+        }
+        if (args.includes("/opt/armada/runtime-bun/bun")) {
+          let input: { op: string; physicalId: string; generation: number };
+          return {
+            stdin: {
+              async writeText(value: string) {
+                input = JSON.parse(value);
+                if (input.op === "capture") baselineCaptures++;
+              },
+              close: async () => {},
+            },
+            stdout: {
+              async readText() {
+                if (input.op === "capture") await atStep?.("baseline capture response");
+                return input.op === "capture"
+                  ? JSON.stringify({
+                      version: 1,
+                      physicalId: input.physicalId,
+                      generation: input.generation,
+                      namespace: { pid: "pid", mount: "mount" },
+                      processes: [{ pid: 1, start: "1" }],
+                      admissionState: "pending",
+                    })
+                  : "{}";
+              },
+            },
+            wait: async () => 0,
+          };
+        }
+        if (args[0] === "bash") return { wait: async () => 0 };
         await atStep?.("bootstrap dispatch");
         const { rows } = await f.db.query<{ provider_sandbox_id: string }>(
           "select provider_sandbox_id from sandboxes where id=$1",
@@ -836,6 +899,7 @@ async function modalLaunchFixture(initial?: Awaited<ReturnType<typeof modalAdmis
         }),
       },
     } as unknown as ModalMachineOptions["client"];
+    modalClient = client;
     const machine: Omit<ModalMachineOptions, "journal"> = {
       client,
       appName: "test",
@@ -887,6 +951,13 @@ async function modalLaunchFixture(initial?: Awaited<ReturnType<typeof modalAdmis
             return runModalLaunch(jobsSql, launchEncryptionKey, job, context, () => ({
               allocation: { source: { kind: "image", ref: "image" }, size: null, computeTtlSeconds: 600 },
               bindingRef: job.id,
+              placement: {
+                scope: { orgId: f.people.org, userId: f.people.owner, visibility: "private", binding: machine.binding },
+                sourceVisibility: "private",
+                snapshot: "snapshot",
+                imageId: "image",
+                managementAuthority: { credentialScope: "user", credentialOwnerId: f.people.owner },
+              },
               machine,
               canUseModalCredential: async () => modalCredentialCurrent,
               prepareRuntimeTicket,
@@ -935,6 +1006,33 @@ async function modalLaunchFixture(initial?: Awaited<ReturnType<typeof modalAdmis
     },
     effects: () => ({ allocations, observed, bootstrapped }),
     cleanupEffects: () => ({ terminations, cleanupPreparations }),
+    retentionEffects: () => ({ checkpoints, baselineCaptures }),
+    retentionHost() {
+      const scope = {
+        orgId: f.people.org,
+        userId: f.people.owner,
+        visibility: "private" as const,
+        binding: { workspace: "workspace", environment: "main", appId: "ap-test" },
+      };
+      const refuseUnexpected = async () => {
+        throw new Error("Unexpected Modal provider call");
+      };
+      return createModalProvider({
+        client: modalClient as NonNullable<Parameters<typeof createModalProvider>[0]["client"]>,
+        appName: "test",
+        scope,
+        store: createSqlModalStore(f.sql, scope),
+        commonRuntime: true,
+        runner: { call: refuseUnexpected },
+        distribution: {
+          capabilities: {},
+          image: refuseUnexpected,
+          start: refuseUnexpected,
+          restoreEnv: refuseUnexpected,
+          prepareSnapshot: prepareFilesystemSnapshot,
+        },
+      });
+    },
     closedClients: () => closedClients,
     revokeModalCredential: () => {
       modalCredentialCurrent = false;
@@ -1609,6 +1707,63 @@ test.each(["deleting", "deleted"] as const)(
     expect(cleanupEffects().cleanupPreparations).toBe(phase === "deleted" ? 1 : 2);
   },
 );
+
+test("owner stop retains the original machine after job-owned Modal bootstrap takeover", async () => {
+  const { f, id, jobId, makeRunner, effects, retentionEffects, cleanupEffects, retentionHost } =
+    await modalLaunchFixture(await modalAdmissionFixture());
+  const first = makeRunner((step) => {
+    if (step === "bootstrap dispatch") throw new Error("Worker lost after issuing the ticket");
+  });
+  expect(await first.reconcileOne(signal)).toBe(true);
+  await first.drain();
+  await f.db.query("update jobs set lease_until='-infinity' where id=$1", [jobId]);
+  const successor = makeRunner();
+  expect(await successor.reconcileOne(signal)).toBe(true);
+  await successor.drain();
+
+  const caller = {
+    via: "service" as const,
+    userId: f.people.owner,
+    orgs: [{ orgId: f.people.org, role: "member" as const }],
+  };
+  const data = createSqlData(f.sql)(caller);
+  await f.db.query(
+    `insert into runtime_checkpoints (sandbox_id,epoch,request_id,watermark,completed_at)
+     select sandbox_id,epoch,$2,0,now() from runtime_enrolments where sandbox_id=$1`,
+    [id, crypto.randomUUID()],
+  );
+  const commands = createRuntimeCommands(createRuntimeEnrolments(f.sql, launchEncryptionKey), launchEncryptionKey);
+  const checkpoint = createRuntimeCheckpoint(f.sql, launchEncryptionKey, commands);
+  const serving = createRuntimeServing(f.sql, launchEncryptionKey);
+  const host = retentionHost();
+  const stop = (target: Parameters<typeof serving>[1]) =>
+    serving(host.provider, target, caller, host.captureRuntimeWork);
+  expect(
+    await callSharedTool(
+      {
+        caller,
+        data,
+        launchCredentials: launchCredentials(createSqlVaultStore(f.sql), launchEncryptionKey),
+        exposedSecrets: async () => [],
+        provider: stop,
+        runtimeStopCheckpoint: createRuntimeStopCheckpoint(f.sql, checkpoint),
+        now: () => new Date(),
+        async sleep() {
+          throw new Error("Stop must not wait");
+        },
+      },
+      "stop",
+      { id },
+    ),
+  ).toMatchObject({ id, status: "stopped" });
+  expect(effects()).toMatchObject({ allocations: 1, bootstrapped: ["physical"] });
+  expect(retentionEffects()).toEqual({ checkpoints: 1, baselineCaptures: 1 });
+  expect(cleanupEffects().terminations).toBe(1);
+  const { rows } = await f.db.query(
+    "select record->>'recoveryImageId' as image from modal_machines where id='physical'",
+  );
+  expect(rows).toEqual([{ image: "im-retained" }]);
+});
 
 test("owner stop after a lost Modal create reply leaves the exact allocation for replacement cleanup", async () => {
   const { f, id, jobId, makeRunner, effects, cleanupEffects, hideAllocation } = await modalLaunchFixture(
@@ -2563,7 +2718,7 @@ test("interrupted Modal bootstrap ticket issuance rolls back the ticket and its 
   expect((await f.db.query("select status from sandboxes where id=$1", [id])).rows).toEqual([{ status: "ready" }]);
 });
 
-test("interrupted Modal enrolment rolls back readiness and leaves its ticket usable", async () => {
+test("interrupted Modal enrolment rolls back readiness and the provider handoff and leaves its ticket usable", async () => {
   const { f, id, makeRunner, enrolPending } = await modalLaunchFixture();
   const runner = makeRunner(undefined, f.sql, false);
   expect(await runner.reconcileOne(signal)).toBe(true);
@@ -2585,8 +2740,50 @@ test("interrupted Modal enrolment rolls back readiness and leaves its ticket usa
   );
   await expect(enrolPending(interrupted)).rejects.toThrow("Enrolment worker lost before commit");
   expect((await f.db.query("select status from sandboxes where id=$1", [id])).rows).toEqual([{ status: "starting" }]);
+  const placement = () => f.db.query("select id from modal_machines where id='physical'").then(({ rows }) => rows);
+  expect(await placement()).toEqual([]);
   await expect(enrolPending()).resolves.toMatchObject({ sandboxId: id });
   expect((await f.db.query("select status from sandboxes where id=$1", [id])).rows).toEqual([{ status: "ready" }]);
+  expect(await placement()).toEqual([{ id: "physical" }]);
+});
+
+test("Modal takeover after a lost baseline capture response enrols the original machine", async () => {
+  const { f, id, jobId, makeRunner, effects, retentionEffects } = await modalLaunchFixture(
+    await modalAdmissionFixture(),
+  );
+  const first = makeRunner((step) => {
+    if (step === "baseline capture response") throw new Error("Lost process baseline response");
+  });
+  expect(await first.reconcileOne(signal)).toBe(true);
+  await first.drain();
+  expect((await f.db.query("select 1 from runtime_enrolments where sandbox_id=$1", [id])).rows).toEqual([]);
+  expect(effects().bootstrapped).toEqual([]);
+
+  await f.db.query("update jobs set lease_until='-infinity' where id=$1", [jobId]);
+  const successor = makeRunner();
+  expect(await successor.reconcileOne(signal)).toBe(true);
+  await successor.drain();
+  expect((await f.db.query("select status from sandboxes where id=$1", [id])).rows).toEqual([{ status: "ready" }]);
+  expect(effects()).toMatchObject({ allocations: 1, bootstrapped: ["physical"] });
+  expect(retentionEffects().baselineCaptures).toBe(2);
+});
+
+test("an expired Modal bootstrap ticket is replaced without recapturing the process baseline", async () => {
+  const { f, id, jobId, makeRunner, effects, retentionEffects } = await modalLaunchFixture(
+    await modalAdmissionFixture(),
+  );
+  const original = makeRunner(undefined, f.sql, false);
+  expect(await original.reconcileOne(signal)).toBe(true);
+  await original.drain();
+  expect(effects().bootstrapped).toEqual(["physical"]);
+  await f.db.query("update runtime_enrolments set enrolment_expires_at='-infinity' where sandbox_id=$1", [id]);
+  await f.db.query("update jobs set run_after='-infinity' where id=$1", [jobId]);
+  const successor = makeRunner();
+  expect(await successor.reconcileOne(signal)).toBe(true);
+  await successor.drain();
+  expect((await f.db.query("select status from sandboxes where id=$1", [id])).rows).toEqual([{ status: "ready" }]);
+  expect(effects().allocations).toBe(1);
+  expect(retentionEffects().baselineCaptures).toBe(1);
 });
 
 test("Modal bootstrap without enrolment retries, then fails and hands off cleanup when expired", async () => {
@@ -2665,10 +2862,11 @@ test.each([
   ["deadline expires", "image lookup"],
   ["deadline expires", "runtime ticket"],
   ["Modal credential is revoked", "image lookup"],
+  ["Modal credential is revoked", "runtime ticket"],
 ] as const)(
   "a Modal launch whose %s during %s cannot dispatch the prepared operation",
   async (change, interruptedAt) => {
-    const { f, jobId, makeRunner, effects, revokeModalCredential } = await modalLaunchFixture();
+    const { f, jobId, makeRunner, effects, retentionEffects, revokeModalCredential } = await modalLaunchFixture();
     const runner = makeRunner(async (step) => {
       if (step !== interruptedAt) return;
       if (change === "Modal credential is revoked") revokeModalCredential();
@@ -2677,6 +2875,7 @@ test.each([
     expect(await runner.reconcileOne(signal)).toBe(true);
     await runner.drain();
     expect(effects().allocations).toBe(interruptedAt === "image lookup" ? 0 : 1);
+    expect(retentionEffects().baselineCaptures).toBe(0);
     expect(effects().bootstrapped).toEqual([]);
   },
 );

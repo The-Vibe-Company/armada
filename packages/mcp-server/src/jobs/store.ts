@@ -17,6 +17,7 @@ import {
   RUNTIME_LANE,
   resetAbandonedTurn,
 } from "../account-turn-dispatch.ts";
+import type { ModalLaunchHandoff } from "../modal-launch-handoff.ts";
 import { deferTransactionWake, runtimeWakes } from "../wake-bus.ts";
 import type { Job, JobStore } from "./runner.ts";
 
@@ -118,13 +119,33 @@ export async function adoptObservedModalAllocation(tx: Sql, job: Job, machineId:
 }
 
 // WARNING: Record the replay token inside the fenced ticket issuance transaction.
-export async function recordModalBootstrapTicket(tx: Sql, jobId: string, token: string, encryptionKey: string) {
+export async function recordModalBootstrapTicket(
+  tx: Sql,
+  job: Job,
+  token: string,
+  encryptionKey: string,
+  machineId: string,
+  handoff: ModalLaunchHandoff | undefined,
+) {
   const sealed = await encryptSecret(token, encryptionKey);
-  await tx.query(
-    `update public.jobs set outcome=coalesce(outcome,'{}'::jsonb) ||
-       jsonb_build_object('bootstrap_ticket_enc',$2::text) where id=$1`,
-    [jobId, Buffer.from(sealed).toString("base64")],
+  const { rows } = await tx.query(
+    `update public.jobs set outcome=outcome ||
+       jsonb_build_object('bootstrap_ticket_enc',$2::text,
+         'modal_handoff',coalesce(outcome->'modal_handoff',$3::jsonb))
+     where id=$1 and lease_epoch=$4 and lease_until>clock_timestamp()
+       and outcome #>> '{modal_machine,entry,machineId}'=$5
+       and (outcome->'modal_handoff' is not null
+         or ($3::jsonb is not null and outcome->'bootstrap_ticket_enc' is null))
+     returning id`,
+    [
+      job.id,
+      Buffer.from(sealed).toString("base64"),
+      handoff ? JSON.stringify(handoff) : null,
+      job.lease_epoch,
+      machineId,
+    ],
   );
+  return rows.length === 1;
 }
 
 // WARNING: Only call inside a fenced job completion after requeueing the job.
@@ -328,7 +349,7 @@ export function createJobsStore(sql: Sql, encryptionKey?: string) {
     const { rows } = await tx.query(
       `update public.jobs j set state = 'failed', lease_owner = null, lease_until = null,
          outcome = coalesce(case when kind='launch' and jsonb_typeof(outcome)='object'
-                                 then outcome - 'bootstrap_ticket_enc' else outcome end, '{}'::jsonb) || jsonb_build_object('reason', $6::text)
+                                 then outcome - 'bootstrap_ticket_enc' - 'modal_handoff' else outcome end, '{}'::jsonb) || jsonb_build_object('reason', $6::text)
        where ${fence} and (j.kind = 'turn_dispatch' or j.generation = $4)
          and (j.generation is distinct from $5 or $6 <> 'stale_generation') returning j.id`,
       [...claimKey(job, owner), generation, reason],
@@ -592,9 +613,12 @@ export function createJobsStore(sql: Sql, encryptionKey?: string) {
              select case when kind = 'launch' and $6::jsonb is not null
                          then jsonb_build_object('result', $6::jsonb) ||
                            case when outcome->'modal_machine' is null then '{}'::jsonb
-                                else jsonb_build_object('modal_machine', outcome->'modal_machine') end
+                                else jsonb_build_object('modal_machine', outcome->'modal_machine') end ||
+                           case when $5 = 'queued' and outcome ? 'modal_handoff'
+                                then jsonb_build_object('modal_handoff', outcome->'modal_handoff')
+                                else '{}'::jsonb end
                          when kind = 'launch' and $5 <> 'queued' and jsonb_typeof(outcome) = 'object'
-                           then outcome - 'bootstrap_ticket_enc'
+                           then outcome - 'bootstrap_ticket_enc' - 'modal_handoff'
                          else coalesce($6::jsonb, outcome) end as evidence
              from public.jobs where id = $1
            ) data`,
