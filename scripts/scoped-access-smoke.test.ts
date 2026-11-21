@@ -27,7 +27,7 @@ function fixture(enabled = true, toolEvidenceTimeoutMs?: number) {
   const output: Obj[] = [];
   const stopped: string[] = [];
   const journaled: string[] = [];
-  const requests: { path: string; body: Obj }[] = [];
+  const requests: { path: string; body: Obj; timeoutMs: number | undefined }[] = [];
   const state = {
     before: [] as string[],
     after: [parent, child],
@@ -83,7 +83,7 @@ function fixture(enabled = true, toolEvidenceTimeoutMs?: number) {
     toolEvidenceTimeoutMs,
     async request<T>(path: string, input: object, timeoutMs?: number): Promise<T> {
       const body = input as Obj;
-      requests.push({ path, body });
+      requests.push({ path, body, timeoutMs });
       expect(body.org).toBe(item.org);
       if (path === "sandbox/list") {
         expect(body.owner).toBe("me");
@@ -353,16 +353,24 @@ describe("ordinary scoped Armada smoke", () => {
     expect(f.stopped).toEqual([child]);
   });
 
-  test("reports the missing receipt when a log read exhausts the observation window", async () => {
-    const f = fixture();
-    f.state.lateLogs = true;
-    f.state.logsExhaustBudget = true;
-    await expect(run(f)).rejects.toThrow("scoped_launch_unproven");
-    expect(f.state.sends).toBe(1);
-    expect(f.output).toContainEqual(
-      expect.objectContaining({ step: "scoped_logs_diagnostic", transportTimeoutMs: 75 }),
-    );
-  });
+  test.each([
+    { mode: "fallback", budget: undefined, firstReadMs: 0, lastReadBudget: 75 },
+    { mode: "measured", budget: 10_500, firstReadMs: 200, lastReadBudget: 375 },
+  ])(
+    "reports the missing receipt when a log read exhausts the $mode window",
+    async ({ budget, firstReadMs, lastReadBudget }) => {
+      const f = fixture(true, budget);
+      f.state.firstLogReadMs = firstReadMs;
+      f.state.lateLogs = true;
+      f.state.logsExhaustBudget = true;
+      await expect(run(f)).rejects.toThrow("scoped_launch_unproven");
+      expect(f.state.sends).toBe(1);
+      expect(f.requests.find((request) => request.path === "logs/read")?.timeoutMs).toBe(budget);
+      expect(f.output).toContainEqual(
+        expect.objectContaining({ step: "scoped_logs_diagnostic", transportTimeoutMs: lastReadBudget }),
+      );
+    },
+  );
 
   test("identifies a transport timeout while waiting for scoped launch evidence", async () => {
     const f = fixture();
