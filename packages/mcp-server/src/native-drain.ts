@@ -40,9 +40,15 @@ export function configureNativeDrain(
     await deleteSandboxWithActivity(
       sandboxes,
       {
-        resolve(target, caller) {
+        async resolve(target, caller) {
           if (target.provider !== provider || target.boatRuntime || target.runtimeTransport === "dialout")
             throw new Error("The sandbox route changed after inventory.");
+          const scopedModal = await sql.query(
+            `select p.id from public.armada_access_parents p
+             where p.sandbox_id=$1::uuid and p.kind='sandbox' and $2::text='modal'`,
+            [row.id, provider],
+          );
+          if (scopedModal.rows.length) throw new Error("Scoped Modal deletion cannot be verified on replay.");
           return providers.resolve(target, caller);
         },
       },

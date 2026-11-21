@@ -1361,29 +1361,6 @@ test.each(["missing proof", "rolled-back admission", "lost commit response", "ve
   },
 );
 
-test("native drain refuses a scoped Modal parent before committing intent or calling delete", async () => {
-  const { db, people, sandboxId } = await seedNativeDrainReceipt(undefined, "modal");
-  await db.query(
-    `insert into public.armada_access_parents (id, kind, org_id, owner_id, sandbox_id, state)
-     values ($1, 'sandbox', $2, $3, $1, 'ready')`,
-    [sandboxId, people.org, people.owner],
-  );
-  const caller: Caller = { via: "service", userId: people.owner, orgs: [{ orgId: people.org, role: "member" }] };
-  const { sandboxes } = createSqlData(bunLikeSql(db))(caller);
-  const remove = mock(async () => ({ status: "deleted" as const }));
-  const provider: Provider = { ...fakeBoat().provider, id: "modal", delete: remove };
-  await expect(
-    deleteSandboxWithActivity(sandboxes, { resolve: async () => provider }, sandboxId, "native-drain"),
-  ).rejects.toMatchObject({ code: "sandbox_not_ready" });
-  expect(remove).not.toHaveBeenCalled();
-  expect(
-    (await db.query("select status, native_drain_pending from public.sandboxes where id=$1", [sandboxId])).rows,
-  ).toEqual([{ status: "stopped", native_drain_pending: false }]);
-  expect(
-    (await db.query("select archive_id from public.native_drain_recovery where sandbox_id=$1", [sandboxId])).rows,
-  ).toEqual([]);
-});
-
 test.each(["not_found", "pending", "settlement failure"] as const)(
   "native drain keeps its row, archive and lease after %s",
   async (outcome) => {

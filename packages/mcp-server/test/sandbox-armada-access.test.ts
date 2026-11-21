@@ -1,12 +1,13 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { createSqlSandboxStore, DelegatedAuthority, encryptSecret, type Provider, type Sql } from "@armada/core/server";
+import { configureNativeDrain } from "../src/native-drain.ts";
 import { createSandboxChildren } from "../src/sandbox-access-children.ts";
 import { createSandboxAccessServices } from "../src/sandbox-access-services.ts";
 import { createSandboxArmadaAccess } from "../src/sandbox-armada-access.ts";
 import { transitionSandbox } from "../src/sandbox-lifecycle.ts";
 import { migratedDatabase } from "./migrated-database.ts";
 import { publishedResponse } from "./published-response.ts";
-import { ENCRYPTION_KEY, fakeBoat, PUBLIC_URL, SECRETS } from "./support.ts";
+import { bunLikeSql, ENCRYPTION_KEY, fakeBoat, PUBLIC_URL, SECRETS, seedDatabase } from "./support.ts";
 
 let pendingDatabase: ReturnType<typeof migratedDatabase> | undefined;
 beforeAll(async () => {
@@ -270,4 +271,37 @@ test("ordinary sandbox opt-in bounds child admission and scrubs authority before
     },
   ]);
   expect((await finish({}))?.status).toBe(403);
+});
+
+test("coordinator drain refuses scoped Modal deletion before provider resolution or durable admission", async () => {
+  const db = await pendingDatabase;
+  if (!db) throw new Error("Test database is not open");
+  const { people } = await seedDatabase(db);
+  const sandboxId = crypto.randomUUID();
+  await db.query(
+    `with golden as (
+       insert into public.goldens(org_id, owner_id, name, visibility, provider, provider_snapshot_id,
+         modal_workspace, modal_environment, modal_app_id, config)
+       values ($1, $2, 'modal-drain', 'private', 'modal', 'image', 'workspace', 'main', 'app', '{"repos":[],"init":[]}')
+       returning id
+     )
+     insert into public.sandboxes(id, golden_id, org_id, owner_id, provider, provider_sandbox_id, harness, status, stopped_at)
+     select $3, id, $1, $2, 'modal', 'test-placement', 'claude', 'stopped', now() from golden`,
+    [people.org, people.owner, sandboxId],
+  );
+  await db.query(
+    `insert into public.armada_access_parents(id, kind, org_id, owner_id, sandbox_id, state)
+     values ($1, 'sandbox', $2, $3, $1, 'ready')`,
+    [sandboxId, people.org, people.owner],
+  );
+  const { remove } = configureNativeDrain(bunLikeSql(db), "modal", people.owner, {
+    ARMADA_ENCRYPTION_KEY: ENCRYPTION_KEY,
+    ARMADA_PUBLIC_URL: PUBLIC_URL,
+  });
+  await expect(remove({ id: sandboxId, org_id: people.org, role: "member" })).rejects.toThrow(
+    "Scoped Modal deletion cannot be verified on replay.",
+  );
+  expect(
+    (await db.query("select status, native_drain_pending from public.sandboxes where id=$1", [sandboxId])).rows,
+  ).toEqual([{ status: "stopped", native_drain_pending: false }]);
 });
