@@ -185,7 +185,7 @@ test.each([true, false])("setup status diagnoses failed session for token mode %
   );
 });
 
-test("status --setup skips the current sandbox and uses an explicit organization", async () => {
+test("info --setup skips the current sandbox and uses an explicit organization", async () => {
   const f = fixture({
     "/api/v1/account/status": {
       userId: "user",

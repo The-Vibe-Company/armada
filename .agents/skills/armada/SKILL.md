@@ -98,7 +98,7 @@ armada new GOLDEN --agent codex "Implement the agreed change; push the branch an
 
 Launch without a prompt creates an idle sandbox. Capture its returned sandbox
 ID from `sandbox.id` in `armada new --json` output immediately. If the
-terminal disconnects before you capture the ID, inspect `armada ls --owner me --json` and detail to avoid paid
+terminal disconnects before you capture the ID, inspect `armada ls --owner me --json` and `armada info SANDBOX --json` to avoid paid
 duplicates. Skill pins are repeatable, exact launch-time references, not floating
 latest versions. Private pins use bare slug@exact-version in the credential’s workspace; qualified
 org/slug@exact-version pins always use the anonymous public catalog, even when
@@ -218,7 +218,8 @@ after an uncertain Docker deletion. The dashboard
 uses the REST operations for extension and stopped Docker sandbox deletion.
 
 For resource advice and preserved archives, use `armada api sandbox/advice '{"id":"SANDBOX"}'`
-and `armada api sandbox/recovery '{"id":"SANDBOX"}'`. Explicit runtime checkpoint and resume use the
+and `armada api sandbox/recovery '{"id":"SANDBOX"}'`. If a route needs organization scope, include
+`"org":"ORG_UUID"` in the JSON body. Explicit runtime checkpoint and resume use the
 owner REST routes `sandbox/checkpoint-runtime-v1` and `sandbox/resume-runtime-v1`.
 Send and runtime resume select the conversation from the sandbox ID. Launch another
 sandbox for a separate conversation.
