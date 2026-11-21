@@ -1184,7 +1184,7 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
     let passed = true;
     const sandbox = <T>(action: string, body: object, timeoutMs?: number) =>
       request<T>(`sandbox/${action}`, { org: item.org, ...body }, undefined, timeoutMs);
-    const measuredStep = <T>(name: keyof typeof deadlines, action: (until?: number) => Promise<T>) =>
+    const measuredStep = <T>(name: string, action: (until?: number) => Promise<T>) =>
       step(name, () => withStepDeadline(name, action));
     let parentCredentialVersion: number | undefined;
     const scoped = scope
@@ -1439,7 +1439,7 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
               if (status === "failed" || status === "stopped") fail("sandbox_not_ready");
               return status === "ready";
             },
-            { step: "ready" },
+            { step: Object.hasOwn(deadlines, readinessStep) ? readinessStep : "ready" },
           );
         } catch (error) {
           if (error instanceof SmokeFailure) {
@@ -1459,7 +1459,7 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
       });
       if (scoped) {
         await scoped.run(sandboxId!, parentCredentialVersion!);
-        await step("scoped_parent_stop", stopSandbox);
+        await measuredStep("scoped_parent_stop", stopSandbox);
         return;
       }
       if (lifecycle && !dirty)
