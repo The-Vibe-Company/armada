@@ -8,26 +8,19 @@ for (const command of [
   "new",
   "events",
   "ls",
-  "advice",
   "rm",
-  "extend",
-  "status",
-  "detail",
-  "recovery",
+  "info",
   "stop",
-  "interrupt",
-  "wait",
   "report",
   "prompt",
   "exec",
   "outputs",
-  "routine",
   "template",
   "snapshot",
   "snapshot new",
-  "creds",
-  "creds import claude",
-  "creds connect",
+  "account",
+  "account import claude",
+  "account add",
 ]) {
   test(`armada ${command} help preserves its output`, async () => {
     async function help(flag: string) {
@@ -107,7 +100,7 @@ test("events help rejects an invalid profile from the environment", async () => 
   expect(stderr).toContain("Profile names must be 1–64");
 });
 
-test.each(["snapshot", "creds"])("bare %s prints focused family help", async (command) => {
+test.each(["snapshot", "account"])("bare %s prints focused family help", async (command) => {
   let stdout = "";
   const fail = () => {
     throw new Error("Family help must not perform authenticated or secret I/O");
@@ -123,7 +116,7 @@ test.each(["snapshot", "creds"])("bare %s prints focused family help", async (co
 
 test.each([
   [["snapshot", "new", "name", "--help"], "armada snapshot new --help"],
-  [["creds", "set", "--help", "--unknown"], "armada creds set --help"],
+  [["account", "add", "--help", "--unknown"], "armada account add --help"],
 ] as const)("%j leaves malformed help requests to the operation parser", async (argv, hint) => {
   let stderr = "";
   const fail = () => {

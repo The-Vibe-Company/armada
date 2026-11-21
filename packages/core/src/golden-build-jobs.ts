@@ -145,7 +145,7 @@ export class GoldenBuildJobs {
       config: input.config ?? null,
       setup: input.setup ?? null,
       goldenId: input.existingGolden?.id ?? null,
-      ...(providerId === "boat" ? {} : { provider: providerId, modal: target.modal }),
+      ...(target.modal ? { provider: providerId, modal: target.modal } : {}),
     };
     const hashRequest = (payload: object) => createHash("sha256").update(JSON.stringify(payload)).digest("hex");
     const hash = additions
@@ -236,10 +236,10 @@ export class GoldenBuildJobs {
           current.owner_id !== input.existingGolden.ownerId ||
           current.visibility !== input.visibility ||
           current.provider !== providerId ||
-          (providerId === "modal" &&
-            (current.modal_workspace !== target.modal?.workspace ||
-              current.modal_environment !== target.modal?.environment ||
-              current.modal_app_id !== target.modal?.appId))
+          (target.modal &&
+            (current.modal_workspace !== target.modal.workspace ||
+              current.modal_environment !== target.modal.environment ||
+              current.modal_app_id !== target.modal.appId))
         )
           throw new GoldenError("conflict", "Golden changed before build admission.");
       }
@@ -825,7 +825,7 @@ export class GoldenBuildJobs {
 function buildTarget(provider: SandboxProviderId, orgId: string, input: Input): ProviderTarget {
   const binding = input.existingGolden?.modal ?? input.modal ?? null;
   let modal: ModalBinding | null = null;
-  if (provider === "modal") {
+  if (HOST_CAPABILITIES[provider].requiresPinnedGoldenBinding) {
     if (
       !binding ||
       [binding.workspace, binding.environment, binding.appId].some((v) => typeof v !== "string" || !v.trim())

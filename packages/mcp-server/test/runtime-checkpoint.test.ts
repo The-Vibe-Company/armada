@@ -13,8 +13,15 @@ import { createRuntimeEnrolments } from "../src/runtime-enrolment.ts";
 import { createRuntimeEvents } from "../src/runtime-events.ts";
 import { createRuntimeHistory } from "../src/runtime-history.ts";
 import { createRuntimeProvider, type RuntimeWorkProvider } from "../src/runtime-provider.ts";
+import {
+  RuntimeCheckpointActivityConflict,
+  RuntimeCheckpointParentConflict,
+  RuntimeReconciliationConflict,
+  SandboxStopTargetChanged,
+} from "../src/runtime-reconciliation-conflict.ts";
 import { createSandboxArmadaAccess } from "../src/sandbox-armada-access.ts";
 import { callSharedTool } from "../src/tool-api.ts";
+import { runtimeWakes, SANDBOX_ADMISSION_WAKE } from "../src/wake-bus.ts";
 import { runtimeFixture, runtimeFixtureGolden, scopedRuntimeFixture } from "./runtime.fixture.ts";
 import { ENCRYPTION_KEY, fakeBoat, PUBLIC_URL, seedDatabase } from "./support.ts";
 
@@ -257,7 +264,7 @@ test.each(["reservation", "command", "acknowledgement", "revocation", "scrub"] a
   },
 );
 
-function stopPort(f: Awaited<ReturnType<typeof runtimeFixture>>, commands = f.bridge) {
+function stopPort(f: Awaited<ReturnType<typeof runtimeFixture>>, commands = f.bridge, sql = f.sql) {
   let stopped = false,
     calls = 0;
   const physicalId = f.row.providerSandboxId!;
@@ -279,10 +286,7 @@ function stopPort(f: Awaited<ReturnType<typeof runtimeFixture>>, commands = f.br
   return {
     context: {
       ...f.context,
-      runtimeStopCheckpoint: createRuntimeStopCheckpoint(
-        f.sql,
-        createRuntimeCheckpoint(f.sql, ENCRYPTION_KEY, commands),
-      ),
+      runtimeStopCheckpoint: createRuntimeStopCheckpoint(sql, createRuntimeCheckpoint(sql, ENCRYPTION_KEY, commands)),
       provider: async () =>
         createRuntimeProvider(
           host,
@@ -398,6 +402,222 @@ test("an unreadable runtime checkpoint acknowledgement never allows compute clea
   }
 });
 
+test.each(["resume", "reconciliation", "late generation change", "scoped parent cleanup"] as const)(
+  "owner stop waits for %s and preserves the runtime",
+  async (path) => {
+    const f = await checkpointFixture("modal", true);
+    const cancel = new AbortController();
+    try {
+      const id = f.row.id;
+      if (path === "resume") {
+        await f.db.query(
+          "update sandboxes set status='starting',activity_lease_id=$2,activity_until='infinity' where id=$1",
+          [id, crypto.randomUUID()],
+        );
+      } else if (path === "reconciliation") {
+        await f.db.query("update sandboxes set reconcile_lease_until='infinity' where id=$1", [id]);
+      } else if (path === "scoped parent cleanup") {
+        await f.db.query("update sandboxes set visibility='private',access_owner_id=owner_id where id=$1", [id]);
+        await f.db.query(
+          `insert into armada_access_parents(id,kind,org_id,owner_id,sandbox_id,state)
+           values($1,'sandbox',$2,$3,$1,'ready')`,
+          [id, f.people.org, f.people.owner],
+        );
+      }
+      const parked = Promise.withResolvers<void>();
+      let blocked = true;
+      const sql: Sql = {
+        ...f.sql,
+        transaction: (work) =>
+          f.sql.transaction!((tx) =>
+            work({
+              ...tx,
+              async query<T>(statement: string, params?: unknown[]) {
+                if (
+                  blocked &&
+                  path === "scoped parent cleanup" &&
+                  statement.includes("from public.armada_access_parents where id=$1 for update skip locked")
+                )
+                  return { rows: [] };
+                return tx.query<T>(statement, params);
+              },
+            }),
+          ),
+      };
+      const stop = stopPort(f, f.bridge, sql);
+      const store = stop.context.data.sandboxes;
+      const stopping = callSharedTool(
+        {
+          ...stop.context,
+          stopSignal: cancel.signal,
+          async runtimeStopCheckpoint(...args) {
+            try {
+              return await stop.context.runtimeStopCheckpoint(...args);
+            } catch (error) {
+              if (error instanceof RuntimeCheckpointParentConflict || error instanceof SandboxStopTargetChanged)
+                parked.resolve();
+              throw error;
+            }
+          },
+          data: {
+            ...stop.context.data,
+            sandboxes: {
+              ...store,
+              async getForStop(id) {
+                const target = await store.getForStop!(id);
+                if (target?.busy) parked.resolve();
+                if (target && blocked && path === "late generation change")
+                  target.sandbox.lifecycleGeneration = target.sandbox.lifecycleGeneration! - 1;
+                return target;
+              },
+            },
+          },
+        },
+        "stop",
+        { id },
+      );
+      try {
+        await Promise.race([parked.promise, stopping]);
+        expect(stop.calls()).toBe(0);
+        expect((await f.db.query("select 1 from runtime_checkpoints where sandbox_id=$1", [id])).rows).toEqual([]);
+        await f.db.query(
+          `update sandboxes set status='ready',activity_lease_id=null,activity_until=null,reconcile_lease_until=null
+           where id=$1`,
+          [id],
+        );
+        blocked = false;
+        runtimeWakes.notify(SANDBOX_ADMISSION_WAKE);
+        expect(await stopping).toMatchObject({ id, status: "stopped" });
+        expect(stop.calls()).toBe(1);
+        expect(
+          (await f.db.query("select 1 from runtime_checkpoints where sandbox_id=$1 and completed_at is not null", [id]))
+            .rows,
+        ).toHaveLength(1);
+      } finally {
+        cancel.abort();
+        await stopping.catch(() => {});
+      }
+    } finally {
+      await f.close();
+    }
+  },
+);
+
+test("owner stop observes a concurrent stop that wins before the checkpoint lock", async () => {
+  const f = await checkpointFixture("modal", true);
+  try {
+    const sql: Sql = {
+      ...f.sql,
+      transaction: async (work) => {
+        await f.db.query(
+          "update sandboxes set status='stopping',stop_requested_at=now(),lifecycle_generation=lifecycle_generation+1 where id=$1",
+          [f.row.id],
+        );
+        return f.sql.transaction!(work);
+      },
+    };
+    const stop = stopPort(f, f.bridge, sql);
+    await expect(
+      callSharedTool(
+        {
+          ...stop.context,
+          async runtimeStopCheckpoint(...args) {
+            try {
+              return await stop.context.runtimeStopCheckpoint(...args);
+            } finally {
+              runtimeWakes.notify(SANDBOX_ADMISSION_WAKE);
+            }
+          },
+        },
+        "stop",
+        { id: f.row.id },
+      ),
+    ).resolves.toMatchObject({ id: f.row.id, status: "stopping" });
+    expect(stop.calls()).toBe(0);
+    expect((await f.db.query("select 1 from runtime_checkpoints where sandbox_id=$1", [f.row.id])).rows).toEqual([]);
+  } finally {
+    await f.close();
+  }
+});
+
+test("owner stop cancelled at checkpoint admission leaves the runtime untouched", async () => {
+  const f = await checkpointFixture("modal", true);
+  const cancel = new AbortController();
+  try {
+    const sql: Sql = {
+      ...f.sql,
+      transaction: (work) =>
+        f.sql.transaction!((tx) =>
+          work({
+            ...tx,
+            async query<T>(statement: string, params?: unknown[]) {
+              const result = await tx.query<T>(statement, params);
+              if (statement.includes("s.lifecycle_generation=$4 and s.status in ('ready','running')")) cancel.abort();
+              return result;
+            },
+          }),
+        ),
+    };
+    const stop = stopPort(f, f.bridge, sql);
+    await expect(
+      callSharedTool({ ...stop.context, stopSignal: cancel.signal }, "stop", { id: f.row.id }),
+    ).rejects.toMatchObject({ code: "dependency_unavailable" });
+    expect(stop.calls()).toBe(0);
+    expect((await f.db.query("select 1 from runtime_checkpoints where sandbox_id=$1", [f.row.id])).rows).toEqual([]);
+  } finally {
+    await f.close();
+  }
+});
+
+test("retained stop identifies a journal append after checkpoint publication", async () => {
+  const f = await checkpointFixture("modal", true);
+  try {
+    const stop = stopPort(f);
+    const checkpoint = stop.context.runtimeStopCheckpoint;
+    const records: unknown[] = [];
+    await observeRequest(
+      async () => {
+        await expect(
+          callSharedTool(
+            {
+              ...stop.context,
+              async runtimeStopCheckpoint(...args) {
+                const receipt = (await checkpoint(...args))!;
+                await createRuntimeEvents(f.authority, ENCRYPTION_KEY).append(f.active.runtimeToken, f.active.epoch, {
+                  sandboxId: f.row.id,
+                  generation: f.active.epoch,
+                  events: [
+                    {
+                      sequence: receipt.checkpoint.watermark + 1,
+                      event: { id: "late", at: 1, kind: "other", type: "late-notification", data: {} },
+                    },
+                  ],
+                });
+                return receipt;
+              },
+            },
+            "stop",
+            { id: f.row.id },
+          ),
+        ).rejects.toMatchObject({ code: "sandbox_not_ready" });
+        return new Response(null, { status: 409 });
+      },
+      (line) => records.push(JSON.parse(line)),
+    );
+    expect(records).toContainEqual(
+      expect.objectContaining({
+        event: "operator_failure",
+        sandboxId: f.row.id,
+        phase: "sandbox.stop.admission",
+        stopEvidence: expect.objectContaining({ retainedCheckpointCurrent: false, deadlineElapsed: false }),
+      }),
+    );
+    expect(stop.calls()).toBe(0);
+  } finally {
+    await f.close();
+  }
+});
+
 test("idle-only stop refuses a queued turn before creating a checkpoint", async () => {
   const f = await checkpointFixture("modal", true);
   try {
@@ -435,6 +655,47 @@ test("an organization admin can still stop another member's runtime compute", as
     await f.close();
   }
 });
+
+test.each(["reconciliation", "activity"] as const)(
+  "Modal runtime %s blocks checkpoint before reserving its intent",
+  async (owner) => {
+    const f = await checkpointFixture("modal");
+    try {
+      const activityLeaseId = owner === "activity" ? crypto.randomUUID() : null;
+      await f.db.query(
+        `update sandboxes set activity_lease_id=$2,
+        reconcile_lease_until=case when $2::uuid is null then 'infinity'::timestamptz end where id=$1`,
+        [f.row.id, activityLeaseId],
+      );
+      const checkpoint = createRuntimeCheckpoint(f.sql, ENCRYPTION_KEY, f.bridge);
+      const records: unknown[] = [];
+      const response = await observeRequest(
+        async () => {
+          await expect(checkpoint(f.caller, args(f.row.id))).rejects.toBeInstanceOf(
+            owner === "activity" ? RuntimeCheckpointActivityConflict : RuntimeReconciliationConflict,
+          );
+          return new Response(null, { status: 409 });
+        },
+        (line) => records.push(JSON.parse(line)),
+      );
+      expect(response?.status).toBe(409);
+      expect(records).toContainEqual(
+        expect.objectContaining({
+          requestId: response.headers.get("x-request-id"),
+          sandboxId: f.row.id,
+          phase: "sandbox.checkpoint.refused",
+          refusalCode: owner === "activity" ? "activity_lease_present" : "reconcile_lease_held",
+          stopEvidence: expect.objectContaining({ reconcileLeaseHeld: owner === "reconciliation", activityLeaseId }),
+        }),
+      );
+      expect(
+        (await f.db.query("select request_id from runtime_checkpoints where sandbox_id=$1", [f.row.id])).rows,
+      ).toEqual([]);
+    } finally {
+      await f.close();
+    }
+  },
+);
 
 test.each(["boat", "modal"] as const)("%s stop recovers the original checkpoint ACK", async (provider) => {
   const f = await checkpointFixture(provider);

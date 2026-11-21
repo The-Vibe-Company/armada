@@ -73,10 +73,9 @@ covers Tools, template versions and routines. CLI command names below are unchan
 armada login
 ```
 
-**2. Choose an organization and connect a sandbox provider.** Create one (you become its admin) or ask an admin to add you with `armada org members add <your-email> --org <org>` after your first sign-in. An admin connects Boat or Modal once for the whole organization; the key is read from stdin or `--file`, never from an argument.
+**2. Choose an organization and connect a sandbox provider.** Create one in the dashboard (you become its admin) or ask an admin to invite you. An admin connects Boat or Modal once for the whole organization; the key is read from stdin or `--file`, never from an argument.
 
 ```sh
-armada org create acme
 armada login --org acme
 printenv BOAT_API_KEY | armada org connect boat --org acme
 # Modal instead: printf '%s %s' "$MODAL_TOKEN_ID" "$MODAL_TOKEN_SECRET" | armada org connect modal --org acme
@@ -86,13 +85,13 @@ armada org setup --org acme
 **3. Store your model credentials.** Your own credentials win over the organization's. Values are encrypted and never shown again.
 
 ```sh
-printenv CLAUDE_CODE_OAUTH_TOKEN | armada creds set claude-oauth   # Claude Code (from `claude setup-token`); or kind `anthropic`
-armada creds set codex-auth --file ~/.codex/auth.json              # Codex; or kind `openai`
-armada creds list
+printenv CLAUDE_CODE_OAUTH_TOKEN | armada account add claude-oauth   # Claude Code (from `claude setup-token`); or kind `anthropic`
+armada account add codex-auth --file ~/.codex/auth.json              # Codex; or kind `openai`
+armada account ls
 ```
 
 Morph is another model-account option for Claude Code, Codex and OpenCode:
-`armada creds connect morph --name shared --file /private/morph-key`.
+`armada account add --preset morph --name shared --file /private/morph-key`.
 Select its account ID with `--credential-id ACCOUNT_UUID` and a Morph model such as
 `--model morph-kimik31`; use Modal, Docker or runtime-backed Boat, not native Boat.
 See [Morph accounts](docs/morph.md) for supported models and restrictions.
@@ -100,11 +99,11 @@ See [Morph accounts](docs/morph.md) for supported models and restrictions.
 Model accounts have a per-account simultaneous-agent limit across sandbox providers.
 Morph defaults to **2**; other accounts default to unlimited. Set `--max-agents N`
 or `--unlimited` when adding an account, or change it with
-`armada creds limits ACCOUNT_UUID --max-agents 2`. Starts beyond the cap are refused
+`armada account limits ACCOUNT_UUID --max-agents 2`. Starts beyond the cap are refused
 before allocating a machine; lowering it does not stop existing agents.
 Follow-up sends to existing sandboxes can return a durable queued prompt receipt
 when the account is full; they dispatch FIFO per account after capacity frees.
-Queued is not running or completed: use wait/logs for that sandbox and correlate the returned prompt ID.
+Queued is not running or completed: use `armada info --wait` or `armada events` for that sandbox and correlate the returned prompt ID.
 
 **4. Connect GitHub.** Snapshots are cloned over your own GitHub connection, and sandboxes use it so commits and pull requests come from you.
 
@@ -134,8 +133,8 @@ armada new web --provider boat --agent claude --model claude-opus-5-5 --reasonin
 armada events SANDBOX_ID -f
 armada prompt --steer SANDBOX_ID "Keep the public API unchanged"
 armada prompt SANDBOX_ID "Now add a regression test" --reasoning-effort xhigh   # this turn only
-armada extend SANDBOX_ID --ttl 270m              # extend the 4h launch to 4h30m from now
-armada stop SANDBOX_ID                     # normally retains disk/conversation; Modal checkpoint failure does not
+armada api sandbox/extend '{"id":"SANDBOX_ID","ttlSeconds":16200}'   # extend the 4h launch to 4h30m from now
+armada stop SANDBOX_ID --after             # wait for settlement and stop if still idle; normally retains disk/conversation; Modal checkpoint failure does not
 armada prompt SANDBOX_ID "Push the branch"   # resumes only if the stopped sandbox was retained
 ```
 
@@ -168,10 +167,10 @@ Armada is also a remote MCP server. Add it to Claude Code, Codex, Cursor or your
 MCP clients sign in with OAuth; bots and CI use a service token bound to one organization:
 
 ```sh
-armada token create --org acme --name ci   # printed once; Armada keeps only its hash
+armada api token/create '{"org":"acme","label":"ci"}'
 ```
 
-Your coordinator decides what to work on and when to merge; Armada gives each task a sandbox, an agent and a live event stream to drive. Endpoints and client configuration: [Connect an MCP client](docs/dave-onboarding.md#7-connect-an-mcp-client).
+The response contains the key once. Capture it in a secret store. Your coordinator decides what to work on and when to merge; Armada gives each task a sandbox, an agent and a live event stream to drive. Endpoints and client configuration: [Connect an MCP client](docs/dave-onboarding.md#7-connect-an-mcp-client).
 
 ## Teams
 
@@ -182,7 +181,7 @@ Your coordinator decides what to work on and when to merge; Armada gives each ta
 | Create private snapshots and private sandboxes | ✓ | ✓ |
 | Change organization snapshots, members and provider keys | ✓ | |
 
-Snapshots and sandboxes follow two separate rules. A private snapshot is visible only to its owner, not even to admins. A sandbox's interior (transcript, logs and outputs) is readable by its owner and by organization admins, whether the sandbox is private or not, and admins can also stop it. Sending prompts is reserved to the owner: an admin's send to a colleague's sandbox is always refused, usually with `404 not_found`, or with `409 credential_binding_required` or `409 sandbox_terminal` when an earlier send check fails first (see [Embed Armada](docs/api/README.md#drive-the-sandbox-from-your-backend)). Ordinary members see only the metadata of sandboxes they do not own, such as status, agent and owner, in the organization's list. Admins can add an existing account immediately with `armada org members add` (no invitation email), or create a pending invitation, including before the recipient has an account. An invitation grants membership only after explicit acceptance by a personal login with the matching verified email; opening its link does not join. See [invitations and acceptance](docs/cli-invitations.md#accept-an-invitation).
+Snapshots and sandboxes follow two separate rules. A private snapshot is visible only to its owner, not even to admins. A sandbox's interior (transcript, logs and outputs) is readable by its owner and by organization admins, whether the sandbox is private or not, and admins can also stop it. Sending prompts is reserved to the owner: an admin's send to a colleague's sandbox is always refused, usually with `404 not_found`, or with `409 credential_binding_required` or `409 sandbox_terminal` when an earlier send check fails first (see [Embed Armada](docs/api/README.md#drive-the-sandbox-from-your-backend)). Ordinary members see only the metadata of sandboxes they do not own, such as status, agent and owner, in the organization's list. Admins can add an existing account immediately with the `members/add` API route (no invitation email), or create a pending invitation, including before the recipient has an account. An invitation grants membership only after explicit acceptance by a personal login with the matching verified email; opening its link does not join. See [invitations and acceptance](docs/cli-invitations.md#accept-an-invitation).
 
 ## Documentation
 
@@ -235,7 +234,7 @@ answers HTTP 401) and no interactive sign-in took place. For example, signed-out
 `armada ls` and `armada ls --json` exit 3, and so does bare `armada`.
 Exit 1 means access denial, state, unsupported operation or service failure.
 Check `armada ls --json` for visible IDs and state; verify your org selection
-with `armada status --setup` or pass `--org UUID`.
+with `armada info --setup` or pass `--org UUID`.
 
 Sandbox mutations are not replayed after transport/server failures or state
 conflicts. Existing authentication recovery may refresh a personal session and
@@ -247,12 +246,11 @@ lifecycle. `recovery --help` also works before login.
 
 Scripts sending a bearer directly to `/mcp` do not use the CLI session store or its refresh/retry path. They must manage their own credential lifecycle: refresh OAuth credentials or renew expiring credentials, and replace revoked service tokens.
 
-### Variables and secrets help
+### Variables and secrets
 
-Use `armada vars -h` or `armada secrets rotate -h` to see the same reference as
-`--help`, before login or value input. The short alias does not reinterpret an
-option value such as `--file -h`, or literal arguments after `--`, as a help request.
-Secret values remain stdin/file-only and are never printed by help.
+Manage application variables and secrets in the dashboard or use the
+[vault API commands](docs/cli-admin.md#application-variables-and-secrets)
+for scripts.
 
 ## Contributing
 

@@ -162,7 +162,12 @@ test("forwards authenticated CLI operations and MCP control routes", async () =>
     ["golden", "capabilities"],
     ["account", "status"],
     ["github", "status"],
+    ["github", "connect"],
+    ["github", "disconnect"],
+    ["github", "install"],
     ["creds", "list"],
+    ["creds", "set"],
+    ["creds", "rm"],
     ["sandbox", "advice"],
     ["sandbox", "extend"],
     ["sandbox", "list"],
@@ -171,6 +176,7 @@ test("forwards authenticated CLI operations and MCP control routes", async () =>
     ["mcp", "catalog"],
     ["mcp", "metadata"],
     ["creds", "accounts", "set"],
+    ["creds", "accounts", "limits"],
     ["creds", "accounts", "rename"],
     ["creds", "accounts", "default"],
     ["creds", "accounts", "remove"],
@@ -266,7 +272,7 @@ test("forwards authenticated CLI operations and MCP control routes", async () =>
   expect(seen).toHaveLength(forwarded);
 });
 
-test("keeps unknown and runner secret callbacks outside the closed public allowlist", async () => {
+test("keeps unknown and machine-only routes outside the closed public allowlist", async () => {
   process.env.ARMADA_MCP_URL = "https://armada.test/mcp";
   const fetchImpl = async () => Response.json({ ok: true });
   for (const path of [
@@ -291,6 +297,7 @@ test("keeps unknown and runner secret callbacks outside the closed public allowl
     ["creds", "accounts", "auth-state"],
     ["creds", "accounts", "auth-state", "callback"],
     ["internal", "runner", "auth-state"],
+    ["docker-host", "register"],
     ["sandbox", "auth-state"],
     ["sandbox", "advice", "callback"],
     ["sandbox", "advice-extra"],

@@ -10,6 +10,7 @@ import {
 import type { IngestGrantClaims, Scope } from "@armada/provider-modal";
 import { scopeKey } from "@armada/provider-modal";
 import { admitAccountCapacity, admitLaunchAccount, releaseAccountCapacity } from "./account-capacity.ts";
+import { NativeOutputPending } from "./event-pagination.ts";
 import { chooseLaunchPoolAccount, type LaunchAccountDefault, readLaunchAccountDefault } from "./launch-account-pool.ts";
 import { exposedSecrets } from "./launch-credentials.ts";
 import { createNativeStateStore } from "./model-auth-state.ts";
@@ -324,16 +325,13 @@ export function createModelAuthOwnership(
           `select 1 from public.sandboxes s join public.model_auth_state state
            on state.account_id=s.credential_id and state.account_version=s.credential_version
            where s.provider=$1::public.sandbox_provider and s.provider_sandbox_id=$2 and s.org_id=$3::uuid
+           and s.deleted_at is null
+           and exists(select 1 from public.members m where m.org_id=s.org_id and m.user_id=$4::uuid)
+           and (coalesce(s.visibility,(select visibility from public.goldens g where g.id=s.golden_id))='org' or s.owner_id=$4::uuid)
            and s.activity_lease_id is not null and s.activity_until>now()`,
-          [provider.id, providerId, caller.orgId],
+          [provider.id, providerId, caller.orgId, caller.userId],
         );
-        if (pending.rows.length)
-          throw new ProviderError({
-            provider: provider.id,
-            code: "unavailable",
-            retryable: true,
-            message: "Native output synchronization is pending. Retry after the current operation finishes.",
-          });
+        if (pending.rows.length) throw new NativeOutputPending(provider.id);
       };
       await pendingCommand();
       const secrets = await this.capture(provider, providerId, caller);
@@ -559,18 +557,18 @@ export type ModelAuthOwnership = ReturnType<typeof createModelAuthOwnership>;
 /** Honest UI capability: consent runs in the user's native CLI, never this service. */
 export const modelAuthCapabilities = {
   hostedOAuth: false,
-  nativeCLI: { codex_auth: "armada creds login codex" },
+  nativeCLI: { codex_auth: "armada account login codex" },
   nativeSubscriptionParallelSandboxes: true,
   nativeSubscriptionResume: true,
   nativeSubscriptionExec: true,
   claude: {
     login: null,
-    import: "armada creds import claude --name <name> --file <private-token-file>",
+    import: "armada account import claude --name <name> --file <private-token-file>",
     preparation: "Run the official claude setup-token locally. Model-only tokens cannot read profile allowance.",
   },
   codex: {
-    login: "armada creds login codex --name <name>",
-    import: "armada creds import codex --name <name> --file <private-auth-json>",
+    login: "armada account login codex --name <name>",
+    import: "armada account import codex --name <name> --file <private-auth-json>",
     preparation: "Install official Codex locally. Device login requires an eligible ChatGPT account.",
   },
   provisioning:

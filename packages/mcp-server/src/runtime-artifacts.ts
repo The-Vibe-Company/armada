@@ -35,7 +35,7 @@ export interface RuntimeArtifactSet {
   runtime: { sha256: string; bytes: number };
   artifacts: { sha256: string; bytes: number }[];
 }
-const pin = (value: unknown): { sha256: string; bytes: number } | undefined => {
+export function runtimeArtifactPin(value: unknown): { sha256: string; bytes: number } | undefined {
   const v = value as { sha256?: unknown; bytes?: unknown } | null;
   return v &&
     typeof v.sha256 === "string" &&
@@ -45,24 +45,22 @@ const pin = (value: unknown): { sha256: string; bytes: number } | undefined => {
     (v.bytes as number) <= 512 * 1024 * 1024
     ? { sha256: v.sha256, bytes: v.bytes as number }
     : undefined;
-};
+}
 /** Public digests only (no file inventory, versions or configuration) from one deployed manifest. */
 export function runtimeArtifactSet(manifest: unknown): RuntimeArtifactSet | undefined {
   const m = manifest as {
     runtime?: unknown;
     harnesses?: unknown;
     opencode?: unknown;
-    antigravity?: { x64?: unknown; arm64?: unknown } | null;
   } | null;
-  const runtime = pin(m?.runtime);
+  const runtime = runtimeArtifactPin(m?.runtime);
   if (!runtime || !m?.harnesses || typeof m.harnesses !== "object") return undefined;
-  if (m.antigravity !== undefined && (!pin(m.antigravity?.x64) || !pin(m.antigravity?.arm64))) return undefined;
   const artifacts = new Map<string, { sha256: string; bytes: number }>();
   for (const harness of Object.values(m.harnesses as Record<string, { archive?: unknown } | null>)) {
-    const archive = pin(harness?.archive);
+    const archive = runtimeArtifactPin(harness?.archive);
     if (archive) artifacts.set(archive.sha256, archive);
   }
-  const opencode = pin(m.opencode);
+  const opencode = runtimeArtifactPin(m.opencode);
   if (opencode) artifacts.set(opencode.sha256, opencode);
   return { runtime, artifacts: [...artifacts.values()] };
 }

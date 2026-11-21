@@ -23,11 +23,11 @@ Quick start / common examples:
   armada login
   armada org list
   armada login --org my-team
-  armada status --setup
+  armada info --setup
   armada host add --name my-workstation
   armada new
   armada ls
-  armada status SANDBOX_ID
+  armada info SANDBOX_ID
   armada prompt SANDBOX_ID "Continue the task"
   armada events SANDBOX_ID --tail 20
   armada stop SANDBOX_ID
@@ -41,7 +41,7 @@ Usage:
   armada host rm UUID [--org UUID]
   armada new [prompt] --provider docker [--host UUID|NAME | --golden snapshot-UUID] --agent claude|codex|opencode [--credential-id UUID] [--org NAME|UUID] [--repo owner/repo[@branch] ...] [--variable KEY:UUID:VERSION ...] [--secret KEY:UUID:VERSION ...] [--idempotency-key KEY] [--json]
                                            Docker launch through the normal Armada API using the official Armada environment.
-  armada status [--setup] [--org UUID] [--json]  Check identity, server, GitHub, hosts and accounts
+  armada info --setup [--org UUID] [--json]  Check identity, server, GitHub, hosts and accounts
   armada completion bash|zsh|fish           Print a shell completion script
   armada --version                         Print the version
   armada --help                            Show this help (also -h or help); no login required
@@ -73,20 +73,12 @@ Usage:
                                            Default page size 25; --json keeps {sandboxes:[...]}; --page-info adds exact totals
   armada mcp sandbox-connections <sandbox-uuid> [--org UUID] [--json]
                                            Read actual bound connection metadata, never mutate bindings
-  armada advice <sandbox-id> [--org UUID] [--json]
-                                           Last-10 comparable-session resource evidence; collects one bounded sample.
-                                           Missing/partial evidence abstains. Never resizes or changes defaults.
-                                           Human launch guidance uses stderr only; --json launch never requests advice.
   armada bind-credential <sandbox-id> --credential-id UUID [--org UUID] [--json]
                                            Owner-only legacy Modal binding recovery; stop safely first; no restart
+  armada info [sandbox-id] [--live | --wait [--timeout seconds]] [--org UUID] [--json]
+                                           Inspect recorded state, probe the provider or wait for activity
   armada rm <sandbox-id> --yes [--org UUID] [--json]  Permanently delete a stopped sandbox and its recovery archives
-  armada extend <sandbox-id> --ttl <duration> [--org UUID] [--json]
-                                           TTL is measured from now, not added to the old deadline; must extend it.
-  armada status <sandbox-id> [--live] [--org UUID] [--json]
-                                           Recorded state by default (no provider probe); --live reads provider/prompt details
-  armada detail|recovery|stop|interrupt <sandbox-id> [--org UUID] [--json]
-  armada wait <sandbox-id> [--timeout <seconds>] [--org UUID] [--json]
-                                           Timeout is 0–600 seconds, default 60.
+  armada stop [sandbox-id] [--turn | --after [--timeout SECONDS]] [--org UUID] [--json]
   armada report [sandbox-id] ready|blocked --prompt-id ID [--reason TEXT] [--pr-number N] [--pr-url URL] [--head-sha SHA]
   armada prompt [--steer] <sandbox-id> <text>
                                            Start a turn or redirect a running turn
@@ -104,73 +96,24 @@ Usage:
   armada mcp list|add|update|connect|status|reconnect|enable|disable|revoke|delete [id] [--org UUID] [--file JSON]
   armada login [--url <url>] [--org NAME|UUID|none]        Sign in and authorize the CLI in your browser
   armada logout
-  armada token create --name <name> [--org <org>] [--expires 30d|90d|1y|never] [--json]
-  armada token ls [--json]
-  armada token revoke <id> [--json]
   armada whoami [--json]
-  armada org create <name>                 Create an org; you are its first admin
   armada org list
   armada org setup [--org <name>]          Show organization provider setup status
   armada org connect boat|modal [--org <name>] [--file <path>]
                                            Connect an org provider using hidden input, stdin or a file
+  armada account --help                      Discover encrypted model account commands
   armada account ls|add|login|rm github      GitHub connection and installation
   armada account status|logout               Armada identity / revoke current login session
-  armada org invitations create <email> [--role admin|member] [--org <name|UUID>] [--json]
-  armada org invitations list [--org <name|UUID>] [--json]
-  armada org invitations resend|revoke <id> [--org <name|UUID>] [--json]
-                                           Admin invitation management; --org overrides the saved selection.
-                                           Email sent means provider accepted, not confirmed inbox delivery.
-  armada org invitations accept [--file <path>] [--json]
-                                           Token from stdin/file only; log in personally with the matching
-                                           verified email first. Opening a link never joins an organization.
-  armada org members list|add|remove|role  [--org <name>] add <email> [--role admin|member]
-                                           Direct membership administration; add requires an existing account,
-                                           grants membership immediately and does not send an invitation.
-  armada creds login codex --name <name> [--org <name>]
-                                           Native local device login; up to 16 minutes after the device code.
-                                           Keep this terminal open; Ctrl-C/shell exit cancels.
-  armada creds import claude|codex --name <name> [--file <path>] [--org <name>]
-                                           Import a locally obtained native token/auth.json; never pass secrets as arguments
-  armada creds limits <account-id> [--model <model-id>] (--max-agents N | --unlimited) [--org <name>]
-                                           Set the maximum simultaneous running agents for a model account
-  armada creds presets [--json]             List the same model connection providers as the dashboard
-  armada creds connect <preset> --name NAME [--file PATH] [--org NAME]
-                                           Provider key from hidden input, stdin/file; custom providers take --models and --base-url
-                                           Azure models are resource deployment names; official Azure addresses are tested
-                                           with a tiny billable request per deployment. A failed check saves nothing.
-  armada creds set <kind> [--org <name>] [--file <path>]
-                                           Store an encrypted credential; use hidden terminal input, stdin or a file
-                                           Model accounts: --max-agents N or --unlimited (Morph defaults to 2; others unlimited)
-                                           Model accounts: --name NAME creates; --id UUID --expected-version N replaces
-                                           Codex: --base-url URL --models deployment,model [--api-version VERSION]
-                                           Key from hidden input, stdin/file; Azure requires actual deployment names, not model catalog IDs
-                                           Codex endpoints require the Responses API
-                                           Custom endpoints run on Modal, Docker or runtime-backed Boat
-                                           Claude: --base-url URL [--endpoint-auth bearer|api-key] (default bearer)
-                                           Claude gateways support Claude models only
-                                           Endpoint prices: --price-model ID --price-input USD --price-output USD
-                                           [--price-cached-input USD]; decimal USD per million tokens, omitted = unknown
-                                           Replacing a connection replaces its prices too; re-enter all rates to keep them
-  armada routine --help                    Create, inspect, enable, pause and manage scheduled template launches
-  armada template --help                   Manage templates and launch published versions
-  armada vars --help                       Readable variables: set/list/read; stdin/file writes only
-  armada secrets --help                    Write-only application secrets: set/list/rotate/revoke/delete
-                                           Personal or --org scope. JSON includes values only for vars read; no sandbox delivery.
-  armada creds test <sandbox-id> --model <deployment-model> [--org <name>] [--json]
-                                           Checks the bound API-key connection on a running Modal or runtime-backed Boat sandbox; may incur a charge
-  armada creds list [--org <name>]         Account IDs, names, defaults and safe metadata; never values
-  armada creds rename <id> <name> [--org <name>]
-  armada creds default|remove <id> [--org <name>]
-  armada creds rm <kind> [--org <name>]
-                                           kinds: claude-oauth, anthropic, openai, codex-auth, boat, modal, skillpack
+  armada template --help                   Inspect and launch published versions
 
 Every command after 'armada login' acts as the user who signed in. snapshot commands take --org <name>
 when you belong to more than one org.
 
 Give an agent access:
-  Create an API key with armada token create --name <name>. Set ARMADA_URL and inject the key
-  as ARMADA_TOKEN from a secret store. Verify with armada whoami. From a personal login,
-  find the key ID with armada token ls and revoke it with armada token revoke <id>.
+  Create an API key in Dashboard Settings or run:
+  armada api token/create '{"label":"worker","org":"ORG_UUID"}'
+  Store the response's token securely. Set ARMADA_URL and inject the key as ARMADA_TOKEN.
+  Verify with armada whoami.
 
 Environment:
   ARMADA_TOKEN                             API token for non-interactive authentication. Takes precedence over
@@ -255,21 +198,9 @@ Deleted sandboxes are excluded by default; request --status deleted to include t
 Page is 1–1000000; limit is 1–200 (default page size 25). This is one page, not all results.
 Human output is a table. --json returns {sandboxes:[...]}; --page-info returns full
 page metadata and exact totals as JSON even without --json.
-Use --org to override a saved selection. Reuse returned IDs with status, events, or prompt.
+Use --org to override a saved selection. Reuse returned IDs with info, events, or prompt.
 Example: armada ls --owner me --page 1 --limit 25 --json
 Example: armada ls --org ORG_UUID --page 2 --page-info
-"
-`;
-
-exports[`armada advice help preserves its output 1`] = `
-"Usage: armada advice <sandbox-id> [--org UUID] [--json]
-Read resource-sizing advice after Armada login and server authorization.
-Collects one bounded sample and considers up to the last 10 comparable sessions.
-Missing or partial evidence can produce no recommendation; do not treat unknowns as measured headroom.
-This never resizes a running machine or changes defaults; recommendations concern future launches.
-Human output summarizes supported advice or the no-recommendation reason.
-Use --json to inspect the full evidence response. Use a sandbox ID from armada ls.
-Example: armada advice SANDBOX_UUID --org ORG_UUID --json
 "
 `;
 
@@ -283,79 +214,31 @@ Example: armada rm SANDBOX_UUID --yes --org ORG_UUID --json
 "
 `;
 
-exports[`armada extend help preserves its output 1`] = `
-"Usage: armada extend <sandbox-UUID> --ttl <duration> [--org UUID] [--json]
-Request a sandbox lifetime extension after Armada login and server authorization.
-TTL is measured from now, not added to the old deadline, and must extend it.
-Duration is a positive integer with optional s, m, h or d; a bare number is seconds.
-Examples: 90, 90s, 30m, 4h, 2d. Server/provider state and lifetime limits still apply.
-Use a sandbox UUID from armada ls --json. Output is JSON even without --json.
-Example: armada extend SANDBOX_UUID --ttl 30m --org ORG_UUID --json
-"
-`;
-
-exports[`armada status help preserves its output 1`] = `
-"Usage: armada status [--setup] [--org UUID] [--json]
-       armada status [sandbox-id] [--live] [--org UUID] [--json]
-Without a sandbox ID or current sandbox, check identity, selected organization,
-server, GitHub, hosts and model accounts. Use --setup to inspect setup from a
-sandbox workspace. Setup reports metadata and exits 1 if a check fails.
-An explicit ID, ARMADA_SANDBOX or .armada/sandbox selects sandbox status.
-Default: recorded state, without a provider probe. --live reads provider/prompt details.
-Use a sandbox ID from armada ls --json. Output is JSON even without --json.
-Recorded state is not proof of current provider readiness.
-Example: armada status --setup --org ORG_UUID --json
-Example: armada status SANDBOX_UUID --org ORG_UUID --json
-Example: armada status SANDBOX_UUID --live --org ORG_UUID
-"
-`;
-
-exports[`armada detail help preserves its output 1`] = `
-"Usage: armada detail <sandbox-id> [--org UUID] [--json]
-Read detailed sandbox information after Armada login and server authorization.
-Use a sandbox ID from armada ls --json. Output is JSON even without --json.
-For recorded status without a provider probe, use armada status instead.
-Example: armada detail SANDBOX_UUID --org ORG_UUID --json
-"
-`;
-
-exports[`armada recovery help preserves its output 1`] = `
-"Usage: armada recovery <sandbox-id> [--org UUID] [--json]
-Read sandbox work-recovery information after Armada login and server authorization.
-Output is JSON even without --json. This is not credential-account rebinding.
-Use a sandbox ID from armada ls --json.
-Example: armada recovery SANDBOX_UUID --org ORG_UUID --json
+exports[`armada info help preserves its output 1`] = `
+"Usage: armada info [--setup] [--org UUID] [--json]
+       armada info [sandbox-id] [--live | --wait [--timeout seconds]] [--prompt-id ID] [--org UUID] [--json]
+An explicit ID, ARMADA_SANDBOX or .armada/sandbox selects a sandbox.
+Without a sandbox, inspect Armada setup. Use --setup to force setup inspection.
+--live reads current provider and prompt details. The default reads recorded state.
+--wait waits for sandbox activity. Timeout is 0–600 seconds, default 60.
+A bounded wait is not proof that the task is complete. Inspect the returned state.
+Use --json for machine-readable sandbox output. Setup reports its checks and exits 1 if a check fails.
+Example: armada info SANDBOX_UUID --wait --timeout 60 --org ORG_UUID --json
 "
 `;
 
 exports[`armada stop help preserves its output 1`] = `
-"Usage: armada stop <sandbox-id> [--org UUID] [--json]
-Stop the machine after Armada login and server authorization, not just the running turn.
+"Usage: armada stop [sandbox-id] [--turn | --after [--timeout SECONDS]] [--org UUID] [--json]
+Without options, stop the machine now. Omit the ID to use the current sandbox.
+--turn interrupts the running turn and keeps the machine up, where supported.
+--after waits for the turn to settle, then stops only if the sandbox is still idle.
+--timeout accepts 0–600 seconds with --after (default 60). A zero timeout only observes
+status. A receipt with timedOut: true means no stop was requested.
 Modal retains its disk only if checkpoint succeeds; fallback termination cannot resume.
 Inspect the returned status/preservation note; do not assume disk retention.
-After an uncertain outcome, inspect status/list before retrying. This is not permanent rm deletion.
+After an uncertain outcome, run armada info or armada ls before retrying. This is not permanent rm deletion.
 Output is JSON even without --json.
-Example: armada stop SANDBOX_UUID --org ORG_UUID --json
-"
-`;
-
-exports[`armada interrupt help preserves its output 1`] = `
-"Usage: armada interrupt <sandbox-id> [--org UUID] [--json]
-Interrupt the sandbox's running turn after Armada login and authorization.
-The sandbox stays up for the next send. This does not stop or delete the machine.
-Availability depends on the provider/harness; the server can refuse unsupported interruption.
-Output is JSON even without --json.
-Example: armada interrupt SANDBOX_UUID --org ORG_UUID --json
-"
-`;
-
-exports[`armada wait help preserves its output 1`] = `
-"Usage: armada wait <sandbox-id> [--timeout <seconds>] [--org UUID] [--json]
-Wait for sandbox activity through the server after Armada login and authorization.
-Timeout is an integer from 0 to 600 seconds (default 60); zero is accepted.
-Use a sandbox ID from armada ls --json. Output is JSON even without --json.
-Inspect the returned state; a bounded wait is not proof that your task is complete.
-Example: armada wait SANDBOX_UUID --timeout 60 --org ORG_UUID --json
+Example: armada stop SANDBOX_UUID --turn --org ORG_UUID --json
 "
 `;
 
@@ -409,46 +292,16 @@ Use --org to scope sandbox prefix lookup.
 "
 `;
 
-exports[`armada routine help preserves its output 1`] = `
-"Usage: armada routine <command> [arguments]
-Manage scheduled template launches that run as the routine owner.
-
-  create  Create a paused routine from file or inline configuration.
-  list    List visible IDs, names, status, versions and next occurrences.
-  show    Inspect configuration, prompt and current version.
-  update  Replace configuration from file, or change only the inline schedule.
-  enable  Schedule the next occurrence, not an immediate manual launch.
-  pause   Stop new admissions; already admitted runs may finish.
-  delete  Mark deleted; does not stop or delete running sandboxes.
-  runs    Read the latest 100 decisions and original-prompt outcomes.
-
-Actions require Armada login or ARMADA_TOKEN. Select an organization with --org
-NAME|UUID or armada login --org NAME|UUID. Organization-scoped writes require administrator permission.
-Use IDs from routine list when exact names collide; keep IDs for history after deletion.
-Updates and state changes require --expected-version from routine show/list;
-conflicts are not retried automatically. Prompts are readable configuration, not secrets.
-Schedules use five-field cron and IANA time zones, with runs at least one hour apart.
-Launch success is not task success; unknown is not success. Inspect routine runs.
-Inspect a command's options with armada routine <command> --help.
-Example: armada routine list --org ORG_UUID --json
-Example: armada routine runs ROUTINE_UUID --org ORG_UUID --json
-"
-`;
-
 exports[`armada template help preserves its output 1`] = `
 "Usage: armada template <command> [arguments]
-Manage reusable launch definitions and their immutable template versions.
+Inspect reusable launch definitions and launch their immutable template versions.
 
-  create   Create a template from a JSON definition file or definition flags.
   list     List visible IDs, names, scopes, status and current versions.
   get      Inspect metadata or a selected version's definition with --json.
-  publish  Publish a complete new version, guarded by --expected-revision.
-  delete   Mark a template deleted, guarded by --expected-revision.
   launch   Launch a template version using a saved --request-key for safe retries.
 
 Actions require Armada login or ARMADA_TOKEN. Select an organization with --org
-NAME|UUID or armada login --org NAME|UUID. Templates may be personal or organization-scoped;
-organization-scoped writes require administrator permission.
+NAME|UUID or armada login --org NAME|UUID. Templates may be personal or organization-scoped.
 Use IDs from template list when exact names collide across scopes.
 Definitions store variable/secret references; do not put raw secret values in them.
 References resolve into frozen manifests at launch, not publication.
@@ -484,35 +337,36 @@ Use snapshot show to inspect the build later. --json prints a single receipt.
 "
 `;
 
-exports[`armada creds help preserves its output 1`] = `
-"Usage: armada creds <command> [arguments]
-Manage encrypted model/provider credentials, not application variables/secrets.
-Use a leaf command with --help or -h for its flags and secure input instructions.
-Native subscription accounts:
-  login codex  Authorize native Codex in your browser; keep the terminal open.
-  import       Import an existing Claude token or Codex auth JSON securely.
-API connections:
-  presets      List built-in provider choices without login.
-  connect      Store a named API connection using a preset, such as morph.
-  set          Store a supported credential kind or custom endpoint.
-  test         Test a sandbox's bound model connection; may incur a provider charge.
-Account metadata:
-  list         List metadata/IDs, never credential values.
-  limits       Set the maximum simultaneous agents for an account or model.
-  rename       Rename by account ID.
-  default      Select a default account by ID.
-  remove       Remove an account by ID.
-  rm           Legacy kind-scoped removal; not an alias for remove <id>.
-Native subscriptions require eligible subscription access; API keys use provider billing.
-Read secret inputs from stdin/hidden input or private files, never command arguments.
-For application environment values use vars or secrets instead. Server authorization still applies.
-Example: armada creds presets --json
-Example: armada creds import --help
+exports[`armada account help preserves its output 1`] = `
+"Usage: armada account <command> [arguments]
+Manage model credentials, GitHub access or your personal Armada session.
+  ls            List credential metadata. Use --presets for connection choices.
+  add           Store a credential kind or use --preset for a named connection.
+  login codex   Authorize native Codex in your browser.
+  import        Import native Claude or Codex credentials securely.
+  default       Select a default model account by ID.
+  limits        Set an account or model concurrency cap.
+  rm            Remove a named account by ID or a credential with --kind.
+  test          Check a sandbox's bound API-key connection.
+Supply API keys and imported credentials through hidden input, stdin or a private file.
+  ls github      Inspect your GitHub connection and installations.
+  add github     Start GitHub App installation and wait for a new installation.
+  login github  Authorize or reauthorize GitHub.
+  rm github      Disconnect your GitHub account.
+Use leaf --help/-h for exact syntax and authorization requirements.
+  status  Read account status from the server as JSON.
+  logout  Sign out the current personal session remotely, then clear local login.
+For local-only session clearing, use armada logout instead.
+Account logout requires a personal session, not service-token authentication;
+remove ARMADA_TOKEN from that command's environment when using saved personal login.
+Help makes no server requests and does not sign anything out.
+Example: armada account login github --help
+Example: armada account logout --help
 "
 `;
 
-exports[`armada creds import claude help preserves its output 1`] = `
-"Usage: armada creds import claude (--name <name> | --id <id> --expected-version <version>) [--file <path>] [--org <name>]
+exports[`armada account import claude help preserves its output 1`] = `
+"Usage: armada account import claude (--name <name> | --id <id> --expected-version <version>) [--file <path>] [--org <name>]
 Import an existing native credential after Armada login; no native login is started.
 Claude: run claude setup-token locally. Codex: supply native auth JSON.
 Read the credential from stdin/hidden input or a private --file, never command arguments.
@@ -520,27 +374,23 @@ Use --name to create; replacement requires --id and a positive integer --expecte
 Set the account cap with --max-agents N or --unlimited.
 Omit --org for personal scope; pass it for organization scope.
 Credentials are stored encrypted; allowance information may be unavailable.
-Example: armada creds import claude --name personal --file /private/native-credential
+Example: armada account import claude --name personal --file /private/native-credential
 "
 `;
 
-exports[`armada creds connect help preserves its output 1`] = `
-"Usage: armada creds connect <preset> --name <name> [--file <path>] [--org <name>] [--json]
-  [--models <id,...>] [--base-url <HTTPS-url>] [--api-version <version>]
-  [--max-agents <positive-integer> | --unlimited]
-Store a named connection after Armada login. Choose a preset with armada creds presets --json.
-Supply only the API key through stdin/hidden input or a private --file, never command arguments or JSON.
-Presets with harness models reject --models, --base-url and --api-version.
-Chosen-model presets require --models and, unless fixed by the preset, --base-url.
-Fixed-address presets reject --base-url; --api-version is only accepted by supporting presets.
-Official Azure addresses are tested with a tiny billable request per deployment before saving;
-a failed check saves nothing. Omit --org for personal scope.
-Morph defaults to 2 simultaneous agents; other accounts default to unlimited.
-Use --max-agents N or --unlimited on connect, import, login and set.
-Change an existing cap with armada creds limits ACCOUNT_UUID --max-agents 2 or --unlimited.
-Morph: armada creds connect morph --name shared --file /private/morph-key
-Use Claude Code, Codex or OpenCode on Modal, Docker or runtime-backed Boat.
-At launch choose --credential-id ACCOUNT_UUID and a Morph plan model with --model.
-Example: armada creds connect openai --name personal --file /private/api-key
+exports[`armada account add help preserves its output 1`] = `
+"Usage: armada account add <kind> [--name NAME | --id UUID --expected-version N] [--org NAME] [--file PATH]
+       armada account add --preset <id> --name NAME [--org NAME] [--file PATH]
+Read credentials from stdin, hidden input or a private file. Omit --org for personal scope.
+List presets and their model requirements with armada account ls --presets --json.
+Presets with a custom address take --base-url and --models. Fixed addresses take --models
+only when required by the preset. Use --api-version only with a supported preset or OpenAI endpoint.
+Official Azure addresses make a tiny billable request per deployment before storing the account.
+Custom OpenAI and OpenCode endpoints require --base-url and exact --models IDs.
+Claude gateways take --base-url and optional --endpoint-auth bearer|api-key (default bearer).
+Custom endpoints accept --price-model, --price-input, --price-output and optional --price-cached-input
+in USD per million tokens. Re-enter prices when replacing a connection.
+Set a named account cap with --max-agents N or --unlimited. Morph defaults to 2.
+Example: armada account add --preset morph --name shared --file /private/morph-key
 "
 `;

@@ -33,14 +33,11 @@ async function capture(args: string[], status: number, serverCode: unknown, mess
 
 test.each(
   [
-    ["status", id],
-    ["detail", id],
-    ["recovery", id],
-    ["advice", id],
-    ["wait", id],
+    ["info", id],
+    ["info", id, "--wait"],
     ["events", id],
     ["stop", id],
-    ["interrupt", id],
+    ["stop", id, "--turn"],
     ["prompt", id, "hello"],
     ["prompt", "--steer", id, "hello"],
     ["exec", id, "--", "printf audit"],
@@ -105,7 +102,7 @@ test.each(["", canary])("binding refusal preserves only an exact fixed reason (s
   expect(result.exit).toBe(1);
   if (!suffix) {
     expect(failure.message).toContain(message);
-    expect(failure.message).toContain("armada detail ID");
+    expect(failure.message).toContain("armada info ID");
   } else {
     expect(failure.message).not.toContain(message);
     expect(failure.message).toContain("armada ls --json");

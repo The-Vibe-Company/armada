@@ -2,6 +2,7 @@ import type { Harness } from "./contract.ts";
 import { HARNESSES } from "./contract.ts";
 import type { Provider } from "./provider.ts";
 import { validateReadableVariables } from "./readable-variables.ts";
+import { launchInfrastructure } from "./sandbox-provider.ts";
 import { sshStdinCheckout } from "./ssh-executor.ts";
 
 /** Fixed stdin-only bootstrap outside checkouts; readable, NOT a secret transport guarantee. */
@@ -12,7 +13,7 @@ export async function sshReadableVariables(
   input: Record<string, string>,
 ): Promise<void> {
   const variables = validateReadableVariables(input);
-  if (provider.id !== "boat" || !(HARNESSES as readonly string[]).includes(harness))
+  if (!launchInfrastructure(provider.id).privateSshBootstrap || !(HARNESSES as readonly string[]).includes(harness))
     throw Error("Readable variable bootstrap unavailable.");
   await sshStdinCheckout(provider, {
     sandboxId,

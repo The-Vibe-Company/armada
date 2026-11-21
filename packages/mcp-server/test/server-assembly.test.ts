@@ -3,6 +3,15 @@ import { assembleServer } from "../src/modules.ts";
 import type { ServerServices } from "../src/server-services.ts";
 import { jobsModule, type LaneFactory } from "../src/server-worker-modules.ts";
 
+const modalCleanup = {
+  launchCleanupJob: {
+    concurrency: 1,
+    async run() {
+      throw new Error("An empty claim must not run Modal cleanup.");
+    },
+  },
+} satisfies Pick<ServerServices["modal"], "launchCleanupJob">;
+
 test("server assembly preserves worker lane order and isolation", () => {
   const neverCall = async () => {
     throw new Error("Planning must not call a provider.");
@@ -32,8 +41,9 @@ test("server assembly preserves worker lane order and isolation", () => {
     webhooks: { run: neverCall },
     delegatedAccess: { childWorker: passiveLane },
     accountTurns: passiveLane,
+    runtimeMcp: { prepare: neverCall },
     langfuse: { exportJob: { concurrency: 1 } },
-    modal: { inventoryReaper: () => ({ ...passiveLane, isolatedSweep: true }) },
+    modal: { ...modalCleanup, inventoryReaper: () => ({ ...passiveLane, isolatedSweep: true }) },
   } as unknown as ServerServices;
 
   expect(assembleServer(services).planWorkers().description).toMatchInlineSnapshot(`
@@ -86,7 +96,7 @@ test("the shared jobs lane claims only configured job kinds", async () => {
   const managed = new Map<string, LaneFactory>();
   jobsModule({ workers: { managed } } as Parameters<typeof jobsModule>[0]);
   const createLane = managed.get("jobs")!;
-  for (const { githubApp, encryptionKey, expected } of [
+  for (const { githubApp, encryptionKey, modalRuntime, expected } of [
     {
       githubApp: null,
       encryptionKey: undefined,
@@ -105,15 +115,27 @@ test("the shared jobs lane claims only configured job kinds", async () => {
     {
       githubApp: {},
       encryptionKey: "test",
-      expected: ["golden_build", "langfuse_export", "maintenance", "webhook", "pr_scan", "outputs_capture"],
+      modalRuntime: true,
+      expected: ["golden_build", "langfuse_export", "maintenance", "webhook", "pr_scan", "outputs_capture", "launch"],
     },
   ]) {
     const claimed = new Set<string>();
+    const errors: string[] = [];
+    let backfillAttempts = 0;
     const lane = createLane({
       githubApp,
       control: {},
-      options: {},
+      options: { logError: (message: string) => errors.push(message) },
       config: { encryptionKey },
+      accountTurns: {
+        async backfillDispatchJobs() {
+          backfillAttempts++;
+          throw new Error("Backfill unavailable");
+        },
+      },
+      runtimeMcp: { prepare: neverCalled },
+      modal: modalCleanup,
+      modalLaunchJob: modalRuntime ? { concurrency: 1, run: neverCalled } : undefined,
       sql: { query: async () => ({ rows: [] }) },
       jobs: {
         async enqueue() {},
@@ -129,6 +151,10 @@ test("the shared jobs lane claims only configured job kinds", async () => {
       },
     } as unknown as Parameters<LaneFactory>[0]);
     await lane?.reconcileOne(new AbortController().signal);
-    expect(claimed).toEqual(new Set([...expected, "snapshot_retirement"]));
+    expect(claimed).toEqual(
+      new Set(["delete", ...(encryptionKey ? ["launch_initial_turn"] : []), ...expected, "snapshot_retirement"]),
+    );
+    expect(backfillAttempts).toBe(encryptionKey ? 1 : 0);
+    expect(errors).toEqual(encryptionKey ? ["armada: queued turn job backfill unavailable."] : []);
   }
 });

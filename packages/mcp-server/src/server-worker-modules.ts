@@ -1,7 +1,9 @@
 import { createDockerHostStore } from "./docker-host-store.ts";
 import { captureDockerStopOutputs } from "./docker-outputs.ts";
+import { createGoldenRuntimeEnvironment } from "./golden-runtime-environment.ts";
 import { createGoldenBuildJob } from "./golden-worker.ts";
 import { startInvitationWorker } from "./invitations.ts";
+import { createModalInitialTurnJob, MODAL_INITIAL_TURN } from "./jobs/modal-launch.ts";
 import { createJobsRunner } from "./jobs/runner.ts";
 import { createMcpSandboxProviderResolver } from "./mcp-sandbox-provider.ts";
 import { createNativeWebhookPrompts } from "./native-webhook-prompts.ts";
@@ -46,11 +48,16 @@ const jobsLane: LaneFactory = ({
   config,
   lifecycleProvider,
   runtimeCommands,
+  runtimeGitHub,
+  runtimeMcp,
   webhooks,
   options,
   outputs,
   langfuse,
   control,
+  modal,
+  modalLaunchJob,
+  accountTurns,
 }) => {
   const prScan = githubApp
     ? createPullRequestScanJob(
@@ -95,6 +102,21 @@ const jobsLane: LaneFactory = ({
   const runner = createJobsRunner(
     jobs,
     {
+      delete: modal.launchCleanupJob,
+      ...(modalLaunchJob ? { launch: modalLaunchJob } : {}),
+      ...(config.encryptionKey
+        ? {
+            [MODAL_INITIAL_TURN]: createModalInitialTurnJob(
+              sql,
+              config.encryptionKey,
+              accountTurns,
+              createGoldenRuntimeEnvironment(sql, config.encryptionKey),
+              runtimeCommands,
+              runtimeMcp.prepare,
+              runtimeGitHub,
+            ),
+          }
+        : {}),
       golden_build: createGoldenBuildJob(goldenBuilds),
       langfuse_export: langfuse.exportJob,
       maintenance: retentionMaintenanceJob(sql, control.applicationVault, options.logError),
@@ -125,6 +147,13 @@ const jobsLane: LaneFactory = ({
         await outputs.enqueueCaptures(jobs, signal);
       } catch {
         (options.logError ?? console.error)("armada: output capture scheduling unavailable.");
+      }
+      if (config.encryptionKey && !signal.aborted) {
+        try {
+          await accountTurns.backfillDispatchJobs(signal);
+        } catch {
+          (options.logError ?? console.error)("armada: queued turn job backfill unavailable.");
+        }
       }
       return runner.reconcileOne(signal);
     },

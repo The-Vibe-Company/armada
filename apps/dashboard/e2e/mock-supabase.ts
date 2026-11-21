@@ -2847,7 +2847,7 @@ function accounts(route: string, body: Row, request: Request): Response {
     return json({ ok: true });
   }
   if (route === "creds/accounts/auth-capabilities") {
-    return json({ hostedOAuth: false, nativeCLI: { codex_auth: "armada creds login codex" } });
+    return json({ hostedOAuth: false, nativeCLI: { codex_auth: "armada account login codex" } });
   }
   if (route === "creds/accounts/models") return json({ connections: [] });
   if (route === "creds/accounts/usage") return controlFail(404, "unknown_route", "Unknown route.");

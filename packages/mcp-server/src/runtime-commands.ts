@@ -114,12 +114,21 @@ export function createRuntimeCommands(
     request: RunnerRequest,
     expectedEpoch?: string,
     assertClaim?: (tx: Sql) => Promise<void>,
+    resolveSkillpackKey?: (tx: Sql) => Promise<string>,
   ) {
     if (request.version !== 1 || !requestId(request.requestId) || typeof request.op !== "string")
       throw new RuntimeCommandRefused();
-    const serialized = JSON.stringify(request);
-    if (Buffer.byteLength(serialized) > MAX_COMMAND) throw new RuntimeCommandRefused();
-    const sealed = await encryptSecret(serialized, key);
+    if (resolveSkillpackKey && (request.op !== "installSkills" || request.input.key !== undefined))
+      throw new RuntimeCommandRefused();
+    const serialize = (skillpackKey?: string) =>
+      JSON.stringify(
+        request.op === "installSkills" && skillpackKey !== undefined
+          ? { ...request, input: { ...request.input, key: skillpackKey } }
+          : request,
+      );
+    const original = serialize();
+    if (Buffer.byteLength(original) > MAX_COMMAND) throw new RuntimeCommandRefused();
+    const sealed = resolveSkillpackKey ? undefined : await encryptSecret(original, key);
     const wakeKeys = [`socket:${request.sandboxId}`, `poll:${request.sandboxId}`];
     let deferred = false;
     const admitted = await authority.withOwner(request.sandboxId, ownerId, async (tx, scope) => {
@@ -141,12 +150,12 @@ export function createRuntimeCommands(
         )
       ).rows[0];
       if (previous) {
-        if (
-          previous.epoch !== scope.epoch ||
-          (expectedEpoch !== undefined && scope.epoch !== expectedEpoch) ||
-          (await decryptSecret(previous.request_enc, key)) !== serialized
-        )
+        if (previous.epoch !== scope.epoch || (expectedEpoch !== undefined && scope.epoch !== expectedEpoch))
           throw new RuntimeCommandConflict();
+        const stored = await decryptSecret(previous.request_enc, key);
+        const storedKey = resolveSkillpackKey ? JSON.parse(stored).input?.key : undefined;
+        if (resolveSkillpackKey && typeof storedKey !== "string") throw new RuntimeCommandConflict();
+        if (stored !== serialize(storedKey)) throw new RuntimeCommandConflict();
         // An identical replay in the current epoch reconciles with the stored command: it adds no
         // work, so the checkpoint fence does not apply and the caller reads the stored reply.
         await assertClaim?.(tx);
@@ -174,6 +183,7 @@ export function createRuntimeCommands(
         ).rows.length
       )
         throw new RuntimeCommandRefused();
+      const serialized = resolveSkillpackKey ? serialize(await resolveSkillpackKey(tx)) : original;
       // Include BOTH published wire envelopes, not merely the inner RunnerRequest.
       // A head-of-line command must always fit the client's 1 MiB JSON/frame cap.
       const overhead =
@@ -188,7 +198,7 @@ export function createRuntimeCommands(
           scope.sandboxId,
           request.requestId,
           scope.epoch,
-          sealed,
+          sealed ?? (await encryptSecret(serialized, key)),
           request.op === "prompt" ? (currentRequestId() ?? null) : null,
         ],
       );
@@ -375,6 +385,7 @@ export function createRuntimeCommands(
     timeoutMs?: number;
     expectedEpoch?: string;
     assertClaim?: (tx: Sql) => Promise<void>;
+    resolveSkillpackKey?: (tx: Sql) => Promise<string>;
     accept?: (reply: RuntimeCommandReply) => boolean;
   };
 
@@ -415,7 +426,13 @@ export function createRuntimeCommands(
         const signal = options.signal ?? new AbortController().signal;
         signal.throwIfAborted();
         const deadline = time.now() + timeout;
-        const admitted = await enqueue(ownerId, request, options.expectedEpoch, options.assertClaim);
+        const admitted = await enqueue(
+          ownerId,
+          request,
+          options.expectedEpoch,
+          options.assertClaim,
+          options.resolveSkillpackKey,
+        );
         provider = admitted.provider;
         const wakeKey = `reply:${request.sandboxId}:${admitted.epoch}:${request.requestId}`;
         while (true) {

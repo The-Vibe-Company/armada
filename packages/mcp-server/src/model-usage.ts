@@ -176,7 +176,7 @@ export interface ModelUsageApi {
     caller: Caller,
     id: string,
     sandboxId: string | undefined,
-    resolve: (sandboxId: string) => Promise<{ provider: Provider; providerSandboxId: string }>,
+    resolve: (sandboxId: string) => Promise<{ provider: Pick<Provider, "events">; providerSandboxId: string }>,
   ): Promise<ModelUsage>;
 }
 

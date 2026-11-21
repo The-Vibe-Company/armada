@@ -168,7 +168,7 @@ export function createPhysicalLifecycle(deps: {
       row.grantExpiresAt = Date.now() + row.ttlSeconds * 1000;
       await save(row);
       sb = await measure("modal_sandbox_create", () =>
-        allocateModalCompute(client, app, image, {
+        allocateModalCompute(client.sandboxes.create.bind(client.sandboxes), app, image, {
           ...(row.runtimePolicy === "explicit-vm-v1" ? { runtime: "vm" as const } : {}),
           size: row.size ?? null,
           name: row.physicalName,

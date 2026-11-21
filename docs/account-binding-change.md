@@ -1,6 +1,6 @@
 # Existing sandbox billing account (#1579)
 
-The sandbox page and `armada status ID` identify the pinned account by name and
+The sandbox page and `armada info ID` identify the pinned account by name and
 billing type (subscription or API key), not today's default or a guess from the
 model name. Unreadable metadata stays unavailable. Admitted turn pricing retains
 its original account/version context.

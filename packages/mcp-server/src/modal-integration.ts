@@ -7,6 +7,7 @@ import {
   EncryptionKeyError,
   type ModalBinding,
   type Provider,
+  ProviderError,
   type ProviderTarget,
   parseModalTokenPair,
   resolveModalTokens,
@@ -21,6 +22,7 @@ import {
   createModalMachineInventory,
   MODAL_IMAGE_LOCK,
   type ModalManagementAuthority,
+  modalDeploymentId,
   type ResolvedModalManagementCredentials,
   type Scope,
   scopeKey,
@@ -28,6 +30,7 @@ import {
 import { loadEmbeddedRunnerArtifact } from "@armada/provider-modal/embedded";
 import { ModalClient } from "modal";
 import type { HandlerOptions } from "./http.ts";
+import { createModalLaunchCleanupJob, createModalLaunchJob } from "./jobs/modal-launch.ts";
 import type { GitHubLaunchOptions } from "./launch-credentials.ts";
 import { observeNativeFirstToken } from "./launch-stage-record.ts";
 import {
@@ -43,6 +46,7 @@ import { diagnosticSandboxId } from "./provider-sandbox-target.ts";
 import { observeProvider, observeProviderCall } from "./request-observability.ts";
 import { measureProviderPhase } from "./request-timing.ts";
 import { createRuntimeServing } from "./runtime-serving.ts";
+import { STRICT_NATIVE_DRAIN_STOP } from "./sandbox-lifecycle.ts";
 
 export type { ModalManagementAuthority } from "@armada/provider-modal";
 export const MODAL_INGEST_PATH = "/api/internal/modal/events";
@@ -148,9 +152,9 @@ export async function createModalIntegration(options: {
   async function resolveManagementCredentials(
     authority: Pick<ModalManagementAuthority, "credentialScope" | "credentialOwnerId">,
     vault: CredentialReader = options.vault,
-  ): Promise<ResolvedModalManagementCredentials> {
+  ): Promise<ResolvedModalManagementCredentials & { id: string | undefined; version: number | undefined }> {
     const row = (await vault.credentials(authority.credentialScope, authority.credentialOwnerId)).find(
-      (candidate) => candidate.kind === "modal",
+      (candidate) => candidate.kind === "modal" && candidate.status === "active",
     );
     if (!row)
       throw new VaultError(
@@ -163,6 +167,8 @@ export async function createModalIntegration(options: {
         ...parseModalTokenPair(value),
         credentialScope: authority.credentialScope,
         credentialOwnerId: authority.credentialOwnerId,
+        id: row.id,
+        version: row.version,
       };
     } catch {
       throw new VaultError("unavailable", "The bound Modal credential is invalid. Replace that credential slot.");
@@ -269,15 +275,25 @@ export async function createModalIntegration(options: {
       ingestUrl,
       artifact,
       ...(options.resumeRefused ? { resumeRefused: options.resumeRefused } : {}),
-      ...(options.beforeResume
-        ? {
-            beforeResume: (provider: Provider, sandboxId: string) =>
-              options.beforeResume!(provider, sandboxId, {
-                userId: context.caller.userId,
-                orgId: context.target.orgId,
-              }),
-          }
-        : {}),
+      async beforeResume(provider, sandboxId) {
+        const blocked = await options.sql.query(
+          `select 1 from public.sandboxes s
+           where s.org_id=$1 and s.provider='modal' and s.provider_sandbox_id=$2
+             and (s.native_drain_pending or ${STRICT_NATIVE_DRAIN_STOP})`,
+          [scope.orgId, sandboxId],
+        );
+        if (blocked.rows.length)
+          throw new ProviderError({
+            provider: "modal",
+            code: "conflict",
+            message: "Native drain has reserved this sandbox for preservation and deletion.",
+            retryable: false,
+          });
+        await options.beforeResume?.(provider, sandboxId, {
+          userId: context.caller.userId,
+          orgId: scope.orgId,
+        });
+      },
       ...(options.beforePrompt
         ? {
             beforePrompt: (provider, sandboxId) =>
@@ -430,7 +446,52 @@ export async function createModalIntegration(options: {
       },
     };
   }
+  const openMachine = async (
+    { appName, binding, ...authority }: Parameters<Parameters<typeof createModalLaunchCleanupJob>[1]>[0],
+    signal: AbortSignal,
+  ) => {
+    const { tokenId, tokenSecret, id, version } = await resolveManagementCredentials(authority);
+    if (!id || !version) throw new Error("Modal platform credential revision is unavailable.");
+    signal.throwIfAborted();
+    const deploymentId = modalDeploymentId(binding.environment, options.publicUrl);
+    const client = new ModalClient({
+      tokenId,
+      tokenSecret,
+      maxThrottleWaitSecs: 0,
+      grpcMiddleware: [
+        async function* (call, rpc) {
+          const requestSignal = rpc.signal ? AbortSignal.any([rpc.signal, signal]) : signal;
+          requestSignal.throwIfAborted();
+          const boundedRpc = { ...rpc, signal: requestSignal, retries: 0, timeoutMs: 10_000 };
+          return yield* call.next(call.request, boundedRpc);
+        },
+      ],
+    });
+    return {
+      client,
+      appName,
+      binding,
+      deploymentId,
+      async canUseModalCredential(tx: Sql) {
+        const { rows } = await tx.query(
+          `select 1 from public.credentials where id=$1 and version=$2 and status='active'
+            and kind='modal' and scope=$3 and owner_id=$4 and (expires_at is null or expires_at>clock_timestamp())
+            for share`,
+          [id, version, authority.credentialScope, authority.credentialOwnerId],
+        );
+        return rows.length > 0;
+      },
+      close: () => client.close(),
+      resolveRuntimeTicket: async () => null,
+      async prepareCheckpoint() {
+        throw new Error("Modal launch and cleanup cannot prepare a checkpoint.");
+      },
+    };
+  };
   return {
+    launchCleanupJob: createModalLaunchCleanupJob(options.sql, openMachine),
+    launchJob: (prepare: Parameters<typeof createModalLaunchJob>[3]) =>
+      createModalLaunchJob(options.sql, options.encryptionKey!, openMachine, prepare),
     inventoryReaper,
     warmRegisteredArtifactCaches,
     modalProviderFor,

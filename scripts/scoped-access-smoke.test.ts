@@ -23,11 +23,11 @@ function at<T>(values: T[], index = 0): T {
   return value;
 }
 type WireTool = { id: string; name: string; input: Obj; result: { output: unknown; isError: boolean } };
-function fixture(enabled = true) {
+function fixture(enabled = true, stepTimeouts: ScopedProbeIo["stepTimeouts"] = {}) {
   const output: Obj[] = [];
   const stopped: string[] = [];
   const journaled: string[] = [];
-  const requests: { path: string; body: Obj }[] = [];
+  const requests: { path: string; body: Obj; timeoutMs: number | undefined }[] = [];
   const state = {
     before: [] as string[],
     after: [parent, child],
@@ -47,6 +47,10 @@ function fixture(enabled = true) {
     sendUnknown: false,
     notReady: false,
     logsFail: false,
+    firstLogReadMs: 0,
+    listReadMs: 0,
+    sendMs: 0,
+    waitReadMs: 0,
     logsTimeout: false,
     logsExhaustBudget: false,
     waitRunning: false,
@@ -79,11 +83,13 @@ function fixture(enabled = true) {
       clock += ms;
     },
     deadline: Number.POSITIVE_INFINITY,
+    stepTimeouts,
     async request<T>(path: string, input: object, timeoutMs?: number): Promise<T> {
       const body = input as Obj;
-      requests.push({ path, body });
+      requests.push({ path, body, timeoutMs });
       expect(body.org).toBe(item.org);
       if (path === "sandbox/list") {
+        clock += state.listReadMs;
         expect(body.owner).toBe("me");
         expect(body.golden).toBe(item.goldenId);
         expect(body.limit).toBe(200);
@@ -98,6 +104,7 @@ function fixture(enabled = true) {
         } as T;
       }
       if (path === "sandbox/send") {
+        clock += state.sendMs;
         state.sends++;
         if (state.notReady && state.sends === 1) throw new Error("not_ready");
         expect(body.id).toBe(parent);
@@ -182,12 +189,14 @@ function fixture(enabled = true) {
         return { promptId: "turn" } as T;
       }
       if (path === "sandbox/wait") {
+        clock += state.waitReadMs;
         expect(body).toEqual({ org: item.org, id: parent, prompt_id: "turn", timeout_seconds: 0 });
         if (state.waitReplies.length) return state.waitReplies.shift() as T;
         return { prompt: { promptId: "turn", state: state.waitRunning ? "running" : "finished" } } as T;
       }
       if (path === "logs/read") {
         state.logReads++;
+        if (state.logReads === 1) clock += state.firstLogReadMs;
         expect(body.id).toBe(parent);
         expect(body.coalesce).toBe(true);
         expect(body.maxBytes).toBe(1_048_576);
@@ -216,10 +225,11 @@ function fixture(enabled = true) {
       }
       throw new Error(`Unexpected route ${path}`);
     },
-    async poll<T>(read: () => Promise<T>, done: (result: T) => boolean) {
+    async poll<T>(read: (remainingMs?: number) => Promise<T>, done: (result: T) => boolean, until?: number) {
       for (let n = 0; n < 3; n++) {
-        const result = await read();
-        if (done(result)) return result;
+        if (until !== undefined && clock >= until) break;
+        const result = await read(until === undefined ? undefined : until - clock);
+        if ((until === undefined || clock <= until) && done(result)) return result;
       }
       throw new Error("poll exhausted");
     },
@@ -342,16 +352,32 @@ describe("ordinary scoped Armada smoke", () => {
     expect(f.state.logReads).toBe(2);
   });
 
-  test("reports the missing receipt when a log read exhausts the observation window", async () => {
-    const f = fixture();
-    f.state.lateLogs = true;
-    f.state.logsExhaustBudget = true;
-    await expect(run(f)).rejects.toThrow("scoped_launch_unproven");
-    expect(f.state.sends).toBe(1);
-    expect(f.output).toContainEqual(
-      expect.objectContaining({ step: "scoped_logs_diagnostic", transportTimeoutMs: 75 }),
-    );
+  test("rejects complete initial tool evidence that arrives after the measured budget", async () => {
+    const f = fixture(true, { scoped_tool_evidence: 1_500 });
+    f.state.firstLogReadMs = 1_501;
+    await expect(run(f)).rejects.toThrow("scoped_incomplete_logs");
+    expect(await f.probe.cleanup(parent, true)).toBe(true);
+    expect(f.stopped).toEqual([child]);
   });
+
+  test.each([
+    { mode: "fallback", budget: undefined, firstReadMs: 0, lastReadBudget: 75 },
+    { mode: "measured", budget: 10_500, firstReadMs: 200, lastReadBudget: 375 },
+  ])(
+    "reports the missing receipt when a log read exhausts the $mode window",
+    async ({ budget, firstReadMs, lastReadBudget }) => {
+      const f = fixture(true, budget === undefined ? {} : { scoped_tool_evidence: budget });
+      f.state.firstLogReadMs = firstReadMs;
+      f.state.lateLogs = true;
+      f.state.logsExhaustBudget = true;
+      await expect(run(f)).rejects.toThrow("scoped_launch_unproven");
+      expect(f.state.sends).toBe(1);
+      expect(f.requests.find((request) => request.path === "logs/read")?.timeoutMs).toBe(budget);
+      expect(f.output).toContainEqual(
+        expect.objectContaining({ step: "scoped_logs_diagnostic", transportTimeoutMs: lastReadBudget }),
+      );
+    },
+  );
 
   test("identifies a transport timeout while waiting for scoped launch evidence", async () => {
     const f = fixture();
@@ -781,6 +807,30 @@ describe("ordinary scoped Armada smoke", () => {
     expect(f.state.logReads).toBe(40);
     expect(f.stopped).toEqual([child]); // Complete individual receipt remains safe despite incomplete overall evidence.
     expect(f.output[0]).toMatchObject({ unknownEvidence: true });
+  });
+
+  test("rejects a complete inventory received after the shared snapshot deadline", async () => {
+    const f = fixture(true, { scoped_snapshot: 100 });
+    f.state.listPages = 2;
+    f.state.listReadMs = 60;
+    await expect(f.probe.prepare()).rejects.toThrow("scoped_incomplete_snapshot");
+    expect(f.requests.map(({ timeoutMs }) => timeoutMs)).toEqual([100, 40]);
+    expect(f.state.sends).toBe(0);
+  });
+
+  test("charges prompt admission against the native turn deadline and rejects late completion", async () => {
+    const f = fixture(true, { scoped_native_turn: 100 });
+    f.state.sendMs = 60;
+    f.state.waitReadMs = 41;
+    await expect(run(f)).rejects.toThrow("poll exhausted");
+    expect(
+      f.requests
+        .filter(({ path }) => path === "sandbox/send" || path === "sandbox/wait")
+        .map(({ timeoutMs }) => timeoutMs),
+    ).toEqual([100, 40]);
+    expect(f.state.sends).toBe(1);
+    expect(await f.probe.cleanup(parent, true)).toBe(true);
+    expect(f.stopped).toEqual([child]);
   });
 
   test("a fenced parent wait is polled until the accepted turn finishes", async () => {

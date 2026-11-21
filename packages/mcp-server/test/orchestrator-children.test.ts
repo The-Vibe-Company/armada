@@ -1,4 +1,4 @@
-import { expect, spyOn, test } from "bun:test";
+import { expect, mock, spyOn, test } from "bun:test";
 import { createHash } from "node:crypto";
 import {
   createSqlGoldenStore,
@@ -9,18 +9,24 @@ import {
   type Sql,
   VaultError,
 } from "@armada/core/server";
-import { createSqlData } from "../src/data.ts";
+import { createSqlData, DataError } from "../src/data.ts";
 import { createEventFeed } from "../src/event-feed.ts";
+import { ModalLaunchSetupConflict } from "../src/jobs/modal-launch-setup.ts";
 import { launchCredentials } from "../src/launch-credentials.ts";
 import { createNativeWebhookPrompts } from "../src/native-webhook-prompts.ts";
 import { observeRequest } from "../src/request-observability.ts";
 import { createRuntimeEnrolments } from "../src/runtime-enrolment.ts";
 import { RuntimeFollowupConflict } from "../src/runtime-followup.ts";
 import { createRuntimeProvider } from "../src/runtime-provider.ts";
+import {
+  RuntimeCheckpointActivityConflict,
+  RuntimeReconciliationConflict,
+} from "../src/runtime-reconciliation-conflict.ts";
 import { launchSandboxChild } from "../src/sandbox-access-child-launch.ts";
 import { createSandboxChildren, type SandboxChildExecutor } from "../src/sandbox-access-children.ts";
 import { createSandboxAccessServices } from "../src/sandbox-access-services.ts";
 import { readStatus } from "../src/turns.ts";
+import { runtimeWakes, SANDBOX_ADMISSION_WAKE } from "../src/wake-bus.ts";
 import { rowOnlyDatabase } from "./row-only-database.ts";
 import { ENCRYPTION_KEY, fakeBoat } from "./support.ts";
 
@@ -451,6 +457,7 @@ test("an uncertain scoped message records a correlated operator diagnostic", asy
     });
     await db.query("insert into orchestrator_children values($1,$2,$3,$4)", [child.id, id, p.org, p.owner]);
     let claimMiss = false;
+    let setupPending = false;
     let admissions = 0;
     let dispatches = 0;
     const children = createSandboxChildren(
@@ -468,7 +475,8 @@ test("an uncertain scoped message records a correlated operator diagnostic", asy
       {
         async message() {
           dispatches++;
-          throw new RuntimeFollowupConflict("runtime_reconciliation_active", "private provider response");
+          if (setupPending) throw new ModalLaunchSetupConflict("modal_launch_setup_pending");
+          throw new RuntimeFollowupConflict("runtime_activity_busy", "private provider response");
         },
         async launch() {
           throw Error("unexpected");
@@ -501,7 +509,7 @@ test("an uncertain scoped message records a correlated operator diagnostic", asy
         event: "operator_failure",
         phase: "scoped.child_message.execution",
         code: "child_outcome_unconfirmed",
-        causeCode: "runtime_reconciliation_active",
+        causeCode: "runtime_activity_busy",
         sandboxId: child.id,
         operationId: original.id,
         requestId: response?.headers.get("x-request-id"),
@@ -543,7 +551,152 @@ test("an uncertain scoped message records a correlated operator diagnostic", asy
     );
     expect(claimMissResponse?.status).toBe(200);
     expect(dispatches).toBe(1);
+    claimMiss = false;
+    setupPending = true;
+    const refused = await children.message(token, "message-setup-pending", child.id, "synthetic child prompt");
+    expect(refused.state).toBe("failed");
+    expect(await children.message(token, "message-setup-pending", child.id, "synthetic child prompt")).toEqual(refused);
+    expect(dispatches).toBe(2);
     expect(lines.join("\n")).not.toContain("private provider response");
+  } finally {
+    await close();
+  }
+});
+
+test.each([
+  "message",
+  "stop",
+  "extend",
+  "shutdown while waiting",
+  "abort after commit",
+  "abandoned before dispatch",
+] as const)("scoped child admission handles %s", async (scenario) => {
+  const action = scenario === "stop" || scenario === "extend" ? scenario : "message";
+  const requestAbort = new AbortController();
+  const { close, db, sql, id, p, parent, golden, authority, token, selection } = await fixture(
+    "running",
+    "codex_auth",
+    "modal",
+  );
+  try {
+    const child = await createSqlSandboxStore(sql).insert({
+      id: crypto.randomUUID(),
+      provider: parent.provider,
+      providerSandboxId: "reconciling-child",
+      runtimeTransport: "dialout",
+      goldenId: golden.id,
+      orgId: p.org,
+      ownerId: p.owner,
+      harness: "codex",
+      model: selection.model,
+      reasoningEffort: "high",
+      status: "ready",
+    });
+    await db.query("insert into orchestrator_children values($1,$2,$3,$4)", [child.id, id, p.org, p.owner]);
+    const lease = action === "stop" ? crypto.randomUUID() : null;
+    await db.query(
+      `update sandboxes set activity_lease_id=$2, activity_until=case when $2::uuid is not null then 'infinity'::timestamptz end,
+        reconcile_lease_until=case when $2::uuid is null then 'infinity'::timestamptz end where id=$1`,
+      [child.id, lease],
+    );
+    const waiting = Promise.withResolvers<void>();
+    const raced = Promise.withResolvers<void>();
+    let dispatchAdmissions = 0;
+    let executionAttempts = 0;
+    const execute = mock(async () => {
+      if (++executionAttempts !== 1) return;
+      raced.resolve();
+      if (action === "stop") throw new RuntimeCheckpointActivityConflict();
+      throw new DataError("Sandbox is busy.", "sandbox_not_ready", { cause: new RuntimeReconciliationConflict() });
+    });
+    const recoverStop = spyOn({ recoverStop: async () => {} }, "recoverStop");
+    const children = createSandboxChildren(
+      sql,
+      {
+        async admit(secret, request, reserve) {
+          const result = await authority.admit(secret, request, reserve);
+          if (++dispatchAdmissions === 2) waiting.resolve();
+          if (dispatchAdmissions === 3 && scenario === "abort after commit") requestAbort.abort();
+          return result;
+        },
+      },
+      {
+        message: execute,
+        stop: execute,
+        recoverStop,
+        extend: execute,
+        async launch() {
+          throw Error("unexpected launch");
+        },
+        async read() {
+          throw Error("unexpected read");
+        },
+        async reconcile() {
+          throw Error("unexpected reconciliation");
+        },
+      },
+    );
+    const request = () => {
+      if (action === "message")
+        return children.message(token, "busy", child.id, "synthetic child prompt", requestAbort.signal);
+      if (action === "extend") return children.extend(token, "busy", child.id, 60);
+      return children.stop(token, "busy", child.id);
+    };
+    const pending = request();
+    await waiting.promise;
+    expect(execute).not.toHaveBeenCalled();
+    expect(
+      (await db.query("select state,dispatched_at from orchestrator_child_operations where target_id=$1", [child.id]))
+        .rows,
+    ).toEqual([{ state: "pending", dispatched_at: null }]);
+
+    if (scenario === "abandoned before dispatch") {
+      expect(await children.reconcileOne()).toBe(false);
+      await db.query("update orchestrator_child_operations set reconcile_after='-infinity' where target_id=$1", [
+        child.id,
+      ]);
+      expect(await children.reconcileOne()).toBe(true);
+      const recorded = await request();
+      expect(recorded).toMatchObject({ state: "failed", sandboxId: child.id });
+      await db.query("update sandboxes set reconcile_lease_until=null where id=$1", [child.id]);
+      runtimeWakes.notify(SANDBOX_ADMISSION_WAKE);
+      expect(await pending).toEqual(recorded);
+      expect(execute).not.toHaveBeenCalled();
+      return;
+    }
+    if (scenario === "shutdown while waiting") {
+      children.stopAdmission();
+      expect(await pending).toMatchObject({ state: "failed", sandboxId: child.id });
+      expect(execute).not.toHaveBeenCalled();
+      return;
+    }
+    if (lease) {
+      await createSqlData(sql)({
+        userId: p.owner,
+        orgs: [{ orgId: p.org, role: "member" }],
+        via: "service",
+      }).sandboxes.update(child.id, {
+        finishActivity: true,
+        activityToken: lease,
+        expectedGeneration: child.lifecycleGeneration!,
+      });
+    } else {
+      await db.query("update sandboxes set reconcile_lease_until=null where id=$1", [child.id]);
+    }
+    runtimeWakes.notify(SANDBOX_ADMISSION_WAKE);
+    if (scenario === "abort after commit") {
+      expect(await pending).toMatchObject({ state: "failed", sandboxId: child.id });
+      expect(execute).not.toHaveBeenCalled();
+      return;
+    }
+    await raced.promise;
+    await db.query("select 1");
+    runtimeWakes.notify(SANDBOX_ADMISSION_WAKE);
+    const result = await pending;
+    expect(result).toMatchObject({ state: "succeeded", sandboxId: child.id });
+    expect(await request()).toEqual(result);
+    expect(execute).toHaveBeenCalledTimes(2);
+    expect(recoverStop).not.toHaveBeenCalled();
   } finally {
     await close();
   }
@@ -1522,7 +1675,14 @@ test.each(["golden lookup failure", "placement refusal", "parent revocation duri
 
 // Real delegated stop and SQL fences: a completed stop must remain live-readable.
 test("managed child stop clears its epoch only after physical confirmation", async () => {
-  let scenario: "confirmed" | "pending" | "stale" | "failed exit" | "admission abort" | "settlement abort";
+  let scenario:
+    | "confirmed"
+    | "pending"
+    | "stale"
+    | "failed exit"
+    | "admission abort"
+    | "settlement abort"
+    | "runtime admitted";
   const { close, db, sql, p, id, token, golden } = await fixture(
     "running",
     "anthropic",
@@ -1550,6 +1710,7 @@ test("managed child stop clears its epoch only after physical confirmation", asy
       sql,
       providers: {
         async resolve() {
+          if (scenario === "runtime admitted") throw Error("The existing reconciler owns the admitted runtime stop.");
           if (scenario === "stale")
             await db.query("update sandboxes set lifecycle_generation=lifecycle_generation+1 where id=$1", [childId]);
           return provider;
@@ -1560,7 +1721,15 @@ test("managed child stop clears its epoch only after physical confirmation", asy
       encryptionKey: ENCRYPTION_KEY,
       scopedMcpUrl: "https://armada.example/mcp",
     });
-    for (scenario of ["confirmed", "pending", "stale", "failed exit", "admission abort", "settlement abort"] as const) {
+    for (scenario of [
+      "confirmed",
+      "pending",
+      "stale",
+      "failed exit",
+      "admission abort",
+      "settlement abort",
+      "runtime admitted",
+    ] as const) {
       const physical = await fake.provider.fork({
         from: "test",
         name: "child",
@@ -1577,10 +1746,13 @@ test("managed child stop clears its epoch only after physical confirmation", asy
         ownerId: p.owner,
         harness: "codex",
         status: scenario === "failed exit" ? "failed" : "ready",
+        ...(scenario === "runtime admitted" ? { boatRuntime: true } : {}),
         model: "m",
         reasoningEffort: "high",
       });
       await db.query("insert into orchestrator_children values($1,$2,$3,$4)", [child.id, id, p.org, p.owner]);
+      if (scenario === "runtime admitted")
+        await db.query("update sandboxes set status='stopping',stop_requested_at=now() where id=$1", [child.id]);
       childId = child.id;
       const calls = fake.stops.length;
       const receipt = await services.childWorker.stop(token, crypto.randomUUID(), child.id);
@@ -1599,6 +1771,14 @@ test("managed child stop clears its epoch only after physical confirmation", asy
           child.id,
         ])
       ).rows;
+      if (scenario === "runtime admitted") {
+        expect(receipt.state).toBe("succeeded");
+        expect(fake.stops).toHaveLength(calls);
+        expect(saved).toMatchObject({ status: "stopping", lifecycleGeneration: 1 });
+        expect(lease).toBeNull();
+        expect(journal.rows).toEqual([]);
+        continue;
+      }
       if (scenario === "stale" || scenario === "admission abort") {
         expect(receipt.state).toBe("uncertain");
         expect(fake.stops).toHaveLength(calls);
@@ -1650,7 +1830,8 @@ test("managed child stop clears its epoch only after physical confirmation", asy
 
 // Scoped child messages share ordinary send's native receipt registration, so the
 // shared settlement boundary admits the turn to Langfuse export.
-test.each(["accepted", "stale", "abort"] as const)("native child send (%s)", async (scenario) => {
+const childSendScenarios = ["accepted", "stale", "abort", "lost response", "settlement abort"];
+test.each(childSendScenarios)("native child send (%s)", async (scenario) => {
   const { close, db, sql, p, id, token, golden } = await fixture(
     "running",
     "anthropic",
@@ -1659,10 +1840,18 @@ test.each(["accepted", "stale", "abort"] as const)("native child send (%s)", asy
   );
   try {
     const fake = fakeBoat();
+    const provider = {
+      ...fake.provider,
+      async prompt(request: Parameters<typeof fake.provider.prompt>[0]) {
+        const receipt = await fake.provider.prompt(request);
+        if (scenario === "lost response") throw Error("Lost child prompt response");
+        return receipt;
+      },
+    };
     const credentials = launchCredentials(createSqlVaultStore(sql), ENCRYPTION_KEY);
     const services = createSandboxAccessServices({
       sql,
-      providers: { resolve: async () => fake.provider },
+      providers: { resolve: async () => provider },
       credentials:
         scenario !== "stale"
           ? credentials
@@ -1691,7 +1880,7 @@ test.each(["accepted", "stale", "abort"] as const)("native child send (%s)", asy
       orgId: p.org,
       ownerId: p.owner,
       harness: "codex",
-      status: "ready",
+      status: scenario === "lost response" ? "running" : "ready",
       model: "m",
       reasoningEffort: "high",
     });
@@ -1709,6 +1898,32 @@ test.each(["accepted", "stale", "abort"] as const)("native child send (%s)", asy
       "insert into outbound_webhook_endpoints(org_id,url,secret_enc) values($1,'https://receiver.example/events',$2)",
       [p.org, new Uint8Array([1])],
     );
+    if (scenario === "settlement abort")
+      await db.exec("alter table sandboxes add constraint reject_child_prompt check (task_prompt_id <> 'prompt_1')");
+    async function laterPreservationHandoff() {
+      await db.query("update native_webhook_prompts set completed_at=now() where sandbox_id=$1", [child.id]);
+      await db.query(
+        `update sandboxes set status='stopped',stopped_at=now(),stop_requested_at=null,activity_lease_id=null,activity_until=null,
+         lifecycle_generation=lifecycle_generation+1,stop_generation=1,preservation_stop_generation=1
+       where id=$1`,
+        [child.id],
+      );
+      await db.query(
+        `insert into sandbox_native_preservation_receipts
+         (sandbox_id,generation,stop_generation,capture_generation,capture_stop_generation,capture_acknowledgements)
+       select id,lifecycle_generation,1,lifecycle_generation,1,
+         jsonb_build_object('completedPrompts',(
+           select jsonb_agg(p.prompt_id) from native_webhook_prompts p
+           where p.sandbox_id=sandboxes.id and p.completed_at is not null
+         ))
+       from sandboxes where id=$1`,
+        [child.id],
+      );
+      return db.query(
+        "select copy_native_drain_recovery(id,lifecycle_generation) as outcome from sandboxes where id=$1",
+        [child.id],
+      );
+    }
     const lines: string[] = [];
     let receipt: Awaited<ReturnType<typeof services.childWorker.message>> | undefined;
     await observeRequest(
@@ -1719,6 +1934,12 @@ test.each(["accepted", "stale", "abort"] as const)("native child send (%s)", asy
       (line) => lines.push(line),
     );
     if (!receipt) throw Error("Missing child receipt.");
+    if (scenario === "lost response" || scenario === "settlement abort") {
+      expect(receipt.state).toBe("uncertain");
+      expect(fake.prompts).toHaveLength(1);
+      expect((await laterPreservationHandoff()).rows).toEqual([{ outcome: "ineligible" }]);
+      return;
+    }
     if (scenario !== "accepted") {
       expect(receipt.state).toBe("failed");
       expect(lines.map((line) => JSON.parse(line))).toContainEqual(
@@ -1748,6 +1969,7 @@ test.each(["accepted", "stale", "abort"] as const)("native child send (%s)", asy
         },
       ]);
       expect((await db.query("select 1 from sandbox_transitions where sandbox_id=$1", [child.id])).rows).toEqual([]);
+      expect((await laterPreservationHandoff()).rows).toEqual([{ outcome: "clean" }]);
       return;
     }
     expect(receipt.state).toBe("succeeded");
@@ -1792,7 +2014,10 @@ test.each(["accepted", "stale", "abort"] as const)("native child send (%s)", asy
         )
       ).rows,
     ).toEqual([{ terminal_status: "finished" }]);
+    expect((await laterPreservationHandoff()).rows).toEqual([{ outcome: "clean" }]);
   } finally {
+    if (scenario === "settlement abort")
+      await db.exec("alter table sandboxes drop constraint if exists reject_child_prompt");
     await close();
   }
 });

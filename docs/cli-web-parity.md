@@ -10,10 +10,10 @@ Commands below start with `armada`. Select an organization with `login --org NAM
 |---|---|---|
 | Sign in / local sign out | Sign-in page and logout | `login [--url URL]`, `logout`; email links/codes and enabled social providers |
 | Account identity / session invalidation | Signed-in account and logout | `account status`, `account logout` invalidates the current login session, then clears local auth |
-| Organizations and members | Organization selection and admin management | `org create/list/use/current`, `org members list/add/remove/role` |
-| Personal and org credentials | Write-only model/hosting forms; org writes require admin | `creds list`, `creds set KIND`, `creds remove ACCOUNT_UUID`; legacy `creds rm KIND` only when unambiguous; values from stdin or `--file` |
-| Modal credentials | Separate token ID and token-secret fields, stored together | `creds set modal --file /secure/modal-token.json`; canonical JSON uses `token_id` and `token_secret` |
-| Service tokens | Token management | `token create/ls/revoke`; optional organization scope |
+| Organizations and members | Organization selection and admin management | `org list`, `login --org NAME\|UUID`, `info --setup`, [organization administration routes](cli-admin.md#organizations-and-membership) |
+| Personal and org credentials | Write-only model/hosting forms; org writes require admin | `account ls`, `account add KIND`, `account rm ACCOUNT_UUID`; legacy `account rm --kind KIND` only when unambiguous; values from stdin or `--file` |
+| Modal credentials | Separate token ID and token-secret fields, stored together | `account add modal --file /secure/modal-token.json`; canonical JSON uses `token_id` and `token_secret` |
+| Service tokens | Token management | [`armada api token/create\|list\|revoke`](cli-admin.md#api-keys) |
 | GitHub connection | Connect, reconnect, disconnect and installation settings | `account ls github`, `account login github`, `account rm github`, `account add github`; authorization waits for its own completion. Manage existing installations in GitHub settings. |
 | Snapshot list and identity | Separate Boat/Modal rows under private/shared sections | `snapshot ls [--provider boat\|modal] [--json]`; JSON includes safe `id` and `orgId` |
 | Snapshot capacity | Per-provider server-reported capacity | `armada api golden/capabilities`; null means unknown/unbounded, not zero |
@@ -21,12 +21,12 @@ Commands below start with `armada`. Select an organization with `login --org NAM
 | Durable build progress | Admission receipt, bounded status polling and recovery after reload | `snapshot show --build JOB_ID`, or `snapshot show --idempotency-key KEY --org ORG_UUID` |
 | Snapshot builds | Build/rebuild workflow | Use `snapshot update` for Boat/Modal or `snapshot rebuild` for Docker |
 | Snapshot visibility | Owner/admin visibility controls | `armada api golden/visibility` |
-| Launch | Snapshot, agent, model, effort, TTL and MCP connections | `launch PRIVATE_SNAPSHOT --provider boat --agent claude\|codex\|opencode [PROMPT] --model ID --reasoning-effort LEVEL --ttl 4h --connections UUID,UUID`. Ordinary cloud launches inherit snapshot visibility. |
-| Repository context | Select a configured repository directory for a Boat or Modal snapshot | `launch ... --repo DIR` or `--repo owner/repo`; persisted initial working directory, including idle launches |
-| Sandbox list | Authorized filters and pages | `list --status STATUS --agent HARNESS --golden UUID --owner UUID\|me --page N --limit N [--json] [--page-info]` |
-| Sandbox detail / status | Sandbox page and prompt status | `detail ID`, `status ID`; actual stored privacy and repository context |
-| Agent turns | Send, steer and interrupt | `send ID PROMPT`, `steer ID TEXT`, `interrupt ID`; model/effort overrides where supported |
-| Stop / wait | Stop and turn progress | `stop ID`, `wait ID --timeout SECONDS [--prompt-id ID]` |
+| Launch | Snapshot, agent, model, effort, TTL and MCP connections | `new PRIVATE_SNAPSHOT --provider boat --agent claude\|codex\|opencode [PROMPT] --model ID --reasoning-effort LEVEL --ttl 4h --connections UUID,UUID`. Ordinary cloud launches inherit snapshot visibility. |
+| Repository context | Select a configured repository directory for a Boat or Modal snapshot | `new ... --repo DIR` or `--repo owner/repo`; persisted initial working directory, including idle launches |
+| Sandbox list | Authorized filters and pages | `ls --status STATUS --ref REF --agent HARNESS --golden UUID --owner UUID\|me --page N --limit N [--json] [--page-info]` |
+| Sandbox detail / status | Sandbox page and prompt status | `info ID --live`, `info ID`; actual stored privacy and repository context |
+| Agent turns | Send, steer and interrupt | `prompt ID PROMPT`, `prompt ID --steer TEXT`, `stop ID --turn`; model/effort overrides where supported |
+| Stop / wait | Stop after settlement and track turn progress | `stop ID`, `stop ID --after [--timeout SECONDS]`, `info ID --wait --timeout SECONDS [--prompt-id ID]` |
 | Events / commands | Event stream and sandbox commands | `events [ID] [-f] [--tail N]`, `exec [ID] -- COMMAND`, `outputs [NAME] [-o DIR]` |
 | MCP definitions | Personal/shared definitions, status and authorization | `mcp list/add/update/connect/status/reconnect/enable/disable/revoke/delete` |
 | Public/OAuth MCP shortcut | Connection creation form | `mcp add NAME URL [--scope personal\|org]`; defaults personal, HTTP, automatic auth discovery |
@@ -37,7 +37,7 @@ See [sandbox list and JSON output](cli-web-parity-556.md) for filter limits, tot
 
 ## Model accounts and limits
 
-Use `armada creds presets --json` to discover named model connections shared with
+Use `armada account ls --presets --json` to discover named model connections shared with
 the dashboard. Morph is a model-account kind, not a compute provider; one account
 supports Claude Code, Codex and OpenCode on supported runtime-backed placements.
 Select an account explicitly with `--credential-id ACCOUNT_UUID` at launch, or
@@ -49,9 +49,9 @@ do not count. A busy selected account refuses admission rather than silently
 switching billing. Lowering a cap leaves existing running agents alone.
 
 ```sh
-armada creds connect morph --name shared --file /private/morph-key --max-agents 2
-armada creds limits ACCOUNT_UUID --max-agents 2
-armada creds limits ACCOUNT_UUID --unlimited
+armada account add --preset morph --name shared --file /private/morph-key --max-agents 2
+armada account limits ACCOUNT_UUID --max-agents 2
+armada account limits ACCOUNT_UUID --unlimited
 ```
 
 These account caps are distinct from snapshot build capacity and Docker host

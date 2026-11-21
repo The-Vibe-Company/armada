@@ -18,21 +18,22 @@ All control routes are authenticated POSTs under `/api/v1/`:
 Mutations return `{account}`. Org writes require a fresh admin check inside the
 mutation transaction. Personal writes address only the caller's rows.
 
-CLI equivalents: `armada creds set openai --name Work` (stdin or `--file`),
-`creds set openai --id <uuid> --expected-version <revision>`, `creds rename <uuid> <name>`,
-`creds default <uuid>`, `creds remove <uuid>`, and `creds list --json`.
+CLI equivalents: `armada account add openai --name Work` (stdin or `--file`),
+`account add openai --id <uuid> --expected-version <revision>`,
+`account default <uuid>`, `account rm <uuid>`, and `account ls --json`.
+Rename accounts from Models in the dashboard.
 Each supports `--org <org>` where applicable. `launch --credential-id <uuid>`
 selects an explicit account (`credentialId` in the control API and MCP launch).
 
 Morph accounts support Claude Code, Codex and OpenCode. Connect with
-`armada creds connect morph --name shared --file /private/morph-key`;
+`armada account add --preset morph --name shared --file /private/morph-key`;
 select the account ID and a supported Morph model at launch. Morph defaults to
 2 simultaneous agents per account; other kinds default to unlimited. Creation/
 replacement accepts `--max-agents N` or `--unlimited`. Update capacity with:
 
 ```sh
-armada creds limits ACCOUNT_UUID --max-agents 2
-armada creds limits ACCOUNT_UUID --unlimited
+armada account limits ACCOUNT_UUID --max-agents 2
+armada account limits ACCOUNT_UUID --unlimited
 ```
 
 Limits span providers and harnesses; stopped/idle-paused sandboxes do not count.
@@ -40,8 +41,8 @@ Over-cap starts refuse before allocation; lowering a cap leaves existing running
 agents alone. Limit edits do not rotate the secret or account binding version.
 See [Morph](morph.md) for models and runtime restrictions.
 
-Legacy `creds set/rm <kind>` updates/removes the sole nondeleted row of that kind;
-multiple rows produce a conflict requiring an ID. Legacy set also rejects duplicate
+`account add <kind>` without an account name updates the sole row of that kind.
+`account rm --kind <kind>` removes it. If a kind has multiple rows, supply an account ID. Legacy set also rejects duplicate
 accounts of another compatible kind in that harness, before writing anything. Legacy kind writes preserve
 historical harness-kind preference through defaults when only legacy-named rows
 exist. Migration sets explicit defaults using Claude OAuth before Anthropic and

@@ -8,12 +8,13 @@ import type {
 } from "@armada/core/server";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { Caller } from "./caller.ts";
-import type { ScopedData } from "./data.ts";
+import type { SandboxView, ScopedData } from "./data.ts";
 import type { GoldenLaunchCredentials } from "./launch-account-admission.ts";
 import type { LaunchDiscoveryOptions } from "./launch-options.ts";
 import { registerAgentTools } from "./mcp-operation-projection.ts";
 import type { createOrdinaryLaunchReceipts } from "./ordinary-launch-receipts.ts";
 import type { RuntimeFollowup } from "./runtime-followup.ts";
+import type { createModalJobReader, SandboxLogReader } from "./runtime-history.ts";
 import { configureTools } from "./sandbox-tool-handlers.ts";
 import type { ToolBinding } from "./tool-registration.ts";
 
@@ -25,8 +26,12 @@ export interface ToolContext {
   sandboxBillingAccount?: (id: string) => Promise<import("./sandbox-billing-account.ts").SandboxBillingAccount | null>;
   dockerControls?: import("./docker-sandbox-controls.ts").DockerSandboxControls;
   runtimeSend?: RuntimeFollowup;
+  configureStopRequest?: () => void;
+  stopSignal?: AbortSignal;
   runtimeStopCheckpoint?: ReturnType<typeof import("./runtime-checkpoint.ts").createRuntimeStopCheckpoint>;
   measure?: import("./request-timing.ts").RequestTiming["measure"];
+  logProvider?(target: SandboxView): Promise<SandboxLogReader>;
+  modalJobReader?: (target: SandboxView) => ReturnType<ReturnType<typeof createModalJobReader>>;
   storedProviders?: Partial<Record<SandboxProviderId, ToolContext["provider"]>>;
   skillDefaults?: SkillDefaultsService;
   caller: Caller;

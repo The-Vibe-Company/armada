@@ -28,9 +28,10 @@ import { DefaultSkillSmokeFailure, readDefaultPins, verifyDefaultReceipts } from
 import { ExpirySmokeFailure, runExpiryCase } from "./expiry-smoke.ts";
 import { helperProbe, skillpackProbe } from "./golden-runtime-smoke.ts";
 import { createScopedProbe, ScopedAccessSmokeFailure } from "./scoped-access-smoke.ts";
-import deadlines from "./smoke-deadlines.json";
+import deadlineTable from "./smoke-deadlines.json";
+import { deadlinesFor, SMOKE_POLL_INTERVAL_MS, USAGE_STATUS_MIN_REQUEST_MS } from "./smoke-deadlines.ts";
 import { observeSmokeLaunch } from "./smoke-launch.ts";
-import { runTemplateSkillCase, TemplateSkillSmokeFailure } from "./template-skill-smoke.ts";
+import { runTemplateSkillCase, TemplateSkillSmokeFailure, verifyReceipts } from "./template-skill-smoke.ts";
 import { runVaultCase, VaultSmokeFailure } from "./vault-smoke.ts";
 
 type Code =
@@ -83,8 +84,22 @@ class SmokeFailure extends Error {
     readonly waitResponse?: Record<string, string | boolean | number>,
     readonly launchResponse?: { httpStatus?: number; timeoutMs: number; requestId?: string; requestKey?: string },
     readonly transportTimeoutMs?: number,
+    readonly statusResponse?: { httpStatus: number; requestId?: string },
   ) {
     super(code);
+  }
+}
+class CredentialListSmokeFailure extends SmokeFailure {
+  constructor(
+    failure: SmokeFailure,
+    readonly credentialList: {
+      phase: "headers" | "body";
+      httpStatus?: number;
+      requestId?: string;
+      timeoutMs?: number;
+    },
+  ) {
+    super(failure.code, failure.status, undefined, undefined, failure.transportTimeoutMs);
   }
 }
 function jsonShape(value: unknown): string {
@@ -148,7 +163,15 @@ const TEMPLATE_LAUNCH_TIMEOUT_MS = 600_000;
 const SIBLING_ATTRIBUTION_WAIT_MS = TEMPLATE_LAUNCH_TIMEOUT_MS;
 const SANDBOX_ID = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i;
 const LAUNCH_PATH = /^(?:sandbox\/launch|templates\/launch)$/;
-type Lane = "templates" | "expiry" | "lifecycle" | "scoped" | "real-model";
+type Lane =
+  | "templates"
+  | "expiry"
+  | "lifecycle"
+  | "scoped"
+  | "real-model"
+  | "github-runtime"
+  | "vault"
+  | "default-skills";
 
 /** Wait for every concurrent unit, so all cleanups finish before the journal sweep; a thrown unit still throws. */
 async function settled(units: Promise<boolean>[]): Promise<boolean> {
@@ -315,11 +338,18 @@ async function verifyRecovery(archive: string, repo: string, commit: string) {
 
 /** Operator entrypoint; injected I/O also permits fake-API validation without compute. */
 async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[], io: SmokeIo): Promise<boolean> {
-  function report(index: number, step: string, error?: unknown, elapsedMs?: number, lane?: Lane) {
+  function report(
+    index: number,
+    step: string,
+    error?: unknown,
+    elapsedMs?: number,
+    lane?: Lane,
+    provider?: RealModelCase["provider"],
+  ) {
     io.out(
       JSON.stringify({
         case: index,
-        ...(lane ? { lane } : {}),
+        ...(lane ? { lane, provider } : {}),
         step,
         ...(elapsedMs === undefined ? {} : { elapsedMs }),
         pass: error === undefined,
@@ -336,6 +366,7 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
                   ? error.code
                   : "invalid_response",
               ...(error instanceof TemplateSkillSmokeFailure ? error.details : {}),
+              ...(error instanceof CredentialListSmokeFailure ? { credentialList: error.credentialList } : {}),
               ...(error instanceof SmokeFailure && error.launchResponse
                 ? { launchResponse: error.launchResponse }
                 : {}),
@@ -527,15 +558,50 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
   const cleanupDeadline = deadline + 5 * 60_000;
   const protectedCanaries = new Set<string>();
   const launches = createLaunchTracker();
-  function send<T>(cleaning: boolean, path: string, body?: unknown, key?: string, timeoutMs = 120_000): Promise<T> {
-    return launches.track(path, (record) => transport<T>(cleaning, path, body, key, timeoutMs, record));
+  type UsageRead = { deadline: number; onDispatch: () => void };
+  function send<T>(
+    cleaning: boolean,
+    path: string,
+    body?: unknown,
+    key?: string,
+    timeoutMs = 120_000,
+    usageRead?: UsageRead,
+  ): Promise<T> {
+    return launches.track(path, (record) =>
+      transport<T>(cleaning, path, body, key, timeoutMs, record, false, usageRead),
+    );
   }
   /** Each concurrent unit owns its cleanup flag; one unit's cleanup never moves another unit's deadline. */
-  function createLane() {
+  function createLane(provider: RealModelCase["provider"], lane: Lane) {
+    const budgets = deadlinesFor(deadlineTable, provider, lane);
     let cleaning = false;
+    let stepUntil: number | undefined;
     return {
-      request: <T>(path: string, body?: unknown, key?: string, timeoutMs?: number) =>
-        send<T>(cleaning, path, body, key, timeoutMs),
+      budgets,
+      poll: <T>(read: PollRead<T>, done: (value: T) => boolean, options: PollOptions = {}) =>
+        poll(read, done, options, options.step === undefined ? undefined : budgets[options.step]),
+      request: <T>(path: string, body?: unknown, key?: string, timeoutMs?: number, usageRead?: UsageRead) => {
+        if (stepUntil === undefined) return send<T>(cleaning, path, body, key, timeoutMs, usageRead);
+        const remaining = stepUntil - io.now();
+        if (remaining <= 0) fail("poll_limit_exceeded");
+        return send<T>(cleaning, path, body, key, Math.min(timeoutMs ?? remaining, remaining), usageRead);
+      },
+      withStepDeadline: async <T>(
+        name: string,
+        action: (until?: number) => Promise<T>,
+        { measureCleanup = false } = {},
+      ) => {
+        const budget = budgets[name];
+        if ((cleaning && !measureCleanup) || budget === undefined) return action();
+        stepUntil = Math.min(cleaning ? cleanupDeadline : deadline, io.now() + budget);
+        try {
+          const result = await action(stepUntil);
+          if (io.now() > stepUntil) fail("poll_limit_exceeded");
+          return result;
+        } finally {
+          stepUntil = undefined;
+        }
+      },
       withCleanup: async <T>(action: () => Promise<T>): Promise<T> => {
         cleaning = true;
         try {
@@ -554,15 +620,20 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
     timeoutMs: number,
     record: (receipt: unknown) => void,
     requireSandboxUuid = false,
+    usageRead?: UsageRead,
   ): Promise<T> {
-    const remaining = (cleaning ? cleanupDeadline : deadline) - io.now();
-    if (remaining <= 0) fail("poll_limit_exceeded");
+    const outerDeadline = cleaning ? cleanupDeadline : deadline;
+    const remaining = Math.min(outerDeadline, usageRead?.deadline ?? outerDeadline) - io.now();
     const requestTimeoutMs = Math.min(timeoutMs, remaining);
+    if (requestTimeoutMs <= 0 || (usageRead !== undefined && requestTimeoutMs < USAGE_STATUS_MIN_REQUEST_MS))
+      fail("poll_limit_exceeded");
     const sandboxLaunch = path === "sandbox/launch";
     const signal = AbortSignal.timeout(requestTimeoutMs);
     const timedOut = (error: unknown) =>
       signal.aborted || (error instanceof DOMException && error.name === "TimeoutError");
+    let receivedResponse: Response | undefined;
     try {
+      usageRead?.onDispatch();
       const response = await io.fetch(`${origin}/api/v1/${path}`, {
         method: body === undefined ? "GET" : "POST",
         headers: {
@@ -575,18 +646,26 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
         redirect: "error",
         signal,
       });
-      const requestId = sandboxLaunch ? response.headers.get("x-request-id") : null;
+      receivedResponse = response;
+      const sandboxStatus = path === "sandbox/status";
+      const requestId = sandboxLaunch || sandboxStatus ? response.headers.get("x-request-id") : null;
+      const correlation =
+        requestId && /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/.test(requestId) ? { requestId } : {};
       const launchResponse = sandboxLaunch
-        ? {
-            httpStatus: response.status,
-            timeoutMs: requestTimeoutMs,
-            ...(requestId && /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/.test(requestId) ? { requestId } : {}),
-          }
+        ? { httpStatus: response.status, timeoutMs: requestTimeoutMs, ...correlation }
         : undefined;
+      const statusResponse = sandboxStatus ? { httpStatus: response.status, ...correlation } : undefined;
       if (!response.ok) {
         const payload = (await response.json().catch((error: unknown) => {
           if (timedOut(error))
-            throw new SmokeFailure("api_failed", response.status, undefined, launchResponse, requestTimeoutMs);
+            throw new SmokeFailure(
+              "api_failed",
+              response.status,
+              undefined,
+              launchResponse,
+              requestTimeoutMs,
+              statusResponse,
+            );
           return null;
         })) as { error?: { code?: unknown } } | null;
         if ([...protectedCanaries].some((value) => JSON.stringify(payload).includes(value)))
@@ -610,7 +689,14 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
         result = (await response.json()) as ResponseBody;
       } catch (error) {
         if (timedOut(error))
-          throw new SmokeFailure("request_failed", response.status, undefined, launchResponse, requestTimeoutMs);
+          throw new SmokeFailure(
+            "request_failed",
+            response.status,
+            undefined,
+            launchResponse,
+            requestTimeoutMs,
+            statusResponse,
+          );
         if (path === "sandbox/wait")
           throw new SmokeFailure("invalid_response", response.status, {
             body: "unparseable",
@@ -646,23 +732,45 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
         fail("invalid_response");
       return result as T;
     } catch (error) {
-      if (error instanceof SmokeFailure || error instanceof VaultSmokeFailure) throw error;
-      if (timedOut(error)) throw new SmokeFailure("request_failed", undefined, undefined, undefined, requestTimeoutMs);
-      fail("request_failed");
+      if (error instanceof VaultSmokeFailure) throw error;
+      const failure =
+        error instanceof SmokeFailure
+          ? error
+          : new SmokeFailure(
+              "request_failed",
+              undefined,
+              undefined,
+              undefined,
+              timedOut(error) ? requestTimeoutMs : undefined,
+            );
+      if (path === "creds/list") {
+        const requestId = receivedResponse?.headers.get("x-request-id");
+        throw new CredentialListSmokeFailure(failure, {
+          phase: receivedResponse ? "body" : "headers",
+          ...(receivedResponse ? { httpStatus: receivedResponse.status } : {}),
+          ...(requestId && SANDBOX_ID.test(requestId) ? { requestId } : {}),
+          ...(failure.transportTimeoutMs === undefined ? {} : { timeoutMs: failure.transportTimeoutMs }),
+        });
+      }
+      throw failure;
     }
   }
+  type PollRead<T> = (timeoutMs?: number, requestDeadline?: number) => Promise<T>;
+  type PollOptions = { limit?: number; step?: string; until?: number; minRequestMs?: number };
   async function poll<T>(
-    read: (timeoutMs?: number) => Promise<T>,
+    read: PollRead<T>,
     done: (value: T) => boolean,
-    options: { limit?: number; step?: string; until?: number } = {},
+    options: Omit<PollOptions, "step"> = {},
+    timeoutMs?: number,
   ): Promise<T> {
-    const timeoutMs = options.step === undefined ? undefined : (deadlines as Record<string, number>)[options.step];
     const until = options.until ?? (timeoutMs === undefined ? undefined : Math.min(deadline, io.now() + timeoutMs));
     const limit = options.limit ?? (until === undefined ? POLLS : Number.POSITIVE_INFINITY);
+    const requestDeadline = until ?? (options.minRequestMs === undefined ? undefined : deadline);
+    const minRequestMs = options.minRequestMs ?? 1;
     for (let i = 0; i < limit; i++) {
-      const remaining = until === undefined ? undefined : until - io.now();
-      if (remaining !== undefined && remaining <= 0) break;
-      const value = await read(remaining).catch((error: unknown) => {
+      const remaining = requestDeadline === undefined ? undefined : requestDeadline - io.now();
+      if (remaining !== undefined && remaining < minRequestMs) break;
+      const value = await read(until === undefined ? undefined : remaining, requestDeadline).catch((error: unknown) => {
         if (
           error instanceof SmokeFailure &&
           error.code === "request_failed" &&
@@ -670,26 +778,36 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
           until !== undefined &&
           io.now() >= until
         )
-          throw new SmokeFailure("poll_limit_exceeded", undefined, undefined, undefined, error.transportTimeoutMs);
+          throw new SmokeFailure(
+            "poll_limit_exceeded",
+            undefined,
+            undefined,
+            undefined,
+            error.transportTimeoutMs,
+            error.statusResponse,
+          );
         throw error;
       });
-      const after = until === undefined ? Number.POSITIVE_INFINITY : until - io.now();
+      const after = requestDeadline === undefined ? Number.POSITIVE_INFINITY : requestDeadline - io.now();
       if (after >= 0 && done(value)) return value;
-      if (after <= 0) break;
-      if (i + 1 < limit) await io.sleep(Math.min(1000, after));
+      if (after <= 0 || (options.minRequestMs !== undefined && after < SMOKE_POLL_INTERVAL_MS + minRequestMs)) break;
+      if (i + 1 < limit) await io.sleep(Math.min(SMOKE_POLL_INTERVAL_MS, after));
     }
     fail("poll_limit_exceeded");
   }
   const defaultPins = new Map<number, string[]>();
   if (defaultSkills) {
-    const { request } = createLane();
     for (const [index, item] of cases.entries()) {
+      const { request, withStepDeadline } = createLane(item.provider, "default-skills");
       try {
         const pins = await readDefaultPins(item.org, item.goldenId!, {
           request,
-          step: async (name, action) => {
-            return timedSmokeStep(action, io.now, (elapsedMs, error) => report(index, name, error, elapsedMs));
-          },
+          step: (name, action) =>
+            timedSmokeStep(
+              () => withStepDeadline(name, action),
+              io.now,
+              (elapsedMs, error) => report(index, name, error, elapsedMs, "default-skills", item.provider),
+            ),
         });
         defaultPins.set(index, pins);
         report(index, "default_skills_policy");
@@ -703,16 +821,19 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
   // against, so it completes before any sandbox unit starts.
   let vaultPassed = true;
   if (vault) {
-    const { request, withCleanup } = createLane();
     for (const [index, item] of cases.entries()) {
+      const { request, withCleanup, withStepDeadline } = createLane(item.provider, "vault");
       const ok = await runVaultCase(item.org, {
         request,
         protect: (value) => protectedCanaries.add(value),
         isFailure: (error, status, code) =>
           error instanceof SmokeFailure && error.status === status && error.code === code,
-        step: async (name, action) => {
-          return timedSmokeStep(action, io.now, (elapsedMs, error) => report(index, name, error, elapsedMs));
-        },
+        step: (name, action) =>
+          timedSmokeStep(
+            () => withStepDeadline(name, action),
+            io.now,
+            (elapsedMs, error) => report(index, name, error, elapsedMs, "vault", item.provider),
+          ),
         out: (line) => io.out(JSON.stringify({ ...JSON.parse(line), case: index })),
         withCleanup,
       });
@@ -721,18 +842,22 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
     if (args.every((arg) => arg === "--vault")) return vaultPassed;
   }
   /** One concurrent sandbox unit; every receipt carries its case and lane so interleaved output stays attributable. */
-  function unit(index: number, lane: Lane) {
+  function unit(index: number, provider: RealModelCase["provider"], lane: Lane) {
     const out = (line: string) => io.out(JSON.stringify({ ...JSON.parse(line), case: index, lane }));
     return {
-      ...createLane(),
+      ...createLane(provider, lane),
       out,
       step: <T>(name: string, action: () => Promise<T>): Promise<T> =>
-        timedSmokeStep(action, io.now, (elapsedMs, error) => report(index, name, error, elapsedMs, lane)),
+        timedSmokeStep(action, io.now, (elapsedMs, error) => report(index, name, error, elapsedMs, lane, provider)),
       io: { ...io, out } satisfies SmokeIo,
     };
   }
   function templateUnit(index: number, item: SmokeCase): Promise<boolean> {
-    const { request, withCleanup, out, step } = unit(index, "templates");
+    const { request, withCleanup, withStepDeadline, out, step, budgets, poll } = unit(
+      index,
+      item.provider,
+      "templates",
+    );
     return runTemplateSkillCase(
       { ...item, goldenId: item.goldenId! },
       {
@@ -740,7 +865,7 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
         now: io.now,
         sleep: io.sleep,
         deadline,
-        launchTimeout: (name) => (deadlines as Record<string, number>)[name] ?? TEMPLATE_LAUNCH_TIMEOUT_MS,
+        launchTimeout: (name) => budgets[name] ?? TEMPLATE_LAUNCH_TIMEOUT_MS,
         trackLaunch: (action) =>
           launches.track("templates/launch", (record) =>
             action(
@@ -755,6 +880,7 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
             (error.status ?? 0) >= 500),
         poll,
         step,
+        measuredStep: (name, action) => step(name, () => withStepDeadline(name, action)),
         out,
         withCleanup,
         stopSandbox: async (id) => {
@@ -781,7 +907,7 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
     timeoutMs: number,
     request: ReturnType<typeof createLane>["request"],
     keepHandle: (id: string) => void,
-    requiresLaunchReceipt = false,
+    recover?: (id: string, requestKey: string, until: number) => Promise<T | undefined>,
   ) {
     const path = "sandbox/launch";
     const requestKey = `post-deploy-smoke:${crypto.randomUUID()}`;
@@ -794,13 +920,17 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
         externalRef: requestKey,
       };
       try {
-        return await transport<T>(false, path, launchBody, undefined, timeoutMs, record, true);
+        return {
+          result: await transport<T>(false, path, launchBody, undefined, timeoutMs, record, true),
+          recovered: false,
+        };
       } catch (error) {
         if (!(error instanceof SmokeFailure)) throw error;
         const lostReceipt = error.code === "invalid_response" && error.launchResponse !== undefined;
         if (lostReceipt || ["outcome_unknown", "request_failed"].includes(error.code) || (error.status ?? 0) >= 500) {
           let observedId: string | undefined;
-          const sandbox = await observeSmokeLaunch(Math.min(deadline, io.now() + timeoutMs), io, async (remaining) => {
+          const until = Math.min(deadline, io.now() + timeoutMs);
+          const recovered = await observeSmokeLaunch(until, io, async (remaining) => {
             const result = await request<{
               sandboxes: { id: string; provider: string; externalRef: string; status: string }[];
             }>(
@@ -827,10 +957,16 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
                 record({ sandbox: row });
                 await io.recordSandbox?.(launchBody.org, row.id, requestKey, item.provider);
               }
-              if (row.id === observedId && launch.ready.includes(row.status)) return row;
+              if (row.id !== observedId || !launch.ready.includes(row.status)) return;
+              if (!recover) return { sandbox: row } as T;
+              return recover(row.id, requestKey, until).catch((readError: unknown) => {
+                if (readError instanceof SmokeFailure || readError instanceof TemplateSkillSmokeFailure)
+                  return undefined;
+                throw readError;
+              });
             }
           });
-          if (sandbox && !requiresLaunchReceipt) return { sandbox } as T;
+          if (recovered !== undefined) return { result: recovered, recovered: true };
         }
         throw new SmokeFailure(error.code, error.status, undefined, {
           timeoutMs,
@@ -841,16 +977,19 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
     });
   }
   function expiryUnit(index: number, item: SmokeCase): Promise<boolean> {
-    const { request, withCleanup, out, step } = unit(index, "expiry");
-    const timeoutMs = (deadlines as Record<string, number>).expiry_launch ?? 120_000;
+    const { request, withCleanup, out, step, budgets } = unit(index, item.provider, "expiry");
+    const timeoutMs = budgets.expiry_launch ?? 120_000;
     // A ready sandbox with no task no longer counts against its model account, so the expiry
     // lane gives the account back before its TTL wait, which then overlaps the other lanes.
     return accountSlot(item.modelAccountId.toLowerCase(), (release) =>
       runExpiryCase(item, {
-        launch: (body, keepHandle) => launchWithObservation(item, body, timeoutMs, request, keepHandle),
+        launch: async <T>(body: object, keepHandle: (id: string) => void) => {
+          const { result } = await launchWithObservation<T>(item, body, timeoutMs, request, keepHandle);
+          return result;
+        },
         request: (path, body, remaining = 120_000) => request(path, body, undefined, Math.min(120_000, remaining)),
         deadlineFor: (name) => {
-          const budget = (deadlines as Record<string, number>)[name];
+          const budget = budgets[name];
           return budget === undefined ? undefined : Math.min(deadline, io.now() + budget);
         },
         now: io.now,
@@ -905,7 +1044,7 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
           modelAccountId: item.scriptedModelAccountId!.toLowerCase(),
           model: "scripted",
         };
-        const lane = unit(index, "scoped");
+        const lane = unit(index, item.provider, "scoped");
         let passed = true;
         for (const mode of ["enabled", "no_option"] as const) {
           const ok = await scopedWindow(`${item.org}\n${item.goldenId}`, () =>
@@ -917,7 +1056,7 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
       })
     : [];
   const lifecycleUnits = cases.map(async (item, index) => {
-    const lane = unit(index, "lifecycle");
+    const lane = unit(index, item.provider, github ? "github-runtime" : "lifecycle");
     let passed = true;
     for (const dirty of preservation ? [false, true] : [false]) {
       if (!(await accountSlot(item.modelAccountId.toLowerCase(), () => lifecycleUnit(index, item, dirty, lane))))
@@ -929,7 +1068,11 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
     (await settled([...modelUnits, ...templateUnits, ...expiryUnits, ...scopedUnits, ...lifecycleUnits])) && vaultPassed
   );
   async function realModelUnit(index: number, item: RealModelCase, source: RealModelLaunchSource) {
-    const { request, withCleanup, step, out } = unit(index, "real-model");
+    const { request, withCleanup, withStepDeadline, step, out, budgets, poll } = unit(
+      index,
+      item.provider,
+      "real-model",
+    );
     const isAuthRefusal = (reason?: string) =>
       typeof reason === "string" &&
       (reason.startsWith("Authentication failed. ") ||
@@ -944,7 +1087,7 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
     out(JSON.stringify({ step: "real_model", model: "real", provider: item.provider }));
     try {
       await step("real_model_launch", async () => {
-        const result = await launchWithObservation<{ sandbox: { id: string } }>(
+        const { result } = await launchWithObservation<{ sandbox: { id: string } }>(
           item,
           {
             provider: item.provider,
@@ -955,7 +1098,7 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
             ttlSeconds: 1800,
             ...source,
           },
-          (deadlines as Record<string, number>)[`parity_${item.provider}_launch`] ?? TEMPLATE_LAUNCH_TIMEOUT_MS,
+          budgets.real_model_launch ?? TEMPLATE_LAUNCH_TIMEOUT_MS,
           request,
           (handle) => {
             id = handle;
@@ -964,22 +1107,28 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
         id = result.sandbox.id;
       });
       await step("real_model_ready", () =>
-        poll(status, (result) => {
-          if (isAuthRefusal(result.statusReason)) fail("model_authentication_refused");
-          if (["failed", "stopped", "deleted"].includes(result.status)) fail("sandbox_not_ready");
-          return smokeLaunch[item.provider].ready.includes(result.status);
+        poll(
+          status,
+          (result) => {
+            if (isAuthRefusal(result.statusReason)) fail("model_authentication_refused");
+            if (["failed", "stopped", "deleted"].includes(result.status)) fail("sandbox_not_ready");
+            return smokeLaunch[item.provider].ready.includes(result.status);
+          },
+          { step: "real_model_ready" },
+        ),
+      );
+      const turn = await step("real_model_send", () =>
+        withStepDeadline("real_model_send", async () => {
+          const result = await sandbox<{ promptId: string }>("send", {
+            prompt: "Say hello in a short sentence. Do not use tools.",
+            request_id: crypto.randomUUID(),
+          }).catch(refuseModelCredentials);
+          if (typeof result?.promptId !== "string" || !result.promptId) fail("invalid_response");
+          return result;
         }),
       );
-      const turn = await step("real_model_send", async () => {
-        const result = await sandbox<{ promptId: string }>("send", {
-          prompt: "Say hello in a short sentence. Do not use tools.",
-          request_id: crypto.randomUUID(),
-        }).catch(refuseModelCredentials);
-        if (typeof result?.promptId !== "string" || !result.promptId) fail("invalid_response");
-        return result;
-      });
       await step("real_model_wait", async () => {
-        const until = Math.min(deadline, io.now() + deadlines.wait);
+        const until = Math.min(deadline, io.now() + (budgets.real_model_wait ?? POLLS * SMOKE_POLL_INTERVAL_MS));
         let finished = false;
         await poll(
           async (timeoutMs) => {
@@ -1039,18 +1188,28 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
       if (id) {
         try {
           await withCleanup(() =>
-            step("real_model_stop", async () => {
-              try {
-                await sandbox("stop", { request_id: crypto.randomUUID() });
-              } catch (error) {
-                if (!(error instanceof SmokeFailure) || error.code !== "outcome_unknown") throw error;
-              }
-              await poll(status, (result) => {
-                if (!["stopped", "failed"].includes(result.status)) return false;
-                if (result.providerState !== "stopped") fail("provider_not_stopped");
-                return true;
-              });
-            }),
+            step("real_model_stop", () =>
+              withStepDeadline(
+                "real_model_stop",
+                async (until) => {
+                  try {
+                    await sandbox("stop", { request_id: crypto.randomUUID() });
+                  } catch (error) {
+                    if (!(error instanceof SmokeFailure) || error.code !== "outcome_unknown") throw error;
+                  }
+                  await poll(
+                    status,
+                    (result) => {
+                      if (!["stopped", "failed"].includes(result.status)) return false;
+                      if (result.providerState !== "stopped") fail("provider_not_stopped");
+                      return true;
+                    },
+                    until === undefined ? undefined : { until },
+                  );
+                },
+                { measureCleanup: true },
+              ),
+            ),
           );
         } catch {
           passed = false;
@@ -1068,12 +1227,14 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
     index: number,
     item: SmokeCase,
     dirty: boolean,
-    { request, withCleanup, step, io }: ReturnType<typeof unit>,
+    { request, withCleanup, withStepDeadline, step, io, budgets, poll }: ReturnType<typeof unit>,
     scope?: "enabled" | "no_option",
   ): Promise<boolean> {
     let passed = true;
     const sandbox = <T>(action: string, body: object, timeoutMs?: number) =>
       request<T>(`sandbox/${action}`, { org: item.org, ...body }, undefined, timeoutMs);
+    const measuredStep = <T>(name: string, action: (until?: number) => Promise<T>) =>
+      step(name, () => withStepDeadline(name, action));
     let parentCredentialVersion: number | undefined;
     const scoped = scope
       ? createScopedProbe({ ...item, goldenId: item.goldenId! }, scope === "enabled", {
@@ -1081,8 +1242,9 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
           now: io.now,
           sleep: io.sleep,
           deadline,
+          stepTimeouts: budgets,
           recordSandbox: (id, key) => io.recordSandbox?.(item.org, id, key, item.provider) ?? Promise.resolve(),
-          poll: (read, done) => poll(read, done, { limit: 300 }),
+          poll: (read, done, until) => poll(read, done, until === undefined ? { limit: 300 } : { until }),
           step,
           withCleanup,
           siblingSandboxes: (candidates) => {
@@ -1149,14 +1311,18 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
     let stopped = false;
     let stopRequested = false;
     let preservationNote: string | undefined;
-    async function stopSandbox() {
+    async function stopSandbox(until?: number) {
       if (!stopRequested) {
         try {
           const receipt = await sandbox<{ preservationNote?: string }>("stop", { id: sandboxId });
           preservationNote = receipt.preservationNote;
         } catch (error) {
           // The stop may already be in flight. Observe it; never replay an unknown mutation.
-          if (!(error instanceof SmokeFailure) || error.code !== "outcome_unknown") throw error;
+          if (
+            !(error instanceof SmokeFailure) ||
+            (error.code !== "outcome_unknown" && error.transportTimeoutMs === undefined)
+          )
+            throw error;
         }
         stopRequested = true;
       }
@@ -1178,6 +1344,7 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
           preservationNote = status.preservationNote ?? preservationNote;
           return true;
         },
+        until === undefined ? undefined : { until },
       );
       stopped = true;
     }
@@ -1186,7 +1353,8 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
         io.out(JSON.stringify({ step: "scoped_access", mode: scope, model: "scripted" }));
         await scoped.prepare();
       }
-      await step(scoped ? "scoped_parent_launch" : "launch", async () => {
+      const launchStep = scoped ? "scoped_parent_launch" : "launch";
+      await step(launchStep, async () => {
         launchAttempted = true;
         type LaunchReceipt = {
           sandbox: {
@@ -1204,6 +1372,15 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
           golden?: { id: string };
           promptId?: string;
         };
+        const matchesParentConfiguration = (parent: LaunchReceipt["sandbox"]) =>
+          parent.harness === item.harness &&
+          parent.model === item.model &&
+          (!item.reasoningEffort || parent.reasoningEffort === item.reasoningEffort) &&
+          parent.credentialId === item.modelAccountId &&
+          typeof parent.credentialVersion === "number" &&
+          Number.isSafeInteger(parent.credentialVersion) &&
+          parent.credentialVersion >= 1 &&
+          (scope !== "enabled" || parent.visibility === "private");
         const body = {
           ...(scope === "enabled" ? { armadaAccessVersion: 1, armadaAccess: { maxActiveChildren: 1 } } : {}),
           golden: item.golden,
@@ -1217,39 +1394,72 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
           ttlSeconds: 1800,
         };
         const requiresLaunchReceipt = defaultSkills || scope !== undefined;
-        const result = await launchWithObservation<LaunchReceipt>(
+        const recoverLaunch = requiresLaunchReceipt
+          ? async (id: string, requestKey: string, until: number) => {
+              const inventoryRemaining = until - io.now();
+              if (inventoryRemaining <= 0) return;
+              const goldenId = item.goldenId!;
+              const inventory = await sandbox<{ sandboxes: { id: string; externalRef: string }[] }>(
+                "list",
+                { owner: "me", externalRef: requestKey, golden: goldenId },
+                Math.min(5_000, inventoryRemaining),
+              );
+              if (
+                inventory?.sandboxes?.length !== 1 ||
+                inventory.sandboxes[0]?.id !== id ||
+                inventory.sandboxes[0].externalRef !== requestKey
+              )
+                return;
+              const remaining = until - io.now();
+              if (remaining <= 0) return;
+              const status = await sandbox<
+                Omit<LaunchReceipt["sandbox"], "provider"> & {
+                  externalRef?: string;
+                  status: string;
+                  prompt: unknown;
+                }
+              >("status", { id }, Math.min(5_000, remaining));
+              if (
+                status?.id !== id ||
+                status.externalRef !== requestKey ||
+                status.status !== "ready" ||
+                status.prompt !== null
+              )
+                return;
+              const observed = { ...status, provider: item.provider };
+              if (scope && !matchesParentConfiguration(observed)) return;
+              if (defaultSkills && !scope) verifyReceipts(status.skills, dirty ? [] : defaultPins.get(index)!);
+              return { sandbox: observed, golden: { id: goldenId } };
+            }
+          : undefined;
+        const { result, recovered } = await launchWithObservation<LaunchReceipt>(
           item,
           body,
-          (deadlines as Record<string, number>).launch ?? 600_000,
+          budgets[launchStep] ?? 600_000,
           request,
           (id) => {
             sandboxId = id;
           },
-          requiresLaunchReceipt,
+          recoverLaunch,
         );
+        const parent = result?.sandbox;
         // Retain the cleanup handle even if later response validation fails.
-        if (typeof result?.sandbox?.id === "string" && result.sandbox.id) sandboxId = result.sandbox.id;
-        if (!sandboxId || result.sandbox.provider !== item.provider || result.promptId) fail("invalid_response");
+        if (typeof parent?.id === "string" && parent.id) sandboxId = parent.id;
+        if (!sandboxId || parent?.provider !== item.provider || result.promptId) fail("invalid_response");
         if (requiresLaunchReceipt && result.golden?.id !== item.goldenId) fail("invalid_response");
         if (scope)
           await step("scoped_parent_configuration", async () => {
+            if (!matchesParentConfiguration(parent)) fail("invalid_response");
             if (
-              result.sandbox.harness !== item.harness ||
-              result.sandbox.model !== item.model ||
-              (item.reasoningEffort && result.sandbox.reasoningEffort !== item.reasoningEffort) ||
-              result.sandbox.credentialId !== item.modelAccountId ||
-              !Number.isSafeInteger(result.sandbox.credentialVersion) ||
-              Number(result.sandbox.credentialVersion) < 1 ||
+              !recovered &&
               (scope === "no_option"
                 ? result.armadaAccess?.enabled === true
-                : result.armadaAccess?.enabled !== true ||
-                  result.armadaAccess.maxActiveChildren !== 1 ||
-                  result.sandbox.visibility !== "private")
+                : result.armadaAccess?.enabled !== true || result.armadaAccess.maxActiveChildren !== 1)
             )
               fail("invalid_response");
-            parentCredentialVersion = result.sandbox.credentialVersion;
+            parentCredentialVersion = parent.credentialVersion;
           });
-        launchSkills = result.sandbox.skills;
+        launchSkills = parent.skills;
       });
       const readinessStep = scoped ? "scoped_parent_ready" : "ready";
       await step(readinessStep, async () => {
@@ -1278,7 +1488,7 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
               if (status === "failed" || status === "stopped") fail("sandbox_not_ready");
               return status === "ready";
             },
-            { step: "ready" },
+            { step: readinessStep },
           );
         } catch (error) {
           if (error instanceof SmokeFailure) {
@@ -1298,7 +1508,7 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
       });
       if (scoped) {
         await scoped.run(sandboxId!, parentCredentialVersion!);
-        await step("scoped_parent_stop", stopSandbox);
+        await measuredStep("scoped_parent_stop", stopSandbox);
         return;
       }
       if (lifecycle && !dirty)
@@ -1313,17 +1523,20 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
           }),
         );
       if (goldenRuntime && !dirty) {
-        await step("golden_helper_integrity", () => checkedExec(helperProbe));
-        await step("golden_skillpack_integrity", () => checkedExec(skillpackProbe));
+        await measuredStep("golden_helper_integrity", () => checkedExec(helperProbe));
+        await measuredStep("golden_skillpack_integrity", () => checkedExec(skillpackProbe));
       }
       if (githubRefresh && !dirty)
-        await step("github_launch_access", () => checkedExec(`${git} ls-remote origin HEAD >/dev/null 2>&1`));
+        await measuredStep("github_launch_access", () => checkedExec(`${git} ls-remote origin HEAD >/dev/null 2>&1`));
       if (defaultSkills) {
         const expected = defaultPins.get(index)!;
-        await step(dirty ? "default_skills_opt_out_receipts" : "default_skills_receipts", async () => {
-          const status = await sandbox<{ skills?: unknown }>("status", { id: sandboxId });
-          verifyDefaultReceipts(launchSkills, status.skills, dirty ? [] : expected);
-        });
+        const receiptStep = dirty ? "default_skills_opt_out_receipts" : "default_skills_receipts";
+        await step(receiptStep, () =>
+          withStepDeadline(receiptStep, async () => {
+            const status = await sandbox<{ skills?: unknown }>("status", { id: sandboxId });
+            verifyDefaultReceipts(launchSkills, status.skills, dirty ? [] : expected);
+          }),
+        );
         if (!expected.length)
           io.out(
             JSON.stringify({
@@ -1465,36 +1678,62 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
           }
         });
         const usageStep = phase ? `${phase}_usage` : second ? "usage_second" : "usage";
-        await step(usageStep, () =>
-          poll(
-            (timeoutMs) =>
-              sandbox<{
-                usage?: {
-                  turns?: {
-                    promptId: string;
-                    inputTokens: number | null;
-                    outputTokens: number | null;
-                    cachedTokens?: number | null;
-                  }[];
-                  tokenTotals?: { inputTokens: number | null; outputTokens: number | null; incomplete?: boolean };
+        await step(usageStep, async () => {
+          let attempts = 0;
+          let lastResponse: Record<string, string | boolean | number> | null = null;
+          try {
+            await poll(
+              async (timeoutMs, requestDeadline) => {
+                const startedAt = io.now();
+                const result = await request<{
+                  usage?: {
+                    turns?: {
+                      promptId: string;
+                      inputTokens: number | null;
+                      outputTokens: number | null;
+                    }[];
+                    tokenTotals?: { inputTokens: number | null; outputTokens: number | null; incomplete?: boolean };
+                  };
+                } | null>("sandbox/status", { org: item.org, id: sandboxId }, undefined, timeoutMs, {
+                  deadline: requestDeadline ?? deadline,
+                  onDispatch: () => {
+                    attempts++;
+                  },
+                });
+                const usage = result?.usage;
+                const row = Array.isArray(usage?.turns)
+                  ? usage.turns.find((row) => row?.promptId === turn.promptId)
+                  : undefined;
+                const totals = usage?.tokenTotals;
+                // Journal only field shapes and booleans. Status bodies may contain secrets.
+                lastResponse = {
+                  elapsedMs: io.now() - startedAt,
+                  turns: jsonShape(usage?.turns),
+                  promptMatched: row !== undefined,
+                  inputTokens: jsonShape(row?.inputTokens),
+                  outputTokens: jsonShape(row?.outputTokens),
+                  totalInputTokens: jsonShape(totals?.inputTokens),
+                  totalOutputTokens: jsonShape(totals?.outputTokens),
+                  incomplete:
+                    typeof totals?.incomplete === "boolean" ? totals.incomplete : jsonShape(totals?.incomplete),
                 };
-              }>("status", { id: sandboxId }, timeoutMs),
-            (result) => {
-              const row = result.usage?.turns?.find((row) => row.promptId === turn.promptId);
-              // A resumed prompt must be measured, not an explicit unknown receipt.
-              return (
-                result.usage?.tokenTotals?.incomplete !== true &&
-                typeof row?.inputTokens === "number" &&
-                typeof row.outputTokens === "number" &&
-                typeof result.usage?.tokenTotals?.inputTokens === "number" &&
-                typeof result.usage?.tokenTotals?.outputTokens === "number"
-              );
-            },
-            { step: usageStep },
-          ).catch((error: unknown) => {
+                return (
+                  totals?.incomplete !== true &&
+                  typeof row?.inputTokens === "number" &&
+                  typeof row.outputTokens === "number" &&
+                  typeof totals?.inputTokens === "number" &&
+                  typeof totals.outputTokens === "number"
+                );
+              },
+              (accepted) => accepted,
+              { step: usageStep, minRequestMs: USAGE_STATUS_MIN_REQUEST_MS },
+            );
+          } catch (error) {
             if (
               error instanceof SmokeFailure &&
-              (error.code === "request_failed" || error.transportTimeoutMs !== undefined)
+              (error.code === "poll_limit_exceeded" ||
+                error.code === "request_failed" ||
+                error.transportTimeoutMs !== undefined)
             ) {
               io.out(
                 JSON.stringify({
@@ -1504,12 +1743,17 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
                   route: "sandbox/status",
                   timeoutMs: error.transportTimeoutMs ?? null,
                   code: error.code,
+                  attempts,
+                  lastResponse,
+                  ...error.statusResponse,
+                  ...(sandboxId && SANDBOX_ID.test(sandboxId) ? { sandboxId } : {}),
+                  ...(SANDBOX_ID.test(turn.promptId) ? { promptId: turn.promptId } : {}),
                 }),
               );
             }
             throw error;
-          }),
-        );
+          }
+        });
         if (github)
           await step(second ? "native_git_second" : "native_git_first", async () => {
             const result = await sandbox<{ exitCode: number | null; timedOut: boolean; stdout?: unknown }>("exec", {
@@ -1541,15 +1785,15 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
           });
       }
       if (preservation)
-        await step("preservation_clean_checkout", () =>
+        await measuredStep("preservation_clean_checkout", () =>
           checkedExec(
             `test -z "$(${git} status --porcelain)" && test -z "$(${git} rev-list HEAD --branches --tags --not --remotes)"`,
           ),
         );
       await nativeTurn(false);
       if (lifecycle && !dirty) {
-        await step("list_ready", () => consistent("ready"));
-        await step("steer_refused", async () => {
+        await measuredStep("list_ready", () => consistent("ready"));
+        await measuredStep("steer_refused", async () => {
           try {
             await sandbox("steer", { id: sandboxId, text: "Smoke: no turn should be running." });
           } catch (error) {
@@ -1558,7 +1802,7 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
           }
           fail("steer_not_refused");
         });
-        await step("extend", async () => {
+        await measuredStep("extend", async () => {
           const before = await sandbox<{ expiresAt: string }>("status", { id: sandboxId });
           const previous = Date.parse(before.expiresAt);
           if (!Number.isFinite(previous)) fail("invalid_response");
@@ -1582,7 +1826,7 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
         ["git_status", "git status -sb"],
         ["git_remote", "git ls-remote origin HEAD"],
       ] as const) {
-        await step(name, async () => {
+        await measuredStep(name, async () => {
           const result = await sandbox<{ exitCode: number | null; timedOut: boolean }>("exec", {
             id: sandboxId,
             command,
@@ -1607,7 +1851,7 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
         });
       }
       if (githubRefresh && !dirty) {
-        await step("github_refresh", async () => {
+        await measuredStep("github_refresh", async () => {
           const receipt = await request<{
             id: string;
             status: string;
@@ -1644,7 +1888,7 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
         );
       }
       if (preservation && dirty)
-        await step("preservation_commit", async () => {
+        await measuredStep("preservation_commit", async () => {
           const result = await sandbox<{ exitCode: number; timedOut: boolean; stdout: string }>("exec", {
             id: sandboxId,
             cwd: item.repo,
@@ -1655,7 +1899,7 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
             fail("invalid_receipt");
           commit = result.stdout.trim();
         });
-      if (!github) await step("stop", stopSandbox);
+      if (!github) await measuredStep("stop", stopSandbox);
       if (preservation) {
         // Recovery is a read-only operation, but do not reuse the earlier stop
         // receipt if verification fails or a regression wakes the worker.
@@ -1663,7 +1907,7 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
         stopRequested = false;
         let verifiedArchive: string | undefined;
         const note = preservationNote;
-        await step(dirty ? "preservation_archive" : "preservation_clean_stop", async () => {
+        await measuredStep(dirty ? "preservation_archive" : "preservation_clean_stop", async () => {
           const result = await sandbox<{ archive: string | null }>("recovery", { id: sandboxId });
           if (!dirty) {
             if (note || result.archive !== null) fail("preservation_failed");
@@ -1679,7 +1923,7 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
           }
         });
         if (dirty) {
-          await step("preservation_recovery_handle", async () => {
+          await measuredStep("preservation_recovery_handle", async () => {
             const parts = note?.slice("unpushed work preserved at work_recovery:".length).split("/");
             if (
               parts?.length !== 2 ||
@@ -1696,14 +1940,14 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
           });
         }
         if (dirty)
-          await step("preservation_unknown_handle_refused", async () => {
+          await measuredStep("preservation_unknown_handle_refused", async () => {
             const absent = await sandbox<{ archive: string | null }>("recovery", {
               id: sandboxId,
               recovery_id: crypto.randomUUID(),
             });
             if (absent.archive !== null) fail("preservation_failed");
           });
-        await step("preservation_recovery_read_only", async () => {
+        await measuredStep("preservation_recovery_read_only", async () => {
           if (dirty) {
             const repeated = await sandbox<{ archive: string | null }>("recovery", { id: sandboxId });
             if (repeated.archive !== verifiedArchive) fail("preservation_failed");
@@ -1718,16 +1962,16 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
         });
       }
       if (lifecycle && !dirty) {
-        await step("list_stopped", () => consistent("stopped"));
+        await measuredStep("list_stopped", () => consistent("stopped"));
         // send is the existing resume operation. Invalidate the old stop handle
         // BEFORE dispatch, so a lost response still requires cleanup.
         stopped = false;
         stopRequested = false;
         preservationNote = undefined;
         await nativeTurn(true, "resume");
-        await step("list_resumed", () => consistent("ready"));
-        await step("stop_resumed", stopSandbox);
-        await step("list_stopped_final", () => consistent("stopped"));
+        await measuredStep("list_resumed", () => consistent("ready"));
+        await measuredStep("stop_resumed", stopSandbox);
+        await measuredStep("list_stopped_final", () => consistent("stopped"));
       }
     }
     try {

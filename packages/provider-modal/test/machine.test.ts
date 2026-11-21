@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { capabilities, type MachineIdentity } from "@armada/core/server";
-import { type ModalClient, NotFoundError } from "modal";
+import { ModalClient, NotFoundError } from "modal";
 import { type MachineConformanceFixture, testMachineConformance } from "../../core/test-support/machine-conformance.ts";
 import { createModalMachine, type ModalMachineJournal, type ModalMachineOptions } from "../src/machine.ts";
 
@@ -91,7 +91,7 @@ function fixture() {
           },
         },
         sandboxes: {
-          async create(_app: unknown, image: { imageId: string }, params: CreateParams) {
+          async experimentalCreate(_app: unknown, image: { imageId: string }, params: CreateParams) {
             const created = allocations.size + 1;
             const machine = {
               id: `physical-${created}`,
@@ -259,3 +259,79 @@ for (const recovery of ["bootstrap", "delete"] as const) {
     }
   });
 }
+
+test("Modal Machine recovers a lost create reply with the SDK profile set to V1", async () => {
+  type CreateV2 = Parameters<ModalClient["cpClient"]["sandboxCreateV2"]>[0];
+  type GetByNameV2 = Parameters<ModalClient["cpClient"]["sandboxGetFromNameV2"]>[0];
+  let v2: CreateV2 | undefined;
+  let allocations = 0;
+  const machineId = "sbv2-allocation";
+  const loseReply = () => {
+    allocations++;
+    throw new Error("Lost create reply");
+  };
+  const sdk = new ModalClient({
+    tokenId: "test",
+    tokenSecret: "test",
+    cpClient: {
+      sandboxCreate: async () => loseReply(),
+      async sandboxCreateV2(request: CreateV2) {
+        v2 = request;
+        loseReply();
+      },
+      async sandboxGetFromNameV2({ sandboxName, includeTerminated }: GetByNameV2) {
+        if (!includeTerminated || !v2 || sandboxName !== v2.definition?.name)
+          throw new Error("V2 allocation is unavailable by name");
+        return { sandboxId: machineId };
+      },
+      async sandboxTagsGetV2() {
+        return { tags: v2?.tags ?? [] };
+      },
+      async sandboxWaitV2() {
+        return {};
+      },
+    } as unknown as ModalClient["cpClient"],
+  });
+  sdk.profile.sandboxV2 = false;
+  const entries = new Map<string, Entry>();
+  const adapter = () =>
+    createModalMachine({
+      client: {
+        ...sdk,
+        apps: { fromName: async () => ({ appId: "app-id" }) } as unknown as SDK["apps"],
+        images: { fromId: async () => ({ imageId: "source", async build() {} }) } as unknown as SDK["images"],
+      },
+      appName: "app",
+      binding: { appId: "app-id", workspace: "workspace", environment: "test" },
+      deploymentId: "deployment",
+      journal: {
+        async read(key) {
+          return entries.get(key);
+        },
+        async compareAndSet(key, revision, next) {
+          if (entries.get(key)?.revision !== revision) return false;
+          entries.set(key, next);
+          return true;
+        },
+      },
+      resolveRuntimeTicket: async () => null,
+      prepareCheckpoint: async () => {},
+    });
+  const incarnation = { sandboxId: "sandbox", generation: 1 };
+  const request = {
+    ...incarnation,
+    source: { kind: "image" as const, ref: "source" },
+    size: null,
+    computeTtlSeconds: 60,
+  };
+  try {
+    await expect(adapter().create(request)).rejects.toThrow("Lost create reply");
+    const successor = adapter();
+    const identity = { ...incarnation, machineId };
+    expect(await successor.observe(incarnation)).toMatchObject({ kind: "present", machine: identity });
+    expect(await successor.create(request)).toEqual(identity);
+    expect(allocations).toBe(1);
+  } finally {
+    sdk.close();
+  }
+});

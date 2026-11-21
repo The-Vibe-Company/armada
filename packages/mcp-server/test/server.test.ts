@@ -1793,7 +1793,7 @@ describe("tools", () => {
     },
   );
 
-  test("ordinary exec commands stay concurrent without changing lifecycle generation", async () => {
+  test("ordinary native exec fences competing commands and invalidates earlier preservation proof", async () => {
     const { token, client, people, boat, db } = await start();
     const mcp = await client(await token(people.member));
     const launched = await call(mcp, "launch", { provider: "boat", golden: "shared", harness: "claude" });
@@ -1828,8 +1828,8 @@ describe("tools", () => {
       release?.();
     }
     const completed = await first;
-    expect(second.isError).not.toBe(true);
-    expect(second.data.exitCode).toBe(0);
+    expect(second.isError).toBe(true);
+    expect(boat.execs.some((request) => request.command === "parallel command")).toBe(false);
     expect(completed.isError).not.toBe(true);
     const after = (
       await db.query<{ lifecycle_generation: string | number | bigint; activity_lease_id: string | null }>(
@@ -1837,7 +1837,7 @@ describe("tools", () => {
         [id],
       )
     ).rows[0];
-    expect(after?.lifecycle_generation).toEqual(before);
+    expect(Number(after?.lifecycle_generation)).toBe(Number(before) + 2);
     expect(after?.activity_lease_id).toBeNull();
   });
 
@@ -2033,6 +2033,60 @@ describe("tools", () => {
           expect(sent.data.promptId).toBe(settled.task_prompt_id);
           expect(settled.activity_lease_id).toBeNull();
         }
+      }
+    },
+  );
+
+  test.each(["current", "stale", "rollback"] as const)(
+    "native send binds only its current acknowledgement (%s)",
+    async (phase) => {
+      const server = await start();
+      const { boat, client, db, people, token } = server;
+      const { id } = await seedRunningSandbox(server);
+      const mcp = await client(await token(people.member));
+      const requestId = crypto.randomUUID();
+      await db.query(
+        `insert into account_turn_queue(sandbox_id,request_id,account_id,owner_id,org_id,
+         actor_epoch,credential_version,input_hash,input_enc,conversation_id,state,dispatch_generation)
+       select s.id,$2,c.id,s.owner_id,s.org_id,1,c.version,'input',$3,'conversation','dispatching',s.lifecycle_generation
+       from sandboxes s join credentials c on c.owner_id=s.org_id and c.kind='openai'
+       where s.id=$1 limit 1`,
+        [id, requestId, new Uint8Array([1])],
+      );
+      await db.query("update sandboxes set task_prompt_id='unrelated-steer' where id=$1", [id]);
+      expect(
+        (await db.query("select native_prompt_id from account_turn_queue where request_id=$1", [requestId])).rows,
+      ).toEqual([{ native_prompt_id: "unrelated-steer" }]);
+
+      const prompt = boat.provider.prompt;
+      boat.provider.prompt = async (input) => {
+        const receipt = await prompt(input);
+        if (phase === "stale")
+          await db.query("update sandboxes set lifecycle_generation=lifecycle_generation+1 where id=$1", [id]);
+        if (phase === "rollback")
+          await db.exec(
+            "alter table sandboxes add constraint refuse_native_binding_test check (task_prompt_id is null) not valid",
+          );
+        return receipt;
+      };
+      const sent = await call(mcp, "send", { id, prompt: "continue", request_id: requestId }).finally(async () => {
+        if (phase === "rollback")
+          await db.exec("alter table sandboxes drop constraint if exists refuse_native_binding_test");
+      });
+      expect(Boolean(sent.isError)).toBe(phase !== "current");
+
+      const { rows } = await db.query<{ prompt_id: string; acknowledged_request_id: string | null }>(
+        "select prompt_id,acknowledged_request_id from native_webhook_prompts where sandbox_id=$1",
+        [id],
+      );
+      expect(rows).toHaveLength(2);
+      expect(rows.find(({ prompt_id }) => prompt_id === "unrelated-steer")?.acknowledged_request_id).toBeNull();
+      const acknowledged = rows.find(({ prompt_id }) => prompt_id !== "unrelated-steer");
+      expect(acknowledged?.acknowledged_request_id).toBe(phase === "current" ? requestId : null);
+      if (phase === "current") {
+        const promptId = sent.data.promptId;
+        if (typeof promptId !== "string") throw new Error("Native send response is missing its prompt ID.");
+        expect(acknowledged?.prompt_id).toBe(promptId);
       }
     },
   );

@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { publishManifest } from "./publish-runtime-artifacts.ts";
 
-test("publication includes every requested digest and refuses missing or corrupt pinned bytes", async () => {
+test("publication includes bundled harness digests only and refuses missing or corrupt pinned bytes", async () => {
   const root = await mkdtemp(join(tmpdir(), "publication-"));
   try {
     const pin = async (path: string) => {
@@ -25,12 +25,7 @@ test("publication includes every requested digest and refuses missing or corrupt
     };
     const destination = join(root, "published");
     await publishManifest(manifest, root, destination);
-    const pins = [
-      manifest.runtime,
-      manifest.harnesses.codex.archive,
-      manifest.opencode,
-      ...Object.values(manifest.antigravity),
-    ];
+    const pins = [manifest.runtime, manifest.harnesses.codex.archive, manifest.opencode];
     expect((await readdir(destination)).sort()).toEqual(pins.map((p) => p.sha256).sort());
     for (const p of pins) {
       expect(await Bun.file(join(destination, p.sha256)).text()).toBe(p.path);

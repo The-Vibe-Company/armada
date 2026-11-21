@@ -439,6 +439,7 @@ export type Database = {
           generation: number;
           golden_ids: string[];
           credential_ids: string[];
+          modal_drain_cleaned_placement: string | null;
         };
         Insert: {
           id?: string;
@@ -451,6 +452,7 @@ export type Database = {
           generation?: number;
           golden_ids?: string[];
           credential_ids?: string[];
+          modal_drain_cleaned_placement?: string | null;
         };
         Update: {
           id?: string;
@@ -463,6 +465,7 @@ export type Database = {
           generation?: number;
           golden_ids?: string[];
           credential_ids?: string[];
+          modal_drain_cleaned_placement?: string | null;
         };
         Relationships: [
           {
@@ -2721,35 +2724,6 @@ export type Database = {
         };
         Relationships: [];
       };
-      model_auth_ownership: {
-        Row: {
-          account_id: string;
-          account_version: number;
-          sandbox_id: string;
-          assigned_at: string;
-        };
-        Insert: {
-          account_id: string;
-          account_version: number;
-          sandbox_id: string;
-          assigned_at?: string;
-        };
-        Update: {
-          account_id?: string;
-          account_version?: number;
-          sandbox_id?: string;
-          assigned_at?: string;
-        };
-        Relationships: [
-          {
-            foreignKeyName: "model_auth_ownership_account_id_fkey";
-            columns: ["account_id"];
-            isOneToOne: true;
-            referencedRelation: "credentials";
-            referencedColumns: ["id"];
-          },
-        ];
-      };
       model_auth_state: {
         Row: {
           account_id: string;
@@ -2781,6 +2755,120 @@ export type Database = {
             columns: ["account_id"];
             isOneToOne: false;
             referencedRelation: "credentials";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
+      native_drain_delete_operations: {
+        Row: {
+          sandbox_id: string;
+          provider: Database["public"]["Enums"]["sandbox_provider"];
+          placement: string;
+          operation_id: string;
+        };
+        Insert: {
+          sandbox_id: string;
+          provider: Database["public"]["Enums"]["sandbox_provider"];
+          placement: string;
+          operation_id: string;
+        };
+        Update: {
+          sandbox_id?: string;
+          provider?: Database["public"]["Enums"]["sandbox_provider"];
+          placement?: string;
+          operation_id?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "native_drain_delete_operations_sandbox_id_fkey";
+            columns: ["sandbox_id"];
+            isOneToOne: true;
+            referencedRelation: "sandboxes";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
+      native_drain_recovery: {
+        Row: {
+          archive_id: string;
+          sandbox_id: string;
+          org_id: string;
+          owner_id: string;
+          archive_enc: string;
+          created_at: string;
+        };
+        Insert: {
+          archive_id: string;
+          sandbox_id: string;
+          org_id: string;
+          owner_id: string;
+          archive_enc: string;
+          created_at?: string;
+        };
+        Update: {
+          archive_id?: string;
+          sandbox_id?: string;
+          org_id?: string;
+          owner_id?: string;
+          archive_enc?: string;
+          created_at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "native_drain_recovery_org_id_fkey";
+            columns: ["org_id"];
+            isOneToOne: false;
+            referencedRelation: "orgs";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "native_drain_recovery_owner_id_fkey";
+            columns: ["owner_id"];
+            isOneToOne: false;
+            referencedRelation: "users";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
+      native_drain_stop_requests: {
+        Row: {
+          sandbox_id: string;
+          stop_generation: number;
+        };
+        Insert: {
+          sandbox_id: string;
+          stop_generation: number;
+        };
+        Update: {
+          sandbox_id?: string;
+          stop_generation?: number;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "native_drain_stop_requests_sandbox_id_fkey";
+            columns: ["sandbox_id"];
+            isOneToOne: true;
+            referencedRelation: "sandboxes";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
+      native_drain_unclaimed_dispatches: {
+        Row: {
+          sandbox_id: string;
+        };
+        Insert: {
+          sandbox_id: string;
+        };
+        Update: {
+          sandbox_id?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "native_drain_unclaimed_dispatches_sandbox_id_fkey";
+            columns: ["sandbox_id"];
+            isOneToOne: true;
+            referencedRelation: "sandboxes";
             referencedColumns: ["id"];
           },
         ];
@@ -2837,6 +2925,7 @@ export type Database = {
           lease_until: string | null;
           completed_at: string | null;
           created_at: string;
+          acknowledged_request_id: string | null;
         };
         Insert: {
           sandbox_id: string;
@@ -2851,6 +2940,7 @@ export type Database = {
           lease_until?: string | null;
           completed_at?: string | null;
           created_at?: string;
+          acknowledged_request_id?: string | null;
         };
         Update: {
           sandbox_id?: string;
@@ -2865,6 +2955,7 @@ export type Database = {
           lease_until?: string | null;
           completed_at?: string | null;
           created_at?: string;
+          acknowledged_request_id?: string | null;
         };
         Relationships: [
           {
@@ -4810,6 +4901,93 @@ export type Database = {
           },
         ];
       };
+      sandbox_native_exec_attempts: {
+        Row: {
+          sandbox_id: string;
+          generation: number;
+        };
+        Insert: {
+          sandbox_id: string;
+          generation: number;
+        };
+        Update: {
+          sandbox_id?: string;
+          generation?: number;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "sandbox_native_exec_attempts_sandbox_id_fkey";
+            columns: ["sandbox_id"];
+            isOneToOne: false;
+            referencedRelation: "sandboxes";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
+      sandbox_native_preservation_receipts: {
+        Row: {
+          sandbox_id: string;
+          generation: number;
+          stop_generation: number;
+          capture_generation: number | null;
+          capture_stop_generation: number | null;
+          archive_id: string | null;
+          capture_acknowledgements: Json | null;
+        };
+        Insert: {
+          sandbox_id: string;
+          generation: number;
+          stop_generation: number;
+          capture_generation?: number | null;
+          capture_stop_generation?: number | null;
+          archive_id?: string | null;
+          capture_acknowledgements?: Json | null;
+        };
+        Update: {
+          sandbox_id?: string;
+          generation?: number;
+          stop_generation?: number;
+          capture_generation?: number | null;
+          capture_stop_generation?: number | null;
+          archive_id?: string | null;
+          capture_acknowledgements?: Json | null;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "sandbox_native_preservation_receipts_sandbox_id_fkey";
+            columns: ["sandbox_id"];
+            isOneToOne: true;
+            referencedRelation: "sandboxes";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
+      sandbox_native_send_attempts: {
+        Row: {
+          sandbox_id: string;
+          generation: number;
+          created_at: string;
+        };
+        Insert: {
+          sandbox_id: string;
+          generation: number;
+          created_at?: string;
+        };
+        Update: {
+          sandbox_id?: string;
+          generation?: number;
+          created_at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "sandbox_native_send_attempts_sandbox_id_fkey";
+            columns: ["sandbox_id"];
+            isOneToOne: false;
+            referencedRelation: "sandboxes";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
       sandbox_output_chunks: {
         Row: {
           transfer_id: string;
@@ -5188,6 +5366,7 @@ export type Database = {
           transition_context: Json | null;
           outputs_retained_generation: number | null;
           outputs_attempt_count: number;
+          native_drain_pending: boolean;
         };
         Insert: {
           id?: string;
@@ -5265,6 +5444,7 @@ export type Database = {
           transition_context?: Json | null;
           outputs_retained_generation?: number | null;
           outputs_attempt_count?: number;
+          native_drain_pending?: boolean;
         };
         Update: {
           id?: string;
@@ -5342,6 +5522,7 @@ export type Database = {
           transition_context?: Json | null;
           outputs_retained_generation?: number | null;
           outputs_attempt_count?: number;
+          native_drain_pending?: boolean;
         };
         Relationships: [
           {

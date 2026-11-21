@@ -28,13 +28,45 @@ export function isSandboxProvider(value: unknown): value is SandboxProviderId {
   return typeof value === "string" && (SANDBOX_PROVIDERS as readonly string[]).includes(value);
 }
 
-/** Native launch transport and fixed private credential target. Unknown adapters opt into neither. */
+/** Native launch transport and private auth capabilities. Unknown adapters opt into none. */
 export function launchInfrastructure(id: string) {
-  const transports: Record<string, { nativeCli: boolean; nativeRuntime: boolean; authPath?: string }> = {
-    boat: { nativeCli: true, nativeRuntime: false, authPath: "/home/user/.codex/auth.json" },
-    modal: { nativeCli: false, nativeRuntime: true, authPath: "/home/user/.armada-runtime/codex/auth.json" },
+  const transports: Record<
+    string,
+    {
+      nativeCli: boolean;
+      nativeRuntime: boolean;
+      authPath?: string;
+      managedNativeAuthWriter: boolean;
+      privateSshBootstrap: boolean;
+      terminalPromptEventIsBoundary: boolean;
+    }
+  > = {
+    boat: {
+      nativeCli: true,
+      nativeRuntime: false,
+      authPath: "/home/user/.codex/auth.json",
+      managedNativeAuthWriter: true,
+      privateSshBootstrap: true,
+      terminalPromptEventIsBoundary: true,
+    },
+    modal: {
+      nativeCli: false,
+      nativeRuntime: true,
+      authPath: "/home/user/.armada-runtime/codex/auth.json",
+      managedNativeAuthWriter: false,
+      privateSshBootstrap: false,
+      terminalPromptEventIsBoundary: false,
+    },
   };
-  return Object.hasOwn(transports, id) ? transports[id]! : { nativeCli: false, nativeRuntime: false };
+  return Object.hasOwn(transports, id)
+    ? transports[id]!
+    : {
+        nativeCli: false,
+        nativeRuntime: false,
+        managedNativeAuthWriter: false,
+        privateSshBootstrap: false,
+        terminalPromptEventIsBoundary: false,
+      };
 }
 
 /** What a provider's infrastructure allows, independent of any agent capability. */
@@ -61,6 +93,14 @@ export const PROVIDER_LIMITS: Readonly<Record<SandboxPlacementProviderId, Provid
  * and must never dispose of it. A fresh fork belongs to that restore attempt.
  */
 export interface HostCapabilities {
+  readonly requiresPinnedGoldenBinding: boolean;
+  readonly canonicalGoldenAdoption: boolean;
+  readonly templateReceiptTransport?: "dialout";
+  readonly startRateLimit?: { readonly status: number; readonly detailsProvider: "boat" };
+  readonly snapshotSourceBusyCode?: string;
+  readonly builderImageFailureCode?: string;
+  /** Install the baseline on the live builder or verify the preinstalled baseline as the image user. */
+  readonly goldenBuilderBaseline: "install-at-build" | "preinstalled-as-user";
   /** Re-resolve pinned management authority inside the golden build admission transaction. */
   readonly revalidateGoldenManagementAtAdmission: boolean;
   readonly goldenRestore: "fresh-fork" | "shared-source";
@@ -94,6 +134,10 @@ export interface HostCapabilities {
 
 export const HOST_CAPABILITIES: Readonly<Record<SandboxProviderId, HostCapabilities>> = {
   boat: {
+    requiresPinnedGoldenBinding: false,
+    canonicalGoldenAdoption: true,
+    startRateLimit: { status: 429, detailsProvider: "boat" },
+    goldenBuilderBaseline: "install-at-build",
     revalidateGoldenManagementAtAdmission: false,
     goldenRestore: "fresh-fork",
     retainSourceOnSnapshotUncertainty: false,
@@ -106,6 +150,12 @@ export const HOST_CAPABILITIES: Readonly<Record<SandboxProviderId, HostCapabilit
     snapshotManagementAuthority: false,
   },
   modal: {
+    requiresPinnedGoldenBinding: true,
+    canonicalGoldenAdoption: false,
+    templateReceiptTransport: "dialout",
+    snapshotSourceBusyCode: "snapshot_source_busy",
+    builderImageFailureCode: "modal_builder_image_failed",
+    goldenBuilderBaseline: "preinstalled-as-user",
     revalidateGoldenManagementAtAdmission: true,
     goldenRestore: "shared-source",
     retainSourceOnSnapshotUncertainty: true,
@@ -137,7 +187,11 @@ export function sandboxRowModalBinding(row: {
   modal_environment?: string | null;
   modal_app_id?: string | null;
 }) {
-  return row.provider === "modal" && row.modal_workspace && row.modal_environment && row.modal_app_id
+  return isSandboxProvider(row.provider) &&
+    HOST_CAPABILITIES[row.provider].requiresPinnedGoldenBinding &&
+    row.modal_workspace &&
+    row.modal_environment &&
+    row.modal_app_id
     ? { workspace: row.modal_workspace, environment: row.modal_environment, appId: row.modal_app_id }
     : null;
 }
@@ -210,7 +264,6 @@ export function createProviderRegistry(
   };
 }
 
-/** Refuses a provider instance that is not the record's own backend. */
 export function assertProviderOf(provider: Provider, expected: SandboxProviderId): void {
   if (provider.id !== expected) {
     throw new ProviderRoutingError(
@@ -225,11 +278,12 @@ function assertProviderTarget(target: ProviderTarget): void {
   if (!isSandboxProvider(target.provider)) {
     throw new Error("The record names no known sandbox provider.");
   }
-  if ((target.provider === "modal") !== (target.modal !== null)) {
+  const { requiresPinnedGoldenBinding } = HOST_CAPABILITIES[target.provider];
+  if (requiresPinnedGoldenBinding !== (target.modal !== null)) {
     throw new ProviderRoutingError(
       "provider_mismatch",
       target.provider,
-      target.provider === "modal"
+      requiresPinnedGoldenBinding
         ? "This Modal golden has no pinned Modal App binding."
         : "Only a Modal golden carries a Modal binding.",
     );

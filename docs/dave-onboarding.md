@@ -30,18 +30,14 @@ In **Snapshots**, choose **New** to open **New snapshot**, then **Build snapshot
 to prepare a workspace. **Sandboxes → Launch a sandbox** and a snapshot’s **Launch**
 open the launch dialog. A template’s **Launch** opens **Launch <template name>**
 with its version’s choices fixed; enter the task there. Templates save reusable launch
-settings: each published configuration is an immutable **template version** (CLI flags
-still use `--revision` and `--expected-revision`).
+settings. Each published configuration is an immutable **template version**. Use
+`--revision` to select a version when inspecting or launching a template from the CLI.
 
 In **Routines**, choose **New routine** to schedule a task from a template.
 It keeps the template as it is at creation; later template versions do not update
-the routine. To edit it, use `armada routine update NAME|ID --expected-version N`:
-`--file config.json` replaces all mutable configuration (including name), while
-`--cron EXPRESSION --timezone IANA_ZONE` changes the schedule and retains the
-other fields. Copy the current version from `routine show` or `routine list`;
-conflicts are not retried. Updating an enabled routine selects its next matching
-occurrence. Enable/pause control new scheduled admissions; pause/delete do not
-stop already admitted runs. See `armada routine --help` for the complete JSON fields.
+the routine. Edit the schedule in **Routines**. Updating an enabled routine
+selects its next matching occurrence. Pause and delete stop new admissions.
+See the [CLI API routes](cli-admin.md#routines) for scripted changes.
 
 ## 1. Install the CLI
 
@@ -75,16 +71,15 @@ doesn't open automatically, use the printed link on any machine.
 
 The session (the Armada URL, an access token and a refresh token) is saved in `~/.config/armada/session.json` (`$XDG_CONFIG_HOME/armada` when set), readable only by you. Later commands reuse it and refresh it automatically. `armada logout` deletes it. For scripts and CI, set `ARMADA_TOKEN` to a service token (step 7) instead: it takes precedence over the saved session.
 
-This first sign-in creates your Armada account. An admin can invite you before you have one (step 4); adding you directly from the CLI needs it.
+This first sign-in creates your Armada account. An admin can invite you before you have one (step 4); adding you directly through the membership API needs it.
 
 ## 4. Create or select an org
 
-For a new organization, choose a name (this guide uses `my-team`) and run:
+For a new organization, create it in the dashboard (this guide uses `my-team`), then run:
 
 ```sh
-armada org create my-team
 armada login --org my-team
-armada status --setup
+armada info --setup
 ```
 
 Creation makes you its first admin. Selection persists for this Armada server; the examples
@@ -94,23 +89,14 @@ run `armada login --org <org>`; an admin must complete its provider setup.
 
 ### Joining an existing org
 
-An org admin invites you by email, from the dashboard or with `armada org invitations create <email> [--role admin|member] [--org <name|UUID>]`, or adds an existing account directly from the CLI:
-
-- **Invitation (dashboard or CLI)**: an admin uses **Invite a teammate** on the org's dashboard page or the invitation command above. This creates a pending invitation, including for someone without an account; it does not grant membership. Email delivery is explicitly opt-in through Supabase Auth: see [mail configuration prerequisites](organization-invitations.md#mail-configuration-explicitly-opt-in). When configured, the Auth email can contain a sign-in link that opens the invitation and may authenticate you, but never joins the org. Sign in personally with the invited address as your verified primary email, review the organization, then click **Accept and join**. Opening the link, signing in or previewing it never grants membership.
-- **Delivery state**: admins can inspect pending invitations and resend or revoke them. `not_configured` means mail or encryption is unavailable; `pending` means delivery is queued; `failed` means the request was rejected or its transport outcome is uncertain. None means email was sent. `sent` means Supabase accepted the request, not that it reached your inbox. If delivery is not configured, the integration owner must configure it before resending; creating an invitation does not provide a separate token-delivery path.
-- **Direct add (CLI)**: an admin runs `armada org members add you@example.com --org <org> [--role member|admin]`. This adds an existing account at once, without an invitation or invitation email, so you must have signed in at least once (step 3); otherwise it says "No Armada account has that email. The person signs in with 'armada login' first."
-
-See [CLI invitation management and acceptance](cli-invitations.md) for the command workflow. Acceptance requires your personal login, not a service token.
+An org admin can invite you from the dashboard. Sign in personally with the invited address, review the organization and select **Accept and join**. An admin can also add an existing account directly through the membership API. See [invitation delivery and acceptance](cli-invitations.md).
 
 Once you are a member, check using your org name in place of `my-team`:
 
 ```sh
 armada org list                          # your orgs: name, your role, id
-armada org members list --org my-team
 armada snapshot ls --org my-team           # the snapshots you can launch
 ```
-
-Admins also manage roles (`armada org members role <email> admin|member --org <org>`) and removal (`armada org members remove <email> --org <org>`). Anyone can create an org with `armada org create <name>` and becomes its first admin.
 
 ## 5. Prepare a first Modal snapshot
 
@@ -154,9 +140,9 @@ in a private file outside your repository (for example `~/.config/armada/model-k
 `600`), then use the matching command:
 
 ```sh
-armada creds set anthropic --name "Claude API" --file ~/.config/armada/model-key
+armada account add anthropic --name "Claude API" --file ~/.config/armada/model-key
 # OR, for an OpenAI API key:
-armada creds set openai --name "OpenAI API" --file ~/.config/armada/model-key
+armada account add openai --name "OpenAI API" --file ~/.config/armada/model-key
 ```
 
 API keys use the key's provider billing account; subscription credentials use the
@@ -169,15 +155,15 @@ The Boat/Modal machine is billed separately through the connected sandbox provid
 For Codex, keep the OpenAI API account above and add an eligible ChatGPT account:
 
 ```sh
-armada creds login codex --name "Personal ChatGPT"
-armada creds list
+armada account login codex --name "Personal ChatGPT"
+armada account ls
 ```
 
 Approve the native Codex device login in your browser and **keep the terminal/session
 open until Armada confirms import**. This creates another account; it does not replace
 the API account or automatically switch its billing. If native login is unavailable,
 import an existing private Codex login file instead (not in addition to a successful
-import): `armada creds import codex --name "Personal ChatGPT" --file ~/.codex/auth.json`.
+import): `armada account import codex --name "Personal ChatGPT" --file ~/.codex/auth.json`.
 See [native subscription authentication](native-subscription-auth.md) for prerequisites,
 file-based login and recovery.
 
@@ -197,15 +183,15 @@ For Claude, keep "Claude API" and run `claude setup-token` locally. Save the
 output token alone in a private file outside your repository, mode `600`, then:
 
 ```sh
-armada creds import claude --name "Personal Claude" --file ~/.config/armada/claude-token
-armada creds list
+armada account import claude --name "Personal Claude" --file ~/.config/armada/claude-token
+armada account ls
 ```
 
-There is no `armada creds login claude` device flow. Launch with `--agent claude`
+There is no `armada account login claude` device flow. Launch with `--agent claude`
 and `--credential-id <claude-api-account-uuid>` or `<claude-subscription-account-uuid>`
 to choose the API or eligible Claude subscription account, respectively.
 
-Optionally run `armada creds default <chosen-account-uuid>` to choose the default
+Optionally run `armada account default <chosen-account-uuid>` to choose the default
 for future launches of that agent. Without an explicit ID, your personal compatible
 accounts take precedence over the org's; within that scope, a default wins, or a sole
 compatible account is used. Multiple compatible accounts without one default require
@@ -217,7 +203,7 @@ These examples create personal accounts. Org admins can add `--org my-team` to a
 creation/import, listing and default commands to manage org accounts instead; passing
 `--org` to launch alone does not override personal-account precedence.
 
-**Previously used unnamed commands?** Legacy `creds set openai`, `anthropic`,
+**Previously used unnamed commands?** Legacy `account add openai`, `anthropic`,
 `codex-auth` or `claude-oauth` without `--name` update the sole account of that
 kind in that scope, or create one if absent; ambiguous multiple accounts are rejected.
 Different kinds coexist rather than replace each other. In an all-legacy "Default"
@@ -235,9 +221,9 @@ Morph is a model account, not a sandbox provider. In the dashboard use
 **What agents have → Models → Add account → Morph**, or store its API key from a private file:
 
 ```sh
-armada creds connect morph --name shared --file ~/.config/armada/morph-key
-armada creds list
-armada creds limits ACCOUNT_UUID --max-agents 2
+armada account add --preset morph --name shared --file ~/.config/armada/morph-key
+armada account ls
+armada account limits ACCOUNT_UUID --max-agents 2
 ```
 
 Replace `ACCOUNT_UUID` with the ID returned by list. The same Morph account supports
@@ -253,8 +239,8 @@ and runtime-backed Boat; native Boat Claude gateways are refused. See
 
 Every model account can cap agents running simultaneously across sandbox providers.
 Morph defaults to **2** and other account kinds to unlimited. Set `--max-agents N`
-or `--unlimited` on `creds connect`, `import`, `login` or `set`; use
-`creds limits ACCOUNT_UUID --max-agents N` (or `--unlimited`) to change an existing
+or `--unlimited` on `account add`, `account import`, or `account login`; use
+`account limits ACCOUNT_UUID --max-agents N` (or `--unlimited`) to change an existing
 account. Org accounts require an org admin and `--org my-team`.
 Stopped and idle-paused sandboxes do not count. Starts beyond the cap are refused
 before allocation, and lowering a cap does not stop existing running agents.
@@ -322,7 +308,7 @@ armada new first-modal --org my-team --provider modal --agent codex \
 ```
 
 `armada new` asks the server to resolve credentials and fork the snapshot. It prints the sandbox id
-(`--json` prints the full record). Use that ID for `armada status <sandbox-id>`,
+(`--json` prints the full record). Use that ID for `armada info <sandbox-id>`,
 `armada events <sandbox-id>` and, when finished, `armada stop <sandbox-id>` to stop charges.
 Omit the prompt to leave the sandbox waiting for your first `armada prompt` instead. Optional `--repo` selects one repository already recorded in the
 snapshot, by `owner/repo` or by its configured directory, and starts the agent there: the
@@ -352,7 +338,7 @@ claude mcp add --transport http armada https://armada-mcp-production.up.railway.
 Sign in personally and open **Settings → API keys**, or create a key in the CLI:
 
 ```sh
-armada token create --name coordinator --org my-team --expires 90d
+armada api token/create '{"label":"coordinator","org":"my-team","expires":"90d"}'
 ```
 
 Armada shows the key once and stores its hash. Set `ARMADA_URL` to your Armada API origin
@@ -360,8 +346,8 @@ and inject the key as `ARMADA_TOKEN` through the agent's secret store or CI secr
 Run `armada whoami --json` in that environment to verify the key's name and expiry.
 Avoid shell tracing and keep the key out of command arguments and logs.
 
-From your personal login, use `armada token ls` to find the key ID and
-`armada token revoke TOKEN_ID` to revoke it. You can also revoke it in Settings.
+From your personal login, use `armada api token/list` to find the key ID and
+`armada api token/revoke '{"id":"TOKEN_UUID"}'` to revoke it. You can also revoke it in Settings.
 Revocation takes effect on the next request. The last-used timestamp updates at most once per minute.
 
 For **Claude Code**, edit the project's `.mcp.json` directly (merge this entry with any existing servers). Keep the variable reference literal in the file; Claude Code, not the shell, expands it:
@@ -433,7 +419,7 @@ A typical coordination loop is `launch` with a prompt, then `status` with `wait:
 
 ### Organization provider setup and recovery
 
-After `armada org create`, connect at least one organization provider before creating new work. Replace `my-team` and the private file paths with your own:
+After creating the organization in the dashboard, connect at least one organization provider before creating new work. Replace `my-team` and the private file paths with your own:
 
 ```sh
 armada org setup --org my-team
@@ -512,7 +498,7 @@ Do not paste session files or tokens into diagnostics or shared logs.
 
 ### Credential command discovery
 
-`armada creds --help` (or `-h`) shows a focused index of native subscription
+`armada account --help` (or `-h`) shows a focused index of native subscription
 accounts, preset/custom API connections and account metadata operations.
 Use leaf help for exact flags. Model/provider credentials are separate from
 application vars/secrets. List returns metadata/IDs, not credential values;
@@ -523,11 +509,8 @@ Keep inputs in stdin/hidden input or private files, never command arguments.
 ### Organization command discovery
 
 `armada org --help` provides the organization command index.
-`armada org members -h` and `armada org invitations -h` show their existing
-subcommands; use leaf help for flags and authorization requirements.
-These explicit help requests do not read saved selections, start login or
-perform membership/invitation operations. Bare no-argument invocations retain
-their previous behavior.
+For organization creation, membership and invitations, use the dashboard or
+[the organization administration routes](cli-admin.md#organizations-and-membership).
 
 ### MCP command discovery
 
@@ -538,14 +521,10 @@ sandbox-connections takes a sandbox UUID. Launch-default selection is separate
 from authorization; reconnect revokes first. Family help makes no MCP/API
 request and leaves bare no-argument invocation unchanged.
 
-### Service-token command discovery
+### Service-token routes
 
-`armada token --help` (or `-h`) provides the focused service-token index.
-Use leaf help for flags. Create prints the new secret even in JSON mode; keep
-output out of public logs and store it securely. List shows metadata/IDs, and
-revoke takes an ID, not a secret value. Armada service tokens authenticate
-scripts via ARMADA_TOKEN; they are not model/provider API credentials.
-Family help makes no API request or token mutation.
+See the [CLI API routes](cli-admin.md#api-keys) for creation, listing and
+revocation. Service tokens authenticate scripts via `ARMADA_TOKEN`.
 
 ### Account command discovery
 
@@ -594,7 +573,7 @@ fi
 
 The trap removes captured files when the shell exits. For a failure you need to
 investigate later, retain the files only in a protected location before exiting.
-Do not adapt this into logging raw values: `vars read`, token creation and
+Do not adapt this into logging raw values: `armada api variables/read -`, token creation and
 installer output can be sensitive. Never put credential values in arguments.
 For an uncertain launch outcome, inspect existing sandbox/receipt state before
 retrying; template launches must preserve their original request key and body.

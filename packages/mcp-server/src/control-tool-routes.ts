@@ -19,6 +19,8 @@ export const sandboxToolRoutes = defineRoutes(
           methods: [operation.route.method],
           handler: async (context: ControlRouteContext) => {
             const parsed = operation.input.body.safeParse(context.body);
+            if (operation.toolName === "stop" && parsed.success && context.request)
+              context.options.configureStopRequest?.(context.request);
             return callSharedTool(
               await sandboxToolContext(context, parsed.success),
               operation.toolName,
@@ -32,7 +34,10 @@ export const sandboxToolRoutes = defineRoutes(
   ),
 );
 
-export async function sandboxToolContext({ route, caller, body, options }: ControlRouteContext, validInput = false) {
+export async function sandboxToolContext(
+  { route, caller, body, options, request }: ControlRouteContext,
+  validInput = false,
+) {
   if (!options.data || !options.providers) throw new VaultError("unavailable", "Sandbox control is not configured.");
   const ref = optional(body, "org");
   const listRef =
@@ -46,7 +51,9 @@ export async function sandboxToolContext({ route, caller, body, options }: Contr
         ? { ...caller, orgs: caller.orgs.filter((org) => org.orgId === listOrgId) }
         : caller
       : await selectedCaller(options, caller, ref);
+  const signals = [request?.signal, options.stopAdmissionShutdown].filter((signal) => signal !== undefined);
   const context: ToolContext = {
+    ...(signals.length ? { stopSignal: AbortSignal.any(signals) } : {}),
     caller: scopedCaller,
     ...(options.sandboxBillingAccount
       ? { sandboxBillingAccount: (id: string) => options.sandboxBillingAccount!(scopedCaller, id) }
@@ -58,6 +65,7 @@ export async function sandboxToolContext({ route, caller, body, options }: Contr
     ...(options.connections ? { connections: options.connections } : {}),
     data: listRef !== undefined ? options.scopedSandboxData!(scopedCaller, listRef) : options.data(scopedCaller),
     measure: (phase, work) => measureRequestPhase(options.timing, phase, work),
+    ...(options.modalJobReader ? { modalJobReader: (target) => options.modalJobReader!(target, scopedCaller) } : {}),
     storedProviders: options.storedProviderFor
       ? {
           modal: (target) =>

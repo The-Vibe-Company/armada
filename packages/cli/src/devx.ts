@@ -9,10 +9,10 @@ import {
 } from "@armada/core";
 import { accountOperations, controlRouteKey } from "@armada/core/contract";
 import { parseArgs, single } from "./args.ts";
-import { createArmadaApiClient, resolveArmadaOrigin } from "./armada-api.ts";
 import type { AuthIo } from "./auth-commands.ts";
 import { control } from "./control.ts";
 import { listHosts, resolveHostOrganization } from "./host-commands.ts";
+import { createSdkCommandClient, resolveArmadaOrigin } from "./sdk-session.ts";
 export async function prepareLaunch(argv: readonly string[], auth: AuthIo): Promise<readonly string[]> {
   if (!auth.interactive || !auth.chooseLaunch || argv.includes("--json") || argv.includes("--")) return argv;
   const args = parseArgs(
@@ -41,7 +41,7 @@ export async function prepareLaunch(argv: readonly string[], auth: AuthIo): Prom
   const origin = await resolveArmadaOrigin(auth);
   const choose = async (key: string, title: string, options: { value: string; label: string }[], fallback?: string) => {
     if (!options.length)
-      throw new AuthError(`${title}: no choices available. Run armada status --setup to check your setup.`, "usage");
+      throw new AuthError(`${title}: no choices available. Run armada info --setup to check your setup.`, "usage");
     const remembered = await auth.launchPreferences?.read(`${origin}/${key}`);
     const preferred = options.find((o) => o.value === remembered)?.value ?? fallback ?? options[0]?.value;
     const value = options.length === 1 ? options[0]?.value : await auth.chooseLaunch?.(title, options, preferred);
@@ -85,7 +85,7 @@ export async function prepareLaunch(argv: readonly string[], auth: AuthIo): Prom
   }
   if (provider === "docker") {
     if (!single(args, "--host") && !single(args, "--golden")) {
-      const client = await createArmadaApiClient(auth);
+      const client = await createSdkCommandClient(auth);
       const hosts = await listHosts(client, await resolveHostOrganization(client, org));
       const host = await choose(
         `${org}/host`,
@@ -111,7 +111,7 @@ export async function prepareLaunch(argv: readonly string[], auth: AuthIo): Prom
     );
     const account = await choose(
       `${org}/${agent}/account`,
-      "Model account (connect one with armada creds --help)",
+      "Model account (connect one with armada account --help)",
       rows.flatMap((c) => (c.id ? [{ value: c.id, label: c.name ?? c.kind }] : [])),
       rows.find((c) => c.isDefault)?.id,
     );
@@ -151,7 +151,7 @@ export async function setupStatus(org: string | undefined, json: boolean, auth: 
     add(
       "Server",
       "unknown",
-      "Could not read server version. Restore the session/connection and run armada status --setup.",
+      "Could not read server version. Restore the session/connection and run armada info --setup.",
     );
   }
   try {
@@ -223,7 +223,7 @@ export async function setupStatus(org: string | undefined, json: boolean, auth: 
     add("Hosts", "unknown", "Select an organization with --org UUID. Find IDs with armada org list.");
   } else {
     try {
-      const hosts = await listHosts(await createArmadaApiClient(auth), org);
+      const hosts = await listHosts(await createSdkCommandClient(auth), org);
       if (!hosts.hosts.length)
         add("Hosts", "optional", "No Docker hosts. Run armada host add for a host; Modal does not need one.");
       for (const host of hosts.hosts.filter((h) => h.state !== "revoked"))
@@ -248,15 +248,15 @@ export async function setupStatus(org: string | undefined, json: boolean, auth: 
     const accounts = await control<{ user: CredentialInfo[]; orgs: OrgCredentials[] }>(auth, "creds/list", { org });
     const models = [...accounts.user, ...accounts.orgs.flatMap((o) => o.credentials)].filter((c) => c.id);
     if (!models.length)
-      add("Model accounts", "failed", "No named model accounts. Run armada creds --help to connect one.");
+      add("Model accounts", "failed", "No named model accounts. Run armada account --help to connect one.");
     for (const model of models)
       add(
         `Account ${model.name ?? model.kind}`,
         model.status ?? "unknown",
-        `${model.kind}; metadata only. Run armada creds list to inspect or test the connection.`,
+        `${model.kind}; metadata only. Run armada account ls to inspect or test the connection.`,
       );
   } catch {
-    add("Model accounts", "unknown", "Could not read model accounts. Run armada creds list.");
+    add("Model accounts", "unknown", "Could not read model accounts. Run armada account ls.");
   }
   auth.out(
     json

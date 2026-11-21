@@ -12,15 +12,19 @@ import {
 } from "@armada/core/server";
 import type { RuntimeWorkProvider } from "./runtime-provider.ts";
 import {
+  COMPLETE_PRESERVATION,
+  lockedNativePreservationWriter,
   NOTE_FENCE,
-  RUNTIME_STOP_OWNER,
+  readNativeCaptureAcknowledgements,
   recordCleanWork,
   recordWorkRecovery,
   STOP_EPOCH,
   type StopFence,
+  WORK_STOP_OWNER,
   writePreservationNote,
 } from "./sandbox-lifecycle.ts";
 import { captureFinalOutputs, recordOutputFailure } from "./sandbox-outputs.ts";
+import { SANDBOX_VISIBLE } from "./sandbox-visibility.ts";
 
 function closedFailure(stage: string, reason: string, diagnostic?: ReturnType<typeof workPreservationError>): string {
   return `${stage}_${reason}${diagnostic ? `_${diagnostic.errorClass === reason ? "" : `${diagnostic.errorClass}_`}${diagnostic.providerStatus === null ? "no_status" : `http_${diagnostic.providerStatus}`}` : ""}`;
@@ -49,7 +53,7 @@ export type StopAuthority = {
   signal?: AbortSignal | undefined;
 };
 
-const NO_EXTRA_FENCE: StopFence = [null, null, null, null];
+const NO_EXTRA_FENCE: StopFence = [null, null, null, null, null];
 
 /** Runtime preservation policy records acknowledged journal evidence, never a Git archive. */
 export async function runtimePreservationNote(sql: Sql, id: string): Promise<string> {
@@ -109,34 +113,39 @@ export async function preserveBeforeStop(
 ): Promise<"pending" | void> {
   const started = Date.now();
   const progress: CaptureProgress = {
+    receiptWriter: sql,
     stage: "observe",
     workAtRisk: false,
     checkedClean: false,
+    deferOnFailure: false,
+    writingReceipt: false,
     stopToken: null,
     fence: NO_EXTRA_FENCE,
   };
-  let outcome: "pending" | void;
-  try {
-    outcome = await preserveGitWork(sql, provider, id, providerId, progress, source, authority);
-  } catch (error) {
-    if (!authority?.signal?.aborted) await finalOutputs(sql, provider, id, started);
-    throw error;
-  }
-  // A pending stop retries later; its final capture runs on that pass.
-  if (outcome === "pending" || authority?.signal?.aborted) return "pending";
-  await finalOutputs(sql, provider, id, started);
-  if (progress.fence[0] !== null) {
+  const ownsStop = async () => {
+    if (progress.fence[0] === null) return true;
     try {
       const owned = await sql.query(`select id from public.sandboxes where ${STOP_EPOCH}`, [
         id,
         ...progress.fence,
         progress.stopToken,
       ]);
-      if (!owned.rows.length) return "pending";
+      return owned.rows.length > 0;
     } catch {
-      return "pending";
+      return false;
     }
+  };
+  let outcome: "pending" | void;
+  try {
+    outcome = await preserveGitWork(sql, provider, id, providerId, progress, source, authority);
+  } catch (error) {
+    if (!authority?.signal?.aborted && (await ownsStop())) await finalOutputs(sql, provider, id, started);
+    throw error;
   }
+  // A pending stop retries later; its final capture runs on that pass.
+  if (outcome === "pending" || authority?.signal?.aborted || !(await ownsStop())) return "pending";
+  await finalOutputs(sql, provider, id, started);
+  if (!(await ownsStop())) return "pending";
 }
 
 /** Git preservation and final output capture share one pre-stop budget so callers'
@@ -193,7 +202,7 @@ async function preserveGitWork(
           const diagnostic = { errorClass: "timeout", providerStatus: null };
           const reason = closedFailure(progress.stage, "timeout", diagnostic);
           const pending =
-            progress.checkedClean || ["observe", "quiesce"].includes(progress.stage) || progress.fence[0] !== null;
+            progress.checkedClean || ["observe", "quiesce"].includes(progress.stage) || pendingOnFailure(progress);
           console.warn(
             JSON.stringify({
               event: pending ? "work_preservation_deferred" : "work_preservation_failed",
@@ -209,7 +218,7 @@ async function preserveGitWork(
             return;
           }
           void writePreservationNote(
-            sql,
+            progress.receiptWriter,
             id,
             progress.workAtRisk
               ? failureNote(`${progress.stage}_timeout`)
@@ -229,10 +238,17 @@ async function preserveGitWork(
   }
 }
 
+function pendingOnFailure(progress: CaptureProgress) {
+  return progress.deferOnFailure || (progress.fence[0] !== null && progress.writingReceipt);
+}
+
 type CaptureProgress = {
+  receiptWriter: Sql;
   stage: string;
   workAtRisk: boolean;
   checkedClean: boolean;
+  deferOnFailure: boolean;
+  writingReceipt: boolean;
   stopToken: string | null;
   fence: StopFence;
 };
@@ -282,27 +298,29 @@ async function captureAndStore(
         application_secret_tainted: boolean;
         boat_runtime: boolean;
         modal_runtime: boolean;
-        runtime_stop_owned: boolean | null;
+        work_stop_owned: boolean | null;
       }>(
         `select boat_runtime,application_secret_tainted,
         (provider='modal' and runtime_transport='dialout') as modal_runtime,
-        (${RUNTIME_STOP_OWNER}) as runtime_stop_owned, case when stop_requested_at is null then null else stop_generation::text end as stop_token,
-        (stop_requested_at is not null and preservation_stop_generation is not distinct from stop_generation) as complete
+        (${WORK_STOP_OWNER}) as work_stop_owned, case when stop_requested_at is null then null else stop_generation::text end as stop_token,
+        (${COMPLETE_PRESERVATION}) as complete
        from public.sandboxes where id=$1::uuid`,
-        [id, providerId, authority?.token ?? null, authority?.generation ?? null, authority?.kind ?? null],
+        [id, providerId, authority?.token ?? null, authority?.generation ?? null, authority?.kind ?? null, provider.id],
       )
     ).rows[0];
     if (expired()) return;
     if (!stop) return "pending";
     stopLoaded = true;
-    if (stop.modal_runtime) {
-      if (!stop.runtime_stop_owned || !authority) return "pending";
-      progress.fence = [providerId, authority.token, authority.generation ?? null, authority.kind];
+    if (stop.modal_runtime || (!stop.boat_runtime && (authority || stop.stop_token !== null))) {
+      if (!stop.work_stop_owned || !authority) return "pending";
+      progress.deferOnFailure = stop.modal_runtime;
+      if (!stop.modal_runtime) progress.receiptWriter = lockedNativePreservationWriter(sql, id);
+      progress.fence = [providerId, authority.token, authority.generation ?? null, authority.kind, provider.id];
     }
     progress.stopToken = stop.stop_token;
     if (stop.application_secret_tainted) {
       await writePreservationNote(
-        sql,
+        progress.receiptWriter,
         id,
         "Unpushed work was not preserved: application-secret exposure forbids archives and disk reuse; resume and recovery are unavailable.",
         stop.stop_token,
@@ -323,28 +341,66 @@ async function captureAndStore(
     if (expired()) return;
     observed("observed", current.state);
     if (["stopped", "deleted"].includes(current.state) || current.physicalExitConfirmed) return;
+    const fencedNativeCapture = !stop.modal_runtime && provider.supportsExecPhysicalGeneration;
+    const physicalGeneration = fencedNativeCapture ? current.physicalGeneration : undefined;
+    if (
+      fencedNativeCapture &&
+      (current.id !== providerId || !["ready", "running"].includes(current.state) || !physicalGeneration)
+    )
+      throw new ProviderError({
+        provider: provider.id,
+        code: "sandbox_not_ready",
+        message: "Native work capture requires the exact active physical incarnation.",
+        retryable: false,
+      });
     if (stop.modal_runtime) {
       if (
         HOST_CAPABILITIES.modal.fencedStopPhases.includes(current.providerState) ||
         ["reserved", "restoring", "creating", "booting"].includes(current.providerState)
       )
         return;
-      const ownsCapture = await sql.query(
-        `select id from public.sandboxes where ${NOTE_FENCE} and not application_secret_tainted`,
-        [id, ...progress.fence, progress.stopToken],
-      );
-      if (expired() || !ownsCapture.rows.length) return "pending";
-    } else {
+    }
+    const ownsCapture = async () => {
+      if (progress.fence[0] === null) return true;
+      try {
+        const owned = await sql.query(
+          `select id from public.sandboxes where ${NOTE_FENCE} and not application_secret_tainted`,
+          [id, ...progress.fence, progress.stopToken],
+        );
+        return !expired() && owned.rows.length > 0;
+      } catch {
+        return false;
+      }
+    };
+    if (!(await ownsCapture())) return "pending";
+    const context = { source, captureId: crypto.randomUUID() };
+    let acknowledgements: string | null = null;
+    if (!stop.modal_runtime) {
       // Native runtimes acknowledge interrupt only after active turns settle.
       stage = progress.stage = "quiesce";
       observed("quiesce_started");
       await (provider.quiesce ?? provider.interrupt).call(provider, { sandboxId: providerId });
-      if (expired()) return;
+      if (expired()) return "pending";
+      if (progress.fence[0] !== null) {
+        try {
+          const evidence = await readNativeCaptureAcknowledgements(
+            sql,
+            id,
+            progress.fence,
+            progress.stopToken,
+            context.captureId,
+            physicalGeneration ?? null,
+          );
+          if (expired() || evidence === undefined) return "pending";
+          acknowledgements = evidence;
+        } catch {
+          return "pending";
+        }
+      }
       observed("quiesce_finished");
     }
     stage = progress.stage = stop.modal_runtime ? "quiesce" : "capture";
     observed("capture_started");
-    const context = { source, captureId: crypto.randomUUID() };
     const onWorkAtRisk = () => {
       progress.workAtRisk = true;
     };
@@ -365,7 +421,13 @@ async function captureAndStore(
         onWorkAtRisk,
       });
     } else {
-      result = await preserveWork(provider, providerId, signal, onWorkAtRisk, context);
+      const collector = physicalGeneration
+        ? {
+            exec: (request: Parameters<Provider["exec"]>[0]) =>
+              provider.exec({ ...request, expectedPhysicalGeneration: physicalGeneration }),
+          }
+        : provider;
+      result = await preserveWork(collector, providerId, signal, onWorkAtRisk, context);
     }
     if (expired()) return;
     stage = progress.stage = "capture";
@@ -380,7 +442,17 @@ async function captureAndStore(
       note = `unpushed work preserved at work_recovery:${id}/${recoveryId}`;
       // Receipt and encrypted archive commit atomically. A competing successful
       // pass or a changed stop epoch cannot create/replace a recovery receipt.
-      const saved = await recordWorkRecovery(sql, id, progress.fence, progress.stopToken, note, recoveryId, encrypted);
+      progress.writingReceipt = true;
+      const saved = await recordWorkRecovery(
+        progress.receiptWriter,
+        id,
+        progress.fence,
+        progress.stopToken,
+        note,
+        recoveryId,
+        encrypted,
+        acknowledgements,
+      );
       if (!saved.rows.length) return "pending";
       observed("capture_committed");
       return;
@@ -389,7 +461,13 @@ async function captureAndStore(
       stage = progress.stage = "storage";
       reason = "failed";
       // Clean success is also durable: NULL note alone is not a receipt.
-      const saved = await recordCleanWork(sql, id, progress.fence, progress.stopToken);
+      const saved = await recordCleanWork(
+        progress.receiptWriter,
+        id,
+        progress.fence,
+        progress.stopToken,
+        acknowledgements,
+      );
       if (!saved.rows.length) return "pending";
       observed("capture_committed");
       return;
@@ -429,7 +507,7 @@ async function captureAndStore(
       if (expired()) return "pending";
       return "pending";
     }
-    defer = progress.fence[0] !== null;
+    defer = pendingOnFailure(progress);
     diagnostic = workPreservationError(error);
     note = progress.workAtRisk
       ? failureNote(`${stage}_failed`)
@@ -451,9 +529,9 @@ async function captureAndStore(
       }),
     );
   try {
-    await writePreservationNote(sql, id, note, progress.stopToken, progress.fence);
+    await writePreservationNote(progress.receiptWriter, id, note, progress.stopToken, progress.fence);
   } catch (error) {
-    defer ||= progress.fence[0] !== null;
+    defer ||= progress.deferOnFailure;
     if (!expired() && note?.startsWith("unpushed work preserved"))
       console.warn(
         JSON.stringify({
@@ -472,12 +550,39 @@ export async function purgeWorkRecovery(sql: Sql, id: string) {
   await sql.query("delete from public.sandbox_work_recovery where sandbox_id=$1", [id]);
 }
 
-export async function readWorkRecovery(sql: Sql, id: string, recoveryId?: string): Promise<string | null> {
+export async function readWorkRecovery(
+  sql: Sql,
+  scope: [string[], string],
+  id: string,
+  recoveryId?: string,
+): Promise<string | null | undefined> {
   const row = (
-    await sql.query<{ archive_enc: Uint8Array<ArrayBuffer> }>(
-      "select r.archive_enc from public.sandbox_work_recovery r join public.sandboxes s on s.id=r.sandbox_id where r.sandbox_id=$1::uuid and not s.application_secret_tainted and ($2::uuid is null or r.id=$2::uuid) order by r.created_at desc limit 1",
-      [id, recoveryId ?? null],
+    await sql.query<{ archive_enc: Uint8Array<ArrayBuffer> | null }>(
+      `with visible as (
+         select s.id, s.org_id, s.owner_id, s.application_secret_tainted,
+           (s.status='deleted' and s.provider in ('boat','modal')
+           and not s.boat_runtime and s.runtime_transport is distinct from 'dialout') as detached
+         from public.sandboxes s join public.goldens g on g.id=s.golden_id
+         where s.id=$3::uuid and ${SANDBOX_VISIBLE}
+       )
+       select recovery.archive_enc
+       from visible s
+       left join lateral (
+         select r.archive_enc, r.created_at, r.id
+         from public.sandbox_work_recovery r
+         where not s.detached and not s.application_secret_tainted
+           and r.sandbox_id=s.id and ($4::uuid is null or r.id=$4)
+         union all
+         select r.archive_enc, r.created_at, r.archive_id
+         from public.native_drain_recovery r
+         where s.detached and not s.application_secret_tainted
+           and r.sandbox_id=s.id and r.org_id=s.org_id and r.owner_id=s.owner_id
+           and ($4::uuid is null or r.archive_id=$4)
+         order by created_at desc, id desc limit 1
+       ) recovery on true`,
+      [...scope, id, recoveryId ?? null],
     )
   ).rows[0];
-  return row ? decryptSecret(row.archive_enc) : null;
+  if (!row) return undefined;
+  return row.archive_enc ? decryptSecret(row.archive_enc) : null;
 }

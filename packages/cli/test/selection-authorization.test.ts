@@ -140,7 +140,7 @@ test.each(["current", "use"])("org %s is rejected before an API request", async 
     throw new Error("Unexpected request");
   });
   expect(await h.run(["org", verb, ...(verb === "use" ? ["Team"] : [])])).toBe(2);
-  expect(h.output().err).toContain("Run armada org create, list, setup, connect, invitations or members.");
+  expect(h.output().err).toContain(`unknown command 'org ${verb}'. Run 'armada --help'.`);
 });
 
 test("MCP connect opens once and polls authenticated canonical status until actually connected", async () => {
@@ -265,7 +265,7 @@ test("structured Modal and Codex credentials accept file whitespace and stay wri
     });
     expect(
       await run(
-        ["creds", "set", kind ?? "", "--file", "credential-input.json", "--json"],
+        ["account", "add", kind ?? "", "--file", "credential-input.json", "--json"],
         { out: h.auth.out, err: h.auth.err },
         { auth: h.auth, readFile: async () => content ?? "" },
       ),
@@ -275,4 +275,39 @@ test("structured Modal and Codex credentials accept file whitespace and stay wri
     expect(h.output().out).toBe('{"ok":true}\n');
     expect(h.output().err).toBe("");
   }
+});
+
+test.each([
+  ["default", "default"],
+  ["rm", "remove"],
+] as const)("account %s sends the selected account ID and scope", async (verb, action) => {
+  const response = { ok: true };
+  const h = harness(async (input, init) => {
+    const request = new Request(String(input), init);
+    expect(new URL(request.url).pathname).toBe(`/api/v1/creds/accounts/${action}`);
+    expect(await request.json()).toEqual({ scope: "org", org, id: "account-id" });
+    return Response.json(response);
+  });
+  expect(await h.run(["account", verb, "account-id", "--org", org])).toBe(0);
+  expect(JSON.parse(h.output().out)).toEqual(response);
+});
+
+test("account login codex requires a name before starting native device authorization", async () => {
+  const h = harness(async () => {
+    throw new Error("A missing name must fail locally");
+  });
+  expect(await h.run(["account", "login", "codex"])).toBe(2);
+  expect(h.output().err).toContain("Creating an account requires --name.");
+});
+
+test("account ls uses the selected organization with flags before or after the verb", async () => {
+  const h = harness(async (input, init) => {
+    const request = new Request(String(input), init);
+    expect(new URL(request.url).pathname).toBe("/api/v1/creds/list");
+    expect(await request.json()).toEqual({ org });
+    return Response.json({ user: [], orgs: [] });
+  });
+  h.auth.preferences = { read: async () => org, write: async () => {} };
+  expect(await h.run(["account", "ls", "--json"])).toBe(0);
+  expect(await h.run(["account", "--json", "ls"])).toBe(0);
 });

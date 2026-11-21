@@ -12,10 +12,10 @@ Supabase sessions. For a backend integration, sign in with the CLI and create a
 revocable service token scoped to the intended organization:
 
 ```sh
-armada token create --org acme --name product-backend
+armada api token/create '{"org":"acme","label":"product-backend"}'
 ```
 
-Store the token in your backend's secret store when it is printed. Armada
+Store the response's `token` in your backend's secret store. Armada
 stores its hash. Access still depends on the issuing user's membership and
 permissions. Keep this bearer out of browsers, URLs and logs. Send
 `Content-Type: application/json` with JSON request bodies.

@@ -291,7 +291,7 @@ making requests. The existing case format is unchanged: every selected pair runs
 twice, using separate disposable sandboxes. The first must start clean with no
 local-only refs and stop without a preservation note or recovery archive. The
 second creates a single empty, unpushed commit (no remote push), stops, retrieves
-the same recovery endpoint used by `armada recovery`, and checks the in-memory
+the same recovery endpoint used by `armada api sandbox/recovery`, and checks the in-memory
 tar manifest for that exact commit. The selected bundle pack is indexed with Git
 in a private temporary object store, then Git must read the expected commit
 object. Incremental bundle prerequisite parents/trees need not be present; this
@@ -626,9 +626,11 @@ requires operator reconciliation.
 Expected added duration: about 3–5 minutes per pair, overlapping the other lanes; no model
 turns, one extra short-lived worker per pair plus normal retained-disk cost.
 Each request remains bounded by the existing shared 35-minute work deadline
-and five-minute cleanup reserve. Readiness and natural stop proof use the
-measured `expiry_ready` and `expiry_as_stop` budgets. Natural stop proof
-includes the final inventory read. Without a measured entry, readiness allows
+and five-minute cleanup reserve. Readiness, TTL metadata and natural stop proof
+use the measured `expiry_ready`, `expiry_deadline` and `expiry_as_stop` budgets.
+The TTL check shares one deadline across all inventory pages, and natural stop
+proof includes its final inventory read. Without a measured entry, the TTL check
+retains its existing per-request timeout and pagination limit, readiness allows
 120 observations and natural expiry allows 360. Cleanup still allows 120
 observations. Staging operators must budget this extra compute time.
 No production, new capabilities or migrations.
@@ -1050,7 +1052,7 @@ providers/harnesses. Morph defaults to 2; other account kinds to unlimited.
 Stopped/idle-paused sandboxes do not count. Busy-account admission refuses; it
 does not silently switch billing. Lowering a cap does not stop existing agents.
 For deliberate owner-authorized configuration, use
-`armada creds limits ACCOUNT_UUID --max-agents N` or `--unlimited`; do not raise
+`armada account limits ACCOUNT_UUID --max-agents N` or `--unlimited`; do not raise
 caps or reset bindings just to force a smoke pass. Account caps are distinct from
 provider snapshot-build and Docker-host capacity.
 
@@ -1148,18 +1150,18 @@ export AZURE_V1_URL='https://YOUR-RESOURCE.openai.azure.com/openai/v1'
 export AZURE_DEPLOYMENT='YOUR-ACTUAL-DEPLOYMENT-NAME'
 export AZURE_KEY_FILE='/private/azure-key'
 
-bun run armada creds connect azure-foundry --name 'Azure Codex' \
+bun run armada account add --preset azure-foundry --name 'Azure Codex' \
   --base-url "$AZURE_V1_URL" --models "$AZURE_DEPLOYMENT" \
   --file "$AZURE_KEY_FILE"
 
-bun run armada creds connect opencode-azure --name 'Azure OpenCode' \
+bun run armada account add --preset opencode-azure --name 'Azure OpenCode' \
   --base-url "$AZURE_V1_URL" --models "$AZURE_DEPLOYMENT" \
   < "$AZURE_KEY_FILE"
 ```
 
 These create separate personal accounts, not a mutation of a retained sandbox's
 billing account. Neither command accepts a secret in argv; omit `--file` to read
-stdin. Use a CLI containing `creds connect` (the source command avoids an old
+stdin. Use a CLI containing `account add --preset` (the source command avoids an old
 installed CLI). OpenCode uses API-key authentication and the v1 Responses path;
 legacy versioned Azure URLs and interactive Entra sign-in are not supported by
 that preset. Both commands use the same mandatory server admission as the
@@ -1168,7 +1170,7 @@ native Responses receipt, **not** that answer/follow-up/resume with a harness is
 proven. See Microsoft’s [v1 endpoint/deployment guidance](https://learn.microsoft.com/en-us/azure/ai-foundry/model-inference/concepts/endpoints).
 
 The older **OpenAI API key → Use a custom endpoint** route now also requires an
-explicit deployment/model list. CLI `creds set openai --base-url` requires
+explicit deployment/model list. CLI `account add openai --base-url` requires
 `--models`; direct named/legacy API writes cannot omit the list or bypass the
 Azure check. Existing sealed accounts remain readable; they are not rewritten,
 automatically verified or rebound. For an old undeclared Azure account, choose
@@ -1189,7 +1191,7 @@ they do not fabricate sandbox usage/cost receipts. An account name alone does no
 establish its sealed endpoint or authentication.
 
 For Codex, dashboard **Test connection** (or
-`bun run armada creds test SANDBOX_ID --model "$AZURE_DEPLOYMENT"`) sends a tiny
+`bun run armada account test SANDBOX_ID --model "$AZURE_DEPLOYMENT"`) sends a tiny
 billable request through an already idle Modal sandbox pinned to that account
 and revision; it does not launch/resume a machine or prove the full harness
 lifecycle. Custom OpenCode connections with declared models also support this
@@ -1882,8 +1884,20 @@ sorts last. Generate the configuration with this command.
 bun scripts/smoke-deadlines.ts /path/to/green-journals > scripts/smoke-deadlines.json
 ```
 
-The generator uses successful `elapsedMs` receipts and rounds up 1.5 times the
-nearest-rank p99. A step with fewer than 20 receipts keeps its existing default. The expiry lane uses `expiry_launch` for the initial response timeout
+The generator uses successful receipts with a positive `elapsedMs` and
+explicit `provider`, `lane`, and `step` fields. A run can contribute multiple
+receipts. Each provider, lane, and step needs 20 of its own receipts from the
+20-run window. Missing entries use the lane's generic request or observation
+limit. After a launch timing contract changes, collect samples under the new
+contract before reusing measured launch or readiness budgets.
+
+The deadline is `max(3 × p99, 10 s)` using nearest-rank p99 and rounding up to
+milliseconds. At 20 samples the p99 is the largest observation. The multiplier
+and floor leave room for staging network latency spikes across runs.
+Usage polling sends another read only when its remaining budget can
+cover at least two seconds. Each read still fits within the enclosing deadline.
+
+The expiry lane uses `expiry_launch` for the initial response timeout
 and for a separate observation window capped by the overall smoke deadline.
 After an ambiguous response it reads sandbox inventory using the launch's
 unique reference. A recovered launch records the full elapsed time. An
@@ -1896,13 +1910,25 @@ ten-minute default when there are too few samples. Inventory can identify
 allocations for cleanup after an ambiguous response. Snapshot, default-skill,
 scoped-parent and template-install checks still require their launch-specific
 proof before they can pass. Scoped child evidence comes from the parent's
-keyed tool receipt when its delivery is delayed, and scheduled routine
-evidence comes from occurrence history. Lifecycle readiness, prompt admission,
+keyed tool receipt when its delivery is delayed. `scoped_snapshot` budgets all
+initial inventory pages together. `scoped_native_turn` budgets prompt admission
+and turn completion together. Both keep their previous bounds when no measured
+entry exists. The `scoped_tool_evidence`
+budget covers the initial log read and subsequent observation. Without a
+measured entry, the initial read keeps its existing request timeout and
+subsequent observation keeps its ten-second window. Scheduled routine evidence
+comes from occurrence history. Lifecycle readiness, prompt admission,
 turn completion and token usage use their respective `ready`, `send`,
 `resume_send`, `wait`, `resume_wait`, `usage`, and `resume_usage` entries. Each
 request is capped at the time remaining for the step. Template prompt completion
 uses the corresponding public or private wait entry. A step without a measured
-entry keeps its existing poll limit. Cleanup has a separate budget.
+entry keeps its existing poll limit. Template account lookup, configuration and
+skill receipt checks, resource creation, answer reads, and exec isolation use
+their named budgets when available. All answer pages share one deadline, and a
+late successful response fails the step. Vault functional checks use their named
+step budgets for request timeouts and reject late successful checks. Vault
+checks without a measured entry keep the generic timeout. Cleanup has a
+separate budget.
 
 Ordinary provider parity records launch latency as `parity_modal_launch` and
 `parity_docker_launch`. It uses the corresponding entry for its response and
@@ -1930,7 +1956,7 @@ Startup requires the Railway environment name `staging` and the pinned staging
 public origin. Leave the flag unset in production.
 
 Provision a staging named OpenAI API-key account using
-`armada creds set openai --name scripted --base-url
+`armada account add openai --name scripted --base-url
 https://armada-mcp-staging.up.railway.app/internal/scripted-model/v1 --models scripted`. Pass the
 same bearer privately on stdin. Keep the bearer out of the smoke configuration,
 logs and command arguments. Before the smoke wiring is deployed, set
@@ -2002,3 +2028,11 @@ does not print the answer or raw model diagnostics.
 After provisioning, compare the median total smoke step duration of 20
 ordinary green staging runs with the median of 20 ordinary green runs from
 before the change. Record the sample runs and both medians in #2844.
+
+Template-backed parity launches emit `parity_<provider>_<feature>_launch`
+receipts that include time spent observing the launch after a timeout. The same
+step names select the generated deadlines, capped by the lane budget. Parity
+uses the original template request key to read the stored launch receipt
+through the template API. If observation expires, parity reports that key and
+the most recent diagnostic carrying a server request ID, or the last HTTP
+diagnostic if no response carried an ID.

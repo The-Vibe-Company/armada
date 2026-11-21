@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { DelegatedAuthority, type Sql } from "@armada/core/server";
 import { createSqlData } from "../src/data.ts";
+import { observeRequest } from "../src/request-observability.ts";
 import { createRuntimeEnrolments } from "../src/runtime-enrolment.ts";
 import { createRuntimeEvents } from "../src/runtime-events.ts";
 import { createRuntimeServing } from "../src/runtime-serving.ts";
@@ -203,7 +204,25 @@ test("enrolled Modal scoped parent cleanup requires a lifecycle fence and reache
   expect(BigInt(parent.rows[0]!.epoch)).toBeGreaterThan(BigInt(issuedEpoch));
   await expect(admit()).rejects.toThrow("denied");
   await expect(provider.delete(request)).rejects.toThrow("requires a lifecycle stop or terminal state");
-  await expect(provider.stop({ ...request, requireRetention: true })).rejects.toThrow("verified runtime checkpoint");
+  const records: unknown[] = [];
+  const response = await observeRequest(
+    async () => {
+      await expect(provider.stop({ ...request, requireRetention: true })).rejects.toThrow(
+        "verified runtime checkpoint",
+      );
+      return new Response(null, { status: 409 });
+    },
+    (line) => records.push(JSON.parse(line)),
+  );
+  expect(records).toContainEqual(
+    expect.objectContaining({
+      event: "operator_failure",
+      requestId: response.headers.get("x-request-id"),
+      sandboxId: row.id,
+      phase: "sandbox.stop.runtime_dispatch",
+      refusalCode: "checkpoint_proof_missing",
+    }),
+  );
   await provider.stop(request);
   expect((await fake.provider.get(machine.id)).state).toBe("stopped");
 

@@ -121,7 +121,6 @@ test("the artifact-set route projects only public digests of the deployed runtim
       claude: { version: "2", archive: { path: "claude.tar.gz", sha256: d("c"), bytes: 30 }, files: [] },
     },
     opencode: { path: "opencode", sha256: d("e"), bytes: 40 },
-    antigravity: { x64: { sha256: d("7"), bytes: 50 }, arm64: { sha256: d("8"), bytes: 60 } },
   });
   const get = (path: string, method = "GET") =>
     route(new Request(`https://armada.example${path}`, { method })) as Promise<Response | null>;

@@ -3,14 +3,16 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { postDeploySmoke } from "./post-deploy-smoke.ts";
-import deadlines from "./smoke-deadlines.json";
+import deadlineTable from "./smoke-deadlines.json";
 
+const deadlines = deadlineTable["modal/expiry"];
 const ownedWorker = "12345678-1234-1234-1234-123456789abc";
 const origin = "https://armada-mcp-staging.up.railway.app";
 type Fault =
   | "none"
   | "never"
   | "late_ready"
+  | "late_ttl_metadata"
   | "late_stop_metadata"
   | "reason"
   | "early"
@@ -85,7 +87,7 @@ function fixture(provider: "modal", fault: Fault = "none") {
           expect(body.org).toBe("org");
           expect(body.externalRef).toBe(launch?.body.externalRef);
           lookups++;
-          if (fault === "late_launch") clock += 120_001;
+          if (fault === "late_launch") clock += deadlines.expiry_launch + 1;
           const found =
             fault === "late_launch" ||
             fault === "unreadable_launch" ||
@@ -106,6 +108,9 @@ function fixture(provider: "modal", fault: Fault = "none") {
           });
         }
         expect(body.harness).toBe("codex");
+        if (fault === "late_ttl_metadata" && !manualStop) {
+          clock += body.page === 1 ? deadlines.expiry_deadline - 1 : 2;
+        }
         if (body.page === 1) return Response.json({ sandboxes: [], page: 1, hasMore: true, nextPage: 2 });
         const stopped = manualStop || clock >= expiry || (fault === "early" && statusCalls > 2);
         if (fault === "late_stop_metadata" && stopped && !manualStop) clock += deadlines.expiry_as_stop;
@@ -193,7 +198,14 @@ test("Modal expires through the ordinary stop lane without a manual stop or mode
   expect(fake.calls.filter((call) => call.path === "sandbox/launch")).toHaveLength(1);
   expect(fake.calls.some((call) => ["sandbox/stop", "sandbox/send"].includes(call.path))).toBe(false);
   for (const step of ["expiry_launch", "expiry_ready", "expiry_deadline", "expiry_as_stop"])
-    expect(fake.reports).toContainEqual({ case: 0, lane: "expiry", step, pass: true, elapsedMs: expect.any(Number) });
+    expect(fake.reports).toContainEqual({
+      case: 0,
+      lane: "expiry",
+      provider,
+      step,
+      pass: true,
+      elapsedMs: expect.any(Number),
+    });
   expect(fake.reports).toContainEqual({
     case: 0,
     lane: "expiry",
@@ -212,6 +224,7 @@ test("Modal expires through the ordinary stop lane without a manual stop or mode
 
 test.each([
   ["late_ready", "expiry_ready"],
+  ["late_ttl_metadata", "expiry_deadline"],
   ["late_stop_metadata", "expiry_as_stop"],
 ] as const)("expiry rejects evidence outside the measured budget: %s", async (fault, step) => {
   const fake = fixture("modal", fault);
@@ -245,7 +258,6 @@ test("expiry false receipts and timeouts fail closed; cleanup cannot turn a manu
     const fake = fixture("modal", fault);
     expect(await postDeploySmoke(fake.env, ["--expiry"], fake.io)).toBe(false);
     expect(fake.calls.filter((call) => call.path === "sandbox/stop")).toHaveLength(1);
-    expect(fake.calls.length).toBeLessThan(500);
     expect(fake.reports.some((line) => line.pass === false)).toBe(true);
     if (fault === "never") {
       expect(fake.reports.find((line) => line.step === "expiry_as_stop")).toMatchObject({

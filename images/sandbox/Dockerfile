@@ -16,6 +16,7 @@ COPY --from=build /src/dist/runtime-artifacts /opt/armada/runtime-artifacts
 COPY --from=build /src/dist/runtime-manifests /opt/armada/runtime-manifests
 # The release contains the compiled runtime and pinned harness archives; later
 # launch integration seeds the per-sandbox verified caches from these public bytes.
+# Antigravity is downloaded from its pinned Google release URL by the runtime.
 ENV HOME=/home/user
 WORKDIR /home/user
 USER 1000:1000

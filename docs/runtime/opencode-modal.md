@@ -39,9 +39,9 @@ Armada-hosted proxy. The suggested `deepseek-flash` model ID follows the
 the retired `deepseek-chat` alias is not a launch default. API keys are stdin/file input only, never CLI arguments.
 
 ```sh
-armada creds set opencode --name deepseek --base-url https://api.deepseek.com \
+armada account add opencode --name deepseek --base-url https://api.deepseek.com \
   --models deepseek-flash --file /private/deepseek-key
-armada creds list --json
+armada account ls --json
 armada new MODAL_SNAPSHOT --provider modal --agent opencode \
   --credential-id ACCOUNT_UUID --model armada/deepseek-flash \
   --reasoning-effort default 'Reply with exactly: armada-opencode-ok'
@@ -80,8 +80,8 @@ Connect/set/import/login accept `--max-agents N` or `--unlimited`.
 For an existing account:
 
 ```sh
-armada creds limits ACCOUNT_UUID --max-agents 2
-armada creds limits ACCOUNT_UUID --unlimited
+armada account limits ACCOUNT_UUID --max-agents 2
+armada account limits ACCOUNT_UUID --unlimited
 ```
 
 ## Test a custom connection
@@ -150,7 +150,7 @@ turn unknown, never an invented partial sum.
 
 1. Migrate/deploy the artifact-bearing image, create the account and launch as above
    on a Modal snapshot. Expect an answer and current-turn input/output tokens in
-   `armada status ID --json`, without any key in logs/events/exec output.
+   `armada info ID --json`, without any key in logs/events/exec output.
 2. Send a follow-up. Start a tool-bearing prompt, steer it while active, then
    start another and interrupt it. Expect one terminal Armada prompt per turn,
    same conversation identity and no duplicated history. Missing interrupted
@@ -260,18 +260,18 @@ proved by the deterministic adapter-selection tests.
 
 ## Shared provider presets in the CLI (#1579)
 
-`armada creds presets` lists the same model connection choices as the dashboard,
+`armada account ls --presets` lists the same model connection choices as the dashboard,
 including their compatible agent. `--json` returns non-secret preset metadata.
-Create a named account with `creds connect`, without writing connection JSON or
+Create a named account with `account add --preset`, without writing connection JSON or
 choosing an internal credential kind:
 
 ```sh
-armada creds connect opencode-anthropic --name 'Anthropic coding' \
+armada account add --preset opencode-anthropic --name 'Anthropic coding' \
   --models claude-opus-5-5 --file /private/anthropic-key
-armada creds connect opencode-azure --name 'Azure coding' \
+armada account add --preset opencode-azure --name 'Azure coding' \
   --base-url https://resource.openai.azure.com/openai/v1 \
   --models my-deployment --file /private/azure-key
-armada creds connect deepseek --name 'DeepSeek coding' \
+armada account add --preset deepseek --name 'DeepSeek coding' \
   --models deepseek-flash --file /private/deepseek-key
 ```
 
@@ -293,7 +293,7 @@ chat-completions route remains unchanged for other providers. No ChatGPT
 subscription import or automatic conversion of an existing account is implied.
 
 ```sh
-armada creds connect opencode-openai --name 'OpenAI coding' \
+armada account add --preset opencode-openai --name 'OpenAI coding' \
   --models gpt-6.1-sol --file /private/openai-key
 ```
 

@@ -1,4 +1,4 @@
-import type { SandboxPlacementProviderId, SandboxStatus } from "@armada/core";
+import type { SandboxPlacementProviderId, SandboxRecord, SandboxStatus } from "@armada/core";
 import {
   decryptSecret,
   HOST_CAPABILITIES,
@@ -8,6 +8,7 @@ import {
   type OutputFailureReason,
   type Provider,
   ProviderError,
+  type SandboxStore,
   type Sql,
   VaultError,
 } from "@armada/core/server";
@@ -16,13 +17,84 @@ import { releaseAccountCapacity } from "./account-capacity.ts";
 import { isDockerPromptRefusal } from "./docker-prompt-refusal.ts";
 import type { Job } from "./jobs/runner.ts";
 import { mergedWorkProof } from "./merged-work.ts";
+import { strictNativeDrainJournals, withdrawExpiredModalDrainLease } from "./modal-drain-journal.ts";
 import { nativeIdleDue, nativeQuiescent } from "./native-idle.ts";
 import { LIVE_OUTPUT_CANDIDATE } from "./output-transfers.ts";
 import { recordNativeIdleTurn } from "./runtime-idle-evidence.ts";
+import { SandboxStopTargetChanged } from "./runtime-reconciliation-conflict.ts";
 import { SANDBOX_VISIBLE } from "./sandbox-visibility.ts";
-import { INTERRUPTED_LAUNCH_REASON } from "./turns.ts";
+import { INTERRUPTED_LAUNCH_REASON, isFailedModalLaunch, MODAL_LAUNCH_FAILURE } from "./turns.ts";
 import { deferTransactionWake, eventFeedWakeKey, runtimeWakes } from "./wake-bus.ts";
 import { preserveBeforeStop, purgeWorkRecovery, recordStopDispatch } from "./work-preservation.ts";
+
+export type ModalLaunchSandbox = Pick<
+  Parameters<SandboxStore["insert"]>[0],
+  | "goldenId"
+  | "harness"
+  | "model"
+  | "reasoningEffort"
+  | "repositoryDir"
+  | "requestedTtlSeconds"
+  | "credentialId"
+  | "credentialVersion"
+  | "visibility"
+  | "externalRef"
+  | "stopWhenWorkMerged"
+> & { effectiveTtlSeconds: number };
+
+export async function insertStartingModalSandbox(
+  tx: Sql,
+  target: {
+    sandboxId: string;
+    orgId: string;
+    ownerId: string;
+    generation: number;
+    visibility: "org" | "private";
+    snapshot: string;
+  },
+  sandbox: ModalLaunchSandbox,
+) {
+  const { sandboxId, orgId, ownerId, generation, visibility, snapshot } = target;
+  await tx.query(
+    `insert into public.sandboxes
+       (id, org_id, owner_id, access_owner_id, golden_id, provider, status, runtime_transport, lifecycle_generation,
+        visibility, harness, model, reasoning_effort, repository_dir, requested_ttl_seconds, effective_ttl_seconds,
+        expires_at, credential_id, credential_version, external_ref, stop_when_work_merged)
+     values ($1,$2,$3,$3,$4,'modal','starting','dialout',$5,$6,$7,$8,$9,$10,$11,$12,
+             now()+$12::integer*interval '1 second',$13,$14,$15,$16)`,
+    [
+      sandboxId,
+      orgId,
+      ownerId,
+      sandbox.goldenId,
+      generation,
+      visibility,
+      sandbox.harness,
+      sandbox.model,
+      sandbox.reasoningEffort,
+      sandbox.repositoryDir ?? null,
+      sandbox.requestedTtlSeconds ?? null,
+      sandbox.effectiveTtlSeconds,
+      sandbox.credentialId ?? null,
+      sandbox.credentialVersion ?? null,
+      sandbox.externalRef ?? null,
+      sandbox.stopWhenWorkMerged ?? true,
+    ],
+  );
+  await tx.query("insert into public.sandbox_source_snapshots (sandbox_id,snapshot_id) values ($1,$2)", [
+    sandboxId,
+    snapshot,
+  ]);
+}
+
+export async function taintStartingModalSandbox(tx: Sql, sandboxId: string, generation: number) {
+  const { rows } = await tx.query(
+    `update public.sandboxes set application_secret_tainted=true
+     where id=$1 and lifecycle_generation=$2 and status='starting' returning id`,
+    [sandboxId, generation],
+  );
+  if (!rows.length) throw new Error("Modal launch exposure restrictions could not be applied.");
+}
 
 export async function bindModalLaunchMachine(tx: Sql, machine: MachineIdentity) {
   const { rows } = await tx.query(
@@ -40,10 +112,13 @@ export type StopFence = [
   token: string | null,
   generation: number | null,
   kind: string | null,
+  provider: string | null,
 ];
 
-export const RUNTIME_STOP_OWNER = `stop_requested_at is not null and deleted_at is null
-  and provider='modal' and runtime_transport='dialout' and provider_sandbox_id=$2::text
+export const WORK_STOP_OWNER = `stop_requested_at is not null and deleted_at is null
+  and provider in ('boat','modal') and not boat_runtime
+  and (provider='modal' or runtime_transport is distinct from 'dialout')
+  and provider_sandbox_id=$2::text and provider::text=$6::text
   and lifecycle_generation=$4::bigint
   and (($5::text='activity' and activity_lease_id=$3::uuid and activity_until>clock_timestamp())
     or ($5::text='reconcile' and reconcile_lease=$3::uuid and reconcile_lease_until>clock_timestamp()
@@ -51,10 +126,85 @@ export const RUNTIME_STOP_OWNER = `stop_requested_at is not null and deleted_at 
   and exists(select 1 from public.members m where m.org_id=sandboxes.org_id and m.user_id=sandboxes.owner_id)`;
 
 export const STOP_EPOCH = `id=$1::uuid
-  and (case when stop_requested_at is null then null else stop_generation end) is not distinct from $6::bigint
-  and ($2::text is null or (${RUNTIME_STOP_OWNER}))`;
-export const NOTE_FENCE = `${STOP_EPOCH}
-  and ($6::bigint is null or preservation_stop_generation is distinct from $6::bigint)`;
+  and (case when stop_requested_at is null then null else stop_generation end) is not distinct from $7::bigint
+  and ($2::text is null or (${WORK_STOP_OWNER}))`;
+export const STRICT_NATIVE_DRAIN_STOP = `exists (
+  select 1 from public.native_drain_stop_requests r
+  where r.sandbox_id=s.id and r.stop_generation=s.stop_generation
+)`;
+
+const NATIVE_WORK_ROUTE = `provider in ('boat','modal') and not boat_runtime
+  and runtime_transport is distinct from 'dialout'`;
+
+const NATIVE_CAPTURE_CURRENT = `r.capture_generation=r.generation
+  and r.capture_stop_generation=r.stop_generation
+  and (r.archive_id is null or exists (
+    select 1 from public.sandbox_work_recovery a where a.id=r.archive_id and a.sandbox_id=r.sandbox_id
+  ))`;
+
+export const COMPLETE_PRESERVATION = `stop_requested_at is not null
+  and preservation_stop_generation is not distinct from stop_generation
+  and (not (${NATIVE_WORK_ROUTE}) or exists (
+    select 1 from public.sandbox_native_preservation_receipts r
+    where r.sandbox_id=sandboxes.id and r.generation=sandboxes.lifecycle_generation
+      and r.stop_generation=sandboxes.stop_generation and (${NATIVE_CAPTURE_CURRENT})
+  ))`;
+
+export const NOTE_FENCE = `${STOP_EPOCH} and not (${COMPLETE_PRESERVATION})`;
+
+export async function readNativeCaptureAcknowledgements(
+  sql: Sql,
+  id: string,
+  fence: StopFence,
+  stopToken: string | null,
+  captureId: string,
+  physicalGeneration: string | null,
+) {
+  const { rows } = await sql.query<{ evidence: string }>(
+    `select (
+       select jsonb_build_object(
+         'captureId',$8::text,
+         'physicalGeneration',$9::text,
+         'prompts',jsonb_object_agg(p.acknowledged_request_id,p.prompt_id)
+           filter (where p.acknowledged_request_id is not null),
+         'completedPrompts',jsonb_agg(p.prompt_id)
+       )
+       from public.native_webhook_prompts p
+       where p.sandbox_id=sandboxes.id and p.provider=sandboxes.provider
+         and p.provider_sandbox_id=sandboxes.provider_sandbox_id
+         and p.owner_id=sandboxes.owner_id and p.org_id=sandboxes.org_id
+         and p.completed_at is not null
+     )::text as evidence
+     from public.sandboxes where ${NOTE_FENCE} and not application_secret_tainted`,
+    [id, ...fence, stopToken, captureId, physicalGeneration],
+  );
+  return rows[0]?.evidence;
+}
+
+function recordNativePreservation(archiveId: "$9::uuid" | "null", evidence: "$11" | "$8") {
+  return `
+    insert into public.sandbox_native_preservation_receipts
+      (sandbox_id,generation,stop_generation,capture_generation,capture_stop_generation,archive_id,capture_acknowledgements)
+    select id,$4::bigint,$7::bigint,$4::bigint,$7::bigint,${archiveId},${evidence}::jsonb from accepted
+    where native and $2::text is not null
+    on conflict(sandbox_id) do update set generation=excluded.generation,
+      stop_generation=excluded.stop_generation,capture_generation=excluded.capture_generation,
+      capture_stop_generation=excluded.capture_stop_generation,archive_id=excluded.archive_id,
+      capture_acknowledgements=excluded.capture_acknowledgements`;
+}
+
+export function lockedNativePreservationWriter(sql: Sql, id: string) {
+  return {
+    async query<T>(statement: string, params?: unknown[]) {
+      if (!sql.transaction) throw new Error("Native preservation writes require a transaction.");
+      return sql.transaction(async (tx) => {
+        // WARNING: The private receipt check needs a fresh snapshot after acquiring the sandbox lock.
+        await tx.query("select id from public.sandboxes where id=$1 for update", [id]);
+        return tx.query<T>(statement, params);
+      });
+    },
+  } satisfies Sql;
+}
 
 export function writePreservationNote(
   sql: Sql,
@@ -63,7 +213,7 @@ export function writePreservationNote(
   stopToken: string | null,
   fence: StopFence,
 ) {
-  return sql.query(`update public.sandboxes set preservation_note=$7 where ${NOTE_FENCE}`, [
+  return sql.query(`update public.sandboxes set preservation_note=$8 where ${NOTE_FENCE}`, [
     id,
     ...fence,
     stopToken,
@@ -79,22 +229,33 @@ export function recordWorkRecovery(
   note: string,
   recoveryId: string,
   encrypted: Uint8Array,
+  acknowledgements: string | null,
 ) {
   return sql.query<{ id: string }>(
     `with accepted as (
-    update public.sandboxes set preservation_note=$7,preservation_stop_generation=$6::bigint
-    where ${NOTE_FENCE} and not application_secret_tainted returning id
-  ) insert into public.sandbox_work_recovery(id,sandbox_id,archive_enc)
-    select $8::uuid,id,$9::bytea from accepted returning id`,
-    [id, ...fence, stopToken, note, recoveryId, encrypted],
+    update public.sandboxes set preservation_note=$8,preservation_stop_generation=$7::bigint
+    where ${NOTE_FENCE} and not application_secret_tainted returning id, (${NATIVE_WORK_ROUTE}) as native
+  ), native_receipt as (${recordNativePreservation("$9::uuid", "$11")})
+  insert into public.sandbox_work_recovery(id,sandbox_id,archive_enc)
+    select $9::uuid,id,$10::bytea from accepted returning id`,
+    [id, ...fence, stopToken, note, recoveryId, encrypted, acknowledgements],
   );
 }
 
-export function recordCleanWork(sql: Sql, id: string, fence: StopFence, stopToken: string | null) {
+export function recordCleanWork(
+  sql: Sql,
+  id: string,
+  fence: StopFence,
+  stopToken: string | null,
+  acknowledgements: string | null,
+) {
   return sql.query<{ id: string }>(
-    `update public.sandboxes set preservation_note=null,
-    preservation_stop_generation=$6::bigint where ${NOTE_FENCE} and not application_secret_tainted returning id`,
-    [id, ...fence, stopToken],
+    `with accepted as (
+    update public.sandboxes set preservation_note=null,preservation_stop_generation=$7::bigint
+    where ${NOTE_FENCE} and not application_secret_tainted returning id, (${NATIVE_WORK_ROUTE}) as native
+  ), native_receipt as (${recordNativePreservation("null", "$8")})
+  select id from accepted`,
+    [id, ...fence, stopToken, acknowledgements],
   );
 }
 
@@ -255,28 +416,35 @@ export async function transitionSandbox(tx: Sql, input: SandboxTransition) {
   return { kind: "applied", generation: Number(result.generation) } satisfies SandboxTransitionResult;
 }
 
-export async function publishDockerRuntimeReadiness(
+export async function publishRuntimeReadiness(
   tx: Sql,
   sandboxId: string,
   generation: string,
   enrolment: "bootstrap" | "retained",
 ) {
-  const {
-    rows: [starting],
-  } = await tx.query<{ generation: string }>(
-    `select s.lifecycle_generation::text as generation from public.sandboxes s
-     where s.id=$1 and s.provider='docker' and s.status='starting' and s.lifecycle_generation=$3
-     and $2::boolean = exists(
-       select 1 from public.docker_resume_claims c where c.sandbox_id=s.id
-       and c.lifecycle_generation=s.lifecycle_generation-1 and c.accepted
-     )
-     and ($2::boolean or exists(
-       select 1 from public.docker_host_jobs j where j.bound_sandbox_id=s.id
-       and j.bound_operation='create' and j.outcome='completed'
-     ))`,
+  const { rows } = await tx.query(
+    `select 1 from public.sandboxes s
+     where s.id=$1 and s.status='starting' and s.lifecycle_generation=$3
+       and (
+         (s.provider='docker' and $2::boolean = exists(
+           select 1 from public.docker_resume_claims c where c.sandbox_id=s.id
+           and c.lifecycle_generation=s.lifecycle_generation-1 and c.accepted
+         ) and ($2::boolean or exists(
+           select 1 from public.docker_host_jobs j where j.bound_sandbox_id=s.id
+           and j.bound_operation='create' and j.outcome='completed'
+         )))
+         or (s.provider='modal' and not $2::boolean and exists(
+           select 1 from public.jobs j
+           where j.sandbox_id=s.id and j.org_id=s.org_id and j.request_owner_id=s.owner_id
+             and j.generation=s.lifecycle_generation and j.kind='launch' and j.state in ('queued','leased')
+             and j.outcome #>> '{modal_machine,entry,operation}'='create'
+             and j.outcome #>> '{modal_machine,entry,phase}'='allocated'
+             and j.outcome #>> '{modal_machine,entry,machineId}'=s.provider_sandbox_id
+         ))
+       )`,
     [sandboxId, enrolment === "retained", generation],
   );
-  if (!starting) return "skipped";
+  if (!rows.length) return "skipped";
   const transition = await transitionSandbox(tx, {
     sandboxId,
     expectedGeneration: generation,
@@ -527,6 +695,17 @@ export async function admitCheckpointedIdleStop(tx: Sql, sandboxId: string, gene
   });
 }
 
+export async function recordFailedModalLaunchExit(tx: Sql, sandboxId: string, generation: number) {
+  const { rows } = await tx.query(
+    `update public.sandboxes set stopped_at=coalesce(stopped_at, clock_timestamp())
+     where id=$1 and lifecycle_generation=$2 and provider='modal' and runtime_transport='dialout'
+       and status='failed' and status_reason=$3 and deleted_at is null and stop_requested_at is null
+     returning id`,
+    [sandboxId, generation, MODAL_LAUNCH_FAILURE],
+  );
+  if (!rows.length) throw new Error("Failed Modal launch exit target changed.");
+}
+
 export async function recordDockerCleanupReceipt(
   tx: Sql,
   sandboxId: string,
@@ -628,6 +807,75 @@ export async function recordNativeRetentionRefusal(
   return result.kind === "applied";
 }
 
+export async function carryNativePreservationAcrossStop(tx: Sql, sandboxId: string, generation: string) {
+  await tx.query(
+    `update public.sandbox_native_preservation_receipts r set generation=$2::bigint, capture_generation=$2::bigint
+     from public.sandboxes
+     where sandboxes.id=$1 and sandboxes.lifecycle_generation=$2::bigint
+       and r.sandbox_id=sandboxes.id and r.generation=$2::bigint-1
+       and r.stop_generation=sandboxes.stop_generation and (${NATIVE_CAPTURE_CURRENT})
+       and sandboxes.preservation_stop_generation=sandboxes.stop_generation
+       and not sandboxes.application_secret_tainted and (${NATIVE_WORK_ROUTE})`,
+    [sandboxId, generation],
+  );
+}
+
+export async function requestStartingModalStop(
+  sql: Sql,
+  scope: readonly [string[], string],
+  sandbox: SandboxRecord,
+  signal?: AbortSignal,
+) {
+  const { id: sandboxId, lifecycleGeneration: generation, status, runtimeTransport } = sandbox;
+  if (
+    runtimeTransport !== "dialout" ||
+    generation === undefined ||
+    (status !== "starting" && !isFailedModalLaunch(sandbox))
+  )
+    return null;
+  if (!sql.transaction) throw new Error("Modal launch cancellation requires a transaction.");
+  return sql.transaction(async (tx) => {
+    const params = [...scope, sandboxId, generation];
+    const {
+      rows: [launch],
+    } = await tx.query<{ allowed: boolean }>(
+      `select (s.owner_id=m.user_id or m.role='admin') as allowed
+       from public.sandboxes s join public.members m on m.org_id=s.org_id and m.user_id=$2
+       join public.jobs j on j.sandbox_id=s.id and j.generation=$4 and j.kind='launch' and j.payload_enc is not null
+         and j.org_id=s.org_id and j.request_owner_id=s.owner_id
+       where s.id=$3 and s.org_id=any($1::uuid[]) and s.provider='modal'
+         and s.runtime_transport='dialout' for share of m`,
+      params,
+    );
+    if (!launch) return null;
+    if (!launch.allowed) throw new VaultError("forbidden", "Only the owner or an org admin may stop this sandbox.");
+    const {
+      rows: [target],
+    } = await tx.query<{ status: SandboxStatus; status_reason: string | null }>(
+      `select status, status_reason from public.sandboxes
+       where id=$1 and lifecycle_generation=$2 and deleted_at is null for update`,
+      [sandboxId, generation],
+    );
+    if (target?.status === "failed" && target.status_reason === MODAL_LAUNCH_FAILURE)
+      return { id: sandboxId, status: target.status };
+    if (target?.status !== "starting") throw new SandboxStopTargetChanged();
+    signal?.throwIfAborted();
+    await tx.query(
+      `update public.sandboxes set stop_requested_at=coalesce(stop_requested_at, clock_timestamp()) where id=$1`,
+      [sandboxId],
+    );
+    return { id: sandboxId, status: target.status };
+  });
+}
+
+export async function clearStartingModalStop(tx: Sql, sandboxId: string, generation: number) {
+  await tx.query(
+    `update public.sandboxes set stop_requested_at=null where id=$1 and lifecycle_generation=$2
+       and status='failed' and status_reason=$3 and stop_requested_at is not null`,
+    [sandboxId, generation, MODAL_LAUNCH_FAILURE],
+  );
+}
+
 export async function publishOwnerStop(
   tx: Sql,
   stop: {
@@ -656,24 +904,270 @@ export async function publishOwnerStop(
   if (result.kind === "conflict") throw new Error("Locked owner stop could not transition.");
 }
 
+export async function hasStrictNativeDrainStop(tx: Sql, sandboxId: string) {
+  const result = await tx.query(`select 1 from public.sandboxes s where s.id=$1 and ${STRICT_NATIVE_DRAIN_STOP}`, [
+    sandboxId,
+  ]);
+  return result.rows.length > 0;
+}
+
+export async function requestNativeSubscriptionStop(
+  tx: Sql,
+  id: string,
+  generation: number,
+  provider: "boat" | "modal",
+) {
+  const token = crypto.randomUUID();
+  const {
+    rows: [admitted],
+  } = await tx.query<{ status: SandboxStatus; generation: string }>(
+    `update public.sandboxes s set lifecycle_generation=lifecycle_generation+1,
+       activity_lease_id=$3, activity_until=clock_timestamp()+interval '2 minutes',
+       stop_generation=stop_generation+1, stop_requested_at=clock_timestamp(), reconcile_after=clock_timestamp()
+     where s.id=$1 and s.lifecycle_generation=$2 and s.status in ('ready','running','starting')
+       and s.provider=$4 and ${NATIVE_WORK_ROUTE} and s.stop_requested_at is null and s.stopped_at is null
+       and s.deleted_at is null and not s.native_drain_pending and s.expires_at>clock_timestamp()
+       and s.activity_lease_id is null and (s.activity_until is null or s.activity_until<=clock_timestamp())
+       and (s.reconcile_lease_until is null or s.reconcile_lease_until<=clock_timestamp())
+       and not exists(select 1 from public.orchestrators o where o.sandbox_id=s.id)
+     returning s.status, s.lifecycle_generation::text as generation`,
+    [id, generation, token, provider],
+  );
+  if (!admitted) return false;
+  await publishOwnerStop(tx, {
+    sandboxId: id,
+    generation: admitted.generation,
+    fromState: admitted.status,
+    toState: "stopping",
+    code: provider === "modal" ? "runtime_retained_stop" : "owner_stop_admitted",
+  });
+  await tx.query(
+    `update public.sandboxes set activity_lease_id=null, activity_until=null
+     where id=$1 and lifecycle_generation=$2 and activity_lease_id=$3`,
+    [id, admitted.generation, token],
+  );
+  return true;
+}
+
+export async function requestNativeDrainStop(
+  sql: Sql,
+  sandbox: SandboxRecord,
+  provider: "boat" | "modal",
+  actorId: string,
+) {
+  if (!sql.transaction) throw new Error("Native drain stop requires a transaction.");
+  const { id, lifecycleGeneration, providerSandboxId } = sandbox;
+  if (lifecycleGeneration === undefined || !providerSandboxId) return false;
+
+  return sql.transaction(async (tx) => {
+    const locked = await tx.query(`select id from public.sandboxes where id=$1 for update`, [id]);
+    if (!locked.rows.length) return false;
+    const journal = strictNativeDrainJournals[provider];
+    if (journal && !(await journal.lockActive(tx, id))) return false;
+    const token = crypto.randomUUID();
+    const {
+      rows: [admitted],
+    } = await tx.query<{ status: SandboxStatus; generation: string }>(
+      `update public.sandboxes s set activity_lease_id=$6, activity_until=clock_timestamp()+interval '2 minutes',
+         lifecycle_generation=lifecycle_generation+1, stop_generation=stop_generation+1,
+         stop_requested_at=clock_timestamp(), reconcile_after=clock_timestamp(), status_reason=null
+       where s.id=$1 and s.lifecycle_generation=$2 and s.provider_sandbox_id=$3 and s.provider=$4
+         and ${NATIVE_WORK_ROUTE} and s.status in ('ready','running') and s.stop_requested_at is null
+         and s.stopped_at is null and s.deleted_at is null and not s.application_secret_tainted
+         and not s.native_drain_pending and s.expires_at>clock_timestamp()
+         and s.activity_lease_id is null
+         and (s.activity_until is null or s.activity_until<=clock_timestamp())
+         and (s.reconcile_lease_until is null or s.reconcile_lease_until<=clock_timestamp())
+         and not exists(select 1 from public.orchestrators o where o.sandbox_id=s.id)
+         and exists(select 1 from public.members m where m.org_id=s.org_id and m.user_id=$5
+           and (m.user_id=s.owner_id or m.role='admin'))
+         and exists(select 1 from public.members m where m.org_id=s.org_id and m.user_id=s.owner_id)
+         and not exists(select 1 from public.account_turn_queue q
+           where q.sandbox_id=s.id and q.state in ('queued','dispatching'))
+         and not exists(select 1 from public.sandbox_native_exec_attempts e where e.sandbox_id=s.id)
+         and not exists(select 1 from public.sandbox_native_send_attempts a where a.sandbox_id=s.id)
+         and not exists(select 1 from public.native_steer_cursors c
+           where c.sandbox_id=s.id and c.pending_since is not null)
+         and not exists(select 1 from public.native_webhook_prompts p
+           where p.sandbox_id=s.id and p.provider=s.provider and p.provider_sandbox_id=s.provider_sandbox_id
+             and p.owner_id=s.owner_id and p.org_id=s.org_id and p.completed_at is null)
+       returning status, lifecycle_generation::text as generation`,
+      [id, lifecycleGeneration, providerSandboxId, provider, actorId, token],
+    );
+    if (!admitted) return false;
+    await publishOwnerStop(tx, {
+      sandboxId: id,
+      generation: admitted.generation,
+      fromState: admitted.status,
+      toState: "stopping",
+      code: "owner_stop_admitted",
+    });
+    await tx.query(
+      `insert into public.native_drain_stop_requests (sandbox_id, stop_generation)
+       select id, stop_generation from public.sandboxes where id=$1
+       on conflict (sandbox_id) do update set stop_generation=excluded.stop_generation`,
+      [id],
+    );
+    await tx.query(
+      `update public.sandboxes set activity_lease_id=null, activity_until=null
+       where id=$1 and lifecycle_generation=$2 and activity_lease_id=$3`,
+      [id, admitted.generation, token],
+    );
+    return true;
+  });
+}
+
+export async function fencePreservedModalDrainIncarnation(tx: Sql, id: string, pending: boolean) {
+  // WARNING: The journal lock must not wait while holding the sandbox lock because Modal ingest takes them in reverse order.
+  const { rows } = await tx.query<{ eligible: boolean; scope: string; id: string; lease_id: string | null }>(
+    `with journal as materialized (
+       select m.scope,m.id,m.owner_id,m.record,m.lease_id,m.lease_until
+       from public.modal_machines m join public.sandboxes s
+         on m.org_id=s.org_id and m.id=s.provider_sandbox_id
+       where s.id=$1
+       for update of m nowait
+     )
+     select j.scope,j.id,j.lease_id,(
+       j.owner_id=s.owner_id
+       and j.record->>'commonRuntime' is distinct from 'true'
+       and case when $2 then j.record->>'phase' in ('stopped','deleting','deleted')
+         else j.record->>'phase'='stopped' and (
+           (j.lease_id is null and j.lease_until is null)
+           or (j.lease_id is not null and j.lease_until<=clock_timestamp())
+         ) end
+       and exists (
+         select 1 from public.sandbox_native_preservation_receipts r
+         where r.sandbox_id=s.id and ($2 or r.generation=s.lifecycle_generation)
+           and r.stop_generation=s.stop_generation and r.stop_generation=s.preservation_stop_generation
+           and r.capture_generation=r.generation and r.capture_stop_generation=r.stop_generation
+           and r.capture_acknowledgements->>'physicalGeneration'=j.record->>'generation'
+           and (not $2 or r.capture_acknowledgements->>'drainAdmissionGeneration'=j.record->>'generation')
+       )
+     ) as eligible
+     from journal j cross join public.sandboxes s where s.id=$1`,
+    [id, pending],
+  );
+  const [journal] = rows;
+  if (rows.length !== 1 || journal?.eligible !== true) return false;
+  if (!pending) {
+    // WARNING: A save started before expiry can still match unless admission withdraws the token under this lock.
+    if (journal.lease_id && !(await withdrawExpiredModalDrainLease(tx, journal, journal.lease_id))) return false;
+    await tx.query(
+      `update public.sandbox_native_preservation_receipts
+       set capture_acknowledgements=jsonb_set(capture_acknowledgements,
+         '{drainAdmissionGeneration}',capture_acknowledgements->'physicalGeneration')
+       where sandbox_id=$1`,
+      [id],
+    );
+  }
+  return true;
+}
+
+export async function markNativeDrainDispatchUnclaimed(tx: Sql, id: string) {
+  await tx.query(
+    `insert into public.native_drain_unclaimed_dispatches (sandbox_id)
+     select id from public.sandboxes where id=$1 and provider='boat'`,
+    [id],
+  );
+}
+
+export async function nativeDrainDispatch(
+  sql: Sql,
+  scope: [string[], string],
+  id: string,
+  placement: string,
+  generation: number,
+  activityToken: string,
+  action: "inspect" | "claim",
+) {
+  const {
+    rows: [owned],
+  } = await sql.query<{ operation_id: string | null }>(
+    `with locked as materialized (
+       select s.id, s.activity_until
+       from public.sandboxes s
+       where s.id=$3::uuid and ${SANDBOX_VISIBLE} and s.provider in ('boat','modal')
+         and s.provider_sandbox_id=$4 and s.lifecycle_generation=$5 and s.activity_lease_id=$6
+         and s.native_drain_pending and not s.boat_runtime and s.runtime_transport is distinct from 'dialout'
+         and s.deleted_at is null
+       for update of s
+     ), owned as materialized (
+       select * from locked where activity_until>clock_timestamp()
+     ), claimed as (
+       delete from public.native_drain_unclaimed_dispatches d using owned
+       where d.sandbox_id=owned.id and $7 returning d.sandbox_id
+     )
+     select o.operation_id from public.sandboxes s
+     join owned on owned.id=s.id
+     left join claimed on claimed.sandbox_id=s.id
+     left join public.native_drain_delete_operations o on o.sandbox_id=s.id
+     where (claimed.sandbox_id is not null or s.provider='modal' or o.sandbox_id is not null
+       or (not $7 and exists (
+         select 1 from public.native_drain_unclaimed_dispatches d where d.sandbox_id=s.id
+       )))
+       and (o.sandbox_id is null or (o.provider=s.provider and o.placement=$4))`,
+    [...scope, id, placement, generation, activityToken, action === "claim"],
+  );
+  return owned;
+}
+
+export async function recordNativeDrainDeleteOperation(
+  sql: Sql,
+  scope: [string[], string],
+  sandboxId: string,
+  generation: number,
+  activityToken: string,
+  operation: { provider: SandboxRecord["provider"]; placement: string; id: string },
+) {
+  const { rows } = await sql.query(
+    `with owned as materialized (
+       select s.id, s.provider, s.provider_sandbox_id, s.activity_until
+       from public.sandboxes s
+       where s.id=$3::uuid and ${SANDBOX_VISIBLE}
+         and s.lifecycle_generation=$4 and s.activity_lease_id=$5 and s.native_drain_pending
+         and s.provider=$6::public.sandbox_provider and s.provider in ('boat','modal')
+         and s.provider_sandbox_id=$7 and not s.boat_runtime
+         and s.runtime_transport is distinct from 'dialout' and s.deleted_at is null
+       for update of s
+     )
+     insert into public.native_drain_delete_operations (sandbox_id, provider, placement, operation_id)
+     select id, provider, provider_sandbox_id, $8 from owned where activity_until>clock_timestamp()
+     on conflict (sandbox_id) do nothing
+     returning sandbox_id`,
+    [...scope, sandboxId, generation, activityToken, operation.provider, operation.placement, operation.id],
+  );
+  return rows.length > 0;
+}
+
 export async function completeSandboxDeletion(
   tx: Sql,
   scope: [string[], string],
   sandboxId: string,
   generation: number,
   activityToken: string,
+  nativeDrain: boolean,
 ) {
   const { rows } = await tx.query<{ generation: string }>(
-    `update public.sandboxes s set
-       lifecycle_generation=s.lifecycle_generation+1,
+    `with owned as materialized (
+       select s.id, s.activity_until from public.sandboxes s
+       where s.id=$3 and ${SANDBOX_VISIBLE} and s.status in ('stopped','failed')
+         and s.lifecycle_generation=$4 and s.activity_lease_id=$5 and s.native_drain_pending=$6::boolean
+       for update of s
+     ), settled as (update public.sandboxes s set
+       lifecycle_generation=s.lifecycle_generation+1, native_drain_pending=false,
        activity_lease_id=null, activity_until=null, preservation_note=null,
        usage_runtime_seconds=case when s.stopped_at is null then null else s.usage_runtime_seconds end,
        usage_running_since=case when s.stopped_at is null then null else s.usage_running_since end,
        stopped_at=coalesce(s.stopped_at, clock_timestamp())
-     where s.id=$3 and ${SANDBOX_VISIBLE} and s.status in ('stopped','failed')
-       and s.lifecycle_generation=$4 and s.activity_lease_id=$5
-     returning s.lifecycle_generation::text as generation`,
-    [...scope, sandboxId, generation, activityToken],
+     from owned
+     where s.id=owned.id and (not $6::boolean or owned.activity_until>clock_timestamp())
+     returning s.id, s.lifecycle_generation::text as generation
+     ), cleared as (
+       delete from public.native_drain_delete_operations o using settled
+       where $6::boolean and o.sandbox_id=settled.id
+     )
+     select generation from settled`,
+    [...scope, sandboxId, generation, activityToken, nativeDrain],
   );
   const receipt = rows[0];
   if (!receipt) return false;
@@ -842,13 +1336,14 @@ export async function recordObservedProviderState(
          and case when $4::text is null then
            ((s.provider='boat' and s.boat_runtime) or (s.provider='modal' and s.runtime_transport='dialout'))
          else s.provider_sandbox_id=$4 and not s.boat_runtime and s.runtime_transport is distinct from 'dialout' end
-         and ($5::boolean or s.stop_requested_at is null) and s.deleted_at is null
+         and ($5::boolean or s.stop_requested_at is null) and s.deleted_at is null and not s.native_drain_pending
          and (s.activity_until is null or s.activity_until<now())
          and (s.reconcile_lease_until is null or s.reconcile_lease_until<now())
        for update of s`,
       [...scope, sandboxId, providerRunPlacement ?? null, nativeStop],
     );
-    if (!eligible.rows.length) return { kind: "conflict" } satisfies SandboxTransitionResult;
+    if (!eligible.rows.length || (await hasStrictNativeDrainStop(tx, sandboxId)))
+      return { kind: "conflict" } satisfies SandboxTransitionResult;
     const path = providerRunPlacement === undefined ? "runtime" : "native";
     const settlesExit = toState === "stopped" || nativeFailure;
     const providerActor = settlesExit ? "runtime_observation" : "lifecycle_runner";
@@ -1249,6 +1744,20 @@ export function createSandboxLifecycle(
                 and r.receipt is null and r.activated_at is not null
             )) as modal_resume) recovery
           where candidate.provider = $2 and candidate.status not in ('stopped','deleted')
+          -- The launch job owns recovery across retries and worker replacement.
+          and not (candidate.provider='modal' and exists(
+            select 1 from public.jobs launch
+            where launch.kind='launch' and launch.state in ('queued','leased')
+              and launch.sandbox_id=candidate.id and launch.generation=candidate.lifecycle_generation
+              and launch.org_id=candidate.org_id and launch.request_owner_id=candidate.owner_id
+          ))
+          -- This transition and the cleanup job commit together.
+          and not (candidate.provider='modal' and candidate.status='failed' and exists(
+            select 1 from public.sandbox_transitions failure
+            where failure.sandbox_id=candidate.id and failure.generation=candidate.lifecycle_generation
+              and failure.actor='lifecycle_runner' and failure.code=$5
+              and failure.from_status='starting' and failure.to_status='failed'
+          ))
           and not exists(select 1 from public.orchestrators parent where parent.sandbox_id=candidate.id)
           and not (candidate.status='failed' and candidate.stopped_at is not null)
           -- Only this worker understands the retained-resume handoff. Old
@@ -1277,10 +1786,26 @@ export function createSandboxLifecycle(
               and r.phase='dispatched' and r.receipt is null
           )) as interrupted_resume,
           exists(select 1 from public.members m where m.org_id=s.org_id and m.user_id=s.owner_id) as owner_is_member`,
-          [token, providerId, UNENROLLED_RESUME_STOP, `${OPERATOR_CLEANUP_PREFIX}%`],
+          [token, providerId, UNENROLLED_RESUME_STOP, `${OPERATOR_CLEANUP_PREFIX}%`, MODAL_LAUNCH_FAILURE],
         )
       ).rows[0];
       if (!row) return false;
+      let strictNativeStop = false;
+      if (row.status === "stopping" && row.stop_requested_at !== null) {
+        // WARNING: Read intent after claiming because SQL can recheck the sandbox against a newer version than the marker snapshot.
+        const {
+          rows: [owned],
+        } = await sql.query<{ strict: boolean }>(
+          `select exists(select 1 from public.native_drain_stop_requests r where r.sandbox_id=s.id
+             and r.stop_generation=s.stop_generation) as strict
+           from public.sandboxes s where s.id=$1 and s.reconcile_lease=$2::uuid
+             and s.lifecycle_generation=$3 and s.reconcile_lease_until>clock_timestamp()
+             and s.status='stopping' and s.stop_requested_at is not null`,
+          [row.id, token, row.lifecycle_generation],
+        );
+        if (!owned) return true;
+        strictNativeStop = owned.strict;
+      }
       const recoverInterruptedResume = async (observedProviderId: string | null) => {
         if (!row.interrupted_resume && !row.protected_resume) return false;
         if (!sql.transaction) throw Error("Runtime resume recovery requires a SQL transaction.");
@@ -1347,6 +1872,7 @@ export function createSandboxLifecycle(
       const retainedResume = row.retained_resume;
       const rollbackRetainedResume = retainedResume && row.runtime_transport === "dialout";
       const native = !row.boat_runtime && row.runtime_transport !== "dialout";
+      const retainedNativeStop = native && providerId === "modal" && row.checkpointed_stop;
       // Lease expiry is not evidence a native exec completed. Retain its identity
       // until an owner outcome or explicit/TTL cleanup, rather than inventing idle.
       const retainUnknownActivity =
@@ -1496,10 +2022,13 @@ export function createSandboxLifecycle(
           terminal = true;
           return settle();
         }
+        if (strictNativeStop && provider.id !== providerId) throw new Error("Strict native stop provider changed.");
         const observe = async () => {
           observing = true;
           const info = await operation(signal, () => provider.get(row.provider_sandbox_id));
           observing = false;
+          if (strictNativeStop && info.id !== row.provider_sandbox_id)
+            throw new Error("Strict native stop observation changed placement.");
           return info;
         };
         let info = await observe();
@@ -1584,6 +2113,7 @@ export function createSandboxLifecycle(
         const workMerged = row.work_merged === true && !row.stop_requested_at;
         const idleStop =
           native &&
+          !strictNativeStop &&
           !expired &&
           (["idle_paused", "work_merged"].includes(row.status_reason ?? "") ||
             (!row.stop_requested_at &&
@@ -1696,6 +2226,7 @@ export function createSandboxLifecycle(
           // Automatic idle stop may observe quiescence, never interrupt a turn.
           if (
             !idleStop &&
+            !strictNativeStop &&
             !row.boat_runtime &&
             row.runtime_transport !== "dialout" &&
             ["ready", "running"].includes(info.state)
@@ -1721,23 +2252,64 @@ export function createSandboxLifecycle(
             });
           signal?.throwIfAborted();
           if (idleStop && !reconcilingStop) await operation(signal, requireIdle);
+          if (strictNativeStop) {
+            const verified = await sql.query(
+              `select 1 from public.sandboxes s
+               where s.id=$1 and s.reconcile_lease=$2::uuid and s.lifecycle_generation=$3
+                 and s.provider_sandbox_id=$4 and s.status='stopping' and s.stop_requested_at is not null
+                 and not s.application_secret_tainted and s.deleted_at is null
+                 and (s.activity_until is null or s.activity_until<=clock_timestamp())
+                 and exists(select 1 from public.native_drain_stop_requests r where r.sandbox_id=s.id
+                   and r.stop_generation=s.stop_generation)
+                 and exists(select 1 from public.native_drain_work_proof(s.id,s.lifecycle_generation)
+                   where outcome in ('clean','archived'))
+                 and (s.provider<>'modal' or exists(
+                   select 1 from public.sandbox_native_preservation_receipts r
+                   where r.sandbox_id=s.id and r.generation=s.lifecycle_generation
+                     and r.stop_generation=s.stop_generation
+                     and r.capture_acknowledgements->>'physicalGeneration'=nullif($5::text,'')
+                 ))
+                 and s.reconcile_lease_until>clock_timestamp()`,
+              [row.id, token, row.lifecycle_generation, row.provider_sandbox_id, info.physicalGeneration ?? null],
+            );
+            if (!verified.rows.length) {
+              error = "Strict native stop is waiting for verified work preservation.";
+              return settle();
+            }
+            signal?.throwIfAborted();
+          }
           const requireRetention =
-            !expired &&
-            (row.checkpointed_stop ||
-              retainedResume ||
-              idleStop ||
-              ["idle_paused", "work_merged"].includes(row.status_reason ?? ""));
+            strictNativeStop ||
+            retainedNativeStop ||
+            (!expired &&
+              (row.checkpointed_stop ||
+                retainedResume ||
+                idleStop ||
+                ["idle_paused", "work_merged"].includes(row.status_reason ?? "")));
           recordStopDispatch(row.id, row.provider_sandbox_id, "lifecycle_stop");
           await operation(signal, () =>
             provider.stop({
               sandboxId: row.provider_sandbox_id,
               ...(requireRetention ? { requireRetention: true } : {}),
+              ...(strictNativeStop ? { generation: row.lifecycle_generation } : {}),
             }),
           );
           info = await observe();
         }
         signal?.throwIfAborted();
         physicalExit = info.physicalExitConfirmed === true || info.stopNote === "checkpoint_failed_disk_not_retained";
+        const journal = strictNativeStop && strictNativeDrainJournals[providerId];
+        if (journal && (physicalExit || ["stopped", "deleted"].includes(info.state))) {
+          const retained =
+            !physicalExit &&
+            info.state === "stopped" &&
+            (await journal.hasRetainedCheckpoint(sql, row.id, row.lifecycle_generation, info.physicalGeneration));
+          if (!retained) {
+            physicalExit = false;
+            error = "Strict native stop is waiting for a verified retained Modal checkpoint.";
+            return settle();
+          }
+        }
         stoppedAt = info.stoppedAt;
         waitingForRetention =
           providerId === "boat" &&
@@ -1771,9 +2343,9 @@ export function createSandboxLifecycle(
             return true;
           }
         }
-        // A definitive absence for the exact registered identity is terminal.
-        // Never infer absence from transport errors or discover resources by name.
         if (
+          !strictNativeStop &&
+          !retainedNativeStop &&
           resolved &&
           !rollbackRetainedResume &&
           (!row.checkpointed_stop || expired) &&
@@ -1783,9 +2355,7 @@ export function createSandboxLifecycle(
         ) {
           terminal = true;
           if (providerId === "boat") physicalExit = true;
-        }
-        // No provider exception text: SDK errors may contain credential-bearing requests.
-        else error = "Provider lifecycle observation unavailable. Retrying without deleting retained data.";
+        } else error = "Provider lifecycle observation unavailable. Retrying without deleting retained data.";
       }
       return settle();
     } finally {

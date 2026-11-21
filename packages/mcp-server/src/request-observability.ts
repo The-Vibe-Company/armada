@@ -1,6 +1,7 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { type FailureDiagnostic, failureDiagnostic } from "@armada/core/server";
 import { redactForLog } from "./log.ts";
+import type { StopRefusalEvidence } from "./stop-refusal-evidence.ts";
 
 export const REQUEST_ID_HEADER = "x-request-id";
 type Log = (line: string) => void;
@@ -21,10 +22,16 @@ export function continueRequest<T>(id: string | undefined, work: () => Promise<T
   return id && serverId.test(id) ? current.run({ id, log }, work) : current.exit(work);
 }
 
+function requestLogForStatus(status: number) {
+  if (status >= 500) return console.error;
+  if (status >= 400) return console.warn;
+  return console.info;
+}
+
 /** Generate our own ID. Caller-supplied headers and runtime idempotency keys are independent. */
-export function observeRequest<T extends Response | undefined>(work: () => T | Promise<T>, log: Log = stderr) {
+export function observeRequest<T extends Response | undefined>(work: () => T | Promise<T>, log?: Log) {
   const id = crypto.randomUUID();
-  return current.run({ id, log }, async () => {
+  return current.run({ id, log: log ?? stderr }, async () => {
     const started = performance.now();
     let response: T | Response;
     let errorClass: string | undefined;
@@ -36,11 +43,13 @@ export function observeRequest<T extends Response | undefined>(work: () => T | P
       errorClass = diagnostic.errorClass;
       response = Response.json({ error: "internal" }, { status: 500 });
     }
-    log(
+    const status = response?.status ?? 101;
+    const requestLog = log ?? requestLogForStatus(status);
+    requestLog(
       JSON.stringify({
         event: "http_request",
         requestId: id,
-        status: response?.status ?? 101,
+        status,
         durationMs: Math.round(performance.now() - started),
         ...(errorClass ? { errorClass } : {}),
       }),
@@ -73,6 +82,7 @@ export function recordOperatorDiagnostic(
     code?: string | undefined;
     refusalCode?: string | undefined;
     causeCode?: string | undefined;
+    stopEvidence?: StopRefusalEvidence | null;
     log?: Log;
   } = {},
 ): void {
@@ -93,6 +103,7 @@ export function recordOperatorDiagnostic(
         code: options.code,
         refusalCode: options.refusalCode,
         causeCode: options.causeCode,
+        stopEvidence: options.stopEvidence,
         ...diagnostic,
       }),
     );

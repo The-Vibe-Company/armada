@@ -106,7 +106,10 @@ export const MAX_AUTH_FILE_LENGTH = 65536;
 export const CODEX_AUTH_PATH = "/home/user/.codex/auth.json";
 
 interface KindInfo {
-  /** The name `armada creds set <name>` takes. */
+  readonly singleton?: true;
+  readonly orgStorage?: "org-boat-key";
+  readonly normalizeValue?: (value: string) => string;
+  /** The name `armada account add <name>` takes. */
   name?: string;
   label: string;
   /** What launch injects it as. A file kind has no variable. */
@@ -121,9 +124,14 @@ export const CREDENTIAL_KINDS: Readonly<Record<CredentialKind, KindInfo>> = {
   opencode: { name: "opencode", label: "OpenCode API key or custom endpoint", env: "OPENCODE_API_KEY" },
   openai: { name: "openai", label: "OpenAI API key for Codex", env: "OPENAI_API_KEY" },
   codex_auth: { name: "codex-auth", label: "Codex auth.json" },
-  boat: { name: "boat", label: "boat.dev API key" },
-  modal: { name: "modal", label: "Modal token pair (id and secret)" },
-  skillpack: { name: "skillpack", label: "Skillpack personal access token" },
+  boat: { name: "boat", label: "boat.dev API key", singleton: true, orgStorage: "org-boat-key" },
+  modal: {
+    name: "modal",
+    label: "Modal token pair (id and secret)",
+    singleton: true,
+    normalizeValue: (value) => JSON.stringify(modalPairJson(parseModalTokenPair(value))),
+  },
+  skillpack: { name: "skillpack", label: "Skillpack personal access token", singleton: true },
   antigravity: { label: "Antigravity" },
 };
 
@@ -159,7 +167,8 @@ export function credentialName(kind: CredentialKind): string {
 export function parseCredentialValue(kind: CredentialKind, raw: string): string {
   const value = raw.trim();
   if (value === "") throw new VaultError("invalid", "The value is empty.");
-  if (kind === "modal") return JSON.stringify(modalPairJson(parseModalTokenPair(value)));
+  const normalizeValue = CREDENTIAL_KINDS[kind]?.normalizeValue;
+  if (normalizeValue) return normalizeValue(value);
   if (kind === "skillpack" && !new RegExp(`^${SKILLPACK_TOKEN_PATTERN}$`).test(value)) {
     throw new VaultError(
       "invalid",
@@ -337,7 +346,7 @@ export async function resolveModalTokens(
         ]
       : [["org", input.orgId]];
   for (const [scope, ownerId] of scopes) {
-    const row = (await reader.credentials(scope, ownerId)).find((candidate) => candidate.kind === "modal");
+    const row = await findStoredCredential(reader, scope, ownerId, "modal");
     if (!row) continue;
     const opened = await open(row.valueEnc, encryptionKey);
     let pair: ModalTokenPair;
@@ -351,8 +360,8 @@ export async function resolveModalTokens(
   throw new VaultError(
     "missing_credential",
     input.visibility === "private"
-      ? "No Modal token pair for you or your org. Run 'armada creds set modal' or ask an org admin to set the org's."
-      : "Your org has no Modal token pair. An org admin sets it with 'armada creds set modal --org <name>'.",
+      ? "No Modal token pair for you or your org. Run 'armada account add modal' or ask an org admin to set the org's."
+      : "Your org has no Modal token pair. An org admin sets it with 'armada account add modal --org <name>'.",
   );
 }
 
@@ -370,7 +379,7 @@ export async function resolveSkillpackCredential(
     ["user", input.userId],
     ["org", input.orgId],
   ] as const) {
-    const row = (await reader.credentials(scope, ownerId)).find((candidate) => candidate.kind === "skillpack");
+    const row = await findStoredCredential(reader, scope, ownerId, "skillpack");
     if (!row) continue;
     if (
       (row.status !== undefined && row.status !== "active") ||
@@ -412,6 +421,15 @@ export interface CredentialReader {
   agentDefaults?(userId: string): Promise<AgentDefault[]>;
   credentials(scope: CredentialScope, ownerId: string): Promise<StoredCredential[]>;
   orgBoatKey(orgId: string): Promise<Uint8Array | null>;
+}
+
+async function findStoredCredential(
+  reader: CredentialReader,
+  scope: CredentialScope,
+  ownerId: string,
+  kind: CredentialKind,
+) {
+  return (await reader.credentials(scope, ownerId)).find((candidate) => candidate.kind === kind);
 }
 
 export interface ResolvedCredentials {
@@ -486,7 +504,7 @@ export async function resolveCredentials(
   }
   throw new VaultError(
     "missing_credential",
-    `No ${HARNESS_CATALOG[input.harness].label} credential for you or your org. Run 'armada creds set ${credentialName(kinds[0] ?? "claude_oauth")}'.`,
+    `No ${HARNESS_CATALOG[input.harness].label} credential for you or your org. Run 'armada account add ${credentialName(kinds[0] ?? "claude_oauth")}'.`,
   );
 }
 
@@ -501,7 +519,7 @@ export async function resolveBoatKey(
   input: { userId: string; orgId: string; visibility: Visibility },
 ): Promise<{ key: string; scope: CredentialScope }> {
   if (input.visibility === "private") {
-    const personal = (await reader.credentials("user", input.userId)).find((row) => row.kind === "boat");
+    const personal = await findStoredCredential(reader, "user", input.userId, "boat");
     if (personal) return { key: await open(personal.valueEnc, encryptionKey), scope: "user" };
   }
   const org = await reader.orgBoatKey(input.orgId);
@@ -509,8 +527,8 @@ export async function resolveBoatKey(
   throw new VaultError(
     "missing_credential",
     input.visibility === "private"
-      ? "No boat.dev key for you or your org. Run 'armada creds set boat' or ask an org admin to set the org key."
-      : "Your org has no boat.dev key. An org admin sets it with 'armada creds set boat --org <name>'.",
+      ? "No boat.dev key for you or your org. Run 'armada account add boat' or ask an org admin to set the org key."
+      : "Your org has no boat.dev key. An org admin sets it with 'armada account add boat --org <name>'.",
   );
 }
 

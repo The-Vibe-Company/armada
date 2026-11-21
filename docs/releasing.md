@@ -32,7 +32,12 @@ so the package has no dependencies.
 
 For the next release, record the elapsed time of the **Publish to npm** job in
 [#2834](https://github.com/The-Vibe-Company/armada/issues/2834) and check it against
-the three-minute target. Use the four `npm-tarballs-<version>-<sha>-<target>` artifacts
+the three-minute target. If it exceeds the target, record the upload times for
+newly published packages and the registry retrieval times for the four platform
+packages from the publish step. The launcher waits for
+all four platform tarballs because a successful upload can precede download
+availability, leaving new CLI installs without a binary. Use the four
+`npm-tarballs-<version>-<sha>-<target>` artifacts
 from the binary run used by that job. For each of the six packages, retrieve the
 exact version with `npm pack "<package>@<version>" --ignore-scripts --prefer-online`
 in a separate directory. Compare its `shasum -a 256` output with the matching
@@ -199,7 +204,7 @@ count. Existing account caps also apply to smoke admission: refusal is not a
 provider pass, and the runner must not silently choose a different billing
 account. Do not raise limits or reset bindings merely to bypass a failed smoke.
 For deliberate owner-authorized account configuration, use
-`armada creds limits ACCOUNT_UUID --max-agents N` or `--unlimited`, as documented
+`armada account limits ACCOUNT_UUID --max-agents N` or `--unlimited`, as documented
 in [model accounts](named-model-credentials.md).
 
 These are existing product constraints, not new release inputs or a requirement

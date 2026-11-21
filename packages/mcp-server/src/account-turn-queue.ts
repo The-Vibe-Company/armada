@@ -24,11 +24,14 @@ import {
 } from "./account-turn-dispatch.ts";
 import type { Caller } from "./caller.ts";
 import { DOCKER_SEND_REFUSAL, DOCKER_SEND_REQUEST } from "./docker-send-request-schema.ts";
+import { assertModalLaunchSetup, MODAL_LAUNCH_SETUP_KEY } from "./jobs/modal-launch-setup.ts";
+import type { JobContext } from "./jobs/runner.ts";
 import { createJobsStore } from "./jobs/store.ts";
 import { queuedPromptAliases } from "./queued-prompt-ids.ts";
 import { currentRequestId } from "./request-observability.ts";
 import type { RuntimeFollowupInput } from "./runtime-followup.ts";
 import { sandboxControlRefusal } from "./sandbox-control-refusal.ts";
+import { hasStrictNativeDrainStop } from "./sandbox-lifecycle.ts";
 import { ToolError } from "./tool-error.ts";
 
 type Entry = {
@@ -131,8 +134,12 @@ export function createAccountTurnQueue(sql: Sql, key: string) {
       return `Waiting for a free agent slot for model ${row.model} on account ${row.name} (${row.model_working}/${row.model_limit}).`;
     return "Prompt accepted; waiting for sandbox dispatch, not an account slot.";
   }
-  async function accept(caller: Caller, input: RuntimeFollowupInput) {
-    const requestId = input.request_id?.toLowerCase() ?? randomUUID();
+  async function persist(
+    caller: Caller,
+    input: RuntimeFollowupInput & { request_id: string },
+    initialLaunch?: { generation: string; canDispatch: JobContext["canDispatch"] },
+  ) {
+    const requestId = input.request_id;
     const normalized = {
       id: input.id,
       request_id: requestId,
@@ -145,7 +152,7 @@ export function createAccountTurnQueue(sql: Sql, key: string) {
     // The first insert owns correlation. Keep it outside the idempotency hash.
     const sealed = await encryptSecret(JSON.stringify({ ...normalized, correlationId: currentRequestId() }), key);
     if (!sql.transaction) throw new VaultError("unavailable", "Transactional account admission unavailable.");
-    const entry = await sql.transaction(async (tx) => {
+    return sql.transaction(async (tx) => {
       const target = (
         await tx.query<{
           status: string;
@@ -161,11 +168,17 @@ export function createAccountTurnQueue(sql: Sql, key: string) {
           credential_id: string | null;
           credential_version: number;
           org_id: string;
+          launch_setup_state: string | null;
         }>(
-          `select s.status,s.status_reason,s.preservation_note,s.expires_at,s.harness,s.provider,s.boat_runtime,s.runtime_transport,s.model,s.reasoning_effort,s.credential_id,s.credential_version,s.org_id from public.sandboxes s
-         join public.members m on m.org_id=s.org_id and m.user_id=$2
-         where s.id=$1 and s.owner_id=$2 and s.deleted_at is null`,
-          [input.id, caller.userId],
+          `select s.status,s.status_reason,s.preservation_note,s.expires_at,s.harness,s.provider,s.boat_runtime,
+                  s.runtime_transport,s.model,s.reasoning_effort,s.credential_id,s.credential_version,s.org_id,
+                  case when s.provider='modal' and not $3::boolean then (
+                    select j.state from public.jobs j where j.idem_key=${MODAL_LAUNCH_SETUP_KEY}
+                  ) end as launch_setup_state
+           from public.sandboxes s
+           join public.members m on m.org_id=s.org_id and m.user_id=$2
+           where s.id=$1 and s.owner_id=$2 and s.deleted_at is null`,
+          [input.id, caller.userId, initialLaunch !== undefined],
         )
       ).rows[0];
       if (!target || !caller.orgs.some((org) => org.orgId === target.org_id))
@@ -182,6 +195,7 @@ export function createAccountTurnQueue(sql: Sql, key: string) {
         new Date(),
       );
       if (refusal) throw new VaultError("conflict", refusal);
+      assertModalLaunchSetup(target.launch_setup_state);
       // Docker admission rules apply to the normalized request before anything is persisted. A keyless
       // send keeps its server-generated request_id, as installed clients (earlier iOS builds) rely on.
       if (target.provider === "docker" && !DOCKER_SEND_REQUEST.safeParse(normalized).success)
@@ -224,6 +238,24 @@ export function createAccountTurnQueue(sql: Sql, key: string) {
         [target.credential_id, target.credential_version, caller.userId, target.org_id],
       );
       if (!credential.rows.length) throw new VaultError("not_found", "Pinned account is no longer authorized.");
+      if (initialLaunch) {
+        const { rows: sandboxes } = await tx.query(
+          `select id from public.sandboxes
+           where id=$1 and lifecycle_generation=$2 and org_id=$3 and owner_id=$4
+             and provider='modal' and runtime_transport='dialout' and provider_sandbox_id is not null
+             and status in ('ready','running') and stop_requested_at is null and deleted_at is null
+             and expires_at>clock_timestamp() for update`,
+          [input.id, initialLaunch.generation, target.org_id, caller.userId],
+        );
+        if (!sandboxes.length) return null;
+        // WARNING: Read after locking because ticket rotation can change the receipt without updating the sandbox.
+        const { rows: enrolled } = await tx.query(
+          `select sandbox_id from public.runtime_enrolments
+           where sandbox_id=$1 and lifecycle_generation=$2 and runtime_hash is not null`,
+          [input.id, initialLaunch.generation],
+        );
+        if (!enrolled.length || !(await initialLaunch.canDispatch(tx))) return null;
+      }
       let saved = (
         await tx.query<Entry>("select * from public.account_turn_queue where sandbox_id=$1 and request_id=$2", [
           input.id,
@@ -238,12 +270,13 @@ export function createAccountTurnQueue(sql: Sql, key: string) {
       if (!saved) {
         const sandbox = await tx.query<Record<string, unknown> & { conversation_ids: string[] }>(
           `select id,status,provider,status_reason,preservation_note,expires_at,boat_runtime,runtime_transport,conversation_ids from public.sandboxes where id=$1 and credential_id=$2 and credential_version=$3
-           and deleted_at is null and expires_at>now() and stop_requested_at is null
+           and deleted_at is null and expires_at>now() and stop_requested_at is null and not native_drain_pending
            and status in ('ready','running','stopped') for update`,
           [input.id, target.credential_id, target.credential_version],
         );
         const locked = sandbox.rows[0];
-        if (!locked) throw new VaultError("conflict", "Sandbox cannot accept a queued prompt.");
+        if (!locked || (await hasStrictNativeDrainStop(tx, input.id)))
+          throw new VaultError("conflict", "Sandbox cannot accept a queued prompt.");
         if (locked.status !== "stopped") {
           const checkpoint = (
             await tx.query<{ merge_stop: boolean }>(
@@ -294,9 +327,15 @@ export function createAccountTurnQueue(sql: Sql, key: string) {
           )
         ).rows[0]!;
         await enqueueDispatchJob(saved, tx);
+        if (initialLaunch && !(await initialLaunch.canDispatch(tx)))
+          throw new Error("Modal initial turn lost its job lease before queue commit.");
       }
       return saved;
     });
+  }
+  async function accept(caller: Caller, input: RuntimeFollowupInput) {
+    const requestId = input.request_id?.toLowerCase() ?? randomUUID();
+    const entry = await persist(caller, { ...input, request_id: requestId });
     if (!entry) return null;
     if (entry.result_enc) return JSON.parse(await decryptSecret(entry.result_enc, key));
     if (entry.state === "failed")
@@ -312,6 +351,14 @@ export function createAccountTurnQueue(sql: Sql, key: string) {
   }
   return {
     accept,
+    async acceptInitialLaunch(
+      caller: Caller,
+      input: { id: string; request_id: string; prompt: string },
+      generation: string,
+      canDispatch: JobContext["canDispatch"],
+    ) {
+      return Boolean(await persist(caller, input, { generation, canDispatch }));
+    },
     async cancelQueued(caller: Caller, sandboxId: string) {
       await sql.query(
         `update public.account_turn_queue q set state='failed',failure_reason='Queued prompt was cancelled.'
@@ -389,18 +436,13 @@ export function createAccountTurnQueue(sql: Sql, key: string) {
     setDispatch(value: NonNullable<typeof dispatch>) {
       dispatch = value;
     },
+    backfillDispatchJobs,
     async drain() {
       await Promise.allSettled([...pending]);
     },
     async reconcileOne(signal: AbortSignal) {
       if (!dispatch || pending.size >= 32 || signal.aborted) return false;
       if (!sql.transaction) throw new VaultError("unavailable", "Transactional account admission unavailable.");
-      try {
-        await backfillDispatchJobs(signal);
-      } catch {
-        console.error("armada: queued turn job backfill unavailable; existing dispatch continues.");
-      }
-      if (signal.aborted) return false;
       const picked = await (async () => {
         // Older replicas could leave a queued receipt after publishing its request.
         // Never replay it (especially on native providers without idempotency).

@@ -14,6 +14,7 @@ export async function startServer(env: Record<string, string | undefined>, optio
   const { config, control, runtimeSockets } = services;
   const eventStreamShutdown = new AbortController();
   control.eventStreamShutdown = eventStreamShutdown.signal;
+  control.stopAdmissionShutdown = eventStreamShutdown.signal;
   const assembly = assembleServer(services);
   let configureDockerArchiveTimeout: ((request: Request) => void) | undefined;
   const handler = createHandler({
@@ -51,10 +52,12 @@ export async function startServer(env: Record<string, string | undefined>, optio
       workerDone: Promise.resolve(),
     },
   );
-  // Cold image pulls/bootstrap can exceed Bun's default ten-second idle window.
-  // Only authenticated normal Docker launches opt out; their service deadline
-  // remains bounded, and other providers/routes keep their existing timeouts.
+  // Cold image pulls and scoped child admission can exceed Bun's default ten-second idle window.
+  // Normal Docker launches and scoped child mutations use their own operation deadlines.
+  // Other routes retain their existing response timeout policy.
   control.configureDockerLaunchRequest = (request) => server.timeout(ingressRequest(request), 0);
+  control.configureStopRequest = (request) => server.timeout(ingressRequest(request), 0);
+  control.configureScopedMutationRequest = (request) => server.timeout(ingressRequest(request), 0);
   control.configureEventStreamRequest = (request) => server.timeout(ingressRequest(request), 30);
   // Archive validation and encrypted chunk publication have their own bounded deadline.
   configureDockerArchiveTimeout = (request) => server.timeout(ingressRequest(request), 45);

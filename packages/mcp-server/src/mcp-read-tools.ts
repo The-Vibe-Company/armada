@@ -76,6 +76,7 @@ export function registerStatusTools(
     allowRecordedFallback = false,
     recorded = false,
   ) => {
+    const currentTurn = promptId === undefined;
     const queued = await context.accountTurns?.status(caller, sandboxId, promptId);
     const publicPromptId = queued && "nativePromptId" in queued ? (promptId ?? queued.publicPromptId) : undefined;
     const publicReport = (report: StatusReport) =>
@@ -124,16 +125,23 @@ export function registerStatusTools(
       return {
         ...publicReport(recordedStatus(found)),
         ...logicalExpiry(found.expiresAt, context.now()),
-        statusMessage: `Recorded state only; use armada status ${sandboxId} --live for provider and prompt details.`,
+        statusMessage: `Recorded state only; use armada info ${sandboxId} --live for provider and prompt details.`,
       };
+    const fenced = found.status === "deleted" || isStatusReadFenced(found);
+    const jobReader = fenced ? null : await context.modalJobReader?.(found);
     try {
       const storedProvider = stored ? context.storedProviders?.[found.provider] : undefined;
-      const provider =
-        found.status === "deleted" || isStatusReadFenced(found)
-          ? null
-          : storedProvider
-            ? await storedProvider(found)
-            : await context.provider(found);
+      const setupPending = jobReader?.setupState === "queued" || jobReader?.setupState === "leased";
+      if (setupPending || jobReader?.setupState === "failed")
+        return {
+          ...recordedStatus(found),
+          ...logicalExpiry(found.expiresAt, context.now()),
+          settled: !setupPending,
+          statusMessage: setupPending ? "Modal launch setup is still in progress." : "Modal launch setup failed.",
+        };
+      const provider = fenced
+        ? null
+        : (jobReader ?? (storedProvider ? await storedProvider(found) : await context.provider(found)));
       const result = await measure("state", () =>
         readStatus(provider, data.sandboxes, found, {
           stored: storedProvider !== undefined,
@@ -141,13 +149,16 @@ export function registerStatusTools(
           now: context.now(),
         }),
       );
+      await jobReader?.verify();
+      const settled = result.settled && (!jobReader || !currentTurn || (await jobReader.followSettled()));
       return {
         ...publicReport(result),
+        settled,
         ...logicalExpiry(result.expiresAt, context.now()),
         statusMessage: idlePauseMessage(result, context.now()),
       };
     } catch (error) {
-      if (!allowRecordedFallback || !(error instanceof ProviderError)) throw error;
+      if (jobReader || !allowRecordedFallback || !(error instanceof ProviderError)) throw error;
       return {
         ...publicReport(recordedStatus(found)),
         ...logicalExpiry(found.expiresAt, context.now()),
@@ -218,8 +229,8 @@ export function registerLogsTool(
     async (args) => {
       const found = await visible(args.id);
       if (found.status === "deleted") throw new ToolError("conflict", "Sandbox is deleted.");
-      const storedProvider = context.storedProviders?.[found.provider];
-      const provider = storedProvider ? await storedProvider(found) : await context.provider(found);
+      const resolveProvider = context.logProvider ?? context.storedProviders?.[found.provider] ?? context.provider;
+      const provider = await resolveProvider(found);
       const page = await readLogs(provider, found.providerSandboxId, {
         ...(args.since_cursor ? { since_cursor: args.since_cursor } : {}),
         ...(args.limit ? { limit: args.limit } : {}),
@@ -234,7 +245,7 @@ export function registerLogsTool(
 }
 
 async function readLogs(
-  provider: Provider,
+  provider: Pick<Provider, "events">,
   sandboxId: string,
   args: {
     since_cursor?: string;
@@ -257,6 +268,7 @@ async function readLogs(
       }),
     args.since_cursor,
     args.all === true,
+    { pauseOnNativeLease: args.direction !== "backward" },
   );
   return {
     ...(olderCursor ? { olderCursor } : {}),

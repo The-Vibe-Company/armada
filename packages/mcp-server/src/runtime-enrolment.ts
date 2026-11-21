@@ -6,7 +6,7 @@ import { createDockerHostStore } from "./docker-host-store.ts";
 import type { Route } from "./http.ts";
 import { runtimeHealthMatches } from "./runtime-health.ts";
 import { runtimeHttpFailure } from "./runtime-http-failure.ts";
-import { publishDockerRuntimeReadiness } from "./sandbox-lifecycle.ts";
+import { publishRuntimeReadiness } from "./sandbox-lifecycle.ts";
 
 const ENROL_PATH = "/api/runtime/enrol";
 const SESSION_PATH = "/api/runtime/session";
@@ -184,6 +184,7 @@ export function createRuntimeEnrolments(sql: Sql, encryptionKey: string, options
     expectedGeneration?: number;
     assertClaim?: (tx: Sql) => Promise<void>;
     ticketGuard?: RuntimeTicketGuard;
+    recordIssued?: (tx: Sql, enrolmentToken: string) => Promise<void>;
   }) {
     const serialized = JSON.stringify(input.configuration);
     if (Buffer.byteLength(serialized) > 1048576) throw new RuntimeEnrolmentDenied();
@@ -246,10 +247,40 @@ export function createRuntimeEnrolments(sql: Sql, encryptionKey: string, options
         )
       ).rows[0];
       if (!row) throw new RuntimeEnrolmentDenied();
+      await input.recordIssued?.(tx, enrolmentToken);
       await input.assertClaim?.(tx);
       return { epoch: String(BigInt(row.epoch) + 1n), lifecycleGeneration: sandbox.lifecycle_generation };
     });
     return { enrolmentToken, ...receipt };
+  }
+  async function refreshModalBootstrapManifest(
+    tx: Sql,
+    sandboxId: string,
+    generation: number,
+    hash: string,
+    artifactManifest: unknown,
+  ) {
+    const {
+      rows: [pending],
+    } = await tx.query<{ configuration_enc: Uint8Array<ArrayBuffer> }>(
+      `select configuration_enc from public.runtime_enrolments
+       where sandbox_id=$1 and lifecycle_generation=$2 and enrolment_hash=$3
+         and enrolment_expires_at>clock_timestamp() and runtime_hash is null and configuration_enc is not null
+       for update`,
+      [sandboxId, generation, hash],
+    );
+    if (!pending) return false;
+    const configuration = JSON.parse(await decryptSecret(pending.configuration_enc, encryptionKey));
+    const serialized = JSON.stringify({ ...configuration, artifactManifest });
+    if (Buffer.byteLength(serialized) > 1048576) throw new RuntimeEnrolmentDenied();
+    const sealed = await encryptSecret(serialized, encryptionKey);
+    const { rows } = await tx.query(
+      `update public.runtime_enrolments set configuration_enc=$4
+       where sandbox_id=$1 and lifecycle_generation=$2 and enrolment_hash=$3
+         and enrolment_expires_at>clock_timestamp() returning sandbox_id`,
+      [sandboxId, generation, hash, sealed],
+    );
+    return rows.length > 0;
   }
   async function enrol(enrolmentToken: string, wireProtocol: string | null = String(PROTOCOL_VERSION)) {
     // The original v1 wire request had no protocol header. This encoding ages out with v1.
@@ -314,7 +345,7 @@ export function createRuntimeEnrolments(sql: Sql, encryptionKey: string, options
       if (!updated) throw new RuntimeEnrolmentDenied();
       if (
         sandbox.status === "starting" &&
-        (await publishDockerRuntimeReadiness(tx, sandbox.id, sandbox.lifecycle_generation, "bootstrap")) === "conflict"
+        (await publishRuntimeReadiness(tx, sandbox.id, sandbox.lifecycle_generation, "bootstrap")) === "conflict"
       )
         throw new RuntimeEnrolmentDenied();
       return { sandboxId: sandbox.id, epoch: updated.epoch, runtimeToken, configuration };
@@ -404,7 +435,7 @@ export function createRuntimeEnrolments(sql: Sql, encryptionKey: string, options
 
   async function confirmDockerRestore(tx: Sql, scope: RuntimeSessionScope, generation: string, health: unknown) {
     if (!(await dockerRestoreMatches(tx, scope, health))) return "unverified";
-    const publication = await publishDockerRuntimeReadiness(tx, scope.sandboxId, generation, "retained");
+    const publication = await publishRuntimeReadiness(tx, scope.sandboxId, generation, "retained");
     if (publication === "conflict") throw new RuntimeEnrolmentDenied();
     return publication;
   }
@@ -466,6 +497,7 @@ export function createRuntimeEnrolments(sql: Sql, encryptionKey: string, options
   };
   return {
     issue,
+    refreshModalBootstrapManifest,
     enrol,
     withBootstrap,
     withSession,

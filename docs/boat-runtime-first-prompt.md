@@ -302,8 +302,10 @@ smoke client does not select the default. Ordinary API, CLI, dashboard, MCP
 `sandbox_launch`, template and routine launches share the same Core launch
 selection: no client flag/endpoint change. Modal/Docker selection is unchanged.
 Runtime mode uses the image's matching `/opt/armada/runtime-manifests/<arch>.json`
-(or the existing trusted manifest override); in runtime-default mode,
-missing/invalid manifest metadata fails startup rather than selecting native. Valid
+(or the existing trusted manifest override). When `ARMADA_BOAT_AGENT_PATH=runtime`,
+startup requires the manifest and its published runtime and harness artifacts
+in `ARMADA_RUNTIME_ARTIFACT_DIR`. Each published artifact must be a regular file
+named by its manifest digest, with the declared byte count. Valid
 image-installed artifacts keep the explicit runtime route/retained sessions
 available during rollback. Missing/corrupt runtime-only metadata does not prevent
 native rollback from booting; explicit runtime bootstrap remains unavailable
@@ -738,7 +740,7 @@ from staging/release gates. These are acceptance instructions, not live evidence
 
 ### API-key model connection checks on running Boat runtimes (#2052)
 
-The existing `sandbox/test-model-connection` API and `armada creds test SANDBOX_UUID --model DEPLOYMENT_MODEL`
+The existing `sandbox/test-model-connection` API and `armada account test SANDBOX_UUID --model DEPLOYMENT_MODEL`
 now support an already-running, owner-controlled Boat shared-runtime sandbox. No
 start, resume, native Boat model API or SSH/exec fallback is used. Native Modal
 checks retain their existing path. The dashboard now lists matching running Boat

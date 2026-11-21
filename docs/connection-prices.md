@@ -69,13 +69,13 @@ with the account ID from the list, `CODEX_DEPLOYMENT` with the deployment name
 from `models`, and `SANDBOX_UUID` with the sandbox ID from the launch receipt.
 
 ```sh
-armada creds set openai --name priced-connection --file /private/priced-connection.json
-armada creds list --json
+armada account add openai --name priced-connection --file /private/priced-connection.json
+armada account ls --json
 armada new MODAL_SNAPSHOT --provider modal --agent codex --credential-id MODEL_ACCOUNT_UUID --model CODEX_DEPLOYMENT "Reply OK"
-armada wait SANDBOX_UUID
+armada info --wait SANDBOX_UUID
 ```
 
-Repeat with `armada creds set anthropic --name priced-gateway --file /private/priced-gateway.json`.
+Repeat with `armada account add anthropic --name priced-gateway --file /private/priced-gateway.json`.
 Launch with `--agent claude` and the Claude account ID in `--credential-id`.
 Omit the Codex deployment flag. Expect accepted config, unchanged native endpoint behavior and
 no key/rate payload returned in account metadata. Existing no-price connections

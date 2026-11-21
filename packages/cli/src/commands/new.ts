@@ -1,12 +1,12 @@
 import { GoldenError, HARNESSES, type LaunchResult, MODEL_CATALOG, resolveModelChoice } from "@armada/core";
 import { requireLaunchAgent } from "../agent-validation.ts";
 import { flag, parseArgs, providerFlag, single, values } from "../args.ts";
-import { createArmadaApiClient } from "../armada-api.ts";
 import { rememberSandbox } from "../current-sandbox.ts";
 import { prepareLaunch } from "../devx.ts";
 import { launchDocker } from "../docker-launch.ts";
 import { parseTtl } from "../operations.ts";
 import { printOptionalResourceAdvice } from "../resource-advice.ts";
+import { createSdkCommandClient } from "../sdk-session.ts";
 import type { Command } from "./command.ts";
 
 type LaunchWireResult = Omit<LaunchResult, "expiresAt"> & { expiresAt?: string | null };
@@ -73,7 +73,7 @@ const run: Command["run"] = async (argv, { io, deps, auth }) => {
   resolveModelChoice(harness, { model: single(args, "--model"), reasoningEffort: single(args, "--reasoning-effort") });
   const ttl = single(args, "--ttl");
   const ttlSeconds = ttl === undefined ? undefined : parseTtl(ttl);
-  const client = await createArmadaApiClient({
+  const client = await createSdkCommandClient({
     env: auth.env,
     fetch: deps.fetch ?? auth.fetch,
     session: auth.session,
@@ -176,6 +176,7 @@ Example: armada new starter --provider modal --agent codex "Inspect the reposito
 Example: armada new "Inspect the repository" --provider docker --host workstation --agent codex --org ORG_UUID
 `,
   automaticJson: true,
+  useSelectedOrg: true,
   run,
 } satisfies Command;
 

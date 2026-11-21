@@ -4,9 +4,9 @@ import { AuthError, type AuthFetch } from "@armada/auth";
 import { organizationOperations } from "@armada/core/contract";
 import { publicAuthOperations } from "@armada/core/contract/public-auth";
 import { authClient } from "@armada/sdk/auth";
-import { armadaApiUrl } from "./armada-api.ts";
 import type { Preferences } from "./preferences.ts";
 import { profileStores } from "./profiles.ts";
+import { armadaApiUrl } from "./sdk-session.ts";
 import type { Session, SessionStore } from "./session.ts";
 
 export interface AuthIo {

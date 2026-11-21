@@ -68,6 +68,59 @@ The coordinator owns the drain run. Existing turn, stop/resume, retention and de
 
 [#2742](https://github.com/The-Vibe-Company/armada/issues/2742) owns the implementation design, including the concrete awaits after durable writes and lease ownership. This note covers the rollout and deletion sequence. Config changes, the drain runner, provider operations, schema changes and deployed verification belong to their respective delivery tickets.
 
+### Modal subscription stop cutover
+
+The first release containing the retained Modal subscription stop handoff
+requires a non-overlapping server cutover. Quiesce subscription traffic, stop
+all older API and worker instances, and confirm their in-flight Modal stop
+operations have settled before starting the new revision. The usual
+[180-second deployment overlap](deployment-draining.md) leaves older dispatchers
+able to retry a failed checkpoint as an ordinary stop and terminate without a
+retained snapshot. Arrange the staging cutover before merging, since staging
+follows main, and the production cutover before approving deployment.
+
+For rollback across this cutover, keep new subscription enrollment quiesced
+while the new workers settle all pending retained native Modal subscription
+stops. Stop the new instances before restarting the older revision. An
+unresolved retained stop blocks rollback to that revision.
+
+### Coordinator command
+
+Run `bun scripts/ops/drain-native.ts --provider modal --dry-run` with
+`ARMADA_DRAIN_READ_ONLY_DATABASE_URL` set to a role with unfiltered inventory
+access. Select `boat` for the Boat cohort.
+
+For a real pass, wait for the selected provider's release and checklist gate,
+disable new native admissions, and drain every replica that could still admit
+or finish a native launch from before the cutover. Apply the strict-stop migration
+and deploy the strict-stop worker before running the real command. Drain all
+older lifecycle workers and wait for their in-flight work to finish, including
+replicas with native launches disabled. Older workers can claim a native stop
+request without enforcing preservation. For Modal, stop older workers and use
+an operator checkout and workers from the revision with the Modal
+physical-generation and retained-checkpoint checks. Before rolling back to a
+worker that lacks those checks, halt the drain and settle pending strict Modal
+stops with the newer workers. Prepare the checkout with
+`bun scripts/prepare-runtime.ts`. Set the server's `ARMADA_DATABASE_URL`,
+`ARMADA_ENCRYPTION_KEY` and `ARMADA_PUBLIC_URL`, and set
+`ARMADA_DRAIN_ACTOR_ID` to a user authorized to delete each candidate.
+Then run `bun scripts/ops/drain-native.ts --provider modal` (or `--provider boat`).
+
+The real command reports the selected, deleted and failed counts. A nonzero
+failed count leaves the drain incomplete and returns a failing exit status.
+For eligible ready or running Boat and Modal rows, the command requests strict preservation
+through the lifecycle worker and reports the row as incomplete on that pass.
+The worker requires current preservation proof and settled work before requesting
+a retained stop. Modal admission also requires an active native journal without
+a lease. The worker matches the captured physical generation and verifies the
+retained checkpoint before settlement. Rerun after the stop settles to delete
+through the existing recovery handoff. Rows with missing or uncertain proof
+require operator reconciliation before deletion. For a
+scoped Modal parent, the drain records scoped cleanup before provider deletion.
+If the delete response is lost, a later pass can use the pinned Modal journal
+after the activity lease expires. Verify the result with a fresh inventory. A
+complete rerun reports zero candidates.
+
 ### Coordinator ledger
 
 [Railway IaC](../.railway/railway.ts) leaves these settings owner-managed. Record effective selector values (including unset), Modal dial-out enablement, runtime artifact version, deployment SHA and UTC timestamp. Cross-check authenticated `launch/options` while the discovery fields exist. A repository default does not establish a deployed setting.
@@ -76,13 +129,15 @@ The coordinator owns the drain run. Existing turn, stop/resume, retention and de
 | --- | --- | --- | --- | --- |
 | Repository defaults | Native | Runtime | See server config and assembly above | Code-derived |
 | Staging | Unverified | Unverified | Unverified | Pending coordinator record |
-| Production | Unverified | Unverified | Unverified | Pending coordinator record |
+| Production | Unverified | Runtime | `/opt/armada/runtime-manifests/x64.json`, dial-out enabled | `dbdd1ec9bac0d040aca762f608913c61eae50e51` · 2026-11-21 08:23 UTC · Railway deployment `19d40232` ([coordinator record](https://github.com/The-Vibe-Company/armada/issues/2740#issuecomment-7059904959)) |
 
-Modal default-on release (#2740), to be completed by the coordinator after deployment:
+Modal default-on release (#2740):
 
 | Release | UTC date | Production checklist result |
 | --- | --- | --- |
-| Pending rollout | Pending | Pending coordinator verification |
+| [v5.0.0](https://github.com/The-Vibe-Company/armada/releases/tag/v5.0.0) (`dbdd1ec9`) | 2026-11-21 | [PASS](https://github.com/The-Vibe-Company/armada/issues/2740#issuecomment-7060461871): canary `a40baae1` and checklist sandboxes `40605f85`, `86f14e5b` and `e1fe83be`. |
+
+The coordinator recorded `ARMADA_MODAL_AGENT_PATH=runtime`, `ARMADA_MODAL_DIALOUT=1` and `ARMADA_MODAL_RUNTIME_MANIFEST=/opt/armada/runtime-manifests/x64.json`. On the Python-free `native-linear-modal` golden, the first turn ran Git in the repository, a follow-up answered, and a turn after stop and resume ran Git again. The canary sandbox was stopped after the check. The production checklist also confirmed enrolled Modal launches and first turns, same-conversation follow-up and retained context after resume, the Docker server lifecycle and account-counter settlement. The one-release-cycle and recoverable previous release requirements remain part of the drain gate.
 
 For #2737, the coordinator ran a read-only count from CLI source on main (`9773b5fad`). The inventory covered the single real user's personal credentials and every organization returned by `armada org list --json` for that owner. The coordinator used `armada creds list --json` for personal credentials and `armada creds list --org <id> --json` for each organization, then counted model-kind rows missing an ID or version. Credential identifiers, names and values were omitted from the record.
 
@@ -100,7 +155,7 @@ Before #2742, capture a read-only aggregate grouped by provider and status for r
 
 | Provider | Default-on release / UTC | Checklist evidence | Recoverable previous release | Drain report / deletion release |
 | --- | --- | --- | --- | --- |
-| Modal | Pending | Pending | Pending | Pending |
+| Modal | v5.0.0 (`dbdd1ec9`) / 2026-11-21 | [PASS](https://github.com/The-Vibe-Company/armada/issues/2740#issuecomment-7060461871) | Pending | Pending |
 | Boat | Pending | Pending | Pending | Pending |
 
 ## Deletion inventory

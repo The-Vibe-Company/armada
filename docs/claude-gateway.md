@@ -9,8 +9,8 @@ streaming, and tool use with Claude models.
 Pass the base URL separately and read the API key from stdin or a private file.
 
 ```sh
-armada creds set anthropic --name gateway --base-url 'https://gateway.example.com/anthropic' --endpoint-auth bearer --file /path/to/private-key
-armada creds list --json
+armada account add anthropic --name gateway --base-url 'https://gateway.example.com/anthropic' --endpoint-auth bearer --file /path/to/private-key
+armada account ls --json
 ```
 
 Use `--endpoint-auth api-key` for the `x-api-key` header. Bearer authentication
@@ -27,7 +27,7 @@ The CLI also accepts the following connection JSON from stdin or a private
 file when you omit `--base-url`. Keep the key out of command arguments.
 
 ```sh
-armada creds set anthropic --name gateway --file /path/to/private-connection.json
+armada account add anthropic --name gateway --file /path/to/private-connection.json
 ```
 
 ```json

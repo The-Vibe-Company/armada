@@ -287,7 +287,7 @@ describe("credentials", () => {
       const org = await createOrg(store, people.stan, "Vibe");
       const input = { userId: people.stan, orgId: org.id };
       await expect(resolveCredentials(store, KEY, { ...input, harness: "codex" })).rejects.toThrow(
-        /armada creds set openai/,
+        /armada account add openai/,
       );
       await setCredential(store, KEY, people.stan, {
         scope: "user",

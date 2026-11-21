@@ -40,6 +40,7 @@ function fixture(status = "stopped", provider = "boat") {
         writes.push({ sql: query, values: [...values] });
         return { rows: [{ id }] } as never;
       }
+      if (query.includes("native_drain_stop_requests")) return { rows: [] } as never;
       if (query.includes("from public.sandboxes s")) return { rows: [{ ...row }] } as never;
       if (query.includes("from public.modal_machines"))
         return { rows: [{ scope: "scope", owner_id: user, leased: false, record: structuredClone(machine) }] } as never;

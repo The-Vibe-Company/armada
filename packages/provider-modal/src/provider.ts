@@ -532,6 +532,7 @@ export function createModalProvider(options: ModalProviderOptions) {
     ...turns,
     supportsExecPhysicalGeneration: true,
     async exec({ expectedPhysicalGeneration, ...r }) {
+      r.signal?.throwIfAborted();
       if (r.onlyIfRunning || expectedPhysicalGeneration !== undefined)
         return admit(r.sandboxId, async (row) => {
           r.signal?.throwIfAborted();
@@ -542,7 +543,7 @@ export function createModalProvider(options: ModalProviderOptions) {
           return runner.call<ExecResult>(row, "exec", { input: r });
         });
       const target = await store.get(r.sandboxId);
-      if (!target.golden) return call(r.sandboxId, "exec", { input: r });
+      if (!target.golden) return call(r.sandboxId, "exec", { input: r }, r.signal);
       return admit(r.sandboxId, async (row, save) => {
         if (!row.golden) throw refusal("conflict", "Sandbox role changed during golden exec admission.");
         const active = await healthyAdmission(row, save);

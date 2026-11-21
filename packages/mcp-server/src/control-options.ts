@@ -32,6 +32,7 @@ import type { RequestTiming } from "./request-timing.ts";
 import type { RuntimeCheckpoint } from "./runtime-checkpoint.ts";
 import type { RuntimeFollowup } from "./runtime-followup.ts";
 import type { RuntimeGitHub } from "./runtime-github.ts";
+import type { SandboxLogReader } from "./runtime-history.ts";
 import type { RuntimeMcp } from "./runtime-mcp.ts";
 import type { RuntimeResume } from "./runtime-resume.ts";
 import type { createSandboxArmadaAccess } from "./sandbox-armada-access.ts";
@@ -40,6 +41,9 @@ export interface ControlOptions {
   listCredentialMetadata?: ReturnType<typeof createSqlCredentialList>;
   eventStreamShutdown?: AbortSignal;
   eventFeed?: import("./event-feed.ts").EventFeed;
+  configureStopRequest?: (request: Request) => void;
+  stopAdmissionShutdown?: AbortSignal;
+  configureScopedMutationRequest?: (request: Request) => void;
   configureEventStreamRequest?: (request: Request) => void;
   scopedSandboxData?: (caller: Caller, ref: string) => ScopedData;
   listGoldenRecords?: (caller: Caller, ref: string | undefined) => Promise<GoldenRecord[]>;
@@ -58,7 +62,7 @@ export interface ControlOptions {
     normalSend?: boolean;
     normalResume?: boolean;
   };
-  runtimeMcp?: RuntimeMcp;
+  runtimeMcp?: Pick<RuntimeMcp, "prepare" | "preflight" | "connections">;
   runtimeGitHub?: RuntimeGitHub;
   runtimeResume?: RuntimeResume;
   runtimeCheckpoint?: RuntimeCheckpoint;
@@ -71,6 +75,7 @@ export interface ControlOptions {
   runtimeHostFor?: (apiKey: string) => Provider;
   skillCatalog?: ReturnType<typeof createSkillCatalog>;
   timing?: RequestTiming;
+  modalJobReader?: ReturnType<typeof import("./runtime-history.ts").createModalJobReader>;
   storedProviderFor?: (target: ProviderTarget, caller: { userId: string }) => Promise<Provider>;
   sandboxArmadaAccess?: ReturnType<typeof createSandboxArmadaAccess>;
   templates?: TemplateService;
@@ -99,7 +104,7 @@ export interface ControlOptions {
   store: VaultStore;
   encryptionKey: string | undefined;
   github?: { app: GitHubApp | null; fetch?: typeof fetch; now?: () => Date };
-  logs?: (caller: Caller, sandboxId: string) => Promise<{ provider: Provider; providerSandboxId: string }>;
+  logs?: (caller: Caller, sandboxId: string) => Promise<{ provider: SandboxLogReader; providerSandboxId: string }>;
   goldenBuilds?: GoldenBuildJobs;
   goldenAdoption?: import("@armada/core/server").GoldenAdoption;
   providers?: ProviderRegistry;

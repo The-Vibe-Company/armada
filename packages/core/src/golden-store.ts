@@ -5,7 +5,7 @@ import type { GoldenBuildWarning } from "./golden-build-warning.ts";
 import { type GoldenConfig, GoldenError, parseGoldenConfig } from "./golden-config.ts";
 import type { HelperReceipt } from "./helper.ts";
 import { parseMachineSizePolicy } from "./machine-size.ts";
-import { isSandboxProvider, sandboxRowModalBinding } from "./sandbox-provider.ts";
+import { HOST_CAPABILITIES, isSandboxProvider, sandboxRowModalBinding } from "./sandbox-provider.ts";
 
 /** The slice of a database client the golden store needs. Postgres `$1` parameters. */
 export interface Sql {
@@ -184,7 +184,8 @@ export function mapGoldenRow(row: GoldenRow): GoldenRecord {
   if (!isSandboxProvider(provider)) throw new Error("Golden row provider is invalid.");
   const config = typeof row.config === "string" ? JSON.parse(row.config) : row.config;
   const modal = sandboxRowModalBinding(row);
-  if (provider === "modal" && !modal) throw new Error("Modal golden row has no pinned binding.");
+  if (HOST_CAPABILITIES[provider].requiresPinnedGoldenBinding && !modal)
+    throw new Error("Modal golden row has no pinned binding.");
   return {
     id: row.id,
     orgId: row.org_id,

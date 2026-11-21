@@ -1,8 +1,8 @@
 import { GoldenError } from "@armada/core";
 import type { ListResult, LogsInput, LogsResult } from "@armada/core/contract";
 import { acceptedOptions, flag, parseArgs, single } from "../args.ts";
-import { createArmadaApiClient } from "../armada-api.ts";
 import { resolveSandboxId } from "../current-sandbox.ts";
+import { createSdkCommandClient } from "../sdk-session.ts";
 import type { Command } from "./command.ts";
 
 const events: Command["run"] = async (argv, { io, deps, auth }) => {
@@ -16,7 +16,7 @@ const events: Command["run"] = async (argv, { io, deps, auth }) => {
   const org = single(args, "--org");
   const follow = flag(args, "-f");
   const json = flag(args, "--json");
-  const client = await createArmadaApiClient({ ...auth, fetch: deps.fetch ?? auth.fetch });
+  const client = await createSdkCommandClient({ ...auth, fetch: deps.fetch ?? auth.fetch });
   const id = await resolveSandboxId(
     args.positionals[0],
     auth.env,
@@ -73,6 +73,7 @@ Read one page of agent events. --tail N starts with the last N events (1–1000)
 Piped output and --json emit one JSON object per event.
 `,
   automaticJson: true,
+  useSelectedOrg: true,
   validateProfileForHelp: true,
   run: events,
 } satisfies Command;

@@ -261,8 +261,8 @@ export type AuthCapabilities = { hostedOAuth: boolean; terminal: Partial<Record<
  * of these exactly, bare or as its documented `--name <name>` template; anything else is not shown.
  */
 const CLI_LOGIN: Partial<Record<AccountKind, string>> = {
-  codex_auth: "armada creds login codex",
-  claude_oauth: "armada creds login claude",
+  codex_auth: "armada account login codex",
+  claude_oauth: "armada account login claude",
 };
 
 /** The allowlisted base for a reported command, or null: never a placeholder, an extra flag or arbitrary shell. */

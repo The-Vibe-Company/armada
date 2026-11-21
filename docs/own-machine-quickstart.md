@@ -50,10 +50,10 @@ The Codex file import below assumes you have already signed in with the native
 Codex CLI and have an eligible account:
 
 ```sh
-armada creds set codex-auth --file ~/.codex/auth.json
+armada account add codex-auth --file ~/.codex/auth.json
 # Or Claude Code:
-# printenv CLAUDE_CODE_OAUTH_TOKEN | armada creds set claude-oauth
-armada creds list
+# printenv CLAUDE_CODE_OAUTH_TOKEN | armada account add claude-oauth
+armada account ls
 armada account login github
 ```
 
@@ -71,8 +71,8 @@ A busy account refuses admission without silently choosing another one.
 Set `--max-agents N` or `--unlimited` when storing an account, or update it:
 
 ```sh
-armada creds limits ACCOUNT_UUID --max-agents 2
-armada creds limits ACCOUNT_UUID --unlimited
+armada account limits ACCOUNT_UUID --max-agents 2
+armada account limits ACCOUNT_UUID --unlimited
 ```
 
 These are model-account limits, distinct from the host's CPU/memory and
@@ -123,7 +123,7 @@ Replace `your-org/your-repo` with an accessible repository. No snapshot is neede
 armada new "Summarize this repository; do not change files" \
   --provider docker --host office --org ORG_UUID --agent codex \
   --repo your-org/your-repo@main
-armada status SANDBOX_ID
+armada info SANDBOX_ID
 armada events SANDBOX_ID -f
 armada stop SANDBOX_ID
 ```

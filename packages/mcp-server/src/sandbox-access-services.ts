@@ -47,10 +47,12 @@ export function createSandboxAccessServices(input: {
   credentials: NamedLaunchCredentials;
   connections: LaunchStores["connections"];
   runtimePlacements?: Partial<Record<SandboxProviderId, LaunchOptions["modalRuntimeDefault"]>>;
+  boatEndpointRuntime?: LaunchOptions["boatEndpointRuntime"];
   runtimeSend?: RuntimeFollowup;
   runtimeCheckpoint?: RuntimeCheckpoint;
   encryptionKey: string;
   scopedMcpUrl: string;
+  configureMutationRequest?: (request: Request) => void;
   /** Docker final output capture before agent-finished stops (tests inject the runtime reader). */
   outputs?: Parameters<typeof captureDockerStopOutputs>[3];
 }) {
@@ -101,16 +103,20 @@ export function createSandboxAccessServices(input: {
   }
   async function stopChild(operation: ChildOperation, admitRecovery?: StopRecoveryAdmission) {
     const { saved, resolveProvider } = await child(operation.sandboxId, operation.ownerId, operation.orgId);
-    const retained = saved.runtimeTransport === "dialout";
+    if (saved.boatRuntime && (saved.status === "stopping" || saved.stopRequestedAt)) return;
+    const retained =
+      saved.runtimeTransport === "dialout" || (saved.boatRuntime && ["ready", "running"].includes(saved.status));
     if (admitRecovery && (!retained || !["ready", "running"].includes(saved.status) || saved.stopRequestedAt))
       throw new DelegatedAccessError("conflict");
     if (saved.status === "stopped" || (saved.status === "failed" && saved.stoppedAt)) return;
-    const provider = await resolveProvider();
     const caller = {
       via: "service" as const,
       userId: operation.ownerId,
       orgs: [{ orgId: operation.orgId, role: "member" as const }],
     };
+    const scoped = createSqlData(sql)(caller).sandboxes;
+    if (!admitRecovery && (await scoped.requestStartingModalStop?.(saved))) return;
+    const provider = await resolveProvider();
     let checkpoint: Awaited<ReturnType<RuntimeCheckpoint>> | undefined;
     if (retained) {
       if (!input.runtimeCheckpoint) throw new DelegatedAccessError("unavailable");
@@ -130,7 +136,6 @@ export function createSandboxAccessServices(input: {
       if (admitRecovery && (checkpoint.requestId !== operation.id || checkpoint.runtime.epoch !== prior?.epoch))
         throw new DelegatedAccessError("conflict");
     }
-    const scoped = createSqlData(sql)(caller).sandboxes;
     const stoppingStatus = saved.status === "failed" ? "failed" : "stopping";
     const statusReason = stoppingStatus === "failed" ? (saved.statusReason ?? null) : retained ? "idle_paused" : null;
     const epoch = checkpoint?.runtime.epoch;
@@ -210,7 +215,21 @@ export function createSandboxAccessServices(input: {
       });
       const golden = goldens.find((g) => g.id === chosen.goldenId);
       if (!golden) throw new ChildLaunchNotAllocated("preallocation_rejected", "golden_lookup");
-      const placement = input.runtimePlacements?.[golden.provider];
+      let placement = input.runtimePlacements?.[golden.provider];
+      if (!placement) {
+        const enrolledBoatParent = (
+          await sql.query(
+            `select p.id from public.armada_access_parents p
+             join public.sandboxes s on s.id=p.sandbox_id
+             where p.id=$1 and p.owner_id=$2 and p.org_id=$3 and s.provider=$4 and s.boat_runtime`,
+            [operation.orchestratorId, operation.ownerId, operation.orgId, golden.provider],
+          )
+        ).rows[0];
+        if (enrolledBoatParent) {
+          placement = input.boatEndpointRuntime;
+          if (!placement) throw new ChildLaunchNotAllocated("preallocation_rejected", "provider_placement");
+        }
+      }
       const actor = { userId: operation.ownerId, orgId: operation.orgId, role: "member" as const };
       const credentials = placement?.credentials ?? input.credentials;
       const privateTarget = { ...golden, visibility: "private" as const, sourceGoldenVisibility: golden.visibility };
@@ -323,14 +342,16 @@ export function createSandboxAccessServices(input: {
             // The accepted prompt continues; the structured line carries the request and sandbox IDs.
             recordOperatorFailure("sandbox_access.send.turn_model_record", error, { sandboxId: saved.id });
           }
+          const patch: ServerSandboxPatch = {
+            nativeSendReceipt: { fromState: "running", placement: saved.providerSandboxId },
+            statusReason: null,
+            taskPromptId: receipt.promptId,
+            rearmDeadline: true,
+            conversationIds: [...new Set([...saved.conversationIds, receipt.conversationId])],
+          };
           return {
             result: undefined,
-            patch: {
-              statusReason: null,
-              taskPromptId: receipt.promptId,
-              rearmDeadline: true,
-              conversationIds: [...new Set([...saved.conversationIds, receipt.conversationId])],
-            },
+            patch,
           };
         },
       );
@@ -401,6 +422,7 @@ export function createSandboxAccessServices(input: {
       authority,
       finish,
       createRuntimeSelfFinish(sql, input.encryptionKey, input.outputs),
+      input.configureMutationRequest,
     ),
     childWorker: children,
     authority,

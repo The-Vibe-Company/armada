@@ -270,6 +270,7 @@ export interface DockerSandboxStatus {
   settled: boolean;
 }
 
+export const DOCKER_SNAPSHOT_PROVIDER = "docker";
 export const DOCKER_SNAPSHOT_STATUSES = ["building", "ready", "failed"] as const;
 export interface DockerSnapshotRecord {
   /** Frozen server release version; null only for snapshots created before version recording. */
@@ -282,7 +283,7 @@ export interface DockerSnapshotRecord {
   orgId: string;
   ownerId: string;
   name: string;
-  provider: "docker";
+  provider: typeof DOCKER_SNAPSHOT_PROVIDER;
   visibility: "private" | "org";
   hostId: string;
   installationId: string;

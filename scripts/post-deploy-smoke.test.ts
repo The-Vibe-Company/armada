@@ -1,10 +1,11 @@
-import { beforeAll, describe, expect, test } from "bun:test";
+import { beforeAll, describe, expect, spyOn, test } from "bun:test";
 import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createKeyedQueue, createLaunchTracker, postDeploySmoke } from "./post-deploy-smoke.ts";
-import deadlines from "./smoke-deadlines.json";
+import deadlineTable from "./smoke-deadlines.json";
 
+const deadlines = deadlineTable["modal/lifecycle"];
 const boatNotice = "boat: not part of the release gate";
 
 const selected = {
@@ -108,7 +109,10 @@ function fixture(handler?: (call: Call) => Response | undefined | Promise<Respon
         .filter((line) => line !== boatNotice)
         .map((line) => {
           const receipt = JSON.parse(line);
-          if (!receipt.step.endsWith("_summary") && receipt.step !== "time_to_ready") delete receipt.elapsedMs;
+          if (!receipt.step.endsWith("_summary") && receipt.step !== "time_to_ready") {
+            if (receipt.elapsedMs !== undefined && receipt.lane) delete receipt.provider;
+            delete receipt.elapsedMs;
+          }
           delete receipt.lane;
           return receipt;
         }),
@@ -717,7 +721,10 @@ describe("preservation checks", () => {
       "default_wrong_receipt",
       "default_opt_out_ignored",
       "default_wrong_golden",
+      "default_recovery_wrong_golden",
+      "default_recovery_expired",
       "scoped_pair",
+      "scoped_parent_timeout",
       "scoped_unsupported",
       "missing",
       "wrong",
@@ -733,13 +740,17 @@ describe("preservation checks", () => {
       "recovery_note_changes",
     ] as const) {
       test(`provider=${provider} fault=${fault} validates recovery without leaking material`, async () => {
-        const defaults = fault.startsWith("default_");
-        const scopes = fault === "scoped_pair";
+        const defaults = fault.startsWith("default_") || fault === "scoped_parent_timeout";
+        const scopes = fault === "scoped_pair" || fault === "scoped_parent_timeout";
         const scopeFlag = fault.startsWith("scoped_");
         const baselineScopeAccount = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
         const scopeAccount = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
         const childId = crypto.randomUUID();
         const scriptedParents = new Map<string, boolean>();
+        const scopedKeys = new Map<string, string>();
+        const scopedLaunchTimeouts: Array<number | undefined> = [];
+        const scopedReadyTimeouts = new Map<string, number | undefined>();
+        const scopedStopTimeouts: Array<number | undefined> = [];
         let childExists = false;
         let childStopped = false;
         const scopeEvents = new Map<string, object[]>();
@@ -756,6 +767,10 @@ describe("preservation checks", () => {
           }));
         let launches = 0;
         let stopping = false;
+        let recoveryKey: string | undefined;
+        let recoverySandboxId: string | undefined;
+        const attemptedRecoveries = new Map<string, string>();
+        let statusReady = false;
 
         let sandboxId = "";
         const recoveryId = crypto.randomUUID();
@@ -772,6 +787,22 @@ describe("preservation checks", () => {
               personal: ["notes@3.0.0"],
             };
             return json({ skills: fault === "default_empty" ? [] : layers[String(call.body.scope)] });
+          }
+          if (call.path === "sandbox/list" && recoveryKey && call.body.externalRef === recoveryKey) {
+            expect(call.body.owner).toBe("me");
+            expect(call.body.org).toBe(defaultOrg);
+            if (call.body.golden !== undefined) expect(call.body.golden).toBe(defaultGolden);
+            return json({
+              sandboxes:
+                call.body.golden && fault === "default_recovery_wrong_golden"
+                  ? []
+                  : [{ id: recoverySandboxId, provider, externalRef: recoveryKey, status: "ready" }],
+            });
+          }
+          if (scopes && call.path === "sandbox/list" && typeof call.body.externalRef === "string") {
+            const key = call.body.externalRef;
+            const id = scopedKeys.get(key);
+            return json({ sandboxes: id ? [{ id, provider, externalRef: key, status: "ready" }] : [] });
           }
           if (scopes && call.path === "sandbox/list") {
             expect(call.body.owner).toBe("me");
@@ -883,12 +914,27 @@ describe("preservation checks", () => {
           const requestedId = String(call.body.id);
           if (scriptedParents.has(requestedId)) {
             if (call.path === "sandbox/stop") {
+              scopedStopTimeouts.push(timeout?.mock.lastCall?.[0]);
               scriptedParents.set(requestedId, true);
               return json({ status: "stopped" });
             }
             if (call.path === "sandbox/status") {
+              if (!scopedReadyTimeouts.has(requestedId))
+                scopedReadyTimeouts.set(requestedId, timeout?.mock.lastCall?.[0]);
               const stopped = scriptedParents.get(requestedId);
-              return json({ status: stopped ? "stopped" : "ready", providerState: stopped ? "stopped" : "active" });
+              return json({
+                id: requestedId,
+                externalRef: [...scopedKeys].find(([, id]) => id === requestedId)?.[0],
+                status: stopped ? "stopped" : "ready",
+                providerState: stopped ? "stopped" : "active",
+                prompt: null,
+                harness: "codex",
+                model: "scripted",
+                credentialId: scopeAccount,
+                credentialVersion: 7,
+                visibility: "private",
+                skills: requestedId === scriptedParents.keys().next().value ? receipts(pins) : [],
+              });
             }
           }
           if (call.path === "sandbox/launch") {
@@ -904,6 +950,12 @@ describe("preservation checks", () => {
                 expect(call.body).not.toHaveProperty("armadaAccess");
                 expect(call.body).not.toHaveProperty("armadaAccessVersion");
                 expect(call.body.skipSkillDefaults).toBe(true);
+              }
+              if (fault === "scoped_parent_timeout") {
+                expect(call.body.externalRef).toBe(call.body.idempotencyKey);
+                scopedKeys.set(String(call.body.externalRef), id);
+                scopedLaunchTimeouts.push(timeout?.mock.lastCall?.[0]);
+                throw new DOMException("timeout", "TimeoutError");
               }
               return json({
                 sandbox: {
@@ -933,6 +985,21 @@ describe("preservation checks", () => {
               if (launches === 2) expect(call.body.skipSkillDefaults).toBe(true);
               else expect(call.body).not.toHaveProperty("skipSkillDefaults");
             }
+            if (
+              fault === "default_policy" ||
+              (launches === 1 && (fault === "default_recovery_wrong_golden" || fault === "default_recovery_expired"))
+            ) {
+              expect(call.body.externalRef).toBe(call.body.idempotencyKey);
+              recoveryKey = String(call.body.externalRef);
+              recoverySandboxId = sandboxId;
+              attemptedRecoveries.set(recoveryKey, sandboxId);
+              statusReady = false;
+              if (fault === "default_policy") throw new DOMException("timeout", "TimeoutError");
+              return Response.json(
+                { error: { code: "outcome_unknown" } },
+                { status: 503, headers: { "x-request-id": recoveryId } },
+              );
+            }
             return json({
               sandbox: {
                 id: sandboxId,
@@ -953,9 +1020,16 @@ describe("preservation checks", () => {
             });
           }
           if (call.path === "sandbox/stop") stopping = true;
+          if (call.path === "sandbox/status" && call.body.id === recoverySandboxId && !statusReady && !stopping) {
+            statusReady = true;
+            return json({ id: sandboxId, externalRef: recoveryKey, status: "starting", prompt: null, skills: [] });
+          }
           if (call.path === "sandbox/status")
             return json({
               status: stopping ? "stopped" : "ready",
+              id: sandboxId,
+              externalRef: recoveryKey,
+              prompt: null,
               ...(defaults
                 ? {
                     skills: receipts(
@@ -1005,6 +1079,7 @@ describe("preservation checks", () => {
           }
         });
         const staging = "https://armada-mcp-staging.up.railway.app";
+        const timeout = scopes ? spyOn(AbortSignal, "timeout") : undefined;
         const result = await postDeploySmoke(
           {
             ...env,
@@ -1022,19 +1097,56 @@ describe("preservation checks", () => {
             ]),
           },
           scopeFlag
-            ? ["--work-preservation", "--scoped-access"]
+            ? ["--work-preservation", "--scoped-access", ...(defaults ? ["--default-skills"] : [])]
             : defaults
               ? ["--work-preservation", "--default-skills"]
               : ["--work-preservation"],
           {
             ...fake.io,
+            recordSandbox: async (_org, id, key) => {
+              if (fault === "default_recovery_expired" && attemptedRecoveries.get(key) === id)
+                fake.advance(deadlines.launch + 1);
+            },
             fetch: (url, init) => fake.io.fetch(url.replace(staging, env.ARMADA_URL), init),
           },
-        );
-        const success = ["none", "default_policy", "default_empty", "scoped_pair", "scoped_unsupported"].includes(
-          fault,
-        );
+        ).finally(() => timeout?.mockRestore());
+        const success = [
+          "none",
+          "default_policy",
+          "default_empty",
+          "scoped_pair",
+          "scoped_parent_timeout",
+          "scoped_unsupported",
+        ].includes(fault);
         expect(result).toBe(success);
+        if (attemptedRecoveries.size) {
+          expect(attemptedRecoveries.size).toBe(success ? 2 : 1);
+          for (const [key, id] of attemptedRecoveries) {
+            expect(
+              fake.calls.filter((call) => call.path === "sandbox/launch" && call.body.idempotencyKey === key),
+            ).toHaveLength(1);
+            expect(fake.calls.some((call) => call.path === "sandbox/stop" && call.body.id === id)).toBe(true);
+            const goldenLookup = fake.calls.some(
+              (call) =>
+                call.path === "sandbox/list" && call.body.externalRef === key && call.body.golden === defaultGolden,
+            );
+            expect(goldenLookup).toBe(fault !== "default_recovery_expired");
+          }
+          const launch = fake.lines
+            .filter((line) => line !== boatNotice)
+            .map((line) => JSON.parse(line))
+            .filter((line) => line.step === "launch");
+          if (success)
+            expect(launch).toEqual(
+              Array.from({ length: 2 }, () => expect.objectContaining({ pass: true, elapsedMs: 1_000 })),
+            );
+          else
+            expect(launch[0]).toMatchObject({
+              pass: false,
+              code: "outcome_unknown",
+              launchResponse: { requestKey: recoveryKey, requestId: recoveryId },
+            });
+        }
         const stops = fake.calls.filter((call) => call.path === "sandbox/stop" && call.body.id !== childId).length;
         expect(stops).toBeGreaterThanOrEqual(2);
         expect(stops).toBeLessThanOrEqual(4);
@@ -1071,7 +1183,22 @@ describe("preservation checks", () => {
             .map((line) => JSON.parse(line))
             .filter((line) => line.lane === "scoped");
           expect(scriptedSteps.map((line) => line.step)).not.toContain("launch");
+          expect(
+            fake.calls.filter((call) => call.path === "sandbox/launch" && call.body.model === "scripted"),
+          ).toHaveLength(2);
+          for (const step of ["scoped_parent_configuration", "scoped_tool_evidence"])
+            expect(scriptedSteps.filter((line) => line.step === step && line.pass)).toHaveLength(2);
           expect(scriptedSteps.filter((line) => line.step === "scoped_parent_launch" && line.pass)).toHaveLength(2);
+          const budgets: Partial<Record<string, number>> = deadlineTable["modal/scoped"];
+          if (fault === "scoped_parent_timeout") {
+            const launchBudget = budgets.scoped_parent_launch ?? 600_000;
+            expect(scopedLaunchTimeouts).toEqual([launchBudget, launchBudget]);
+          } else {
+            const readyBudget = budgets.scoped_parent_ready ?? 120_000;
+            const stopBudget = budgets.scoped_parent_stop ?? 120_000;
+            expect([...scopedReadyTimeouts.values()]).toEqual([readyBudget, readyBudget]);
+            expect(scopedStopTimeouts).toEqual([stopBudget, stopBudget]);
+          }
           expect(
             fake.receipts().filter((line) => line.step === "scoped_access" && line.model === "scripted"),
           ).toHaveLength(2);
@@ -1097,7 +1224,7 @@ describe("preservation checks", () => {
         }
         expect(fake.lines.join("")).not.toContain(commit);
         expect(fake.lines.join("")).not.toContain("secret");
-        if (!success)
+        if (!success && !attemptedRecoveries.size)
           expect(fake.receipts()).toContainEqual(
             expect.objectContaining({
               pass: false,
@@ -1113,6 +1240,60 @@ describe("preservation checks", () => {
           );
       });
     }
+  }
+});
+
+describe("default-skill measured deadlines", () => {
+  const staging = "https://armada-mcp-staging.up.railway.app";
+  const org = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+  const goldenId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+  const cases = JSON.stringify([{ ...selected, org, goldenId }]);
+
+  for (const step of ["default_skills_golden", "default_skills_receipts"] as const) {
+    test(`a late successful ${step} read fails the smoke`, async () => {
+      let readyReads = 0;
+      const stopped = new Set<unknown>();
+      const fake = fixture((call) => {
+        if (call.path === "skills/defaults/get") {
+          if (step === "default_skills_golden" && call.body.scope === "golden")
+            fake.advance(deadlineTable["modal/default-skills"][step] + 1);
+          return json({ skills: [] });
+        }
+        if (call.path === "sandbox/launch") {
+          readyReads = 0;
+          const id = lifecycleId(call.body.skipSkillDefaults ? 2 : 1);
+          return json({ sandbox: { id, provider: "modal", skills: [] }, golden: { id: goldenId } });
+        }
+        if (call.path === "sandbox/stop") stopped.add(call.body.id);
+        if (call.path === "sandbox/status" && !stopped.has(call.body.id)) {
+          if (++readyReads === 2 && step === "default_skills_receipts") {
+            const budget =
+              call.body.id === lifecycleId(1) ? deadlines[step] : deadlines.default_skills_opt_out_receipts;
+            fake.advance(budget + 1);
+          }
+          return json({ status: "ready", providerState: "active", skills: [] });
+        }
+      });
+      const result = await postDeploySmoke(
+        { ...env, ARMADA_URL: staging, ARMADA_SMOKE_CASES: cases },
+        ["--work-preservation", "--default-skills"],
+        { ...fake.io, fetch: (url, init) => fake.io.fetch(url.replace(staging, env.ARMADA_URL), init) },
+      );
+      expect(result).toBe(false);
+      expect(fake.receipts()).toContainEqual({ case: 0, step, pass: false, code: "poll_limit_exceeded" });
+      expect(fake.calls.filter((call) => call.path === "sandbox/launch")).toHaveLength(
+        step === "default_skills_golden" ? 0 : 2,
+      );
+      if (step === "default_skills_receipts") {
+        expect(fake.receipts()).toContainEqual({
+          case: 0,
+          step: "default_skills_opt_out_receipts",
+          pass: false,
+          code: "poll_limit_exceeded",
+        });
+        expect(stopped).toEqual(new Set([lifecycleId(1), lifecycleId(2)]));
+      }
+    });
   }
 });
 
@@ -1144,7 +1325,63 @@ test("template/skill smoke validates the entire staging case configuration befor
   }
 });
 
-test.each(["configured", "no_pins", "refused", "late_wait"])(
+test.each([
+  {
+    mode: "timeout before headers",
+    code: "request_failed",
+    credentialList: { phase: "headers", timeoutMs: deadlineTable["modal/templates"].template_model_account },
+  },
+  {
+    mode: "server failure",
+    code: "api_failed",
+    credentialList: { phase: "body", httpStatus: 500, requestId: sandboxFixtureId },
+  },
+  {
+    mode: "timeout reading the body",
+    code: "request_failed",
+    credentialList: {
+      phase: "body",
+      httpStatus: 200,
+      timeoutMs: deadlineTable["modal/templates"].template_model_account,
+    },
+  },
+])("template model account identifies $mode without logging response content", async (scenario) => {
+  const fake = fixture(() => {
+    const timeout = new DOMException("secret transport detail", "TimeoutError");
+    if (scenario.mode === "timeout before headers") throw timeout;
+    if (scenario.mode === "timeout reading the body") {
+      const stream = new ReadableStream({
+        start: (controller) => controller.error(timeout),
+      });
+      return new Response(stream, { headers: { "x-request-id": "secret unexpected header" } });
+    }
+    return Response.json(
+      { error: { message: "secret server detail" } },
+      { status: 500, headers: { "x-request-id": sandboxFixtureId } },
+    );
+  });
+  const staging = "https://armada-mcp-staging.up.railway.app";
+  expect(
+    await postDeploySmoke({ ...env, ARMADA_URL: staging }, ["--templates-skills"], {
+      ...fake.io,
+      fetch: (url, init) => fake.io.fetch(url.replace(staging, env.ARMADA_URL), init),
+    }),
+  ).toBe(false);
+  expect(fake.calls.map(({ path }) => path)).toEqual(["creds/list"]);
+  expect(fake.lines.filter((line) => line !== boatNotice).map((line) => JSON.parse(line))).toContainEqual({
+    case: 0,
+    lane: "templates",
+    provider: "modal",
+    step: "template_model_account",
+    elapsedMs: 0,
+    pass: false,
+    code: scenario.code,
+    credentialList: scenario.credentialList,
+  });
+  expect(fake.lines.join("")).not.toContain("secret");
+});
+
+test.each(["configured", "no_pins", "refused", "late_wait", "late_answer"])(
   "template transport %s cleans workers and reports closed verdicts",
   async (mode) => {
     let value = "";
@@ -1187,9 +1424,16 @@ test.each(["configured", "no_pins", "refused", "late_wait"])(
             manifest: { skillReceipts: [receipt] },
           });
         case "sandbox/wait":
-          if (mode === "late_wait") await fake.io.sleep(deadlines.template_wait + 1);
+          if (mode === "late_wait") await fake.io.sleep(deadlineTable["modal/templates"].template_wait + 1);
           return json({ prompt: { promptId: "prompt-id", state: "finished" } });
         case "logs/read":
+          if (mode === "late_answer") {
+            if (!call.body.cursor) {
+              fake.advance(deadlineTable["modal/templates"].template_answer - 100);
+              return json({ events: [], cursor: "next", hasMore: true });
+            }
+            fake.advance(101);
+          }
           return json({
             events: [
               {
@@ -1237,7 +1481,7 @@ test.each(["configured", "no_pins", "refused", "late_wait"])(
           fetch: (url, init) => fake.io.fetch(url.replace(staging, env.ARMADA_URL), init),
         },
       ),
-    ).toBe(mode !== "refused" && mode !== "late_wait");
+    ).toBe(mode !== "refused" && mode !== "late_wait" && mode !== "late_answer");
     expect(fake.calls.some((call) => call.path === "sandbox/launch")).toBe(false);
     expect(fake.calls.map((call) => call.path).slice(-3)).toEqual([
       "sandbox/status",
@@ -1252,6 +1496,16 @@ test.each(["configured", "no_pins", "refused", "late_wait"])(
         code: "poll_limit_exceeded",
       });
       expect(fake.calls.some((call) => call.path === "logs/read")).toBe(false);
+      return;
+    }
+    if (mode === "late_answer") {
+      expect(fake.receipts()).toContainEqual({
+        case: 0,
+        step: "template_answer",
+        pass: false,
+        code: "poll_limit_exceeded",
+      });
+      expect(fake.calls.some((call) => call.path === "sandbox/exec")).toBe(false);
       return;
     }
     if (mode === "refused")
@@ -1366,7 +1620,7 @@ test("scoped access validates its matched control pair and explicit account IDs 
   }
 });
 
-test("vault transport catches canary echoes in error envelopes, cleans metadata and never allocates compute", async () => {
+test.each(["canary echo", "late create"] as const)("vault rejects %s and cleans up", async (fault) => {
   const org = "11111111-1111-4111-8111-111111111111";
   let variable: Record<string, unknown> | undefined;
   let readable = "";
@@ -1387,9 +1641,10 @@ test("vault transport catches canary echoes in error envelopes, cleans metadata 
           createdAt: "2026-11-11T00:00:00Z",
           updatedAt: "2026-11-11T00:00:00Z",
         };
+        if (fault === "late create") fake.advance(deadlineTable["modal/vault"].vault_variable_set + 1);
         return json({ item: variable });
       case "variables/list":
-        return json({ items: variable ? [variable] : [] });
+        return json({ items: variable && fault !== "late create" ? [variable] : [] });
       case "variables/read":
         return json({ item: variable, value: readable });
       case "secrets/set":
@@ -1425,6 +1680,24 @@ test("vault transport catches canary echoes in error envelopes, cleans metadata 
       },
     ),
   ).toBe(false);
+  if (fault === "late create") {
+    expect(fake.calls.map((call) => call.path)).toEqual(["variables/set", "variables/list", "variables/delete"]);
+    expect(fake.calls.at(-1)?.body).toEqual({ org, id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", expectedVersion: 1 });
+    expect(fake.receipts()).toContainEqual({
+      case: 0,
+      step: "vault_variable_set",
+      pass: false,
+      code: "poll_limit_exceeded",
+    });
+    expect(fake.receipts()).toContainEqual({
+      case: 0,
+      step: "vault_cleanup_summary",
+      pass: true,
+      leftoverSecrets: [],
+      leftoverVariables: [],
+    });
+    return;
+  }
   expect(fake.receipts()).toContainEqual({ case: 0, step: "vault_secret_set", pass: false, code: "secret_exposed" });
   expect(fake.calls.some((call) => call.path.startsWith("sandbox/"))).toBe(false);
   expect(fake.calls.filter((call) => call.path === "variables/delete")).toHaveLength(1);
@@ -1448,7 +1721,11 @@ type LifecycleFault =
   | "stop_failed"
   | "lost_launch"
   | "recovered_launch";
-function lifecycleFixture(fault: LifecycleFault = "none", handler?: (call: Call) => Response | undefined) {
+function lifecycleFixture(
+  fault: LifecycleFault = "none",
+  handler?: (call: Call) => Response | undefined,
+  launchElapsedMs = 500,
+) {
   // Per-sandbox state: concurrent case lanes interleave their calls.
   interface Life {
     id: string;
@@ -1468,7 +1745,7 @@ function lifecycleFixture(fault: LifecycleFault = "none", handler?: (call: Call)
     if (override) return override;
     if (call.path === "sandbox/launch") {
       launches++;
-      fake.advance(500);
+      fake.advance(launchElapsedMs);
       const life: Life = {
         id: lifecycleId(launches),
         provider: String(call.body.provider),
@@ -1634,6 +1911,131 @@ test("lifecycle records readiness and confirms extend/list, closed idle steer re
   ).toBe(true);
   expect(fake.lines.join("")).not.toContain("secret");
 });
+
+test.each(["fetch", "error body"])(
+  "a lifecycle stop timeout during %s leaves cleanup to confirm the original stop",
+  async (phase) => {
+    let stops = 0;
+    const fake = lifecycleFixture("none", (call) => {
+      if (call.path === "sandbox/stop" && ++stops === 1) {
+        const timeout = (): never => {
+          fake.advance(deadlines.stop);
+          throw new DOMException("stop response timed out", "TimeoutError");
+        };
+        if (phase === "fetch") return timeout();
+        return Object.assign(json({ error: { code: "outcome_unknown" } }, 503), { json: async () => timeout() });
+      }
+      if (call.path === "sandbox/status" && stops > 0) return json({ status: "stopped", providerState: "stopped" });
+      return undefined;
+    });
+    expect(await fake.run()).toBe(false);
+    expect(stops).toBe(1);
+    expect(fake.receipts()).toContainEqual({ case: 0, step: "stop", pass: false, code: "poll_limit_exceeded" });
+    expect(fake.receipts()).toContainEqual({ case: 0, step: "cleanup_sandbox", pass: true });
+  },
+);
+
+test("lifecycle stop polling yields to cleanup at the measured deadline", async () => {
+  let stopStartedAt: number | undefined;
+  const statusTimes: number[] = [];
+  const fake = lifecycleFixture("none", (call) => {
+    if (call.path === "sandbox/stop") stopStartedAt = fake.io.now();
+    if (call.path === "sandbox/status" && stopStartedAt !== undefined) {
+      statusTimes.push(fake.io.now() - stopStartedAt);
+      if (statusTimes.length === 1) {
+        fake.advance(deadlines.stop - 1);
+        return json({ status: "stopping", providerState: "active" });
+      }
+    }
+    return undefined;
+  });
+  expect(await fake.run()).toBe(false);
+  expect(statusTimes).toEqual([0, deadlines.stop]);
+  expect(fake.receipts()).toContainEqual({ case: 0, step: "stop", pass: false, code: "poll_limit_exceeded" });
+  expect(fake.receipts()).toContainEqual({ case: 0, step: "cleanup_sandbox", pass: true });
+});
+
+test.each([
+  ["stop", 1],
+  ["stop_resumed", 2],
+] as const)("lifecycle %s rejects a late stop status without redispatching", async (step, targetStop) => {
+  let stops = 0;
+  let delayStatus = false;
+  const fake = lifecycleFixture("none", (call) => {
+    if (call.path === "sandbox/stop") delayStatus = ++stops === targetStop;
+    if (call.path === "sandbox/status" && delayStatus) {
+      delayStatus = false;
+      fake.advance(deadlines[step] + 1);
+    }
+    return undefined;
+  });
+  expect(await fake.run()).toBe(false);
+  expect(fake.receipts()).toContainEqual({ case: 0, step, pass: false, code: "poll_limit_exceeded" });
+  expect(stops).toBe(targetStop);
+  expect(fake.receipts()).toContainEqual(
+    expect.objectContaining({ step: "lifecycle_cleanup_summary", pass: true, leftoverSandboxIds: [] }),
+  );
+});
+
+test.each([
+  ["list_ready", "sandbox/list"],
+  ["steer_refused", "sandbox/steer"],
+  ["extend", "sandbox/extend"],
+] as const)("lifecycle %s rejects a late response and still stops the sandbox", async (step, path) => {
+  const fake = lifecycleFixture("none", (call) => {
+    if (call.path === path) fake.advance(deadlines[step] + 1);
+    return undefined;
+  });
+  expect(await fake.run()).toBe(false);
+  expect(fake.receipts()).toContainEqual({ case: 0, step, pass: false, code: "poll_limit_exceeded" });
+  expect(fake.calls.filter((call) => call.path === path)).toHaveLength(1);
+  expect(fake.calls.at(-2)?.path).toBe("sandbox/stop");
+  expect(fake.calls.at(-1)?.path).toBe("sandbox/status");
+});
+
+test.each([
+  ["git_status", "git status -sb", []],
+  ["git_remote", "git ls-remote origin HEAD", []],
+  ["github_launch_access", "ls-remote origin HEAD", ["--github-refresh"]],
+  ["golden_helper_integrity", "armada-helper", ["--golden-runtime"]],
+  ["golden_skillpack_integrity", "skillpack-runtime", ["--golden-runtime"]],
+] as const)("a late %s exec receipt fails and the sandbox is stopped", async (step, command, args) => {
+  const fake = lifecycleFixture("none", (call) => {
+    if (call.path === "sandbox/exec" && String(call.body.command).includes(command)) fake.advance(deadlines[step] + 1);
+    return undefined;
+  });
+  expect(await fake.run([selected], [...args])).toBe(false);
+  expect(fake.receipts()).toContainEqual({ case: 0, step, pass: false, code: "poll_limit_exceeded" });
+  expect(fake.calls.at(-2)?.path).toBe("sandbox/stop");
+  expect(fake.calls.at(-1)?.path).toBe("sandbox/status");
+});
+
+test.each(["preservation_clean_checkout", "preservation_clean_stop"] as const)(
+  "a late %s receipt fails while the clean worker is stopped",
+  async (step) => {
+    const fake = lifecycleFixture("none", (call) => {
+      if (call.path === "sandbox/exec" && String(call.body.command).includes("rev-list HEAD")) {
+        if (step === "preservation_clean_checkout" && call.body.id === lifecycleId(1))
+          fake.advance(deadlines[step] + 1);
+        return json({ exitCode: 0, timedOut: false });
+      }
+      if (call.path === "sandbox/recovery" && call.body.id === lifecycleId(1)) {
+        fake.advance(deadlines[step] + 1);
+        return json({ archive: null });
+      }
+    });
+    await fake.run([selected], ["--work-preservation"]);
+    expect(fake.receipts()).toContainEqual({ case: 0, step, pass: false, code: "poll_limit_exceeded" });
+    expect(fake.receipts()).toContainEqual(
+      expect.objectContaining({
+        step: "preservation_cleanup_summary",
+        phase: "clean",
+        pass: true,
+        leftoverSandboxIds: [],
+      }),
+    );
+  },
+);
 
 test("a resumed send admitted after its measured deadline fails without replay and still cleans up", async () => {
   const fake = lifecycleFixture("none", (call) => {
@@ -2017,13 +2419,14 @@ test("an ambiguous expiry launch reports bounded HTTP correlation without replay
     expect(fake.lines.filter((line) => line !== boatNotice).map((line) => JSON.parse(line))).toContainEqual({
       case: 0,
       lane: "expiry",
+      provider: "modal",
       step: "expiry_launch",
       pass: false,
       code: status === 200 ? "request_failed" : "outcome_unknown",
-      elapsedMs: 112_848 + deadlines.expiry_launch,
+      elapsedMs: 112_848 + deadlineTable["modal/expiry"].expiry_launch,
       launchResponse: {
         httpStatus: status,
-        timeoutMs: deadlines.expiry_launch,
+        timeoutMs: deadlineTable["modal/expiry"].expiry_launch,
         requestKey: launches[0]?.body.idempotencyKey,
         ...(header === requestId ? { requestId } : {}),
       },
@@ -2033,7 +2436,7 @@ test("an ambiguous expiry launch reports bounded HTTP correlation without replay
 });
 
 test("independent sandbox lanes run concurrently: the expiry wait overlaps every case's lifecycle, receipts stay attributable", async () => {
-  const fake = lifecycleFixture("none", (call) => expiry(call));
+  const fake = lifecycleFixture("none", (call) => expiry(call), 0);
   const expiry = expiryApi(fake.io.now);
   // Distinct model accounts: nothing makes the lanes take turns.
   const cases = ["claude", "codex"].map((harness) => ({ ...selected, harness, modelAccountId: `account-${harness}` }));
@@ -2311,7 +2714,16 @@ test("GitHub refresh accepts the runtime receipt after proving launch access", a
         })
       : undefined,
   );
-  expect(await fake.run([selected], ["--github-refresh"])).toBe(true);
+  const timeout = spyOn(AbortSignal, "timeout");
+  try {
+    expect(await fake.run([selected], ["--github-refresh"])).toBe(true);
+    const signal = fake.calls.find((call) => call.path === "github/refresh")?.init.signal;
+    const timeoutIndex = timeout.mock.results.findIndex((result) => result.value === signal);
+    const budgets: Partial<Record<string, number>> = deadlines;
+    expect(timeout.mock.calls[timeoutIndex]?.[0]).toBe(budgets.github_refresh ?? 120_000);
+  } finally {
+    timeout.mockRestore();
+  }
   expect(fake.calls.filter((call) => call.path === "sandbox/launch")).toHaveLength(1);
   expect(fake.calls.filter((call) => call.path === "sandbox/send")).toHaveLength(2);
   expect(fake.calls.filter((call) => call.path === "github/refresh")).toHaveLength(1);
@@ -2505,7 +2917,7 @@ test("readiness timing excludes slow integrity probes and survives either probe 
     const fake = lifecycleFixture("none", (call) => {
       if (call.path !== "sandbox/exec") return;
       execs++;
-      fake.advance(30_000);
+      if (execs <= 2) fake.advance(1_000);
       if (execs === failedExec) return json({ exitCode: 1, timedOut: false });
     });
     expect(await fake.run([selected], ["--golden-runtime"])).toBe(failedExec === 0);
@@ -2550,7 +2962,8 @@ test("Modal smoke refuses a finished turn whose status never reports usage and s
     ),
   ).toBe(false);
   expect(fake.receipts()).toContainEqual({ case: 0, step: "usage", pass: false, code: "poll_limit_exceeded" });
-  expect(fake.io.now()).toBe(deadlines.usage);
+  expect(fake.io.now()).toBeLessThanOrEqual(deadlines.usage - 2_000);
+  expect(fake.io.now()).toBeGreaterThan(deadlines.usage - 3_000);
   expect(fake.calls.some((call) => call.path === "sandbox/stop")).toBe(true);
 });
 
@@ -2596,8 +3009,28 @@ test.each(["unknown", "missing", "old", "partial", "measured", "null-totals", "c
         .slice(1)
         .map((line) => JSON.parse(line))
         .find((line) => line.step === "resume_usage");
-      expect(usage?.elapsedMs).toBe(deadlines.resume_usage);
+      expect(usage?.elapsedMs).toBeLessThanOrEqual(deadlines.resume_usage - 2_000);
+      expect(usage?.elapsedMs).toBeGreaterThan(deadlines.resume_usage - 3_000);
     }
+    expect(fake.receipts().find((line) => line.step === "usage_request_diagnostic")).toEqual(
+      accepted
+        ? undefined
+        : expect.objectContaining({
+            usageStep: "resume_usage",
+            code: "poll_limit_exceeded",
+            timeoutMs: null,
+            lastResponse: {
+              elapsedMs: 0,
+              turns: "array",
+              promptMatched: mode !== "missing" && mode !== "old",
+              inputTokens: mode === "missing" || mode === "old" ? "missing" : "null",
+              outputTokens: mode === "missing" || mode === "old" ? "missing" : "null",
+              totalInputTokens: mode === "null-totals" ? "null" : "number",
+              totalOutputTokens: mode === "null-totals" ? "null" : "number",
+              incomplete: mode !== "complete-marker",
+            },
+          }),
+    );
     expect(fake.receipts()).toContainEqual(
       accepted
         ? { case: 0, step: "resume_usage", pass: true }
@@ -2605,6 +3038,44 @@ test.each(["unknown", "missing", "old", "partial", "measured", "null-totals", "c
     );
   },
 );
+
+test.each([
+  ["usage", false],
+  ["resume_usage", false],
+  ["resume_usage", true],
+] as const)("a late %s status read leaves no sub-floor retry (clock tick: %s)", async (step, tick) => {
+  const promptId = step === "usage" ? "turn-1" : "turn-2";
+  let checkingUsage = false;
+  let attempts = 0;
+  let tickAt: number | undefined;
+  const fake = lifecycleFixture("none", (call) => {
+    if (call.path === "sandbox/wait" && call.body.prompt_id === promptId) checkingUsage = true;
+    if (call.path === "sandbox/stop") checkingUsage = false;
+    if (call.path !== "sandbox/status" || !checkingUsage) return undefined;
+    attempts++;
+    fake.advance(deadlines[step] - (tick ? 3_000 : 2_500));
+    if (tick) tickAt = fake.io.now() + 1_000;
+    return json({ usage: { turns: [], tokenTotals: { inputTokens: null, outputTokens: null } } });
+  });
+  if (tick) {
+    const { now } = fake.io;
+    fake.io.now = () => {
+      const snapshot = now();
+      if (tickAt !== undefined && snapshot >= tickAt) {
+        tickAt = undefined;
+        fake.advance(1);
+      }
+      return snapshot;
+    };
+  }
+  expect(await fake.run([{ ...selected, provider: "modal" }])).toBe(false);
+  expect(fake.receipts()).toContainEqual({ case: 0, step, pass: false, code: "poll_limit_exceeded" });
+  expect(attempts).toBe(1);
+  expect(fake.receipts().find((receipt) => receipt.step === "usage_request_diagnostic")).toMatchObject({
+    usageStep: step,
+    attempts,
+  });
+});
 
 test.each(["fetch", "body"])(
   "a resumed usage request that exhausts the poll deadline reports its timeout: %s",
@@ -2619,7 +3090,9 @@ test.each(["fetch", "body"])(
         throw new DOMException("private transport detail", "TimeoutError");
       };
       if (phase === "fetch") return timeout();
-      return Object.assign(json({ usage: null }), { json: timeout });
+      const response = json({ usage: null });
+      response.headers.set("x-request-id", lifecycleId(99));
+      return Object.assign(response, { json: timeout });
     });
     expect(await fake.run([{ ...selected, provider: "modal" }])).toBe(false);
     expect(fake.receipts()).toContainEqual({
@@ -2635,6 +3108,10 @@ test.each(["fetch", "body"])(
       provider: "modal",
       route: "sandbox/status",
       timeoutMs: deadlines.resume_usage,
+      attempts: 1,
+      sandboxId: lifecycleId(1),
+      ...(phase === "body" ? { httpStatus: 200, requestId: lifecycleId(99) } : {}),
+      lastResponse: null,
       code: "poll_limit_exceeded",
     });
     expect(fake.lines.join("\n")).not.toContain("private transport detail");

@@ -90,6 +90,13 @@ export function runtimeAgentFor(
   });
 }
 
+export function workspaceCommandId(
+  epoch: string,
+  step: { phase: "repository" | "init"; index: number; attempt: number },
+) {
+  return `workspace_${epoch}_${step.phase}_${step.index}_${step.attempt}`;
+}
+
 /** Agent operations only, NOT a complete Provider. Never wraps/falls back to native Boat APIs.
  * Launch admission must select this bridge explicitly and supply trusted persisted binding.
  */
@@ -141,7 +148,7 @@ export function createRuntimeAgent(
         accept: (candidate) => "result" in candidate.body && valid(candidate.body.result),
       });
     } catch (error) {
-      if (error instanceof ProviderError) throw error;
+      if (error instanceof ProviderError || error instanceof PrivateSkillError) throw error;
       // Refused before admission: nothing was written, so the refusal is definite.
       if (error instanceof RuntimeCommandRefused) throw refusal("conflict");
       // A lost wait is not proof of non-execution. Preserve the exact identity for
@@ -210,9 +217,9 @@ export function createRuntimeAgent(
         },
       );
     },
-    async workspaceHealth(epoch: string, signal?: AbortSignal) {
+    async workspaceHealth(epoch: string, signal?: AbortSignal, requestId?: string) {
       await invoke<{ ready?: unknown; generation?: unknown; workspaceVersion?: unknown }>(
-        { ...identity(), op: "health" },
+        { ...identity(requestId), op: "health" },
         signal,
         epoch,
         undefined,
@@ -232,7 +239,7 @@ export function createRuntimeAgent(
       if (request.detached) throw refusal("invalid_request");
       const result = await invoke<Extract<ExecResult, { detached: false }>>(
         {
-          ...identity(`workspace_${epoch}_${step.phase}_${step.index}_${step.attempt}`),
+          ...identity(workspaceCommandId(epoch, step)),
           op: "workspaceExec",
           input: {
             command: request.command,
@@ -262,9 +269,10 @@ export function createRuntimeAgent(
       key: string | null,
       epoch: string,
       signal?: AbortSignal,
+      requestId?: string,
     ): Promise<SkillReceipt[]> {
       await invoke<{ ready?: unknown; generation?: unknown; skillsVersion?: unknown }>(
-        { ...identity(), op: "health" },
+        { ...identity(requestId ? `${requestId}_health` : undefined), op: "health" },
         signal,
         epoch,
         undefined,
@@ -275,7 +283,7 @@ export function createRuntimeAgent(
       );
       const result = await invoke<{ receipts: SkillReceipt[]; failure?: { reason?: unknown } }>(
         {
-          ...identity(`skills_${sandboxId}`),
+          ...identity(requestId ?? `skills_${sandboxId}`),
           op: "installSkills",
           input: { harness: binding.harness, references, cwd, ...(key ? { key } : {}) },
         },

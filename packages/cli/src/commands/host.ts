@@ -43,6 +43,7 @@ Protect the short-lived installer token in the output. --json returns the receip
 `,
   },
   helpWhenBare: true,
+  useSelectedOrg: true,
   async run(argv, { io, auth }) {
     return hostCommand(argv, { ...auth, ...io });
   },

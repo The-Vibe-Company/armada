@@ -8,6 +8,7 @@ import {
   HARNESS_CAPABILITIES,
   HARNESS_KINDS,
   HARNESSES,
+  type LaunchOptions,
   type LaunchOptionsResponse,
   MACHINE_SIZES,
   MODEL_CATALOG,
@@ -27,6 +28,7 @@ import type { PGlite } from "@electric-sql/pglite";
 import { AppService } from "modal";
 import type { AuthIo } from "../../cli/src/auth-commands.ts";
 import { run } from "../../cli/src/run.ts";
+import { boatRuntimeLaunch } from "../src/boat-runtime-launch.ts";
 import { createCredentialBindingRecovery } from "../src/credential-binding-recovery.ts";
 import { type ControlOptions, controlOptionsFromEnv, createSqlData, handleControlRequest } from "../src/index.ts";
 import { launchCredentials } from "../src/launch-credentials.ts";
@@ -194,19 +196,19 @@ test("Skillpack connection reports only visible metadata and never advertises un
   });
 });
 
-describe("armada org and armada creds against the control API", () => {
+describe("armada org and armada account against the control API", () => {
   test("organization setup is org-only, live-authorized, validated and encrypted through CLI/API", async () => {
     await withServer(async ({ db, options, cli }) => {
       const admin = cli(STAN);
       const member = cli(ADA);
-      await admin.run(["org", "create", "Setup"]);
+      await admin.run(["api", "org/create", JSON.stringify({ name: "Setup" })]);
       const org = (await options.store.memberships(STAN))[0]!;
       await options.store.addMember(org.id, ADA, "member");
       let calls = 0;
       options.providerValidator = async () => {
         calls++;
       };
-      await member.run(["creds", "set", "boat"], { stdin: "personal-test-value" });
+      await member.run(["account", "add", "boat"], { stdin: "personal-test-value" });
       const status = async () => JSON.parse((await member.run(["org", "setup", "--json"])).out);
       expect(await status()).toEqual({
         org: { ...org, role: "member" },
@@ -246,9 +248,9 @@ describe("armada org and armada creds against the control API", () => {
         scope: "org",
       });
       expect(
-        JSON.parse((await member.run(["creds", "list", "--org", org.id, "--json"])).out).orgs[0].credentials,
+        JSON.parse((await member.run(["account", "ls", "--org", org.id, "--json"])).out).orgs[0].credentials,
       ).toEqual([{ kind: "boat", createdAt: null }]);
-      expect((await admin.run(["creds", "rm", "boat", "--org", org.id])).code).toBe(0);
+      expect((await admin.run(["account", "rm", "--kind", "boat", "--org", org.id])).code).toBe(0);
       expect((await status()).ready).toBe(false);
       await expect(
         resolveBoatKey(options.store, KEY, { userId: STAN, orgId: org.id, visibility: "org" }),
@@ -379,35 +381,45 @@ describe("armada org and armada creds against the control API", () => {
       const secrets = [TOKEN_SECRET, "codex-do-not-leak", "boat-org-key", "boat-ada-key"];
       const everything = () => [stan, ada].map((who) => who.out + who.err).join("");
 
-      expect((await stan.run(["org", "create", "Vibe"])).code).toBe(0);
+      expect((await stan.run(["api", "org/create", JSON.stringify({ name: "Vibe" })])).code).toBe(0);
       expect((await stan.run(["org", "list"])).out).toContain("Vibe  admin");
-      expect((await stan.run(["org", "members", "add", "Ada@Example.com"])).out).toContain(
-        "Added ada@example.com as member.",
+      const added = await stan.run(["api", "members/add", JSON.stringify({ org: "Vibe", email: "Ada@Example.com" })]);
+      expect(added.code).toBe(0);
+      expect(JSON.parse(added.out)).toMatchObject({ member: { email: "ada@example.com", role: "member" } });
+      const members = await stan.run(["api", "members/list", JSON.stringify({ org: "Vibe" })]);
+      expect(members.code).toBe(0);
+      expect(JSON.parse(members.out).members).toContainEqual(
+        expect.objectContaining({ email: "ada@example.com", role: "member" }),
       );
-      expect((await stan.run(["org", "members", "list"])).out).toContain("ada@example.com  member");
 
       expect(
-        (await stan.run(["creds", "set", "claude-oauth", "--org", "Vibe"], { stdin: `${TOKEN_SECRET}\n` })).code,
+        (await stan.run(["account", "add", "claude-oauth", "--org", "Vibe"], { stdin: `${TOKEN_SECRET}\n` })).code,
       ).toBe(0);
-      expect((await stan.run(["creds", "set", "boat", "--org", "Vibe"], { stdin: "boat-org-key" })).code).toBe(0);
+      expect((await stan.run(["account", "add", "boat", "--org", "Vibe"], { stdin: "boat-org-key" })).code).toBe(0);
       expect(
         (
-          await stan.run(["creds", "set", "codex-auth", "--file", "/home/stan/auth.json"], {
+          await stan.run(["account", "add", "codex-auth", "--file", "/home/stan/auth.json"], {
             files: { "/home/stan/auth.json": AUTH_JSON },
           })
         ).code,
       ).toBe(0);
-      expect((await ada.run(["creds", "set", "boat"], { stdin: "boat-ada-key" })).code).toBe(0);
+      expect((await ada.run(["account", "add", "boat"], { stdin: "boat-ada-key" })).code).toBe(0);
 
-      const adaSees = await ada.run(["creds", "list"]);
+      const adaSees = await ada.run(["account", "ls"]);
       expect(adaSees.out).toContain("You:\n  boat");
       expect(adaSees.out).toContain("Org Vibe (member):\n  boat\n  claude-oauth");
       expect(adaSees.out).not.toContain("codex-auth");
-      const denied = await ada.run(["creds", "set", "anthropic", "--org", "Vibe"], { stdin: "sk-ant-api03-x" });
+      const denied = await ada.run(["account", "add", "anthropic", "--org", "Vibe"], { stdin: "sk-ant-api03-x" });
       expect(denied.code).toBe(1);
       expect(denied.err).toContain("Only an org admin can do that.");
-      expect((await ada.run(["creds", "rm", "claude-oauth", "--org", "Vibe"])).code).toBe(1);
-      expect((await ada.run(["org", "members", "remove", "stan@example.com"])).err).toContain("Only an org admin");
+      expect((await ada.run(["account", "rm", "--kind", "claude-oauth", "--org", "Vibe"])).code).toBe(1);
+      const remove = await ada.run([
+        "api",
+        "members/remove",
+        JSON.stringify({ org: "Vibe", email: "stan@example.com" }),
+      ]);
+      expect(remove.code).toBe(1);
+      expect(remove.err).toContain("HTTP 403");
 
       const org = (await options.store.memberships(STAN))[0];
       const resolved = await resolveCredentials(options.store, KEY, {
@@ -431,8 +443,8 @@ describe("armada org and armada creds against the control API", () => {
         expect(everything()).not.toContain(secret);
       }
 
-      expect((await stan.run(["creds", "rm", "boat", "--org", "Vibe"])).code).toBe(0);
-      expect((await stan.run(["creds", "list", "--org", "Vibe"])).out).not.toContain("  boat");
+      expect((await stan.run(["account", "rm", "--kind", "boat", "--org", "Vibe"])).code).toBe(0);
+      expect((await stan.run(["account", "ls", "--org", "Vibe"])).out).not.toContain("  boat");
     });
   });
 
@@ -460,14 +472,14 @@ describe("armada org and armada creds against the control API", () => {
         },
       };
       const stan = cli(STAN);
-      const cached = await stan.run(["status", id, "--json"]);
+      const cached = await stan.run(["info", id, "--json"]);
       expect(cached.code).toBe(0);
       expect(JSON.parse(cached.out)).toMatchObject({ id, status: "ready", providerState: null, prompt: null });
       expect(probes).toBe(0);
-      const live = await stan.run(["status", id, "--live", "--json"]);
+      const live = await stan.run(["info", id, "--live", "--json"]);
       expect(live.code).toBe(0);
       expect(probes).toBe(1);
-      expect((await cli(ADA).run(["status", id])).code).not.toBe(0);
+      expect((await cli(ADA).run(["info", id])).code).not.toBe(0);
       expect(probes).toBe(1);
     });
   });
@@ -475,12 +487,12 @@ describe("armada org and armada creds against the control API", () => {
   test("CLI sandbox list shares the MCP scoped operation and rejects unavailable registry features", async () => {
     await withServer(async ({ options, cli }) => {
       const stan = cli(STAN);
-      await stan.run(["org", "create", "SandboxScope"]);
+      await stan.run(["api", "org/create", JSON.stringify({ name: "SandboxScope" })]);
       options.providers = { resolve: async () => fakeProvider() };
       const listed = await stan.run(["ls", "--json"]);
       expect(listed.code).toBe(0);
       expect(JSON.parse(listed.out)).toEqual({ sandboxes: [] });
-      const missing = await stan.run(["status", "33333333-3333-4333-8333-333333333333"]);
+      const missing = await stan.run(["info", "33333333-3333-4333-8333-333333333333"]);
       expect(missing.code).not.toBe(0);
       expect(missing.out).toBe("");
       const mcp = await stan.run(["mcp", "list"]);
@@ -492,17 +504,17 @@ describe("armada org and armada creds against the control API", () => {
   test("a value is read from stdin or a file, never from an argument", async () => {
     await withServer(async ({ cli }) => {
       const stan = cli(STAN);
-      await stan.run(["org", "create", "Vibe"]);
-      const tty = await stan.run(["creds", "set", "openai"], { stdin: null });
+      await stan.run(["api", "org/create", JSON.stringify({ name: "Vibe" })]);
+      const tty = await stan.run(["account", "add", "openai"], { stdin: null });
       expect(tty.code).toBe(2);
       expect(tty.err).toContain("Pipe the value on stdin");
-      const extra = await stan.run(["creds", "set", "openai", "sk-pasted-on-the-command-line"]);
+      const extra = await stan.run(["account", "add", "openai", "sk-pasted-on-the-command-line"]);
       expect(extra.code).toBe(2);
       expect(extra.err).not.toContain("sk-pasted");
-      const unknown = await stan.run(["creds", "set", "not-a-credential"], { stdin: "x" });
+      const unknown = await stan.run(["account", "add", "not-a-credential"], { stdin: "x" });
       expect(unknown.code).toBe(2);
       expect(unknown.err).toContain("Unknown credential 'not-a-credential'");
-      const spaced = await stan.run(["creds", "set", "openai"], { stdin: "sk one two" });
+      const spaced = await stan.run(["account", "add", "openai"], { stdin: "sk one two" });
       expect(spaced.code).toBe(2);
       expect(spaced.err).not.toContain("one two");
     });
@@ -1765,7 +1777,7 @@ describe("controlOptionsFromEnv", () => {
 test("CLI removal uses authorized API and returns only the retained-artifact receipt", async () => {
   await withServer(async ({ db, options, cli }) => {
     const stan = cli(STAN);
-    await stan.run(["org", "create", "Removal"]);
+    await stan.run(["api", "org/create", JSON.stringify({ name: "Removal" })]);
     const org = (await options.store.memberships(STAN))[0]!;
     options.authStore.addMembership(STAN, { orgId: org.id, name: org.name, role: "admin" });
     const result = await db.query<{ id: string }>(
@@ -1798,7 +1810,7 @@ test("CLI removal uses authorized API and returns only the retained-artifact rec
 test("public sandbox logs omit account-private native quota and auth records", async () => {
   await withServer(async ({ options, cli }) => {
     const stan = cli(STAN);
-    await stan.run(["org", "create", "Quota privacy"]);
+    await stan.run(["api", "org/create", JSON.stringify({ name: "Quota privacy" })]);
     const boat = fakeBoat();
     boat.provider.get = async (id) => ({ id, name: id, state: "ready", providerState: "ready", labels: {} });
     const types = [
@@ -1849,29 +1861,34 @@ test("public sandbox logs omit account-private native quota and auth records", a
 test("CLI named-account operations preserve safe IDs and CAS through the authenticated API", async () => {
   await withServer(async ({ cli }) => {
     const admin = cli(STAN);
-    await admin.run(["org", "create", "Accounts"]);
-    expect((await admin.run(["creds", "set", "openai", "--name", "Work"], { stdin: "work-test-key" })).code).toBe(0);
+    await admin.run(["api", "org/create", JSON.stringify({ name: "Accounts" })]);
+    expect((await admin.run(["account", "add", "openai", "--name", "Work"], { stdin: "work-test-key" })).code).toBe(0);
     expect(
-      (await admin.run(["creds", "set", "openai", "--name", "Personal"], { stdin: "personal-test-key" })).code,
+      (await admin.run(["account", "add", "openai", "--name", "Personal"], { stdin: "personal-test-key" })).code,
     ).toBe(0);
-    const listed = await admin.run(["creds", "list", "--json"]);
+    const listed = await admin.run(["account", "ls", "--json"]);
     expect(listed.out).not.toContain("work-test-key");
     expect(listed.out).not.toContain("valueEnc");
     const accounts = JSON.parse(listed.out).user;
     expect(accounts).toHaveLength(2);
     const id = accounts.find((row: { name: string }) => row.name === "Work").id;
-    expect((await admin.run(["creds", "rename", id, "Renamed"])).code).toBe(0);
-    expect((await admin.run(["creds", "default", id])).code).toBe(0);
     expect(
-      (await admin.run(["creds", "set", "openai", "--id", id, "--expected-version", "1"], { stdin: "new-test-key" }))
+      (await admin.run(["api", "creds/accounts/rename", JSON.stringify({ scope: "user", id, name: "Renamed" })])).code,
+    ).toBe(0);
+    expect((await admin.run(["account", "default", id])).code).toBe(0);
+    expect(
+      (await admin.run(["account", "add", "openai", "--id", id, "--expected-version", "1"], { stdin: "new-test-key" }))
         .code,
     ).toBe(0);
     expect(
-      (await admin.run(["creds", "set", "openai", "--id", id, "--expected-version", "1"], { stdin: "stale-test-key" }))
-        .code,
+      (
+        await admin.run(["account", "add", "openai", "--id", id, "--expected-version", "1"], {
+          stdin: "stale-test-key",
+        })
+      ).code,
     ).not.toBe(0);
-    expect((await admin.run(["creds", "remove", id])).code).toBe(0);
-    expect(JSON.parse((await admin.run(["creds", "list", "--json"])).out).user).toHaveLength(1);
+    expect((await admin.run(["account", "rm", id])).code).toBe(0);
+    expect(JSON.parse((await admin.run(["account", "ls", "--json"])).out).user).toHaveLength(1);
   });
 });
 
@@ -1883,7 +1900,7 @@ test.each(["claude", "codex", "privatized"] as const)(
     await withServer(async ({ db, options, cli }) => {
       const admin = cli(STAN),
         owner = cli(ADA);
-      await admin.run(["org", "create", "Recovery"]);
+      await admin.run(["api", "org/create", JSON.stringify({ name: "Recovery" })]);
       const org = (await options.store.memberships(STAN))[0]!;
       await options.store.addMember(org.id, ADA, "member");
       options.authStore.addMembership(STAN, { orgId: org.id, name: org.name, role: "admin" });
@@ -1990,15 +2007,15 @@ test.each(["claude", "codex", "privatized"] as const)(
       ])
         expect(
           (
-            await owner.run(["creds", "set", harness === "claude" ? "claude-oauth" : "codex-auth", "--name", name!], {
+            await owner.run(["account", "add", harness === "claude" ? "claude-oauth" : "codex-auth", "--name", name!], {
               stdin: harness === "claude" ? value! : nativeToken(value!),
             })
           ).code,
         ).toBe(0);
-      await owner.run(["creds", "set", harness === "claude" ? "openai" : "claude-oauth", "--name", "WrongHarness"], {
+      await owner.run(["account", "add", harness === "claude" ? "openai" : "claude-oauth", "--name", "WrongHarness"], {
         stdin: "wrong-harness-key",
       });
-      const accounts = JSON.parse((await owner.run(["creds", "list", "--json"])).out).user as {
+      const accounts = JSON.parse((await owner.run(["account", "ls", "--json"])).out).user as {
         id: string;
         name: string;
       }[];
@@ -2623,7 +2640,7 @@ test("CLI/API connection checks require the owner and current bound revision, ex
   await withServer(async ({ db, options, cli }) => {
     const owner = cli(STAN),
       other = cli(ADA);
-    await owner.run(["org", "create", "Connection checks"]);
+    await owner.run(["api", "org/create", JSON.stringify({ name: "Connection checks" })]);
     const org = (await options.store.memberships(STAN))[0]!;
     await options.store.addMember(org.id, ADA, "admin");
     options.authStore.addMembership(STAN, { orgId: org.id, name: org.name, role: "admin" });
@@ -2631,7 +2648,7 @@ test("CLI/API connection checks require the owner and current bound revision, ex
     const key = crypto.randomUUID();
     expect(
       (
-        await owner.run(["creds", "set", "openai", "--name", "Foundry"], {
+        await owner.run(["account", "add", "openai", "--name", "Foundry"], {
           stdin: JSON.stringify({
             endpoint: { version: 1, baseUrl: "https://example.com/v1" },
             apiKey: key,
@@ -2687,7 +2704,7 @@ test("CLI/API connection checks require the owner and current bound revision, ex
         };
       },
     };
-    const args = ["creds", "test", id, "--model", "deployment", "--json"];
+    const args = ["account", "test", id, "--model", "deployment", "--json"];
     const denied = await other.run(args);
     expect(denied.code).not.toBe(0);
     expect(denied.err).toContain("Only the sandbox owner");
@@ -2731,7 +2748,7 @@ test("CLI/API connection checks require the owner and current bound revision, ex
     expect(malformed.code).not.toBe(0);
     expect(malformed.out + malformed.err).not.toContain(key);
     const before = calls;
-    const badFlags = await owner.run(["creds", "test", id, "--model", "deployment", "--file", "never-read"]);
+    const badFlags = await owner.run(["account", "test", id, "--model", "deployment", "--file", "never-read"]);
     expect(badFlags.code).not.toBe(0);
     expect(badFlags.err).toContain("accept only --model");
     expect(calls).toBe(before);
@@ -2741,7 +2758,7 @@ test("CLI/API connection checks require the owner and current bound revision, ex
     expect(calls).toBe(before);
     expect(
       (
-        await owner.run(["creds", "set", "openai", "--id", account, "--expected-version", "1"], {
+        await owner.run(["account", "add", "openai", "--id", account, "--expected-version", "1"], {
           stdin: JSON.stringify({
             endpoint: { version: 1, baseUrl: "https://example.com/v1" },
             apiKey: crypto.randomUUID(),
@@ -2755,7 +2772,7 @@ test("CLI/API connection checks require the owner and current bound revision, ex
     // A standard vendor key has no endpoint metadata, but the same bound runtime can probe it.
     expect(
       (
-        await owner.run(["creds", "set", "openai", "--id", account, "--expected-version", "2"], {
+        await owner.run(["account", "add", "openai", "--id", account, "--expected-version", "2"], {
           stdin: "vendor_key_placeholder",
         })
       ).code,
@@ -2769,8 +2786,8 @@ test("CLI/API connection checks require the owner and current bound revision, ex
       (
         await owner.run(
           [
-            "creds",
-            "set",
+            "account",
+            "add",
             "opencode",
             "--name",
             "Custom OpenCode",
@@ -2795,7 +2812,7 @@ test("CLI/API connection checks require the owner and current bound revision, ex
     expectedHarness = "opencode";
     expectedModel = "armada/chosen";
     receipt = { ok: true, status: 200, error: null, code: null };
-    expect((await owner.run(["creds", "test", openCodeSandbox, "--model", expectedModel, "--json"])).code).toBe(0);
+    expect((await owner.run(["account", "test", openCodeSandbox, "--model", expectedModel, "--json"])).code).toBe(0);
     expect(calls).toBe(beforeOpenCode + 1);
     const boatGolden = (
       await db.query<{ id: string }>(
@@ -2812,7 +2829,7 @@ test("CLI/API connection checks require the owner and current bound revision, ex
     expectedSandboxId = "boat_probe";
     expectedHarness = "codex";
     expectedModel = "deployment";
-    const boatArgs = ["creds", "test", boatId, "--model", expectedModel, "--json"];
+    const boatArgs = ["account", "test", boatId, "--model", expectedModel, "--json"];
     const generation = (
       await db.query<{ lifecycle_generation: number }>("select lifecycle_generation from sandboxes where id=$1", [
         boatId,
@@ -2833,7 +2850,7 @@ test("CLI/API connection checks require the owner and current bound revision, ex
       "insert into sandboxes(id,provider,provider_sandbox_id,golden_id,org_id,owner_id,harness,status,credential_id,credential_version) values($1,'boat','native_probe',$2,$3,$4,'codex','ready',$5,3)",
       [nativeId, boatGolden, org.id, STAN, account],
     );
-    expect((await owner.run(["creds", "test", nativeId, "--model", expectedModel, "--json"])).code).not.toBe(0);
+    expect((await owner.run(["account", "test", nativeId, "--model", expectedModel, "--json"])).code).not.toBe(0);
     expect(calls).toBe(afterBoat);
     await db.query("update sandboxes set status='stopped',stopped_at=now() where id=$1", [boatId]);
     expect((await owner.run(boatArgs)).code).not.toBe(0);
@@ -3193,12 +3210,16 @@ test.each([
   { harness: "codex" as const, fromDefaults: true, entry: "ordinary-mcp" },
   { harness: "codex" as const, fromDefaults: true, entry: "ordinary-scoped" },
   { harness: "codex" as const, fromDefaults: true, entry: "ordinary-scoped-idle" },
+  { harness: "codex" as const, fromDefaults: true, entry: "ordinary-scoped-boat" },
 ])(
-  "Modal runtime launch prepares explicit/default MCP and skills before its first prompt ($harness defaults=$fromDefaults entry=$entry)",
+  "Enrolled golden launch prepares explicit/default MCP and skills before its first prompt ($harness defaults=$fromDefaults entry=$entry)",
   async ({ harness, fromDefaults, entry }) => {
     const ordinary = entry.startsWith("ordinary");
     const scoped = entry.startsWith("ordinary-scoped");
     const idle = entry === "ordinary-scoped-idle";
+    const boat = entry === "ordinary-scoped-boat";
+    const provider = boat ? "boat" : "modal";
+    const runtimeFields = boat ? { boatRuntime: true } : { runtimeTransport: "dialout" };
     await withServer(async ({ db, options }) => {
       const org = await options.store.createOrg("Modal runtime", STAN);
       options.authStore.addMembership(STAN, { orgId: org.id, name: org.name, role: "admin" });
@@ -3215,6 +3236,12 @@ test.each([
        values($1,$2,'modal-runtime','org','modal','master','image','workspace','main','app','{"repos":[{"url":"https://github.com/example/web.git","branch":"main","dir":"web"}],"init":["must not run"]}')`,
         [org.id, STAN],
       );
+      if (boat)
+        await db.query(
+          `insert into goldens(org_id,name,visibility,owner_id,boat_snapshot_id,config)
+           values($1,'boat-runtime','org',$2,$3,'{"repos":[{"url":"https://github.com/example/web.git","branch":"main","dir":"web"}]}')`,
+          [org.id, STAN, `a${"b".repeat(62)}`],
+        );
       const bearer = `eyJhbGciOiJIUzI1NiJ9.${btoa(JSON.stringify({ sub: STAN })).replace(/=+$/, "")}.sig`;
       const request = (body: object) =>
         handleControlRequest(
@@ -3227,8 +3254,8 @@ test.each([
         );
       const body = {
         org: org.id,
-        golden: "modal-runtime",
-        provider: "modal",
+        golden: `${provider}-runtime`,
+        provider,
         harness,
         ...(harness === "opencode" ? { model: "opencode/fixture", reasoningEffort: "default" } : {}),
         ...(idle ? {} : { prompt: "reply" }),
@@ -3240,7 +3267,7 @@ test.each([
       const fake = fakeBoat();
       const host = {
         ...fake.provider,
-        id: "modal" as const,
+        id: provider,
         harnesses: [...fake.provider.harnesses, "opencode" as const],
         capabilities: { ...fake.provider.capabilities, opencode: HARNESS_CAPABILITIES.opencode },
       };
@@ -3299,6 +3326,7 @@ test.each([
       });
       const connection = crypto.randomUUID();
       options.providerFor = () => {
+        if (boat) return native;
         throw Error("No Boat provider for Modal");
       };
       if (!ordinary) expect((await request(body))?.status).toBe(503);
@@ -3315,13 +3343,20 @@ test.each([
         },
       };
       if (ordinary) options.providers = { resolve: async () => native };
-      options.modalRuntimeLaunch = {
-        supportsScopedAccess: true,
+      const runtimePolicy: NonNullable<ControlOptions["modalRuntimeLaunch"]> = {
+        ...(boat
+          ? boatRuntimeLaunch({
+              sql,
+              encryptionKey: KEY,
+              serverUrl: "https://armada.test",
+              manifest: {},
+              architecture: "x64",
+            })
+          : { supportsScopedAccess: true }),
         async start(input) {
           starts++;
-          expect(input.sandbox.provider).toBe("modal");
-          expect(input.sandbox.runtimeTransport).toBe("dialout");
-          expect(input.sandbox.boatRuntime).toBeUndefined();
+          expect(input.sandbox).toMatchObject({ provider, ...runtimeFields });
+          if (scoped) expect(input.sandbox.visibility).toBe("private");
           await enrolments.enrol(
             (await enrolments.issue({ sandboxId: input.sandbox.id, ownerId: STAN, configuration: {} })).enrolmentToken,
           );
@@ -3357,6 +3392,7 @@ test.each([
           };
         },
       };
+      options.modalRuntimeLaunch = runtimePolicy;
       if (!ordinary)
         for (const bad of [
           { ...body, skipSkillDefaults: "invalid" },
@@ -3388,25 +3424,31 @@ test.each([
           },
           async prepare(_provider, sandbox) {
             expect(starts).toBe(1);
-            expect(sandbox).toMatchObject({ runtimeTransport: "dialout", provider: "modal", skills: [receipt] });
+            expect(sandbox).toMatchObject({ ...runtimeFields, provider, skills: [receipt] });
             mcpPrepared = true;
           },
         },
       };
+      let boatPlacementTarget: unknown;
       if (ordinary) {
         if (!options.runtimeMcp.connections) throw Error("Missing runtime connection policy");
         options.launch = {
           ...options.launch,
-          modalRuntimeDefault: {
-            policy: options.modalRuntimeLaunch,
+          [boat ? "boatRuntimeDefault" : "modalRuntimeDefault"]: {
+            policy: runtimePolicy,
             credentials: launchCredentials(options.store, KEY, undefined, options.modelAuth),
             connections: options.runtimeMcp.connections,
-            provider: (actor, golden) =>
-              options.modalRuntimeHostFor!(
+            provider: async (actor, golden) => {
+              if (boat) {
+                boatPlacementTarget = golden;
+                return host;
+              }
+              return options.modalRuntimeHostFor!(
                 { ...golden, runtimeTransport: "dialout" },
                 { userId: actor.userId, orgs: [{ orgId: actor.orgId, role: actor.role }], via: "service" },
-              ),
-          },
+              );
+            },
+          } satisfies NonNullable<LaunchOptions["boatRuntimeDefault"]>,
         };
       }
       const input = {
@@ -3452,11 +3494,12 @@ test.each([
       const launched = launchEnvelope.parse(await response?.json());
       expect(launched).toMatchObject({
         runtime: { kind: "armada", epoch: "1" },
-        sandbox: { provider: "modal", runtimeTransport: "dialout", skills: [receipt] },
+        sandbox: { provider, ...runtimeFields, skills: [receipt] },
         promptId: idle ? null : "modal-initial",
         ...(scoped ? { armadaAccess: { enabled: true, maxActiveChildren: 1 } } : {}),
       });
       if (scoped) await expect(admit()).resolves.toBe(STAN);
+      if (boat) expect(boatPlacementTarget).toMatchObject({ visibility: "private", sourceGoldenVisibility: "org" });
       expect(starts).toBe(1);
       expect(fake.forks).toHaveLength(1);
       expect(fake.prompts).toHaveLength(0);
@@ -3472,6 +3515,27 @@ test.each([
           throw Error("Scoped launch must retain its bound account and model");
         const { createSandboxAccessServices } = await import("../src/sandbox-access-services.ts");
         const credentials = launchCredentials(options.store, KEY);
+        const childPlacement: NonNullable<LaunchOptions["boatRuntimeDefault"]> = {
+          credentials,
+          connections: { async validate() {}, async bind() {} },
+          provider: async () => host,
+          policy: {
+            async start({ sandbox }) {
+              expect(sandbox).toMatchObject({ visibility: "private", ...runtimeFields });
+              const ticket = await enrolments.issue({ sandboxId: sandbox.id, ownerId: STAN, configuration: {} });
+              const active = await enrolments.enrol(ticket.enrolmentToken);
+              return {
+                epoch: active.epoch,
+                async prepareWorkspace() {
+                  return { status: "not_connected" };
+                },
+                async prompt() {
+                  throw Error("The delegated child has no initial prompt");
+                },
+              };
+            },
+          },
+        };
         const children = createSandboxAccessServices({
           sql,
           credentials,
@@ -3483,33 +3547,7 @@ test.each([
           },
           encryptionKey: KEY,
           scopedMcpUrl: "https://armada.test",
-          runtimePlacements: {
-            modal: {
-              credentials,
-              connections: { async validate() {}, async bind() {} },
-              provider: async (_actor, target) =>
-                options.modalRuntimeHostFor!(
-                  { ...target, runtimeTransport: "dialout" },
-                  { userId: STAN, orgs: [{ orgId: org.id, role: "admin" }], via: "service" },
-                ),
-              policy: {
-                async start({ sandbox }) {
-                  expect(sandbox).toMatchObject({ visibility: "private", runtimeTransport: "dialout" });
-                  const ticket = await enrolments.issue({ sandboxId: sandbox.id, ownerId: STAN, configuration: {} });
-                  const active = await enrolments.enrol(ticket.enrolmentToken);
-                  return {
-                    epoch: active.epoch,
-                    async prepareWorkspace() {
-                      return { status: "not_connected" };
-                    },
-                    async prompt() {
-                      throw Error("The delegated child has no initial prompt");
-                    },
-                  };
-                },
-              },
-            },
-          },
+          ...(boat ? { boatEndpointRuntime: childPlacement } : { runtimePlacements: { modal: childPlacement } }),
         });
         const child = await children.childWorker.launch(token, "enrolled-child", {
           goldenId: parent.goldenId,

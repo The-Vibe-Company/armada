@@ -16,6 +16,11 @@ import { bootstrapSandboxAccess } from "./sandbox-access-bootstrap.ts";
 import { orchestratorScopedMcpUrl } from "./sandbox-access-scoped-gateway.ts";
 import { createDelegatedTransport, createEnrolledDelegatedTransport } from "./sandbox-access-transport.ts";
 
+type NativeModalDrainDelete = Parameters<Provider["delete"]>[0] & { generation?: number };
+
+const enrolledPlacement =
+  "((s.provider='boat' and s.boat_runtime) or (s.provider='modal' and s.runtime_transport='dialout'))";
+
 const workerScopes = ["worker:launch", "worker:read", "worker:message", "worker:stop", "worker:extend"] as const;
 
 export interface SandboxArmadaAccessOptions {
@@ -39,7 +44,7 @@ export function createSandboxArmadaAccess(input: {
   const authority = authorityFor(sql);
   const native = (provider: Provider) =>
     provider.id === "boat" ? createBoatOrchestratorProvider(provider, input.encryptionKey) : provider;
-  async function scope(provider: Provider, providerId: string) {
+  async function scope(provider: Provider, providerId: string, sandboxId?: string) {
     return (
       await sql.query<{
         id: string;
@@ -49,21 +54,24 @@ export function createSandboxArmadaAccess(input: {
         lifecycle_generation: string;
         golden_ids: string[];
         credential_ids: string[];
-        runtime_transport: "dialout" | null;
+        enrolled: boolean;
         stop_requested: boolean;
         terminal: boolean;
+        modal_drain_cleaned_placement: string | null;
       }>(
         `select p.id,p.sandbox_id,p.owner_id,p.org_id,s.lifecycle_generation,p.golden_ids,p.credential_ids,
-          s.runtime_transport,s.stop_requested_at is not null as stop_requested,
+          p.modal_drain_cleaned_placement,${enrolledPlacement} is true as enrolled,s.stop_requested_at is not null as stop_requested,
           s.status in ('stopped','failed','deleted') as terminal from public.armada_access_parents p
-       join public.sandboxes s on s.id=p.sandbox_id where p.kind='sandbox' and s.provider=$1 and s.provider_sandbox_id=$2`,
-        [provider.id, providerId],
+       join public.sandboxes s on s.id=p.sandbox_id where p.kind='sandbox' and s.provider=$1 and s.provider_sandbox_id=$2
+         and ($3::uuid is null or s.id=$3)`,
+        [provider.id, providerId, sandboxId ?? null],
       )
     ).rows[0];
   }
   async function install(provider: Provider, id: string) {
     const parent = await scope(provider, id);
     if (!parent) return;
+    if (parent.enrolled) throw new VaultError("conflict", "Scoped runtime access requires enrolled delivery.");
     const target = native(provider);
     const physical = await target.get(id);
     if (!physical.physicalGeneration || !["ready", "running"].includes(physical.state))
@@ -114,7 +122,7 @@ export function createSandboxArmadaAccess(input: {
         `select p.id,p.golden_ids,p.credential_ids from public.armada_access_parents p
          join public.sandboxes s on s.id=p.sandbox_id
          where p.sandbox_id=$1 and p.owner_id=$2 and p.kind='sandbox'
-         and s.provider='modal' and s.runtime_transport='dialout'`,
+         and ${enrolledPlacement}`,
         [sandboxId, ownerId],
       )
     ).rows[0];
@@ -212,7 +220,7 @@ export function createSandboxArmadaAccess(input: {
       harness: sandbox.harness,
       skillRevision: "0".repeat(40),
     };
-    if (sandbox.runtimeTransport === "dialout") {
+    if (sandbox.boatRuntime || sandbox.runtimeTransport === "dialout") {
       if (!input.commands || !runtime) throw new VaultError("unavailable", "Scoped runtime delivery is unavailable.");
       await bootstrapSandboxAccess(provider, {
         ...bootstrap,
@@ -222,8 +230,8 @@ export function createSandboxArmadaAccess(input: {
             if (scope.epoch !== runtime.epoch) throw new VaultError("conflict", "Scoped runtime epoch changed.");
             const row = (
               await tx.query<{ generation: string }>(
-                `select lifecycle_generation::text as generation from public.sandboxes
-                 where id=$1 and org_id=$2 and provider=$3 and provider_sandbox_id=$4 and runtime_transport='dialout'
+                `select lifecycle_generation::text as generation from public.sandboxes s
+                 where id=$1 and org_id=$2 and provider=$3 and provider_sandbox_id=$4 and ${enrolledPlacement}
                  and visibility='private' and golden_id=$5 and credential_id=$6`,
                 [sandbox.id, actor.orgId, provider.id, sandbox.providerSandboxId, sandbox.goldenId, credentialId],
               )
@@ -237,19 +245,33 @@ export function createSandboxArmadaAccess(input: {
       });
       return;
     }
-    if (sandbox.boatRuntime) throw new VaultError("invalid", "Scoped access requires supported runtime placement.");
     if (!sql.transaction) throw new VaultError("unavailable", "Scoped access requires a transaction.");
-    await sql.transaction(register);
+    await sql.transaction(async (tx) => {
+      const eligible = await tx.query(
+        "select id from public.sandboxes where id=$1 and not native_drain_pending for update",
+        [sandbox.id],
+      );
+      if (!eligible.rows.length) throw new VaultError("conflict", "Sandbox is unavailable for scoped access.");
+      await register(tx);
+    });
     await bootstrapSandboxAccess(native(provider), {
       ...bootstrap,
       configureAuthority: () => install(provider, sandbox.providerSandboxId),
     });
   }
-  async function scrub(provider: Provider, id: string, cleanup?: "stop" | "delete") {
-    const parent = await scope(provider, id);
+  async function scrub(provider: Provider, id: string, cleanup?: "stop" | "delete", sandboxId?: string) {
+    const parent = await scope(provider, id, sandboxId);
     if (!parent) return;
-    if (cleanup && parent.runtime_transport === "dialout") {
-      if (parent.terminal || (cleanup === "stop" && parent.stop_requested)) return;
+    await scrubParent(provider, id, parent, cleanup);
+  }
+  async function scrubParent(
+    provider: Provider,
+    id: string,
+    parent: NonNullable<Awaited<ReturnType<typeof scope>>>,
+    cleanup?: "stop" | "delete",
+  ) {
+    if (parent.enrolled) {
+      if (cleanup && (parent.terminal || (cleanup === "stop" && parent.stop_requested))) return;
       throw new VaultError("conflict", "Scoped runtime cleanup requires a lifecycle stop or terminal state.");
     }
     await authority.revoke(parent.id);
@@ -270,14 +292,46 @@ export function createSandboxArmadaAccess(input: {
       }),
     );
   }
+  async function deleteNativeModal(provider: Provider, sandboxId: string, request: NativeModalDrainDelete) {
+    const placement = request.sandboxId;
+    async function assertOwner(store: Sql, lock = false) {
+      const owned = await store.query(
+        `select id from public.sandboxes where id=$1 and provider='modal' and provider_sandbox_id=$2
+         and runtime_transport is null and native_drain_pending and lifecycle_generation=$3
+         and activity_lease_id is not null and activity_until>clock_timestamp()${lock ? " for update" : ""}`,
+        [sandboxId, placement, request.generation ?? null],
+      );
+      if (!owned.rows.length) throw new VaultError("conflict", "Native drain no longer owns this placement.");
+    }
+    await assertOwner(sql);
+    const parent = await scope(provider, placement, sandboxId);
+    if (parent && parent.modal_drain_cleaned_placement !== placement) {
+      await scrubParent(provider, placement, parent, "delete");
+      if (!sql.transaction) throw new VaultError("unavailable", "Scoped cleanup requires a transaction.");
+      await sql.transaction(async (tx) => {
+        await assertOwner(tx, true);
+        const recorded = await tx.query(
+          "update public.armada_access_parents set modal_drain_cleaned_placement=$2 where id=$1 returning id",
+          [parent.id, placement],
+        );
+        if (!recorded.rows.length) throw new VaultError("conflict", "Scoped parent changed during cleanup.");
+      });
+    }
+    await assertOwner(sql);
+    return provider.delete(request);
+  }
   return {
     beforePrompt: install,
     beforeSnapshot: scrub,
+    beforeNativeDrainDelete: (provider: Provider, sandboxId: string, placement: string) =>
+      scrub(provider, placement, "delete", sandboxId),
     restoreEnrolled,
     prepare,
-    wrap(provider: Provider): Provider {
+    wrap(provider: Provider, modalDrainSandboxId?: string): Provider {
       return new Proxy(provider, {
         get(target, key) {
+          if (key === "delete" && modalDrainSandboxId)
+            return (request: NativeModalDrainDelete) => deleteNativeModal(target, modalDrainSandboxId, request);
           if (key === "stop" || key === "delete")
             return async (request: { sandboxId: string }) => {
               await scrub(target, request.sandboxId, key);

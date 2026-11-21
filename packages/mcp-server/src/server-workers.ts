@@ -1,5 +1,5 @@
 import { JOBS_WAKE } from "./jobs/store.ts";
-import { runtimeWakes, waitForTimeout } from "./wake-bus.ts";
+import { runtimeWakes, SANDBOX_ADMISSION_WAKE, waitForTimeout } from "./wake-bus.ts";
 
 export interface ServerLifecycleLane {
   reconcileOne(signal: AbortSignal): Promise<boolean>;
@@ -18,6 +18,7 @@ export function startServerWorkers(
   async function runLanes(group: readonly ServerLifecycleLane[], timebox = true, wakes = false) {
     const wake = wakes ? runtimeWakes.watch(JOBS_WAKE) : undefined;
     let nextLane = 0;
+    let nextAdmissionWake = 0;
     while (!shutdown.signal.aborted) {
       const item = timebox ? new AbortController() : undefined;
       const timeout = item ? setTimeout(() => item.abort(), 30_000) : undefined;
@@ -40,6 +41,10 @@ export function startServerWorkers(
         log("armada: sandbox lifecycle tick unavailable; durable leases remain fenced.");
       } finally {
         clearTimeout(timeout);
+        if (wake && performance.now() >= nextAdmissionWake) {
+          nextAdmissionWake = performance.now() + 1000;
+          runtimeWakes.notify(SANDBOX_ADMISSION_WAKE);
+        }
       }
       if (wake) await wake.wait(shutdown.signal, 1000, waitForTimeout);
       else await waitForTimeout(1000, shutdown.signal);

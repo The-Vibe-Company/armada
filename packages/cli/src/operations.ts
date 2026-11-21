@@ -1,10 +1,16 @@
 import { AuthError } from "@armada/auth";
 import { GoldenError, HARNESSES } from "@armada/core";
-import type { ListInput, ListResult } from "@armada/core/contract";
+import {
+  DEFAULT_WAIT_SECONDS,
+  type ListInput,
+  type ListResult,
+  MAX_WAIT_SECONDS,
+  type WaitResult,
+} from "@armada/core/contract";
 import { sandboxListInput } from "@armada/core/contract/sandbox";
 import { invalidAgentMessage } from "./agent-validation.ts";
+import { ArmadaApiError } from "./api-responses.ts";
 import { acceptedOptions, flag, parseArgs, single, uuid } from "./args.ts";
-import { ArmadaApiError, type ArmadaCommandClient, createArmadaApiClient } from "./armada-api.ts";
 import type { AuthIo } from "./auth-commands.ts";
 import {
   type CurrentSandboxFile,
@@ -14,14 +20,27 @@ import {
 } from "./current-sandbox.ts";
 import { setupStatus } from "./devx.ts";
 import { mcpCommand } from "./mcp-commands.ts";
-import { resourceAdviceText } from "./resource-advice.ts";
 import { sandboxListText } from "./sandbox-list.ts";
+import { type ArmadaCommandClient, createSdkCommandClient } from "./sdk-session.ts";
 
 export async function operation(
   command:
-    | Exclude<keyof ArmadaCommandClient["sandboxes"], "launch" | "list" | "logs" | "send" | "steer">
+    | Exclude<
+        keyof ArmadaCommandClient["sandboxes"],
+        | "launch"
+        | "list"
+        | "logs"
+        | "send"
+        | "steer"
+        | "status"
+        | "wait"
+        | "advice"
+        | "recovery"
+        | "extend"
+        | "interrupt"
+      >
     | "ls"
-    | "detail"
+    | "info"
     | "rm"
     | "mcp",
   argv: readonly string[],
@@ -42,9 +61,11 @@ export async function operation(
       ? ["--page-info"]
       : command === "rm"
         ? ["--yes"]
-        : command === "status"
-          ? ["--live", "--setup"]
-          : [],
+        : command === "info"
+          ? ["--live", "--setup", "--wait"]
+          : command === "stop"
+            ? ["--turn", "--after"]
+            : [],
   );
   const end = argv.indexOf("--");
   if (command === "exec" && (end < 0 || end === argv.length - 1 || args.positionals.length > argv.length - end))
@@ -55,34 +76,41 @@ export async function operation(
   const [id, ...rest] = implicitWithPayload || implicitReport ? [undefined, ...args.positionals] : args.positionals;
   const options: Record<string, readonly string[]> = {
     ls: ["--status", "--ref", "--agent", "--harness", "--golden", "--owner", "--page", "--limit", "--page-info"],
-    status: ["--live", "--prompt-id", "--setup"],
-    detail: ["--prompt-id"],
-    recovery: [],
-    advice: [],
+    info: ["--live", "--prompt-id", "--setup", "--wait", "--timeout"],
     exec: ["--cwd", "--timeout"],
-    stop: [],
-    wait: ["--timeout", "--prompt-id"],
+    stop: ["--turn", "--after", "--timeout"],
     report: ["--prompt-id", ...(rest[0] === "blocked" ? ["--reason"] : ["--pr-number", "--pr-url", "--head-sha"])],
     "bind-credential": ["--credential-id"],
-    extend: ["--ttl"],
     rm: ["--yes"],
   };
   acceptedOptions(args, command, ["--org", "--json", ...(options[command] ?? [])]);
   const org = single(args, "--org");
+  const wait = command === "info" && flag(args, "--wait");
+  const after = command === "stop" && flag(args, "--after");
+  const turn = command === "stop" && flag(args, "--turn");
+  if (after && turn) throw new GoldenError("invalid_config", "Choose --turn or --after.");
   let current: string | undefined;
-  if (command === "status") {
+  if (command === "info") {
     const setup = flag(args, "--setup");
-    const sandboxRequested = id !== undefined || flag(args, "--live") || flag(args, "--prompt-id");
+    const live = flag(args, "--live");
+    const timeout = single(args, "--timeout");
+    if (wait && live) throw new GoldenError("invalid_config", "Choose --live or --wait.");
+    if (timeout !== undefined && !wait) throw new GoldenError("invalid_config", "Pass --wait to use --timeout.");
+    const sandboxRequested = id !== undefined || live || wait || flag(args, "--prompt-id");
     if (setup && sandboxRequested)
-      throw new GoldenError("invalid_config", "--setup cannot be combined with a sandbox ID, --live, or --prompt-id.");
+      throw new GoldenError(
+        "invalid_config",
+        "--setup cannot be combined with a sandbox ID, --live, --wait, or --prompt-id.",
+      );
+    if (rest.length) throw new GoldenError("invalid_config", "Unexpected arguments.");
     if (!setup && id === undefined) current = await readCurrentSandbox(auth.env, sandboxFile);
     if (setup || (!sandboxRequested && !current)) return setupStatus(org, flag(args, "--json"), auth);
   }
   let api: Promise<ArmadaCommandClient> | undefined;
-  const client = () => (api ??= createArmadaApiClient(auth));
+  const client = () => (api ??= createSdkCommandClient(auth));
   const list = async (body: ListInput) => (await client()).sandboxes.list<ListResult>(body);
   const resolveId = (id: string | undefined) =>
-    command === "status"
+    command === "info"
       ? resolveSandboxReference(id, current, org, list)
       : resolveSandboxId(id, auth.env, sandboxFile, org, list);
   if (command === "rm") {
@@ -107,7 +135,7 @@ export async function operation(
       "Repository context is immutable; select --repo at launch, not on later operations.",
     );
   const body: Record<string, unknown> = {};
-  if (command === "status") body.recorded = !flag(args, "--live");
+  if (command === "info" && !wait) body.recorded = !flag(args, "--live");
   for (const [flag, key] of Object.entries({
     "--org": "org",
     "--cwd": "cwd",
@@ -118,21 +146,15 @@ export async function operation(
   }
   const timeout = single(args, "--timeout");
   if (timeout !== undefined) {
+    if (command === "stop" && !after) throw new GoldenError("invalid_config", "Pass --after to use --timeout.");
     if (!/^\d+$/.test(timeout)) throw new GoldenError("invalid_config", "--timeout is seconds.");
     const seconds = Number(timeout);
     body.timeout_seconds = seconds;
-    const minimum = command === "wait" ? 0 : 1;
-    if (!Number.isSafeInteger(seconds) || seconds < minimum || seconds > 600)
-      throw new GoldenError("invalid_config", `--timeout must be ${minimum}–600 seconds.`);
+    const minimum = wait || after ? 0 : 1;
+    if (!Number.isSafeInteger(seconds) || seconds < minimum || seconds > MAX_WAIT_SECONDS)
+      throw new GoldenError("invalid_config", `--timeout must be ${minimum}–${MAX_WAIT_SECONDS} seconds.`);
   }
   if (command === "ls") Object.assign(body, sandboxListFilters(args));
-  if (command === "extend") {
-    if (org !== undefined) uuid(org, "--org");
-    const ttl = single(args, "--ttl");
-    if (ttl === undefined || [...args.options.keys()].some((key) => !["--ttl", "--org", "--json"].includes(key)))
-      throw new GoldenError("invalid_config", "Run armada extend <sandbox-id> --ttl <duration> [--org UUID] [--json].");
-    body.ttlSeconds = parseTtl(ttl);
-  }
   if (command === "bind-credential") {
     const credentialId = single(args, "--credential-id");
     uuid(credentialId, "credential id");
@@ -158,31 +180,52 @@ export async function operation(
     body.command = rest.join(" ");
   } else if ((command === "ls" && id) || rest.length) throw new GoldenError("invalid_config", "Unexpected arguments.");
   if (command !== "ls") {
-    const resolved = await resolveId(id);
-    if (command === "extend") uuid(resolved, "sandbox id");
-    body.id = resolved;
+    body.id = await resolveId(id);
   }
-  const seconds =
-    command === "wait"
-      ? Number(body.timeout_seconds ?? 60)
-      : command === "exec"
-        ? Number(body.timeout_seconds ?? 120)
-        : undefined;
+  const seconds = wait
+    ? Number(body.timeout_seconds ?? DEFAULT_WAIT_SECONDS)
+    : command === "exec"
+      ? Number(body.timeout_seconds ?? 120)
+      : undefined;
+  let action: keyof ArmadaCommandClient["sandboxes"];
+  switch (command) {
+    case "stop":
+      action = turn ? "interrupt" : "stop";
+      break;
+    case "info":
+      action = wait ? "wait" : "status";
+      break;
+    case "ls":
+      action = "list";
+      break;
+    default:
+      action = command;
+  }
+  if (after) {
+    const waitSeconds = Number(body.timeout_seconds ?? DEFAULT_WAIT_SECONDS);
+    const { sandboxes } = await client();
+    const deadline = auth.now().getTime() + waitSeconds * 1_000;
+    const waited = await sandboxes.wait<WaitResult>(
+      { id: body.id, org, timeout_seconds: waitSeconds },
+      { signal: AbortSignal.timeout((waitSeconds + 15) * 1_000) },
+    );
+    if (waited.timedOut || auth.now().getTime() >= deadline) {
+      auth.out(`${JSON.stringify({ id: waited.id, status: waited.status, timedOut: true }, null, 2)}\n`);
+      return 0;
+    }
+    delete body.timeout_seconds;
+    body.only_if_idle = true;
+  }
   const signal =
-    command === "stop" || command === "bind-credential"
+    action === "stop" || action === "bind-credential"
       ? AbortSignal.timeout(660_000)
       : seconds === undefined
         ? undefined
         : AbortSignal.timeout((seconds + 15) * 1_000);
-  const request = client().then((client) =>
-    client.sandboxes[command === "detail" ? "status" : command === "ls" ? "list" : command](
-      body,
-      signal ? { signal } : undefined,
-    ),
-  );
+  const request = client().then((client) => client.sandboxes[action](body, signal ? { signal } : undefined));
   const result = await request.catch((error: unknown) => {
     if (
-      command === "stop" &&
+      action === "stop" &&
       error instanceof ArmadaApiError &&
       error.code === "unavailable" &&
       error.status >= 500 &&
@@ -196,22 +239,19 @@ export async function operation(
         1,
       );
     if (
-      command === "stop" &&
+      action === "stop" &&
       error instanceof AuthError &&
       !(error instanceof ArmadaApiError) &&
       error.code === "unavailable"
     )
       throw new AuthError(
-        `${error.message} Outcome unknown. Run armada status ${body.id} to check before retrying.`,
+        `${error.message} Outcome unknown. Run armada info ${body.id} to check before retrying.`,
         "unavailable",
       );
     throw error;
   });
 
-  if (command === "advice" && !flag(args, "--json")) {
-    const { advice } = result as import("@armada/core").ResourceAdviceResponse;
-    auth.out(`${resourceAdviceText(advice) ?? `No resource recommendation (${advice.reason}); defaults unchanged.`}\n`);
-  } else if (command === "ls" && !flag(args, "--page-info")) {
+  if (command === "ls" && !flag(args, "--page-info")) {
     const page = result as { sandboxes?: unknown };
     if (!Array.isArray(page?.sandboxes))
       throw new GoldenError("invalid_config", "Armada returned an invalid sandbox page.");
@@ -219,7 +259,14 @@ export async function operation(
       auth.out(`${JSON.stringify(flag(args, "--page-info") ? result : { sandboxes: page.sandboxes }, null, 2)}\n`);
     else auth.out(sandboxListText(page.sandboxes, auth.now()));
   } else {
-    if (command === "status" && !flag(args, "--json") && result && typeof result === "object" && "prompt" in result) {
+    if (
+      command === "info" &&
+      !wait &&
+      !flag(args, "--json") &&
+      result &&
+      typeof result === "object" &&
+      "prompt" in result
+    ) {
       const prompt = result.prompt as {
         rateLimit?: { message: string; retryCount: number; totalWaitMs: number } | null;
       } | null;

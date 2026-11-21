@@ -157,6 +157,7 @@ Example: armada mcp update CONNECTION_UUID --file /private/connection.json --org
     "mcp reconnect": mcpAuthorizationHelp("reconnect"),
   },
   helpWhenBare: true,
+  useSelectedOrg: true,
   run: runOperation("mcp"),
 } satisfies Command;
 
@@ -170,10 +171,11 @@ export const bindCredential = {
   help: `Usage: armada bind-credential <sandbox-id> --credential-id UUID [--org UUID] [--json]
 Owner-only legacy Modal credential-binding recovery after Armada login.
 Stop the sandbox safely before rebinding; this command does not restart it.
-Use a sandbox ID from armada ls and a credential-account UUID from creds list.
+Use a sandbox ID from armada ls and a credential-account UUID from account ls.
 Do not pass secret credential values. Output is JSON even without --json.
 Example: armada bind-credential SANDBOX_UUID --credential-id ACCOUNT_UUID --org ORG_UUID
 `,
   automaticJson: true,
+  useSelectedOrg: true,
   run: runOperation("bind-credential"),
 } satisfies Command;

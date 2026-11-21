@@ -55,12 +55,17 @@ import {
   BoatApi,
   Configuration,
   type CreateSandboxRequest,
+  DeletionOperationKindEnum,
+  DeletionOperationResponseTypeEnum,
+  DeletionOperationStatusEnum,
   type PromptRequestProviderEnum,
   type Sandbox,
+  SandboxLastSnapshotStatusEnum,
   type SandboxListResponse,
   SandboxStateEnum,
   type SavedSnapshot,
   type StopOperationResponse,
+  StopOperationStatusEnum,
 } from "@boatdev/sdk";
 import {
   parseVmResourceFiles,
@@ -97,6 +102,8 @@ const BOAT_STATES: Record<SandboxState, readonly string[]> = {
 
 const LOG_STATES = new Set<string>(Object.values(SandboxStateEnum));
 const MAPPED_STATES = new Set(Object.values(BOAT_STATES).flat());
+const STOP_STATUSES = new Set<string>(Object.values(StopOperationStatusEnum));
+const SNAPSHOT_STATUSES = new Set<string>(Object.values(SandboxLastSnapshotStatusEnum));
 function trace(fields: Record<string, unknown>): void {
   try {
     console.info(JSON.stringify({ ...fields, at: new Date().toISOString() }));
@@ -121,15 +128,38 @@ function sandboxState(providerState: string): SandboxState {
   return "starting";
 }
 
-function archivedRetention(sandbox: Sandbox) {
-  if (sandbox.dataExpiredAt || sandbox.snapshots === false) return "unconfirmed";
-  if (sandbox.stop || sandbox.lastSnapshotStatus === "queued" || sandbox.lastSnapshotStatus === "in_progress")
-    return "pending";
-  if (sandbox.snapshotAvailable !== true || (sandbox.lastSnapshotStatus && sandbox.lastSnapshotStatus !== "completed"))
-    return "unconfirmed";
+function stopInFlight(status: StopOperationStatusEnum | undefined) {
+  return status === StopOperationStatusEnum.Pending || status === StopOperationStatusEnum.Failing;
+}
+
+function archivedSnapshotVerification(sandbox: Sandbox) {
+  if (sandbox.dataExpiredAt || sandbox.snapshots === false) return "unconfirmed" as const;
+  const stopStatus = sandbox.stop?.status;
+  const snapshotStatus = sandbox.lastSnapshotStatus;
+  if (
+    stopInFlight(stopStatus) ||
+    snapshotStatus === SandboxLastSnapshotStatusEnum.Queued ||
+    snapshotStatus === SandboxLastSnapshotStatusEnum.InProgress
+  )
+    return "pending" as const;
+  if (
+    (sandbox.stop &&
+      stopStatus !== StopOperationStatusEnum.Completed &&
+      stopStatus !== StopOperationStatusEnum.Superseded) ||
+    sandbox.snapshotAvailable !== true ||
+    (snapshotStatus && snapshotStatus !== SandboxLastSnapshotStatusEnum.Completed)
+  )
+    return "unconfirmed" as const;
   const stoppedAt = sandbox.stoppedAt?.getTime();
   const verifiedAt = (sandbox.snapshotVerifiedAt ?? sandbox.snapshotCompletedAt)?.getTime();
-  return stoppedAt !== undefined && verifiedAt !== undefined && verifiedAt >= stoppedAt ? "usable" : "unconfirmed";
+  if (
+    stoppedAt === undefined ||
+    verifiedAt === undefined ||
+    !Number.isFinite(stoppedAt) ||
+    !Number.isFinite(verifiedAt)
+  )
+    return "unconfirmed" as const;
+  return { stoppedAt, verifiedAt };
 }
 
 function sandboxInfo(sandbox: Sandbox): SandboxInfo {
@@ -140,7 +170,6 @@ function sandboxInfo(sandbox: Sandbox): SandboxInfo {
     providerState: sandbox.state,
     labels: sandbox.labels ?? {},
   };
-  if (sandbox.state === "archived") info.retainedSnapshot = archivedRetention(sandbox);
   if (sandbox.error) info.error = sandbox.error;
   if (sandbox.createdAt) info.createdAt = sandbox.createdAt;
   if (sandbox.stoppedAt && Number.isFinite(sandbox.stoppedAt.getTime())) info.stoppedAt = sandbox.stoppedAt;
@@ -214,6 +243,12 @@ interface BoatRuntimeHost {
 
 /** The boat.dev placement, over `@boatdev/sdk`. Every failure is a `ProviderError`. */
 export interface BoatProvider extends Provider {
+  observeSandboxDeletion(request: {
+    sandboxId: string;
+    generation: number;
+    operationId: string;
+    signal: AbortSignal;
+  }): Promise<DeleteReceipt>;
   /** Report-only observations from Boat's label-filtered sandbox API. The timestamps
    * and IDs describe logical sandboxes. Resume can replace the underlying machine. */
   listSandboxInventory(request?: {
@@ -322,6 +357,52 @@ export function createBoatProvider(options: BoatProviderOptions): BoatProvider &
     }
   }
 
+  async function observeArchivedRetention(sandbox: Sandbox, signal: AbortSignal) {
+    const verification = archivedSnapshotVerification(sandbox);
+    if (typeof verification === "string") return verification;
+    const { stoppedAt, verifiedAt } = verification;
+    if (verifiedAt >= stoppedAt) return "usable";
+
+    const lastSnapshotAttemptAt = sandbox.lastSnapshotAttemptAt?.getTime();
+    if (
+      sandbox.lastSnapshotStatus !== SandboxLastSnapshotStatusEnum.Completed ||
+      (lastSnapshotAttemptAt !== undefined &&
+        (!Number.isFinite(lastSnapshotAttemptAt) || lastSnapshotAttemptAt > verifiedAt))
+    )
+      return "unconfirmed";
+
+    const stop = sandbox.stop;
+    const endedAt = stop?.endedAt?.getTime();
+    if (
+      !stop?.id ||
+      stop.status !== StopOperationStatusEnum.Completed ||
+      endedAt === undefined ||
+      !Number.isFinite(endedAt) ||
+      endedAt < stoppedAt
+    )
+      return "unconfirmed";
+
+    const observed = await call(() => api.getStop({ sandboxId: sandbox.id, stopId: stop.id }, { signal })).catch(
+      (error: unknown) => {
+        if (error instanceof ProviderError && error.status === 404 && error.code === "not_found") return null;
+        throw error;
+      },
+    );
+    if (!observed) return "pending";
+    const operation = observed.stop;
+    const requestedAt = operation?.requestedAt?.getTime();
+    return observed.ok === true &&
+      observed.id === sandbox.id &&
+      operation?.id === stop.id &&
+      operation.status === StopOperationStatusEnum.Completed &&
+      operation.endedAt?.getTime() === endedAt &&
+      requestedAt !== undefined &&
+      Number.isFinite(requestedAt) &&
+      requestedAt <= verifiedAt
+      ? "usable"
+      : "unconfirmed";
+  }
+
   async function archive(sandboxId: string): Promise<void> {
     const signal = AbortSignal.timeout(150_000);
     // The generated SandboxActionResponse omits the documented top-level stop.
@@ -343,9 +424,8 @@ export function createBoatProvider(options: BoatProviderOptions): BoatProvider &
       signal.throwIfAborted();
       const observed: StopOperationResponse = await call(() => api.getStop({ sandboxId, stopId }, { signal }));
       if (observed.id !== sandboxId || observed.stop?.id !== stopId) throw unexpectedAnswer("stop operation");
-      if (observed.stop.status === "completed") return;
-      if (!["pending", "failing"].includes(observed.stop.status))
-        throw invalidRequest("Sandbox archival was superseded.");
+      if (observed.stop.status === StopOperationStatusEnum.Completed) return;
+      if (!stopInFlight(observed.stop.status)) throw invalidRequest("Sandbox archival was superseded.");
       await sleep(1000);
     }
     throw invalidRequest("Sandbox archival remains unconfirmed.");
@@ -497,8 +577,9 @@ export function createBoatProvider(options: BoatProviderOptions): BoatProvider &
       if (current?.id !== sandboxId) throw unexpectedAnswer("retained sandbox");
       if (current.state === "cancelled" || current.dataExpiredAt || current.snapshots === false) return "gone";
       if (current.state !== "archived") return "pending";
-      const retention = archivedRetention(current);
-      if (retention !== "usable") return retention === "pending" ? "pending" : "gone";
+      const verification = archivedSnapshotVerification(current);
+      if (verification === "pending") return "pending";
+      if (verification === "unconfirmed" || verification.verifiedAt < verification.stoppedAt) return "gone";
       const latest = await call(() => api.getLatestSandboxSnapshot({ sandboxId }, { signal })).catch(
         missingRetainedResource,
       );
@@ -594,18 +675,33 @@ export function createBoatProvider(options: BoatProviderOptions): BoatProvider &
       };
     },
     async get(sandboxId: string, requestOptions?: { signal?: AbortSignal }): Promise<SandboxInfo> {
-      const response = await call(() =>
-        api.get(
-          { sandboxId },
-          {
-            signal: requestOptions?.signal
-              ? AbortSignal.any([requestOptions.signal, AbortSignal.timeout(10_000)])
-              : AbortSignal.timeout(10_000),
-          },
-        ),
-      );
+      const timeout = AbortSignal.timeout(10_000);
+      const signal = requestOptions?.signal ? AbortSignal.any([requestOptions.signal, timeout]) : timeout;
+      const response = await call(() => api.get({ sandboxId }, { signal }));
       if (!response.sandbox?.id || response.sandbox.id !== sandboxId) throw unexpectedAnswer("sandbox");
-      return sandboxInfo(response.sandbox);
+      const current = response.sandbox;
+      const info = sandboxInfo(current);
+      if (current.state === "archived") info.retainedSnapshot = await observeArchivedRetention(current, signal);
+      if (info.retainedSnapshot && info.retainedSnapshot !== "usable") {
+        const stopStatus = current.stop?.status;
+        const snapshotStatus = current.lastSnapshotStatus;
+        const stoppedAt = current.stoppedAt?.getTime();
+        const verifiedAt = (current.snapshotVerifiedAt ?? current.snapshotCompletedAt)?.getTime();
+        trace({
+          event: "boat_retention_unconfirmed",
+          providerSandboxId: sandboxId,
+          retention: info.retainedSnapshot,
+          stopStatus: stopStatus == null || STOP_STATUSES.has(stopStatus) ? (stopStatus ?? null) : "unknown",
+          snapshotStatus:
+            snapshotStatus == null || SNAPSHOT_STATUSES.has(snapshotStatus) ? (snapshotStatus ?? null) : "unknown",
+          snapshotAvailable: current.snapshotAvailable === true,
+          snapshotsDisabled: current.snapshots === false,
+          dataExpired: Boolean(current.dataExpiredAt),
+          stoppedAt: Number.isFinite(stoppedAt) ? stoppedAt : null,
+          verifiedAt: Number.isFinite(verifiedAt) ? verifiedAt : null,
+        });
+      }
+      return info;
     },
 
     async resumeBestEffort(sandboxId: string): Promise<void> {
@@ -1151,6 +1247,22 @@ export function createBoatProvider(options: BoatProviderOptions): BoatProvider &
       lifecycleTrace(request.sandboxId, "stop", "api_dispatch", "ordinary");
       await call(() => api.stop({ sandboxId: request.sandboxId }, { signal: AbortSignal.timeout(10_000) }));
       lifecycleTrace(request.sandboxId, "stop", "api_accepted", "ordinary");
+    },
+
+    async observeSandboxDeletion({ sandboxId, operationId, signal }) {
+      const response = await call(() =>
+        api.getDeletionOperation({ operationId }, { signal: AbortSignal.any([signal, AbortSignal.timeout(10_000)]) }),
+      );
+      const operation = response.operation;
+      if (
+        response.ok !== true ||
+        response.type !== DeletionOperationResponseTypeEnum.DeletionOperation ||
+        operation?.id !== operationId ||
+        operation.kind !== DeletionOperationKindEnum.Sandbox ||
+        operation.targetId !== sandboxId
+      )
+        throw unexpectedAnswer("sandbox deletion operation");
+      return { status: operation.status === DeletionOperationStatusEnum.Completed ? "completed" : "pending" };
     },
 
     async delete(request: { sandboxId: string }): Promise<DeleteReceipt> {

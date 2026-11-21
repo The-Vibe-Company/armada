@@ -83,7 +83,7 @@ outcomes. Runtime receipts are validated against the shared closed DTO before
 returning `{id,test:{ok,status,error,code}}`.
 
 ```sh
-armada creds test PUBLIC_SANDBOX_UUID --model AZURE_DEPLOYMENT --json
+armada account test PUBLIC_SANDBOX_UUID --model AZURE_DEPLOYMENT --json
 ```
 
 A probe rejection is an HTTP200 API response with `test.ok:false`, because

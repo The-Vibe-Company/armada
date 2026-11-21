@@ -7,6 +7,7 @@ import {
   createSqlVaultStore,
   createTemplateService,
   GoldenBuildJobs,
+  type GoldenRecord,
   GoldenSnapshotRetirements,
   githubAppFromEnv,
   githubInstallationAppFromEnv,
@@ -21,7 +22,7 @@ import { boatRuntimeResume } from "./boat-runtime-resume.ts";
 import { type ConfiguredControlOptions, createQueuedSandboxDispatch } from "./control.ts";
 import { createCredentialBindingRecovery } from "./credential-binding-recovery.ts";
 import { createSqlCredentialList } from "./credential-list-sql.ts";
-import { createScopedSandboxData, createSqlData } from "./data.ts";
+import { createScopedSandboxData, createSqlData, type SandboxView } from "./data.ts";
 import { retryDatabaseBoot } from "./database-boot.ts";
 import { createDatabaseReadiness } from "./database-readiness.ts";
 import { requireDatabaseSchema } from "./database-schema.ts";
@@ -37,6 +38,7 @@ import { configureBoatGitHub } from "./github-boat.ts";
 import { createSqlGoldenList } from "./golden-list.ts";
 import { type HandlerOptions, providerRegistry, type Route } from "./http.ts";
 import { Invitations } from "./invitations.ts";
+import { modalLaunchTicketGuard } from "./jobs/modal-launch.ts";
 import { createJobsStore } from "./jobs/store.ts";
 import { createLangfuse } from "./langfuse.ts";
 import { launchCredentials } from "./launch-credentials.ts";
@@ -50,6 +52,7 @@ import { modalRuntimeResume } from "./modal-runtime-resume.ts";
 import { createModelAuthOwnership } from "./model-auth.ts";
 import { createModelUsageApi } from "./model-usage.ts";
 import type { NamedLaunchCredentials } from "./named-credentials.ts";
+import { withNativeLogJournal } from "./native-log-journal.ts";
 import { createObservedBoatProvider } from "./observed-boat.ts";
 import { createOrdinaryLaunchReceipts } from "./ordinary-launch-receipts.ts";
 import { createOutboundWebhooks } from "./outbound-webhooks.ts";
@@ -62,8 +65,10 @@ import { createRuntimeEnrolments } from "./runtime-enrolment.ts";
 import { createRuntimeEvents } from "./runtime-events.ts";
 import { createRuntimeFollowup } from "./runtime-followup.ts";
 import { createRuntimeGitHub } from "./runtime-github.ts";
+import { createModalJobReader, createModalLogReader } from "./runtime-history.ts";
 import { createRuntimeMcp } from "./runtime-mcp.ts";
 import { createRuntimeNativeAuth } from "./runtime-native-auth.ts";
+import { runtimeConfigurationWithVariables } from "./runtime-readable-variables.ts";
 import { createRuntimeResume } from "./runtime-resume.ts";
 import { createRuntimeServing } from "./runtime-serving.ts";
 import { createRuntimeSockets } from "./runtime-sockets.ts";
@@ -286,13 +291,13 @@ export async function createServerServices(env: Record<string, string | undefine
       policy: runtimeLaunch,
       credentials: launchCredentials(store, config.encryptionKey, undefined, modelAuth, { store, app: githubApp }),
       connections: runtimeMcp.connections,
-      provider: async (actor, golden) =>
+      provider: async (actor, golden: GoldenRecord & { sourceGoldenVisibility?: GoldenRecord["visibility"] }) =>
         runtimeHostFor(
           (
             await resolveBoatKey(store, config.encryptionKey, {
               userId: actor.userId,
               orgId: actor.orgId,
-              visibility: golden.visibility,
+              visibility: golden.sourceGoldenVisibility ?? golden.visibility,
             })
           ).key,
         ),
@@ -314,6 +319,38 @@ export async function createServerServices(env: Record<string, string | undefine
       modelAuth,
     });
   }
+  const modalLaunchCredentials = launchCredentials(store, config.encryptionKey, undefined, modelAuth);
+  const modalLaunchJob =
+    modalRuntime &&
+    modal.launchJob(async (sandbox) => {
+      if (!sandbox.credentialId || !sandbox.credentialVersion) throw new Error("Modal launch account pin is missing.");
+      const actor = { userId: sandbox.ownerId, orgId: sandbox.orgId, role: "member" as const };
+      const credentials = await modalLaunchCredentials.resolve(
+        actor,
+        sandbox.harness,
+        sandbox.credentialId,
+        sandbox.credentialVersion,
+      );
+      const plan = await runtimeConfigurationWithVariables(
+        sql,
+        {
+          actor,
+          sandbox,
+          credentials,
+          manifest: modalRuntime.manifest,
+          architecture: modalRuntime.manifest.architecture,
+          modelAuth,
+        },
+        "modal",
+        "modal_runtime_empty_v1",
+      );
+      return {
+        ...plan,
+        ownerId: sandbox.ownerId,
+        serverUrl: config.publicUrl,
+        ...modalLaunchTicketGuard(sandbox),
+      };
+    });
   const dockerCredentials = launchCredentials(store, config.encryptionKey, undefined, modelAuth, {
     store,
     app: githubApp,
@@ -350,7 +387,7 @@ export async function createServerServices(env: Record<string, string | undefine
   if (config.modalAgentPath === "runtime" && modalRuntimePolicy) {
     launch.modalRuntimeDefault = {
       policy: modalRuntimePolicy,
-      credentials: launchCredentials(store, config.encryptionKey, undefined, modelAuth),
+      credentials: modalLaunchCredentials,
       connections: runtimeMcp.connections,
       provider: (actor, golden) =>
         modalRuntimeHostFor(
@@ -427,7 +464,25 @@ export async function createServerServices(env: Record<string, string | undefine
           ...(dockerBootstrap ? { bootstrap: dockerBootstrap } : {}),
         })
       : undefined;
+  const modalJobReader = createModalJobReader(sql, config.encryptionKey);
   const logProviders = { boat: providers.resolve.bind(providers), modal: modal.storedProviderFor };
+  const journalLogProviders = {
+    modal: createModalLogReader(sql, config.encryptionKey, logProviders.modal),
+    boat: async (sandbox: Parameters<typeof logProviders.boat>[0], caller: Parameters<typeof logProviders.boat>[1]) => {
+      const provider = await logProviders.boat(sandbox, caller);
+      return sandbox.id && !sandbox.boatRuntime && !sandbox.runtimeTransport && config.encryptionKey
+        ? withNativeLogJournal(
+            sql,
+            config.encryptionKey,
+            provider,
+            { id: sandbox.id, orgId: sandbox.orgId, userId: caller.userId },
+            options.logError,
+          )
+        : provider;
+    },
+  };
+  const logProvider = (sandbox: SandboxView, caller: import("./caller.ts").Caller) =>
+    journalLogProviders[sandbox.provider](sandbox, caller);
   const ordinaryLaunchReceipts = createOrdinaryLaunchReceipts(sql);
   const deviceLogin = deviceLoginFromConfig(sql, config.dashboardUrl, env);
   const control: ConfiguredControlOptions = {
@@ -500,13 +555,14 @@ export async function createServerServices(env: Record<string, string | undefine
     goldenTarget: modal.goldenTarget,
     goldenBuilds,
     goldenAdoption,
+    modalJobReader,
     storedProviderFor: modal.storedProviderFor,
     logs: async (caller, sandboxId) => {
       const scoped = data(caller);
       const sandbox = await scoped.sandboxes.get(sandboxId);
       if (!sandbox) throw new Error("No such sandbox.");
       return {
-        provider: await logProviders[sandbox.provider](sandbox, caller),
+        provider: await logProvider(sandbox, caller),
         providerSandboxId: sandbox.providerSandboxId,
       };
     },
@@ -524,11 +580,13 @@ export async function createServerServices(env: Record<string, string | undefine
     credentials,
     runtimeSend,
     runtimeCheckpoint,
-    runtimePlacements: { modal: launch.modalRuntimeDefault },
+    runtimePlacements: { boat: launch.boatRuntimeDefault, modal: launch.modalRuntimeDefault },
+    boatEndpointRuntime: launch.boatEndpointRuntime,
     encryptionKey: config.encryptionKey,
     connections: mcp.connections,
     publicUrl: config.publicUrl,
     scopedMcpUrl: orchestratorScopedMcpUrl(config.publicUrl),
+    configureMutationRequest: (request: Request) => control.configureScopedMutationRequest?.(request),
   };
   const delegatedAccess = createSandboxAccessServices(sandboxAccessContext);
   control.eventFeed = createEventFeed(sql, delegatedAccess.authority);
@@ -551,10 +609,16 @@ export async function createServerServices(env: Record<string, string | undefine
   );
   const handlerOptions: Omit<HandlerOptions, "routes"> = {
     launchDiscovery: control,
+    logProvider,
+    modalJobReader,
     readOutputSnapshot: outputs.readSnapshot,
     ...(dockerControls ? { dockerControls } : {}),
     runtimeSend,
     runtimeStopCheckpoint,
+    configureStopRequest: (request) => control.configureStopRequest?.(request),
+    get stopAdmissionShutdown() {
+      return control.stopAdmissionShutdown;
+    },
     accountTurns,
     ...(control.sandboxBillingAccount ? { sandboxBillingAccount: control.sandboxBillingAccount } : {}),
     ready: createDatabaseReadiness(sql),
@@ -614,11 +678,13 @@ export async function createServerServices(env: Record<string, string | undefine
     runtimeCommands,
     runtimeEvents,
     runtimeGitHub,
+    runtimeMcp,
     runtimeSockets,
     langfuse,
     delegatedAccess,
     modelAuth,
     modal,
+    modalLaunchJob,
     modalArtifactCache: warmModalArtifacts,
     mcp,
     goldenBuilds,

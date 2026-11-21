@@ -1,11 +1,16 @@
 import { describe, expect, jest, test } from "bun:test";
+import { mkdtemp, readdir, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { failureDiagnostic, type Sql } from "@armada/core/server";
+import { createAccountTurnQueue } from "../src/account-turn-queue.ts";
 import { createSqlData } from "../src/data.ts";
 import { createJobsStore } from "../src/jobs/store.ts";
-import { createRuntimeFollowup } from "../src/runtime-followup.ts";
+import { createRuntimeFollowup, RuntimeFollowupConflict } from "../src/runtime-followup.ts";
+import { RuntimeReconciliationConflict } from "../src/runtime-reconciliation-conflict.ts";
 import { callSharedTool } from "../src/tool-api.ts";
 import { rowOnlyDatabase } from "./row-only-database.ts";
-import { runtimeFixture as fixture, scopedRuntimeFixture } from "./runtime.fixture.ts";
+import { configureRuntimeFixture, runtimeFixture as fixture, scopedRuntimeFixture } from "./runtime.fixture.ts";
 import { ENCRYPTION_KEY } from "./support.ts";
 
 const sharedDatabase = rowOnlyDatabase();
@@ -107,6 +112,92 @@ test("uncertain send reconciles the same durable identity/lease; changed input a
   } finally {
     await f.close();
   }
+});
+
+describe("direct Modal runtime admission", () => {
+  const modalSetupFixture = scopedRuntimeFixture(async () => fixture(await sharedDatabase(), "modal", "codex"), {
+    perTest: true,
+    timeout: 20_000,
+  });
+
+  test("direct Modal sends wait for the current setup receipt before claiming runtime activity", async () => {
+    const f = await modalSetupFixture();
+    const request = f.input();
+    const { lifecycleGeneration } = (await createSqlData(f.sql)(f.caller).sandboxes.get(request.id))!;
+    const jobs = createJobsStore(f.sql, ENCRYPTION_KEY);
+    const setupId = await jobs.enqueue(
+      "launch_initial_turn",
+      request.id,
+      lifecycleGeneration!,
+      request.id,
+      {},
+      { orgId: f.row.orgId, maxAttempts: 1 },
+    );
+
+    const refused = async (message: string) => {
+      await expect(f.send(f.caller, request)).rejects.toMatchObject({ code: "conflict", message });
+      expect(await f.bridge.result(f.caller.userId, request.id, `follow_${request.request_id}`)).toMatchObject({
+        state: "missing",
+      });
+      expect(
+        (await f.sql.query("select activity_lease_id from public.sandboxes where id=$1", [request.id])).rows,
+      ).toEqual([{ activity_lease_id: null }]);
+    };
+    await f.db.query(
+      `with template as (
+         insert into launch_templates(org_id,owner_id,scope,name)
+         values($1,$2,'personal','runtime-followup-template') returning id
+       ), revision as (
+         insert into launch_template_revisions(template_id,revision,definition,digest,created_by)
+         select id,1,'{}',repeat('a',64),$2 from template returning id,template_id
+       )
+       insert into template_launch_requests(org_id,actor_id,client_key,digest,template_id,revision_id,
+                                            manifest,golden_operation_fence_id,sandbox_id)
+       select $1,$2,'runtime-followup',repeat('a',64),template_id,id,'{}',$3,$4 from revision`,
+      [f.row.orgId, f.caller.userId, crypto.randomUUID(), request.id],
+    );
+    await refused("Modal launch setup is still in progress.");
+    await f.db.query("delete from template_launch_requests where sandbox_id=$1", [request.id]);
+    await f.db.query("update public.jobs set state='failed' where id=$1", [setupId]);
+    await refused("Modal launch setup failed.");
+    const queue = createAccountTurnQueue(f.sql, ENCRYPTION_KEY);
+    expect(
+      await queue.acceptInitialLaunch(
+        f.caller,
+        { id: request.id, request_id: setupId, prompt: "initial launch prompt" },
+        String(lifecycleGeneration),
+        async () => true,
+      ),
+    ).toBe(true);
+    await f.db.query("update public.jobs set state='done' where id=$1", [setupId]);
+    await refused("Modal launch prompt is awaiting dispatch.");
+    await queue.cancelQueued(f.caller, request.id);
+    const receipt = await f.send(f.caller, request);
+    expect(receipt.promptId).not.toBe(f.first.promptId);
+    expect(f.starts).toHaveLength(2);
+  });
+
+  test("a fresh wake cannot bypass setup on a retained Modal sandbox", async () => {
+    const f = await modalSetupFixture();
+    const request = f.input();
+    const { lifecycleGeneration } = (await createSqlData(f.sql)(f.caller).sandboxes.get(request.id))!;
+    await createJobsStore(f.sql, ENCRYPTION_KEY).enqueue(
+      "launch_initial_turn",
+      request.id,
+      lifecycleGeneration!,
+      request.id,
+      {},
+      { orgId: f.row.orgId, maxAttempts: 1 },
+    );
+    await f.db.query("update public.sandboxes set status='stopped',stopped_at=now() where id=$1", [request.id]);
+    const send = createRuntimeFollowup(f.sql, ENCRYPTION_KEY, f.bridge, undefined, async () => {
+      throw new Error("Resume dispatch was reached before launch setup.");
+    });
+    await expect(send(f.caller, request)).rejects.toMatchObject({
+      code: "conflict",
+      message: "Modal launch setup is still in progress.",
+    });
+  });
 });
 
 test("runtime follow-up preserves the operator cause behind an uncertain send", async () => {
@@ -332,15 +423,15 @@ test("a competing accepted turn invalidates an older finished probe before admis
   }
 });
 
-test("an active lifecycle reconciliation reports a closed cause before runtime prompt dispatch", async () => {
+test("reconciliation refuses fresh sends before dispatch and preserves prior command uncertainty", async () => {
   const f = await fixture(await sharedDatabase());
   try {
+    const prior = f.input("accepted before reconciliation");
+    await f.send(f.caller, prior);
     await f.db.query("update sandboxes set reconcile_lease_until='infinity' where id=$1", [f.row.id]);
-    await expect(f.send(f.caller, f.input())).rejects.toMatchObject({
-      code: "conflict",
-      reason: "runtime_reconciliation_active",
-    });
-    expect(f.starts).toHaveLength(1);
+    await expect(f.send(f.caller, f.input())).rejects.toBeInstanceOf(RuntimeReconciliationConflict);
+    await expect(f.send(f.caller, prior)).rejects.toBeInstanceOf(RuntimeFollowupConflict);
+    expect(f.starts).toHaveLength(2);
   } finally {
     await f.close();
   }
@@ -413,3 +504,46 @@ describe.each([
     expect((await createSqlData(f.sql)(f.caller).sandboxes.get(f.row.id))?.taskPromptId).toBe(next.promptId);
   });
 });
+
+test.each([
+  {
+    phase: "setup",
+    error: "sandbox golden does not exist",
+    prepare: (database: Awaited<ReturnType<typeof sharedDatabase>>) =>
+      fixture(database, "boat", "codex", true, undefined, {
+        goldenId: crypto.randomUUID(),
+        providerSandboxId: "missing-golden",
+      }),
+  },
+  {
+    phase: "configuration",
+    error: "runtime fixture configuration failed",
+    async prepare(database: Awaited<ReturnType<typeof sharedDatabase>>) {
+      const runtime = await fixture(database, "boat", "codex", true, undefined, {
+        goldenId: database.sharedGoldenId,
+        providerSandboxId: crypto.randomUUID(),
+      });
+      return configureRuntimeFixture(runtime, async () => {
+        throw new Error("runtime fixture configuration failed");
+      });
+    },
+  },
+])(
+  "failed runtime $phase removes its journal directory and keeps the caller's database open",
+  async ({ error, prepare }) => {
+    const database = await sharedDatabase();
+    const root = await mkdtemp(join(tmpdir(), "runtime-setup-failure-"));
+    const tempKey = process.platform === "win32" ? "TEMP" : "TMPDIR";
+    const previous = process.env[tempKey];
+    process.env[tempKey] = root;
+    try {
+      await expect(prepare(database)).rejects.toThrow(error);
+      expect(await readdir(root)).toEqual([]);
+      expect(database.db.closed).toBe(false);
+    } finally {
+      if (previous === undefined) delete process.env[tempKey];
+      else process.env[tempKey] = previous;
+      await rm(root, { recursive: true, force: true });
+    }
+  },
+);

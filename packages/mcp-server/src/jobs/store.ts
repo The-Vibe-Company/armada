@@ -3,11 +3,15 @@ import type { ModalMachineJournal } from "@armada/provider-modal";
 import {
   COMPLETED_RUNTIME_WAKE,
   CONFIRMED_WAKE_WITHOUT_TICKET,
+  CURRENT_DOCKER_RESUME_JOB,
   DISPATCH_ABANDONED,
   DISPATCHING_TURN_CANCELLED,
+  DOCKER_RESUME_WITHOUT_DISPATCH_DEADLINE,
   ENROLLED_PENDING_RUNTIME_WAKE,
+  FAILED_DOCKER_WAKE,
   failTurnReceipt,
   NATIVE_DISPATCH_UNCERTAIN,
+  PENDING_READY_DOCKER_RESUME_ACK,
   QUEUED_DISPATCH_EVIDENCE,
   QUEUED_TURN_CANCELLED,
   RUNTIME_LANE,
@@ -17,6 +21,16 @@ import { deferTransactionWake, runtimeWakes } from "../wake-bus.ts";
 import type { Job, JobStore } from "./runner.ts";
 
 export const JOBS_WAKE = "jobs";
+
+export function jobRequestKey(orgId: string, kind: string, ownerId: string, key: string) {
+  return JSON.stringify(["request", orgId, kind, ownerId, key]);
+}
+
+export class ConflictingJobRequest extends Error {
+  constructor() {
+    super("Conflicting job request.");
+  }
+}
 
 type JobRow = Omit<Job, "payload"> & { payload_enc: string | null };
 
@@ -34,6 +48,24 @@ const NO_ADJACENT_DISPATCH_EVIDENCE = `(s.activity_lease_id is distinct from q.r
     select 1 from public.docker_resume_claims c where c.sandbox_id = s.id and c.request_id = q.request_id
   )))`;
 
+const OBSOLETE_RUNTIME_PROMPT = `(s.activity_lease_id is distinct from q.request_id
+  and (s.provider <> 'docker' or (
+    not exists(select 1 from public.docker_resume_claims dc
+      where dc.sandbox_id = s.id and dc.request_id = q.request_id)
+    and not exists(select 1 from public.docker_host_jobs dj
+      where dj.bound_sandbox_id = s.id and dj.request_id = q.request_id)
+  ))
+  and exists(
+    select 1 from public.runtime_commands c
+    join public.runtime_enrolments e on e.sandbox_id = c.sandbox_id
+    where c.sandbox_id = s.id and c.request_id = (case when s.provider = 'docker' then 'docker_prompt_' else 'follow_' end) || q.request_id::text
+      and c.result_enc is not null and c.epoch < e.epoch
+      and e.runtime_hash is not null and e.lifecycle_generation = s.lifecycle_generation
+  )
+  and not exists(
+    select 1 from public.runtime_resumes r where r.sandbox_id = s.id and r.request_id = q.request_id
+  ))`;
+
 const CURRENT_DOCKER_PROMPT_COMMAND = `(s.provider = 'docker' and exists(
   select 1 from public.runtime_commands c
   join public.runtime_enrolments e on e.sandbox_id = c.sandbox_id and e.epoch = c.epoch
@@ -46,26 +78,6 @@ const CURRENT_DOCKER_PROMPT_COMMAND = `(s.provider = 'docker' and exists(
     and e.lifecycle_generation = s.lifecycle_generation
     and e.docker_issuer_fence = h.owner_id::text || ':' || a.epoch::text
     and h.hash is not null and h.registration_hash is null and h.revoked_at is null
-))`;
-
-const CURRENT_DOCKER_RESUME_JOB = `(s.provider = 'docker' and exists(
-  select 1 from public.docker_resume_claims c
-  join public.docker_host_jobs h_job on h_job.request_id = c.request_id
-    and h_job.bound_sandbox_id = c.sandbox_id and h_job.bound_actor_id = c.actor_id and h_job.host_id = c.host_id
-  join public.docker_hosts h on h.id = c.host_id and h.org_id = s.org_id and h.installation_id = c.installation_id
-  join public.members issuer on issuer.org_id = h.org_id and issuer.user_id = h.owner_id
-  join public.members actor on actor.org_id = s.org_id and actor.user_id = c.actor_id
-  join public.mcp_actor_epochs a on a.org_id = actor.org_id and a.user_id = actor.user_id
-  where c.request_id = q.request_id and c.sandbox_id = s.id and c.actor_id = s.owner_id and c.actor_id = q.owner_id
-    and c.host_id = s.docker_host_id and c.installation_id = s.docker_installation_id
-    and c.generation = s.docker_generation and c.accepted
-    and c.lifecycle_generation = q.dispatch_generation and c.lifecycle_generation + 1 = s.lifecycle_generation
-    and h_job.bound_operation = 'resume' and h_job.bound_actor_epoch = a.epoch
-    and h_job.cancelled_at is null and h_job.refused_resume_generation is null
-    and (h_job.outcome = 'completed' or (h_job.outcome is null and s.status = 'starting'))
-    and h.hash is not null and h.registration_hash is null and h.revoked_at is null
-    and not exists(select 1 from public.runtime_commands p
-      where p.sandbox_id = s.id and p.request_id = 'docker_prompt_' || q.request_id::text)
 ))`;
 
 export async function withJobLease<T>(sql: Sql, job: Job, write: (tx: Sql) => Promise<T>) {
@@ -83,6 +95,36 @@ export async function withJobLease<T>(sql: Sql, job: Job, write: (tx: Sql) => Pr
     );
     if (jobs.length) return write(tx);
   });
+}
+
+export async function adoptObservedModalAllocation(tx: Sql, job: Job, machineId: string) {
+  const { rows } = await tx.query(
+    `update public.jobs set outcome=case
+       when outcome #>> '{modal_machine,entry,phase}'='allocated' then outcome
+       else jsonb_set(outcome,'{modal_machine,entry}',outcome #> '{modal_machine,entry}' ||
+         jsonb_build_object('phase','allocated','machineId',$3::text,
+           'revision',(outcome #>> '{modal_machine,entry,revision}')::int+1))
+       end
+     where id=$1 and kind='launch' and lease_epoch=$2 and lease_until>clock_timestamp()
+       and outcome #>> '{modal_machine,entry,operation}'='create'
+       and ((outcome #>> '{modal_machine,entry,phase}'='creating'
+             and outcome #>> '{modal_machine,entry,machineId}' is null)
+         or (outcome #>> '{modal_machine,entry,phase}'='allocated'
+             and outcome #>> '{modal_machine,entry,machineId}'=$3))
+     returning id`,
+    [job.id, job.lease_epoch, machineId],
+  );
+  return rows.length > 0;
+}
+
+// WARNING: Record the replay token inside the fenced ticket issuance transaction.
+export async function recordModalBootstrapTicket(tx: Sql, jobId: string, token: string, encryptionKey: string) {
+  const sealed = await encryptSecret(token, encryptionKey);
+  await tx.query(
+    `update public.jobs set outcome=coalesce(outcome,'{}'::jsonb) ||
+       jsonb_build_object('bootstrap_ticket_enc',$2::text) where id=$1`,
+    [jobId, Buffer.from(sealed).toString("base64")],
+  );
 }
 
 // WARNING: Only call inside a fenced job completion after requeueing the job.
@@ -140,9 +182,10 @@ export function createJobsStore(sql: Sql, encryptionKey?: string) {
           cancelled: boolean;
           queued_with_evidence: boolean;
           native_uncertain: boolean;
+          failed_docker_wake: boolean;
           abandoned: boolean;
           unrecoverable_dispatch: boolean;
-          open_dispatch_until: string | null;
+          defer_dispatch_until: string | null;
         }>(
           `select s.lifecycle_generation::text as generation,
                   case when q.state = 'queued' then ${QUEUED_TURN_CANCELLED}
@@ -150,33 +193,48 @@ export function createJobsStore(sql: Sql, encryptionKey?: string) {
                   (q.state = 'queued' and ${QUEUED_DISPATCH_EVIDENCE}) as queued_with_evidence,
                   (q.state = 'dispatching' and (q.dispatch_until is null or q.dispatch_until <= clock_timestamp())
                     and ${NATIVE_DISPATCH_UNCERTAIN}) as native_uncertain,
+                  (q.state = 'dispatching' and ${FAILED_DOCKER_WAKE}) as failed_docker_wake,
                   (q.state = 'dispatching' and ${DISPATCH_ABANDONED}
                     and (s.lifecycle_generation = $3 or s.status in ('ready','running'))) as abandoned,
                   (q.state = 'dispatching' and (q.dispatch_generation is null
                     or q.dispatch_generation < s.lifecycle_generation - 1
                     or (${ADJACENT_RUNTIME_DISPATCH} and s.status in ('ready','running')
                       and (q.dispatch_until is null or q.dispatch_until <= statement_timestamp())
-                      and ${NO_ADJACENT_DISPATCH_EVIDENCE}))) as unrecoverable_dispatch,
+                      and (${NO_ADJACENT_DISPATCH_EVIDENCE} or ${OBSOLETE_RUNTIME_PROMPT}))))
+                    as unrecoverable_dispatch,
                   case when ${ADJACENT_RUNTIME_DISPATCH}
-                    and ((s.status in ('ready','running')
-                      and (s.provider in ('boat','modal') or ${NO_ADJACENT_DISPATCH_EVIDENCE}
-                        or (s.activity_lease_id is null and ${CURRENT_DOCKER_PROMPT_COMMAND})))
-                      or (s.status in ('starting','ready','running')
+                    and (s.status in ('ready','running')
+                      or (s.status = 'starting'
                         and s.activity_lease_id is null and ${CURRENT_DOCKER_RESUME_JOB}))
                     and isfinite(q.dispatch_until) and q.dispatch_until > statement_timestamp()
-                    then q.dispatch_until::text end as open_dispatch_until
+                    then q.dispatch_until::text
+                    when ${ADJACENT_RUNTIME_DISPATCH} and ${PENDING_READY_DOCKER_RESUME_ACK}
+                    then least(s.expires_at, statement_timestamp() + interval '1 second')::text
+                  end as defer_dispatch_until
            from public.sandboxes s join public.account_turn_queue q on q.sandbox_id = s.id
            where s.id = $1 and q.request_id = $2`,
           [sandboxId, requestId, job.generation],
         );
-        if (sandbox?.cancelled || sandbox?.queued_with_evidence || sandbox?.native_uncertain) {
+        if (
+          sandbox?.cancelled ||
+          sandbox?.queued_with_evidence ||
+          sandbox?.native_uncertain ||
+          sandbox?.failed_docker_wake
+        ) {
           const reason = sandbox.cancelled
             ? "cancelled_receipt"
             : sandbox.queued_with_evidence
               ? "queued_dispatch_evidence"
-              : "native_dispatch_uncertain";
+              : sandbox.native_uncertain
+                ? "native_dispatch_uncertain"
+                : "docker_wake_failed";
           if (await retireClaim(tx, job, owner, sandbox.generation, reason))
-            await failTurnReceipt(tx, sandboxId, requestId, reason === "native_dispatch_uncertain");
+            await failTurnReceipt(
+              tx,
+              sandboxId,
+              requestId,
+              reason === "native_dispatch_uncertain" || reason === "docker_wake_failed",
+            );
           return job;
         }
         let reset = false;
@@ -206,7 +264,8 @@ export function createJobsStore(sql: Sql, encryptionKey?: string) {
                    and s.status in ('starting','ready','running')
                    and q.dispatch_generation in (s.lifecycle_generation, s.lifecycle_generation - 1)
                    and (${COMPLETED_RUNTIME_WAKE} or ${ENROLLED_PENDING_RUNTIME_WAKE}
-                     or ${CONFIRMED_WAKE_WITHOUT_TICKET} or (q.dispatch_until <= clock_timestamp()
+                     or ${CONFIRMED_WAKE_WITHOUT_TICKET} or ${DOCKER_RESUME_WITHOUT_DISPATCH_DEADLINE}
+                     or (q.dispatch_until <= clock_timestamp()
                      and (s.activity_lease_id = q.request_id
                        or (s.activity_lease_id is null and ${CURRENT_DOCKER_RESUME_JOB})
                        or (s.activity_lease_id is null and s.status in ('ready','running')
@@ -223,12 +282,12 @@ export function createJobsStore(sql: Sql, encryptionKey?: string) {
           if (updated) return { ...job, generation: updated.generation };
           if (reset) throw new Error("Abandoned turn reset lost its generation fence.");
         }
-        if (retiring && sandbox?.open_dispatch_until) {
+        if (retiring && sandbox?.defer_dispatch_until) {
           const { rows } = await tx.query(
             `update public.jobs j set state = 'queued', lease_owner = null, lease_until = null, run_after = $4,
                attempts = case when $6::boolean then j.attempts - 1 else j.attempts end
              where ${fence} and j.generation < $5 returning j.id`,
-            [...claimIdentity(job, owner), sandbox.open_dispatch_until, sandbox.generation, phase === "no_dispatch"],
+            [...claimIdentity(job, owner), sandbox.defer_dispatch_until, sandbox.generation, phase === "no_dispatch"],
           );
           if (rows.length) return job;
         }
@@ -263,11 +322,13 @@ export function createJobsStore(sql: Sql, encryptionKey?: string) {
       | "stale_generation"
       | "cancelled_receipt"
       | "queued_dispatch_evidence"
+      | "docker_wake_failed"
       | "native_dispatch_uncertain" = "stale_generation",
   ) {
     const { rows } = await tx.query(
       `update public.jobs j set state = 'failed', lease_owner = null, lease_until = null,
-         outcome = coalesce(outcome, '{}'::jsonb) || jsonb_build_object('reason', $6::text)
+         outcome = coalesce(case when kind='launch' and jsonb_typeof(outcome)='object'
+                                 then outcome - 'bootstrap_ticket_enc' else outcome end, '{}'::jsonb) || jsonb_build_object('reason', $6::text)
        where ${fence} and (j.kind = 'turn_dispatch' or j.generation = $4)
          and (j.generation is distinct from $5 or $6 <> 'stale_generation') returning j.id`,
       [...claimKey(job, owner), generation, reason],
@@ -297,49 +358,88 @@ export function createJobsStore(sql: Sql, encryptionKey?: string) {
     });
   }
 
+  function modalMachineJournal(
+    job: Job,
+    journalJobId: string,
+    isCurrent: (tx: Sql) => Promise<boolean> | boolean,
+    mayWrite: (
+      tx: Sql,
+      revision: number | undefined,
+      next: Parameters<ModalMachineJournal["compareAndSet"]>[2],
+    ) => Promise<boolean>,
+    checkpointPath = "{modal_machine}",
+  ) {
+    return {
+      async read(key) {
+        const checkpoint = await withJobLease(sql, job, async (tx) => {
+          if (!(await isCurrent(tx))) return;
+          const { rows } = await tx.query<{
+            checkpoint: { key: string; entry: Awaited<ReturnType<ModalMachineJournal["read"]>> } | null;
+          }>(
+            `select outcome #> $2::text[] as checkpoint from public.jobs where id=$1
+           and exists (select 1 from public.jobs claim where claim.id=$3 and claim.lease_until>clock_timestamp())`,
+            [journalJobId, checkpointPath, job.id],
+          );
+          return rows[0]?.checkpoint;
+        });
+        if (checkpoint === undefined) throw new Error("Modal machine journal claim is no longer current.");
+        if (checkpoint && checkpoint.key !== key) throw new Error("Modal launch journal key changed.");
+        return checkpoint?.entry;
+      },
+      async compareAndSet(key, revision, next) {
+        if (next.revision !== (revision ?? 0) + 1) return false;
+        return (
+          (await withJobLease(sql, job, async (tx) => {
+            if (!(await isCurrent(tx)) || !(await mayWrite(tx, revision, next))) return false;
+            const { rows } = await tx.query(
+              `update public.jobs set outcome=jsonb_set(
+               case when outcome is null then '{}'::jsonb
+                    when jsonb_typeof(outcome) = 'object' then outcome
+                    else jsonb_build_object('result', outcome) end,
+               $6::text[], $2::jsonb)
+             where id=$1
+               and exists (select 1 from public.jobs claim where claim.id=$5 and claim.lease_until>clock_timestamp())
+               and (outcome #> $6::text[] is null or (outcome #> $6::text[])->>'key' = $3)
+               and ((outcome #> $6::text[])->'entry'->>'revision')::integer is not distinct from $4::integer
+             returning id`,
+              [journalJobId, JSON.stringify({ key, entry: next }), key, revision ?? null, job.id, checkpointPath],
+            );
+            return rows.length > 0;
+          })) ?? false
+        );
+      },
+    } satisfies ModalMachineJournal;
+  }
+
   return {
     modalLaunchJournal(job: Job, canCreate?: (tx: Sql) => Promise<boolean>) {
       if (job.kind !== "launch" || !job.sandbox_id || !job.generation) {
         throw new Error("Modal machine journal requires a launch claim.");
       }
-      return {
-        async read(key) {
-          const checkpoint = await withJobLease(sql, job, async (tx) => {
-            const { rows } = await tx.query<{
-              checkpoint: { key: string; entry: Awaited<ReturnType<ModalMachineJournal["read"]>> } | null;
-            }>(
-              "select outcome->'modal_machine' as checkpoint from public.jobs where id=$1 and lease_until > clock_timestamp()",
-              [job.id],
-            );
-            return rows[0]?.checkpoint;
-          });
-          if (checkpoint === undefined) throw new Error("Modal launch claim is no longer current.");
-          if (checkpoint && checkpoint.key !== key) throw new Error("Modal launch journal key changed.");
-          return checkpoint?.entry;
-        },
-        async compareAndSet(key, revision, next) {
-          if (next.revision !== (revision ?? 0) + 1) return false;
-          return (
-            (await withJobLease(sql, job, async (tx) => {
-              if (next.phase === "creating" && revision === undefined && canCreate && !(await canCreate(tx)))
-                return false;
-              const { rows } = await tx.query(
-                `update public.jobs set outcome=jsonb_set(
-                   case when outcome is null then '{}'::jsonb
-                        when jsonb_typeof(outcome) = 'object' then outcome
-                        else jsonb_build_object('result', outcome) end,
-                   '{modal_machine}', $2::jsonb)
-                 where id=$1 and lease_until > clock_timestamp()
-                   and (outcome->'modal_machine' is null or outcome->'modal_machine'->>'key' = $3)
-                   and (outcome->'modal_machine'->'entry'->>'revision')::integer is not distinct from $4::integer
-                 returning id`,
-                [job.id, JSON.stringify({ key, entry: next }), key, revision ?? null],
-              );
-              return rows.length > 0;
-            })) ?? false
-          );
-        },
-      } satisfies ModalMachineJournal;
+      return modalMachineJournal(
+        job,
+        job.id,
+        () => true,
+        async (tx, revision, next) =>
+          next.phase !== "creating" || revision !== undefined || !canCreate || canCreate(tx),
+      );
+    },
+    modalFailedLaunchJournal(
+      job: Job,
+      launchJobId: string,
+      isCurrent: (tx: Sql) => Promise<boolean>,
+      canDispatch: (tx: Sql) => Promise<boolean>,
+    ) {
+      if (job.kind !== "delete" || !job.sandbox_id || !job.generation) {
+        throw new Error("Modal failed launch journal requires a delete claim.");
+      }
+      return modalMachineJournal(
+        job,
+        launchJobId,
+        isCurrent,
+        async (tx, _revision, next) => next.phase === "deleted" || canDispatch(tx),
+        "{evidence,modal_machine}",
+      );
     },
     async enqueue(
       kind: string,
@@ -352,11 +452,9 @@ export function createJobsStore(sql: Sql, encryptionKey?: string) {
     ) {
       const db = tx ?? sql;
       const { orgId, request, deadline, maxAttempts } = options;
-      const key = JSON.stringify(
-        request
-          ? ["request", orgId, kind, request.ownerId, idemKey]
-          : ["internal", orgId, kind, sandboxId, generation, idemKey],
-      );
+      const key = request
+        ? jobRequestKey(orgId, kind, request.ownerId, idemKey)
+        : JSON.stringify(["internal", orgId, kind, sandboxId, generation, idemKey]);
       const serialized = JSON.stringify(payload);
       if (serialized === undefined) throw new Error("Job payload must be JSON.");
       const sealed = payload === null ? null : toBytea(await encryptSecret(serialized, encryptionKey));
@@ -390,7 +488,7 @@ export function createJobsStore(sql: Sql, encryptionKey?: string) {
         `select id from public.jobs where idem_key = $1 and request_digest is not distinct from $2`,
         [key, request?.digest ?? null],
       );
-      if (!existingRows[0]) throw new Error("Conflicting job request.");
+      if (!existingRows[0]) throw new ConflictingJobRequest();
       return existingRows[0].id;
     },
     async claim(kind, owner, seconds, concurrency) {
@@ -495,6 +593,8 @@ export function createJobsStore(sql: Sql, encryptionKey?: string) {
                          then jsonb_build_object('result', $6::jsonb) ||
                            case when outcome->'modal_machine' is null then '{}'::jsonb
                                 else jsonb_build_object('modal_machine', outcome->'modal_machine') end
+                         when kind = 'launch' and $5 <> 'queued' and jsonb_typeof(outcome) = 'object'
+                           then outcome - 'bootstrap_ticket_enc'
                          else coalesce($6::jsonb, outcome) end as evidence
              from public.jobs where id = $1
            ) data`,
@@ -523,5 +623,11 @@ export function createJobsStore(sql: Sql, encryptionKey?: string) {
   } satisfies JobStore & {
     enqueue: (...args: never[]) => Promise<string>;
     modalLaunchJournal: (job: Job, canCreate?: (tx: Sql) => Promise<boolean>) => ModalMachineJournal;
+    modalFailedLaunchJournal: (
+      job: Job,
+      launchJobId: string,
+      isCurrent: (tx: Sql) => Promise<boolean>,
+      canDispatch: (tx: Sql) => Promise<boolean>,
+    ) => ModalMachineJournal;
   };
 }

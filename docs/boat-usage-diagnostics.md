@@ -7,7 +7,7 @@ turn as usual, wait until it finishes, and run this **before stopping**:
 ```bash
 PROBE=$(python3 -c 'import pathlib,shlex; print("python3 -I -c " + shlex.quote(pathlib.Path("scripts/diagnostics/boat-usage-probe.py").read_text()))')
 armada exec ACTIVE_SANDBOX_UUID -- "$PROBE"
-armada detail ACTIVE_SANDBOX_UUID --json
+armada info ACTIVE_SANDBOX_UUID --live --json
 ```
 
 Use the existing staging URL/organization configuration; do not accidentally run

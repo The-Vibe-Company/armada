@@ -2,25 +2,20 @@ import type { AuthIo } from "../auth-commands.ts";
 import type { Deps, Io } from "../run.ts";
 
 export type UsageGroup =
-  | "invitations"
   | "org"
   | "host"
   | "docker-launch"
   | "new"
   | "ls"
-  | "advice"
   | "sandbox"
   | "setup"
   | "session"
   | "account"
   | "automation"
-  | "vault"
   | "mcp"
   | "mcp-bindings"
   | "bind-credential"
-  | "snapshots"
-  | "credential-setup"
-  | "credential-accounts";
+  | "snapshots";
 
 export type Command = {
   name: string;
@@ -31,6 +26,7 @@ export type Command = {
   automaticJson?: boolean;
   helpWhenBare?: boolean;
   validateProfileForHelp?: boolean;
-  useSelectedOrg?: boolean | ((argv: readonly string[]) => boolean);
+  requireKnownSubcommand?: boolean;
+  useSelectedOrg?: true | ((argv: readonly string[]) => boolean);
   run: (argv: readonly string[], context: { io: Io; deps: Deps; auth: AuthIo }) => Promise<number>;
 };
