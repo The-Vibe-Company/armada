@@ -401,6 +401,7 @@ export function configureTools(
       const membership = caller.orgs.find((member) => member.orgId === found.orgId);
       if (!membership) throw new ToolError("forbidden", "No current organization membership.");
       if (!enrolled) await prepareConnections(provider, found, membership.role);
+      signal?.throwIfAborted();
       const nativeActor = { userId: found.ownerId, orgId: found.orgId, role: "member" as const };
       const readNativeSecrets = (phase: "before" | "after") =>
         context.launchCredentials.nativeSecrets?.(nativeActor, found.id, provider, found.providerSandboxId, phase);
@@ -449,7 +450,9 @@ export function configureTools(
       return execute();
     }
 
-    const admission: ServerSandboxPatch = fencedExec ? { nativeBoatExecAdmission: true } : {};
+    const admission: ServerSandboxPatch = fencedExec
+      ? { nativeExecAdmission: { provider: found.provider, placement: found.providerSandboxId } }
+      : {};
     return sandboxActivity(
       data.sandboxes,
       found,
