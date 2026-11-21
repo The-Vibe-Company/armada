@@ -1144,7 +1144,7 @@ test("template/skill smoke validates the entire staging case configuration befor
   }
 });
 
-test.each(["configured", "no_pins", "refused", "late_wait"])(
+test.each(["configured", "no_pins", "refused", "late_wait", "late_answer"])(
   "template transport %s cleans workers and reports closed verdicts",
   async (mode) => {
     let value = "";
@@ -1190,6 +1190,13 @@ test.each(["configured", "no_pins", "refused", "late_wait"])(
           if (mode === "late_wait") await fake.io.sleep(deadlines.template_wait + 1);
           return json({ prompt: { promptId: "prompt-id", state: "finished" } });
         case "logs/read":
+          if (mode === "late_answer") {
+            if (!call.body.cursor) {
+              fake.advance(deadlines.template_answer - 100);
+              return json({ events: [], cursor: "next", hasMore: true });
+            }
+            fake.advance(101);
+          }
           return json({
             events: [
               {
@@ -1237,7 +1244,7 @@ test.each(["configured", "no_pins", "refused", "late_wait"])(
           fetch: (url, init) => fake.io.fetch(url.replace(staging, env.ARMADA_URL), init),
         },
       ),
-    ).toBe(mode !== "refused" && mode !== "late_wait");
+    ).toBe(mode !== "refused" && mode !== "late_wait" && mode !== "late_answer");
     expect(fake.calls.some((call) => call.path === "sandbox/launch")).toBe(false);
     expect(fake.calls.map((call) => call.path).slice(-3)).toEqual([
       "sandbox/status",
@@ -1252,6 +1259,16 @@ test.each(["configured", "no_pins", "refused", "late_wait"])(
         code: "poll_limit_exceeded",
       });
       expect(fake.calls.some((call) => call.path === "logs/read")).toBe(false);
+      return;
+    }
+    if (mode === "late_answer") {
+      expect(fake.receipts()).toContainEqual({
+        case: 0,
+        step: "template_answer",
+        pass: false,
+        code: "poll_limit_exceeded",
+      });
+      expect(fake.calls.some((call) => call.path === "sandbox/exec")).toBe(false);
       return;
     }
     if (mode === "refused")

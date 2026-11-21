@@ -533,9 +533,26 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
   /** Each concurrent unit owns its cleanup flag; one unit's cleanup never moves another unit's deadline. */
   function createLane() {
     let cleaning = false;
+    let stepUntil: number | undefined;
     return {
-      request: <T>(path: string, body?: unknown, key?: string, timeoutMs?: number) =>
-        send<T>(cleaning, path, body, key, timeoutMs),
+      request: <T>(path: string, body?: unknown, key?: string, timeoutMs?: number) => {
+        if (stepUntil === undefined) return send<T>(cleaning, path, body, key, timeoutMs);
+        const remaining = stepUntil - io.now();
+        if (remaining <= 0) fail("poll_limit_exceeded");
+        return send<T>(cleaning, path, body, key, Math.min(timeoutMs ?? remaining, remaining));
+      },
+      withStepDeadline: async <T>(name: string, action: () => Promise<T>) => {
+        const budget = (deadlines as Record<string, number>)[name];
+        if (cleaning || budget === undefined) return action();
+        stepUntil = Math.min(deadline, io.now() + budget);
+        try {
+          const result = await action();
+          if (io.now() > stepUntil) fail("poll_limit_exceeded");
+          return result;
+        } finally {
+          stepUntil = undefined;
+        }
+      },
       withCleanup: async <T>(action: () => Promise<T>): Promise<T> => {
         cleaning = true;
         try {
@@ -703,46 +720,21 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
   // against, so it completes before any sandbox unit starts.
   let vaultPassed = true;
   if (vault) {
-    const { request, withCleanup } = createLane();
+    const { request, withCleanup, withStepDeadline } = createLane();
     for (const [index, item] of cases.entries()) {
-      let stepUntil: number | undefined;
-      let cleaning = false;
       const ok = await runVaultCase(item.org, {
-        request: <T>(path: string, body: object) => {
-          const remaining = stepUntil === undefined ? undefined : stepUntil - io.now();
-          if (remaining !== undefined && remaining <= 0) fail("poll_limit_exceeded");
-          return request<T>(path, body, undefined, remaining);
-        },
+        request,
         protect: (value) => protectedCanaries.add(value),
         isFailure: (error, status, code) =>
           error instanceof SmokeFailure && error.status === status && error.code === code,
-        step: async (name, action) => {
-          return timedSmokeStep(
-            async () => {
-              const budget = (deadlines as Record<string, number>)[name];
-              if (cleaning || budget === undefined) return action();
-              stepUntil = Math.min(deadline, io.now() + budget);
-              try {
-                const result = await action();
-                if (io.now() > stepUntil) fail("poll_limit_exceeded");
-                return result;
-              } finally {
-                stepUntil = undefined;
-              }
-            },
+        step: (name, action) =>
+          timedSmokeStep(
+            () => withStepDeadline(name, action),
             io.now,
             (elapsedMs, error) => report(index, name, error, elapsedMs),
-          );
-        },
+          ),
         out: (line) => io.out(JSON.stringify({ ...JSON.parse(line), case: index })),
-        withCleanup: async (action) => {
-          cleaning = true;
-          try {
-            return await withCleanup(action);
-          } finally {
-            cleaning = false;
-          }
-        },
+        withCleanup,
       });
       if (!ok) vaultPassed = false;
     }
@@ -760,7 +752,7 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
     };
   }
   function templateUnit(index: number, item: SmokeCase): Promise<boolean> {
-    const { request, withCleanup, out, step } = unit(index, "templates");
+    const { request, withCleanup, withStepDeadline, out, step } = unit(index, "templates");
     return runTemplateSkillCase(
       { ...item, goldenId: item.goldenId! },
       {
@@ -783,6 +775,7 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
             (error.status ?? 0) >= 500),
         poll,
         step,
+        measuredStep: (name, action) => step(name, () => withStepDeadline(name, action)),
         out,
         withCleanup,
         stopSandbox: async (id) => {
