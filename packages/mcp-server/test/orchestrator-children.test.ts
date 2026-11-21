@@ -1,4 +1,4 @@
-import { expect, spyOn, test } from "bun:test";
+import { expect, mock, spyOn, test } from "bun:test";
 import { createHash } from "node:crypto";
 import {
   createSqlGoldenStore,
@@ -575,17 +575,18 @@ test("a reconciliation refusal settles each fresh child mutation without replayi
       status: "ready",
     });
     await db.query("insert into orchestrator_children values($1,$2,$3,$4)", [child.id, id, p.org, p.owner]);
-    const refuse = async () => {
+    const refuse = mock(async () => {
       throw new RuntimeReconciliationConflict();
-    };
+    });
+    const extend = mock(async () => {
+      throw new DataError("Sandbox is busy.", "sandbox_not_ready", { cause: new RuntimeReconciliationConflict() });
+    });
     const recoverStop = spyOn({ recoverStop: async () => {} }, "recoverStop");
     const children = createSandboxChildren(sql, authority, {
       message: refuse,
       stop: refuse,
       recoverStop,
-      async extend() {
-        throw new DataError("Sandbox is busy.", "sandbox_not_ready", { cause: new RuntimeReconciliationConflict() });
-      },
+      extend,
       async launch() {
         throw Error("unexpected launch");
       },
@@ -605,6 +606,8 @@ test("a reconciliation refusal settles each fresh child mutation without replayi
       expect(result).toMatchObject({ state: "failed", sandboxId: child.id });
       expect(await request()).toEqual(result);
     }
+    expect(refuse).toHaveBeenCalledTimes(2);
+    expect(extend).toHaveBeenCalledTimes(1);
     expect(recoverStop).not.toHaveBeenCalled();
   } finally {
     await close();

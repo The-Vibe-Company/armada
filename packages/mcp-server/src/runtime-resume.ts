@@ -157,7 +157,16 @@ export function createRuntimeResume(
           [found.id, caller.userId],
         )
       ).rows[0];
-      if (fence?.busy) throw new RuntimeReconciliationConflict();
+      const existing = await read(tx, found.id, requestId);
+      if (fence?.busy) {
+        const followup = await tx.query("select 1 from public.runtime_commands where sandbox_id=$1 and request_id=$2", [
+          found.id,
+          `follow_${requestId}`,
+        ]);
+        if (prior || existing || fence.lease === requestId || followup.rows.length)
+          throw new VaultError("conflict", "Runtime resume target changed or cannot retain secrets safely.");
+        throw new RuntimeReconciliationConflict();
+      }
       const current = await createSqlData(tx)(caller).sandboxes.get(found.id);
       if (
         !fence ||
@@ -183,7 +192,6 @@ export function createRuntimeResume(
           [found.id],
         )
       ).rows[0];
-      const existing = await read(tx, found.id, requestId);
       if (existing) {
         if (firstWakeClaim) throw new VaultError("conflict", "Runtime resume intent changed during queued admission.");
         if (existing.request_hash !== hash) throw new VaultError("conflict", "Resume request input changed.");

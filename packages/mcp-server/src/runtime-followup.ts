@@ -29,6 +29,7 @@ export class RuntimeFollowupConflict extends VaultError {
       | "sandbox_not_ready"
       | "runtime_binding_missing"
       | "runtime_prompt_running"
+      | "runtime_reconciliation_active"
       | "runtime_admission_changed"
       | "runtime_activity_busy",
     message: string,
@@ -177,7 +178,6 @@ export function createRuntimeFollowup(
             [found.id],
           )
         ).rows[0];
-        if (lease?.reconciling) throw new RuntimeReconciliationConflict();
         if (
           !current ||
           current.lifecycleGeneration === undefined ||
@@ -205,6 +205,18 @@ export function createRuntimeFollowup(
             [found.id, commandId],
           )
         ).rows[0];
+        if (lease.reconciling) {
+          const wake = await locked.query(
+            "select 1 from public.runtime_resumes where sandbox_id=$1 and request_id=$2",
+            [found.id, requestId],
+          );
+          if (saved || previous.state !== "missing" || lease.activity_lease_id === requestId || wake.rows.length)
+            throw new RuntimeFollowupConflict(
+              "runtime_reconciliation_active",
+              "Runtime admission changed; inspect status before retrying.",
+            );
+          throw new RuntimeReconciliationConflict();
+        }
         const checkpoint =
           !saved &&
           (

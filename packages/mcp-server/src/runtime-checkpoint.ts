@@ -250,8 +250,9 @@ export function createRuntimeCheckpoint(
           [sandbox.id],
         )
       ).rows[0];
-      if (lease?.reconciling) throw new RuntimeReconciliationConflict();
-      if (lease?.busy)
+      if (lease?.reconciling && !old && !(await read(tx, sandbox.id, requestId)))
+        throw new RuntimeReconciliationConflict();
+      if (lease?.busy || lease?.reconciling)
         throw new VaultError(
           "conflict",
           "Runtime admission is busy; wait or reconcile its original request before checkpointing.",
