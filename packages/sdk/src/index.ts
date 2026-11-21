@@ -12,6 +12,7 @@ import type {
   ListResult,
   LogsInput,
   LogsResult,
+  ModalLaunchReceipt,
   OutputGetInput,
   OutputsListInput,
   OutputsListResult,
@@ -104,7 +105,9 @@ export type {
   ViewerTokenResult,
   WaitInput,
 };
-export type LaunchResult = LaunchEnvelope;
+export type LaunchResult = LaunchEnvelope | ModalLaunchReceipt;
+export type { ModalLaunchReceipt };
+
 const { listSandboxOutputs, readSandboxOutput } = sandboxOutputOperations;
 
 /**
@@ -181,6 +184,11 @@ export class Armada {
   }
   readonly #sandboxes = sandboxClient(this.request.bind(this));
 
+  launch(
+    input: Exclude<LaunchInput, { provider: "modal"; golden: string }>,
+    options?: RequestOptions,
+  ): Promise<LaunchEnvelope>;
+  launch(input: LaunchInput, options?: RequestOptions): Promise<LaunchResult>;
   launch(input: LaunchInput, options?: RequestOptions) {
     return this.#sandboxes.launch<LaunchResult>(input, options);
   }
