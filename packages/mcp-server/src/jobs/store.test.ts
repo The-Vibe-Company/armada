@@ -225,6 +225,16 @@ test("Modal backfill preserves accepted, refused and unresolved ordinary keys wi
   await expect(admit({ ...success, digest: "changed" })).rejects.toMatchObject({ code: "conflict" });
   expect(await store.claim("launch", crypto.randomUUID(), 30, 1)).toBeUndefined();
   expect((await db.query("select id from sandboxes")).rows).toEqual([{ id: accepted }]);
+
+  const caller = {
+    via: "service" as const,
+    userId: input.ownerId,
+    orgs: [{ orgId: input.orgId, role: "member" as const }],
+  };
+  const { sandboxes } = createSqlData(sql)(caller);
+  const sandbox = (await sandboxes.get(accepted))!;
+  expect(await sandboxes.requestStartingModalStop!(accepted, sandbox.lifecycleGeneration!)).toBeNull();
+  expect(await createModalJobReader(sql, launchEncryptionKey)(sandbox, caller)).toBeNull();
 });
 
 test("Modal backfill rolls back when a destination key belongs to a different receipt", async () => {
