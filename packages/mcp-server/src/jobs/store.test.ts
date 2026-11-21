@@ -2392,6 +2392,11 @@ test("the registered jobs lane retries a lost seed reply and preserves the sched
     options: { logError: () => {} },
     githubApp: null,
     config: {},
+    modal: {
+      launchCleanupJob: createModalLaunchCleanupJob(sql, async () => {
+        throw new Error("Unexpected Modal cleanup.");
+      }),
+    },
     langfuse: {
       exportJob: {
         concurrency: 1,
