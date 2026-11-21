@@ -78,7 +78,7 @@ Usage:
   armada info [sandbox-id] [--live | --wait [--timeout seconds]] [--org UUID] [--json]
                                            Inspect recorded state, probe the provider or wait for activity
   armada rm <sandbox-id> --yes [--org UUID] [--json]  Permanently delete a stopped sandbox and its recovery archives
-  armada stop [sandbox-id] [--turn | --after DURATION] [--org UUID] [--json]
+  armada stop [sandbox-id] [--turn | --after [--timeout SECONDS]] [--org UUID] [--json]
   armada report [sandbox-id] ready|blocked --prompt-id ID [--reason TEXT] [--pr-number N] [--pr-url URL] [--head-sha SHA]
   armada prompt [--steer] <sandbox-id> <text>
                                            Start a turn or redirect a running turn
@@ -231,12 +231,12 @@ Example: armada info SANDBOX_UUID --wait --timeout 60 --org ORG_UUID --json
 `;
 
 exports[`armada stop help preserves its output 1`] = `
-"Usage: armada stop [sandbox-id] [--turn | --after DURATION] [--org UUID] [--json]
+"Usage: armada stop [sandbox-id] [--turn | --after [--timeout SECONDS]] [--org UUID] [--json]
 Without options, stop the machine now. Omit the ID to use the current sandbox.
 --turn interrupts the running turn and keeps the machine up, where supported.
---after DURATION extends the sandbox lifetime from now. The new deadline must be later
-than the current deadline and within server/provider limits. Use seconds or s, m, h, d
-(e.g. 90, 30m, 4h or 2d).
+--after waits for the turn to settle, then stops only if the sandbox is still idle.
+--timeout accepts 0–600 seconds with --after (default 60). A zero timeout only observes
+status. A receipt with timedOut: true means no stop was requested.
 Modal retains its disk only if checkpoint succeeds; fallback termination cannot resume.
 Inspect the returned status/preservation note; do not assume disk retention.
 After an uncertain outcome, run armada info or armada ls before retrying. This is not permanent rm deletion.

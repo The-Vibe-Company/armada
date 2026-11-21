@@ -10,7 +10,7 @@ Commands below start with `armada`. Select an organization with `login --org NAM
 |---|---|---|
 | Sign in / local sign out | Sign-in page and logout | `login [--url URL]`, `logout`; email links/codes and enabled social providers |
 | Account identity / session invalidation | Signed-in account and logout | `account status`, `account logout` invalidates the current login session, then clears local auth |
-| Organizations and members | Organization selection and admin management | `org list`, `login --org NAME\|UUID`, `status --setup`, [organization administration routes](cli-admin.md#organizations-and-membership) |
+| Organizations and members | Organization selection and admin management | `org list`, `login --org NAME\|UUID`, `info --setup`, [organization administration routes](cli-admin.md#organizations-and-membership) |
 | Personal and org credentials | Write-only model/hosting forms; org writes require admin | `account ls`, `account add KIND`, `account rm ACCOUNT_UUID`; legacy `account rm --kind KIND` only when unambiguous; values from stdin or `--file` |
 | Modal credentials | Separate token ID and token-secret fields, stored together | `account add modal --file /secure/modal-token.json`; canonical JSON uses `token_id` and `token_secret` |
 | Service tokens | Token management | [`armada api token/create\|list\|revoke`](cli-admin.md#api-keys) |
@@ -26,7 +26,7 @@ Commands below start with `armada`. Select an organization with `login --org NAM
 | Sandbox list | Authorized filters and pages | `ls --status STATUS --ref REF --agent HARNESS --golden UUID --owner UUID\|me --page N --limit N [--json] [--page-info]` |
 | Sandbox detail / status | Sandbox page and prompt status | `info ID --live`, `info ID`; actual stored privacy and repository context |
 | Agent turns | Send, steer and interrupt | `prompt ID PROMPT`, `prompt ID --steer TEXT`, `stop ID --turn`; model/effort overrides where supported |
-| Stop / wait | Stop, extend and track turn progress | `stop ID`, `stop ID --after DURATION`, `info ID --wait --timeout SECONDS [--prompt-id ID]` |
+| Stop / wait | Stop after settlement and track turn progress | `stop ID`, `stop ID --after [--timeout SECONDS]`, `info ID --wait --timeout SECONDS [--prompt-id ID]` |
 | Events / commands | Event stream and sandbox commands | `events [ID] [-f] [--tail N]`, `exec [ID] -- COMMAND`, `outputs [NAME] [-o DIR]` |
 | MCP definitions | Personal/shared definitions, status and authorization | `mcp list/add/update/connect/status/reconnect/enable/disable/revoke/delete` |
 | Public/OAuth MCP shortcut | Connection creation form | `mcp add NAME URL [--scope personal\|org]`; defaults personal, HTTP, automatic auth discovery |

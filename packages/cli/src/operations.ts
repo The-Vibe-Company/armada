@@ -1,6 +1,12 @@
 import { AuthError } from "@armada/auth";
 import { GoldenError, HARNESSES } from "@armada/core";
-import type { ListInput, ListResult } from "@armada/core/contract";
+import {
+  DEFAULT_WAIT_SECONDS,
+  type ListInput,
+  type ListResult,
+  MAX_WAIT_SECONDS,
+  type WaitResult,
+} from "@armada/core/contract";
 import { sandboxListInput } from "@armada/core/contract/sandbox";
 import { invalidAgentMessage } from "./agent-validation.ts";
 import { acceptedOptions, flag, parseArgs, single, uuid } from "./args.ts";
@@ -49,9 +55,7 @@ export async function operation(
       ? ["--reason", "--pr-number", "--pr-url", "--head-sha"]
       : command === "ls"
         ? ["--status", "--ref", "--harness", "--golden", "--owner", "--page", "--limit"]
-        : command === "stop"
-          ? ["--after"]
-          : [],
+        : [],
     command === "ls"
       ? ["--page-info"]
       : command === "rm"
@@ -59,7 +63,7 @@ export async function operation(
         : command === "info"
           ? ["--live", "--setup", "--wait"]
           : command === "stop"
-            ? ["--turn"]
+            ? ["--turn", "--after"]
             : [],
   );
   const end = argv.indexOf("--");
@@ -73,7 +77,7 @@ export async function operation(
     ls: ["--status", "--ref", "--agent", "--harness", "--golden", "--owner", "--page", "--limit", "--page-info"],
     info: ["--live", "--prompt-id", "--setup", "--wait", "--timeout"],
     exec: ["--cwd", "--timeout"],
-    stop: ["--turn", "--after"],
+    stop: ["--turn", "--after", "--timeout"],
     report: ["--prompt-id", ...(rest[0] === "blocked" ? ["--reason"] : ["--pr-number", "--pr-url", "--head-sha"])],
     "bind-credential": ["--credential-id"],
     rm: ["--yes"],
@@ -81,6 +85,9 @@ export async function operation(
   acceptedOptions(args, command, ["--org", "--json", ...(options[command] ?? [])]);
   const org = single(args, "--org");
   const wait = command === "info" && flag(args, "--wait");
+  const after = command === "stop" && flag(args, "--after");
+  const turn = command === "stop" && flag(args, "--turn");
+  if (after && turn) throw new GoldenError("invalid_config", "Choose --turn or --after.");
   let current: string | undefined;
   if (command === "info") {
     const setup = flag(args, "--setup");
@@ -138,21 +145,15 @@ export async function operation(
   }
   const timeout = single(args, "--timeout");
   if (timeout !== undefined) {
+    if (command === "stop" && !after) throw new GoldenError("invalid_config", "Pass --after to use --timeout.");
     if (!/^\d+$/.test(timeout)) throw new GoldenError("invalid_config", "--timeout is seconds.");
     const seconds = Number(timeout);
     body.timeout_seconds = seconds;
-    const minimum = wait ? 0 : 1;
-    if (!Number.isSafeInteger(seconds) || seconds < minimum || seconds > 600)
-      throw new GoldenError("invalid_config", `--timeout must be ${minimum}–600 seconds.`);
+    const minimum = wait || after ? 0 : 1;
+    if (!Number.isSafeInteger(seconds) || seconds < minimum || seconds > MAX_WAIT_SECONDS)
+      throw new GoldenError("invalid_config", `--timeout must be ${minimum}–${MAX_WAIT_SECONDS} seconds.`);
   }
   if (command === "ls") Object.assign(body, sandboxListFilters(args));
-  const after = single(args, "--after");
-  const turn = flag(args, "--turn");
-  if (after !== undefined && turn) throw new GoldenError("invalid_config", "Choose --turn or --after.");
-  if (after !== undefined) {
-    if (org !== undefined) uuid(org, "--org");
-    body.ttlSeconds = parseTtl(after, "--after");
-  }
   if (command === "bind-credential") {
     const credentialId = single(args, "--credential-id");
     uuid(credentialId, "credential id");
@@ -178,19 +179,17 @@ export async function operation(
     body.command = rest.join(" ");
   } else if ((command === "ls" && id) || rest.length) throw new GoldenError("invalid_config", "Unexpected arguments.");
   if (command !== "ls") {
-    const resolved = await resolveId(id);
-    if (after !== undefined) uuid(resolved, "sandbox id");
-    body.id = resolved;
+    body.id = await resolveId(id);
   }
   const seconds = wait
-    ? Number(body.timeout_seconds ?? 60)
+    ? Number(body.timeout_seconds ?? DEFAULT_WAIT_SECONDS)
     : command === "exec"
       ? Number(body.timeout_seconds ?? 120)
       : undefined;
   let action: keyof ArmadaCommandClient["sandboxes"];
   switch (command) {
     case "stop":
-      action = turn ? "interrupt" : after === undefined ? "stop" : "extend";
+      action = turn ? "interrupt" : "stop";
       break;
     case "info":
       action = wait ? "wait" : "status";
@@ -200,6 +199,21 @@ export async function operation(
       break;
     default:
       action = command;
+  }
+  if (after) {
+    const waitSeconds = Number(body.timeout_seconds ?? DEFAULT_WAIT_SECONDS);
+    const { sandboxes } = await client();
+    const deadline = auth.now().getTime() + waitSeconds * 1_000;
+    const waited = await sandboxes.wait<WaitResult>(
+      { id: body.id, org, timeout_seconds: waitSeconds },
+      { signal: AbortSignal.timeout((waitSeconds + 15) * 1_000) },
+    );
+    if (waited.timedOut || auth.now().getTime() >= deadline) {
+      auth.out(`${JSON.stringify({ id: waited.id, status: waited.status, timedOut: true }, null, 2)}\n`);
+      return 0;
+    }
+    delete body.timeout_seconds;
+    body.only_if_idle = true;
   }
   const signal =
     action === "stop" || action === "bind-credential"
@@ -313,12 +327,11 @@ function sandboxListFilters(args: ReturnType<typeof parseArgs>): Record<string, 
   return body;
 }
 
-export function parseTtl(value: string, option = "--ttl"): number {
+export function parseTtl(value: string): number {
   const match = /^([1-9][0-9]*)([smhd]?)$/.exec(value);
   const unit = { "": 1, s: 1, m: 60, h: 3600, d: 86_400 }[match?.[2] ?? ""];
-  const seconds = Number(match?.[1]) * (unit ?? NaN);
-  if (!Number.isSafeInteger(seconds)) {
-    throw new GoldenError("invalid_config", `${option} '${value}' is not a duration. Use 90, 30m, 4h or 2d.`);
+  if (!match?.[1] || unit === undefined) {
+    throw new GoldenError("invalid_config", `--ttl '${value}' is not a duration. Use 90, 30m, 4h or 2d.`);
   }
-  return seconds;
+  return Number(match[1]) * unit;
 }
