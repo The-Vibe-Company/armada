@@ -160,7 +160,7 @@ function recordFollowupCommand(input: { id: string; request_id: string; prompt: 
     sandboxId: input.id,
     requestId: `follow_${input.request_id}`,
     op: "prompt",
-    input: { text: input.prompt, conversationId: "history", harness: "codex" },
+    input: { sandboxId: input.id, text: input.prompt, conversationId: "history", harness: "codex" },
   });
 }
 
