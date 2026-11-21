@@ -17,7 +17,7 @@ import { releaseAccountCapacity } from "./account-capacity.ts";
 import { isDockerPromptRefusal } from "./docker-prompt-refusal.ts";
 import type { Job } from "./jobs/runner.ts";
 import { mergedWorkProof } from "./merged-work.ts";
-import { withdrawExpiredModalDrainLease } from "./modal-drain-journal.ts";
+import { strictNativeDrainJournals, withdrawExpiredModalDrainLease } from "./modal-drain-journal.ts";
 import { nativeIdleDue, nativeQuiescent } from "./native-idle.ts";
 import { LIVE_OUTPUT_CANDIDATE } from "./output-transfers.ts";
 import { recordNativeIdleTurn } from "./runtime-idle-evidence.ts";
@@ -962,20 +962,8 @@ export async function requestNativeDrainStop(
   return sql.transaction(async (tx) => {
     const locked = await tx.query(`select id from public.sandboxes where id=$1 for update`, [id]);
     if (!locked.rows.length) return false;
-    if (provider === "modal") {
-      // WARNING: Modal ingest can lock the journal before the sandbox. Refuse contention without waiting.
-      const journal = await tx.query<{ eligible: boolean }>(
-        `select (m.owner_id=s.owner_id and m.record->>'phase'='active'
-           and m.record->>'commonRuntime' is distinct from 'true'
-           and m.lease_id is null and m.lease_until is null) as eligible
-         from public.modal_machines m join public.sandboxes s
-           on m.org_id=s.org_id and m.id=s.provider_sandbox_id
-         where s.id=$1 and s.provider='modal'
-         for update of m nowait`,
-        [id],
-      );
-      if (journal.rows.length !== 1 || journal.rows[0]?.eligible !== true) return false;
-    }
+    const journal = strictNativeDrainJournals[provider];
+    if (journal && !(await journal.lockActive(tx, id))) return false;
     const token = crypto.randomUUID();
     const {
       rows: [admitted],
@@ -2310,27 +2298,12 @@ export function createSandboxLifecycle(
         }
         signal?.throwIfAborted();
         physicalExit = info.physicalExitConfirmed === true || info.stopNote === "checkpoint_failed_disk_not_retained";
-        if (
-          strictNativeStop &&
-          providerId === "modal" &&
-          (physicalExit || ["stopped", "deleted"].includes(info.state))
-        ) {
+        const journal = strictNativeStop && strictNativeDrainJournals[providerId];
+        if (journal && (physicalExit || ["stopped", "deleted"].includes(info.state))) {
           const retained =
             !physicalExit &&
             info.state === "stopped" &&
-            (
-              await sql.query(
-                `select 1 from public.sandboxes s join public.modal_machines m
-               on m.org_id=s.org_id and m.owner_id=s.owner_id and m.id=s.provider_sandbox_id
-             join public.sandbox_native_preservation_receipts r on r.sandbox_id=s.id
-             where s.id=$1 and s.lifecycle_generation=$2 and r.generation=s.lifecycle_generation
-               and r.stop_generation=s.stop_generation
-               and m.record->>'phase'='stopped' and nullif(m.record->>'recoveryImageId','') is not null
-               and m.record->>'generation'=nullif($3::text,'')
-               and r.capture_acknowledgements->>'physicalGeneration'=m.record->>'generation'`,
-                [row.id, row.lifecycle_generation, info.physicalGeneration ?? null],
-              )
-            ).rows.length === 1;
+            (await journal.hasRetainedCheckpoint(sql, row.id, row.lifecycle_generation, info.physicalGeneration));
           if (!retained) {
             physicalExit = false;
             error = "Strict native stop is waiting for a verified retained Modal checkpoint.";
