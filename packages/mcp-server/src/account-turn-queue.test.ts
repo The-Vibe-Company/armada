@@ -1216,7 +1216,6 @@ test("a restarted Docker runner waits for the claim lease before recovering a di
   await queue.accept(caller, input);
   const original = await claimTurn(input.request_id);
   expect(await admitClaimedAccountTurn(sql, original)).not.toBeNull();
-  // Expire the receipt window alone. The shared job lease still owns this request.
   await sql.query("update account_turn_queue set dispatch_until='-infinity' where sandbox_id=$1", [input.id]);
   await sql.query("update jobs set lease_until='infinity' where id=$1", [original.job.id]);
 
