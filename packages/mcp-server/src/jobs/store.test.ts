@@ -1593,7 +1593,7 @@ test("enrolled Modal launch jobs report and settle turns from the runtime journa
 
   const { runtimeToken, epoch } = activeRuntime();
   const promptId = crypto.randomUUID();
-  await f.db.query("update sandboxes set task_prompt_id=$2 where id=$1", [id, promptId]);
+  const queue = createAccountTurnQueue(f.sql, launchEncryptionKey);
   const journal = createRuntimeEvents(createRuntimeEnrolments(f.sql, launchEncryptionKey), launchEncryptionKey);
   const append = (sequence: number, status: "running" | "finished") =>
     journal.append(runtimeToken, epoch, {
@@ -1617,6 +1617,7 @@ test("enrolled Modal launch jobs report and settle turns from the runtime journa
   const context = {
     caller,
     data,
+    accountTurns: queue,
     launchCredentials: launchCredentials(createSqlVaultStore(f.sql), launchEncryptionKey),
     exposedSecrets: async () => [],
     provider: unavailable,
@@ -1627,7 +1628,7 @@ test("enrolled Modal launch jobs report and settle turns from the runtime journa
       throw new Error("A finished turn must settle immediately.");
     },
   } satisfies Parameters<typeof callSharedTool>[0];
-  const follow = () =>
+  const follow = (cursor?: string) =>
     readLogs(
       {
         logs: async (actor, id) => {
@@ -1637,25 +1638,54 @@ test("enrolled Modal launch jobs report and settle turns from the runtime journa
       },
       caller,
       id,
-      { follow: true },
+      { follow: true, ...(cursor ? { cursor } : {}) },
     );
-  const report = () => callSharedTool(context, "report", { id, prompt_id: promptId, outcome: { state: "ready" } });
+  expect(await callSharedTool(context, "status", { id })).toMatchObject({
+    status: "ready",
+    prompt: null,
+    settled: false,
+    statusMessage: "Modal launch setup is still in progress.",
+  });
+  expect(await follow()).toMatchObject({ settled: false });
+
+  const setup = await modalFirstTurnLane(f, queue);
+  expect(await setup.reconcileOne(signal)).toBe(true);
+  await setup.drain();
+  const {
+    rows: [turn],
+  } = await f.db.query<{ request_id: string }>("select request_id from account_turn_queue where sandbox_id=$1", [id]);
+  const publicPromptId = turn!.request_id;
+  // The dispatch receipt may be durable before the first runtime event reaches the server.
+  await f.db.query("update sandboxes set task_prompt_id=$2 where id=$1", [id, promptId]);
+  await f.db.query("update account_turn_queue set state='admitted',result_enc=$2 where sandbox_id=$1", [
+    id,
+    await encryptSecret(JSON.stringify({ promptId }), launchEncryptionKey),
+  ]);
+  expect(await callSharedTool(context, "status", { id, prompt_id: publicPromptId })).toMatchObject({
+    prompt: { promptId: publicPromptId, state: "running" },
+    settled: false,
+  });
+  const report = () =>
+    callSharedTool(context, "report", { id, prompt_id: publicPromptId, outcome: { state: "ready" } });
 
   await append(1, "running");
   expect(await callSharedTool(context, "status", { id })).toMatchObject({
     id,
     providerState: null,
-    prompt: { promptId, state: "running" },
+    prompt: { promptId: publicPromptId, state: "running" },
     settled: false,
   });
-  expect(await follow()).toMatchObject({ settled: false });
+  const active = await follow();
+  expect(active.settled).toBe(false);
+  expect(active.cursor).not.toBeNull();
+  expect(await follow(active.cursor!)).toMatchObject({ events: [], settled: false });
   await expect(report()).rejects.toMatchObject({ code: "conflict" });
 
   await append(2, "finished");
-  expect(await callSharedTool(context, "wait", { id, prompt_id: promptId })).toMatchObject({
+  expect(await callSharedTool(context, "wait", { id, prompt_id: publicPromptId })).toMatchObject({
     id,
     providerState: null,
-    prompt: { promptId, state: "finished" },
+    prompt: { promptId: publicPromptId, state: "finished" },
     settled: true,
   });
   expect(await follow()).toMatchObject({ settled: true });

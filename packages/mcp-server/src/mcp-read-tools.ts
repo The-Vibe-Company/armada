@@ -130,17 +130,25 @@ export function registerStatusTools(
       const storedProvider = stored ? context.storedProviders?.[found.provider] : undefined;
       const fenced = found.status === "deleted" || isStatusReadFenced(found);
       const jobReader = fenced ? null : await context.modalJobReader?.(found);
+      const setupPending = jobReader?.setupState === "queued" || jobReader?.setupState === "leased";
+      if (setupPending || jobReader?.setupState === "failed")
+        return {
+          ...recordedStatus(found),
+          ...logicalExpiry(found.expiresAt, context.now()),
+          settled: !setupPending,
+          statusMessage: setupPending ? "Modal launch setup is still in progress." : "Modal launch setup failed.",
+        };
       const provider = fenced
         ? null
         : (jobReader ?? (storedProvider ? await storedProvider(found) : await context.provider(found)));
       const result = await measure("state", () =>
         readStatus(provider, data.sandboxes, found, {
-          stored: Boolean(jobReader) || storedProvider !== undefined,
-          recordedCompute: Boolean(jobReader),
+          stored: storedProvider !== undefined,
           ...(promptId ? { promptId } : {}),
           now: context.now(),
         }),
       );
+      await jobReader?.verify();
       return {
         ...publicReport(result),
         ...logicalExpiry(result.expiresAt, context.now()),

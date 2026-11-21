@@ -8,9 +8,10 @@ import {
   type Provider,
   ProviderError,
 } from "@armada/core";
-import { decryptSecret, type Sql } from "@armada/core/server";
+import { decryptSecret, type Sql, VaultError } from "@armada/core/server";
 import type { Caller } from "./caller.ts";
 import { createSqlData, type SandboxView } from "./data.ts";
+import { MODAL_LAUNCH_SETUP_KEY } from "./jobs/modal-launch-setup.ts";
 import { SANDBOX_VISIBLE } from "./sandbox-visibility.ts";
 
 /** Durable journal reads, never live host/native-agent observations. */
@@ -98,7 +99,9 @@ export function createRuntimeHistory(
   };
 }
 
-export type SandboxLogReader = Pick<Provider, "events" | "get" | "getPrompt">;
+export type SandboxLogReader = Pick<Provider, "events" | "get" | "getPrompt"> & {
+  followSettled?(): Promise<boolean | undefined>;
+};
 
 export function createModalJobReader(sql: Sql, key: string) {
   const history = createRuntimeHistory(sql, key);
@@ -107,39 +110,61 @@ export function createModalJobReader(sql: Sql, key: string) {
     if (sandbox.runtimeTransport !== "dialout" || sandbox.lifecycleGeneration === undefined) return null;
     const current = async () => {
       const row = await data(caller).sandboxes.get(sandbox.id);
-      if (!row || row.lifecycleGeneration !== sandbox.lifecycleGeneration)
-        throw new ProviderError({
-          provider: sandbox.provider,
-          code: "conflict",
-          message: "The sandbox binding changed during observation.",
-          retryable: true,
-        });
+      if (!row) throw new VaultError("not_found", "No visible runtime sandbox.");
+      if (row.lifecycleGeneration !== sandbox.lifecycleGeneration)
+        throw new VaultError("conflict", "The sandbox binding changed during observation.");
       return row;
     };
-    const { rows } = await sql.query(
-      `select 1 from public.sandboxes s join public.jobs j on j.sandbox_id=s.id
-       where ${SANDBOX_VISIBLE} and s.id=$3 and s.provider='modal' and j.kind='launch'
-         and s.lifecycle_generation=$4 and j.generation=s.lifecycle_generation`,
-      [caller.orgs.map((org) => org.orgId), caller.userId, sandbox.id, sandbox.lifecycleGeneration],
-    );
-    if (!rows.length) return null;
+    const scope = [caller.orgs.map((org) => org.orgId), caller.userId, sandbox.id, sandbox.lifecycleGeneration];
+    const evidence = async () =>
+      (
+        await sql.query<{
+          job_owned: boolean;
+          setup_state: string | null;
+          settled: boolean;
+          active_prompt: string | null;
+        }>(
+          `select exists(select 1 from public.jobs j where j.sandbox_id=s.id and j.kind='launch'
+            and j.generation=s.lifecycle_generation and j.org_id=s.org_id and j.request_owner_id=s.owner_id) as job_owned,
+          setup.state as setup_state,
+          case
+            when s.stop_requested_at is not null or s.status in ('starting','stopping') then false
+            when s.status='running' and nullif(s.task_prompt_id,'') is null then false
+            when s.status in ('stopped','deleted','failed') then true
+            else coalesce(setup.state not in ('leased','queued'),true)
+              and not exists(select 1 from public.account_turn_queue q where q.sandbox_id=s.id
+                and q.queued_generation=s.lifecycle_generation and q.state in ('queued','dispatching'))
+              and not exists(select 1 from public.runtime_idle_turns t where t.sandbox_id=s.id and not t.settled)
+              and (nullif(s.task_prompt_id,'') is null or coalesce(turn.settled,false))
+          end as settled,
+          case when s.status in ('ready','running') and not coalesce(turn.settled,false)
+            then s.task_prompt_id end as active_prompt
+         from public.sandboxes s
+         left join public.jobs setup on setup.idem_key=${MODAL_LAUNCH_SETUP_KEY}
+         left join public.runtime_idle_turns turn on turn.sandbox_id=s.id and turn.prompt_id=s.task_prompt_id
+         where ${SANDBOX_VISIBLE} and s.id=$3 and s.lifecycle_generation=$4 and s.provider='modal' and s.runtime_transport='dialout'`,
+          scope,
+        )
+      ).rows[0];
+    const observed = await evidence();
+    if (!observed?.job_owned) {
+      await current();
+      return null;
+    }
     const events: Provider["events"] = async ({ sandboxId: _placement, ...pagination }) => {
       const page = await history(caller, sandbox.id, pagination);
       await current();
       return page;
     };
-    const reader: SandboxLogReader & Pick<Provider, "id"> = {
+    const reader = {
       id: sandbox.provider,
       events,
-      async get() {
-        const row = await current();
-        return {
-          id: row.providerSandboxId,
-          name: row.id,
-          state: row.stopRequestedAt ? "stopping" : row.status === "deleted" ? "stopped" : row.status,
-          providerState: "recorded",
-          labels: {},
-        } satisfies Awaited<ReturnType<Provider["get"]>>;
+      setupState: observed.setup_state,
+      verify: current,
+      async followSettled() {
+        const latest = await evidence();
+        if (!latest) throw new VaultError("conflict", "The sandbox binding changed during observation.");
+        return latest.settled;
       },
       async getPrompt({ promptId, signal }: Parameters<Provider["getPrompt"]>[0]) {
         let cursor: string | undefined;
@@ -158,9 +183,9 @@ export function createModalJobReader(sql: Sql, key: string) {
           if (!read.hasMore || !read.olderCursor || read.olderCursor === cursor) break;
           cursor = read.olderCursor;
         }
-        const row = await current();
-        if (row.taskPromptId === promptId && row.status === "running")
-          return { promptId, status: "running", done: false };
+        const latest = await evidence();
+        if (!latest) throw new VaultError("conflict", "The sandbox binding changed during observation.");
+        if (latest.active_prompt === promptId) return { promptId, status: "running", done: false };
         throw new ProviderError({
           provider: sandbox.provider,
           code: "not_found",
@@ -168,7 +193,8 @@ export function createModalJobReader(sql: Sql, key: string) {
           retryable: true,
         });
       },
-    };
+    } satisfies Pick<SandboxLogReader, "events" | "getPrompt" | "followSettled"> &
+      Pick<Provider, "id"> & { setupState: string | null; verify: typeof current };
     return reader;
   };
 }
@@ -183,13 +209,13 @@ export function createModalLogReader(
   const read: (sandbox: SandboxView, caller: Caller) => Promise<SandboxLogReader> = async (sandbox, caller) => {
     if (sandbox.runtimeTransport !== "dialout") return resolveProvider(sandbox, caller);
 
-    let observation: Promise<SandboxLogReader> | undefined;
-    const current = () =>
-      (observation ??= jobReader(sandbox, caller).then((reader) => reader ?? resolveProvider(sandbox, caller)));
+    let observation: Promise<Provider> | undefined;
+    const observe = () => (observation ??= resolveProvider(sandbox, caller));
     return {
       events: ({ sandboxId: _placement, ...pagination }) => history(caller, sandbox.id, pagination),
-      get: async (...args) => (await current()).get(...args),
-      getPrompt: async (request) => (await current()).getPrompt(request),
+      followSettled: async () => (await jobReader(sandbox, caller))?.followSettled(),
+      get: async (...args) => (await observe()).get(...args),
+      getPrompt: async (request) => (await observe()).getPrompt(request),
     };
   };
   return read;

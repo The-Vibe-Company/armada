@@ -110,18 +110,18 @@ const hasReportedCounters = (row: TurnTokenUsage) =>
     (value) => typeof value === "number" && Number.isSafeInteger(value) && value >= 0,
   );
 
+type StatusReader = Pick<Provider, "id" | "getPrompt" | "events" | "collectTurnUsage"> & Partial<Pick<Provider, "get">>;
+
 /**
  * Reads where a sandbox is and records it. The prompt's status comes from `getPrompt` (events are
  * rewritten in place); a turn boat calls `finished` after a usage limit or an expired login is `failed`.
  * Runtime prompt activity is reported separately from the enrolled machine state.
  */
-type StatusReader = Pick<Provider, "id" | "get" | "getPrompt" | "events" | "collectTurnUsage">;
-
 export async function readStatus(
   provider: StatusReader | null,
   store: ServerSandboxStore,
   sandbox: SandboxView,
-  options: { promptId?: string; now: Date; stored?: boolean; recordedCompute?: boolean },
+  options: { promptId?: string; now: Date; stored?: boolean },
 ): Promise<StatusReport> {
   if (isStatusReadFenced(sandbox)) return report(sandbox, sandbox.status, null, null, null);
 
@@ -129,7 +129,8 @@ export async function readStatus(
     return report({ ...sandbox, statusReason: null }, "deleted", null, null, null);
   }
 
-  const info = options.recordedCompute ? null : await provider.get(sandbox.providerSandboxId);
+  const info = await provider.get?.(sandbox.providerSandboxId);
+  const stored = options.stored || !info;
   if (provider.id === "boat" && info?.state === "stopped" && info.retainedSnapshot !== "usable")
     return report(sandbox, "stopping", info, null, info.expiresAt ?? null);
   const target = options.promptId
@@ -218,7 +219,7 @@ export async function readStatus(
         });
         terminalEvents = events;
         cacheOutcome =
-          !options.stored && !!recorded && complete && evidence.modelSelectionReason !== "model_selection_unverified";
+          !stored && !!recorded && complete && evidence.modelSelectionReason !== "model_selection_unverified";
       }
     }
     // Retained terminal reports can predate health recording. Keep their outcome and use the original source time.
@@ -254,13 +255,15 @@ export async function readStatus(
       /* Status stays available. The next observation can retry telemetry storage. */
     }
     try {
-      await store.recordAccountRateLimit?.(
-        sandbox.id,
-        target.promptId,
-        outcome.state === "running" && rateLimit?.waiting && rateLimit.message.startsWith("Rate limited by")
-          ? rateLimit.retryAt
-          : null,
-      );
+      // Runtime event ingestion owns the retry projection for journal-only reads.
+      if (info)
+        await store.recordAccountRateLimit?.(
+          sandbox.id,
+          target.promptId,
+          outcome.state === "running" && rateLimit?.waiting && rateLimit.message.startsWith("Rate limited by")
+            ? rateLimit.retryAt
+            : null,
+        );
     } catch {
       /* A telemetry write cannot change turn status. Existing retry evidence expires on its own. */
     }
@@ -285,7 +288,7 @@ export async function readStatus(
 
   // Stored Modal history already contains native counters; project it without waking compute.
   if (store.recordUsage && (prompt ? prompt.state !== "running" : sandbox.status !== "running")) {
-    await collectSandboxUsage(provider, store, sandbox, prompt?.promptId, { eventsOnly: options.stored === true });
+    await collectSandboxUsage(provider, store, sandbox, prompt?.promptId, { eventsOnly: stored });
     const refreshed = await store.get(sandbox.id);
     if (refreshed?.usage) sandbox = { ...sandbox, usage: refreshed.usage };
   }
@@ -309,7 +312,7 @@ export async function readStatus(
         : null;
   // Stored projections never acquire activity/lifecycle leases or publish over a
   // concurrent admission. The existing lifecycle worker refreshes physical state.
-  if (options.stored) return report({ ...sandbox, statusReason: reason }, next, info, prompt, info.expiresAt ?? null);
+  if (stored) return report({ ...sandbox, statusReason: reason }, next, info, prompt, info.expiresAt ?? null);
   const nativeExit =
     !runtime &&
     isSandboxProvider(sandbox.provider) &&
@@ -589,7 +592,7 @@ export async function collectSandboxUsage(
       // Observe compute once before fan-out. A terminal guest cannot provide native
       // counters; per-prompt exec guards would otherwise repeat the same GET up to
       // twenty times for an archived sandbox. Exec still guards races after this read.
-      const compute = prompts.size ? await provider.get(sandbox.providerSandboxId).catch(() => null) : null;
+      const compute = prompts.size ? await provider.get?.(sandbox.providerSandboxId).catch(() => null) : null;
       const inactive =
         compute !== null && (compute.physicalExitConfirmed === true || !["ready", "running"].includes(compute.state));
       // A native read is bounded independently of provider event history.
