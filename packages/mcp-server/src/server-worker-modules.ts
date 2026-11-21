@@ -51,6 +51,7 @@ const jobsLane: LaneFactory = ({
   outputs,
   langfuse,
   control,
+  modal,
 }) => {
   const prScan = githubApp
     ? createPullRequestScanJob(
@@ -95,6 +96,7 @@ const jobsLane: LaneFactory = ({
   const runner = createJobsRunner(
     jobs,
     {
+      delete: modal.launchCleanupJob,
       golden_build: createGoldenBuildJob(goldenBuilds),
       langfuse_export: langfuse.exportJob,
       maintenance: retentionMaintenanceJob(sql, control.applicationVault, options.logError),
