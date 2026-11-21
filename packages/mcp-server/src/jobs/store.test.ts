@@ -770,6 +770,13 @@ test.each(["acknowledgement lost", "promptless takeover", "secret revoked", "san
     const turns = async () =>
       (await db.query("select request_id from account_turn_queue where sandbox_id=$1", [id])).rows;
     const queue = createAccountTurnQueue(sql, launchEncryptionKey);
+    const sendFollowUp = () =>
+      queue.accept(
+        { userId: people.owner, orgs: [{ orgId: people.org, role: "member" }], via: "service" },
+        { id, prompt: "Follow up" },
+      );
+    if (scenario === "acknowledgement lost")
+      await expect(sendFollowUp()).rejects.toThrow("Modal launch setup is still in progress.");
     const firstTurn = (wait: () => Promise<void>) =>
       createJobsRunner(
         createJobsStore(sql, launchEncryptionKey),
@@ -802,6 +809,7 @@ test.each(["acknowledgement lost", "promptless takeover", "secret revoked", "san
           ])
         ).rows,
       ).toEqual([{ state: "failed", reason: "modal_initial_turn_environment_refused" }]);
+      if (scenario === "secret revoked") await expect(sendFollowUp()).rejects.toThrow("Modal launch setup failed.");
       return;
     }
     const { command } = await bridge.next(runtimeToken, epoch);
@@ -829,6 +837,15 @@ test.each(["acknowledgement lost", "promptless takeover", "secret revoked", "san
     expect((await db.query("select request_id from runtime_commands where sandbox_id=$1", [id])).rows).toEqual([
       { request_id: command.requestId },
     ]);
+    if (scenario === "acknowledgement lost") {
+      const [initial] = await turns();
+      const followUp = await sendFollowUp();
+      const { rows } = await db.query(
+        "select request_id from account_turn_queue where sandbox_id=$1 order by sequence",
+        [id],
+      );
+      expect(rows).toEqual([initial, { request_id: followUp.requestId }]);
+    }
   },
 );
 
