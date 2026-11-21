@@ -22,6 +22,7 @@ import {
 import { createModalMachine, type ModalMachineOptions, scopeKey } from "@armada/provider-modal";
 import { z } from "zod";
 import type { AccountTurnQueue } from "../account-turn-queue.ts";
+import type { Caller } from "../caller.ts";
 import type { createGoldenRuntimeEnvironment } from "../golden-runtime-environment.ts";
 import { type OrdinaryLaunchFailure, replayOrdinaryLaunchFailure } from "../ordinary-launch-receipts.ts";
 import { createRuntimeAgent, workspaceCommandId } from "../runtime-agent.ts";
@@ -29,6 +30,7 @@ import { RuntimeCommandRefused } from "../runtime-commands.ts";
 import type { RuntimeConfigurationTarget } from "../runtime-configuration.ts";
 import { createRuntimeEnrolments, type RuntimeTicketGuard } from "../runtime-enrolment.ts";
 import type { RuntimeGitHub } from "../runtime-github.ts";
+import type { RuntimeMcp } from "../runtime-mcp.ts";
 import { readRuntimeTemplateEnvironment } from "../runtime-readable-variables.ts";
 import { runtimeWorkspace } from "../runtime-workspace.ts";
 import {
@@ -272,6 +274,7 @@ export function createModalInitialTurnJob(
   queue: Pick<AccountTurnQueue, "acceptInitialLaunch">,
   environment: Pick<ReturnType<typeof createGoldenRuntimeEnvironment>, "deliver">,
   commands: Parameters<typeof createRuntimeAgent>[0],
+  prepareMcp: RuntimeMcp["prepare"],
   github?: Pick<RuntimeGitHub, "prepareLaunch">,
 ) {
   return {
@@ -326,6 +329,15 @@ export function createModalInitialTurnJob(
         if (!(await context.canDispatch(tx))) throw new Error("Modal setup lost its job claim.");
       };
       if (epoch === null) return { status: "fail", reason: "modal_initial_turn_unavailable" };
+      const assertRuntimeClaim = async (tx: Sql) => {
+        await assertClaim(tx);
+        const { rows } = await tx.query(
+          `select 1 from public.runtime_enrolments
+           where sandbox_id=$1 and lifecycle_generation=$2 and epoch=$3 and runtime_hash is not null`,
+          [sandboxId, generation, epoch],
+        );
+        if (!rows.length) throw new GoldenError("conflict", "Modal setup runtime changed.");
+      };
       try {
         await environment.deliver("modal", actor, sandboxId, epoch, context.signal, async (tx) => {
           await assertClaim(tx);
@@ -377,15 +389,7 @@ export function createModalInitialTurnJob(
           {
             trackPushes: true,
             healthRequestId: `workspace_health_${job.id}_${epoch}`,
-            async assertClaim(tx) {
-              await assertClaim(tx);
-              const { rows } = await tx.query(
-                `select 1 from public.runtime_enrolments
-                 where sandbox_id=$1 and lifecycle_generation=$2 and epoch=$3 and runtime_hash is not null`,
-                [sandboxId, generation, epoch],
-              );
-              if (!rows.length) throw new GoldenError("conflict", "Modal workspace runtime changed.");
-            },
+            assertClaim: assertRuntimeClaim,
           },
         );
         await workspace.prepareWorkspace({ config }, () => {});
@@ -399,12 +403,25 @@ export function createModalInitialTurnJob(
         throw error;
       }
 
+      const caller: Caller = {
+        userId: target.owner_id,
+        orgs: [{ orgId: target.org_id, role: target.role }],
+        via: "service",
+      };
+      try {
+        await prepareMcp(caller, sandboxId, context.signal, assertRuntimeClaim, `mcp_health_${job.id}_${epoch}`);
+      } catch (error) {
+        if (error instanceof VaultError || error instanceof RuntimeCommandRefused || error instanceof GoldenError)
+          return { status: "fail", reason: "modal_initial_turn_mcp_refused" };
+        throw error;
+      }
+
       const { prompt } = payload.data;
       if (prompt === undefined) return { status: "done" };
 
       try {
         const accepted = await queue.acceptInitialLaunch(
-          { userId: target.owner_id, orgs: [{ orgId: target.org_id, role: target.role }], via: "service" },
+          caller,
           { id: sandboxId, request_id: job.id, prompt },
           generation,
           async (tx) => {

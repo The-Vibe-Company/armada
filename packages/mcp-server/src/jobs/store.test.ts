@@ -10,6 +10,7 @@ import { retentionMaintenanceJob, seedRetentionMaintenance } from "../retention-
 import { createRuntimeCommands } from "../runtime-commands.ts";
 import { createRuntimeEnrolments, scopedRuntimeSql } from "../runtime-enrolment.ts";
 import { createRuntimeGitHub } from "../runtime-github.ts";
+import { createRuntimeMcp, type RuntimeMcp } from "../runtime-mcp.ts";
 import { createSandboxLifecycle } from "../sandbox-lifecycle.ts";
 import type { LaneFactory } from "../server-worker-modules.ts";
 import { sqlOver } from "../sql.ts";
@@ -748,6 +749,7 @@ async function modalFirstTurnLane(
   accountTurns: Pick<ReturnType<typeof createAccountTurnQueue>, "acceptInitialLaunch">,
   runtimeCommands = fixtureWorkspaceCommands,
   runtimeGitHub?: ReturnType<typeof createRuntimeGitHub>,
+  runtimeMcp: Pick<RuntimeMcp, "prepare"> = { prepare: async () => undefined },
 ) {
   const factory = await registeredJobsLane();
   return factory({
@@ -756,6 +758,7 @@ async function modalFirstTurnLane(
     accountTurns,
     runtimeCommands,
     runtimeGitHub,
+    runtimeMcp,
     config: { encryptionKey: launchEncryptionKey },
     options: { logError: () => {} },
     control: {},
@@ -948,6 +951,71 @@ test("a replacement Modal setup claimant replays workspace commands before admit
   expect(await turns()).toHaveLength(1);
 });
 
+test("a replacement Modal setup claimant completes the admitted MCP revision before queueing the first turn", async () => {
+  const { f, id, makeRunner, activeRuntime } = await modalLaunchFixture(await modalAdmissionFixture());
+  const launch = makeRunner();
+  expect(await launch.reconcileOne(signal)).toBe(true);
+  await launch.drain();
+
+  const { runtimeToken, epoch } = activeRuntime();
+  const authority = createRuntimeEnrolments(f.sql, launchEncryptionKey);
+  const queue = createAccountTurnQueue(f.sql, launchEncryptionKey);
+  const turns = async () =>
+    (await f.db.query("select request_id from account_turn_queue where sandbox_id=$1", [id])).rows;
+  const configurations: string[] = [];
+  let mcpHealthCommands = 0;
+  const runSetup = async (interrupt: boolean) => {
+    const bridge = createRuntimeCommands(authority, launchEncryptionKey, {
+      now: () => 0,
+      async wait() {
+        const { command } = await bridge.next(runtimeToken, epoch);
+        if (!command) throw Error("Expected a runtime command.");
+        expect(await turns()).toEqual([]);
+        let result: unknown = { detached: false, exitCode: 0, stdout: "", stderr: "" };
+        if (command.op === "health") {
+          if (!command.requestId.startsWith("workspace_health_")) mcpHealthCommands++;
+          result = { ready: true, generation: epoch, workspaceVersion: 1, mcpVersion: 1 };
+        }
+        if (command.op === "configureMcp") {
+          expect(command.configuration.servers.armada_self).toBeDefined();
+          configurations.push(command.requestId);
+          if (interrupt) throw Error("Worker lost after MCP command admission.");
+          result = { revision: command.configuration.revision };
+        }
+        await bridge.complete(runtimeToken, epoch, {
+          epoch,
+          requestId: command.requestId,
+          status: 200,
+          body: { version: 1, requestId: command.requestId, result },
+        });
+      },
+    });
+    const mcp = createRuntimeMcp({
+      sql: f.sql,
+      key: launchEncryptionKey,
+      origin: "https://armada.test",
+      commands: bridge,
+    });
+    const lane = await modalFirstTurnLane(f, queue, bridge, undefined, mcp);
+    expect(await lane.reconcileOne(signal)).toBe(true);
+    await lane.drain();
+  };
+
+  await runSetup(true);
+  expect(configurations).toHaveLength(1);
+  expect(await turns()).toEqual([]);
+  const [configuration] = configurations;
+  await f.db.query("update jobs set lease_until='-infinity' where sandbox_id=$1 and kind=$2", [id, MODAL_INITIAL_TURN]);
+
+  await runSetup(false);
+  expect(configurations).toEqual([configuration!, configuration!]);
+  expect(mcpHealthCommands).toBe(1);
+  expect((await f.db.query("select configured from mcp_bootstraps where sandbox_id=$1", [id])).rows).toEqual([
+    { configured: true },
+  ]);
+  expect(await turns()).toHaveLength(1);
+});
+
 test.each(["acknowledgement lost", "promptless takeover", "secret revoked", "sandbox untainted"] as const)(
   "the Modal first-turn worker fences runtime configuration when %s",
   async (scenario) => {
@@ -1025,6 +1093,7 @@ test.each(["acknowledgement lost", "promptless takeover", "secret revoked", "san
             queue,
             createGoldenRuntimeEnvironment(sql, launchEncryptionKey, { now: () => 0, wait }),
             fixtureWorkspaceCommands,
+            async () => undefined,
           ),
         },
         () => {},
