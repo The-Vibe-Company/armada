@@ -40,6 +40,19 @@ const NO_ADJACENT_DISPATCH_EVIDENCE = `(s.activity_lease_id is distinct from q.r
     select 1 from public.docker_resume_claims c where c.sandbox_id = s.id and c.request_id = q.request_id
   )))`;
 
+const OBSOLETE_RUNTIME_FOLLOWUP = `(s.provider in ('boat','modal')
+  and s.activity_lease_id is distinct from q.request_id
+  and exists(
+    select 1 from public.runtime_commands c
+    join public.runtime_enrolments e on e.sandbox_id = c.sandbox_id
+    where c.sandbox_id = s.id and c.request_id = 'follow_' || q.request_id::text
+      and c.result_enc is not null and c.epoch < e.epoch
+      and e.runtime_hash is not null and e.lifecycle_generation = s.lifecycle_generation
+  )
+  and not exists(
+    select 1 from public.runtime_resumes r where r.sandbox_id = s.id and r.request_id = q.request_id
+  ))`;
+
 const CURRENT_DOCKER_PROMPT_COMMAND = `(s.provider = 'docker' and exists(
   select 1 from public.runtime_commands c
   join public.runtime_enrolments e on e.sandbox_id = c.sandbox_id and e.epoch = c.epoch
@@ -161,8 +174,10 @@ export function createJobsStore(sql: Sql, encryptionKey?: string) {
                   (q.state = 'dispatching' and (q.dispatch_generation is null
                     or q.dispatch_generation < s.lifecycle_generation - 1
                     or (${ADJACENT_RUNTIME_DISPATCH} and s.status in ('ready','running')
-                      and (q.dispatch_until is null or q.dispatch_until <= statement_timestamp())
-                      and ${NO_ADJACENT_DISPATCH_EVIDENCE}))) as unrecoverable_dispatch,
+                      and (((q.dispatch_until is null or q.dispatch_until <= statement_timestamp())
+                          and ${NO_ADJACENT_DISPATCH_EVIDENCE})
+                        or (q.dispatch_until <= statement_timestamp() and ${OBSOLETE_RUNTIME_FOLLOWUP})))))
+                    as unrecoverable_dispatch,
                   case when ${ADJACENT_RUNTIME_DISPATCH}
                     and ((s.status in ('ready','running')
                       and (s.provider in ('boat','modal') or ${NO_ADJACENT_DISPATCH_EVIDENCE}

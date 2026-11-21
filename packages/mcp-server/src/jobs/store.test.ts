@@ -1192,6 +1192,7 @@ test.each(["current", "pending", "other request", "other epoch", "old issuer", "
 
 test.each([
   ["pending while starting", "starting", null, true],
+  ["pending after readiness", "running", null, false],
   ["completed before prompt", "running", "completed", true],
   ["failed", "starting", "failed", false],
   ["refused", "starting", null, false],
@@ -1292,6 +1293,7 @@ test.each([
     const job = (await store.claim("turn_dispatch", owner, 30, 1))!;
     expect(job).toMatchObject({ id, generation: recover ? "3" : "2", payload: { requestId } });
     expect(await store.inspect(job, owner)).toBe(recover ? "dispatch" : "stale");
+    if (scenario === "pending after readiness") await store.retireStale(job, owner, "no_dispatch");
     expect(
       (
         await db.query(
@@ -1372,6 +1374,7 @@ test.each([
   "missing dispatch generation",
   "expired adjacent dispatch without evidence",
   "expired adjacent dispatch with unrelated activity",
+  "expired adjacent dispatch with an obsolete runtime command",
   "adjacent dispatch without a deadline or evidence",
 ] as const)("a failed receipt write rolls back retirement after %s", async (scenario) => {
   const f = await fixture();
@@ -1407,6 +1410,18 @@ test.each([
         missingDeadline ? null : adjacent ? "-infinity" : "infinity",
       ],
     );
+    if (scenario === "expired adjacent dispatch with an obsolete runtime command") {
+      await db.query(
+        `insert into runtime_enrolments (sandbox_id,lifecycle_generation,epoch,runtime_hash)
+         values ($1,3,2,repeat('a',64))`,
+        [sandboxId],
+      );
+      await db.query(
+        `insert into runtime_commands (sandbox_id,request_id,epoch,request_enc,result_enc)
+         values ($1,$2,1,''::bytea,''::bytea)`,
+        [sandboxId, `follow_${requestId}`],
+      );
+    }
     await db.query("insert into account_agent_reservations (sandbox_id, account_id) values ($1, $2)", [
       sandboxId,
       f.openaiCredentialId,
