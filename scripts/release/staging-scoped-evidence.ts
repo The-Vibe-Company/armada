@@ -17,13 +17,6 @@ function records(jsonl: string, strict = false) {
 function correlationKeys(smoke: string) {
   const keys = new Set<string>();
   for (const record of records(smoke)) {
-    if (record.lane === "templates" && record.step === "template_model_account" && record.pass === false) {
-      const details = record.credentialList;
-      if (details && typeof details === "object" && "requestId" in details) {
-        const { requestId } = details;
-        if (typeof requestId === "string" && uuid.test(requestId)) keys.add(`requestId:${requestId}`);
-      }
-    }
     if (typeof record.step !== "string" || !diagnosticSteps.has(record.step)) continue;
     if (typeof record.operationId === "string" && uuid.test(record.operationId))
       keys.add(`operationId:${record.operationId}`);
