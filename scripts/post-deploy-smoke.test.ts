@@ -720,6 +720,7 @@ describe("preservation checks", () => {
       "default_recovery_wrong_golden",
       "default_recovery_expired",
       "scoped_pair",
+      "scoped_parent_timeout",
       "scoped_unsupported",
       "missing",
       "wrong",
@@ -735,13 +736,14 @@ describe("preservation checks", () => {
       "recovery_note_changes",
     ] as const) {
       test(`provider=${provider} fault=${fault} validates recovery without leaking material`, async () => {
-        const defaults = fault.startsWith("default_");
-        const scopes = fault === "scoped_pair";
+        const defaults = fault.startsWith("default_") || fault === "scoped_parent_timeout";
+        const scopes = fault === "scoped_pair" || fault === "scoped_parent_timeout";
         const scopeFlag = fault.startsWith("scoped_");
         const baselineScopeAccount = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
         const scopeAccount = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
         const childId = crypto.randomUUID();
         const scriptedParents = new Map<string, boolean>();
+        const scopedKeys = new Map<string, string>();
         let childExists = false;
         let childStopped = false;
         const scopeEvents = new Map<string, object[]>();
@@ -789,6 +791,11 @@ describe("preservation checks", () => {
                   ? []
                   : [{ id: recoverySandboxId, provider, externalRef: recoveryKey, status: "ready" }],
             });
+          }
+          if (scopes && call.path === "sandbox/list" && typeof call.body.externalRef === "string") {
+            const key = call.body.externalRef;
+            const id = scopedKeys.get(key);
+            return json({ sandboxes: id ? [{ id, provider, externalRef: key, status: "ready" }] : [] });
           }
           if (scopes && call.path === "sandbox/list") {
             expect(call.body.owner).toBe("me");
@@ -905,7 +912,19 @@ describe("preservation checks", () => {
             }
             if (call.path === "sandbox/status") {
               const stopped = scriptedParents.get(requestedId);
-              return json({ status: stopped ? "stopped" : "ready", providerState: stopped ? "stopped" : "active" });
+              return json({
+                id: requestedId,
+                externalRef: [...scopedKeys].find(([, id]) => id === requestedId)?.[0],
+                status: stopped ? "stopped" : "ready",
+                providerState: stopped ? "stopped" : "active",
+                prompt: null,
+                harness: "codex",
+                model: "scripted",
+                credentialId: scopeAccount,
+                credentialVersion: 7,
+                visibility: "private",
+                skills: requestedId === scriptedParents.keys().next().value ? receipts(pins) : [],
+              });
             }
           }
           if (call.path === "sandbox/launch") {
@@ -921,6 +940,11 @@ describe("preservation checks", () => {
                 expect(call.body).not.toHaveProperty("armadaAccess");
                 expect(call.body).not.toHaveProperty("armadaAccessVersion");
                 expect(call.body.skipSkillDefaults).toBe(true);
+              }
+              if (fault === "scoped_parent_timeout") {
+                expect(call.body.externalRef).toBe(call.body.idempotencyKey);
+                scopedKeys.set(String(call.body.externalRef), id);
+                throw new DOMException("timeout", "TimeoutError");
               }
               return json({
                 sandbox: {
@@ -1061,7 +1085,7 @@ describe("preservation checks", () => {
             ]),
           },
           scopeFlag
-            ? ["--work-preservation", "--scoped-access"]
+            ? ["--work-preservation", "--scoped-access", ...(defaults ? ["--default-skills"] : [])]
             : defaults
               ? ["--work-preservation", "--default-skills"]
               : ["--work-preservation"],
@@ -1074,9 +1098,14 @@ describe("preservation checks", () => {
             fetch: (url, init) => fake.io.fetch(url.replace(staging, env.ARMADA_URL), init),
           },
         );
-        const success = ["none", "default_policy", "default_empty", "scoped_pair", "scoped_unsupported"].includes(
-          fault,
-        );
+        const success = [
+          "none",
+          "default_policy",
+          "default_empty",
+          "scoped_pair",
+          "scoped_parent_timeout",
+          "scoped_unsupported",
+        ].includes(fault);
         expect(result).toBe(success);
         if (attemptedRecoveries.size) {
           expect(attemptedRecoveries.size).toBe(success ? 2 : 1);
@@ -1142,6 +1171,11 @@ describe("preservation checks", () => {
             .map((line) => JSON.parse(line))
             .filter((line) => line.lane === "scoped");
           expect(scriptedSteps.map((line) => line.step)).not.toContain("launch");
+          expect(
+            fake.calls.filter((call) => call.path === "sandbox/launch" && call.body.model === "scripted"),
+          ).toHaveLength(2);
+          for (const step of ["scoped_parent_configuration", "scoped_tool_evidence"])
+            expect(scriptedSteps.filter((line) => line.step === step && line.pass)).toHaveLength(2);
           expect(scriptedSteps.filter((line) => line.step === "scoped_parent_launch" && line.pass)).toHaveLength(2);
           expect(
             fake.receipts().filter((line) => line.step === "scoped_access" && line.model === "scripted"),
