@@ -368,6 +368,8 @@ export async function runTemplateSkillCase(item: TemplateSkillCase, io: Template
   } catch {
     passed = false;
   } finally {
+    const leftoverTemplates: string[] = [];
+    let leftoverVariable: string | undefined;
     await io.withCleanup(async () => {
       for (const record of templates.toReversed()) {
         if (record.sandboxId)
@@ -379,34 +381,43 @@ export async function runTemplateSkillCase(item: TemplateSkillCase, io: Template
             const list = await api<{ items: Template[] }>("templates/list");
             if (!Array.isArray(list?.items)) fail("invalid_response");
             const found = list.items.filter((entry) => entry.name === record.name);
-            if (found.length > 1) fail("cleanup_unconfirmed");
-            if (found[0]) record.resource = found[0];
+            // An empty list can race a create that committed after its client timed out.
+            if (found.length !== 1) fail("cleanup_unconfirmed");
+            record.resource = found[0];
           });
-        if (record.resource)
-          await cleanup("cleanup_template", async () => {
+        if (!record.attempted) continue;
+        const resource = record.resource;
+        const deleted =
+          resource &&
+          (await cleanup("cleanup_template", async () => {
             const result = await api<{ item: { status: string } }>("templates/delete", {
-              id: record.resource!.id,
-              expectedRevision: record.resource!.currentRevision,
+              id: resource.id,
+              expectedRevision: resource.currentRevision,
             });
             if (result?.item?.status !== "deleted") fail("cleanup_unconfirmed");
-          });
+          }));
+        if (!deleted) leftoverTemplates.push(record.name);
       }
       if (!variable && variableAttempted)
         await cleanup("reconcile_template_variable", async () => {
           const list = await api<{ items: (Resource & { name: string })[] }>("variables/list");
           if (!Array.isArray(list?.items)) fail("invalid_response");
           const found = list.items.filter((entry) => entry.name === key);
-          if (found.length > 1) fail("cleanup_unconfirmed");
-          if (found[0]) variable = found[0];
+          if (found.length !== 1) fail("cleanup_unconfirmed");
+          variable = found[0];
         });
-      if (variable)
-        await cleanup("cleanup_template_variable", async () => {
+      if (!variableAttempted) return;
+      const resource = variable;
+      const deleted =
+        resource &&
+        (await cleanup("cleanup_template_variable", async () => {
           const result = await api<{ item: { status: string } }>("variables/delete", {
-            id: variable!.id,
-            expectedVersion: variable!.version,
+            id: resource.id,
+            expectedVersion: resource.version,
           });
           if (result?.item?.status !== "deleted") fail("cleanup_unconfirmed");
-        });
+        }));
+      if (!deleted) leftoverVariable = key;
     });
     const leftoverSandboxIds = templates
       .filter((record) => record.sandboxId && !record.stopConfirmed)
@@ -423,9 +434,11 @@ export async function runTemplateSkillCase(item: TemplateSkillCase, io: Template
     io.out(
       JSON.stringify({
         step: "template_cleanup_summary",
-        pass: !leftoverSandboxIds.length && !uncertainLaunches.length,
+        pass: !leftoverSandboxIds.length && !uncertainLaunches.length && !leftoverTemplates.length && !leftoverVariable,
         leftoverSandboxIds,
         uncertainLaunches,
+        ...(leftoverTemplates.length ? { leftoverTemplates } : {}),
+        ...(leftoverVariable ? { leftoverVariable } : {}),
       }),
     );
   }
