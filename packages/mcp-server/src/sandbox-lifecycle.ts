@@ -270,6 +270,7 @@ export async function markOutputCollectorSupported(sql: Sql, id: string, generat
   return verified.rows.length > 0;
 }
 
+export const MODAL_LAUNCH_FAILURE = "modal_launch_failed";
 export const UNENROLLED_RESUME_STOP = "runtime_resume_unenrolled";
 const OPERATOR_CLEANUP_PREFIX = "Operator cleanup required:";
 
@@ -1414,6 +1415,13 @@ export function createSandboxLifecycle(
               and launch.sandbox_id=candidate.id and launch.generation=candidate.lifecycle_generation
               and launch.org_id=candidate.org_id and launch.request_owner_id=candidate.owner_id
           ))
+          -- This transition and the cleanup job commit together.
+          and not (candidate.provider='modal' and candidate.status='failed' and exists(
+            select 1 from public.sandbox_transitions failure
+            where failure.sandbox_id=candidate.id and failure.generation=candidate.lifecycle_generation
+              and failure.actor='lifecycle_runner' and failure.code=$5
+              and failure.from_status='starting' and failure.to_status='failed'
+          ))
           and not exists(select 1 from public.orchestrators parent where parent.sandbox_id=candidate.id)
           and not (candidate.status='failed' and candidate.stopped_at is not null)
           -- Only this worker understands the retained-resume handoff. Old
@@ -1442,7 +1450,7 @@ export function createSandboxLifecycle(
               and r.phase='dispatched' and r.receipt is null
           )) as interrupted_resume,
           exists(select 1 from public.members m where m.org_id=s.org_id and m.user_id=s.owner_id) as owner_is_member`,
-          [token, providerId, UNENROLLED_RESUME_STOP, `${OPERATOR_CLEANUP_PREFIX}%`],
+          [token, providerId, UNENROLLED_RESUME_STOP, `${OPERATOR_CLEANUP_PREFIX}%`, MODAL_LAUNCH_FAILURE],
         )
       ).rows[0];
       if (!row) return false;
