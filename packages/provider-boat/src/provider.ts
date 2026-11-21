@@ -57,10 +57,12 @@ import {
   type CreateSandboxRequest,
   type PromptRequestProviderEnum,
   type Sandbox,
+  SandboxLastSnapshotStatusEnum,
   type SandboxListResponse,
   SandboxStateEnum,
   type SavedSnapshot,
   type StopOperationResponse,
+  StopOperationStatusEnum,
 } from "@boatdev/sdk";
 import {
   parseVmResourceFiles,
@@ -97,6 +99,8 @@ const BOAT_STATES: Record<SandboxState, readonly string[]> = {
 
 const LOG_STATES = new Set<string>(Object.values(SandboxStateEnum));
 const MAPPED_STATES = new Set(Object.values(BOAT_STATES).flat());
+const STOP_STATUSES = new Set<string>(Object.values(StopOperationStatusEnum));
+const SNAPSHOT_STATUSES = new Set<string>(Object.values(SandboxLastSnapshotStatusEnum));
 function trace(fields: Record<string, unknown>): void {
   try {
     console.info(JSON.stringify({ ...fields, at: new Date().toISOString() }));
@@ -121,11 +125,27 @@ function sandboxState(providerState: string): SandboxState {
   return "starting";
 }
 
+function stopInFlight(status: StopOperationStatusEnum | undefined) {
+  return status === StopOperationStatusEnum.Pending || status === StopOperationStatusEnum.Failing;
+}
+
 function archivedRetention(sandbox: Sandbox) {
   if (sandbox.dataExpiredAt || sandbox.snapshots === false) return "unconfirmed";
-  if (sandbox.stop || sandbox.lastSnapshotStatus === "queued" || sandbox.lastSnapshotStatus === "in_progress")
+  const stopStatus = sandbox.stop?.status;
+  const snapshotStatus = sandbox.lastSnapshotStatus;
+  if (
+    stopInFlight(stopStatus) ||
+    snapshotStatus === SandboxLastSnapshotStatusEnum.Queued ||
+    snapshotStatus === SandboxLastSnapshotStatusEnum.InProgress
+  )
     return "pending";
-  if (sandbox.snapshotAvailable !== true || (sandbox.lastSnapshotStatus && sandbox.lastSnapshotStatus !== "completed"))
+  if (
+    (sandbox.stop &&
+      stopStatus !== StopOperationStatusEnum.Completed &&
+      stopStatus !== StopOperationStatusEnum.Superseded) ||
+    sandbox.snapshotAvailable !== true ||
+    (snapshotStatus && snapshotStatus !== SandboxLastSnapshotStatusEnum.Completed)
+  )
     return "unconfirmed";
   const stoppedAt = sandbox.stoppedAt?.getTime();
   const verifiedAt = (sandbox.snapshotVerifiedAt ?? sandbox.snapshotCompletedAt)?.getTime();
@@ -343,9 +363,8 @@ export function createBoatProvider(options: BoatProviderOptions): BoatProvider &
       signal.throwIfAborted();
       const observed: StopOperationResponse = await call(() => api.getStop({ sandboxId, stopId }, { signal }));
       if (observed.id !== sandboxId || observed.stop?.id !== stopId) throw unexpectedAnswer("stop operation");
-      if (observed.stop.status === "completed") return;
-      if (!["pending", "failing"].includes(observed.stop.status))
-        throw invalidRequest("Sandbox archival was superseded.");
+      if (observed.stop.status === StopOperationStatusEnum.Completed) return;
+      if (!stopInFlight(observed.stop.status)) throw invalidRequest("Sandbox archival was superseded.");
       await sleep(1000);
     }
     throw invalidRequest("Sandbox archival remains unconfirmed.");
@@ -605,7 +624,28 @@ export function createBoatProvider(options: BoatProviderOptions): BoatProvider &
         ),
       );
       if (!response.sandbox?.id || response.sandbox.id !== sandboxId) throw unexpectedAnswer("sandbox");
-      return sandboxInfo(response.sandbox);
+      const current = response.sandbox;
+      const info = sandboxInfo(current);
+      if (info.retainedSnapshot && info.retainedSnapshot !== "usable") {
+        const stopStatus = current.stop?.status;
+        const snapshotStatus = current.lastSnapshotStatus;
+        const stoppedAt = current.stoppedAt?.getTime();
+        const verifiedAt = (current.snapshotVerifiedAt ?? current.snapshotCompletedAt)?.getTime();
+        trace({
+          event: "boat_retention_unconfirmed",
+          providerSandboxId: sandboxId,
+          retention: info.retainedSnapshot,
+          stopStatus: stopStatus == null || STOP_STATUSES.has(stopStatus) ? (stopStatus ?? null) : "unknown",
+          snapshotStatus:
+            snapshotStatus == null || SNAPSHOT_STATUSES.has(snapshotStatus) ? (snapshotStatus ?? null) : "unknown",
+          snapshotAvailable: current.snapshotAvailable === true,
+          snapshotsDisabled: current.snapshots === false,
+          dataExpired: Boolean(current.dataExpiredAt),
+          stoppedAt: Number.isFinite(stoppedAt) ? stoppedAt : null,
+          verifiedAt: Number.isFinite(verifiedAt) ? verifiedAt : null,
+        });
+      }
+      return info;
     },
 
     async resumeBestEffort(sandboxId: string): Promise<void> {
