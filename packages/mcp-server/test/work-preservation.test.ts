@@ -1305,14 +1305,18 @@ test.each(["missing proof", "rolled-back admission", "lost commit response", "ve
     const provider = fakeBoat().provider;
     const detached = () => db.query("select archive_id from native_drain_recovery where sandbox_id=$1", [sandboxId]);
     const state = async () =>
-      (await db.query("select status, lifecycle_generation::int as generation from sandboxes where id=$1", [sandboxId]))
-        .rows[0];
+      (
+        await db.query(
+          "select status, lifecycle_generation::int as generation, native_boat_drain_operation_id from sandboxes where id=$1",
+          [sandboxId],
+        )
+      ).rows[0];
     const remove = mock(async () => {
       if (scenario === "verified proof") {
         expect((await detached()).rows).toEqual([{ archive_id: archiveId }]);
-        expect(await state()).toEqual({ status: "stopped", generation: 5 });
+        expect(await state()).toEqual({ status: "stopped", generation: 5, native_boat_drain_operation_id: null });
       }
-      return { status: "deleted" as const };
+      return { status: "deleted" as const, operationId: "deletion-operation" };
     });
     provider.delete = remove;
     if (scenario === "missing proof")
@@ -1339,12 +1343,12 @@ test.each(["missing proof", "rolled-back admission", "lost commit response", "ve
       if (scenario === "verified proof") {
         expect(await deletion).toEqual({ id: sandboxId, status: "deleted" });
         expect(remove).toHaveBeenCalledTimes(1);
-        expect(await state()).toEqual({ status: "deleted", generation: 6 });
+        expect(await state()).toEqual({ status: "deleted", generation: 6, native_boat_drain_operation_id: null });
         expect((await detached()).rows).toEqual([{ archive_id: archiveId }]);
       } else if (scenario === "lost commit response") {
         await expect(deletion).rejects.toThrow("Delete admission commit response lost");
         expect(remove).not.toHaveBeenCalled();
-        expect(await state()).toEqual({ status: "stopped", generation: 5 });
+        expect(await state()).toEqual({ status: "stopped", generation: 5, native_boat_drain_operation_id: null });
         expect((await detached()).rows).toEqual([{ archive_id: archiveId }]);
         expect((await db.query("select activity_lease_id from sandboxes where id=$1", [sandboxId])).rows[0]).toEqual({
           activity_lease_id: expect.any(String),
@@ -1352,7 +1356,7 @@ test.each(["missing proof", "rolled-back admission", "lost commit response", "ve
       } else {
         await expect(deletion).rejects.toMatchObject({ code: "sandbox_not_ready" });
         expect(remove).not.toHaveBeenCalled();
-        expect(await state()).toEqual({ status: "stopped", generation: 4 });
+        expect(await state()).toEqual({ status: "stopped", generation: 4, native_boat_drain_operation_id: null });
         expect((await detached()).rows).toEqual([]);
       }
     } finally {
@@ -1421,8 +1425,11 @@ test.each([
   "lost settlement",
   "unavailable provider",
   "Boat pending",
+  "Boat stale receipt",
+  "Boat lost evidence write",
+  "Boat lost evidence acknowledgement",
 ] as const)("native drain replay handles %s without repeating work preservation", async (scenario) => {
-  const providerId = scenario === "Boat pending" ? "boat" : "modal";
+  const providerId = scenario.startsWith("Boat ") ? "boat" : "modal";
   const { db, people, sandboxId, archiveId } = await seedNativeDrainReceipt(undefined, providerId);
   const caller: Caller = { via: "service", userId: people.owner, orgs: [{ orgId: people.org, role: "member" }] };
   const sql = bunLikeSql(db);
@@ -1436,11 +1443,25 @@ test.each([
     if (!retry && scenario === "lost admission reply") throw new Error("Admission reply lost");
     return result;
   };
+  const query = sql.query;
+  sql.query = async <T>(statement: string, params?: unknown[]) => {
+    if (statement.includes("set native_boat_drain_operation_id")) {
+      if (scenario === "Boat lost evidence write") throw new Error("Operation evidence write unavailable");
+      if (scenario === "Boat lost evidence acknowledgement") {
+        await query(statement, params);
+        throw new Error("Operation evidence write reply lost");
+      }
+    }
+    return query<T>(statement, params);
+  };
   const provider: Provider = {
     ...fakeBoat().provider,
     id: providerId,
     delete: mock(async () => {
       providerCalled = true;
+      if (scenario === "Boat stale receipt")
+        await db.query("update sandboxes set activity_until=now()-interval '1 second' where id=$1", [sandboxId]);
+      if (providerId === "boat") return { status: "pending", operationId: "deletion-operation" };
       if (!retry && scenario === "lost provider reply") throw new Error("Provider reply lost");
       if (retry && scenario === "unavailable provider")
         throw new ProviderError({
@@ -1450,20 +1471,28 @@ test.each([
           retryable: true,
         });
       return {
-        status: scenario === "Boat pending" || (!retry && scenario === "unavailable provider") ? "pending" : "deleted",
+        status: !retry && scenario === "unavailable provider" ? "pending" : "deleted",
       };
     }),
   };
   const { sandboxes } = createSqlData(sql)(caller);
   const drain = () =>
     deleteSandboxWithActivity(sandboxes, { resolve: async () => provider }, sandboxId, "native-drain");
-  await expect(drain()).rejects.toThrow();
+  if (scenario === "Boat stale receipt") {
+    await expect(drain()).rejects.toMatchObject({ code: "sandbox_not_ready" });
+  } else if (scenario === "Boat lost evidence write") {
+    await expect(drain()).rejects.toThrow("Operation evidence write unavailable");
+  } else if (scenario === "Boat lost evidence acknowledgement") {
+    await expect(drain()).rejects.toThrow("Operation evidence write reply lost");
+  } else {
+    await expect(drain()).rejects.toThrow();
+  }
   retry = true;
   const callsBeforeRetry = scenario === "lost admission reply" ? 0 : 1;
   await expect(drain()).rejects.toMatchObject({ code: "sandbox_not_ready" });
   expect(provider.delete).toHaveBeenCalledTimes(callsBeforeRetry);
   await db.query("update sandboxes set activity_until=now()-interval '1 second' where id=$1", [sandboxId]);
-  if (scenario === "Boat pending") {
+  if (providerId === "boat") {
     await expect(drain()).rejects.toMatchObject({ code: "sandbox_not_ready" });
     expect(provider.delete).toHaveBeenCalledTimes(callsBeforeRetry);
   } else if (scenario === "unavailable provider") {
@@ -1472,18 +1501,24 @@ test.each([
     await expect(drain()).resolves.toEqual({ id: sandboxId, status: "deleted" });
     await expect(drain()).resolves.toEqual({ id: sandboxId, status: "deleted" });
   }
-  if (scenario !== "Boat pending") {
+  if (providerId !== "boat") {
     expect(provider.delete).toHaveBeenCalledTimes(callsBeforeRetry + 1);
     expect(provider.delete).toHaveBeenLastCalledWith({ sandboxId: `bx_${sandboxId}`, generation: 6 });
   }
   const { rows } = await db.query(
-    `select s.status,s.native_drain_pending,r.archive_id
+    `select s.status,s.native_drain_pending,s.native_boat_drain_operation_id,r.archive_id
        from sandboxes s join native_drain_recovery r on r.sandbox_id=s.id where s.id=$1`,
     [sandboxId],
   );
-  const pending = scenario === "Boat pending" || scenario === "unavailable provider";
+  const pending = providerId === "boat" || scenario === "unavailable provider";
   expect(rows).toEqual([
-    { status: pending ? "stopped" : "deleted", native_drain_pending: pending, archive_id: archiveId },
+    {
+      status: pending ? "stopped" : "deleted",
+      native_drain_pending: pending,
+      native_boat_drain_operation_id:
+        scenario === "Boat pending" || scenario === "Boat lost evidence acknowledgement" ? "deletion-operation" : null,
+      archive_id: archiveId,
+    },
   ]);
 });
 

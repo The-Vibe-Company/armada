@@ -5295,6 +5295,7 @@ export type Database = {
           outputs_retained_generation: number | null;
           outputs_attempt_count: number;
           native_drain_pending: boolean;
+          native_boat_drain_operation_id: string | null;
         };
         Insert: {
           id?: string;
@@ -5373,6 +5374,7 @@ export type Database = {
           outputs_retained_generation?: number | null;
           outputs_attempt_count?: number;
           native_drain_pending?: boolean;
+          native_boat_drain_operation_id?: string | null;
         };
         Update: {
           id?: string;
@@ -5451,6 +5453,7 @@ export type Database = {
           outputs_retained_generation?: number | null;
           outputs_attempt_count?: number;
           native_drain_pending?: boolean;
+          native_boat_drain_operation_id?: string | null;
         };
         Relationships: [
           {

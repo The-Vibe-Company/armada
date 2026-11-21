@@ -888,7 +888,7 @@ export async function completeSandboxDeletion(
 ) {
   const { rows } = await tx.query<{ generation: string }>(
     `update public.sandboxes s set
-       lifecycle_generation=s.lifecycle_generation+1, native_drain_pending=false,
+       lifecycle_generation=s.lifecycle_generation+1, native_drain_pending=false, native_boat_drain_operation_id=null,
        activity_lease_id=null, activity_until=null, preservation_note=null,
        usage_runtime_seconds=case when s.stopped_at is null then null else s.usage_runtime_seconds end,
        usage_running_since=case when s.stopped_at is null then null else s.usage_running_since end,
