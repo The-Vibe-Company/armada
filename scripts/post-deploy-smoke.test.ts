@@ -1453,6 +1453,7 @@ test.each(["canary echo", "late create"] as const)("vault rejects %s and cleans 
     pass: false,
     leftoverSecrets: [String(fake.calls.find((call) => call.path === "secrets/set")?.body.name)],
     leftoverVariables: [],
+  });
 });
 
 type LifecycleFault =
