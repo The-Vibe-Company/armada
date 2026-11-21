@@ -869,7 +869,7 @@ async function seedNativeDrainReceipt(ciphertext = new Uint8Array([21, 34, 55]))
   return { db, people, sandboxId, archiveId, ciphertext, copy };
 }
 
-async function nativeExecFixture(provider: Provider, placement: string) {
+async function nativeExecFixture(provider: Provider, placement: string, onQuery?: (statement: string) => void) {
   const { db, people, sharedGoldenId, modalGoldenId, openaiCredentialId } = sharedDatabase();
   const sandboxId = crypto.randomUUID();
   await db.query(
@@ -888,7 +888,7 @@ async function nativeExecFixture(provider: Provider, placement: string) {
   const caller: Caller = { via: "service", userId: people.owner, orgs: [{ orgId: people.org, role: "admin" }] };
   const context: ToolContext = {
     caller,
-    data: createSqlData(bunLikeSql(db))(caller),
+    data: createSqlData(bunLikeSql(db, onQuery))(caller),
     launchCredentials: {
       async resolve() {
         throw new Error("Exec does not launch a sandbox.");
@@ -972,12 +972,36 @@ test("ordinary native exec refuses newly tainted Modal workspaces before provide
   expect(exec).not.toHaveBeenCalled();
 });
 
-test.each(["lost command response", "failed redaction", "failed settlement"])(
-  "ordinary native exec keeps the Modal lease after %s",
+async function handoffWithCleanExecCapture(sandboxId: string) {
+  const { db } = sharedDatabase();
+  await db.query(
+    `update sandboxes set status='stopped',stopped_at=now(),activity_lease_id=null,activity_until=null,
+         lifecycle_generation=lifecycle_generation+1,stop_generation=1,preservation_stop_generation=1
+       where id=$1`,
+    [sandboxId],
+  );
+  await db.query(
+    `insert into sandbox_native_preservation_receipts
+         (sandbox_id,generation,stop_generation,capture_generation,capture_stop_generation)
+       select id,lifecycle_generation,1,lifecycle_generation,1 from sandboxes where id=$1`,
+    [sandboxId],
+  );
+  return db.query("select copy_native_drain_recovery(id,lifecycle_generation) as outcome from sandboxes where id=$1", [
+    sandboxId,
+  ]);
+}
+
+test.each(["lost command response", "failed redaction", "failed evidence insert", "failed evidence delete"])(
+  "ordinary native Modal exec preserves the admission and handoff invariants after %s",
   async (failure) => {
     const fake = fakeBoat();
     const provider = { ...fake.provider, id: "modal" };
-    const { db, context, sandboxId, invoke } = await nativeExecFixture(provider, crypto.randomUUID());
+    const { db, context, sandboxId, invoke } = await nativeExecFixture(provider, crypto.randomUUID(), (statement) => {
+      if (failure === "failed evidence insert" && statement.includes("insert into public.sandbox_native_exec_attempts"))
+        throw new Error(failure);
+      if (failure === "failed evidence delete" && statement.includes("delete from public.sandbox_native_exec_attempts"))
+        throw new Error(failure);
+    });
     const exec = provider.exec;
     let signal: AbortSignal | undefined;
     provider.exec = async (request) => {
@@ -990,25 +1014,54 @@ test.each(["lost command response", "failed redaction", "failed settlement"])(
         throw new Error(failure);
       };
     }
-    if (failure === "failed settlement") {
-      const update = context.data.sandboxes.update;
-      context.data.sandboxes.update = async (id, patch) => {
-        if (patch.finishActivity) throw new Error(failure);
-        return update(id, patch);
-      };
-    }
 
     const result = await invoke("exec", { id: sandboxId, command: "edit workspace" });
-    expect(signal).toBeInstanceOf(AbortSignal);
     expect(result.isError).toBe(true);
-    expect(result.content).toContainEqual({ type: "text", text: "error code: outcome_unknown" });
-    const lease = (
-      await db.query<{ active: boolean }>(
-        "select activity_lease_id is not null and activity_until > now() as active from sandboxes where id=$1",
-        [sandboxId],
-      )
-    ).rows[0];
-    expect(lease?.active).toBe(true);
+    const beforeDispatch = failure === "failed evidence insert";
+    if (beforeDispatch) expect(signal).toBeUndefined();
+    else {
+      expect(signal).toBeInstanceOf(AbortSignal);
+      expect(result.content).toContainEqual({ type: "text", text: "error code: outcome_unknown" });
+    }
+    const lease = await db.query<{ active: boolean; generation: number }>(
+      `select activity_lease_id is not null and activity_until > now() as active,
+         lifecycle_generation::integer as generation from sandboxes where id=$1`,
+      [sandboxId],
+    );
+    expect(lease.rows).toEqual([{ active: !beforeDispatch, generation: beforeDispatch ? 1 : 2 }]);
+    const handoff = await handoffWithCleanExecCapture(sandboxId);
+    expect(handoff.rows).toEqual([{ outcome: beforeDispatch ? "clean" : "ineligible" }]);
+  },
+);
+
+test.each(["foreground", "detached", "timed out", "unknown exit", "expired settlement"] as const)(
+  "native handoff accounts for a %s exec after the activity window",
+  async (outcome) => {
+    const fake = fakeBoat();
+    const provider: Provider = {
+      ...fake.provider,
+      async exec(request) {
+        if (outcome === "detached" && request.command === "edit workspace") return { detached: true, processId: 42 };
+        if (outcome === "expired settlement") {
+          await db.query("update sandboxes set activity_until=now()-interval '1 second' where id=$1", [sandboxId]);
+        }
+        const result = await fake.provider.exec(request);
+        return result.detached
+          ? result
+          : { ...result, timedOut: outcome === "timed out", exitCode: outcome === "unknown exit" ? null : 0 };
+      },
+    };
+    const { db, sandboxId, invoke } = await nativeExecFixture(provider, crypto.randomUUID());
+    const reply = await invoke("exec", { id: sandboxId, command: "edit workspace" });
+    if (outcome === "foreground") expect(reply.structuredContent).toMatchObject({ exitCode: 0 });
+    if (outcome === "detached") {
+      await db.query("update sandboxes set activity_until=now()-interval '1 second' where id=$1", [sandboxId]);
+      const next = await invoke("exec", { id: sandboxId, command: "inspect workspace" });
+      expect(next.structuredContent).toMatchObject({ exitCode: 0 });
+    }
+
+    const observed = await handoffWithCleanExecCapture(sandboxId);
+    expect(observed.rows).toEqual([{ outcome: outcome === "foreground" ? "clean" : "ineligible" }]);
   },
 );
 

@@ -77,6 +77,7 @@ export interface ServerSandboxPatch extends SandboxPatch {
   deleteCompleted?: true;
   expireAfterExtension?: true;
   nativeExecAdmission?: { provider: SandboxRecord["provider"]; placement: string };
+  nativeExecCompleted?: true;
   nativeRetentionRefusal?: string;
   nativeResumeAdmission?: string;
   nativeSendAdmission?: ServerSandboxPatch["nativeChildSend"];
@@ -1065,6 +1066,13 @@ export function createSqlData(
             and s.expires_at>clock_timestamp() and s.stop_requested_at is null
             and not s.application_secret_tainted`;
         }
+        if (patch.nativeExecCompleted)
+          fence += " and s.activity_until>clock_timestamp() and s.stop_requested_at is null";
+        if (patch.renewActivity)
+          fence += ` and (s.activity_until>clock_timestamp() or not exists(
+            select 1 from public.sandbox_native_exec_attempts e
+            where e.sandbox_id=s.id and e.generation=s.lifecycle_generation
+          ))`;
         // A read-only reconciler may overlap list readiness. Admission can supersede
         // that observation, but never a claimed stop or an expired/starting sandbox.
         // The generation CAS also fences its stop-claim and late publication.
@@ -1169,6 +1177,33 @@ export function createSqlData(
                     ? "runtime_retained_stop"
                     : "owner_stop_admitted",
               });
+            }
+            return updated;
+          });
+        } else if (patch.nativeExecAdmission || patch.nativeExecCompleted) {
+          const { activityToken, expectedGeneration } = patch;
+          if (
+            !sql.transaction ||
+            !activityToken ||
+            expectedGeneration === undefined ||
+            (patch.nativeExecAdmission ? !admission : !patch.finishActivity)
+          )
+            throw new DataError("Native exec requires its activity generation and token.");
+          result = await sql.transaction(async (tx) => {
+            const updated = await applyUpdate(tx);
+            if (!updated.rows[0]?.id) return updated;
+            if (patch.nativeExecAdmission) {
+              await tx.query("insert into public.sandbox_native_exec_attempts(sandbox_id,generation) values($1,$2)", [
+                id,
+                expectedGeneration + 1,
+              ]);
+            } else {
+              const settled = await tx.query(
+                `delete from public.sandbox_native_exec_attempts
+                 where sandbox_id=$1 and generation=$2 returning sandbox_id`,
+                [id, expectedGeneration],
+              );
+              if (!settled.rows.length) throw new DataError("Native exec evidence changed before completion.");
             }
             return updated;
           });
