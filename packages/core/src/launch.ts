@@ -28,6 +28,7 @@ import { runtimeLaunch } from "./launch-runtime.ts";
 import { LaunchSecretRefusal, RuntimeLaunchSecretRefusal } from "./launch-secrets.ts";
 import type { LaunchStage } from "./launch-stages.ts";
 import { isLaunchTtlSeconds, validateLaunchSkillPins } from "./launch-validation.ts";
+import { capabilities } from "./machine-capabilities.ts";
 import { type MachineSize, resolveMachineSize } from "./machine-size.ts";
 import { type ModelChoice, resolveModelChoice } from "./models.ts";
 import { OPENCODE_CONNECTION_PROVIDER, OPENCODE_ENDPOINT_ENV, parseOpenCodeEndpoint } from "./opencode-endpoint.ts";
@@ -392,7 +393,7 @@ async function resolveGoldenLaunch(
   const checkedTtl = checkTtl(golden.provider, request.ttlSeconds ?? DEFAULT_LAUNCH_TTL_SECONDS);
   const ttlSeconds = options.privateParent
     ? checkedTtl
-    : Math.min(checkedTtl, PROVIDER_LIMITS[golden.provider].maxTtlSeconds - SANDBOX_STOP_MARGIN_SECONDS);
+    : Math.min(checkedTtl, capabilities(golden.provider).maxTtlSeconds - SANDBOX_STOP_MARGIN_SECONDS);
   const extensionHeadroom = options.extensionHeadroomSeconds ?? DEFAULT_SANDBOX_EXTENSION_HEADROOM_SECONDS;
   if (
     !Number.isSafeInteger(extensionHeadroom) ||
@@ -422,9 +423,9 @@ async function resolveGoldenLaunch(
   );
   const snapshot = golden.providerSnapshotId;
   if (!snapshot) throw new GoldenError("conflict", `Golden '${golden.name}' has no snapshot yet.`);
-  if (golden.provider === "modal") timing.mark("launch_plan");
+  if (launchPlacement.recordLaunchTimings) timing.mark("launch_plan");
   const credentials = await stores.credentials.resolve(actor, harness, request.credentialId, options.credentialVersion);
-  if (golden.provider === "modal") timing.mark("credential_resolution");
+  if (launchPlacement.recordLaunchTimings) timing.mark("credential_resolution");
   if (runtime && !credentials.binding)
     throw new VaultError("credential_binding_required", LAUNCH_CREDENTIAL_BINDING_GUIDANCE);
   if (credentials.morphModels) {
