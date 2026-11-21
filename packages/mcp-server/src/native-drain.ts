@@ -5,6 +5,7 @@ import { createSqlData } from "./data.ts";
 import { providerRegistry } from "./http.ts";
 import { createModalIntegration } from "./modal-integration.ts";
 import { createObservedBoatProvider } from "./observed-boat.ts";
+import { createSandboxArmadaAccess } from "./sandbox-armada-access.ts";
 import { deleteSandboxWithActivity } from "./sandbox-rest-controls.ts";
 
 export function configureNativeDrain(
@@ -17,16 +18,20 @@ export function configureNativeDrain(
   const publicUrl = env.ARMADA_PUBLIC_URL;
   if (!encryptionKey || !publicUrl) throw new Error("Native drain provider configuration is incomplete.");
   const vault = createSqlVaultStore(sql);
+  const scopedAccess = createSandboxArmadaAccess({ sql, encryptionKey, publicUrl });
   let modal: ReturnType<typeof createModalIntegration> | undefined;
   const modalIntegration = () => (modal ??= createModalIntegration({ sql, vault, encryptionKey, publicUrl }));
   const deploymentId = env.ARMADA_BOAT_DEPLOYMENT_ID?.trim();
   const providers = providerRegistry({
     vault,
     encryptionKey,
-    providerFor: (apiKey) => createObservedBoatProvider({ apiKey, ...(deploymentId ? { deploymentId } : {}) }),
+    providerFor: (apiKey) =>
+      scopedAccess.wrap(createObservedBoatProvider({ apiKey, ...(deploymentId ? { deploymentId } : {}) })),
     modalTokensFor: async (target, caller) => (await modalIntegration()).modalTokensFor(target, caller),
-    modalProviderFor: async (tokens, binding, context) =>
-      (await modalIntegration()).modalProviderFor(tokens, binding, context),
+    modalProviderFor: async (tokens, binding, context) => {
+      const ports = await (await modalIntegration()).modalProviderFor(tokens, binding, context);
+      return { ...ports, provider: scopedAccess.wrap(ports.provider) };
+    },
   });
   const data = createSqlData(sql);
   const remove = async (row: { id: string; org_id: string; role: MemberRole | null }) => {
