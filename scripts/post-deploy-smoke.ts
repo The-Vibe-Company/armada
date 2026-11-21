@@ -1378,7 +1378,7 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
                 return;
               const observed = { ...status, provider: item.provider };
               if (scope && !matchesParentConfiguration(observed)) return;
-              if (defaultSkills) verifyReceipts(status.skills, dirty ? [] : defaultPins.get(index)!);
+              if (defaultSkills && !scope) verifyReceipts(status.skills, dirty ? [] : defaultPins.get(index)!);
               return { sandbox: observed, golden: { id: goldenId } };
             }
           : undefined;

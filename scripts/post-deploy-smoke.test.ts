@@ -736,7 +736,7 @@ describe("preservation checks", () => {
       "recovery_note_changes",
     ] as const) {
       test(`provider=${provider} fault=${fault} validates recovery without leaking material`, async () => {
-        const defaults = fault.startsWith("default_");
+        const defaults = fault.startsWith("default_") || fault === "scoped_parent_timeout";
         const scopes = fault === "scoped_pair" || fault === "scoped_parent_timeout";
         const scopeFlag = fault.startsWith("scoped_");
         const baselineScopeAccount = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
@@ -923,6 +923,7 @@ describe("preservation checks", () => {
                 credentialId: scopeAccount,
                 credentialVersion: 7,
                 visibility: "private",
+                skills: requestedId === scriptedParents.keys().next().value ? receipts(pins) : [],
               });
             }
           }
@@ -1084,7 +1085,7 @@ describe("preservation checks", () => {
             ]),
           },
           scopeFlag
-            ? ["--work-preservation", "--scoped-access"]
+            ? ["--work-preservation", "--scoped-access", ...(defaults ? ["--default-skills"] : [])]
             : defaults
               ? ["--work-preservation", "--default-skills"]
               : ["--work-preservation"],
