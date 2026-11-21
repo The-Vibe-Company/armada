@@ -1376,6 +1376,7 @@ test.each([
   "expired adjacent dispatch with unrelated activity",
   "expired adjacent dispatch with an obsolete runtime command",
   "adjacent dispatch without a deadline or evidence",
+  "adjacent dispatch without a deadline and with an obsolete runtime command",
 ] as const)("a failed receipt write rolls back retirement after %s", async (scenario) => {
   const f = await fixture();
   const { db, people, store } = f;
@@ -1395,7 +1396,7 @@ test.each([
     },
   );
   if (uncertain) {
-    const missingDeadline = scenario === "adjacent dispatch without a deadline or evidence";
+    const missingDeadline = scenario.startsWith("adjacent dispatch without a deadline");
     const adjacent = missingDeadline || scenario.startsWith("expired adjacent");
     const activityId = scenario === "expired adjacent dispatch with unrelated activity" ? crypto.randomUUID() : null;
     await db.query(
@@ -1410,7 +1411,7 @@ test.each([
         missingDeadline ? null : adjacent ? "-infinity" : "infinity",
       ],
     );
-    if (scenario === "expired adjacent dispatch with an obsolete runtime command") {
+    if (scenario.endsWith("with an obsolete runtime command")) {
       await db.query(
         `insert into runtime_enrolments (sandbox_id,lifecycle_generation,epoch,runtime_hash)
          values ($1,3,2,repeat('a',64))`,
