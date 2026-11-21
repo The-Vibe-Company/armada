@@ -1226,18 +1226,26 @@ test("native invalid model settings are rejected before a durable prompt is queu
 
 test("a native request with its own durable mutating command stays uncertain rather than replaying", async () => {
   const input = { id: ids[1]!, request_id: requests[0]!, prompt: "possibly accepted instruction" };
+  await sql.query("update sandboxes set provider='boat' where id=$1", [input.id]);
   await queue.accept(caller, input);
   let calls = 0;
-  queue.setDispatch(async () => {
+  const worker = sharedRunner(async () => {
     calls++;
     await recordFollowupCommand(input);
     throw Error("reply lost");
   });
-  expect(await queue.reconcileOne(new AbortController().signal)).toBe(true);
-  await queue.drain();
-  expect(await queue.reconcileOne(new AbortController().signal)).toBe(false);
+  const signal = new AbortController().signal;
+  expect(await worker.reconcileOne(signal)).toBe(true);
+  await worker.drain();
+  expect(await worker.reconcileOne(signal)).toBe(false);
   expect(calls).toBe(1);
-  expect((await database().query("select * from account_agent_reservations")).rows).toHaveLength(1);
+  expect(await queue.status(caller, input.id, input.request_id)).toMatchObject({
+    failed: true,
+    message: "Dispatch outcome uncertain; inspect sandbox history before resending.",
+  });
+  expect((await sql.query("select sandbox_id from account_agent_reservations")).rows).toEqual([
+    { sandbox_id: input.id },
+  ]);
 });
 
 test("a restarted Docker runner waits for the claim lease before recovering a dispatch without intent", async () => {
@@ -1613,22 +1621,20 @@ test.each(["boat", "modal", "docker"])(
       [input.id, provider],
     );
     await queue.accept(caller, input);
-    await database().query(
-      "update account_turn_queue set state='dispatching',dispatch_generation=1,dispatch_until=now()-interval '1 second' where sandbox_id=$1",
-      [input.id],
-    );
+    const original = await claimTurn(input.request_id);
+    expect(await admitClaimedAccountTurn(sql, original)).not.toBeNull();
     await recordFollowupCommand(input);
     await database().query(
       "update sandboxes set status='stopped',lifecycle_generation=2,activity_lease_id='30000000-0000-4000-8000-000000000001' where id=$1",
       [input.id],
     );
+    await sql.query("update account_turn_queue set dispatch_until='-infinity' where sandbox_id=$1", [input.id]);
+    await sql.query("update jobs set lease_until='-infinity' where id=$1", [original.job.id]);
     let calls = 0;
-    queue.setDispatch(async () => {
+    await sharedDispatcher(async () => {
       calls++;
       return { promptId: "unwanted_turn" };
-    });
-    await queue.reconcileOne(new AbortController().signal);
-    await queue.drain();
+    })();
     expect(calls).toBe(0);
     expect(await queue.status(caller, input.id, input.request_id)).toMatchObject({ failed: true });
   },
