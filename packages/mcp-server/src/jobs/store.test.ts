@@ -644,8 +644,24 @@ test("an interrupted Modal failure handoff rolls back the failure and delete job
   expect(await successor.reconcileOne(signal)).toBe(true);
   await successor.drain();
   expect((await f.db.query("select status from sandboxes where id=$1", [id])).rows).toEqual([{ status: "failed" }]);
-  expect(await successor.reconcileOne(signal)).toBe(true);
-  await successor.drain();
+  const factory = await registeredJobsLane();
+  const cleanup = factory({
+    sql: f.sql,
+    jobs: createJobsStore(f.sql, launchEncryptionKey),
+    config: {},
+    options: {},
+    control: {},
+    langfuse: { exportJob: { concurrency: 1 } },
+    webhooks: {},
+    outputs: { enqueueCaptures: async () => {}, drain: async () => {} },
+    modal: {
+      launchCleanupJob: createModalLaunchCleanupJob(f.sql, async () => {
+        throw new Error("Cleanup without an allocation must not open a provider client.");
+      }),
+    },
+  } as unknown as Parameters<LaneFactory>[0])!;
+  expect(await cleanup.reconcileOne(signal)).toBe(true);
+  await cleanup.drain();
   expect((await f.db.query("select state from jobs where kind='delete' and sandbox_id=$1", [id])).rows).toEqual([
     { state: "done" },
   ]);
@@ -2369,13 +2385,17 @@ test("a failed completion transaction replays the same job and preserves its pri
   ]);
 });
 
-test("the registered jobs lane retries a lost seed reply and preserves the schedule across a restart", async () => {
-  const { db, sql, store } = await fixture();
+async function registeredJobsLane() {
   await import("../modules.ts");
   const { jobsModule } = await import("../server-worker-modules.ts");
   const managed = new Map<string, LaneFactory>();
   jobsModule({ workers: { managed } } as Parameters<typeof jobsModule>[0]);
-  const factory = managed.get("jobs")!;
+  return managed.get("jobs")!;
+}
+
+test("the registered jobs lane retries a lost seed reply and preserves the schedule across a restart", async () => {
+  const { db, sql, store } = await fixture();
+  const factory = await registeredJobsLane();
   let purges = 0;
   let seeds = 0;
   const services = {
