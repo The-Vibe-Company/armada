@@ -637,8 +637,13 @@ for (const mode of [
               } else expect(body).toEqual(templateRequests.get(p));
               expect(body.revision).toBe(2);
               expect(body.prompt).toBeUndefined();
-              if (["template_transport_recovery", "template_lost_identity"].includes(mode) && n === 1)
+              if (
+                (["template_transport_recovery", "template_lost_identity"].includes(mode) && n === 1) ||
+                (mode === "template_timeout_unknown" && n > 2)
+              )
                 throw new Error("transport_placeholder");
+              if (mode === "template_timeout_unknown" && n === 2)
+                return new Response("{", { headers: { "x-request-id": "e0000000-0000-4000-8000-000000000002" } });
               if (mode === "template_timeout_unknown" || (mode === "template_timeout_recovery" && n === 1))
                 return Response.json(
                   { error: { code: "api_failed", message: "Request timed out." } },
@@ -2004,10 +2009,10 @@ for (const mode of [
             });
           if (mode === "template_timeout_unknown")
             expect(report.features.templates[provider].diagnostic).toMatchObject({
-              code: "api_failed",
-              httpStatus: 408,
-              message: "Request timed out.",
-              requestId: "e0000000-0000-4000-8000-000000000001",
+              code: "launch_response_unreadable",
+              httpStatus: 200,
+              message: "Launch response could not be read.",
+              requestId: "e0000000-0000-4000-8000-000000000002",
               requestKey: (templateRequests.get(provider) as { requestKey: string }).requestKey,
             });
           if (mode === "template_timeout_unknown" || mode === "template_lost_identity") {

@@ -380,8 +380,8 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
       body &&
       (body as { provider?: unknown }).provider === "docker" &&
       "externalRef" in body;
-    const requestId =
-      modalLaunch || keyedDockerLaunch || path === "templates/launch" ? response.headers.get("x-request-id") : null;
+    const trackedLaunch = modalLaunch || keyedDockerLaunch || path === "templates/launch";
+    const requestId = trackedLaunch ? response.headers.get("x-request-id") : null;
     const correlation = requestId && UUID.test(requestId) ? { requestId } : {};
     if (!response.ok) {
       const body = (await response.json().catch(() => null)) as {
@@ -412,7 +412,7 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
       });
     }
     const result = (await response.json().catch((error: unknown) => {
-      if (!modalLaunch && !keyedDockerLaunch) throw error;
+      if (!trackedLaunch) throw error;
       throw new ParityError({
         code: "launch_response_unreadable",
         httpStatus: response.status,
@@ -1992,10 +1992,16 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
                     const timingStep = `parity_${c.provider}_${feature}_launch`;
                     const started = io.now();
                     const featureDeadline = feature === "templates" ? deadline : readableUntil;
-                    const until = Math.min(featureDeadline, started + (launchTimeouts[timingStep] ?? OBSERVATION_MS));
+                    const until = Math.min(
+                      featureDeadline,
+                      requestDeadline ?? Number.POSITIVE_INFINITY,
+                      started + (launchTimeouts[timingStep] ?? OBSERVATION_MS),
+                    );
                     let lastDiagnostic: Diagnostic | undefined;
+                    let polls = 0;
                     // The template contract exposes the existing receipt through the original keyed request.
                     const receipt = await observeSmokeLaunch(until, io, async (remaining) => {
+                      polls++;
                       let value: Receipt;
                       try {
                         value = await request<Receipt>("templates/launch", { org: c.org, ...input }, remaining);
@@ -2005,6 +2011,7 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
                           !detail.quota &&
                           ([
                             "transport_or_receipt_failed",
+                            "launch_response_unreadable",
                             "outcome_unknown",
                             "unavailable",
                             "provider_unavailable",
@@ -2014,7 +2021,7 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
                             [408, 425, 500, 502, 503, 504].includes(detail.httpStatus ?? 0))
                         ) {
                           uncertain = true;
-                          lastDiagnostic = detail;
+                          if (detail.httpStatus !== undefined || lastDiagnostic === undefined) lastDiagnostic = detail;
                           return;
                         }
                         const refusedBeforeAdmission =
@@ -2026,7 +2033,7 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
                           ([404, 405].includes(detail.httpStatus ?? 0) &&
                             ["not_found", "unknown_route", "method_not_allowed"].includes(detail.code));
                         if (!uncertain && refusedBeforeAdmission) templateIntentUnknown = false;
-                        throw new ParityError({ ...detail, requestKey: input.requestKey });
+                        throw error;
                       }
                       if (value.state !== "succeeded" && value.state !== "failed") uncertain = true;
                       // Journal the durable claimed sandbox before waiting for allocation acknowledgement.
@@ -2049,11 +2056,20 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
                         if (value.id !== id) throw new Error("invalid_template_receipt");
                       }
                       if (value.state === "succeeded" || value.state === "failed") return value;
+                    }).catch((error: unknown) => {
+                      throw new ParityError({
+                        ...diagnostic(error),
+                        requestKey: input.requestKey,
+                        elapsedMs: io.now() - started,
+                        polls,
+                      });
                     });
                     if (!receipt)
                       throw new ParityError({
                         ...diagnostic(new Error("poll_limit_exceeded")),
                         ...lastDiagnostic,
+                        elapsedMs: io.now() - started,
+                        polls,
                         requestKey: input.requestKey,
                       });
                     if (
