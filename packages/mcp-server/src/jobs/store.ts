@@ -174,9 +174,8 @@ export function createJobsStore(sql: Sql, encryptionKey?: string) {
                   (q.state = 'dispatching' and (q.dispatch_generation is null
                     or q.dispatch_generation < s.lifecycle_generation - 1
                     or (${ADJACENT_RUNTIME_DISPATCH} and s.status in ('ready','running')
-                      and (((q.dispatch_until is null or q.dispatch_until <= statement_timestamp())
-                          and ${NO_ADJACENT_DISPATCH_EVIDENCE})
-                        or (q.dispatch_until <= statement_timestamp() and ${OBSOLETE_RUNTIME_FOLLOWUP})))))
+                      and (q.dispatch_until is null or q.dispatch_until <= statement_timestamp())
+                      and (${NO_ADJACENT_DISPATCH_EVIDENCE} or ${OBSOLETE_RUNTIME_FOLLOWUP}))))
                     as unrecoverable_dispatch,
                   case when ${ADJACENT_RUNTIME_DISPATCH}
                     and ((s.status in ('ready','running')
