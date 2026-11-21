@@ -4,8 +4,10 @@ import { type ModalMachineOptions, scopeKey } from "@armada/provider-modal";
 import { rowOnlyDatabase } from "../../test/row-only-database.ts";
 import { createTurnDispatchJob, type DispatchTurn } from "../account-turn-dispatch.ts";
 import { createAccountTurnQueue } from "../account-turn-queue.ts";
+import { createGoldenRuntimeEnvironment } from "../golden-runtime-environment.ts";
 import { createOrdinaryLaunchReceipts } from "../ordinary-launch-receipts.ts";
 import { retentionMaintenanceJob, seedRetentionMaintenance } from "../retention-maintenance.ts";
+import { createRuntimeCommands } from "../runtime-commands.ts";
 import { createRuntimeEnrolments, scopedRuntimeSql } from "../runtime-enrolment.ts";
 import { createSandboxLifecycle } from "../sandbox-lifecycle.ts";
 import type { LaneFactory } from "../server-worker-modules.ts";
@@ -13,8 +15,10 @@ import { sqlOver } from "../sql.ts";
 import { runtimeWakes } from "../wake-bus.ts";
 import {
   admitModalLaunch,
+  createModalInitialTurnJob,
   createModalLaunchCleanupJob,
   createModalLaunchJob,
+  MODAL_INITIAL_TURN,
   type ModalLaunchAdmission,
   modalLaunchTicketGuard,
   runModalLaunch,
@@ -453,6 +457,7 @@ async function modalLaunchFixture(initial?: Awaited<ReturnType<typeof modalAdmis
   const bootstrapped: string[] = [];
   const enrolments = createRuntimeEnrolments(f.sql, launchEncryptionKey);
   let enrolmentToken: string;
+  let activeRuntime: Awaited<ReturnType<typeof enrolments.enrol>> | undefined;
   const makeRunner = (atStep?: (step: ModalLaunchStep) => void | Promise<void>, jobsSql = f.sql, enrol = true) => {
     const sandbox = {
       sandboxId: "physical",
@@ -481,7 +486,7 @@ async function modalLaunchFixture(initial?: Awaited<ReturnType<typeof modalAdmis
             close: async () => {},
           },
           async wait() {
-            if (enrol) await enrolments.enrol(enrolmentToken);
+            if (enrol) activeRuntime = await enrolments.enrol(enrolmentToken);
             await atStep?.("bootstrap response");
             return 0;
           },
@@ -608,6 +613,7 @@ async function modalLaunchFixture(initial?: Awaited<ReturnType<typeof modalAdmis
     revokeModalCredential: () => {
       modalCredentialCurrent = false;
     },
+    activeRuntime: () => activeRuntime!,
     enrolPending: (authority = enrolments) => authority.enrol(enrolmentToken),
   };
 }
@@ -621,12 +627,12 @@ async function modalFirstTurnLane(
     sql: f.sql,
     jobs: f.store,
     accountTurns,
-    config: {},
+    config: { encryptionKey: launchEncryptionKey },
     options: { logError: () => {} },
     control: {},
     langfuse: { exportJob: { concurrency: 1 } },
     webhooks: {},
-    outputs: { drain: async () => {} },
+    outputs: { drain: async () => {}, captureJob: { concurrency: 1 } },
     modal: { launchCleanupJob: { concurrency: 1 } },
   } as unknown as Parameters<LaneFactory>[0])!;
 }
@@ -700,6 +706,125 @@ test.each(["before", "after"] as const)(
       prompt: admission.input.initialPrompt,
     });
     expect((await dispatchJobs()).rows).toEqual([{ kind: "turn_dispatch" }]);
+  },
+);
+
+test.each(["acknowledgement lost", "secret revoked", "sandbox untainted"] as const)(
+  "the Modal first-turn worker fences runtime configuration when %s",
+  async (scenario) => {
+    const admission = await modalAdmissionFixture();
+    const { f, id, makeRunner, activeRuntime } = await modalLaunchFixture(admission);
+    const { db, people, sql } = f;
+    const secretValue = crypto.randomUUID();
+    const {
+      rows: [secret],
+    } = await db.query<{ id: string }>(
+      `insert into application_secrets(org_id,owner_id,scope,name,value_enc)
+     values($1,$2,'personal','APP_TOKEN',$3) returning id`,
+      [people.org, people.owner, await encryptSecret(secretValue, launchEncryptionKey)],
+    );
+    const {
+      rows: [actor],
+    } = await db.query<{ epoch: number }>("select epoch::int from mcp_actor_epochs where org_id=$1 and user_id=$2", [
+      people.org,
+      people.owner,
+    ]);
+    if (scenario !== "sandbox untainted")
+      await db.query("update sandboxes set application_secret_tainted=true where id=$1", [id]);
+    const manifest = {
+      version: 1,
+      actorId: people.owner,
+      actorEpoch: actor?.epoch ?? 0,
+      golden: { id: admission.input.sandbox.goldenId, provider: "modal" },
+      account: { id: f.openaiCredentialId, version: 1 },
+      definition: {
+        provider: "modal",
+        harness: "codex",
+        model: admission.input.sandbox.model,
+        reasoningEffort: admission.input.sandbox.reasoningEffort,
+        variables: [],
+        secrets: [{ key: "APP_TOKEN", secretId: secret!.id, version: 1 }],
+      },
+      variables: {},
+    };
+    await db.query(
+      `with template as (
+       insert into launch_templates(org_id,owner_id,scope,name)
+       values($1,$2,'personal','modal-job-template') returning id
+     ), revision as (
+       insert into launch_template_revisions(template_id,revision,definition,digest,created_by)
+       select id,1,'{}',repeat('a',64),$2 from template returning id,template_id
+     )
+     insert into template_launch_requests(org_id,actor_id,client_key,digest,template_id,revision_id,
+                                          manifest,golden_operation_fence_id,sandbox_id)
+     select $1,$2,'first-turn',repeat('a',64),template_id,id,$3,$4,$5 from revision`,
+      [people.org, people.owner, manifest, crypto.randomUUID(), id],
+    );
+
+    const launch = makeRunner();
+    expect(await launch.reconcileOne(signal)).toBe(true);
+    await launch.drain();
+    const { runtimeToken, epoch } = activeRuntime();
+    const bridge = createRuntimeCommands(createRuntimeEnrolments(sql, launchEncryptionKey), launchEncryptionKey);
+    const turns = async () =>
+      (await db.query("select request_id from account_turn_queue where sandbox_id=$1", [id])).rows;
+    const queue = createAccountTurnQueue(sql, launchEncryptionKey);
+    const firstTurn = (wait: () => Promise<void>) =>
+      createJobsRunner(
+        createJobsStore(sql, launchEncryptionKey),
+        {
+          [MODAL_INITIAL_TURN]: createModalInitialTurnJob(
+            sql,
+            queue,
+            createGoldenRuntimeEnvironment(sql, launchEncryptionKey, { now: () => 0, wait }),
+          ),
+        },
+        () => {},
+        () => () => {},
+      );
+
+    if (scenario === "secret revoked")
+      await db.query("update application_secrets set status='revoked',value_enc=null where id=$1", [secret!.id]);
+    const original = firstTurn(async () => {
+      throw new Error("Worker lost while waiting for acknowledgement");
+    });
+    expect(await original.reconcileOne(signal)).toBe(true);
+    await original.drain();
+    expect(await turns()).toEqual([]);
+    if (scenario !== "acknowledgement lost") {
+      expect((await bridge.next(runtimeToken, epoch)).command).toBeNull();
+      expect(
+        (
+          await db.query("select state,outcome->>'reason' as reason from jobs where sandbox_id=$1 and kind=$2", [
+            id,
+            MODAL_INITIAL_TURN,
+          ])
+        ).rows,
+      ).toEqual([{ state: "failed", reason: "modal_initial_turn_environment_refused" }]);
+      return;
+    }
+    const { command } = await bridge.next(runtimeToken, epoch);
+    if (command?.op !== "configureReadableVariables") throw new Error("Missing durable configuration command.");
+    expect(command.secretKeys).toEqual(["APP_TOKEN"]);
+    expect(command.variables.APP_TOKEN === secretValue).toBe(true);
+
+    await db.query("update jobs set lease_until='-infinity' where sandbox_id=$1 and kind=$2", [id, MODAL_INITIAL_TURN]);
+    const replacement = firstTurn(async () => {
+      expect(await turns()).toEqual([]);
+      expect((await bridge.next(runtimeToken, epoch)).command?.requestId).toBe(command.requestId);
+      await bridge.complete(runtimeToken, epoch, {
+        epoch,
+        requestId: command.requestId,
+        status: 200,
+        body: { version: 1, requestId: command.requestId, result: { acknowledged: true } },
+      });
+    });
+    expect(await replacement.reconcileOne(signal)).toBe(true);
+    await replacement.drain();
+    expect(await turns()).toHaveLength(1);
+    expect((await db.query("select request_id from runtime_commands where sandbox_id=$1", [id])).rows).toEqual([
+      { request_id: command.requestId },
+    ]);
   },
 );
 

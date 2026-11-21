@@ -11,7 +11,9 @@ import {
 import { createModalMachine, type ModalMachineOptions, scopeKey } from "@armada/provider-modal";
 import { z } from "zod";
 import type { AccountTurnQueue } from "../account-turn-queue.ts";
+import type { createGoldenRuntimeEnvironment } from "../golden-runtime-environment.ts";
 import { type OrdinaryLaunchFailure, replayOrdinaryLaunchFailure } from "../ordinary-launch-receipts.ts";
+import { RuntimeCommandRefused } from "../runtime-commands.ts";
 import type { RuntimeConfigurationTarget } from "../runtime-configuration.ts";
 import { createRuntimeEnrolments, type RuntimeTicketGuard } from "../runtime-enrolment.ts";
 import {
@@ -175,7 +177,11 @@ export async function admitModalLaunch(sql: Sql, encryptionKey: string, input: M
   }
 }
 
-export function createModalInitialTurnJob(sql: Sql, queue: Pick<AccountTurnQueue, "acceptInitialLaunch">) {
+export function createModalInitialTurnJob(
+  sql: Sql,
+  queue: Pick<AccountTurnQueue, "acceptInitialLaunch">,
+  environment: Pick<ReturnType<typeof createGoldenRuntimeEnvironment>, "deliver">,
+) {
   return {
     concurrency: 4,
     async run(job, context) {
@@ -192,9 +198,10 @@ export function createModalInitialTurnJob(sql: Sql, queue: Pick<AccountTurnQueue
         owner_id: string;
         role: MemberRole;
         state: string;
+        epoch: string | null;
         accepted: boolean;
       }>(
-        `select s.org_id, s.owner_id, m.role, launch.state,
+        `select s.org_id, s.owner_id, m.role, launch.state, runtime.epoch::text as epoch,
                 exists(select 1 from public.account_turn_queue q
                        where q.sandbox_id=s.id and q.request_id=intent.id
                          and q.queued_generation=intent.generation and q.owner_id=s.owner_id and q.org_id=s.org_id
@@ -207,6 +214,9 @@ export function createModalInitialTurnJob(sql: Sql, queue: Pick<AccountTurnQueue
            and intent.idem_key=format('["internal","%s","launch_initial_turn","%s",%s,"%s"]',
                                       s.org_id,s.id,intent.generation,launch.id)
          join public.members m on m.org_id=s.org_id and m.user_id=s.owner_id
+         left join public.runtime_enrolments runtime on runtime.sandbox_id=s.id
+           and runtime.lifecycle_generation=s.lifecycle_generation and runtime.runtime_hash is not null
+           and s.status in ('ready','running') and s.stop_requested_at is null and s.deleted_at is null
          where intent.id=$1`,
         [job.id],
       );
@@ -215,12 +225,43 @@ export function createModalInitialTurnJob(sql: Sql, queue: Pick<AccountTurnQueue
       if (!(await context.canDispatch())) return { status: "fail", reason: "modal_initial_turn_budget_exhausted" };
       if (target.state !== "done") return { status: "retry", after: new Date(Date.now() + 1_000), unattempted: true };
 
+      const { epoch } = target;
+      if (epoch === null) return { status: "fail", reason: "modal_initial_turn_unavailable" };
+      try {
+        await environment.deliver(
+          "modal",
+          { userId: target.owner_id, orgId: target.org_id },
+          sandboxId,
+          epoch,
+          context.signal,
+          async (tx) => {
+            if (!(await context.canDispatch(tx))) throw new Error("Modal initial turn lost its job claim.");
+            const { rows } = await tx.query(
+              "select 1 from public.sandboxes where id=$1 and lifecycle_generation=$2 and application_secret_tainted",
+              [sandboxId, generation],
+            );
+            if (!rows.length) throw new VaultError("conflict", "Application-secret restrictions are missing.");
+          },
+        );
+      } catch (error) {
+        if (error instanceof RuntimeCommandRefused || (error instanceof VaultError && error.code === "conflict"))
+          return { status: "fail", reason: "modal_initial_turn_environment_refused" };
+        throw error;
+      }
+
       try {
         const accepted = await queue.acceptInitialLaunch(
           { userId: target.owner_id, orgs: [{ orgId: target.org_id, role: target.role }], via: "service" },
           { id: sandboxId, request_id: job.id, prompt: payload.data.prompt },
           generation,
-          context.canDispatch,
+          async (tx) => {
+            const { rows } = await (tx ?? sql).query(
+              `select 1 from public.runtime_enrolments
+               where sandbox_id=$1 and lifecycle_generation=$2 and epoch=$3 and runtime_hash is not null`,
+              [sandboxId, generation, epoch],
+            );
+            return rows.length > 0 && context.canDispatch(tx);
+          },
         );
         if (accepted) return { status: "done" };
       } catch (error) {
