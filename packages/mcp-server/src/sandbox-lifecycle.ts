@@ -1616,7 +1616,6 @@ export function createSandboxLifecycle(
           owner_is_member: boolean;
           retained_resume: boolean;
           checkpointed_stop: boolean;
-          strict_native_stop: boolean;
           interrupted_resume: boolean;
           protected_resume: boolean;
           work_merged: boolean | null;
@@ -1670,10 +1669,6 @@ export function createSandboxLifecycle(
           ${mergedWorkProof("s")} as work_merged,due.retained_resume,
           due.modal_resume as protected_resume,
           (s.status='stopping' and s.stop_requested_at is not null and exists(
-            select 1 from public.native_drain_stop_requests r where r.sandbox_id=s.id
-              and r.stop_generation=s.stop_generation
-          )) as strict_native_stop,
-          (s.status='stopping' and s.stop_requested_at is not null and exists(
             select 1 from public.sandbox_transitions t where t.sandbox_id=s.id
               and t.generation between s.lifecycle_generation-1 and s.lifecycle_generation
               and t.actor='api' and t.code='runtime_retained_stop' and t.to_status='stopping'
@@ -1687,6 +1682,23 @@ export function createSandboxLifecycle(
         )
       ).rows[0];
       if (!row) return false;
+      let strictNativeStop = false;
+      if (row.status === "stopping" && row.stop_requested_at !== null) {
+        // A claim can recheck the updated sandbox row after its statement snapshot.
+        // Read the matching intent after claiming so an older snapshot cannot miss it.
+        const {
+          rows: [owned],
+        } = await sql.query<{ strict: boolean }>(
+          `select exists(select 1 from public.native_drain_stop_requests r where r.sandbox_id=s.id
+             and r.stop_generation=s.stop_generation) as strict
+           from public.sandboxes s where s.id=$1 and s.reconcile_lease=$2::uuid
+             and s.lifecycle_generation=$3 and s.reconcile_lease_until>clock_timestamp()
+             and s.status='stopping' and s.stop_requested_at is not null`,
+          [row.id, token, row.lifecycle_generation],
+        );
+        if (!owned) return true;
+        strictNativeStop = owned.strict;
+      }
       const recoverInterruptedResume = async (observedProviderId: string | null) => {
         if (!row.interrupted_resume && !row.protected_resume) return false;
         if (!sql.transaction) throw Error("Runtime resume recovery requires a SQL transaction.");
@@ -1910,7 +1922,7 @@ export function createSandboxLifecycle(
         };
         let info = await observe();
         initialObservation = false;
-        if (row.strict_native_stop && (info.id !== row.provider_sandbox_id || provider.id !== providerId))
+        if (strictNativeStop && (info.id !== row.provider_sandbox_id || provider.id !== providerId))
           throw new Error("Strict native stop observation changed placement.");
         if (
           canDeferInterruptedResume &&
@@ -1992,7 +2004,7 @@ export function createSandboxLifecycle(
         const workMerged = row.work_merged === true && !row.stop_requested_at;
         const idleStop =
           native &&
-          !row.strict_native_stop &&
+          !strictNativeStop &&
           !expired &&
           (["idle_paused", "work_merged"].includes(row.status_reason ?? "") ||
             (!row.stop_requested_at &&
@@ -2105,7 +2117,7 @@ export function createSandboxLifecycle(
           // Automatic idle stop may observe quiescence, never interrupt a turn.
           if (
             !idleStop &&
-            !row.strict_native_stop &&
+            !strictNativeStop &&
             !row.boat_runtime &&
             row.runtime_transport !== "dialout" &&
             ["ready", "running"].includes(info.state)
@@ -2131,12 +2143,13 @@ export function createSandboxLifecycle(
             });
           signal?.throwIfAborted();
           if (idleStop && !reconcilingStop) await operation(signal, requireIdle);
-          if (row.strict_native_stop) {
+          if (strictNativeStop) {
             const verified = await sql.query(
               `select 1 from public.sandboxes s
                where s.id=$1 and s.reconcile_lease=$2::uuid and s.lifecycle_generation=$3
                  and s.provider_sandbox_id=$4 and s.status='stopping' and s.stop_requested_at is not null
                  and not s.application_secret_tainted and s.deleted_at is null
+                 and (s.activity_until is null or s.activity_until<=clock_timestamp())
                  and exists(select 1 from public.native_drain_stop_requests r where r.sandbox_id=s.id
                    and r.stop_generation=s.stop_generation)
                  and exists(select 1 from public.native_drain_work_proof(s.id,s.lifecycle_generation)
@@ -2151,7 +2164,7 @@ export function createSandboxLifecycle(
             signal?.throwIfAborted();
           }
           const requireRetention =
-            row.strict_native_stop ||
+            strictNativeStop ||
             (!expired &&
               (row.checkpointed_stop ||
                 retainedResume ||
@@ -2162,7 +2175,7 @@ export function createSandboxLifecycle(
             provider.stop({
               sandboxId: row.provider_sandbox_id,
               ...(requireRetention ? { requireRetention: true } : {}),
-              ...(row.strict_native_stop ? { generation: row.lifecycle_generation } : {}),
+              ...(strictNativeStop ? { generation: row.lifecycle_generation } : {}),
             }),
           );
           info = await observe();
