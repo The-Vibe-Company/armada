@@ -13,12 +13,18 @@ import { BoatRetentionUnconfirmed } from "@armada/provider-boat";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import * as z from "zod";
 import { CREDENTIAL_BINDING_GUIDANCE } from "./credential-binding.ts";
-import type { SandboxView, ServerSandboxPatch } from "./data.ts";
+import { DataError, type SandboxView, type ServerSandboxPatch } from "./data.ts";
 import { mcpLaunchContract, runMcpLaunch } from "./mcp-launch-tool.ts";
 import { DEFAULT_WAIT_SECONDS, registerListTool, registerLogsTool, registerStatusTools } from "./mcp-read-tools.ts";
 import { nativeExecCancellation, runtimeBridgeTarget } from "./provider-runtime-admission.ts";
 import { recordOperatorFailure } from "./request-observability.ts";
 import { RuntimeCheckpointRejected } from "./runtime-checkpoint.ts";
+import {
+  RuntimeCheckpointActivityConflict,
+  RuntimeCheckpointParentConflict,
+  RuntimeReconciliationConflict,
+  SandboxStopTargetChanged,
+} from "./runtime-reconciliation-conflict.ts";
 import { appendConversation, sandboxActivity } from "./sandbox-activity.ts";
 import { refuseConversationSelector } from "./sandbox-conversation.ts";
 
@@ -27,6 +33,7 @@ import { errorResult, publicationFailure, unknownMutationOutcome } from "./tool-
 import { createToolRegistration, type ToolBinding } from "./tool-registration.ts";
 import type { ToolContext } from "./tools.ts";
 import { collectSandboxUsage, isFailedModalLaunch, latestPrompt, readStatus } from "./turns.ts";
+import { SANDBOX_ADMISSION_TIMEOUT_MS, waitForSandboxAdmission } from "./wake-bus.ts";
 import { stopAndObserve } from "./work-preservation.ts";
 
 const OUTPUT_LIMIT = 20_000;
@@ -494,28 +501,33 @@ export function configureTools(
     ).catch((error) => publicationFailure(error, acknowledged));
   });
 
-  const stopTool = tool(
-    "stop",
-    sandboxOperations.stopSandbox.tool,
-    async (args) => {
-      const found = await visible(args.id);
+  const stopTool = (() => {
+    async function stopOnce(
+      found: SandboxView,
+      onlyIfIdle: boolean,
+      checkpointState: { attempted: boolean },
+      signal?: AbortSignal,
+    ) {
       const canCheckIdle = found.status === "ready" || (found.status === "running" && runtimeBridgeTarget(found));
-      if (args.only_if_idle && !canCheckIdle && found.status !== "stopped")
+      if (onlyIfIdle && !canCheckIdle && found.status !== "stopped")
         throw new VaultError(
           "credential_binding_unsafe",
           "Wait for the running turn or lifecycle operation to finish before changing accounts.",
         );
-      if (args.only_if_idle && canCheckIdle && !(await statusOf(args.id, undefined)).settled)
+      if (onlyIfIdle && canCheckIdle && !(await statusOf(found.id, undefined)).settled)
         throw new VaultError(
           "credential_binding_unsafe",
           "Wait for the current turn to finish before changing accounts.",
         );
 
-      const startingStop = await data.sandboxes.requestStartingModalStop?.(found);
-      if (startingStop) return startingStop;
+      if (onlyIfIdle) {
+        const startingStop = await data.sandboxes.requestStartingModalStop?.(found);
+        if (startingStop) return startingStop;
+      }
       if (found.stopRequestedAt || ["stopping", "stopped"].includes(found.status))
         return { id: found.id, status: found.status };
-      const { provider } = await live(args.id, true, found);
+      const { provider } = await live(found.id, true, found);
+      signal?.throwIfAborted();
       const needsCheckpoint =
         found.ownerId === caller.userId &&
         runtimeBridgeTarget(found) &&
@@ -524,15 +536,18 @@ export function configureTools(
       if (needsCheckpoint && !context.runtimeStopCheckpoint)
         throw new VaultError("unavailable", "Runtime stop checkpoint is unavailable.");
       const checkpoint = needsCheckpoint
-        ? await context.runtimeStopCheckpoint!(caller, found, args.only_if_idle === true).catch((error) => {
+        ? await context.runtimeStopCheckpoint!(caller, found, onlyIfIdle, signal).catch((error) => {
             if (error instanceof RuntimeCheckpointRejected) return null;
             recordOperatorFailure("sandbox.stop.checkpoint", error, { sandboxId: found.id });
             throw error;
           })
         : undefined;
-      const stopAdmission: Pick<ServerSandboxPatch, "ownerStop" | "onlyIfIdle"> = {
+      checkpointState.attempted = checkpoint !== undefined;
+      if (!checkpointState.attempted) signal?.throwIfAborted();
+      const stopAdmission: Pick<ServerSandboxPatch, "ownerStop" | "onlyIfIdle" | "ownerStopSignal"> = {
         ownerStop: true,
-        onlyIfIdle: args.only_if_idle === true,
+        onlyIfIdle,
+        ...(signal && !checkpointState.attempted ? { ownerStopSignal: signal } : {}),
       };
       const retainedGuard: Pick<ServerSandboxPatch, "retainedRuntimeStop"> = checkpoint
         ? { retainedRuntimeStop: checkpoint.requestId }
@@ -619,9 +634,51 @@ export function configureTools(
           };
         },
       );
-    },
-    true,
-  );
+    }
+
+    return tool(
+      "stop",
+      sandboxOperations.stopSandbox.tool,
+      async (args) => {
+        const checkpoint = { attempted: false };
+        if (args.only_if_idle) return stopOnce(await visible(args.id), true, checkpoint);
+        context.configureStopRequest?.();
+        const deadline = AbortSignal.timeout(SANDBOX_ADMISSION_TIMEOUT_MS);
+        const signal = context.stopSignal ? AbortSignal.any([deadline, context.stopSignal]) : deadline;
+        try {
+          return await waitForSandboxAdmission(signal, async () => {
+            const target = await data.sandboxes.getForStop?.(args.id);
+            const found = target ? target.sandbox : await visible(args.id);
+            signal.throwIfAborted();
+            try {
+              if (found.stopRequestedAt || ["stopping", "stopped", "deleted"].includes(found.status))
+                return { busy: false, result: await stopOnce(found, false, checkpoint) };
+              const startingStop = await data.sandboxes.requestStartingModalStop?.(found, signal);
+              if (startingStop) return { busy: false, result: startingStop };
+              if (target?.busy) return { busy: true };
+              return { busy: false, result: await stopOnce(found, false, checkpoint, signal) };
+            } catch (error) {
+              const cause = error instanceof DataError ? error.cause : error;
+              if (
+                !checkpoint.attempted &&
+                (cause instanceof RuntimeReconciliationConflict ||
+                  cause instanceof RuntimeCheckpointActivityConflict ||
+                  cause instanceof RuntimeCheckpointParentConflict ||
+                  cause instanceof SandboxStopTargetChanged)
+              )
+                return { busy: true };
+              throw error;
+            }
+          });
+        } catch (error) {
+          if (error === signal.reason)
+            throw new ToolError("dependency_unavailable", "Sandbox stop admission ended before compute stop.");
+          throw error;
+        }
+      },
+      true,
+    );
+  })();
 
   if (surface === "mcp") {
     const { sendPrompt, sandboxStatus, stopSandbox } = sandboxOperations;

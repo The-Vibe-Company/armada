@@ -15,3 +15,15 @@ export class RuntimeCheckpointActivityConflict extends VaultError {
     super("conflict", "Runtime admission is busy; wait or reconcile its original request before checkpointing.");
   }
 }
+
+export class RuntimeCheckpointParentConflict extends VaultError {
+  constructor() {
+    super("conflict", "Scoped parent authority is busy. Retry checkpoint.");
+  }
+}
+
+export class SandboxStopTargetChanged extends VaultError {
+  constructor() {
+    super("conflict", "Sandbox changed before stop admission.");
+  }
+}
