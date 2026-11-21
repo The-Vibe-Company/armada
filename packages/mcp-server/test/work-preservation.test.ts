@@ -2068,6 +2068,37 @@ test.each(["activity", "queue", "provider observation", "ordinary delete"] as co
   },
 );
 
+test("a current strict stop fences authenticated sandbox updates", async () => {
+  const { db, people, sandboxId, copy } = await seedNativeDrainReceipt();
+  const updateAsOwner = (conversationId: string) =>
+    db.transaction(async (tx) => {
+      await tx.query("select set_config('request.jwt.claim.sub', $1, true)", [people.owner]);
+      await tx.exec("set local role authenticated");
+      return tx.query("update sandboxes set conversation_ids=array[$2::text] where id=$1 returning id", [
+        sandboxId,
+        conversationId,
+      ]);
+    });
+
+  await db.query(
+    `insert into native_drain_stop_requests(sandbox_id,stop_generation)
+     select id,stop_generation-1 from sandboxes where id=$1`,
+    [sandboxId],
+  );
+  expect((await updateAsOwner("before-strict-stop")).rows).toEqual([{ id: sandboxId }]);
+
+  await db.query(
+    `update native_drain_stop_requests r set stop_generation=s.stop_generation
+     from sandboxes s where r.sandbox_id=s.id and s.id=$1`,
+    [sandboxId],
+  );
+  await expect(updateAsOwner("after-strict-stop")).rejects.toMatchObject({ code: "42501" });
+  expect((await db.query("select conversation_ids from sandboxes where id=$1", [sandboxId])).rows).toEqual([
+    { conversation_ids: ["before-strict-stop"] },
+  ]);
+  expect(await copy()).toBe("archived");
+});
+
 test("a native prompt cannot cancel a strict stop awaiting capture", async () => {
   const provider = fakeBoat().provider;
   const placement = "bx_strict_stopping_prompt";
