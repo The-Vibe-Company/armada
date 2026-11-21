@@ -1409,7 +1409,6 @@ test("a full model queues its override without blocking another model and report
     dispatched.push(input.model!);
     return { promptId: input.request_id, status: "running" };
   });
-  // Give the blocked request the first claim and check that model pressure is free to retry.
   await sql.query("update jobs set run_after='-infinity' where sandbox_id=$1", [ids[1]]);
   await dispatchNext();
   expect(dispatched).toEqual([]);
