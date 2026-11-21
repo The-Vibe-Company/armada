@@ -87,7 +87,7 @@ function fixture(provider: "modal", fault: Fault = "none") {
           expect(body.org).toBe("org");
           expect(body.externalRef).toBe(launch?.body.externalRef);
           lookups++;
-          if (fault === "late_launch") clock += 120_001;
+          if (fault === "late_launch") clock += deadlines.expiry_launch + 1;
           const found =
             fault === "late_launch" ||
             fault === "unreadable_launch" ||

@@ -3,12 +3,10 @@ import { isSandboxPlacementProvider } from "../packages/core/src/sandbox-provide
 
 const GREEN_JOURNAL_LIMIT = 20;
 const MIN_STEP_SAMPLES = 20;
-const MIN_STEP_DEADLINE_MS = 2_000;
-export const USAGE_STATUS_MIN_REQUEST_MS = MIN_STEP_DEADLINE_MS;
+// WARNING: Keep max(3 × p99, 10 s). Staging network spikes repeatedly exceeded twice the measured p99.
+const MIN_STEP_DEADLINE_MS = 10_000;
+export const USAGE_STATUS_MIN_REQUEST_MS = 2_000;
 export const SMOKE_POLL_INTERVAL_MS = 1_000;
-const USAGE_POLL_MIN_MS = 2 * USAGE_STATUS_MIN_REQUEST_MS + SMOKE_POLL_INTERVAL_MS;
-const DOCKER_REAL_MODEL_READY_FLOOR_MS = 60_000;
-const usagePollSteps = new Set(["usage", "usage_second", "resume_usage"]);
 
 type DeadlineTable = Readonly<Record<string, Readonly<Partial<Record<string, number>>>>>;
 
@@ -52,13 +50,7 @@ export function smokeDeadlines(greenJournalsNewestFirst: readonly string[]) {
           if (values.length < MIN_STEP_SAMPLES) return [];
           values.sort((a, b) => a - b);
           const p99 = values[Math.ceil(values.length * 0.99) - 1]!;
-          const floor =
-            scope === "docker/real-model" && step === "real_model_ready"
-              ? DOCKER_REAL_MODEL_READY_FLOOR_MS
-              : usagePollSteps.has(step)
-                ? USAGE_POLL_MIN_MS
-                : MIN_STEP_DEADLINE_MS;
-          return [[step, Math.max(floor, Math.ceil(2 * p99))] as const];
+          return [[step, Math.max(MIN_STEP_DEADLINE_MS, Math.ceil(3 * p99))] as const];
         }),
     );
     if (Object.keys(budgets).length > 0) table[scope] = budgets;
