@@ -1,5 +1,33 @@
 # Changelog
 
+## [7.0.0](https://github.com/The-Vibe-Company/armada/compare/v6.0.0...v7.0.0) (2026-11-21)
+
+
+### ⚠ BREAKING CHANGES
+
+* **launch:** Modal launch runs as a job and answers `starting` ([#3905](https://github.com/The-Vibe-Company/armada/issues/3905))
+* **launch:** Modal launch runs as a job and answers `starting` ([#3897](https://github.com/The-Vibe-Company/armada/issues/3897))
+* **launch:** Modal launch runs as a job and answers `starting` ([#3893](https://github.com/The-Vibe-Company/armada/issues/3893))
+* **launch:** Modal launch runs as a job and answers `starting` ([#3890](https://github.com/The-Vibe-Company/armada/issues/3890))
+* **launch:** Modal launch runs as a job and answers `starting` ([#3888](https://github.com/The-Vibe-Company/armada/issues/3888))
+* **launch:** Modal launch runs as a job and answers `starting` ([#3884](https://github.com/The-Vibe-Company/armada/issues/3884))
+
+### Features
+
+* **launch:** Modal launch runs as a job and answers `starting` ([#3884](https://github.com/The-Vibe-Company/armada/issues/3884)) ([81ae560](https://github.com/The-Vibe-Company/armada/commit/81ae560eb61ba182747eb9f4734fca2ed7ac2450))
+* **launch:** Modal launch runs as a job and answers `starting` ([#3888](https://github.com/The-Vibe-Company/armada/issues/3888)) ([e6aee45](https://github.com/The-Vibe-Company/armada/commit/e6aee4532ab291c2409199a4f7e33da614e43c69))
+* **launch:** Modal launch runs as a job and answers `starting` ([#3890](https://github.com/The-Vibe-Company/armada/issues/3890)) ([cce2cee](https://github.com/The-Vibe-Company/armada/commit/cce2cee1e749bda999c980640f277cfb000f1383))
+* **launch:** Modal launch runs as a job and answers `starting` ([#3893](https://github.com/The-Vibe-Company/armada/issues/3893)) ([823e097](https://github.com/The-Vibe-Company/armada/commit/823e09702101ac15bb1b45c5bb754cbbef4ddf15))
+* **launch:** Modal launch runs as a job and answers `starting` ([#3897](https://github.com/The-Vibe-Company/armada/issues/3897)) ([1bd67cf](https://github.com/The-Vibe-Company/armada/commit/1bd67cf5ee79cd9534d96c412f4433262fbc82e4))
+* **launch:** Modal launch runs as a job and answers `starting` ([#3905](https://github.com/The-Vibe-Company/armada/issues/3905)) ([08446d1](https://github.com/The-Vibe-Company/armada/commit/08446d1b0fc56cf7f86f97ecd23f1119be6c531c))
+
+
+### Bug Fixes
+
+* **boat:** owner stop stuck in stopping because the snapshot is verified before the stop time ([#3904](https://github.com/The-Vibe-Company/armada/issues/3904)) ([8896d2c](https://github.com/The-Vibe-Company/armada/commit/8896d2c3ea34d48b1a47172ccf82d04734fc8ff0))
+* **cli:** armada whoami fails with Unknown flag --org on a saved login ([#3902](https://github.com/The-Vibe-Company/armada/issues/3902)) ([e0faadf](https://github.com/The-Vibe-Company/armada/commit/e0faadfaa6ac0ec4b4dfe94c2175332518ed8697))
+* **server:** http_request logs every request at error level ([#3903](https://github.com/The-Vibe-Company/armada/issues/3903)) ([73c38ce](https://github.com/The-Vibe-Company/armada/commit/73c38ced240e785cfaa9bfe957a5dcffab1e4ce6))
+
 ## [6.0.0](https://github.com/The-Vibe-Company/armada/compare/v5.0.0...v6.0.0) (2026-11-21)
 
 
