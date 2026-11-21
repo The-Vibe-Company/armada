@@ -13,6 +13,7 @@ import { createRuntimeEnrolments } from "../src/runtime-enrolment.ts";
 import { createRuntimeEvents } from "../src/runtime-events.ts";
 import { createRuntimeHistory } from "../src/runtime-history.ts";
 import { createRuntimeProvider, type RuntimeWorkProvider } from "../src/runtime-provider.ts";
+import { RuntimeReconciliationConflict } from "../src/runtime-reconciliation-conflict.ts";
 import { createSandboxArmadaAccess } from "../src/sandbox-armada-access.ts";
 import { callSharedTool } from "../src/tool-api.ts";
 import { runtimeFixture, runtimeFixtureGolden, scopedRuntimeFixture } from "./runtime.fixture.ts";
@@ -431,6 +432,20 @@ test("an organization admin can still stop another member's runtime compute", as
     expect((await f.db.query("select 1 from runtime_checkpoints where sandbox_id=$1", [f.row.id])).rows).toHaveLength(
       0,
     );
+  } finally {
+    await f.close();
+  }
+});
+
+test("a reconciling Modal runtime refuses checkpoint before reserving its intent", async () => {
+  const f = await checkpointFixture("modal");
+  try {
+    await f.db.query("update sandboxes set reconcile_lease_until='infinity' where id=$1", [f.row.id]);
+    const checkpoint = createRuntimeCheckpoint(f.sql, ENCRYPTION_KEY, f.bridge);
+    await expect(checkpoint(f.caller, args(f.row.id))).rejects.toBeInstanceOf(RuntimeReconciliationConflict);
+    expect(
+      (await f.db.query("select request_id from runtime_checkpoints where sandbox_id=$1", [f.row.id])).rows,
+    ).toEqual([]);
   } finally {
     await f.close();
   }

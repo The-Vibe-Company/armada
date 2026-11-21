@@ -4,6 +4,7 @@ import { createAccountTurnQueue } from "../src/account-turn-queue.ts";
 import { createSqlData } from "../src/data.ts";
 import { createJobsStore } from "../src/jobs/store.ts";
 import { createRuntimeFollowup } from "../src/runtime-followup.ts";
+import { RuntimeReconciliationConflict } from "../src/runtime-reconciliation-conflict.ts";
 import { callSharedTool } from "../src/tool-api.ts";
 import { rowOnlyDatabase } from "./row-only-database.ts";
 import { runtimeFixture as fixture, scopedRuntimeFixture } from "./runtime.fixture.ts";
@@ -423,10 +424,7 @@ test("an active lifecycle reconciliation reports a closed cause before runtime p
   const f = await fixture(await sharedDatabase());
   try {
     await f.db.query("update sandboxes set reconcile_lease_until='infinity' where id=$1", [f.row.id]);
-    await expect(f.send(f.caller, f.input())).rejects.toMatchObject({
-      code: "conflict",
-      reason: "runtime_reconciliation_active",
-    });
+    await expect(f.send(f.caller, f.input())).rejects.toBeInstanceOf(RuntimeReconciliationConflict);
     expect(f.starts).toHaveLength(1);
   } finally {
     await f.close();

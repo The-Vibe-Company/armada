@@ -560,7 +560,7 @@ test("an uncertain scoped message records a correlated operator diagnostic", asy
 });
 
 test("a reconciliation refusal settles each fresh child mutation without replaying it", async () => {
-  const { close, db, sql, id, p, parent, golden, authority, token } = await fixture();
+  const { close, db, sql, id, p, parent, golden, authority, token, selection } = await fixture();
   try {
     const child = await createSqlSandboxStore(sql).insert({
       id: crypto.randomUUID(),
@@ -570,7 +570,7 @@ test("a reconciliation refusal settles each fresh child mutation without replayi
       orgId: p.org,
       ownerId: p.owner,
       harness: "codex",
-      model: parent.model,
+      model: selection.model,
       reasoningEffort: "high",
       status: "ready",
     });
