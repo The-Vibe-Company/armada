@@ -424,14 +424,15 @@ export async function publishRuntimeReadiness(
   enrolment: "bootstrap" | "retained",
 ) {
   const { rows } = await tx.query<{
-    provider: string;
+    launch_job_id: string | null;
     provider_sandbox_id: string;
     org_id: string;
     owner_id: string;
     visibility: string;
     handoff: ModalLaunchHandoff | null;
   }>(
-    `select s.provider, s.provider_sandbox_id, s.org_id, s.owner_id, s.visibility, launch.handoff from public.sandboxes s
+    `select launch.id as launch_job_id, s.provider_sandbox_id, s.org_id, s.owner_id, s.visibility, launch.handoff
+     from public.sandboxes s
      left join lateral (
        select j.id, j.outcome->'modal_handoff' as handoff from public.jobs j
        where s.provider='modal' and not $2::boolean
@@ -456,7 +457,7 @@ export async function publishRuntimeReadiness(
   );
   const [row] = rows;
   if (!row) return "skipped";
-  if (row.provider === "modal") {
+  if (row.launch_job_id !== null) {
     const handoff = row.handoff;
     if (
       rows.length !== 1 ||
