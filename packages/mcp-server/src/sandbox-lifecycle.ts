@@ -153,14 +153,19 @@ export async function readNativeCaptureAcknowledgements(
   captureId: string,
 ) {
   const { rows } = await sql.query<{ evidence: string }>(
-    `select jsonb_build_object('captureId',$8::text,'prompts',(
-       select jsonb_object_agg(p.acknowledged_request_id,p.prompt_id)
+    `select (
+       select jsonb_build_object(
+         'captureId',$8::text,
+         'prompts',jsonb_object_agg(p.acknowledged_request_id,p.prompt_id)
+           filter (where p.acknowledged_request_id is not null),
+         'completedPrompts',jsonb_agg(p.prompt_id)
+       )
        from public.native_webhook_prompts p
        where p.sandbox_id=sandboxes.id and p.provider=sandboxes.provider
          and p.provider_sandbox_id=sandboxes.provider_sandbox_id
          and p.owner_id=sandboxes.owner_id and p.org_id=sandboxes.org_id
-         and p.acknowledged_request_id is not null and p.completed_at is not null
-     ))::text as evidence
+         and p.completed_at is not null
+     )::text as evidence
      from public.sandboxes where ${NOTE_FENCE} and not application_secret_tainted`,
     [id, ...fence, stopToken, captureId],
   );

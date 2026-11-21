@@ -1739,8 +1739,13 @@ test.each(childSendScenarios)("native child send (%s)", async (scenario) => {
       );
       await db.query(
         `insert into sandbox_native_preservation_receipts
-         (sandbox_id,generation,stop_generation,capture_generation,capture_stop_generation)
-       select id,lifecycle_generation,1,lifecycle_generation,1 from sandboxes where id=$1`,
+         (sandbox_id,generation,stop_generation,capture_generation,capture_stop_generation,capture_acknowledgements)
+       select id,lifecycle_generation,1,lifecycle_generation,1,
+         jsonb_build_object('completedPrompts',(
+           select jsonb_agg(p.prompt_id) from native_webhook_prompts p
+           where p.sandbox_id=sandboxes.id and p.completed_at is not null
+         ))
+       from sandboxes where id=$1`,
         [child.id],
       );
       return db.query(
