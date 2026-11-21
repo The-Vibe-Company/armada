@@ -493,7 +493,7 @@ export async function purgeWorkRecovery(sql: Sql, id: string) {
   await sql.query("delete from public.sandbox_work_recovery where sandbox_id=$1", [id]);
 }
 
-export async function readWorkRecovery(sql: Sql, id: string, recoveryId?: string) {
+export async function readWorkRecovery(sql: Sql, id: string, recoveryId?: string): Promise<string | null> {
   const row = (
     await sql.query<{ archive_enc: Uint8Array<ArrayBuffer> }>(
       "select r.archive_enc from public.sandbox_work_recovery r join public.sandboxes s on s.id=r.sandbox_id where r.sandbox_id=$1::uuid and not s.application_secret_tainted and ($2::uuid is null or r.id=$2::uuid) order by r.created_at desc limit 1",
