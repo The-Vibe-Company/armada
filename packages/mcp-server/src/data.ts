@@ -37,6 +37,7 @@ import {
   assertSqlGoldenMutation,
   beginSnapshotLaunch,
   CoreLaunchSettlementConflict,
+  failureDiagnostic,
 } from "@armada/core/server";
 import { beginGoldenOperation, reconcileGoldenOperations } from "../../core/src/golden-store.ts";
 import { recordNativeAccountExhaustion } from "./account-exhaustion.ts";
@@ -44,6 +45,7 @@ import { publishAccountSpend, unmeasuredUsage } from "./account-spend.ts";
 import type { Caller } from "./caller.ts";
 import { scopedOrg } from "./control-caller.ts";
 import { bindNativePromptRequest } from "./native-webhook-prompts.ts";
+import { recordOperatorDiagnostic } from "./request-observability.ts";
 import { createResourceStore, type ResourceStore } from "./resource-store.ts";
 import { unsettledRuntimeCommands } from "./runtime-idle-evidence.ts";
 import {
@@ -60,6 +62,7 @@ import {
   settleRuntimeTurn,
 } from "./sandbox-lifecycle.ts";
 import { SANDBOX_MEMBER, SANDBOX_VISIBLE } from "./sandbox-visibility.ts";
+import { type StopRefusalEvidence, stopRefusalEvidence } from "./stop-refusal-evidence.ts";
 import { admittedTurnContexts, stampTurnPricing, withServerCost } from "./turn-pricing.ts";
 import { preserveBeforeStop, readWorkRecovery, type StopAuthority } from "./work-preservation.ts";
 
@@ -75,7 +78,7 @@ export interface SandboxView extends SandboxRecord {
 
 export interface ServerSandboxPatch extends SandboxPatch {
   deleteCompleted?: true;
-  requireNativeDrainRecovery?: true;
+  nativeDrain?: true;
   expireAfterExtension?: true;
   nativeExecAdmission?: { provider: SandboxRecord["provider"]; placement: string };
   nativeExecCompleted?: true;
@@ -816,7 +819,7 @@ export function createSqlData(
           if (!sql.transaction || expectedGeneration === undefined || !activityToken || !patch.finishActivity)
             throw new DataError("Sandbox deletion completion requires its activity generation and token.");
           const applied = await sql.transaction((tx) =>
-            completeSandboxDeletion(tx, scope, id, expectedGeneration, activityToken),
+            completeSandboxDeletion(tx, scope, id, expectedGeneration, activityToken, patch.nativeDrain === true),
           );
           if (!applied) throw new DataError("Sandbox deletion receipt is stale.", "sandbox_not_ready");
           return;
@@ -938,6 +941,7 @@ export function createSqlData(
           set("activity_lease_id", patch.activityToken, "::uuid");
           sets.push("activity_until = now() + interval '2 minutes'");
         }
+        if (patch.nativeDrain && patch.deleteRequested) sets.push("native_drain_pending = true");
         if (patch.rearmDeadline) sets.push("expires_at = now() + s.effective_ttl_seconds * interval '1 second'");
         if (patch.stopRequested !== undefined) {
           // Retries of an in-flight stop share one epoch; send/resume clears it.
@@ -982,7 +986,9 @@ export function createSqlData(
         const stopAdmissionReason = stopStatus === "stopping" && !patch.finishActivity ? reason : undefined;
         if (reason !== undefined && stopAdmissionReason === undefined) set("status_reason", reason, "::text");
         if (sets.length === 0) return;
-        let fence = "";
+        let fence = patch.renewActivity
+          ? " and (not s.native_drain_pending or s.activity_until > clock_timestamp())"
+          : " and not s.native_drain_pending";
         if (patch.nativeDiagnostic) {
           const { state, placement, previousReason } = patch.nativeDiagnostic;
           params.push(state, placement, previousReason);
@@ -1045,14 +1051,15 @@ export function createSqlData(
           generationParam = params.length;
           fence += ` and s.lifecycle_generation = $${params.length}`;
         }
+        let retainedProof: string | undefined;
         if (patch.retainedRuntimeStop !== undefined) {
           params.push(patch.retainedRuntimeStop);
+          retainedProof = `exists(select 1 from public.runtime_checkpoints p join public.runtime_enrolments r
+            on r.sandbox_id=p.sandbox_id and r.epoch=p.epoch
+            where p.sandbox_id=s.id and p.request_id=$${params.length}::uuid
+            and p.watermark=(select coalesce(max(sequence),0) from public.runtime_events where sandbox_id=s.id))`;
           fence += ` and s.status in ('ready','running') and s.stop_requested_at is null
-            and s.expires_at>clock_timestamp() and not s.application_secret_tainted
-            and exists(select 1 from public.runtime_checkpoints p join public.runtime_enrolments r
-              on r.sandbox_id=p.sandbox_id and r.epoch=p.epoch
-              where p.sandbox_id=s.id and p.request_id=$${params.length}::uuid
-              and p.watermark=(select coalesce(max(sequence),0) from public.runtime_events where sandbox_id=s.id))`;
+            and s.expires_at>clock_timestamp() and not s.application_secret_tainted and ${retainedProof}`;
         }
         if (patch.deleteRequested)
           fence += ` and s.status in ('stopped','failed')
@@ -1128,12 +1135,14 @@ export function createSqlData(
         const update = `update public.sandboxes s set ${sets.join(", ")} from public.goldens g
            where s.id = $3 and g.id = s.golden_id and ${SANDBOX_VISIBLE}
              and (${ownsActivity && patch.expectedGeneration !== undefined ? "true" : `${observationFence} and (s.activity_until is null or s.activity_until < now())`}) ${fence} returning ${publishTransition ? "s.id, s.status, s.lifecycle_generation::text as generation" : "s.id"}`;
+        const effects = `${cancelTurns ? ", refused as (update public.account_turn_queue q set state='failed',failure_reason='Dispatch refused by owner stop.' from updated u where q.sandbox_id=u.id and q.state in ('queued','dispatching'))" : ""}${releaseReservation ? ", released as (delete from public.account_agent_reservations r using updated u where r.sandbox_id=u.id)" : ""}`;
         const applyUpdate = (connection: Sql) =>
           connection.query<{
             id: string | null;
             status?: SandboxStatus;
             generation?: string;
             observed?: Record<string, unknown> | null;
+            stop_evidence?: StopRefusalEvidence | null;
           }>(
             observeRefusal
               ? `with observed as (select s.status::text as status,
@@ -1146,7 +1155,18 @@ export function createSqlData(
                 from public.sandboxes s where s.id=$3::uuid and ${SANDBOX_VISIBLE}),
               updated as (${update})
               select (select id from updated) as id, (select row_to_json(o) from observed o) as observed`
-              : `${wrapped ? "with updated as (" : ""}${update}${wrapped ? `)${cancelTurns ? ", refused as (update public.account_turn_queue q set state='failed',failure_reason='Dispatch refused by owner stop.' from updated u where q.sandbox_id=u.id and q.state in ('queued','dispatching'))" : ""}${releaseReservation ? ", released as (delete from public.account_agent_reservations r using updated u where r.sandbox_id=u.id)" : ""} select ${returning} from updated` : ""}`,
+              : stopStatus !== undefined
+                ? `with updated as (${update})${effects}
+                   select u.id,u.status,u.generation,
+                     case when u.id is null then (select row_to_json(e) from
+                       (select ${stopRefusalEvidence}, $${generationParam}::bigint::text as "requestGeneration",
+                         ${retainedProof ?? "null"} as "retainedCheckpointCurrent"
+                         from public.sandboxes s
+                         where s.id=$3::uuid and ${SANDBOX_VISIBLE}) e) end as stop_evidence
+                   from (values (1)) seed left join updated u on true`
+                : wrapped
+                  ? `with updated as (${update})${effects} select ${returning} from updated`
+                  : update,
             params,
           );
         const recordNativePromptAttempt = async (tx: Sql, generation: string) => {
@@ -1156,7 +1176,7 @@ export function createSqlData(
           ]);
         };
         let result: Awaited<ReturnType<typeof applyUpdate>>;
-        if (patch.requireNativeDrainRecovery) {
+        if (patch.nativeDrain) {
           const { expectedGeneration } = patch;
           if (!sql.transaction || !patch.deleteRequested || !admission || expectedGeneration === undefined)
             throw new DataError("Native drain requires its delete admission fence.");
@@ -1352,10 +1372,21 @@ export function createSqlData(
                 observed: result.rows[0]?.observed ?? null,
               }),
             );
-          throw new DataError(
+          const error = new DataError(
             "The sandbox is busy or its lifecycle changed; retry after refreshing status.",
             "sandbox_not_ready",
           );
+          if (stopStatus !== undefined)
+            recordOperatorDiagnostic(
+              patch.finishActivity ? "sandbox.stop.settlement" : "sandbox.stop.admission",
+              failureDiagnostic(error),
+              {
+                sandboxId: id,
+                refusalCode: "stop_fence_rejected",
+                stopEvidence: result.rows[0]?.stop_evidence ?? null,
+              },
+            );
+          throw error;
         }
         // Names the writer behind any later refusal's activityLeaseId. Lease IDs are random
         // fences, not credentials.

@@ -29,6 +29,7 @@ type Target = {
   deleted_at: unknown;
   stopped_at: unknown;
   leased: boolean;
+  native_drain_pending: boolean;
   credential_id: string | null;
   credential_version: number | null;
 };
@@ -69,6 +70,7 @@ export function createSandboxAccountChange(
         boatRuntime: row.boat_runtime,
         ...(row.runtime_transport ? { runtimeTransport: row.runtime_transport } : {}),
       });
+    if (row.native_drain_pending) throw new VaultError("conflict", "Native sandbox deletion is pending.");
     if (row.deleted_at || (!["ready", "stopped"].includes(row.status) && !runtimeRunning) || row.leased)
       throw new VaultError("credential_binding_unsafe", ACCOUNT_CHANGE_BUSY);
     return row;

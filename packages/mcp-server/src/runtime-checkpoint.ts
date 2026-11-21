@@ -1,13 +1,31 @@
-import { DelegatedAuthority, decryptSecret, type Sql, VaultError } from "@armada/core/server";
+import { DelegatedAuthority, decryptSecret, failureDiagnostic, type Sql, VaultError } from "@armada/core/server";
 import type { Caller } from "./caller.ts";
 import type { SandboxView } from "./data.ts";
 import { createSqlData } from "./data.ts";
 import { createDockerSandboxService } from "./docker-sandbox-service.ts";
 import { runtimeHarnessSupported } from "./provider-runtime-admission.ts";
+import { recordOperatorDiagnostic } from "./request-observability.ts";
 import type { createRuntimeCommands } from "./runtime-commands.ts";
 import { createRuntimeEnrolments } from "./runtime-enrolment.ts";
 import { unsettledRuntimeCommands } from "./runtime-idle-evidence.ts";
 import { recordStoppedCheckpointNote } from "./sandbox-lifecycle.ts";
+import { type StopRefusalEvidence, stopRefusalEvidence } from "./stop-refusal-evidence.ts";
+
+function checkpointConflict(
+  sandboxId: string,
+  refusalCode: string,
+  message: string,
+  evidence?: StopRefusalEvidence,
+  cause?: unknown,
+) {
+  const error = new VaultError("conflict", message);
+  recordOperatorDiagnostic("sandbox.checkpoint.refused", failureDiagnostic(cause ?? error), {
+    sandboxId,
+    refusalCode,
+    ...(evidence ? { stopEvidence: evidence } : {}),
+  });
+  return error;
+}
 
 interface Intent {
   epoch: string;
@@ -125,7 +143,7 @@ export function createRuntimeCheckpoint(
     if (
       !(await sql.query("select id from public.sandboxes where id=$1 and not application_secret_tainted", [id])).rows[0]
     )
-      throw new VaultError("conflict", "Application-secret exposure forbids checkpoint reuse.");
+      throw checkpointConflict(id, "checkpoint_secret_taint", "Application-secret exposure forbids checkpoint reuse.");
     return row;
   };
   const read = async (tx: Sql, id: string, requestId: string) =>
@@ -155,11 +173,12 @@ export function createRuntimeCheckpoint(
     const sandbox = await authorize(caller, input.id);
     const old = await read(sql, sandbox.id, requestId);
     if (old && old.epoch !== old.current_epoch)
-      throw new VaultError("conflict", "Checkpoint belongs to an older runtime epoch.");
+      throw checkpointConflict(sandbox.id, "stale_epoch", "Checkpoint belongs to an older runtime epoch.");
     if (old?.watermark !== null && old?.watermark !== undefined) {
       if (old.archive !== old.watermark)
-        throw new VaultError(
-          "conflict",
+        throw checkpointConflict(
+          sandbox.id,
+          "journal_changed",
           "Runtime journal changed after checkpoint; no resumable checkpoint is claimed.",
         );
       await authorize(caller, sandbox.id);
@@ -192,8 +211,9 @@ export function createRuntimeCheckpoint(
         throw new RuntimeCheckpointRejected();
       const proof = checkpointProof(reply, intent.epoch, commandId);
       if (!proof)
-        throw new VaultError(
-          "conflict",
+        throw checkpointConflict(
+          sandbox.id,
+          "invalid_proof",
           "Runtime did not acknowledge a complete checkpoint; inspect or stop without claiming resume.",
         );
       if (!sql.transaction)
@@ -215,7 +235,11 @@ export function createRuntimeCheckpoint(
         if (!target) throw new VaultError("not_found", "Runtime checkpoint target changed.");
         const current = await read(tx, sandbox.id, requestId);
         if (!current || current.epoch !== intent.epoch || current.current_epoch !== intent.epoch)
-          throw new VaultError("conflict", "Runtime epoch changed before checkpoint publication.");
+          throw checkpointConflict(
+            sandbox.id,
+            "publication_epoch_changed",
+            "Runtime epoch changed before checkpoint publication.",
+          );
         const high = (
           await tx.query<{ sequence: string }>(
             "select coalesce(max(sequence),0)::text as sequence from public.runtime_events where sandbox_id=$1",
@@ -223,14 +247,22 @@ export function createRuntimeCheckpoint(
           )
         ).rows[0];
         if (high?.sequence !== String(proof.watermark))
-          throw new VaultError("conflict", "Checkpoint journal prefix is not fully synchronized.");
+          throw checkpointConflict(
+            sandbox.id,
+            "journal_not_synchronized",
+            "Checkpoint journal prefix is not fully synchronized.",
+          );
         const saved = await tx.query(
           "update public.runtime_checkpoints set watermark=$3,completed_at=coalesce(completed_at,now()) where sandbox_id=$1 and epoch=$2 and (watermark is null or watermark=$3) returning sandbox_id",
           [sandbox.id, intent.epoch, proof.watermark],
         );
         await recordStoppedCheckpointNote(tx, sandbox.id, intent.epoch, proof.watermark);
         if (!saved.rows.length)
-          throw new VaultError("conflict", "Runtime checkpoint receipt conflicts with prior proof.");
+          throw checkpointConflict(
+            sandbox.id,
+            "receipt_conflicts",
+            "Runtime checkpoint receipt conflicts with prior proof.",
+          );
         return { ...current, watermark: String(proof.watermark) };
       });
       return receipt(sandbox.id, completed);
@@ -240,19 +272,27 @@ export function createRuntimeCheckpoint(
       if (completed) return completed;
     }
     if (!["ready", "running"].includes(sandbox.status) || sandbox.stopRequestedAt)
-      throw new VaultError("conflict", "Stopped runtime has no acknowledged checkpoint; no compute was resumed.");
+      throw checkpointConflict(
+        sandbox.id,
+        "checkpoint_state_ineligible",
+        "Stopped runtime has no acknowledged checkpoint; no compute was resumed.",
+      );
     const intent = await createRuntimeEnrolments(sql, key).withOwner(sandbox.id, caller.userId, async (tx, scope) => {
       const lease = (
-        await tx.query<{ busy: boolean }>(
-          "select (activity_lease_id is not null or reconcile_lease_until>now()) as busy from public.sandboxes where id=$1",
+        await tx.query<StopRefusalEvidence>(
+          `select ${stopRefusalEvidence} from public.sandboxes s where s.id=$1
+            and (s.activity_lease_id is not null or s.reconcile_lease_until>now())`,
           [sandbox.id],
         )
       ).rows[0];
-      if (lease?.busy)
-        throw new VaultError(
-          "conflict",
+      if (lease) {
+        throw checkpointConflict(
+          sandbox.id,
+          lease.activityLeaseId ? "activity_lease_present" : "reconcile_lease_held",
           "Runtime admission is busy; wait or reconcile its original request before checkpointing.",
+          lease,
         );
+      }
       const mergeStop = (await beforeIntent?.(tx)) === true;
       const current = (
         await tx.query<{ request_id: string }>(
@@ -261,7 +301,11 @@ export function createRuntimeCheckpoint(
         )
       ).rows[0];
       if (current && current.request_id !== requestId)
-        throw new VaultError("conflict", "Reuse the original checkpoint request_id for this epoch.");
+        throw checkpointConflict(
+          sandbox.id,
+          "request_id_changed",
+          "Reuse the original checkpoint request_id for this epoch.",
+        );
       const parent = (
         await tx.query<{ id: string }>(
           "select id from public.armada_access_parents where sandbox_id=$1 and kind='sandbox'",
@@ -275,7 +319,11 @@ export function createRuntimeCheckpoint(
             [parent.id],
           );
           if (!locked.rows.length)
-            throw new VaultError("conflict", "Scoped parent authority is busy. Retry checkpoint.");
+            throw checkpointConflict(
+              sandbox.id,
+              "scoped_parent_locked",
+              "Scoped parent authority is busy. Retry checkpoint.",
+            );
           await new DelegatedAuthority(tx, async () => {}).revoke(parent.id);
         }
         await tx.query(
@@ -291,6 +339,7 @@ export function createRuntimeCheckpoint(
         scrub: !!parent,
       };
     });
+    let commandPhase = "scoped_scrub_unconfirmed";
     try {
       if (intent.scrub) {
         const prefix = `scrub_checkpoint_${requestId}_`;
@@ -318,6 +367,7 @@ export function createRuntimeCheckpoint(
           if (!accept(reply)) throw new Error("Scoped parent scrub was not acknowledged.");
         }
       }
+      commandPhase = "checkpoint_command_unconfirmed";
       await commands.call(
         caller.userId,
         { version: 1, sandboxId: sandbox.id, requestId: `checkpoint_${requestId}`, op: "checkpoint" },
@@ -326,15 +376,22 @@ export function createRuntimeCheckpoint(
           accept: (reply) => checkpointProof(reply, intent.epoch, `checkpoint_${requestId}`) !== undefined,
         },
       );
-    } catch {
-      throw new VaultError(
-        "conflict",
+    } catch (error) {
+      throw checkpointConflict(
+        sandbox.id,
+        commandPhase,
         "Runtime checkpoint outcome is uncertain; reuse the original request_id or stop without claiming resume.",
+        undefined,
+        error,
       );
     }
     const completed = await finish(intent);
     if (!completed)
-      throw new VaultError("conflict", "Runtime checkpoint is not yet acknowledged; reuse the original request_id.");
+      throw checkpointConflict(
+        sandbox.id,
+        "missing_acknowledgement",
+        "Runtime checkpoint is not yet acknowledged; reuse the original request_id.",
+      );
     return completed;
   };
 }
@@ -352,7 +409,7 @@ export function createRuntimeStopCheckpoint(sql: Sql, checkpoint: RuntimeCheckpo
         [sandbox.id, caller.userId, sandbox.orgId, sandbox.lifecycleGeneration],
       )
     ).rows[0];
-    if (!current) throw new VaultError("conflict", "Sandbox changed before runtime stop.");
+    if (!current) throw checkpointConflict(sandbox.id, "stop_target_changed", "Sandbox changed before runtime stop.");
     if (current.application_secret_tainted) return undefined;
     return checkpoint(
       caller,
@@ -368,7 +425,11 @@ export function createRuntimeStopCheckpoint(sql: Sql, checkpoint: RuntimeCheckpo
           [sandbox.id, onlyIfIdle, current.request_id !== null, sandbox.lifecycleGeneration],
         );
         if (!eligible.rows.length)
-          throw new VaultError("conflict", "Runtime stop admission changed or work is pending.");
+          throw checkpointConflict(
+            sandbox.id,
+            "stop_checkpoint_ineligible",
+            "Runtime stop admission changed or work is pending.",
+          );
       },
     );
   };

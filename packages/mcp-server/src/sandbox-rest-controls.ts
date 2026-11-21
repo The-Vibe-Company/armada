@@ -165,7 +165,7 @@ export async function deleteSandboxWithActivity(
   const nativeDrain = mode === "native-drain";
   const admission: ServerSandboxPatch = {
     deleteRequested: true,
-    ...(nativeDrain ? { requireNativeDrainRecovery: true } : {}),
+    ...(nativeDrain ? { nativeDrain: true } : {}),
   };
   if (!sandboxes.assertDeletionAllowed) throw new ToolError("unavailable", "Sandbox deletion is not configured.");
   await sandboxes.assertDeletionAllowed(id);
@@ -199,7 +199,7 @@ export async function deleteSandboxWithActivity(
           if (nativeDrain || !(error instanceof ProviderError && error.code === "not_found")) throw error;
         }
       }
-      const patch: ServerSandboxPatch = { deleteCompleted: true };
+      const patch: ServerSandboxPatch = { deleteCompleted: true, ...(nativeDrain ? { nativeDrain: true } : {}) };
       return { result: { id: found.id, status: "deleted" as const }, patch };
     },
     nativeDrain ? undefined : { failurePatch },

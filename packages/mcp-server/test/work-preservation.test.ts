@@ -2,6 +2,7 @@ import { afterAll, beforeAll, expect, jest, mock, spyOn, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { decryptSecret, encryptSecret, type Provider, ProviderError } from "@armada/core/server";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
+import { createAccountTurnQueue } from "../src/account-turn-queue.ts";
 import type { Caller } from "../src/caller.ts";
 import { createSqlData } from "../src/data.ts";
 import { createRuntimeProvider, type RuntimeWorkProvider } from "../src/runtime-provider.ts";
@@ -1410,6 +1411,67 @@ test.each(["not_found", "pending", "settlement failure"] as const)(
     expect(state.rows).toEqual([{ status: "stopped", generation: 5, leased: true }]);
     const archive = await db.query("select archive_id from native_drain_recovery where sandbox_id=$1", [sandboxId]);
     expect(archive.rows).toEqual([{ archive_id: archiveId }]);
+  },
+);
+
+test.each(["activity", "queue", "provider observation", "owner row update", "ordinary delete"] as const)(
+  "uncertain native drain refuses %s after its lease expires",
+  async (attempt) => {
+    const { db, people, sandboxId } = await seedNativeDrainReceipt();
+    const { openaiCredentialId } = sharedDatabase();
+    await db.query(
+      "update sandboxes set credential_id=$2, credential_version=1, expires_at=now()+interval '1 day' where id=$1",
+      [sandboxId, openaiCredentialId],
+    );
+    const caller: Caller = { via: "service", userId: people.owner, orgs: [{ orgId: people.org, role: "member" }] };
+    const sql = bunLikeSql(db);
+    const { sandboxes } = createSqlData(sql)(caller);
+    const remove = mock(async () => ({ status: "pending" as const }));
+    const providers = { resolve: async () => ({ ...fakeBoat().provider, delete: remove }) };
+    await expect(deleteSandboxWithActivity(sandboxes, providers, sandboxId, "native-drain")).rejects.toThrow(
+      "Provider deletion is pending",
+    );
+    await db.query("update sandboxes set activity_until=now()-interval '1 second' where id=$1", [sandboxId]);
+
+    if (attempt === "activity") {
+      await expect(
+        sandboxes.update(sandboxId, {
+          advanceGeneration: true,
+          expectedGeneration: 5,
+          activityToken: crypto.randomUUID(),
+          stopRequested: false,
+          nativeResumeAdmission: `bx_${sandboxId}`,
+        }),
+      ).rejects.toMatchObject({ code: "sandbox_not_ready" });
+    } else if (attempt === "provider observation") {
+      await expect(
+        sandboxes.update(sandboxId, {
+          status: "ready",
+          statusReason: null,
+          expectedGeneration: 5,
+          providerObservation: { fromState: "stopped", providerRunPlacement: `bx_${sandboxId}` },
+        }),
+      ).rejects.toMatchObject({ code: "sandbox_not_ready" });
+    } else if (attempt === "owner row update") {
+      await db.transaction(async (tx) => {
+        await tx.query("select set_config('request.jwt.claim.sub', $1, true)", [people.owner]);
+        await tx.exec("set local role authenticated");
+        const updated = await tx.query("update sandboxes set status='ready',stopped_at=null where id=$1 returning id", [
+          sandboxId,
+        ]);
+        expect(updated.rows).toEqual([]);
+      });
+    } else if (attempt === "queue") {
+      const queue = createAccountTurnQueue(sql, ENCRYPTION_KEY);
+      await expect(queue.accept(caller, { id: sandboxId, prompt: "new work" })).rejects.toThrow(
+        "Sandbox cannot accept a queued prompt.",
+      );
+    } else {
+      await expect(deleteSandboxWithActivity(sandboxes, providers, sandboxId)).rejects.toMatchObject({
+        code: "sandbox_not_ready",
+      });
+      expect(remove).toHaveBeenCalledTimes(1);
+    }
   },
 );
 

@@ -269,7 +269,7 @@ export function createAccountTurnQueue(sql: Sql, key: string) {
       if (!saved) {
         const sandbox = await tx.query<Record<string, unknown> & { conversation_ids: string[] }>(
           `select id,status,provider,status_reason,preservation_note,expires_at,boat_runtime,runtime_transport,conversation_ids from public.sandboxes where id=$1 and credential_id=$2 and credential_version=$3
-           and deleted_at is null and expires_at>now() and stop_requested_at is null
+           and deleted_at is null and expires_at>now() and stop_requested_at is null and not native_drain_pending
            and status in ('ready','running','stopped') for update`,
           [input.id, target.credential_id, target.credential_version],
         );
