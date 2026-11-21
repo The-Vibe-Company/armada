@@ -421,6 +421,33 @@ describe("sandboxes", () => {
     expect(boat.requests[1]).toMatchObject({ method: "DELETE", path: `/api/v1/sandboxes/${ID}` });
     expect(boat.requests[1]?.headers.get("x-ascii-confirm-delete")).toBe(ID);
   });
+
+  test.each([
+    ["completed", {}, "completed"],
+    ["still processing", { status: "processing" }, "pending"],
+    ["wrong operation", { id: "del_other" }, null],
+    ["wrong kind", { kind: "snapshot" }, null],
+    ["wrong placement", { targetId: "bx_98765432" }, null],
+  ] as const)("observes an exact sandbox deletion: %s", async (_case, changes, status) => {
+    const boat = fakeBoat({
+      body: {
+        ok: true,
+        type: "deletion.operation",
+        operation: { id: "del_1", kind: "sandbox", targetId: ID, status: "completed", ...changes },
+      },
+    });
+    const receipt = boat.provider.observeSandboxDeletion({
+      sandboxId: ID,
+      generation: 6,
+      operationId: "del_1",
+      signal: new AbortController().signal,
+    });
+    if (status === null) await expect(receipt).rejects.toMatchObject({ code: "unknown" });
+    else await expect(receipt).resolves.toEqual({ status });
+    expect(boat.requests.map(({ method, path }) => ({ method, path }))).toEqual([
+      { method: "GET", path: "/api/v1/deletion-operations/del_1" },
+    ]);
+  });
 });
 
 describe("agent turns", () => {

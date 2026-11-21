@@ -1187,6 +1187,59 @@ describe("preservation checks", () => {
   }
 });
 
+describe("default-skill measured deadlines", () => {
+  const staging = "https://armada-mcp-staging.up.railway.app";
+  const org = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+  const goldenId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+  const cases = JSON.stringify([{ ...selected, org, goldenId }]);
+
+  for (const step of ["default_skills_golden", "default_skills_receipts"] as const) {
+    test(`a late successful ${step} read fails the smoke`, async () => {
+      let readyReads = 0;
+      const stopped = new Set<unknown>();
+      const fake = fixture((call) => {
+        if (call.path === "skills/defaults/get") {
+          if (step === "default_skills_golden" && call.body.scope === "golden") fake.advance(deadlines[step] + 1);
+          return json({ skills: [] });
+        }
+        if (call.path === "sandbox/launch") {
+          readyReads = 0;
+          const id = lifecycleId(call.body.skipSkillDefaults ? 2 : 1);
+          return json({ sandbox: { id, provider: "modal", skills: [] }, golden: { id: goldenId } });
+        }
+        if (call.path === "sandbox/stop") stopped.add(call.body.id);
+        if (call.path === "sandbox/status" && !stopped.has(call.body.id)) {
+          if (++readyReads === 2 && step === "default_skills_receipts") {
+            const budget =
+              call.body.id === lifecycleId(1) ? deadlines[step] : deadlines.default_skills_opt_out_receipts;
+            fake.advance(budget + 1);
+          }
+          return json({ status: "ready", providerState: "active", skills: [] });
+        }
+      });
+      const result = await postDeploySmoke(
+        { ...env, ARMADA_URL: staging, ARMADA_SMOKE_CASES: cases },
+        ["--work-preservation", "--default-skills"],
+        { ...fake.io, fetch: (url, init) => fake.io.fetch(url.replace(staging, env.ARMADA_URL), init) },
+      );
+      expect(result).toBe(false);
+      expect(fake.receipts()).toContainEqual({ case: 0, step, pass: false, code: "poll_limit_exceeded" });
+      expect(fake.calls.filter((call) => call.path === "sandbox/launch")).toHaveLength(
+        step === "default_skills_golden" ? 0 : 2,
+      );
+      if (step === "default_skills_receipts") {
+        expect(fake.receipts()).toContainEqual({
+          case: 0,
+          step: "default_skills_opt_out_receipts",
+          pass: false,
+          code: "poll_limit_exceeded",
+        });
+        expect(stopped).toEqual(new Set([lifecycleId(1), lifecycleId(2)]));
+      }
+    });
+  }
+});
+
 test("preservation refuses non-staging origins before requests", async () => {
   const fake = fixture();
   expect(await postDeploySmoke(env, ["--work-preservation"], fake.io)).toBe(false);
@@ -1213,6 +1266,57 @@ test("template/skill smoke validates the entire staging case configuration befor
     expect(fake.calls).toHaveLength(0);
     expect(fake.receipts()).toEqual([{ case: 0, step: "configure", pass: false, code: "invalid_configuration" }]);
   }
+});
+
+test.each([
+  {
+    mode: "timeout before headers",
+    code: "request_failed",
+    credentialList: { phase: "headers", timeoutMs: deadlines.template_model_account },
+  },
+  {
+    mode: "server failure",
+    code: "api_failed",
+    credentialList: { phase: "body", httpStatus: 500, requestId: sandboxFixtureId },
+  },
+  {
+    mode: "timeout reading the body",
+    code: "request_failed",
+    credentialList: { phase: "body", httpStatus: 200, timeoutMs: deadlines.template_model_account },
+  },
+])("template model account identifies $mode without logging response content", async (scenario) => {
+  const fake = fixture(() => {
+    const timeout = new DOMException("secret transport detail", "TimeoutError");
+    if (scenario.mode === "timeout before headers") throw timeout;
+    if (scenario.mode === "timeout reading the body") {
+      const stream = new ReadableStream({
+        start: (controller) => controller.error(timeout),
+      });
+      return new Response(stream, { headers: { "x-request-id": "secret unexpected header" } });
+    }
+    return Response.json(
+      { error: { message: "secret server detail" } },
+      { status: 500, headers: { "x-request-id": sandboxFixtureId } },
+    );
+  });
+  const staging = "https://armada-mcp-staging.up.railway.app";
+  expect(
+    await postDeploySmoke({ ...env, ARMADA_URL: staging }, ["--templates-skills"], {
+      ...fake.io,
+      fetch: (url, init) => fake.io.fetch(url.replace(staging, env.ARMADA_URL), init),
+    }),
+  ).toBe(false);
+  expect(fake.calls.map(({ path }) => path)).toEqual(["creds/list"]);
+  expect(fake.lines.filter((line) => line !== boatNotice).map((line) => JSON.parse(line))).toContainEqual({
+    case: 0,
+    lane: "templates",
+    step: "template_model_account",
+    elapsedMs: 0,
+    pass: false,
+    code: scenario.code,
+    credentialList: scenario.credentialList,
+  });
+  expect(fake.lines.join("")).not.toContain("secret");
 });
 
 test.each(["configured", "no_pins", "refused", "late_wait", "late_answer"])(
