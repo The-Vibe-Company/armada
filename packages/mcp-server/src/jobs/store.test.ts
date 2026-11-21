@@ -1324,12 +1324,14 @@ test.each([
   ["unrelated runtime resume", 3, "resume", "-infinity", true, false],
   ["runtime legacy window still open", 2, null, "infinity", true, false],
   ["runtime dispatch has no evidence", 2, null, "-infinity", true, false],
+  ["runtime dispatch has neither a window nor evidence", 2, null, null, true, false],
+  ["runtime dispatch has evidence but no window", 2, "request", null, true, false],
   ["stopped runtime dispatch has no evidence", 2, null, "-infinity", true, false],
   ["older job for abandoned runtime dispatch", 3, null, "-infinity", true, false],
   ["native receipt has a prompt ID", 2, "prompt", "-infinity", false, true],
   ["native dispatch has no evidence", 2, null, "-infinity", false, false],
   ["older job for abandoned native dispatch", 3, null, "-infinity", false, false],
-  ["native dispatch window is missing", 2, null, null, false, false],
+  ["native dispatch has neither a window nor evidence", 2, null, null, false, false],
   ["native reset interrupted before commit", 2, null, "-infinity", false, false],
 ] as const)("shared claim reconciles %s", async (scenario, generation, activity, until, runtime, uncertain) => {
   const f = await fixture();
@@ -1449,7 +1451,10 @@ test.each([
     expect(claim?.attempts).toBe(1);
   }
   const reset =
-    (interrupted && !runtime) || scenario.endsWith("dispatch has no evidence") || scenario.startsWith("older job");
+    (interrupted && !runtime) ||
+    scenario.endsWith("dispatch has no evidence") ||
+    scenario.endsWith("has neither a window nor evidence") ||
+    scenario.startsWith("older job");
   expect(await outcome()).toEqual([
     {
       job_state: uncertain ? "failed" : "leased",
