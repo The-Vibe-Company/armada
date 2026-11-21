@@ -1308,7 +1308,7 @@ test.each(["missing proof", "rolled-back admission", "lost commit response", "ve
       (
         await db.query(
           `select s.status, s.lifecycle_generation::int as generation, o.operation_id as drain_operation_id
-           from sandboxes s left join native_boat_drain_operations o on o.sandbox_id=s.id where s.id=$1`,
+           from sandboxes s left join native_drain_delete_operations o on o.sandbox_id=s.id where s.id=$1`,
           [sandboxId],
         )
       ).rows[0];
@@ -1395,7 +1395,7 @@ test.each(["not_found", "pending", "settlement failure"] as const)(
             message: "Delete target unavailable",
             retryable: false,
           });
-        return { status: outcome === "pending" ? "pending" : "deleted", operationId: "deletion-operation" };
+        return outcome === "pending" ? { status: "pending" } : { status: "deleted", operationId: "deletion-operation" };
       }),
     };
     const { sandboxes } = createSqlData(sql)(caller);
@@ -1417,7 +1417,7 @@ test.each(["not_found", "pending", "settlement failure"] as const)(
     expect(state.rows).toEqual([{ status: "stopped", generation: 5, leased: true }]);
     const archive = await db.query("select archive_id from native_drain_recovery where sandbox_id=$1", [sandboxId]);
     expect(archive.rows).toEqual([{ archive_id: archiveId }]);
-    const evidence = await db.query("select operation_id from native_boat_drain_operations where sandbox_id=$1", [
+    const evidence = await db.query("select operation_id from native_drain_delete_operations where sandbox_id=$1", [
       sandboxId,
     ]);
     expect(evidence.rows).toEqual(outcome === "settlement failure" ? [{ operation_id: "deletion-operation" }] : []);
@@ -1450,7 +1450,7 @@ test.each([
   };
   const query = sql.query;
   sql.query = async <T>(statement: string, params?: unknown[]) => {
-    if (statement.includes("insert into public.native_boat_drain_operations")) {
+    if (statement.includes("insert into public.native_drain_delete_operations")) {
       if (scenario === "Boat lost evidence write") throw new Error("Operation evidence write unavailable");
       if (scenario === "Boat lost evidence acknowledgement") {
         await query(statement, params);
@@ -1459,13 +1459,29 @@ test.each([
     }
     return query<T>(statement, params);
   };
+  const { sandboxes } = createSqlData(sql)(caller);
   const provider: Provider = {
     ...fakeBoat().provider,
     id: providerId,
     delete: mock(async () => {
       providerCalled = true;
-      if (scenario === "Boat stale receipt")
+      if (scenario === "Boat stale receipt") {
+        const {
+          rows: [lease],
+        } = await db.query<{ token: string }>("select activity_lease_id as token from sandboxes where id=$1", [
+          sandboxId,
+        ]);
+        if (!lease) throw new Error("Missing activity lease");
+        const renew = () =>
+          sandboxes.update(sandboxId, {
+            renewActivity: true,
+            expectedGeneration: 5,
+            activityToken: lease.token,
+          });
+        await renew();
         await db.query("update sandboxes set activity_until=now()-interval '1 second' where id=$1", [sandboxId]);
+        await expect(renew()).rejects.toMatchObject({ code: "sandbox_not_ready" });
+      }
       if (providerId === "boat") return { status: "pending", operationId: "deletion-operation" };
       if (!retry && scenario === "lost provider reply") throw new Error("Provider reply lost");
       if (retry && scenario === "unavailable provider")
@@ -1480,7 +1496,6 @@ test.each([
       };
     }),
   };
-  const { sandboxes } = createSqlData(sql)(caller);
   const drain = () =>
     deleteSandboxWithActivity(sandboxes, { resolve: async () => provider }, sandboxId, "native-drain");
   if (scenario === "Boat stale receipt") {
@@ -1511,9 +1526,9 @@ test.each([
     expect(provider.delete).toHaveBeenLastCalledWith({ sandboxId: `bx_${sandboxId}`, generation: 6 });
   }
   const { rows } = await db.query(
-    `select s.status,s.native_drain_pending,o.operation_id as drain_operation_id,o.placement,r.archive_id
+    `select s.status,s.native_drain_pending,o.operation_id as drain_operation_id,o.provider,o.placement,r.archive_id
        from sandboxes s join native_drain_recovery r on r.sandbox_id=s.id
-       left join native_boat_drain_operations o on o.sandbox_id=s.id where s.id=$1`,
+       left join native_drain_delete_operations o on o.sandbox_id=s.id where s.id=$1`,
     [sandboxId],
   );
   const pending = providerId === "boat" || scenario === "unavailable provider";
@@ -1523,6 +1538,7 @@ test.each([
       status: pending ? "stopped" : "deleted",
       native_drain_pending: pending,
       drain_operation_id: recorded ? "deletion-operation" : null,
+      provider: recorded ? providerId : null,
       placement: recorded ? `bx_${sandboxId}` : null,
       archive_id: archiveId,
     },
@@ -1533,9 +1549,9 @@ test("Boat drain operation evidence is service-only", async () => {
   const { db } = sharedDatabase();
   const { rows } = await db.query(
     `select
-       has_table_privilege('authenticated','public.native_boat_drain_operations','select,insert,delete') as jwt_access,
-       has_table_privilege('anon','public.native_boat_drain_operations','select,insert,delete') as anon_access,
-       has_table_privilege('service_role','public.native_boat_drain_operations','select') as service_read`,
+       has_table_privilege('authenticated','public.native_drain_delete_operations','select,insert,delete') as jwt_access,
+       has_table_privilege('anon','public.native_drain_delete_operations','select,insert,delete') as anon_access,
+       has_table_privilege('service_role','public.native_drain_delete_operations','select') as service_read`,
   );
   expect(rows).toEqual([{ jwt_access: false, anon_access: false, service_read: true }]);
 });

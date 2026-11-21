@@ -192,10 +192,14 @@ export async function deleteSandboxWithActivity(
             ...(found.lifecycleGeneration !== undefined ? { generation: found.lifecycleGeneration + 1 } : {}),
           };
           const receipt = await provider.delete(target);
-          if (nativeDrain && found.provider === "boat" && receipt.operationId?.trim()) {
+          if (nativeDrain && receipt.operationId?.trim()) {
             signal.throwIfAborted();
             await sandboxes.update(id, {
-              nativeBoatDrainOperation: { placement: target.sandboxId, id: receipt.operationId },
+              nativeDrainDeleteOperation: {
+                provider: found.provider,
+                placement: target.sandboxId,
+                id: receipt.operationId,
+              },
               ...(target.generation === undefined ? {} : { expectedGeneration: target.generation }),
               activityToken,
             });

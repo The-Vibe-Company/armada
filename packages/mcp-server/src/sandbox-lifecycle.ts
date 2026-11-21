@@ -878,29 +878,30 @@ export async function publishOwnerStop(
   if (result.kind === "conflict") throw new Error("Locked owner stop could not transition.");
 }
 
-export async function recordNativeBoatDrainOperation(
+export async function recordNativeDrainDeleteOperation(
   sql: Sql,
   scope: [string[], string],
   sandboxId: string,
   generation: number,
   activityToken: string,
-  operation: { placement: string; id: string },
+  operation: { provider: SandboxRecord["provider"]; placement: string; id: string },
 ) {
   const { rows } = await sql.query(
     `with owned as materialized (
-       select s.id, s.provider_sandbox_id, s.activity_until
+       select s.id, s.provider, s.provider_sandbox_id, s.activity_until
        from public.sandboxes s
        where s.id=$3::uuid and ${SANDBOX_VISIBLE}
          and s.lifecycle_generation=$4 and s.activity_lease_id=$5 and s.native_drain_pending
-         and s.provider='boat' and s.provider_sandbox_id=$6 and not s.boat_runtime
+         and s.provider=$6::public.sandbox_provider and s.provider in ('boat','modal')
+         and s.provider_sandbox_id=$7 and not s.boat_runtime
          and s.runtime_transport is distinct from 'dialout' and s.deleted_at is null
        for update of s
      )
-     insert into public.native_boat_drain_operations (sandbox_id, placement, operation_id)
-     select id, provider_sandbox_id, $7 from owned where activity_until>clock_timestamp()
+     insert into public.native_drain_delete_operations (sandbox_id, provider, placement, operation_id)
+     select id, provider, provider_sandbox_id, $8 from owned where activity_until>clock_timestamp()
      on conflict (sandbox_id) do nothing
      returning sandbox_id`,
-    [...scope, sandboxId, generation, activityToken, operation.placement, operation.id],
+    [...scope, sandboxId, generation, activityToken, operation.provider, operation.placement, operation.id],
   );
   return rows.length > 0;
 }
@@ -929,7 +930,7 @@ export async function completeSandboxDeletion(
      where s.id=owned.id and (not $6::boolean or owned.activity_until>clock_timestamp())
      returning s.id, s.lifecycle_generation::text as generation
      ), cleared as (
-       delete from public.native_boat_drain_operations o using settled
+       delete from public.native_drain_delete_operations o using settled
        where $6::boolean and o.sandbox_id=settled.id
      )
      select generation from settled`,
