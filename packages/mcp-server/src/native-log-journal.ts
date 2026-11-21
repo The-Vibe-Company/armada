@@ -1,5 +1,13 @@
 import { createHash } from "node:crypto";
-import { decryptSecret, type EventPage, encryptSecret, type Provider, type Sql, VaultError } from "@armada/core/server";
+import {
+  decryptSecret,
+  type EventPage,
+  encryptSecret,
+  eventPageOptions,
+  type Provider,
+  type Sql,
+  VaultError,
+} from "@armada/core/server";
 import { NativeOutputPending, persistedNativePages } from "./event-pagination.ts";
 import { SANDBOX_VISIBLE } from "./sandbox-visibility.ts";
 
@@ -17,6 +25,12 @@ const pendingCommand = `
     where a.account_id=s.credential_id and a.account_version=s.credential_version)
 `;
 
+type StoredPage = EventPage & { budget?: { anchor: string; limit: number; maxBytes: number } };
+
+function hashRequest(parts: readonly unknown[]) {
+  return createHash("sha256").update(JSON.stringify(parts)).digest("hex");
+}
+
 export function withNativeLogJournal(
   sql: Sql,
   key: string,
@@ -28,19 +42,18 @@ export function withNativeLogJournal(
     ...provider,
     async events(request) {
       const params = [[scope.orgId], scope.userId, scope.id, request.sandboxId];
-      const digest = createHash("sha256")
-        .update(
-          JSON.stringify([
-            request.cursor ?? null,
-            request.direction ?? "forward",
-            request.conversationId ?? null,
-            request.limit ?? 100,
-            request.maxBytes ?? 262144,
-            request.coalesce ?? false,
-          ]),
-        )
-        .digest("hex");
-      const slot = (request.direction === "backward" ? 4 : 0) + (Number.parseInt(digest[0]!, 16) % 4);
+      const { backward, limit, maxBytes } = eventPageOptions(request, provider.id);
+      const coalesce = request.coalesce ?? false;
+      const anchor = hashRequest([request.cursor ?? null, request.conversationId ?? null, coalesce]);
+      const digest = hashRequest([
+        request.cursor ?? null,
+        request.direction ?? "forward",
+        request.conversationId ?? null,
+        limit,
+        maxBytes,
+        coalesce,
+      ]);
+      const slot = (backward ? 4 : 0) + (Number.parseInt(digest[0]!, 16) % 4);
       const {
         rows: [target],
       } = await sql.query<{ generation: string; pending: boolean; observed: string }>(
@@ -53,21 +66,28 @@ export function withNativeLogJournal(
 
       const journalParams = [...params, slot, digest];
       const persisted = async () => {
-        const {
-          rows: [saved],
-        } = await sql.query<{ page: string }>(
-          `select encode(p.page_enc,'base64') as page
+        const { rows } = await sql.query<{ digest: string; page: string }>(
+          `select p.request_hash as digest, encode(p.page_enc,'base64') as page
            from public.sandboxes s join armada_logs.native_log_pages p
              on p.sandbox_id=s.id and p.provider_sandbox_id=s.provider_sandbox_id
-           where ${authorizedSandbox} and p.slot=$5 and p.request_hash=$6`,
-          journalParams,
+           where ${authorizedSandbox} and ((p.slot=$5 and p.request_hash=$6) or ($7::boolean and p.slot>=4))
+           order by (p.request_hash=$6) desc, p.observed_at desc, p.slot`,
+          [...journalParams, backward],
         );
-        if (!saved) return undefined;
-        const page: EventPage = JSON.parse(
-          await decryptSecret(Uint8Array.from(Buffer.from(saved.page, "base64")), key),
-        );
-        persistedNativePages.add(page);
-        return page;
+        for (const saved of rows) {
+          const { budget, ...page }: StoredPage = JSON.parse(
+            await decryptSecret(Uint8Array.from(Buffer.from(saved.page, "base64")), key),
+          );
+          if (saved.digest !== digest) {
+            if (budget?.anchor !== anchor) continue;
+            const rawCount = coalesce ? budget.limit : page.events.length;
+            const bytes = coalesce ? budget.maxBytes : Buffer.byteLength(JSON.stringify(page.events));
+            if (rawCount > limit || (bytes > maxBytes && (coalesce || rawCount !== 1))) continue;
+          }
+          persistedNativePages.add(page);
+          return page;
+        }
+        return undefined;
       };
       request.signal?.throwIfAborted();
       if (target.pending) {
@@ -86,7 +106,8 @@ export function withNativeLogJournal(
         throw error;
       }
       if (page.events.length > 0) {
-        const body = JSON.stringify(page);
+        const stored: StoredPage = backward ? { ...page, budget: { anchor, limit, maxBytes } } : page;
+        const body = JSON.stringify(stored);
         if (Buffer.byteLength(body) <= 1_310_720) {
           try {
             const sealed = await encryptSecret(body, key);
