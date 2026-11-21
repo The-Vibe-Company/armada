@@ -27,7 +27,6 @@ export type Command = {
   helpWhenBare?: boolean;
   validateProfileForHelp?: boolean;
   requireKnownSubcommand?: boolean;
-  /** Opt in to receiving the saved organization as an implicit --org argument. */
   useSelectedOrg?: true | ((argv: readonly string[]) => boolean);
   run: (argv: readonly string[], context: { io: Io; deps: Deps; auth: AuthIo }) => Promise<number>;
 };
