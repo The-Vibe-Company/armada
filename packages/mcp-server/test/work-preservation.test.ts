@@ -1015,7 +1015,10 @@ test.each([
   await expect(drain.remove(candidate)).rejects.toThrow("before preservation and stop are confirmed");
   expect((await inventory())?.status).toBe("stopping");
   expect(stop).not.toHaveBeenCalled();
-  await db.query("update sandboxes set reconcile_after='-infinity' where id=$1", [sandboxId]);
+  await db.query(
+    "update sandboxes set reconcile_after=case when id=$1 then '-infinity'::timestamptz else 'infinity'::timestamptz end",
+    [sandboxId],
+  );
 
   const worker = createSandboxLifecycle(sql, async (id) => {
     expect(id).toBe(sandboxId);
@@ -1032,7 +1035,6 @@ test.each([
     ]);
     expect(proof.rows).toEqual([{ outcome: "clean" }]);
   }
-  await db.query("update sandboxes set reconcile_after='infinity' where id=$1", [sandboxId]);
 });
 
 test("Modal native interrupt cannot restore the disk after strict stop admission", async () => {
