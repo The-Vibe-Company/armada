@@ -1,6 +1,6 @@
-import { afterAll, beforeAll, expect, spyOn, test } from "bun:test";
+import { afterAll, beforeAll, expect, jest, mock, spyOn, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { decryptSecret, encryptSecret, ProviderError } from "@armada/core/server";
+import { decryptSecret, encryptSecret, type Provider, ProviderError } from "@armada/core/server";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import type { Caller } from "../src/caller.ts";
 import { createSqlData } from "../src/data.ts";
@@ -869,31 +869,23 @@ async function seedNativeDrainReceipt(ciphertext = new Uint8Array([21, 34, 55]))
   return { db, people, sandboxId, archiveId, ciphertext, copy };
 }
 
-test("ordinary native exec excludes owner stop until workspace mutation finishes", async () => {
-  const { db, people, sharedGoldenId } = sharedDatabase();
-  const boat = fakeBoat();
-  const machine = await boat.provider.fork({
-    from: "fixture-snapshot",
-    noEnv: true,
-    env: {},
-    labels: {},
-    ttlSeconds: 3600,
-  });
+async function nativeExecFixture(provider: Provider, placement: string) {
+  const { db, people, sharedGoldenId, modalGoldenId, openaiCredentialId } = sharedDatabase();
   const sandboxId = crypto.randomUUID();
   await db.query(
-    `insert into sandboxes(id,golden_id,org_id,owner_id,provider,provider_sandbox_id,harness,status)
-     values($1,$2,$3,$4,'boat',$5,'claude','ready')`,
-    [sandboxId, sharedGoldenId, people.org, people.owner, machine.id],
+    `insert into sandboxes(id,golden_id,org_id,owner_id,provider,provider_sandbox_id,harness,status,credential_id,credential_version)
+     values($1,$2,$3,$4,$5,$6,'codex','ready',$7,1)`,
+    [
+      sandboxId,
+      provider.id === "modal" ? modalGoldenId : sharedGoldenId,
+      people.org,
+      people.owner,
+      provider.id,
+      placement,
+      openaiCredentialId,
+    ],
   );
   const caller: Caller = { via: "service", userId: people.owner, orgs: [{ orgId: people.org, role: "admin" }] };
-  let stopDuringExec: CallToolResult | undefined;
-  const provider = {
-    ...boat.provider,
-    async exec(request: Parameters<typeof boat.provider.exec>[0]) {
-      if (request.command === "edit workspace") stopDuringExec = await invoke("stop", { id: sandboxId });
-      return boat.provider.exec(request);
-    },
-  };
   const context: ToolContext = {
     caller,
     data: createSqlData(bunLikeSql(db))(caller),
@@ -918,6 +910,29 @@ test("ordinary native exec excludes owner stop until workspace mutation finishes
     return reply;
   }
 
+  return { db, context, sandboxId, invoke };
+}
+
+test.each(["boat", "modal"])("ordinary native exec excludes owner stop on %s", async (providerId) => {
+  const boat = fakeBoat();
+  const machine = await boat.provider.fork({
+    from: "fixture-snapshot",
+    noEnv: true,
+    env: {},
+    labels: {},
+    ttlSeconds: 3600,
+  });
+  let stopDuringExec: CallToolResult | undefined;
+  const provider = {
+    ...boat.provider,
+    id: providerId,
+    async exec(request: Parameters<typeof boat.provider.exec>[0]) {
+      if (request.command === "edit workspace") stopDuringExec = await invoke("stop", { id: sandboxId });
+      return boat.provider.exec(request);
+    },
+  };
+  const { invoke, context, sandboxId } = await nativeExecFixture(provider, machine.id);
+
   const result = await invoke("exec", { id: sandboxId, command: "edit workspace" });
   expect(stopDuringExec?.isError).toBe(true);
   expect(boat.stops).toHaveLength(0);
@@ -933,6 +948,97 @@ test("ordinary native exec excludes owner stop until workspace mutation finishes
   const commands = boat.execs.length;
   expect((await invoke("exec", { id: sandboxId, command: "must not restore" })).isError).toBe(true);
   expect(boat.execs).toHaveLength(commands);
+});
+
+test("ordinary native exec refuses newly tainted Modal workspaces before provider preparation", async () => {
+  const fake = fakeBoat();
+  const provider = { ...fake.provider, id: "modal" };
+  const { db, context, sandboxId, invoke } = await nativeExecFixture(provider, crypto.randomUUID());
+  const prepare = mock(async () => {});
+  context.connections = {
+    async validate() {},
+    async bind() {},
+    prepare,
+  };
+  const exec = spyOn(provider, "exec");
+  const assertExecAllowed = context.data.sandboxes.assertExecAllowed;
+  context.data.sandboxes.assertExecAllowed = async (id) => {
+    await assertExecAllowed?.(id);
+    await db.query("update sandboxes set application_secret_tainted=true where id=$1", [sandboxId]);
+  };
+
+  expect((await invoke("exec", { id: sandboxId, command: "edit workspace" })).isError).toBe(true);
+  expect(prepare).not.toHaveBeenCalled();
+  expect(exec).not.toHaveBeenCalled();
+});
+
+test.each(["lost command response", "failed redaction", "failed settlement"])(
+  "ordinary native exec keeps the Modal lease after %s",
+  async (failure) => {
+    const fake = fakeBoat();
+    const provider = { ...fake.provider, id: "modal" };
+    const { db, context, sandboxId, invoke } = await nativeExecFixture(provider, crypto.randomUUID());
+    const exec = provider.exec;
+    let signal: AbortSignal | undefined;
+    provider.exec = async (request) => {
+      signal = request.signal;
+      if (failure === "lost command response") throw new Error(failure);
+      return exec(request);
+    };
+    if (failure === "failed redaction") {
+      context.exposedSecrets = async () => {
+        throw new Error(failure);
+      };
+    }
+    if (failure === "failed settlement") {
+      const update = context.data.sandboxes.update;
+      context.data.sandboxes.update = async (id, patch) => {
+        if (patch.finishActivity) throw new Error(failure);
+        return update(id, patch);
+      };
+    }
+
+    const result = await invoke("exec", { id: sandboxId, command: "edit workspace" });
+    expect(signal).toBeInstanceOf(AbortSignal);
+    expect(result.isError).toBe(true);
+    expect(result.content).toContainEqual({ type: "text", text: "error code: outcome_unknown" });
+    const lease = (
+      await db.query<{ active: boolean }>(
+        "select activity_lease_id is not null and activity_until > now() as active from sandboxes where id=$1",
+        [sandboxId],
+      )
+    ).rows[0];
+    expect(lease?.active).toBe(true);
+  },
+);
+
+test("ordinary native exec skips post-command provider sampling after the activity deadline", async () => {
+  const fake = fakeBoat();
+  const provider = {
+    ...fake.provider,
+    id: "modal",
+    async exec(request: Parameters<typeof fake.provider.exec>[0]) {
+      const completed = await fake.provider.exec(request);
+      jest.advanceTimersByTime(180_000);
+      return completed;
+    },
+  };
+  const { context, sandboxId, invoke } = await nativeExecFixture(provider, crypto.randomUUID());
+  const sampled: (string | undefined)[] = [];
+  context.launchCredentials.nativeSecrets = async (_actor, _id, _provider, _placement, phase) => {
+    sampled.push(phase);
+    return [];
+  };
+
+  jest.useFakeTimers();
+  try {
+    const result = await invoke("exec", { id: sandboxId, command: "edit workspace" });
+    expect(result.content).toContainEqual({ type: "text", text: "error code: outcome_unknown" });
+    expect(fake.execs).toHaveLength(1);
+    expect(sampled).toEqual(["before"]);
+  } finally {
+    jest.useRealTimers();
+  }
 });
 
 test("owners and admins can recover the exact native archive after normal deletion and handoff replay", async () => {

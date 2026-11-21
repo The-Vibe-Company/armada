@@ -23,4 +23,4 @@ export function runtimeConfigurationFailure(id: unknown) {
   return `${typeof id === "string" && Object.hasOwn(names, id) ? names[id] : "Runtime"} configuration is unavailable.`;
 }
 
-export const nativeExecCancellation: Readonly<Partial<Record<SandboxProviderId, true>>> = { boat: true };
+export const nativeExecCancellation: Readonly<Partial<Record<SandboxProviderId, true>>> = { boat: true, modal: true };

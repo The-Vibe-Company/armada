@@ -76,7 +76,7 @@ export interface SandboxView extends SandboxRecord {
 export interface ServerSandboxPatch extends SandboxPatch {
   deleteCompleted?: true;
   expireAfterExtension?: true;
-  nativeBoatExecAdmission?: true;
+  nativeExecAdmission?: { provider: SandboxRecord["provider"]; placement: string };
   nativeRetentionRefusal?: string;
   nativeResumeAdmission?: string;
   nativeSendAdmission?: ServerSandboxPatch["nativeChildSend"];
@@ -124,7 +124,7 @@ export interface ServerSandboxStore extends SandboxStore {
   launchTiming?(id: string): Promise<LaunchTiming | null>;
   assertExtensionAllowed?(id: string): Promise<void>;
   assertDeletionAllowed?(id: string): Promise<void>;
-  /** Refuse taint and stop intent before any exec; native Boat exec also claims the activity lease. */
+  /** Refuse taint and stop intent before exec; native Boat and Modal exec also claim the activity lease. */
   assertExecAllowed?(id: string): Promise<void>;
   recordUsage?(
     id: string,
@@ -1055,11 +1055,16 @@ export function createSqlData(
         if (patch.deleteRequested)
           fence += ` and s.status in ('stopped','failed')
             and not ${SANDBOX_DELETION_MANAGED}`;
-        if (patch.nativeBoatExecAdmission)
-          fence += ` and s.provider='boat' and not s.boat_runtime
+        if (patch.nativeExecAdmission) {
+          params.push(patch.nativeExecAdmission.provider, patch.nativeExecAdmission.placement);
+          fence += ` and s.provider=$${params.length - 1}::public.sandbox_provider
+            and s.provider_sandbox_id=$${params.length}
+            and s.provider in ('boat','modal') and not s.boat_runtime
             and s.runtime_transport is distinct from 'dialout'
             and s.status in ('starting','ready','running') and s.deleted_at is null
-            and s.expires_at>clock_timestamp() and s.stop_requested_at is null`;
+            and s.expires_at>clock_timestamp() and s.stop_requested_at is null
+            and not s.application_secret_tainted`;
+        }
         // A read-only reconciler may overlap list readiness. Admission can supersede
         // that observation, but never a claimed stop or an expired/starting sandbox.
         // The generation CAS also fences its stop-claim and late publication.
