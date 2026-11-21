@@ -7,6 +7,7 @@ export function sandboxOperation(metadata: Omit<Command, "run" | "name"> & { nam
   return {
     ...metadata,
     automaticJson: true,
+    useSelectedOrg: true,
     run: (argv, { auth, deps }) => operation(metadata.name, argv, auth, async () => "", undefined, deps.sandboxFile),
   };
 }

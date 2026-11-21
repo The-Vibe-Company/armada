@@ -22,6 +22,7 @@ Native providers do not deduplicate by request ID. Inspect state before retrying
 Example: armada prompt SANDBOX_UUID --steer -- "Focus on the failing test"
 `,
   automaticJson: true,
+  useSelectedOrg: true,
   async run(argv, { auth, deps }) {
     const args = parseArgs(argv, ["--request-id"], ["--steer"]);
     const steer = flag(args, "--steer");

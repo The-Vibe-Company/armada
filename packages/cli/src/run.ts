@@ -240,8 +240,7 @@ async function dispatch(argv: readonly string[], io: Io, deps: Deps): Promise<nu
   const terminator = rest.indexOf("--");
   const optionArgs = terminator < 0 ? rest : rest.slice(0, terminator);
   const useSelectedOrg = registered?.useSelectedOrg;
-  const commandUsesSelection =
-    typeof useSelectedOrg === "function" ? useSelectedOrg(rest) : registered && useSelectedOrg !== false;
+  const commandUsesSelection = typeof useSelectedOrg === "function" ? useSelectedOrg(rest) : useSelectedOrg === true;
   if (command && commandUsesSelection && !optionArgs.some((arg) => arg === "--org" || arg.startsWith("--org="))) {
     const auth = authOf(io, deps);
     const selected = await auth.preferences?.read(await resolveArmadaOrigin(auth));

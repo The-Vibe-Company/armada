@@ -176,6 +176,7 @@ Example: armada new starter --provider modal --agent codex "Inspect the reposito
 Example: armada new "Inspect the repository" --provider docker --host workstation --agent codex --org ORG_UUID
 `,
   automaticJson: true,
+  useSelectedOrg: true,
   run,
 } satisfies Command;
 

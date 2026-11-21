@@ -24,7 +24,6 @@ does not unset that environment variable. Keep tokens in a secure environment, n
 {authenticated:true} after authorization. Open the link on any machine.
 Example: armada --profile staging login --url https://staging.example.com
 `,
-  useSelectedOrg: false,
   async run(argv, { auth }) {
     const parsed = parseAuth(argv);
     rejectUnknown(parsed.flags, ["url", "org", "json"]);
