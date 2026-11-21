@@ -723,3 +723,71 @@ test("subscription preparation leaves provider stop to a strict drain admitted d
   expect(admitted).toBe(true);
   expect(boat.stops).toEqual([]);
 });
+
+test("strict drain cannot admit while a Boat subscription stop owns provider dispatch", async () => {
+  const { db, people } = await database();
+  const actor: GoldenActor = { userId: people.owner, orgId: people.org, role: "member" };
+  const account = (
+    await db.query<{ id: string }>(
+      "insert into credentials(scope,owner_id,kind,value_enc) values('user',$1,'codex_auth',$2) returning id",
+      [people.owner, await encryptSecret(native(0), ENCRYPTION_KEY)],
+    )
+  ).rows[0]!;
+  const golden = (await createSqlGoldenStore(db).findByName(people.org, "shared"))[0]!;
+  const boat = fakeBoat();
+  const physical = await boat.provider.fork({ from: "legacy", noEnv: true, env: {}, labels: {}, ttlSeconds: 3600 });
+  const store = createSqlSandboxStore(db);
+  const sandbox = await store.insert({
+    id: crypto.randomUUID(),
+    provider: "boat",
+    providerSandboxId: physical.id,
+    goldenId: golden.id,
+    orgId: actor.orgId,
+    ownerId: actor.userId,
+    harness: "codex",
+    status: "ready",
+    model: "gpt-6.1-sol",
+    reasoningEffort: "high",
+    credentialId: account.id,
+    expiresAt: new Date(Date.now() + 60_000).toISOString(),
+  });
+  let strictAdmission: boolean | undefined;
+  const provider = {
+    ...boat.provider,
+    async stop(request: { sandboxId: string }) {
+      const [current] = (
+        await db.query<{ generation: number }>(
+          "select lifecycle_generation::int as generation from sandboxes where id=$1",
+          [sandbox.id],
+        )
+      ).rows;
+      strictAdmission = await requestNativeDrainStop(
+        db,
+        { ...sandbox, lifecycleGeneration: current!.generation },
+        "boat",
+        actor.userId,
+      );
+      await boat.provider.stop(request);
+    },
+  };
+  const unexpected = () => {
+    throw Error("an unversioned source must not transfer native auth");
+  };
+  const migration = createSubscriptionMigration(
+    db,
+    async () => ({ provider, providerSandboxId: physical.id }),
+    unexpected,
+    { configuration: unexpected, transferLegacy: unexpected },
+  );
+  await migration.prepareAccount(actor, account.id, 1);
+
+  expect(strictAdmission).toBe(false);
+  expect(boat.stops).toEqual([physical.id]);
+  const [finished] = (
+    await db.query<{ activity_lease_id: string | null; generation: number }>(
+      "select activity_lease_id, lifecycle_generation::int as generation from sandboxes where id=$1",
+      [sandbox.id],
+    )
+  ).rows;
+  expect(finished).toEqual({ activity_lease_id: null, generation: sandbox.lifecycleGeneration! + 2 });
+});

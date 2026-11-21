@@ -7,7 +7,11 @@ import {
   sshPrivateAuthState,
   VaultError,
 } from "@armada/core/server";
-import { hasStrictNativeDrainStop } from "./sandbox-lifecycle.ts";
+import {
+  claimBoatSubscriptionStop,
+  finishBoatSubscriptionStop,
+  hasStrictNativeDrainStop,
+} from "./sandbox-lifecycle.ts";
 import { captureFinalOutputs } from "./sandbox-outputs.ts";
 import { configureBoatSubscription } from "./subscription-boat.ts";
 import { type SubscriptionConfiguration, SubscriptionTemporaryError } from "./subscription-broker.ts";
@@ -153,6 +157,20 @@ export function createSubscriptionMigration(
       await new Promise((resolve) => setTimeout(resolve, Math.min(100, Math.max(0, deadline - Date.now()))));
     }
   }
+  async function stopBoat(source: Source, target: Target) {
+    if (!sql.transaction) throw new VaultError("unavailable", "Subscription native upgrade requires transactions.");
+    const token = crypto.randomUUID();
+    const generation = await sql.transaction(async (tx) => {
+      await recheckLocked(source, tx);
+      return claimBoatSubscriptionStop(tx, source.id, source.lifecycle_generation, token);
+    });
+    const request = { sandboxId: target.providerSandboxId, generation };
+    await target.provider.stop(request);
+    const stopped = await target.provider.get(request.sandboxId, { signal: AbortSignal.timeout(10_000) });
+    if (stopped.id !== request.sandboxId || stopped.state !== "stopped")
+      throw new VaultError("unavailable", "Subscription native stop is not confirmed.");
+    await finishBoatSubscriptionStop(sql, source.id, generation, token);
+  }
   async function upgrade(source: Source, target: Target, version: number) {
     if (target.provider.id !== source.provider || target.providerSandboxId !== source.provider_sandbox_id)
       throw new VaultError("conflict", "Subscription provider binding changed.");
@@ -169,6 +187,10 @@ export function createSubscriptionMigration(
       await captureFinalOutputs(sql, target.provider, source.id, { signal: AbortSignal.timeout(10_000) }).catch(
         () => {},
       );
+      if (target.provider.id === "boat") {
+        await stopBoat(source, target);
+        return;
+      }
       await recheck(source);
       try {
         await target.provider.stop({ sandboxId: target.providerSandboxId });
@@ -183,12 +205,7 @@ export function createSubscriptionMigration(
         )
           throw error;
       }
-      if (target.provider.id === "modal") await waitStopped(target);
-      else {
-        const stopped = await target.provider.get(target.providerSandboxId, { signal: AbortSignal.timeout(10_000) });
-        if (stopped.id !== target.providerSandboxId || stopped.state !== "stopped")
-          throw new VaultError("unavailable", "Subscription native stop is not confirmed.");
-      }
+      await waitStopped(target);
       return;
     }
     if (target.provider.id === "boat") await upgradeBoat(source, target, version);

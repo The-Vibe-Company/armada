@@ -911,6 +911,34 @@ export async function hasStrictNativeDrainStop(tx: Sql, sandboxId: string) {
   return result.rows.length > 0;
 }
 
+/** The caller holds the sandbox row lock and has checked the current strict stop marker. */
+export async function claimBoatSubscriptionStop(tx: Sql, id: string, generation: number, token: string) {
+  const { rows } = await tx.query<{ generation: string }>(
+    `update public.sandboxes set activity_lease_id=$3, activity_until=clock_timestamp()+interval '2 minutes',
+       lifecycle_generation=lifecycle_generation+1, reconcile_after=clock_timestamp()
+     where id=$1 and lifecycle_generation=$2 and status in ('ready','running','starting')
+       and provider='boat' and not boat_runtime and runtime_transport is distinct from 'dialout'
+       and stop_requested_at is null and stopped_at is null and expires_at>clock_timestamp()
+       and activity_lease_id is null and (activity_until is null or activity_until<=clock_timestamp())
+       and (reconcile_lease_until is null or reconcile_lease_until<=clock_timestamp())
+     returning lifecycle_generation::text as generation`,
+    [id, generation, token],
+  );
+  if (!rows[0]) throw new VaultError("conflict", "Native sandbox stop activity could not be admitted.");
+  return rows[0].generation;
+}
+
+export async function finishBoatSubscriptionStop(sql: Sql, id: string, generation: string, token: string) {
+  const { rows } = await sql.query(
+    `update public.sandboxes set lifecycle_generation=lifecycle_generation+1,
+       activity_lease_id=null, activity_until=null, reconcile_after=clock_timestamp()
+     where id=$1 and lifecycle_generation=$2 and activity_lease_id=$3
+       and activity_until>clock_timestamp() returning id`,
+    [id, generation, token],
+  );
+  if (!rows.length) throw new VaultError("conflict", "Native sandbox stop activity is no longer current.");
+}
+
 export async function requestNativeDrainStop(
   sql: Sql,
   sandbox: SandboxRecord,
