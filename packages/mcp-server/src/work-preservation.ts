@@ -423,8 +423,6 @@ async function captureAndStore(
         onWorkAtRisk,
       });
     } else {
-      // The collector reads archive chunks in separate exec calls. Bind every call
-      // to the incarnation observed before quiescence.
       const collector = physicalGeneration
         ? {
             exec: (request: Parameters<Provider["exec"]>[0]) =>
