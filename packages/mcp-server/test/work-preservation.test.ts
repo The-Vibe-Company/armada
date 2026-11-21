@@ -832,3 +832,111 @@ test.each(["observe", "capture"] as const)(
     });
   },
 );
+
+async function seedNativeDrainReceipt() {
+  const { db, people, sharedGoldenId } = sharedDatabase();
+  const sandboxId = crypto.randomUUID();
+  const archiveId = crypto.randomUUID();
+  const ciphertext = new Uint8Array([21, 34, 55]);
+  await db.query(
+    `insert into sandboxes(id,golden_id,org_id,owner_id,provider,provider_sandbox_id,harness,status,
+       stopped_at,lifecycle_generation,stop_generation,preservation_stop_generation)
+     values($1,$2,$3,$4,'boat',$5,'claude','stopped',now(),4,2,2)`,
+    [sandboxId, sharedGoldenId, people.org, people.owner, `bx_${sandboxId}`],
+  );
+  await db.query("insert into sandbox_work_recovery(id,sandbox_id,archive_enc) values($1,$2,$3)", [
+    archiveId,
+    sandboxId,
+    ciphertext,
+  ]);
+  await db.query(
+    `insert into sandbox_native_preservation_receipts
+       (sandbox_id,generation,stop_generation,capture_generation,capture_stop_generation,archive_id)
+     values($1,4,2,4,2,$2)`,
+    [sandboxId, archiveId],
+  );
+  async function copy(generation = 4) {
+    const result = await db.query<{ outcome: string }>("select copy_native_drain_recovery($1,$2) as outcome", [
+      sandboxId,
+      generation,
+    ]);
+    return result.rows[0]?.outcome;
+  }
+  return { db, people, sandboxId, archiveId, ciphertext, copy };
+}
+
+test("the exact native recovery survives normal sandbox deletion and a handoff retry does not duplicate it", async () => {
+  const { db, people, sandboxId, archiveId, ciphertext, copy } = await seedNativeDrainReceipt();
+  expect(await copy()).toBe("archived");
+  expect(await copy()).toBe("archived");
+
+  const token = crypto.randomUUID();
+  await db.query("update sandboxes set activity_lease_id=$2,activity_until=now()+interval '1 day' where id=$1", [
+    sandboxId,
+    token,
+  ]);
+  const { sandboxes } = createSqlData(bunLikeSql(db))({
+    via: "service",
+    userId: people.owner,
+    orgs: [{ orgId: people.org, role: "admin" }],
+  });
+  await sandboxes.update(sandboxId, {
+    deleteCompleted: true,
+    expectedGeneration: 4,
+    activityToken: token,
+    finishActivity: true,
+  });
+
+  expect((await sandboxes.get(sandboxId))?.status).toBe("deleted");
+  expect((await db.query("select id from sandbox_work_recovery where sandbox_id=$1", [sandboxId])).rows).toEqual([]);
+  expect(await copy(5)).toBe("ineligible");
+  expect(
+    (
+      await db.query("select archive_id,org_id,owner_id,archive_enc from native_drain_recovery where sandbox_id=$1", [
+        sandboxId,
+      ])
+    ).rows,
+  ).toEqual([{ archive_id: archiveId, org_id: people.org, owner_id: people.owner, archive_enc: ciphertext }]);
+});
+
+test("native handoff refuses stale and missing proof even with a historical archive", async () => {
+  const { db, sandboxId, archiveId, copy } = await seedNativeDrainReceipt();
+  expect(await copy(3)).toBe("ineligible");
+  await db.query("delete from sandbox_work_recovery where id=$1", [archiveId]);
+  await db.query("insert into sandbox_work_recovery(sandbox_id,archive_enc) values($1,$2)", [
+    sandboxId,
+    new Uint8Array([89]),
+  ]);
+  expect(await copy()).toBe("unverified");
+
+  await db.query(
+    "update sandbox_native_preservation_receipts set archive_id=null, capture_generation=3 where sandbox_id=$1",
+    [sandboxId],
+  );
+  expect(await copy()).toBe("unverified");
+  await db.query("update sandbox_native_preservation_receipts set capture_generation=4 where sandbox_id=$1", [
+    sandboxId,
+  ]);
+  expect(await copy()).toBe("clean");
+  expect(
+    (await db.query("select archive_id from native_drain_recovery where sandbox_id=$1", [sandboxId])).rows,
+  ).toEqual([]);
+});
+
+test("native drain recovery is service-only and taint purges the detached copy", async () => {
+  const { db, sandboxId, copy } = await seedNativeDrainReceipt();
+  const privileges = await db.query(
+    `select
+      has_function_privilege('authenticated','public.copy_native_drain_recovery(uuid,bigint)','execute') as jwt_copy,
+      has_table_privilege('authenticated','public.native_drain_recovery','select') as jwt_read,
+      has_function_privilege('service_role','public.copy_native_drain_recovery(uuid,bigint)','execute') as service_copy,
+      has_table_privilege('service_role','public.native_drain_recovery','select') as service_read`,
+  );
+  expect(privileges.rows).toEqual([{ jwt_copy: false, jwt_read: false, service_copy: true, service_read: true }]);
+  expect(await copy()).toBe("archived");
+  await db.query("update sandboxes set application_secret_tainted=true where id=$1", [sandboxId]);
+  expect(await copy()).toBe("ineligible");
+  expect(
+    (await db.query("select archive_id from native_drain_recovery where sandbox_id=$1", [sandboxId])).rows,
+  ).toEqual([]);
+});
