@@ -21,6 +21,7 @@ import {
   createModalMachineInventory,
   MODAL_IMAGE_LOCK,
   type ModalManagementAuthority,
+  modalDeploymentId,
   type ResolvedModalManagementCredentials,
   type Scope,
   scopeKey,
@@ -28,6 +29,7 @@ import {
 import { loadEmbeddedRunnerArtifact } from "@armada/provider-modal/embedded";
 import { ModalClient } from "modal";
 import type { HandlerOptions } from "./http.ts";
+import { createModalLaunchCleanupJob } from "./jobs/modal-launch.ts";
 import type { GitHubLaunchOptions } from "./launch-credentials.ts";
 import { observeNativeFirstToken } from "./launch-stage-record.ts";
 import {
@@ -431,6 +433,34 @@ export async function createModalIntegration(options: {
     };
   }
   return {
+    launchCleanupJob: createModalLaunchCleanupJob(options.sql, async ({ appName, binding, ...authority }, signal) => {
+      const { tokenId, tokenSecret } = await resolveManagementCredentials(authority);
+      signal.throwIfAborted();
+      const deploymentId = modalDeploymentId(binding.environment, options.publicUrl);
+      const client = new ModalClient({
+        tokenId,
+        tokenSecret,
+        maxThrottleWaitSecs: 0,
+        grpcMiddleware: [
+          async function* (call, rpc) {
+            const requestSignal = rpc.signal ? AbortSignal.any([rpc.signal, signal]) : signal;
+            requestSignal.throwIfAborted();
+            return yield* call.next(call.request, { ...rpc, signal: requestSignal });
+          },
+        ],
+      });
+      return {
+        client,
+        appName,
+        binding,
+        deploymentId,
+        close: () => client.close(),
+        resolveRuntimeTicket: async () => null,
+        async prepareCheckpoint() {
+          throw new Error("Physical Modal cleanup cannot prepare a checkpoint.");
+        },
+      };
+    }),
     inventoryReaper,
     warmRegisteredArtifactCaches,
     modalProviderFor,
