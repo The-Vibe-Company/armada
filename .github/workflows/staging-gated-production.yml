@@ -249,6 +249,29 @@ jobs:
             bun scripts/post-deploy-smoke.ts --work-preservation --templates-skills --lifecycle --vault --default-skills --scoped-access --github-refresh --golden-runtime --expiry --real-model | tee "$RUNNER_TEMP/armada-smoke.jsonl" || status=$?
           wait "$dashboard_pid" || status=1
           exit "$status"
+      - name: Correlate scoped smoke failures with candidate server diagnostics
+        if: ${{ !cancelled() && steps.smoke.outcome == 'failure' }}
+        continue-on-error: true
+        env:
+          CANDIDATE_DEPLOYMENT_ID: ${{ steps.deployment.outputs.railway_deployment_id }}
+        run: |
+          set -euo pipefail
+          [[ "$ARMADA_URL" == 'https://armada-mcp-staging.up.railway.app' ]]
+          [[ "$CANDIDATE_DEPLOYMENT_ID" =~ ^[a-f0-9-]{36}$ ]]
+          smoke="$RUNNER_TEMP/armada-smoke.jsonl"
+          collector=.release-tools/scripts/release/staging-scoped-evidence.ts
+          filter=$(bun "$collector" "$smoke" --filter)
+          if [[ -z "$filter" ]]; then
+            echo '{"step":"scoped_server_evidence","code":"no_scoped_correlation_ids"}'
+            exit 0
+          fi
+          if ! logs=$(timeout 15s railway logs "$CANDIDATE_DEPLOYMENT_ID" --deployment --json --since 15m \
+              --lines 100 --project "$RAILWAY_PROJECT_ID" --environment "$RAILWAY_ENVIRONMENT_ID" \
+              --service "$RAILWAY_SERVICE_ID" --filter "$filter" 2>/dev/null); then
+            echo '{"step":"scoped_server_evidence","code":"candidate_log_query_failed"}'
+            exit 1
+          fi
+          env -i PATH="$PATH" bun "$collector" "$smoke" <<< "$logs"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: (steps.evidence.outputs.reused != 'true' && always() && hashFiles('.smoke/sandboxes.json') != '')
         with:
