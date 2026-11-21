@@ -1,13 +1,10 @@
 import { afterAll, beforeAll, expect, jest, mock, spyOn, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { createSqlVaultStore, decryptSecret, encryptSecret, type Provider, ProviderError } from "@armada/core/server";
-import { createSqlModalStore, type Scope } from "@armada/provider-modal";
+import { decryptSecret, encryptSecret, type Provider, ProviderError } from "@armada/core/server";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
-import { type App, AppService } from "modal";
 import { createAccountTurnQueue } from "../src/account-turn-queue.ts";
 import type { Caller } from "../src/caller.ts";
 import { createSqlData } from "../src/data.ts";
-import { createModalIntegration } from "../src/modal-integration.ts";
 import { configureNativeDrain } from "../src/native-drain.ts";
 import { createRuntimeProvider, type RuntimeWorkProvider } from "../src/runtime-provider.ts";
 import { createSandboxArmadaAccess } from "../src/sandbox-armada-access.ts";
@@ -961,147 +958,72 @@ async function nativeToolFixture(provider: Provider, placement: string, onQuery?
   return { db, context, sandboxId, invoke };
 }
 
-test.each([
-  ["boat", "clean"],
-  ["boat", "failed"],
-  ["boat", "wrong-placement"],
-  ["modal", "clean"],
-  ["modal", "failed"],
-] as const)("active native drain requires capture and exact stop evidence (%s, %s)", async (backend, capture) => {
-  const boat = fakeBoat();
-  const placement = `active_drain_${backend}_${capture}`;
-  let stopped = false;
-  const stop = mock(async () => {
-    stopped = true;
-  });
-  boat.setExecOutput({
-    stdout: JSON.stringify(
-      capture !== "failed"
-        ? { status: "clean" }
-        : {
-            status: "failed",
-            reason: "collector_failed",
-          },
-    ),
-  });
-  const provider: Provider = {
-    ...boat.provider,
-    id: backend,
-    ...(backend === "modal" ? { supportsExecPhysicalGeneration: true as const } : {}),
-    async quiesce() {},
-    async get() {
-      return {
-        id: stopped && capture === "wrong-placement" ? "bx_unrelated" : placement,
-        name: "active drain fixture",
-        labels: {},
-        state: stopped ? "stopped" : "ready",
-        providerState: stopped ? "archived" : "running",
-        physicalGeneration: "1",
-        ...(stopped ? { retainedSnapshot: "usable" } : {}),
-      };
-    },
-    stop,
-  };
-  const { db, context, sandboxId } = await nativeToolFixture(provider, placement);
-  const caller = context.caller;
-  const sql = bunLikeSql(db);
-  const drain = configureNativeDrain(sql, backend, caller.userId, {
-    ARMADA_ENCRYPTION_KEY: ENCRYPTION_KEY,
-    ARMADA_PUBLIC_URL: PUBLIC_URL,
-  });
-  const candidate = { id: sandboxId, org_id: caller.orgs[0]!.orgId, role: "admin" as const };
-  const inventory = () => context.data.sandboxes.get(sandboxId);
-
-  await expect(drain.remove(candidate)).rejects.toThrow("before preservation and stop are confirmed");
-  expect((await inventory())?.status).toBe("stopping");
-  expect(stop).not.toHaveBeenCalled();
-  await db.query(
-    "update sandboxes set reconcile_after=case when id=$1 then '-infinity'::timestamptz else 'infinity'::timestamptz end",
-    [sandboxId],
-  );
-
-  const worker = createSandboxLifecycle(sql, async (id) => {
-    expect(id).toBe(sandboxId);
-    return provider;
-  });
-  expect(await worker.reconcileOne()).toBe(true);
-  expect((await inventory())?.status).toBe(capture === "clean" ? "stopped" : "stopping");
-  expect(stop).toHaveBeenCalledTimes(capture === "failed" ? 0 : 1);
-  if (capture === "clean") {
-    const row = await inventory();
-    const proof = await db.query("select copy_native_drain_recovery($1,$2) as outcome", [
-      sandboxId,
-      row?.lifecycleGeneration,
-    ]);
-    expect(proof.rows).toEqual([{ outcome: "clean" }]);
-  }
-});
-
-test("Modal native interrupt cannot restore the disk after strict stop admission", async () => {
-  const placement = "strict-modal-restore";
-  const { db, context, sandboxId } = await nativeToolFixture({ ...fakeBoat().provider, id: "modal" }, placement);
-  const actor = context.caller;
-  const orgId = actor.orgs[0]!.orgId;
-  const binding = { workspace: "workspace", environment: "main", appId: "app" };
-  const scope: Scope = { orgId, userId: actor.userId, visibility: "private", binding };
-  const tokenPair = { tokenId: ["ak", "fixture1"].join("-"), tokenSecret: ["as", "fixture2"].join("-") };
-  await db.query(
-    `insert into modal_server_apps(org_id,authority,authority_scope,authority_owner_id,app_name,app_id,environment)
-     values($1,'native-drain-fixture','org',$1,'native-drain-test',$2,$3)`,
-    [orgId, binding.appId, binding.environment],
-  );
-  await db.query("insert into credentials(scope,owner_id,kind,value_enc) values('org',$1,'modal',$2)", [
-    orgId,
-    await encryptSecret(JSON.stringify(tokenPair), ENCRYPTION_KEY),
-  ]);
-  const sql = bunLikeSql(db);
-  const store = createSqlModalStore(sql, scope);
-  await store.reserve(placement, {
-    info: { id: placement, name: placement, labels: {}, state: "stopped", providerState: "stopped" },
-    phase: "stopped",
-    generation: 1,
-    golden: false,
-    ttlSeconds: 60,
-    physicalName: placement,
-    recoveryImageId: "retained-disk",
-    managementAuthority: { credentialScope: "org", credentialOwnerId: orgId },
-  });
-  // oxlint-disable-next-line landmines-testing/no-test-doubles -- Replace only the Modal App lookup to exercise the real composed adapter and journal without cloud access.
-  const apps = spyOn(AppService.prototype, "fromName").mockImplementation(
-    async () => ({ appId: binding.appId }) as App,
-  );
-  try {
-    const integration = await createModalIntegration({
-      sql,
-      vault: createSqlVaultStore(sql),
-      encryptionKey: ENCRYPTION_KEY,
-      publicUrl: PUBLIC_URL,
-      async beforeResume() {
-        throw new Error("Resume reached model admission");
+test.each(["clean", "failed", "wrong-placement"] as const)(
+  "active native drain requires capture and exact stop evidence (%s)",
+  async (capture) => {
+    const boat = fakeBoat();
+    const placement = `bx_active_drain_${capture}`;
+    let stopped = false;
+    const stop = mock(async () => {
+      stopped = true;
+    });
+    boat.setExecOutput({
+      stdout: JSON.stringify(
+        capture !== "failed"
+          ? { status: "clean" }
+          : {
+              status: "failed",
+              reason: "collector_failed",
+            },
+      ),
+    });
+    const provider: Provider = {
+      ...boat.provider,
+      async quiesce() {},
+      async get() {
+        return {
+          id: stopped && capture === "wrong-placement" ? "bx_unrelated" : placement,
+          name: "active drain fixture",
+          labels: {},
+          state: stopped ? "stopped" : "ready",
+          providerState: stopped ? "archived" : "running",
+          ...(stopped ? { retainedSnapshot: "usable" } : {}),
+        };
       },
-    });
-    const target = (await context.data.sandboxes.get(sandboxId))!;
-    const { provider } = await integration.modalProviderFor(tokenPair, binding, {
-      caller: actor,
-      target,
-      credentialScope: "org",
-    });
-    const drain = configureNativeDrain(sql, "modal", actor.userId, {
+      stop,
+    };
+    const { db, context, sandboxId } = await nativeToolFixture(provider, placement);
+    const caller = context.caller;
+    const sql = bunLikeSql(db);
+    const drain = configureNativeDrain(sql, "boat", caller.userId, {
       ARMADA_ENCRYPTION_KEY: ENCRYPTION_KEY,
       ARMADA_PUBLIC_URL: PUBLIC_URL,
     });
-    await expect(drain.remove({ id: sandboxId, org_id: orgId, role: "admin" })).rejects.toThrow(
-      "before preservation and stop are confirmed",
-    );
-    await expect(provider.interrupt({ sandboxId: placement })).rejects.toMatchObject({
-      code: "sandbox_not_ready",
-      message: "Native drain preservation blocks restoring this workspace.",
+    const candidate = { id: sandboxId, org_id: caller.orgs[0]!.orgId, role: "admin" as const };
+    const inventory = () => context.data.sandboxes.get(sandboxId);
+
+    await expect(drain.remove(candidate)).rejects.toThrow("before preservation and stop are confirmed");
+    expect((await inventory())?.status).toBe("stopping");
+    expect(stop).not.toHaveBeenCalled();
+    await db.query("update sandboxes set reconcile_after='-infinity' where id=$1", [sandboxId]);
+
+    const worker = createSandboxLifecycle(sql, async (id) => {
+      expect(id).toBe(sandboxId);
+      return provider;
     });
-    expect(await store.get(placement)).toMatchObject({ phase: "stopped", generation: 1 });
-  } finally {
-    apps.mockRestore();
-  }
-});
+    expect(await worker.reconcileOne()).toBe(true);
+    expect((await inventory())?.status).toBe(capture === "clean" ? "stopped" : "stopping");
+    expect(stop).toHaveBeenCalledTimes(capture === "failed" ? 0 : 1);
+    if (capture === "clean") {
+      const row = await inventory();
+      const proof = await db.query("select copy_native_drain_recovery($1,$2) as outcome", [
+        sandboxId,
+        row?.lifecycleGeneration,
+      ]);
+      expect(proof.rows).toEqual([{ outcome: "clean" }]);
+    }
+  },
+);
 
 test("active native drain retains an expired historical activity with unknown outcome", async () => {
   const { db, context, sandboxId } = await nativeToolFixture(fakeBoat().provider, "bx_drain_historical_activity");
@@ -2086,6 +2008,95 @@ test.each(["activity", "queue", "provider observation", "owner row update", "ord
     }
   },
 );
+
+test.each(["activity", "queue", "provider observation", "ordinary delete"] as const)(
+  "a confirmed strict stop preserves its drain proof against %s",
+  async (attempt) => {
+    const { db, people, sandboxId, copy } = await seedNativeDrainReceipt();
+    const { openaiCredentialId } = sharedDatabase();
+    await db.query("update sandboxes set credential_id=$2, credential_version=1, expires_at='2099-01-01' where id=$1", [
+      sandboxId,
+      openaiCredentialId,
+    ]);
+    await db.query(
+      `insert into native_drain_stop_requests(sandbox_id,stop_generation)
+       select id,stop_generation from sandboxes where id=$1`,
+      [sandboxId],
+    );
+    const caller: Caller = { via: "service", userId: people.owner, orgs: [{ orgId: people.org, role: "member" }] };
+    const sql = bunLikeSql(db);
+    const { sandboxes } = createSqlData(sql)(caller);
+    const placement = `bx_${sandboxId}`;
+    if (attempt === "activity") {
+      await expect(
+        sandboxes.update(sandboxId, {
+          advanceGeneration: true,
+          expectedGeneration: 4,
+          activityToken: crypto.randomUUID(),
+          stopRequested: false,
+          nativeResumeAdmission: placement,
+        }),
+      ).rejects.toMatchObject({ code: "sandbox_not_ready" });
+    } else if (attempt === "provider observation") {
+      await expect(
+        sandboxes.update(sandboxId, {
+          status: "ready",
+          statusReason: null,
+          expectedGeneration: 4,
+          providerObservation: { fromState: "stopped", providerRunPlacement: placement },
+        }),
+      ).rejects.toMatchObject({ code: "sandbox_not_ready" });
+    } else if (attempt === "queue") {
+      const queue = createAccountTurnQueue(sql, ENCRYPTION_KEY);
+      await expect(queue.accept(caller, { id: sandboxId, prompt: "new work" })).rejects.toThrow(
+        "Sandbox cannot accept a queued prompt.",
+      );
+    } else {
+      const remove = mock(async () => ({ status: "deleted" as const }));
+      const providers = { resolve: async () => ({ ...fakeBoat().provider, delete: remove }) };
+      await expect(deleteSandboxWithActivity(sandboxes, providers, sandboxId)).rejects.toMatchObject({
+        code: "sandbox_not_ready",
+      });
+      expect(remove).not.toHaveBeenCalled();
+      await expect(deleteSandboxWithActivity(sandboxes, providers, sandboxId, "native-drain")).resolves.toMatchObject({
+        status: "deleted",
+      });
+      expect(remove).toHaveBeenCalledTimes(1);
+      return;
+    }
+    expect(await copy()).toBe("archived");
+  },
+);
+
+test("a native prompt cannot cancel a strict stop awaiting capture", async () => {
+  const provider = fakeBoat().provider;
+  const placement = "bx_strict_stopping_prompt";
+  const { context, db, sandboxId } = await nativeToolFixture(provider, placement);
+  const caller = context.caller;
+  const drain = configureNativeDrain(bunLikeSql(db), "boat", caller.userId, {
+    ARMADA_ENCRYPTION_KEY: ENCRYPTION_KEY,
+    ARMADA_PUBLIC_URL: PUBLIC_URL,
+  });
+  await expect(drain.remove({ id: sandboxId, org_id: caller.orgs[0]!.orgId, role: "admin" })).rejects.toThrow(
+    "before preservation and stop are confirmed",
+  );
+  const { sandboxes } = context.data;
+  await expect(
+    sandboxes.update(sandboxId, {
+      advanceGeneration: true,
+      expectedGeneration: 2,
+      activityToken: crypto.randomUUID(),
+      stopRequested: false,
+      nativePromptAdmission: { fromState: "stopping", placement },
+    }),
+  ).rejects.toMatchObject({ code: "sandbox_not_ready" });
+  expect(await sandboxes.get(sandboxId)).toMatchObject({
+    status: "stopping",
+    lifecycleGeneration: 2,
+    stopRequestedAt: expect.any(String),
+  });
+  await db.query("update sandboxes set reconcile_after='infinity' where id=$1", [sandboxId]);
+});
 
 test("owners and admins can recover the exact native archive after normal deletion and handoff replay", async () => {
   const archive = Buffer.from("detached work fixture").toString("base64");

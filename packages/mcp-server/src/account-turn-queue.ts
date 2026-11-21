@@ -31,6 +31,7 @@ import { queuedPromptAliases } from "./queued-prompt-ids.ts";
 import { currentRequestId } from "./request-observability.ts";
 import type { RuntimeFollowupInput } from "./runtime-followup.ts";
 import { sandboxControlRefusal } from "./sandbox-control-refusal.ts";
+import { hasStrictNativeDrainStop } from "./sandbox-lifecycle.ts";
 import { ToolError } from "./tool-error.ts";
 
 type Entry = {
@@ -274,7 +275,8 @@ export function createAccountTurnQueue(sql: Sql, key: string) {
           [input.id, target.credential_id, target.credential_version],
         );
         const locked = sandbox.rows[0];
-        if (!locked) throw new VaultError("conflict", "Sandbox cannot accept a queued prompt.");
+        if (!locked || (await hasStrictNativeDrainStop(tx, input.id)))
+          throw new VaultError("conflict", "Sandbox cannot accept a queued prompt.");
         if (locked.status !== "stopped") {
           const checkpoint = (
             await tx.query<{ merge_stop: boolean }>(

@@ -127,6 +127,11 @@ export const WORK_STOP_OWNER = `stop_requested_at is not null and deleted_at is 
 export const STOP_EPOCH = `id=$1::uuid
   and (case when stop_requested_at is null then null else stop_generation end) is not distinct from $7::bigint
   and ($2::text is null or (${WORK_STOP_OWNER}))`;
+export const STRICT_NATIVE_DRAIN_STOP = `exists (
+  select 1 from public.native_drain_stop_requests r
+  where r.sandbox_id=s.id and r.stop_generation=s.stop_generation
+)`;
+
 const NATIVE_WORK_ROUTE = `provider in ('boat','modal') and not boat_runtime
   and runtime_transport is distinct from 'dialout'`;
 
@@ -896,6 +901,13 @@ export async function publishOwnerStop(
   if (result.kind === "conflict") throw new Error("Locked owner stop could not transition.");
 }
 
+export async function hasStrictNativeDrainStop(tx: Sql, sandboxId: string) {
+  const result = await tx.query(`select 1 from public.sandboxes s where s.id=$1 and ${STRICT_NATIVE_DRAIN_STOP}`, [
+    sandboxId,
+  ]);
+  return result.rows.length > 0;
+}
+
 export async function requestNativeDrainStop(
   sql: Sql,
   sandbox: SandboxRecord,
@@ -916,9 +928,7 @@ export async function requestNativeDrainStop(
       `update public.sandboxes s set activity_lease_id=$6, activity_until=clock_timestamp()+interval '2 minutes',
          lifecycle_generation=lifecycle_generation+1, stop_generation=stop_generation+1,
          stop_requested_at=clock_timestamp(), reconcile_after=clock_timestamp(), status_reason=null
-       where s.id=$1 and s.lifecycle_generation=$2 and s.provider_sandbox_id=$3 and s.provider=$4 and s.provider in ('boat','modal')
-         and (s.provider='boat' or exists(select 1 from public.goldens g where g.id=s.golden_id
-           and g.modal_workspace is not null and g.modal_environment is not null and g.modal_app_id is not null))
+       where s.id=$1 and s.lifecycle_generation=$2 and s.provider_sandbox_id=$3 and s.provider=$4 and s.provider='boat'
          and ${NATIVE_WORK_ROUTE} and s.status in ('ready','running') and s.stop_requested_at is null
          and s.stopped_at is null and s.deleted_at is null and not s.application_secret_tainted
          and not s.native_drain_pending and s.expires_at>clock_timestamp()
@@ -1243,7 +1253,8 @@ export async function recordObservedProviderState(
        for update of s`,
       [...scope, sandboxId, providerRunPlacement ?? null, nativeStop],
     );
-    if (!eligible.rows.length) return { kind: "conflict" } satisfies SandboxTransitionResult;
+    if (!eligible.rows.length || (await hasStrictNativeDrainStop(tx, sandboxId)))
+      return { kind: "conflict" } satisfies SandboxTransitionResult;
     const path = providerRunPlacement === undefined ? "runtime" : "native";
     const settlesExit = toState === "stopped" || nativeFailure;
     const providerActor = settlesExit ? "runtime_observation" : "lifecycle_runner";

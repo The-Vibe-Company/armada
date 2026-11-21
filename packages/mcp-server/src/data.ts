@@ -68,6 +68,7 @@ import {
   recordNativeRetentionRefusal,
   recordObservedProviderState,
   requestStartingModalStop,
+  STRICT_NATIVE_DRAIN_STOP,
   settleRuntimeTurn,
 } from "./sandbox-lifecycle.ts";
 import { SANDBOX_MEMBER, SANDBOX_VISIBLE } from "./sandbox-visibility.ts";
@@ -1061,11 +1062,13 @@ export function createSqlData(
         const stopAdmissionReason = stopStatus === "stopping" && !patch.finishActivity ? reason : undefined;
         if (reason !== undefined && stopAdmissionReason === undefined) set("status_reason", reason, "::text");
         if (sets.length === 0) return;
+        const admission = !!patch.advanceGeneration && !!patch.activityToken;
         let fence = "";
         if (!patch.nativeDrainAdmission) {
           fence = patch.renewActivity
             ? " and s.id=renewal_target.id and (not renewal_target.native_drain_pending or renewal_target.activity_until > clock_timestamp())"
             : " and not s.native_drain_pending";
+          if (admission || nativeResume !== undefined) fence += ` and not ${STRICT_NATIVE_DRAIN_STOP}`;
         }
         if (patch.nativeDiagnostic) {
           const { state, placement, previousReason } = patch.nativeDiagnostic;
@@ -1206,7 +1209,6 @@ export function createSqlData(
         }
         const cancelTurns = patch.stopRequested === true && !idleAdmission;
         const wrapped = releaseReservation || cancelTurns;
-        const admission = !!patch.advanceGeneration && !!patch.activityToken;
         // A refused delete admission names its predicates from the CAS statement's own snapshot,
         // not a later read that a concurrent lease release could already have cleared. A row
         // changed while this statement waited on its lock is rechecked at its newest version,
