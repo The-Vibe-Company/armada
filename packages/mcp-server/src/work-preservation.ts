@@ -341,6 +341,18 @@ async function captureAndStore(
     if (expired()) return;
     observed("observed", current.state);
     if (["stopped", "deleted"].includes(current.state) || current.physicalExitConfirmed) return;
+    const fencedNativeCapture = !stop.modal_runtime && provider.supportsExecPhysicalGeneration;
+    const physicalGeneration = fencedNativeCapture ? current.physicalGeneration : undefined;
+    if (
+      fencedNativeCapture &&
+      (current.id !== providerId || !["ready", "running"].includes(current.state) || !physicalGeneration)
+    )
+      throw new ProviderError({
+        provider: provider.id,
+        code: "sandbox_not_ready",
+        message: "Native work capture requires the exact active physical incarnation.",
+        retryable: false,
+      });
     if (stop.modal_runtime) {
       if (
         HOST_CAPABILITIES.modal.fencedStopPhases.includes(current.providerState) ||
@@ -408,7 +420,13 @@ async function captureAndStore(
         onWorkAtRisk,
       });
     } else {
-      result = await preserveWork(provider, providerId, signal, onWorkAtRisk, context);
+      const collector = physicalGeneration
+        ? {
+            exec: (request: Parameters<Provider["exec"]>[0]) =>
+              provider.exec({ ...request, expectedPhysicalGeneration: physicalGeneration }),
+          }
+        : provider;
+      result = await preserveWork(collector, providerId, signal, onWorkAtRisk, context);
     }
     if (expired()) return;
     stage = progress.stage = "capture";
