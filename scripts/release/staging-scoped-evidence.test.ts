@@ -47,3 +47,7 @@ test("joins scoped smoke failures to candidate operator diagnostics without copy
     unmatchedRequestIds: [],
   });
 });
+
+test("malformed candidate logs fail collection instead of reporting missing matches", () => {
+  expect(() => scopedEvidence("", "{malformed")).toThrow("Invalid candidate log record.");
+});
