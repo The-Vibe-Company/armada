@@ -52,11 +52,11 @@ export function sandboxFailure(path: string, status: number, serverCode: unknown
                 : "unavailable";
   const bindingReasons: Record<string, string> = {
     "This sandbox is already bound; its account cannot change.":
-      "This sandbox is already bound; its account cannot change. Run armada info ID --live to inspect the existing binding; keep that account.",
+      "This sandbox is already bound; its account cannot change. Run armada info ID to inspect the existing binding; keep that account.",
     "The Modal workspace is already bound; its account cannot change.":
-      "The Modal workspace is already bound; its account cannot change. Run armada info ID --live to inspect the existing binding; keep that account.",
+      "The Modal workspace is already bound; its account cannot change. Run armada info ID to inspect the existing binding; keep that account.",
     "The workspace was bound concurrently; no account change was made.":
-      "The workspace was bound concurrently; no account change was made. Run armada info ID --live to inspect the winning binding before continuing.",
+      "The workspace was bound concurrently; no account change was made. Run armada info ID to inspect the winning binding before continuing.",
   };
   const bindingReason =
     path === "/api/v1/sandbox/bind-credential" &&

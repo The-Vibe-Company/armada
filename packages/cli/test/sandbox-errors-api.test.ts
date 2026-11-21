@@ -102,7 +102,7 @@ test.each(["", canary])("binding refusal preserves only an exact fixed reason (s
   expect(result.exit).toBe(1);
   if (!suffix) {
     expect(failure.message).toContain(message);
-    expect(failure.message).toContain("armada info ID --live");
+    expect(failure.message).toContain("armada info ID");
   } else {
     expect(failure.message).not.toContain(message);
     expect(failure.message).toContain("armada ls --json");
