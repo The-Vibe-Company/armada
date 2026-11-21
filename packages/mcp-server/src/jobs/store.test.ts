@@ -1688,7 +1688,10 @@ test("enrolled Modal launch jobs report and settle turns from the runtime journa
       throw new Error("A finished turn must settle immediately.");
     },
   } satisfies Parameters<typeof callSharedTool>[0];
-  const follow = (cursor?: string, afterPage?: () => Promise<unknown>) =>
+  const follow = (
+    cursor?: string,
+    hooks?: { beforePage?: () => Promise<unknown>; afterPage?: () => Promise<unknown> },
+  ) =>
     readLogs(
       {
         logs: async (actor, id) => {
@@ -1698,8 +1701,9 @@ test("enrolled Modal launch jobs report and settle turns from the runtime journa
             provider: {
               ...provider,
               async events(request) {
+                await hooks?.beforePage?.();
                 const page = await provider.events(request);
-                await afterPage?.();
+                await hooks?.afterPage?.();
                 return page;
               },
             },
@@ -1762,7 +1766,10 @@ test("enrolled Modal launch jobs report and settle turns from the runtime journa
   expect(await follow(active.cursor!)).toMatchObject({ events: [], settled: false });
   await expect(report()).rejects.toMatchObject({ code: "conflict" });
 
-  expect(await follow(active.cursor!, () => append(2, "finished"))).toMatchObject({ events: [], settled: false });
+  expect(await follow(active.cursor!, { afterPage: () => append(2, "finished") })).toMatchObject({
+    events: [],
+    settled: false,
+  });
   expect(await callSharedTool(context, "wait", { id, prompt_id: publicPromptId })).toMatchObject({
     id,
     providerState: null,
@@ -1771,6 +1778,42 @@ test("enrolled Modal launch jobs report and settle turns from the runtime journa
   });
   expect(await follow(active.cursor!)).toMatchObject({ events: [{ status: "finished" }], settled: true });
   expect(await report()).toMatchObject({ id, taskOutcome: { state: "ready" } });
+
+  await f.db.query("update sandboxes set lifecycle_generation=lifecycle_generation+1 where id=$1", [id]);
+  expect(await callSharedTool(context, "wait", { id, prompt_id: publicPromptId })).toMatchObject({
+    id,
+    providerState: null,
+    prompt: { promptId: publicPromptId, state: "finished" },
+    settled: true,
+  });
+  expect(await follow(active.cursor!)).toMatchObject({ events: [{ status: "finished" }], settled: true });
+  await expect(
+    follow(active.cursor!, {
+      beforePage: () =>
+        f.db.query("update sandboxes set lifecycle_generation=lifecycle_generation+1 where id=$1", [id]),
+    }),
+  ).rejects.toMatchObject({ code: "conflict" });
+});
+
+test("Modal read ownership survives a generation advance before the launch receipt settles", async () => {
+  const { f, id, jobId, makeRunner } = await modalLaunchFixture(await modalAdmissionFixture());
+  const runner = makeRunner(async (step) => {
+    if (step !== "bootstrap response") return;
+    await f.db.query("update sandboxes set lifecycle_generation=lifecycle_generation+1 where id=$1", [id]);
+  });
+  expect(await runner.reconcileOne(signal)).toBe(true);
+  await runner.drain();
+  expect((await f.db.query("select state from jobs where id=$1", [jobId])).rows).not.toEqual([{ state: "done" }]);
+
+  const caller = {
+    via: "service" as const,
+    userId: f.people.owner,
+    orgs: [{ orgId: f.people.org, role: "member" as const }],
+  };
+  const sandbox = (await createSqlData(f.sql)(caller).sandboxes.get(id))!;
+  expect(sandbox.status).toBe("ready");
+  const reader = await createModalJobReader(f.sql, launchEncryptionKey)(sandbox, caller);
+  expect(await reader?.followSettled()).toBe(true);
 });
 
 async function failedModalLaunchFixture() {
