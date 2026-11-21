@@ -3,12 +3,14 @@ import {
   MACHINE_SIZES,
   type MachineSize,
   SANDBOX_PLACEMENT_PROVIDERS,
-  type SandboxListMetadata,
+  type SandboxListMetadata as WireSandboxListMetadata,
 } from "@armada/core";
 import { MACHINE_SIZE_LABELS } from "./machine-size.ts";
 import { parseTaskOutcome } from "./outcome.ts";
 import { parsePullRequests } from "./pull-requests.ts";
 import { SANDBOX_STATUSES } from "./sandbox-filters.ts";
+
+export type SandboxListMetadata = Omit<WireSandboxListMetadata, "boatId">;
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -57,7 +59,6 @@ function parseRow(value: unknown): SandboxListMetadata | string {
   if (!oneOf(SANDBOX_STATUSES, status)) return "status";
   if (typeof canOpen !== "boolean" || typeof canManage !== "boolean") return "permissions";
   const providerSandboxId = nullable(row.providerSandboxId, text);
-  const boatId = nullable(row.boatId, text);
   const model = nullable(row.model, text);
   const reasoningEffort = nullable(row.reasoningEffort, text);
   const stoppedAt = timestamp(row.stoppedAt);
@@ -67,7 +68,6 @@ function parseRow(value: unknown): SandboxListMetadata | string {
   const preservationNote = nullable(row.preservationNote, text);
   if (
     providerSandboxId === undefined ||
-    boatId === undefined ||
     model === undefined ||
     reasoningEffort === undefined ||
     stoppedAt === undefined ||
@@ -85,7 +85,6 @@ function parseRow(value: unknown): SandboxListMetadata | string {
     ownerId,
     provider,
     providerSandboxId,
-    boatId,
     harness,
     model,
     reasoningEffort,

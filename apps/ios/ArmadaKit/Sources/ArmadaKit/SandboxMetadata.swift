@@ -8,7 +8,6 @@ public struct SandboxMetadata: Decodable, Sendable, Identifiable {
     public let ownerId: String
     public let provider: String
     public let providerSandboxId: String?
-    public let boatId: String?
     public let harness: String
     public let model: String?
     public let reasoningEffort: String?
