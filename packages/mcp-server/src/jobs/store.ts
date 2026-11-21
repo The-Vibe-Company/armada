@@ -178,10 +178,8 @@ export function createJobsStore(sql: Sql, encryptionKey?: string) {
                       and (${NO_ADJACENT_DISPATCH_EVIDENCE} or ${OBSOLETE_RUNTIME_FOLLOWUP}))))
                     as unrecoverable_dispatch,
                   case when ${ADJACENT_RUNTIME_DISPATCH}
-                    and ((s.status in ('ready','running')
-                      and (s.provider in ('boat','modal') or ${NO_ADJACENT_DISPATCH_EVIDENCE}
-                        or (s.activity_lease_id is null and ${CURRENT_DOCKER_PROMPT_COMMAND})))
-                      or (s.status in ('starting','ready','running')
+                    and (s.status in ('ready','running')
+                      or (s.status = 'starting'
                         and s.activity_lease_id is null and ${CURRENT_DOCKER_RESUME_JOB}))
                     and isfinite(q.dispatch_until) and q.dispatch_until > statement_timestamp()
                     then q.dispatch_until::text end as open_dispatch_until
