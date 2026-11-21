@@ -27,12 +27,7 @@ test.each(["success", "health", "github", "repository", "init", "network"] as co
     const signal = new AbortController().signal;
     const prepared = runtimeWorkspace(
       {
-        host: {
-          id: "modal",
-          async exec() {
-            throw Error("Native exec must never run");
-          },
-        },
+        host: { id: "modal" },
         actor: { userId: "owner", orgId: "org", role: "member" },
         sandbox: { id: "logical", providerSandboxId: "physical" },
         credentials: { secrets: [] },
@@ -77,7 +72,7 @@ test.each(["success", "health", "github", "repository", "init", "network"] as co
         },
       },
     );
-    const work = prepared.prepareWorkspace!(
+    const work = prepared.prepareWorkspace(
       golden,
       () => {},
       async () => {

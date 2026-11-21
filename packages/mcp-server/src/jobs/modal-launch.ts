@@ -1,9 +1,12 @@
 import {
   type GoldenRecord,
   HARNESS_KINDS,
+  type Harness,
   MACHINE_SIZES,
   type MemberRole,
   type ModalBinding,
+  ProviderError,
+  parseGoldenConfig,
   type SandboxStatus,
 } from "@armada/core";
 import {
@@ -21,10 +24,13 @@ import { z } from "zod";
 import type { AccountTurnQueue } from "../account-turn-queue.ts";
 import type { createGoldenRuntimeEnvironment } from "../golden-runtime-environment.ts";
 import { type OrdinaryLaunchFailure, replayOrdinaryLaunchFailure } from "../ordinary-launch-receipts.ts";
+import { createRuntimeAgent, workspaceCommandId } from "../runtime-agent.ts";
 import { RuntimeCommandRefused } from "../runtime-commands.ts";
 import type { RuntimeConfigurationTarget } from "../runtime-configuration.ts";
 import { createRuntimeEnrolments, type RuntimeTicketGuard } from "../runtime-enrolment.ts";
+import type { RuntimeGitHub } from "../runtime-github.ts";
 import { readRuntimeTemplateEnvironment } from "../runtime-readable-variables.ts";
+import { runtimeWorkspace } from "../runtime-workspace.ts";
 import {
   bindModalLaunchMachine,
   insertStartingModalSandbox,
@@ -33,6 +39,7 @@ import {
   taintStartingModalSandbox,
   transitionSandbox,
 } from "../sandbox-lifecycle.ts";
+import { parseModalLaunchWorkspace } from "./modal-launch-setup.ts";
 import type { Job, JobContext, JobKind, JobResult } from "./runner.ts";
 import { ConflictingJobRequest, createJobsStore, jobRequestKey, withJobLease } from "./store.ts";
 
@@ -64,7 +71,7 @@ async function lockPinnedModalReservation(sql: Sql, orgId: string, ownerId: stri
     digest: string;
     state: string;
     template_scope: string;
-    frozen_golden: Pick<GoldenRecord, "id" | "providerSnapshotId" | "modal"> | null;
+    frozen_golden: Pick<GoldenRecord, "id" | "providerSnapshotId" | "modal" | "config"> | null;
     sandbox_exists: boolean;
   }>(
     `select r.id,r.sandbox_id,r.digest,r.state,t.scope as template_scope,r.manifest->'golden' as frozen_golden,
@@ -126,12 +133,13 @@ export async function admitModalLaunch(sql: Sql, encryptionKey: string, input: M
         rows: [golden],
       } = await tx.query<{
         visibility: "org" | "private";
+        config: unknown;
         provider_snapshot_id: string | null;
         modal_workspace: string;
         modal_environment: string;
         modal_app_id: string;
       }>(
-        `select g.visibility, g.provider_snapshot_id, g.modal_workspace, g.modal_environment, g.modal_app_id
+        `select g.visibility, g.config, g.provider_snapshot_id, g.modal_workspace, g.modal_environment, g.modal_app_id
          from public.goldens g join public.members m on m.org_id=g.org_id and m.user_id=$3
          where g.id=$1 and g.org_id=$2 and g.provider='modal' and g.removed_at is null
            and (g.visibility='org' or g.owner_id=$3)
@@ -240,12 +248,13 @@ export async function admitModalLaunch(sql: Sql, encryptionKey: string, input: M
         await assertLaunchSecretBindings(tx, actor, bindings, reservation.template_scope === "org");
         if (bindings.length) await taintStartingModalSandbox(tx, sandboxId, generation);
       }
+      const workspace = parseGoldenConfig(reservation ? reservation.frozen_golden?.config : golden.config);
       await store.enqueue(
         MODAL_INITIAL_TURN,
         sandboxId,
         generation,
         sandboxId,
-        { launchJobId: jobId, prompt: input.initialPrompt },
+        { launchJobId: jobId, prompt: input.initialPrompt, workspace },
         { orgId, maxAttempts: 3 },
         tx,
       );
@@ -262,6 +271,8 @@ export function createModalInitialTurnJob(
   sql: Sql,
   queue: Pick<AccountTurnQueue, "acceptInitialLaunch">,
   environment: Pick<ReturnType<typeof createGoldenRuntimeEnvironment>, "deliver">,
+  commands: Parameters<typeof createRuntimeAgent>[0],
+  github?: Pick<RuntimeGitHub, "prepareLaunch">,
 ) {
   return {
     concurrency: 4,
@@ -269,7 +280,7 @@ export function createModalInitialTurnJob(
       const sandboxId = job.sandbox_id;
       const generation = job.generation;
       const payload = z
-        .object({ launchJobId: z.string().uuid(), prompt: z.string().optional() })
+        .object({ launchJobId: z.string().uuid(), prompt: z.string().optional(), workspace: z.unknown() })
         .safeParse(job.payload);
       if (!sandboxId || !generation || !payload.success)
         return { status: "fail", reason: "invalid_modal_initial_turn" };
@@ -280,11 +291,13 @@ export function createModalInitialTurnJob(
         org_id: string;
         owner_id: string;
         role: MemberRole;
+        provider_sandbox_id: string;
+        harness: Harness;
         state: string;
         epoch: string | null;
         accepted: boolean;
       }>(
-        `select s.org_id, s.owner_id, m.role, launch.state, runtime.epoch::text as epoch,
+        `select s.org_id, s.owner_id, m.role, s.provider_sandbox_id, s.harness, launch.state, runtime.epoch::text as epoch,
                 exists(select 1 from public.account_turn_queue q
                        where q.sandbox_id=s.id and q.request_id=intent.id
                          and q.queued_generation=intent.generation and q.owner_id=s.owner_id and q.org_id=s.org_id
@@ -308,26 +321,81 @@ export function createModalInitialTurnJob(
       if (target.state !== "done") return { status: "retry", after: new Date(Date.now() + 1_000), unattempted: true };
 
       const { epoch } = target;
+      const actor = { userId: target.owner_id, orgId: target.org_id, role: target.role };
+      const assertClaim = async (tx: Sql) => {
+        if (!(await context.canDispatch(tx))) throw new Error("Modal setup lost its job claim.");
+      };
       if (epoch === null) return { status: "fail", reason: "modal_initial_turn_unavailable" };
       try {
-        await environment.deliver(
-          "modal",
-          { userId: target.owner_id, orgId: target.org_id },
-          sandboxId,
-          epoch,
-          context.signal,
-          async (tx) => {
-            if (!(await context.canDispatch(tx))) throw new Error("Modal initial turn lost its job claim.");
-            const { rows } = await tx.query(
-              "select 1 from public.sandboxes where id=$1 and lifecycle_generation=$2 and application_secret_tainted",
-              [sandboxId, generation],
-            );
-            if (!rows.length) throw new VaultError("conflict", "Application-secret restrictions are missing.");
-          },
-        );
+        await environment.deliver("modal", actor, sandboxId, epoch, context.signal, async (tx) => {
+          await assertClaim(tx);
+          const { rows } = await tx.query(
+            "select 1 from public.sandboxes where id=$1 and lifecycle_generation=$2 and application_secret_tainted",
+            [sandboxId, generation],
+          );
+          if (!rows.length) throw new VaultError("conflict", "Application-secret restrictions are missing.");
+        });
       } catch (error) {
         if (error instanceof RuntimeCommandRefused || (error instanceof VaultError && error.code === "conflict"))
           return { status: "fail", reason: "modal_initial_turn_environment_refused" };
+        throw error;
+      }
+
+      try {
+        const config = parseModalLaunchWorkspace(payload.data);
+        const workspaceStarted =
+          github &&
+          (
+            await sql.query(
+              "select 1 from public.runtime_commands where sandbox_id=$1 and epoch=$2 and request_id=$3",
+              [sandboxId, epoch, workspaceCommandId(epoch, { phase: "repository", index: 0, attempt: 0 })],
+            )
+          ).rows.length > 0;
+        const agent = createRuntimeAgent(
+          { call: (owner, command, options) => commands.call(owner, command, { ...options, assertClaim }) },
+          {
+            provider: "modal",
+            harness: target.harness,
+            ownerId: actor.userId,
+            sandboxId,
+            providerSandboxId: target.provider_sandbox_id,
+            cwd: "/home/user",
+            defaults: { model: "", reasoningEffort: "" },
+          },
+        );
+        const workspace = runtimeWorkspace(
+          {
+            actor,
+            host: { id: "modal" },
+            sandbox: { id: sandboxId, providerSandboxId: target.provider_sandbox_id },
+            credentials: { secrets: [] },
+            signal: context.signal,
+          },
+          agent,
+          epoch,
+          workspaceStarted ? undefined : github,
+          {
+            trackPushes: true,
+            healthRequestId: `workspace_health_${job.id}_${epoch}`,
+            async assertClaim(tx) {
+              await assertClaim(tx);
+              const { rows } = await tx.query(
+                `select 1 from public.runtime_enrolments
+                 where sandbox_id=$1 and lifecycle_generation=$2 and epoch=$3 and runtime_hash is not null`,
+                [sandboxId, generation, epoch],
+              );
+              if (!rows.length) throw new GoldenError("conflict", "Modal workspace runtime changed.");
+            },
+          },
+        );
+        await workspace.prepareWorkspace({ config }, () => {});
+      } catch (error) {
+        if (
+          error instanceof LaunchError ||
+          error instanceof GoldenError ||
+          (error instanceof ProviderError && !error.details?.runtimeRequestId)
+        )
+          return { status: "fail", reason: "modal_initial_turn_workspace_refused" };
         throw error;
       }
 
