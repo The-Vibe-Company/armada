@@ -50,6 +50,7 @@ import { modalRuntimeResume } from "./modal-runtime-resume.ts";
 import { createModelAuthOwnership } from "./model-auth.ts";
 import { createModelUsageApi } from "./model-usage.ts";
 import type { NamedLaunchCredentials } from "./named-credentials.ts";
+import { withNativeLogJournal } from "./native-log-journal.ts";
 import { createObservedBoatProvider } from "./observed-boat.ts";
 import { createOrdinaryLaunchReceipts } from "./ordinary-launch-receipts.ts";
 import { createOutboundWebhooks } from "./outbound-webhooks.ts";
@@ -428,6 +429,19 @@ export async function createServerServices(env: Record<string, string | undefine
         })
       : undefined;
   const logProviders = { boat: providers.resolve.bind(providers), modal: modal.storedProviderFor };
+  const httpLogProviders = {
+    ...logProviders,
+    boat: async (sandbox: Parameters<typeof logProviders.boat>[0], caller: Parameters<typeof logProviders.boat>[1]) => {
+      const provider = await logProviders.boat(sandbox, caller);
+      return sandbox.id && !sandbox.boatRuntime && config.encryptionKey
+        ? withNativeLogJournal(sql, config.encryptionKey, provider, {
+            id: sandbox.id,
+            orgId: sandbox.orgId,
+            userId: caller.userId,
+          })
+        : provider;
+    },
+  };
   const ordinaryLaunchReceipts = createOrdinaryLaunchReceipts(sql);
   const deviceLogin = deviceLoginFromConfig(sql, config.dashboardUrl, env);
   const control: ConfiguredControlOptions = {
@@ -506,7 +520,7 @@ export async function createServerServices(env: Record<string, string | undefine
       const sandbox = await scoped.sandboxes.get(sandboxId);
       if (!sandbox) throw new Error("No such sandbox.");
       return {
-        provider: await logProviders[sandbox.provider](sandbox, caller),
+        provider: await httpLogProviders[sandbox.provider](sandbox, caller),
         providerSandboxId: sandbox.providerSandboxId,
       };
     },
