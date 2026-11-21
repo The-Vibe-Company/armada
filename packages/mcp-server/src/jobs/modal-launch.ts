@@ -1,5 +1,6 @@
 import { sha256Hex } from "@armada/auth";
 import {
+  EncryptionKeyError,
   type GoldenRecord,
   HARNESS_KINDS,
   type Harness,
@@ -1004,7 +1005,13 @@ async function dispatchModalLaunch(
       signal.throwIfAborted();
       if (
         canDefer &&
-        !(error instanceof ModalBootstrapRefused || error instanceof RuntimeEnrolmentDenied) &&
+        !(
+          error instanceof ModalBootstrapRefused ||
+          error instanceof RuntimeEnrolmentDenied ||
+          error instanceof EncryptionKeyError ||
+          error instanceof DOMException ||
+          error instanceof SyntaxError
+        ) &&
         (!(error instanceof ProviderError) || error.retryable) &&
         (await canDispatch())
       )
