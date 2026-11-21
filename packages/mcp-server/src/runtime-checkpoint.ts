@@ -7,6 +7,7 @@ import { runtimeHarnessSupported } from "./provider-runtime-admission.ts";
 import type { createRuntimeCommands } from "./runtime-commands.ts";
 import { createRuntimeEnrolments } from "./runtime-enrolment.ts";
 import { unsettledRuntimeCommands } from "./runtime-idle-evidence.ts";
+import { RuntimeReconciliationConflict } from "./runtime-reconciliation-conflict.ts";
 import { recordStoppedCheckpointNote } from "./sandbox-lifecycle.ts";
 
 interface Intent {
@@ -243,11 +244,13 @@ export function createRuntimeCheckpoint(
       throw new VaultError("conflict", "Stopped runtime has no acknowledged checkpoint; no compute was resumed.");
     const intent = await createRuntimeEnrolments(sql, key).withOwner(sandbox.id, caller.userId, async (tx, scope) => {
       const lease = (
-        await tx.query<{ busy: boolean }>(
-          "select (activity_lease_id is not null or reconcile_lease_until>now()) as busy from public.sandboxes where id=$1",
+        await tx.query<{ busy: boolean; reconciling: boolean }>(
+          `select activity_lease_id is not null as busy, reconcile_lease_until>now() as reconciling
+           from public.sandboxes where id=$1`,
           [sandbox.id],
         )
       ).rows[0];
+      if (lease?.reconciling) throw new RuntimeReconciliationConflict();
       if (lease?.busy)
         throw new VaultError(
           "conflict",

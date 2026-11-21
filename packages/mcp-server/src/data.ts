@@ -46,6 +46,7 @@ import { scopedOrg } from "./control-caller.ts";
 import { bindNativePromptRequest } from "./native-webhook-prompts.ts";
 import { createResourceStore, type ResourceStore } from "./resource-store.ts";
 import { unsettledRuntimeCommands } from "./runtime-idle-evidence.ts";
+import { RuntimeReconciliationConflict } from "./runtime-reconciliation-conflict.ts";
 import {
   carryNativePreservationAcrossStop,
   completeSandboxDeletion,
@@ -244,8 +245,9 @@ export class DataError extends Error {
   constructor(
     message: string,
     readonly code: "unavailable" | "sandbox_not_ready" | "not_found" | "invalid" = "unavailable",
+    options?: ErrorOptions,
   ) {
-    super(message);
+    super(message, options);
   }
 }
 
@@ -1185,12 +1187,24 @@ export function createSqlData(
           if (!sql.transaction) throw new Error("Fenced sandbox admission requires a transaction.");
           result = await sql.transaction(async (tx) => {
             // WARNING: The queue check needs a fresh statement snapshot after acquiring the sandbox lock.
-            const locked = await tx.query<{ id: string }>(
-              `select s.id from public.sandboxes s where s.id=$3::uuid and ${SANDBOX_VISIBLE} for update`,
+            const locked = await tx.query<{ observation_blocked: boolean }>(
+              `select not (${observationFence}) as observation_blocked
+               from public.sandboxes s where s.id=$3::uuid and ${SANDBOX_VISIBLE} for update`,
               [...scope, id],
             );
             if (!locked.rows.length) return { rows: [] };
             const updated = await applyUpdate(tx);
+            if (
+              !updated.rows[0]?.id &&
+              !ownsActivity &&
+              !patch.retainedRuntimeStop &&
+              locked.rows[0]?.observation_blocked
+            )
+              throw new DataError(
+                "The sandbox is busy or its lifecycle changed; retry after refreshing status.",
+                "sandbox_not_ready",
+                { cause: new RuntimeReconciliationConflict() },
+              );
             const row = updated.rows[0];
             if (stopStatus !== undefined && row?.id) {
               if (!row.status || !row.generation) throw new Error("Owner stop update did not return its fence.");

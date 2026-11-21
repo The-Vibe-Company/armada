@@ -9,6 +9,7 @@ import { runtimeAgentFor } from "./runtime-agent.ts";
 import type { createRuntimeCommands } from "./runtime-commands.ts";
 import { createRuntimeEnrolments, runtimeTransaction } from "./runtime-enrolment.ts";
 import type { RuntimeMcp } from "./runtime-mcp.ts";
+import { RuntimeReconciliationConflict } from "./runtime-reconciliation-conflict.ts";
 import type { RuntimeResume, RuntimeTurnClaim } from "./runtime-resume.ts";
 import { appendConversation } from "./sandbox-activity.ts";
 import type { RestoreScopedRuntimeAccess } from "./sandbox-armada-access.ts";
@@ -28,7 +29,6 @@ export class RuntimeFollowupConflict extends VaultError {
       | "sandbox_not_ready"
       | "runtime_binding_missing"
       | "runtime_prompt_running"
-      | "runtime_reconciliation_active"
       | "runtime_admission_changed"
       | "runtime_activity_busy",
     message: string,
@@ -177,12 +177,12 @@ export function createRuntimeFollowup(
             [found.id],
           )
         ).rows[0];
+        if (lease?.reconciling) throw new RuntimeReconciliationConflict();
         if (
           !current ||
           current.lifecycleGeneration === undefined ||
           current.lifecycleGeneration !== found.lifecycleGeneration ||
           !lease ||
-          lease.reconciling ||
           !["ready", "running"].includes(current.status) ||
           current.credentialId !== found.credentialId ||
           current.credentialVersion !== found.credentialVersion ||
@@ -194,7 +194,7 @@ export function createRuntimeFollowup(
           )
         )
           throw new RuntimeFollowupConflict(
-            lease?.reconciling ? "runtime_reconciliation_active" : "runtime_admission_changed",
+            "runtime_admission_changed",
             "Runtime admission changed; inspect status before retrying.",
           );
         // The durable command identity decides first: an admitted turn may have executed, so the

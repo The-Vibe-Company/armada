@@ -14,6 +14,7 @@ import type { createRuntimeCommands } from "./runtime-commands.ts";
 import { createRuntimeEnrolments, type RuntimeTicketGuard } from "./runtime-enrolment.ts";
 import type { RuntimeGitHub } from "./runtime-github.ts";
 import type { RuntimeMcp } from "./runtime-mcp.ts";
+import { RuntimeReconciliationConflict } from "./runtime-reconciliation-conflict.ts";
 import type { RestoreScopedRuntimeAccess } from "./sandbox-armada-access.ts";
 import { refuseConversationSelector, SINGLE_CONVERSATION_GUIDANCE } from "./sandbox-conversation.ts";
 import {
@@ -156,13 +157,13 @@ export function createRuntimeResume(
           [found.id, caller.userId],
         )
       ).rows[0];
+      if (fence?.busy) throw new RuntimeReconciliationConflict();
       const current = await createSqlData(tx)(caller).sandboxes.get(found.id);
       if (
         !fence ||
         !current ||
         fence.tainted ||
         !fence.unexpired ||
-        fence.busy ||
         !current.model ||
         !current.reasoningEffort ||
         current.deletedAt ||

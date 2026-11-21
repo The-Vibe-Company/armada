@@ -9,7 +9,7 @@ import {
   type Sql,
   VaultError,
 } from "@armada/core/server";
-import { createSqlData } from "../src/data.ts";
+import { createSqlData, DataError } from "../src/data.ts";
 import { createEventFeed } from "../src/event-feed.ts";
 import { ModalLaunchSetupConflict } from "../src/jobs/modal-launch-setup.ts";
 import { launchCredentials } from "../src/launch-credentials.ts";
@@ -18,6 +18,7 @@ import { observeRequest } from "../src/request-observability.ts";
 import { createRuntimeEnrolments } from "../src/runtime-enrolment.ts";
 import { RuntimeFollowupConflict } from "../src/runtime-followup.ts";
 import { createRuntimeProvider } from "../src/runtime-provider.ts";
+import { RuntimeReconciliationConflict } from "../src/runtime-reconciliation-conflict.ts";
 import { launchSandboxChild } from "../src/sandbox-access-child-launch.ts";
 import { createSandboxChildren, type SandboxChildExecutor } from "../src/sandbox-access-children.ts";
 import { createSandboxAccessServices } from "../src/sandbox-access-services.ts";
@@ -471,7 +472,7 @@ test("an uncertain scoped message records a correlated operator diagnostic", asy
         async message() {
           dispatches++;
           if (setupPending) throw new ModalLaunchSetupConflict("modal_launch_setup_pending");
-          throw new RuntimeFollowupConflict("runtime_reconciliation_active", "private provider response");
+          throw new RuntimeFollowupConflict("runtime_activity_busy", "private provider response");
         },
         async launch() {
           throw Error("unexpected");
@@ -504,7 +505,7 @@ test("an uncertain scoped message records a correlated operator diagnostic", asy
         event: "operator_failure",
         phase: "scoped.child_message.execution",
         code: "child_outcome_unconfirmed",
-        causeCode: "runtime_reconciliation_active",
+        causeCode: "runtime_activity_busy",
         sandboxId: child.id,
         operationId: original.id,
         requestId: response?.headers.get("x-request-id"),
@@ -553,6 +554,56 @@ test("an uncertain scoped message records a correlated operator diagnostic", asy
     expect(await children.message(token, "message-setup-pending", child.id, "synthetic child prompt")).toEqual(refused);
     expect(dispatches).toBe(2);
     expect(lines.join("\n")).not.toContain("private provider response");
+  } finally {
+    await close();
+  }
+});
+
+test("a reconciliation refusal settles each fresh child mutation without replaying it", async () => {
+  const { close, db, sql, id, p, parent, golden, authority, token } = await fixture();
+  try {
+    const child = await createSqlSandboxStore(sql).insert({
+      id: crypto.randomUUID(),
+      provider: parent.provider,
+      providerSandboxId: "reconciling-child",
+      goldenId: golden.id,
+      orgId: p.org,
+      ownerId: p.owner,
+      harness: "codex",
+      status: "ready",
+    });
+    await db.query("insert into orchestrator_children values($1,$2,$3,$4)", [child.id, id, p.org, p.owner]);
+    const refuse = async () => {
+      throw new RuntimeReconciliationConflict();
+    };
+    const recoverStop = spyOn({ recoverStop: async () => {} }, "recoverStop");
+    const children = createSandboxChildren(sql, authority, {
+      message: refuse,
+      stop: refuse,
+      recoverStop,
+      async extend() {
+        throw new DataError("Sandbox is busy.", "sandbox_not_ready", { cause: new RuntimeReconciliationConflict() });
+      },
+      async launch() {
+        throw Error("unexpected launch");
+      },
+      async read() {
+        throw Error("unexpected read");
+      },
+      async reconcile() {
+        throw Error("unexpected reconciliation");
+      },
+    });
+    for (const request of [
+      () => children.message(token, "message-busy", child.id, "synthetic child prompt"),
+      () => children.stop(token, "stop-busy", child.id),
+      () => children.extend(token, "extend-busy", child.id, 60),
+    ]) {
+      const result = await request();
+      expect(result).toMatchObject({ state: "failed", sandboxId: child.id });
+      expect(await request()).toEqual(result);
+    }
+    expect(recoverStop).not.toHaveBeenCalled();
   } finally {
     await close();
   }
