@@ -107,7 +107,7 @@ with the sandbox ID from the launch receipt.
 
 ```sh
 armada new MODAL_SNAPSHOT --provider modal --agent claude "Reply OK"
-armada wait SANDBOX_UUID
+armada info --wait SANDBOX_UUID
 ```
 
 Using an authorized service/operator database connection (never a user JWT), run:

@@ -48,6 +48,7 @@ The rehearsed 2.57.2 binary below uses `launch`.
 ```bash
 read -r -p 'Sandbox creation command from pinned CLI help: ' sandbox_create_command
 read -r -p 'Sandbox listing command from pinned CLI help: ' sandbox_list_command
+read -r -p 'Sandbox inspection command from pinned CLI help: ' sandbox_inspect_command
 ```
 
 For the Modal path, use the listing verb shown by the pinned version's snapshot
@@ -83,7 +84,7 @@ staging_armada "$sandbox_list_command" --org "$staging_org" --golden "$snapshot_
 
 ```bash
 read -r -p 'Returned sandbox ID: ' sandbox_id
-staging_armada status "$sandbox_id" --org "$staging_org"
+staging_armada "$sandbox_inspect_command" "$sandbox_id" --org "$staging_org"
 staging_armada events "$sandbox_id" --org "$staging_org" -f
 ```
 
@@ -181,7 +182,7 @@ session and close the dedicated shell.
 
 ```bash
 staging_armada stop "$sandbox_id" --org "$staging_org"
-staging_armada status "$sandbox_id" --org "$staging_org"
+staging_armada "$sandbox_inspect_command" "$sandbox_id" --org "$staging_org"
 staging_armada logout
 ```
 

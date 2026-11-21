@@ -235,7 +235,7 @@ answers HTTP 401) and no interactive sign-in took place. For example, signed-out
 `armada ls` and `armada ls --json` exit 3, and so does bare `armada`.
 Exit 1 means access denial, state, unsupported operation or service failure.
 Check `armada ls --json` for visible IDs and state; verify your org selection
-with `armada status --setup` or pass `--org UUID`.
+with `armada info --setup` or pass `--org UUID`.
 
 Sandbox mutations are not replayed after transport/server failures or state
 conflicts. Existing authentication recovery may refresh a personal session and

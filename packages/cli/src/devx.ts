@@ -41,7 +41,7 @@ export async function prepareLaunch(argv: readonly string[], auth: AuthIo): Prom
   const origin = await resolveArmadaOrigin(auth);
   const choose = async (key: string, title: string, options: { value: string; label: string }[], fallback?: string) => {
     if (!options.length)
-      throw new AuthError(`${title}: no choices available. Run armada status --setup to check your setup.`, "usage");
+      throw new AuthError(`${title}: no choices available. Run armada info --setup to check your setup.`, "usage");
     const remembered = await auth.launchPreferences?.read(`${origin}/${key}`);
     const preferred = options.find((o) => o.value === remembered)?.value ?? fallback ?? options[0]?.value;
     const value = options.length === 1 ? options[0]?.value : await auth.chooseLaunch?.(title, options, preferred);
@@ -151,7 +151,7 @@ export async function setupStatus(org: string | undefined, json: boolean, auth: 
     add(
       "Server",
       "unknown",
-      "Could not read server version. Restore the session/connection and run armada status --setup.",
+      "Could not read server version. Restore the session/connection and run armada info --setup.",
     );
   }
   try {

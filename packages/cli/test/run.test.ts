@@ -60,10 +60,7 @@ describe("run", () => {
   test.each([
     "new",
     "ls",
-    "detail",
-    "recovery",
-    "status",
-    "advice",
+    "info",
     "bind-credential",
     "rm",
     "extend",
@@ -71,7 +68,6 @@ describe("run", () => {
     "prompt",
     "exec",
     "stop",
-    "wait",
     "interrupt",
     "mcp",
     "login",
@@ -110,6 +106,7 @@ describe("run", () => {
       [["list"], "list", true],
       [["send"], "send", true],
       [["steer"], "steer", true],
+      ...["status", "detail", "wait", "advice", "recovery"].map((verb) => [[verb], verb, true] as const),
       [["snapshot", "frobnicate", "--org", "org_placeholder"], "snapshot frobnicate"],
       ...[
         "create",

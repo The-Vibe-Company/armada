@@ -80,11 +80,11 @@ Source invocations need their own rule.
 ~~~sh
 armada new "$GOLDEN" --provider "$PROVIDER" --repo "$REPO" --agent "$REVIEW_HARNESS" --model "$REVIEW_MODEL" --ttl 30m --no-connections --json "$(cat "$PROMPT_FILE")"
 # Persist returned sandbox UUID immediately, then register cleanup.
-armada status "$REVIEWER_ID" --json
-armada wait "$REVIEWER_ID" --timeout 600 --json
+armada info "$REVIEWER_ID" --json
+armada info --wait "$REVIEWER_ID" --timeout 600 --json
 armada events "$REVIEWER_ID" -f --json
 armada stop "$REVIEWER_ID" --json
-armada status "$REVIEWER_ID" --json
+armada info "$REVIEWER_ID" --json
 ~~~
 
 An **Armada orchestrator parent** uses its existing scoped MCP launch, not a

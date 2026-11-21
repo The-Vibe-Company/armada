@@ -22,7 +22,7 @@ coordinator scripts that manage several sandboxes from one directory.
 
 ## 1. Establish identity and scope
 
-Run `armada status --setup --json` for identity, organization, server, GitHub,
+Run `armada info --setup --json` for identity, organization, server, GitHub,
 hosts and model accounts. Use `armada org list` to find organization IDs.
 For an interactive human, run `armada login` and authorize the request in the dashboard
 using the printed link and matching short code. For automation, use an authorized
@@ -87,7 +87,7 @@ any receipt UUID returned. On success, pass `sandbox.id` to subsequent tools.
   Use `armada account ls` to find the account ID, then retry the launch with
   `--credential-id ACCOUNT`.
 - Bound TTL, size and concurrency to the task. Start small unless evidence calls
-  for more. `armada advice SANDBOX --json` provides bounded historical resource
+  for more. `armada api sandbox/advice '{"id":"SANDBOX"}'` provides bounded historical resource
   evidence; unknown evidence is not a recommendation to upscale.
 
 Example (replace the skill pin with an accessible, exact version):
@@ -104,7 +104,7 @@ latest versions. Private pins use bare slug@exact-version in the credential’s 
 org/slug@exact-version pins always use the anonymous public catalog, even when
 a key exists. Private pins require a configured Skillpack credential and
 access to the package; do not put that credential in a golden or prompt. Check
-`armada detail SANDBOX --json` for recorded skill references/checksums. Do not
+`armada info SANDBOX --live --json` for recorded skill references/checksums. Do not
 claim a skill is active merely because its package exists locally.
 
 Use `armada ls --status running` to filter by state, or `armada ls --ref REF`
@@ -166,9 +166,9 @@ or orchestration are provided.
 
 ```sh
 armada prompt SANDBOX "Continue with the next agreed task"
-armada wait SANDBOX --timeout 120 --json
+armada info --wait SANDBOX --timeout 120 --json
 armada events SANDBOX --tail 50 --json
-armada status SANDBOX --json
+armada info SANDBOX --json
 ```
 
 Send starts a new turn in the sandbox's conversation. Launch another sandbox
@@ -217,8 +217,8 @@ and confirmed recovery first. For direct API callers, use
 after an uncertain Docker deletion. The dashboard
 uses the REST operations for extension and stopped Docker sandbox deletion.
 
-For resource advice and preserved archives, use `armada advice SANDBOX --json`
-and `armada recovery SANDBOX`. Explicit runtime checkpoint and resume use the
+For resource advice and preserved archives, use `armada api sandbox/advice '{"id":"SANDBOX"}'`
+and `armada api sandbox/recovery '{"id":"SANDBOX"}'`. Explicit runtime checkpoint and resume use the
 owner REST routes `sandbox/checkpoint-runtime-v1` and `sandbox/resume-runtime-v1`.
 Send and runtime resume select the conversation from the sandbox ID. Launch another
 sandbox for a separate conversation.

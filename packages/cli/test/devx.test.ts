@@ -84,7 +84,7 @@ test.each([VERSION, "0.0.1", null])(
         },
       },
     });
-    expect(await f.run(["status"])).toBe(0);
+    expect(await f.run(["info"])).toBe(0);
     expect(f.output()).toContain("CHECK\tSTATUS\tDETAIL / NEXT STEP");
     expect(f.output()).toContain("Session\tok\tSigned in as user (service)");
     expect(f.output()).toContain("Organization\tok\torg");
@@ -128,7 +128,7 @@ test("setup status names the uninstall for a draining host instead of telling th
     "/api/v1/creds/list": { user: [{ id: "model", name: "Work", kind: "openai", status: "active" }], orgs: [] },
     "/api/v1/github/status": { connection: { status: "not_connected", login: null } },
   });
-  expect(await f.run(["status", "--json"])).toBe(0);
+  expect(await f.run(["info", "--json"])).toBe(0);
   const host = JSON.parse(f.output()).checks.find((row: { check: string }) => row.check === "Host desk");
   expect(host.detail).toContain("draining for uninstall");
   expect(host.detail).not.toContain("Check the host machine");
@@ -148,7 +148,7 @@ test.each([
       "/api/v1/account/status": { userId: "user", authentication: "service", version: VERSION, orgs: [] },
       "/api/v1/github/status": { connection },
     });
-    expect(await f.run(["status", "--json"])).toBe(0);
+    expect(await f.run(["info", "--json"])).toBe(0);
     expect(JSON.parse(f.output()).checks.find((row: { check: string }) => row.check === "GitHub")).toMatchObject({
       status,
       detail: expect.stringContaining(detail),
@@ -161,7 +161,7 @@ test("setup status reports personal-login GitHub requirement when a service bear
     "/api/v1/account/status": { userId: "user", authentication: "service", version: VERSION, orgs: [] },
     "/api/v1/github/status": Response.json({ error: "forbidden" }, { status: 403 }),
   });
-  expect(await f.run(["status", "--json"])).toBe(0);
+  expect(await f.run(["info", "--json"])).toBe(0);
   expect(f.output()).toContain("unset ARMADA_TOKEN");
   expect(JSON.parse(f.output()).checks.find((row: { check: string }) => row.check === "GitHub")).toMatchObject({
     status: "unknown",
@@ -172,7 +172,7 @@ test("setup status reports personal-login GitHub requirement when a service bear
 test.each([true, false])("setup status diagnoses failed session for token mode %s", async (token) => {
   const f = fixture({});
   if (!token) f.auth.env = {};
-  expect(await f.run(["status", "--json"])).toBe(1);
+  expect(await f.run(["info", "--json"])).toBe(1);
   expect(JSON.parse(f.output()).checks).toEqual(
     expect.arrayContaining([
       expect.objectContaining({
@@ -201,7 +201,7 @@ test("status --setup skips the current sandbox and uses an explicit organization
   f.auth.preferences = { read: async () => "saved", write: async () => {} };
   f.expectHostOrg("explicit");
 
-  expect(await f.run(["status", "--setup", "--org", "explicit"], { stdoutIsTTY: false })).toBe(0);
+  expect(await f.run(["info", "--setup", "--org", "explicit"], { stdoutIsTTY: false })).toBe(0);
   expect(JSON.parse(f.output()).checks).toContainEqual({ check: "Organization", status: "ok", detail: "explicit" });
   expect(f.paths).toContain("/api/v1/docker/hosts/list");
   expect(f.paths).not.toContain("/api/v1/sandbox/status");
