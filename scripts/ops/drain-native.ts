@@ -39,7 +39,7 @@ async function queryInventory(statement: string, provider: NativeProvider) {
   if (!url || !/^postgres(?:ql)?:\/\//.test(url))
     throw new Error("Set ARMADA_DRAIN_READ_ONLY_DATABASE_URL for the coordinator's inventory.");
   try {
-    const client = new SQL(url, { max: 1, connectionTimeout: 10 });
+    const client = new SQL(url, { max: 1, connectionTimeout: 10, prepare: false });
     try {
       return await client.begin("READ ONLY", async (tx) => {
         await tx.unsafe("SET LOCAL row_security = off");
