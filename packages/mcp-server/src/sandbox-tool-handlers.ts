@@ -397,6 +397,7 @@ export function configureTools(
         found.id,
       ));
     let acknowledged = false;
+    let nativeExecCompleted = false;
     const execute = async (signal?: AbortSignal) => {
       const membership = caller.orgs.find((member) => member.orgId === found.orgId);
       if (!membership) throw new ToolError("forbidden", "No current organization membership.");
@@ -431,6 +432,12 @@ export function configureTools(
           const safe = redact(text, secrets);
           return safe.length <= OUTPUT_LIMIT ? safe : `...${safe.slice(-OUTPUT_LIMIT)}`;
         };
+        nativeExecCompleted =
+          fencedExec === true &&
+          result.detached === false &&
+          result.timedOut === false &&
+          Number.isSafeInteger(result.exitCode) &&
+          typeof result.truncated === "boolean";
         return {
           id: found.id,
           exitCode: result.exitCode,
@@ -462,7 +469,8 @@ export function configureTools(
         signal.throwIfAborted();
         const result = await execute(fencedExec ? signal : undefined);
         signal.throwIfAborted();
-        return { result, patch: {} };
+        const patch: ServerSandboxPatch = nativeExecCompleted ? { nativeExecCompleted: true } : {};
+        return { result, patch };
       },
       { deadlineMs: ((args.timeout_seconds ?? 120) + 60) * 1000 },
     ).catch((error) => publicationFailure(error, acknowledged));
