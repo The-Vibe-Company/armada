@@ -1,6 +1,7 @@
 import type { ModalBinding, SandboxStatus } from "@armada/core";
 import {
   GoldenError,
+  LaunchError,
   type Machine,
   type MachineIdentity,
   type MachineIncarnation,
@@ -8,6 +9,7 @@ import {
 } from "@armada/core/server";
 import { createModalMachine, type ModalMachineOptions } from "@armada/provider-modal";
 import { z } from "zod";
+import { type OrdinaryLaunchFailure, replayOrdinaryLaunchFailure } from "../ordinary-launch-receipts.ts";
 import { createRuntimeEnrolments } from "../runtime-enrolment.ts";
 import {
   bindModalLaunchMachine,
@@ -29,6 +31,10 @@ export interface ModalLaunchAdmission {
   deadline: Date;
   maxAttempts: number;
 }
+
+type ArchivedLaunchReceipt =
+  | { receipt: "accepted" | "unknown" }
+  | { receipt: "refused"; failure: OrdinaryLaunchFailure };
 
 // WARNING: Activate only after the receipt backfill and launch runner integration.
 export async function admitModalLaunch(sql: Sql, encryptionKey: string, input: ModalLaunchAdmission) {
@@ -82,8 +88,13 @@ export async function admitModalLaunch(sql: Sql, encryptionKey: string, input: M
       );
       const {
         rows: [receipt],
-      } = await tx.query<{ sandbox_id: string; status: SandboxStatus | null; golden_id: string | null }>(
-        `select j.sandbox_id, s.status, s.golden_id from public.jobs j
+      } = await tx.query<{
+        sandbox_id: string;
+        status: SandboxStatus | null;
+        golden_id: string | null;
+        outcome: ArchivedLaunchReceipt | null;
+      }>(
+        `select j.sandbox_id, s.status, s.golden_id, j.outcome from public.jobs j
          left join public.sandboxes s on s.id=j.sandbox_id and s.org_id=j.org_id and s.owner_id=j.request_owner_id
          where j.id=$1 and j.kind='launch' and j.org_id=$2 and j.request_owner_id=$3`,
         [jobId, orgId, ownerId],
@@ -92,6 +103,12 @@ export async function admitModalLaunch(sql: Sql, encryptionKey: string, input: M
       if (receipt.sandbox_id !== sandboxId) {
         if (receipt.golden_id && receipt.golden_id !== sandbox.goldenId)
           throw new GoldenError("conflict", "Launch key conflicts with an existing receipt.");
+        if (receipt.outcome?.receipt === "refused") throw replayOrdinaryLaunchFailure(receipt.outcome.failure);
+        if (receipt.outcome?.receipt === "unknown")
+          throw new LaunchError(
+            "outcome_unknown",
+            `Launch outcome unknown; receipt ${receipt.sandbox_id}. Do not use a new key.`,
+          );
         return { sandbox: { id: receipt.sandbox_id, status: receipt.status ?? "deleted" } };
       }
 
