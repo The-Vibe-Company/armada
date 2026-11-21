@@ -13,7 +13,11 @@ publish_package() {
     echo "$name@$VERSION is already published."
     return
   fi
+  local started=$SECONDS
   npm publish "./$tarball" --access public --tag "$DIST_TAG" --provenance ${dry[@]+"${dry[@]}"}
+  if [ "$PUBLISH" = true ]; then
+    echo "Published $name@$VERSION in $((SECONDS - started))s."
+  fi
   newly_published+="$name "
 }
 
@@ -60,6 +64,7 @@ if [ "$PUBLISH" = true ]; then
           echo "Registry tarball for $name@$VERSION differs from the staged artifact." >&2
           return 1
         fi
+        echo "Registry tarball for $name@$VERSION verified in $((SECONDS - started))s after the publish or skip."
         return 0
       fi
       elapsed=$((SECONDS - started))
