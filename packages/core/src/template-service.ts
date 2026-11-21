@@ -18,6 +18,7 @@ import {
   resolveLaunchSecrets,
 } from "./launch-secrets.ts";
 import { resolveLaunchVariables } from "./launch-variables.ts";
+import { capabilities } from "./machine-capabilities.ts";
 import { parseMachineSize } from "./machine-size.ts";
 import { MAX_MCP_CONNECTIONS } from "./mcp-launch-selection.ts";
 import { resolveModelChoice } from "./models.ts";
@@ -248,10 +249,9 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
     enforceModelScope = true,
     expectedConnections?: Manifest["connections"],
   ) {
-    const g =
-      def.provider === "docker" ? null : await golden(tx, actor, scope, def.goldenId, def.provider, !enforceModelScope);
+    let g: GoldenRecord | null = null;
     let host: Manifest["host"];
-    if (def.provider === "docker") {
+    if (def.goldenId === null) {
       // Issuer membership is observed here, not locked out of order after the actor.
       // The reservation rechecks this policy under its sorted actor/issuer prelocks.
       const row = (
@@ -280,7 +280,8 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
         ).rows[0];
         if (!snapshot) unavailable("environment_snapshot_unavailable");
       }
-    } else if (g) {
+    } else {
+      g = await golden(tx, actor, scope, def.goldenId, def.provider, !enforceModelScope);
       if (canonical(g.modal) !== canonical(def.goldenBinding)) unavailable("environment_binding_changed");
       if (await snapshotSealed(tx, g.provider, g.providerSnapshotId)) unavailable("environment_snapshot_unavailable");
     }
@@ -347,8 +348,9 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
     } catch {
       invalid();
     }
-    const g = d.provider === "docker" ? null : await golden(tx, actor, scope, id(d.goldenId), d.provider);
-    if (d.provider === "docker") {
+    const hostLaunch = capabilities(d.provider).launchSource === "host";
+    const g = hostLaunch ? null : await golden(tx, actor, scope, id(d.goldenId), d.provider);
+    if (hostLaunch) {
       id(d.hostId);
       if (d.snapshotId !== undefined) id(d.snapshotId);
       if (d.goldenId !== undefined && d.goldenId !== null) invalid();
@@ -557,8 +559,8 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
       return { a, h, r: await revision(tx, h, input.revision) };
     });
     const def = selection.r.definition;
-    // Docker launches record no external reference; refuse rather than drop it.
-    if (input.externalRef !== undefined && def.provider === "docker") unavailable("external_ref_unavailable");
+    // Host launches record no external reference; refuse rather than drop it.
+    if (input.externalRef !== undefined && def.goldenId === null) unavailable("external_ref_unavailable");
     await runtime.validateDefinition?.(def);
     let account = def.modelAccount;
     if (input.modelAccount !== undefined) {
@@ -681,7 +683,7 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
         ...(input.ttlSeconds === undefined ? {} : { ttlSeconds: input.ttlSeconds as number }),
       });
       const result =
-        def.provider === "docker"
+        def.goldenId === null
           ? await (async () => {
               if (!runtime.launchDocker || !m.host || input.repo !== undefined || size !== undefined)
                 unavailable("environment_admission_unavailable");
