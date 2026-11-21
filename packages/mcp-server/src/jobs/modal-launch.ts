@@ -714,6 +714,28 @@ function hasModalMachineJournal(job: Job) {
   return typeof job.outcome === "object" && job.outcome !== null && "modal_machine" in job.outcome;
 }
 
+async function beforeProviderMutation<T>(context: DispatchContext, canDefer: boolean, work: () => Promise<T>) {
+  try {
+    return await work();
+  } catch (error) {
+    context.signal.throwIfAborted();
+    if (
+      canDefer &&
+      !(
+        error instanceof ModalBootstrapRefused ||
+        error instanceof RuntimeEnrolmentDenied ||
+        error instanceof EncryptionKeyError ||
+        error instanceof DOMException ||
+        error instanceof SyntaxError
+      ) &&
+      (!(error instanceof ProviderError) || error.retryable) &&
+      (await context.canDispatch())
+    )
+      return "deferred" as const;
+    throw error;
+  }
+}
+
 export async function runModalLaunch(
   sql: Sql,
   encryptionKey: string,
@@ -758,12 +780,20 @@ export async function runModalLaunch(
     return receipt;
   };
   const done = { status: "done" } satisfies JobResult;
-  const pending = await withJobLease(sql, job, readEnrolment);
-  context.signal.throwIfAborted();
-  if (!pending || pending.enrolled) return done;
-  if (pending.check_after && (!pending.bootstrap_ticket_enc || !(await context.canDispatch()))) {
-    return { status: "retry", after: new Date(pending.check_after), unattempted: true } satisfies JobResult;
-  }
+  const retryUnattempted = (after = new Date(Date.now() + ENROLMENT_RETRY_DELAY_MS)) =>
+    ({ status: "retry", after, unattempted: true }) satisfies JobResult;
+  const hasJournal = hasModalMachineJournal(job);
+  const initial = await beforeProviderMutation(context, hasJournal, async () => {
+    const pending = await withJobLease(sql, job, readEnrolment);
+    context.signal.throwIfAborted();
+    if (!pending || pending.enrolled) return;
+    const waitForEnrolment = pending.check_after && (!pending.bootstrap_ticket_enc || !(await context.canDispatch()));
+    return { pending, waitForEnrolment };
+  });
+  if (initial === "deferred") return retryUnattempted();
+  if (!initial) return done;
+  const { pending, waitForEnrolment } = initial;
+  if (waitForEnrolment && pending.check_after) return retryUnattempted(new Date(pending.check_after));
 
   const startingTarget = async (tx: Sql) => {
     const {
@@ -787,7 +817,6 @@ export async function runModalLaunch(
     );
     return row;
   };
-  const hasJournal = hasModalMachineJournal(job);
   let skipProvider = pending.cancel_without_provider || (!hasJournal && !(await context.canDispatch()));
   let plan: ModalLaunchPlan | undefined;
   if (!skipProvider) {
@@ -797,11 +826,7 @@ export async function runModalLaunch(
       context.signal.throwIfAborted();
       if (await context.canDispatch()) {
         if (!hasJournal) throw error;
-        return {
-          status: "retry",
-          after: new Date(Date.now() + ENROLMENT_RETRY_DELAY_MS),
-          unattempted: true,
-        } satisfies JobResult;
+        return retryUnattempted();
       }
       const target = await withJobLease(sql, job, startingTarget);
       if (!target) return done;
@@ -879,19 +904,18 @@ export async function runModalLaunch(
         }
       })
     : undefined;
-  const afterDispatch = await withJobLease(sql, job, readEnrolment);
-  context.signal.throwIfAborted();
-  if (!afterDispatch || afterDispatch.enrolled) return done;
-  const target = await withJobLease(sql, job, startingTarget);
-  context.signal.throwIfAborted();
-  if (!target) return done;
-  if (dispatch?.kind === "dispatch_deferred" && !target.stop_requested) {
-    return {
-      status: "retry",
-      after: new Date(Date.now() + ENROLMENT_RETRY_DELAY_MS),
-      unattempted: true,
-    } satisfies JobResult;
-  }
+  const settlement = await beforeProviderMutation(context, dispatch?.kind === "dispatch_deferred", async () => {
+    const afterDispatch = await withJobLease(sql, job, readEnrolment);
+    context.signal.throwIfAborted();
+    if (!afterDispatch || afterDispatch.enrolled) return;
+    const target = await withJobLease(sql, job, startingTarget);
+    context.signal.throwIfAborted();
+    if (target) return { afterDispatch, target };
+  });
+  if (settlement === "deferred") return retryUnattempted();
+  if (!settlement) return done;
+  const { afterDispatch, target } = settlement;
+  if (dispatch?.kind === "dispatch_deferred" && !target.stop_requested) return retryUnattempted();
   if (dispatch?.kind === "bootstrapped" && !target.stop_requested) {
     return {
       status: "retry",
@@ -998,29 +1022,8 @@ async function dispatchModalLaunch(
   const target = () => withJobLease(sql, job, dispatchTarget);
   const recovering = hasModalMachineJournal(job);
   const deferred = { kind: "dispatch_deferred" } as const;
-  async function beforeProviderMutation<T>(work: () => Promise<T>, canDefer: boolean) {
-    try {
-      return await work();
-    } catch (error) {
-      signal.throwIfAborted();
-      if (
-        canDefer &&
-        !(
-          error instanceof ModalBootstrapRefused ||
-          error instanceof RuntimeEnrolmentDenied ||
-          error instanceof EncryptionKeyError ||
-          error instanceof DOMException ||
-          error instanceof SyntaxError
-        ) &&
-        (!(error instanceof ProviderError) || error.retryable) &&
-        (await canDispatch())
-      )
-        return "deferred" as const;
-      throw error;
-    }
-  }
   async function canDeferPreparation(machineId: string) {
-    const current = await beforeProviderMutation(target, true);
+    const current = await beforeProviderMutation(context, true, target);
     return current === "deferred" || current?.provider_sandbox_id === machineId;
   }
   let recoveredAllocation = false;
@@ -1039,10 +1042,12 @@ async function dispatchModalLaunch(
         throw error;
       });
       const canDeferReplay = recoveredAllocation && replayingTicket;
-      const ticket = await beforeProviderMutation(() => resolveRuntimeTicket(request, preparation), canDeferReplay);
+      const ticket = await beforeProviderMutation(context, canDeferReplay, () =>
+        resolveRuntimeTicket(request, preparation),
+      );
       if (ticket === "deferred") throw preparationDeferred;
       if (!ticket) return null;
-      const authorized = await beforeProviderMutation(target, canDeferReplay);
+      const authorized = await beforeProviderMutation(context, canDeferReplay, target);
       if (authorized === "deferred") throw preparationDeferred;
       if (authorized?.provider_sandbox_id !== request.machineId)
         throw new ModalBootstrapRefused("Modal bootstrap dispatch is no longer authorized.");
@@ -1051,7 +1056,7 @@ async function dispatchModalLaunch(
   });
   const reconcile = async () => ({ kind: "reconcile", observation: await machine.observe(incarnation) }) as const;
 
-  const current = reconciliationOnly ? undefined : await beforeProviderMutation(target, recovering);
+  const current = reconciliationOnly ? undefined : await beforeProviderMutation(context, recovering, target);
   if (current === "deferred") return deferred;
   if (!current) return reconcile();
 
@@ -1059,7 +1064,7 @@ async function dispatchModalLaunch(
   const observed =
     job.attempts > 1 ? await machine.observe({ ...incarnation, ...(machineId ? { machineId } : {}) }) : undefined;
   if (observed) {
-    const confirmed = await beforeProviderMutation(target, recovering);
+    const confirmed = await beforeProviderMutation(context, recovering, target);
     if (confirmed === "deferred") return deferred;
     if (!confirmed) return { kind: "reconcile", observation: observed } as const;
     if (observed.kind === "unknown" || (machineId && observed.kind === "absent"))
@@ -1077,15 +1082,13 @@ async function dispatchModalLaunch(
       observed?.kind === "present" ? observed.machine : await machine.create({ ...plan.allocation, ...incarnation });
     if (allocated.sandboxId !== sandboxId || allocated.generation !== generation)
       throw new Error("Modal launch changed the machine incarnation.");
-    const bound = await beforeProviderMutation(
-      () =>
-        withJobLease(sql, job, async (tx) => {
-          if ((await dispatchTarget(tx))?.provider_sandbox_id !== null) return false;
-          if (observed?.kind === "present" && !(await adoptObservedModalAllocation(tx, job, allocated.machineId)))
-            return false;
-          return bindModalLaunchMachine(tx, allocated);
-        }),
-      observed?.kind === "present",
+    const bound = await beforeProviderMutation(context, observed?.kind === "present", () =>
+      withJobLease(sql, job, async (tx) => {
+        if ((await dispatchTarget(tx))?.provider_sandbox_id !== null) return false;
+        if (observed?.kind === "present" && !(await adoptObservedModalAllocation(tx, job, allocated.machineId)))
+          return false;
+        return bindModalLaunchMachine(tx, allocated);
+      }),
     );
     if (bound === "deferred") return deferred;
     if (!bound) return observed?.kind === "present" ? { kind: "reconcile", observation: observed } : reconcile();
@@ -1094,7 +1097,7 @@ async function dispatchModalLaunch(
   if (observed?.kind === "present" && observed.phase === "stopped")
     return { kind: "reconcile", observation: observed } as const;
   recoveredAllocation = machineId !== null || observed?.kind === "present";
-  const readyToBootstrap = await beforeProviderMutation(target, recoveredAllocation);
+  const readyToBootstrap = await beforeProviderMutation(context, recoveredAllocation, target);
   if (readyToBootstrap === "deferred") return deferred;
   if (readyToBootstrap?.provider_sandbox_id !== allocated.machineId) return reconcile();
   signal.throwIfAborted();
