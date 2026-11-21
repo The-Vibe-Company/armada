@@ -159,10 +159,10 @@ export function createSubscriptionMigration(
     if (physical.id !== target.providerSandboxId)
       throw new VaultError("conflict", "Subscription provider identity changed.");
     if (physical.state === "stopped") return;
+    await recheck(source);
     if (source.credential_version !== version || target.provider.id === "modal") {
       // Older/unknown pins are not repointed. Stopping prevents future native
       // rotations when possible; Modal stop publishes its private checkpoint.
-      await recheck(source);
       // This stop bypasses preserveBeforeStop; stopped workspaces are never read for outputs.
       await captureFinalOutputs(sql, target.provider, source.id, { signal: AbortSignal.timeout(10_000) }).catch(
         () => {},
@@ -180,8 +180,6 @@ export function createSubscriptionMigration(
           )
         )
           throw error;
-        // Another replica owns the healthy stop/checkpoint. Observe completion,
-        // never redispatch stop and consume its provider recovery budget.
       }
       if (target.provider.id === "modal") await waitStopped(target);
       else {
@@ -230,7 +228,6 @@ export function createSubscriptionMigration(
           await once(source, () => resolveStoredSandbox(sql, source.id), version);
         } catch (error) {
           if (error instanceof SubscriptionTemporaryError) throw error;
-          /* Unknown/absent history never becomes a new account admission refusal. */
         }
       }
     },

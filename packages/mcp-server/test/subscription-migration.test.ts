@@ -636,7 +636,7 @@ test.each(["boat", "modal"] as const)("subscription preparation leaves a strict 
   );
   await db.query("insert into native_drain_stop_requests(sandbox_id,stop_generation) values($1,1)", [id]);
   const resolved: string[] = [];
-  const unexpected = async (): Promise<never> => {
+  const unexpected = async () => {
     throw Error("subscription must leave the strict source alone");
   };
   const migration = createSubscriptionMigration(
