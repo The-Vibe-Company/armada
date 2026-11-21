@@ -450,8 +450,43 @@ test.each(["active secret", "revoked secret", "changed snapshot", "changed conne
       return;
     }
     const accepted = { sandbox: { id: sandboxId, status: "starting" } } as const;
+    const receiptState = async () =>
+      (
+        await db.query<{ state: string; result: { envelope: unknown } | null }>(
+          "select state,result from template_launch_requests where id=$1",
+          [receipt!.id],
+        )
+      ).rows[0];
+    const interrupted: Sql = {
+      ...sql,
+      transaction: (work) =>
+        sql.transaction!(async (tx) => {
+          await work(tx);
+          throw new Error("Admission interrupted before commit");
+        }),
+    };
+    await expect(admitModalLaunch(interrupted, launchEncryptionKey, pinned)).rejects.toThrow(
+      "Admission interrupted before commit",
+    );
+    expect(await receiptState()).toEqual({ state: "claimed", result: null });
+    expect((await db.query("select id from sandboxes where id=$1", [sandboxId])).rows).toEqual([]);
+    expect((await db.query("select id from jobs where sandbox_id=$1", [sandboxId])).rows).toEqual([]);
     expect(await admit()).toEqual(accepted);
+    const published = await receiptState();
+    expect(published).toMatchObject({
+      state: "succeeded",
+      result: {
+        requestId: receipt!.id,
+        state: "succeeded",
+        id: sandboxId,
+        status: "starting",
+        provider: "modal",
+        manifest: { resolvedSkills: ["example/tool@1.0.0"] },
+      },
+    });
+    expect(published?.result?.envelope).toEqual(accepted);
     expect(await admit()).toEqual(accepted);
+    expect(await receiptState()).toEqual(published);
     const setup = await createJobsStore(sql, launchEncryptionKey).claim(MODAL_INITIAL_TURN, crypto.randomUUID(), 30, 1);
     expect(setup?.payload).toMatchObject({ skills: ["example/tool@1.0.0"] });
     expect((await db.query("select sandbox_id,connection_id from mcp_bindings")).rows).toEqual([

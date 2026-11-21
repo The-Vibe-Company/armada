@@ -81,13 +81,15 @@ async function lockPinnedModalReservation(sql: Sql, orgId: string, ownerId: stri
     sandbox_id: string;
     digest: string;
     state: string;
+    has_result: boolean;
     template_scope: string;
     frozen_golden: Pick<GoldenRecord, "id" | "providerSnapshotId" | "modal" | "config"> | null;
     sandbox_exists: boolean;
     frozen_connections: unknown;
     frozen_skills: unknown;
   }>(
-    `select r.id,r.sandbox_id,r.digest,r.state,t.scope as template_scope,r.manifest->'golden' as frozen_golden,
+    `select r.id,r.sandbox_id,r.digest,r.state,r.result is not null as has_result,
+            t.scope as template_scope,r.manifest->'golden' as frozen_golden,
             r.manifest->'connections' as frozen_connections, r.manifest->'resolvedSkills' as frozen_skills,
             exists(select 1 from public.sandboxes s where s.id=r.sandbox_id) as sandbox_exists
      from public.template_launch_requests r
@@ -145,7 +147,7 @@ export async function admitModalLaunch(
             throw new GoldenError("conflict", "Modal template launch reservation conflicts with an existing job.");
           return { sandbox: { id: sandboxId, status: existing.status ?? "deleted" } };
         }
-        if (reservation.state !== "claimed" || reservation.sandbox_exists)
+        if (reservation.state !== "claimed" || reservation.has_result || reservation.sandbox_exists)
           throw new GoldenError("conflict", "Modal template launch reservation is no longer available.");
       }
       const {
@@ -292,7 +294,24 @@ export async function admitModalLaunch(
         { orgId, maxAttempts: 3 },
         tx,
       );
-      return { sandbox: { id: sandboxId, status: "starting" as const } };
+      const envelope = { sandbox: { id: sandboxId, status: "starting" as const } };
+      if (reservation) {
+        const result = {
+          requestId: reservation.id,
+          state: "succeeded",
+          id: sandboxId,
+          provider: "modal",
+          status: envelope.sandbox.status,
+          envelope,
+        };
+        await tx.query(
+          `update public.template_launch_requests
+           set state='succeeded', result=$2::jsonb || jsonb_build_object('manifest',manifest), updated_at=now()
+           where id=$1`,
+          [reservation.id, JSON.stringify(result)],
+        );
+      }
+      return envelope;
     });
   } catch (error) {
     if (error instanceof ConflictingJobRequest)

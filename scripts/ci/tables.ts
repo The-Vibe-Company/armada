@@ -33,7 +33,8 @@ const owners = [
   ],
   ["goldens golden_*", [`${core}/golden-*.ts`, `${server}/golden-*.ts`]],
   ["*_skill_defaults", [`${core}/skill-defaults.ts`]],
-  ["launch_templates launch_template_revisions template_launch_requests", [`${core}/template-service.ts`]],
+  ["launch_templates launch_template_revisions", [`${core}/template-service.ts`]],
+  ["template_launch_requests", [`${core}/template-service.ts`, `${server}/jobs/modal-launch.ts`]],
   ["routines routine_*", [`${core}/routine-*.ts`]],
   [
     "application_secret* application_vault_audit readable_variables",
