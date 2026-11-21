@@ -1,4 +1,4 @@
-import type { ModalBinding, SandboxStatus } from "@armada/core";
+import type { MemberRole, ModalBinding, SandboxStatus } from "@armada/core";
 import {
   GoldenError,
   LaunchError,
@@ -6,9 +6,11 @@ import {
   type MachineIdentity,
   type MachineIncarnation,
   type Sql,
+  VaultError,
 } from "@armada/core/server";
 import { createModalMachine, type ModalMachineOptions } from "@armada/provider-modal";
 import { z } from "zod";
+import type { AccountTurnQueue } from "../account-turn-queue.ts";
 import { type OrdinaryLaunchFailure, replayOrdinaryLaunchFailure } from "../ordinary-launch-receipts.ts";
 import { createRuntimeEnrolments } from "../runtime-enrolment.ts";
 import {
@@ -35,6 +37,8 @@ export interface ModalLaunchAdmission {
 type ArchivedLaunchReceipt =
   | { receipt: "accepted" | "unknown" }
   | { receipt: "refused"; failure: OrdinaryLaunchFailure };
+
+export const MODAL_INITIAL_TURN = "launch_initial_turn";
 
 // WARNING: Activate only after the receipt backfill and launch runner integration.
 export async function admitModalLaunch(sql: Sql, encryptionKey: string, input: ModalLaunchAdmission) {
@@ -138,12 +142,12 @@ export async function admitModalLaunch(sql: Sql, encryptionKey: string, input: M
       );
       if (input.initialPrompt !== undefined) {
         await store.enqueue(
-          "launch_initial_turn",
+          MODAL_INITIAL_TURN,
           sandboxId,
           generation,
           jobId,
           { prompt: input.initialPrompt },
-          { orgId, maxAttempts: 1 },
+          { orgId, maxAttempts: 3 },
           tx,
         );
       }
@@ -154,6 +158,62 @@ export async function admitModalLaunch(sql: Sql, encryptionKey: string, input: M
       throw new GoldenError("conflict", "Launch key conflicts with an existing receipt.");
     throw error;
   }
+}
+
+export function createModalInitialTurnJob(sql: Sql, queue: Pick<AccountTurnQueue, "acceptInitialLaunch">) {
+  return {
+    concurrency: 4,
+    async run(job, context) {
+      const sandboxId = job.sandbox_id;
+      const generation = job.generation;
+      const payload = z.object({ prompt: z.string() }).safeParse(job.payload);
+      if (!sandboxId || !generation || !payload.success)
+        return { status: "fail", reason: "invalid_modal_initial_turn" };
+
+      const {
+        rows: [target],
+      } = await sql.query<{
+        org_id: string;
+        owner_id: string;
+        role: MemberRole;
+        state: string;
+        accepted: boolean;
+      }>(
+        `select s.org_id, s.owner_id, m.role, launch.state,
+                exists(select 1 from public.account_turn_queue q
+                       where q.sandbox_id=s.id and q.request_id=intent.id
+                         and q.queued_generation=intent.generation and q.owner_id=s.owner_id and q.org_id=s.org_id
+                ) as accepted
+         from public.jobs intent
+         join public.sandboxes s on s.id=intent.sandbox_id and s.lifecycle_generation=intent.generation
+           and s.org_id=intent.org_id and s.provider='modal'
+         join public.jobs launch on launch.sandbox_id=s.id and launch.generation=intent.generation
+           and launch.org_id=s.org_id and launch.request_owner_id=s.owner_id and launch.kind='launch'
+           and intent.idem_key=format('["internal","%s","launch_initial_turn","%s",%s,"%s"]',
+                                      s.org_id,s.id,intent.generation,launch.id)
+         join public.members m on m.org_id=s.org_id and m.user_id=s.owner_id
+         where intent.id=$1`,
+        [job.id],
+      );
+      if (target?.accepted) return { status: "done" };
+      if (!target || target.state === "failed") return { status: "fail", reason: "modal_initial_turn_unavailable" };
+      if (!(await context.canDispatch())) return { status: "fail", reason: "modal_initial_turn_budget_exhausted" };
+      if (target.state !== "done") return { status: "retry", after: new Date(Date.now() + 1_000), unattempted: true };
+
+      try {
+        const accepted = await queue.acceptInitialLaunch(
+          { userId: target.owner_id, orgs: [{ orgId: target.org_id, role: target.role }], via: "service" },
+          { id: sandboxId, request_id: job.id, prompt: payload.data.prompt },
+          generation,
+          context.canDispatch,
+        );
+        if (accepted) return { status: "done" };
+      } catch (error) {
+        if (!(error instanceof VaultError) || !["conflict", "not_found", "invalid"].includes(error.code)) throw error;
+      }
+      return { status: "fail", reason: "modal_initial_turn_refused" };
+    },
+  } satisfies JobKind;
 }
 
 type DispatchContext = Pick<JobContext, "canDispatch" | "signal">;

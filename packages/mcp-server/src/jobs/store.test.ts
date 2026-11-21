@@ -357,20 +357,29 @@ type ModalLaunchStep =
   | "machine poll"
   | "cleanup preparation";
 
-async function modalLaunchFixture() {
-  const f = await fixture();
-  const id = await unboundModalSandbox(f);
+async function modalLaunchFixture(initial?: Awaited<ReturnType<typeof modalAdmissionFixture>>) {
+  const f = initial ?? (await fixture());
+  const id = initial
+    ? (
+        await admitModalLaunch(f.sql, launchEncryptionKey, {
+          ...initial.input,
+          sandbox: { ...initial.input.sandbox, credentialId: f.openaiCredentialId, credentialVersion: 1 },
+        })
+      ).sandbox.id
+    : await unboundModalSandbox(f);
   await f.db.query(
     `insert into modal_server_apps(org_id,authority,authority_scope,authority_owner_id,app_name,app_id,environment)
      values($1,'owner','user',$2,'test','ap-test','main')`,
     [f.people.org, f.people.owner],
   );
-  const jobId = await f.store.enqueue("launch", id, 2, id, null, {
-    orgId: f.people.org,
-    maxAttempts: 3,
-    deadline: new Date("2100-01-01T00:00:00Z"),
-    request: { ownerId: f.people.owner, digest: "fixture" },
-  });
+  const jobId = initial
+    ? (await f.db.query<{ id: string }>("select id from jobs where sandbox_id=$1 and kind='launch'", [id])).rows[0]!.id
+    : await f.store.enqueue("launch", id, 2, id, null, {
+        orgId: f.people.org,
+        maxAttempts: 3,
+        deadline: new Date("2100-01-01T00:00:00Z"),
+        request: { ownerId: f.people.owner, digest: "fixture" },
+      });
   let allocations = 0;
   let observed = 0;
   let visible = true;
@@ -508,6 +517,119 @@ async function modalLaunchFixture() {
     enrolPending: (authority = enrolments) => authority.enrol(enrolmentToken),
   };
 }
+
+async function modalFirstTurnLane(
+  f: Awaited<ReturnType<typeof fixture>>,
+  accountTurns: Pick<ReturnType<typeof createAccountTurnQueue>, "acceptInitialLaunch">,
+) {
+  const factory = await registeredJobsLane();
+  return factory({
+    sql: f.sql,
+    jobs: f.store,
+    accountTurns,
+    config: {},
+    options: { logError: () => {} },
+    control: {},
+    langfuse: { exportJob: { concurrency: 1 } },
+    webhooks: {},
+    outputs: { drain: async () => {} },
+    modal: { launchCleanupJob: { concurrency: 1 } },
+  } as unknown as Parameters<LaneFactory>[0])!;
+}
+
+test.each(["before", "after"] as const)(
+  "the registered Modal first-turn job recovers a crash %s queue commit",
+  async (crash) => {
+    const admission = await modalAdmissionFixture();
+    const { f, id, makeRunner } = await modalLaunchFixture(admission);
+    const { db, sql } = f;
+    const {
+      rows: [intent],
+    } = await db.query<{ id: string }>("select id from jobs where sandbox_id=$1 and kind='launch_initial_turn'", [id]);
+    const queue = createAccountTurnQueue(sql, launchEncryptionKey);
+    const claim = async (lane: Awaited<ReturnType<typeof modalFirstTurnLane>>) => {
+      expect(await lane.reconcileOne(signal)).toBe(true);
+      await lane.drain();
+    };
+    const turns = () =>
+      db.query<{ request_id: string; input_enc: Uint8Array<ArrayBuffer> }>(
+        "select request_id,input_enc from account_turn_queue where sandbox_id=$1",
+        [id],
+      );
+    const intentState = async () =>
+      (await db.query("select state,attempts from jobs where id=$1", [intent!.id])).rows[0];
+    const dispatchJobs = () => db.query("select kind from jobs where sandbox_id=$1 and kind='turn_dispatch'", [id]);
+
+    const expiringSql = sqlOver({
+      unsafe: async (query, params) => (await db.query(query, params)).rows,
+      begin: (work) =>
+        db.transaction((tx) =>
+          work({
+            async unsafe(query, params) {
+              const result = await tx.query(query, params);
+              if (query.includes("insert into public.account_turn_queue")) {
+                await tx.query("update public.jobs set lease_until='-infinity' where id=$1", [intent!.id]);
+              }
+              return result.rows;
+            },
+          }),
+        ),
+    });
+    const interruptedQueue = {
+      async acceptInitialLaunch(...args) {
+        if (crash === "before")
+          return createAccountTurnQueue(expiringSql, launchEncryptionKey).acceptInitialLaunch(...args);
+        await queue.acceptInitialLaunch(...args);
+        throw new Error("Lost worker");
+      },
+    } satisfies Pick<typeof queue, "acceptInitialLaunch">;
+    await claim(await modalFirstTurnLane(f, queue));
+    expect(await intentState()).toEqual({ state: "queued", attempts: 0 });
+    expect((await turns()).rows).toHaveLength(0);
+
+    await claim(makeRunner());
+    await db.query("update jobs set run_after='-infinity',attempts=$2 where id=$1", [
+      intent!.id,
+      crash === "after" ? 2 : 0,
+    ]);
+    await claim(await modalFirstTurnLane(f, interruptedQueue));
+    expect(await intentState()).toEqual({ state: "leased", attempts: crash === "after" ? 3 : 1 });
+    expect((await turns()).rows).toHaveLength(crash === "after" ? 1 : 0);
+    expect((await dispatchJobs()).rows).toHaveLength(crash === "after" ? 1 : 0);
+
+    await db.query("update jobs set lease_until='-infinity' where id=$1", [intent!.id]);
+    await claim(await modalFirstTurnLane(f, queue));
+    expect(await intentState()).toEqual({ state: "done", attempts: crash === "after" ? 4 : 2 });
+    const { rows } = await turns();
+    expect(rows.map(({ request_id }) => request_id)).toEqual([intent!.id]);
+    expect(JSON.parse(await decryptSecret(rows[0]!.input_enc, launchEncryptionKey))).toMatchObject({
+      prompt: admission.input.initialPrompt,
+    });
+    expect((await dispatchJobs()).rows).toEqual([{ kind: "turn_dispatch" }]);
+  },
+);
+
+test.each(["without current enrolment", "after stop"] as const)(
+  "the registered Modal first-turn job declines a completed launch %s",
+  async (target) => {
+    const { f, id, makeRunner } = await modalLaunchFixture(await modalAdmissionFixture());
+    const launch = makeRunner();
+    expect(await launch.reconcileOne(signal)).toBe(true);
+    await launch.drain();
+    if (target === "after stop") {
+      await f.db.query("update sandboxes set status='stopped',stopped_at=now() where id=$1", [id]);
+    } else {
+      await f.db.query("delete from runtime_enrolments where sandbox_id=$1", [id]);
+    }
+    const firstTurn = await modalFirstTurnLane(f, createAccountTurnQueue(f.sql, launchEncryptionKey));
+    expect(await firstTurn.reconcileOne(signal)).toBe(true);
+    await firstTurn.drain();
+    expect((await f.db.query("select request_id from account_turn_queue where sandbox_id=$1", [id])).rows).toEqual([]);
+    expect(
+      (await f.db.query("select state from jobs where sandbox_id=$1 and kind='launch_initial_turn'", [id])).rows,
+    ).toEqual([{ state: "failed" }]);
+  },
+);
 
 test.each(["create response", "bootstrap dispatch"] as const)(
   "an expired Modal launch hands off the exact allocation after losing the %s",

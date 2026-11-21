@@ -954,3 +954,41 @@ test("native drain recovery is service-only and taint purges the detached copy",
     (await db.query("select archive_id from native_drain_recovery where sandbox_id=$1", [sandboxId])).rows,
   ).toEqual([]);
 });
+
+test.each(["prompt", "steer", "queued", "dispatching"] as const)(
+  "native handoff leaves verified work attached while %s work is unresolved",
+  async (kind) => {
+    const { db, sandboxId, copy } = await seedNativeDrainReceipt();
+    let settle: string;
+    if (kind === "prompt") {
+      await db.query(
+        `insert into native_webhook_prompts(sandbox_id,prompt_id,provider,provider_sandbox_id,owner_id,org_id,failures)
+         select id,'turn',provider,provider_sandbox_id,owner_id,org_id,5 from sandboxes where id=$1`,
+        [sandboxId],
+      );
+      settle = "update native_webhook_prompts set completed_at=now() where sandbox_id=$1";
+    } else if (kind === "steer") {
+      await db.query(
+        "insert into native_steer_cursors(sandbox_id,steer_id,pending_since,pending_steers) values($1,gen_random_uuid(),now(),1)",
+        [sandboxId],
+      );
+      settle = "update native_steer_cursors set pending_since=null,pending_steers=0 where sandbox_id=$1";
+    } else {
+      await db.query(
+        `insert into account_turn_queue(sandbox_id,request_id,account_id,owner_id,org_id,
+           actor_epoch,credential_version,input_hash,input_enc,conversation_id,state,dispatch_generation)
+         select s.id,gen_random_uuid(),c.id,s.owner_id,s.org_id,1,c.version,'input',$3,'conversation',$2,
+           case when $2='dispatching' then s.lifecycle_generation end
+         from sandboxes s join credentials c on c.owner_id=s.org_id and c.kind='openai'
+         where s.id=$1 limit 1`,
+        [sandboxId, kind, new Uint8Array([1])],
+      );
+      settle = "update account_turn_queue set state='admitted' where sandbox_id=$1";
+    }
+
+    expect(await copy()).toBe("ineligible");
+    expect((await db.query("select 1 from native_drain_recovery where sandbox_id=$1", [sandboxId])).rows).toEqual([]);
+    await db.query(settle, [sandboxId]);
+    expect(await copy()).toBe("archived");
+  },
+);
