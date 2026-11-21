@@ -2709,6 +2709,25 @@ test.each(["unknown", "missing", "old", "partial", "measured", "null-totals", "c
         .find((line) => line.step === "resume_usage");
       expect(usage?.elapsedMs).toBe(deadlines.resume_usage);
     }
+    expect(fake.receipts().find((line) => line.step === "usage_request_diagnostic")).toEqual(
+      accepted
+        ? undefined
+        : expect.objectContaining({
+            usageStep: "resume_usage",
+            code: "poll_limit_exceeded",
+            timeoutMs: null,
+            lastResponse: {
+              elapsedMs: 0,
+              turns: "array",
+              promptMatched: mode !== "missing" && mode !== "old",
+              inputTokens: mode === "missing" || mode === "old" ? "missing" : "null",
+              outputTokens: mode === "missing" || mode === "old" ? "missing" : "null",
+              totalInputTokens: mode === "null-totals" ? "null" : "number",
+              totalOutputTokens: mode === "null-totals" ? "null" : "number",
+              incomplete: mode !== "complete-marker",
+            },
+          }),
+    );
     expect(fake.receipts()).toContainEqual(
       accepted
         ? { case: 0, step: "resume_usage", pass: true }
@@ -2746,6 +2765,9 @@ test.each(["fetch", "body"])(
       provider: "modal",
       route: "sandbox/status",
       timeoutMs: deadlines.resume_usage,
+      attempts: 1,
+      sandboxId: lifecycleId(1),
+      lastResponse: null,
       code: "poll_limit_exceeded",
     });
     expect(fake.lines.join("\n")).not.toContain("private transport detail");
