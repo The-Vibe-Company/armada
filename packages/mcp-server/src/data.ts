@@ -1201,6 +1201,13 @@ export function createSqlData(
               [...scope, id, provider, placement],
             );
             if (!locked) throw new DataError("Sandbox is not eligible for native drain deletion.", "sandbox_not_ready");
+            const scopedModal = await tx.query(
+              `select p.id from public.armada_access_parents p
+               where p.sandbox_id=$1::uuid and p.kind='sandbox' and $2::text='modal'`,
+              [id, provider],
+            );
+            if (scopedModal.rows.length)
+              throw new DataError("Scoped Modal deletion cannot be verified on replay.", "sandbox_not_ready");
             if (!locked.native_drain_pending) {
               const {
                 rows: [recovery],
