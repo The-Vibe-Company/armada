@@ -791,7 +791,7 @@
     "packages/mcp-server/src/sql.ts": 12,
     "packages/mcp-server/src/subscription-boat.ts": 1,
     "packages/mcp-server/src/subscription-broker.ts": 22,
-    "packages/mcp-server/src/subscription-migration.ts": 13,
+    "packages/mcp-server/src/subscription-migration.ts": 12,
     "packages/mcp-server/src/token-control.ts": 1,
     "packages/mcp-server/src/tool-api.ts": 2,
     "packages/mcp-server/src/tools.ts": 8,
