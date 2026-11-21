@@ -1012,7 +1012,7 @@ test.each(unstampedDrainScenarios)(
       ]);
 
     const expiredToken = crypto.randomUUID();
-    const hasExpiredLease = ["expired journal lease", "admission rollback", "lost commit reply"].includes(scenario);
+    const hasExpiredLease = scenario !== "archived" && scenario !== "clean";
     if (hasExpiredLease)
       await db.query("update modal_machines set lease_id=$2,lease_until='2000-01-01' where id=$1", [
         `bx_${sandboxId}`,
@@ -1064,9 +1064,9 @@ test.each(unstampedDrainScenarios)(
     else await expect(drain()).rejects.toMatchObject({ code: "sandbox_not_ready" });
     expect(remove).not.toHaveBeenCalled();
     expect(await stamp()).toEqual([{ stamp: scenario === "lost commit reply" ? "1" : null }]);
-    if (scenario === "admission rollback")
+    if (scenario !== "lost commit reply") {
       expect(await journalLease()).toEqual([{ lease_id: expiredToken, cleared: false }]);
-    if (scenario === "lost commit reply") {
+    } else {
       expect(await journalLease()).toEqual([{ lease_id: null, cleared: true }]);
       inject = false;
       await db.query("update sandboxes set activity_until='2000-01-01' where id=$1", [sandboxId]);
