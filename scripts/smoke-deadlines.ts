@@ -6,8 +6,6 @@ const MIN_STEP_DEADLINE_MS = 2_000;
 export const USAGE_STATUS_MIN_REQUEST_MS = MIN_STEP_DEADLINE_MS;
 export const SMOKE_POLL_INTERVAL_MS = 1_000;
 const USAGE_POLL_MIN_MS = 2 * USAGE_STATUS_MIN_REQUEST_MS + SMOKE_POLL_INTERVAL_MS;
-// Docker launch returns while the host is still booting the sandbox. The release
-// smoke was still waiting at 40 seconds, beyond the older green sample range.
 const DOCKER_REAL_MODEL_READY_FLOOR_MS = 60_000;
 const usagePollSteps = new Set(["usage", "usage_second", "resume_usage"]);
 
