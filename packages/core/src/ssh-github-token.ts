@@ -1,5 +1,6 @@
 import { GitHubHydrationError } from "./api-failure.ts";
 import type { Provider } from "./provider.ts";
+import { launchInfrastructure } from "./sandbox-provider.ts";
 import { shellQuote } from "./shell-quote.ts";
 import { type SshExecDeps, sshStdinCheckout } from "./ssh-executor.ts";
 
@@ -13,7 +14,7 @@ export async function sshHydrateGitHubToken(
 ): Promise<void> {
   const expiry = expiresAt.getTime();
   if (
-    provider.id !== "boat" ||
+    !launchInfrastructure(provider.id).privateSshBootstrap ||
     !/^[\x21-\x7e]{1,16384}$/.test(token) ||
     !Number.isFinite(expiry) ||
     expiry <= Date.now()
