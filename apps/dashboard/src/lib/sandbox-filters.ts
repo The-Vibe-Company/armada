@@ -1,4 +1,5 @@
-import { HARNESSES, MACHINE_SIZES, SANDBOX_PLACEMENT_PROVIDERS, type SandboxListMetadata } from "@armada/core";
+import { HARNESSES, MACHINE_SIZES, SANDBOX_PLACEMENT_PROVIDERS } from "@armada/core";
+import type { SandboxListMetadata } from "./sandbox-access.ts";
 
 import { sandboxListAttention } from "./sandbox-activity.ts";
 import { sandboxListName } from "./sandbox-list-name.ts";

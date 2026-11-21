@@ -1,4 +1,4 @@
-import { accountBindingAvailability, isSandboxProvider, MODEL_CATALOG, type SandboxListMetadata } from "@armada/core";
+import { accountBindingAvailability, isSandboxProvider, MODEL_CATALOG } from "@armada/core";
 import { ArrowLeftIcon, ContainerIcon, LockIcon } from "lucide-react";
 import type { Metadata } from "next";
 import Link from "next/link";
@@ -50,7 +50,7 @@ import { describeEvidence } from "@/lib/machine-size";
 import { parseTaskOutcome, preservationView, settledOutcome } from "@/lib/outcome";
 import { parsePullRequests } from "@/lib/pull-requests";
 import { sandboxRepositoryDir } from "@/lib/repository-context";
-import { machineSizeLabel } from "@/lib/sandbox-access";
+import { machineSizeLabel, type SandboxListMetadata } from "@/lib/sandbox-access";
 import { costOfRow } from "@/lib/sandbox-cost";
 import { createClient } from "@/lib/supabase/server";
 import { usageRevision } from "@/lib/usage-revision";

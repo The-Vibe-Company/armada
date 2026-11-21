@@ -1,5 +1,5 @@
-import type { SandboxListMetadata } from "@armada/core";
 import { HARNESS_LABELS } from "./labels.ts";
+import type { SandboxListMetadata } from "./sandbox-access.ts";
 
 const UUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
 const LONG_TOKEN = /[a-z0-9]{24,}/i;

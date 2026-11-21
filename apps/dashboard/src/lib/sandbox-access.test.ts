@@ -1,6 +1,5 @@
 import { expect, test } from "bun:test";
-import type { SandboxListMetadata } from "@armada/core";
-import { parseSandboxListMetadata, skippedRowsNote } from "./sandbox-access.ts";
+import { parseSandboxListMetadata, type SandboxListMetadata, skippedRowsNote } from "./sandbox-access.ts";
 import { filterSandboxes, parseSandboxFilters, sandboxFacetCounts } from "./sandbox-filters.ts";
 
 const ORG = "00000000-0000-4000-8000-000000000011";
@@ -14,7 +13,6 @@ function row(overrides: Partial<SandboxListMetadata> = {}) {
     ownerId: BOB,
     provider: "modal",
     providerSandboxId: "sb-modal-1",
-    boatId: null,
     harness: "codex",
     model: null,
     reasoningEffort: null,
@@ -60,7 +58,7 @@ test("a row that does not match the contract is left out and reported, never gue
     [{ ...row(), status: "exploded" }, "status"],
     [{ ...row(), createdAt: "yesterday" }, "identity"],
     [(({ stoppedAt: _, ...rest }) => rest)(row()), "optional fields"],
-    [(({ boatId: _, ...rest }) => rest)(row()), "optional fields"],
+    [(({ providerSandboxId: _, ...rest }) => rest)(row()), "optional fields"],
     [{ ...row(), preservationNote: 7 }, "optional fields"],
   ] as const)
     expect(parseSandboxListMetadata([broken, good])).toEqual({ rows: [good], skipped: [{ id: row().id, reason }] });
