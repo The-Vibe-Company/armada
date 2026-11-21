@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import { promptFailureReason } from "../packages/core/src/native-failure.ts";
 import { postDeploySmoke } from "./post-deploy-smoke.ts";
 import deadlines from "./smoke-deadlines.json";
@@ -30,6 +30,9 @@ test.each([
   { scenario: "wait request reaches the model deadline", state: "running", code: "model_timeout" },
   { scenario: "finished without complete text", state: "finished", code: "invalid_receipt" },
 ])("real-model staging smoke handles $scenario and stops both sandboxes", async ({ scenario, state, code }) => {
+  const budgets: Record<string, number | undefined> = deadlines;
+  const timeouts = new Map<string, number[]>();
+  const timeout = spyOn(AbortSignal, "timeout");
   let now = 0;
   const launches: { provider: string; credentialId: string }[] = [];
   let dockerAllocation: { id: string; externalRef: string } | undefined;
@@ -46,7 +49,15 @@ test.each([
     },
     fetch: async (url, init) => {
       const body = JSON.parse(String(init.body));
-      switch (new URL(url).pathname) {
+      const path = new URL(url).pathname;
+      const request = path.endsWith("/status") && stopped.has(body.id) ? "stop-confirmation" : path.split("/").at(-1)!;
+      const budget = timeout.mock.lastCall?.[0];
+      if (budget !== undefined) {
+        const values = timeouts.get(request) ?? [];
+        values.push(budget);
+        timeouts.set(request, values);
+      }
+      switch (path) {
         case "/api/v1/sandbox/launch":
           if (body.provider === "docker") {
             expect(body.idempotencyKey).toBe(body.externalRef);
@@ -76,7 +87,7 @@ test.each([
           return Response.json({ promptId: body.id });
         case "/api/v1/sandbox/wait":
           if (scenario === "wait request reaches the model deadline") {
-            now += deadlines.wait;
+            now += budgets.real_model_wait ?? deadlines.wait;
             throw new DOMException("Timed out", "TimeoutError");
           }
           return Response.json({
@@ -101,12 +112,36 @@ test.each([
           });
         case "/api/v1/sandbox/stop":
           stopped.add(body.id);
+          if (scenario === "finished with complete text") now += 100;
           return Response.json({});
         default:
           throw new Error(`Unexpected request ${url}`);
       }
     },
-  });
+  }).finally(() => timeout.mockRestore());
+  if (scenario === "finished with complete text") {
+    expect(timeouts.get("launch")).toEqual(
+      ["modal", "docker"].map(
+        (provider) => budgets.real_model_launch ?? budgets[`parity_${provider}_launch`] ?? 600_000,
+      ),
+    );
+    for (const [request, budget] of [
+      ["status", budgets.real_model_ready ?? 120_000],
+      ["send", budgets.real_model_send ?? 120_000],
+      ["wait", budgets.real_model_wait ?? deadlines.wait],
+      ["stop", budgets.real_model_stop ?? 120_000],
+    ] as const) {
+      expect(timeouts.get(request)).toEqual([budget, budget]);
+    }
+    const confirmations = timeouts.get("stop-confirmation")!;
+    expect(confirmations).toHaveLength(2);
+    if (budgets.real_model_stop === undefined) {
+      expect(confirmations).toEqual([120_000, 120_000]);
+    } else {
+      // Each stop request consumed time from its confirmation budget.
+      expect(confirmations.every((budget) => budget > 0 && budget <= budgets.real_model_stop! - 100)).toBe(true);
+    }
+  }
   expect(passed).toBe(code === undefined);
   expect(launches).toEqual([
     { provider: "modal", credentialId: modal.modelAccountId },
