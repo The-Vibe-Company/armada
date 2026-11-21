@@ -2296,6 +2296,7 @@ test.each([
     const { f, id, jobId, makeRunner, effects, exitAllocation, hideAllocation } = await modalLaunchFixture(
       await modalAdmissionFixture(),
     );
+    await f.db.query("update jobs set max_attempts=2 where id=$1", [jobId]);
     const interrupted = makeRunner(
       (step) => {
         if (step === lostAt) throw new Error("Worker lost");
@@ -2346,7 +2347,9 @@ test.each([
       expect(await next.reconcileOne(signal)).toBe(true);
       await next.drain();
       expect(effects()).toEqual({ allocations: 1, observed: 2, bootstrapped: ["physical"] });
-      expect((await f.db.query("select state from jobs where id=$1", [jobId])).rows).toEqual([{ state: "done" }]);
+      expect((await f.db.query("select state, attempts from jobs where id=$1", [jobId])).rows).toEqual([
+        { state: "done", attempts: 2 },
+      ]);
     }
   },
 );
