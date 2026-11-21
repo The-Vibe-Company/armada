@@ -28,8 +28,12 @@ export function configureNativeDrain(
     providerFor: (apiKey) =>
       scopedAccess.wrap(createObservedBoatProvider({ apiKey, ...(deploymentId ? { deploymentId } : {}) })),
     modalTokensFor: async (target, caller) => (await modalIntegration()).modalTokensFor(target, caller),
-    modalProviderFor: async (tokens, binding, context) =>
-      (await modalIntegration()).modalProviderFor(tokens, binding, context),
+    modalProviderFor: async (tokens, binding, context) => {
+      const sandboxId = context.target.id;
+      if (!sandboxId) throw new Error("Native drain requires a persisted Modal sandbox.");
+      const ports = await (await modalIntegration()).modalProviderFor(tokens, binding, context);
+      return { ...ports, provider: scopedAccess.wrap(ports.provider, sandboxId) };
+    },
   });
   const data = createSqlData(sql);
   const remove = async (row: { id: string; org_id: string; role: MemberRole | null }) => {
@@ -41,8 +45,7 @@ export function configureNativeDrain(
         async resolve(target, caller) {
           if (target.provider !== provider || target.boatRuntime || target.runtimeTransport === "dialout")
             throw new Error("The sandbox route changed after inventory.");
-          const resolved = await providers.resolve(target, caller);
-          return provider === "modal" ? scopedAccess.wrap(resolved, row.id) : resolved;
+          return providers.resolve(target, caller);
         },
       },
       row.id,

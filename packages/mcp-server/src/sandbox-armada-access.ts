@@ -325,7 +325,7 @@ export function createSandboxArmadaAccess(input: {
     wrap(provider: Provider, modalDrainSandboxId?: string): Provider {
       return new Proxy(provider, {
         get(target, key) {
-          if (key === "delete" && modalDrainSandboxId && target.id === "modal")
+          if (key === "delete" && modalDrainSandboxId)
             return (request: NativeModalDrainDelete) => deleteNativeModal(target, modalDrainSandboxId, request);
           if (key === "stop" || key === "delete")
             return async (request: { sandboxId: string }) => {
