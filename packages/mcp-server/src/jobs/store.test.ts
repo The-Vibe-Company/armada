@@ -2305,15 +2305,17 @@ test.each([
   ["unknown", "sandbox binding"],
   ["stopped", "create response"],
   ["plan unavailable", "create response"],
-  ["credential unavailable before observation", "create response"],
-  ["credential unavailable after observation", "create response"],
-  ["credential unavailable before binding", "create response"],
-  ["credential unavailable after binding", "create response"],
+  ["credential unavailable before observation", "create response", 1],
+  ["credential unavailable after observation", "create response", 2],
+  ["credential unavailable before binding", "create response", 3],
+  ["credential unavailable after binding", "create response", 4],
   ["ticket unavailable", "create response"],
   ["ownership unavailable", "create response"],
+  ["ticket and credential unavailable", "create response", 5],
+  ["ownership and credential unavailable", "create response", 5],
 ] as const)(
   "a replacement Modal launch claimant defers bootstrap for %s after losing the %s",
-  async (observation, lostAt) => {
+  async (observation, lostAt, credentialFailure) => {
     const { f, id, jobId, makeRunner, effects, exitAllocation, hideAllocation } = await modalLaunchFixture(
       await modalAdmissionFixture(),
     );
@@ -2341,13 +2343,6 @@ test.each([
     if (observation === "stopped") exitAllocation();
     await f.db.query("update jobs set lease_until='-infinity' where id=$1", [jobId]);
 
-    const credentialFailure =
-      [
-        "credential unavailable before observation",
-        "credential unavailable after observation",
-        "credential unavailable before binding",
-        "credential unavailable after binding",
-      ].indexOf(observation) + 1;
     let credentialChecks = 0;
     const replacement = makeRunner((step) => {
       if (step === "dispatch credential" && ++credentialChecks === credentialFailure)
@@ -2355,9 +2350,15 @@ test.each([
       if (observation === "unknown" && step === "machine poll") throw new Error("Modal poll unavailable");
       if (observation === "plan unavailable" && step === "open Modal")
         throw new Error("Modal credential read unavailable");
-      if (observation === "ticket unavailable" && step === "runtime ticket")
+      if (
+        (observation === "ticket unavailable" || observation === "ticket and credential unavailable") &&
+        step === "runtime ticket"
+      )
         throw new Error("Runtime ticket preparation unavailable");
-      if (observation === "ownership unavailable" && step === "exact machine ownership")
+      if (
+        (observation === "ownership unavailable" || observation === "ownership and credential unavailable") &&
+        step === "exact machine ownership"
+      )
         throw new Error("Modal ownership lookup timed out");
     });
     expect(await replacement.reconcileOne(signal)).toBe(true);

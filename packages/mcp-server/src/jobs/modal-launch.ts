@@ -989,6 +989,10 @@ async function dispatchModalLaunch(
       throw error;
     }
   }
+  async function canDeferPreparation(machineId: string) {
+    const current = await beforeProviderMutation(target, true);
+    return current === "deferred" || current?.provider_sandbox_id === machineId;
+  }
   let recoveredAllocation = false;
   let ticketResolutionStarted = false;
   const preparationDeferred = new Error("Modal runtime ticket preparation deferred.");
@@ -1001,8 +1005,7 @@ async function dispatchModalLaunch(
     async resolveRuntimeTicket(request) {
       ticketResolutionStarted = true;
       const preparation = await plan.prepareRuntimeTicket(request).catch(async (error: unknown) => {
-        if (recoveredAllocation && (await target())?.provider_sandbox_id === request.machineId)
-          throw preparationDeferred;
+        if (recoveredAllocation && (await canDeferPreparation(request.machineId))) throw preparationDeferred;
         throw error;
       });
       const ticket = await resolveRuntimeTicket(request, preparation);
@@ -1068,7 +1071,7 @@ async function dispatchModalLaunch(
       recoveredAllocation &&
       !ticketResolutionStarted &&
       (!(error instanceof ProviderError) || error.retryable) &&
-      (await target())?.provider_sandbox_id === allocated.machineId
+      (await canDeferPreparation(allocated.machineId))
     ) {
       return { kind: "dispatch_deferred" } as const;
     }
