@@ -1,3 +1,4 @@
+import { sha256Hex } from "@armada/auth";
 import {
   type GoldenRecord,
   HARNESS_KINDS,
@@ -14,6 +15,7 @@ import {
   assertLaunchSecretBindings,
   createSqlSandboxStore,
   createSqlVaultStore,
+  decryptSecret,
   GoldenError,
   LaunchError,
   type Machine,
@@ -50,7 +52,13 @@ import {
 import { MODAL_LAUNCH_FAILURE } from "../turns.ts";
 import { parseModalLaunchWorkspace } from "./modal-launch-setup.ts";
 import type { Job, JobContext, JobKind, JobResult } from "./runner.ts";
-import { ConflictingJobRequest, createJobsStore, jobRequestKey, withJobLease } from "./store.ts";
+import {
+  ConflictingJobRequest,
+  createJobsStore,
+  jobRequestKey,
+  recordModalBootstrapTicket,
+  withJobLease,
+} from "./store.ts";
 
 export type ModalLaunchAllocation = Omit<Parameters<Machine["create"]>[0], "sandboxId" | "generation" | "signal">;
 export interface ModalLaunchAdmission {
@@ -708,7 +716,13 @@ export async function runModalLaunch(
   const readEnrolment = async (tx: Sql) => {
     const {
       rows: [receipt],
-    } = await tx.query<{ enrolled: boolean; check_after: string | null; cancel_without_provider: boolean }>(
+    } = await tx.query<{
+      enrolled: boolean;
+      check_after: string | null;
+      cancel_without_provider: boolean;
+      enrolment_hash: string | null;
+      bootstrap_ticket_enc: string | null;
+    }>(
       `select s.stop_requested_at is null and e.runtime_hash is not null as enrolled,
               s.stop_requested_at is not null and (
                 j.outcome #> '{modal_machine,entry}' is null or s.provider_sandbox_id is not null
@@ -718,7 +732,8 @@ export async function runModalLaunch(
                      and e.enrolment_expires_at>clock_timestamp()
                      and j.deadline_at>clock_timestamp() and s.expires_at>clock_timestamp()
                 then least(e.enrolment_expires_at,j.deadline_at,s.expires_at,clock_timestamp()+interval '1 second')::text
-              end as check_after
+              end as check_after,
+              e.enrolment_hash, j.outcome->>'bootstrap_ticket_enc' as bootstrap_ticket_enc
        from public.sandboxes s
        join public.jobs j on j.id=$2 and j.sandbox_id=s.id and j.generation=s.lifecycle_generation
          and j.org_id=s.org_id and j.request_owner_id=s.owner_id
@@ -728,14 +743,14 @@ export async function runModalLaunch(
          and s.status in ('starting','ready','running') and s.deleted_at is null`,
       [sandboxId, job.id],
     );
-    return receipt ?? { enrolled: false, check_after: null, cancel_without_provider: false };
+    return receipt;
   };
   const done = { status: "done" } satisfies JobResult;
-  const beforeDispatch = await withJobLease(sql, job, readEnrolment);
+  const pending = await withJobLease(sql, job, readEnrolment);
   context.signal.throwIfAborted();
-  if (!beforeDispatch || beforeDispatch.enrolled) return done;
-  if (beforeDispatch.check_after) {
-    return { status: "retry", after: new Date(beforeDispatch.check_after), unattempted: true } satisfies JobResult;
+  if (!pending || pending.enrolled) return done;
+  if (pending.check_after && (!pending.bootstrap_ticket_enc || !(await context.canDispatch()))) {
+    return { status: "retry", after: new Date(pending.check_after), unattempted: true } satisfies JobResult;
   }
 
   const startingTarget = async (tx: Sql) => {
@@ -761,7 +776,7 @@ export async function runModalLaunch(
     return row;
   };
   const hasJournal = typeof job.outcome === "object" && job.outcome !== null && "modal_machine" in job.outcome;
-  let skipProvider = beforeDispatch.cancel_without_provider || (!hasJournal && !(await context.canDispatch()));
+  let skipProvider = pending.cancel_without_provider || (!hasJournal && !(await context.canDispatch()));
   let plan: ModalLaunchPlan | undefined;
   if (!skipProvider) {
     try {
@@ -784,6 +799,23 @@ export async function runModalLaunch(
     ? await dispatchModalLaunch(sql, job, context, plan, { sandboxId, generation }, async (request) => {
         const { ownerId, configuration, commandGrantExpiresAt, lockPrerequisites, checkAccountPin, ...prepared } =
           await plan.prepareRuntimeTicket(request);
+        if (pending.check_after && pending.bootstrap_ticket_enc) {
+          const enrolmentToken = await decryptSecret(
+            Uint8Array.from(Buffer.from(pending.bootstrap_ticket_enc, "base64")),
+            encryptionKey,
+          );
+          const hash = await sha256Hex(enrolmentToken);
+          if (!sql.transaction) throw new Error("Modal bootstrap replay requires a transaction.");
+          const current = await sql.transaction(async (tx) => {
+            await lockPrerequisites(tx);
+            return withJobLease(scopedRuntimeSql(tx), job, async (locked) => {
+              await checkAccountPin(locked);
+              const receipt = await readEnrolment(locked);
+              return receipt?.check_after && receipt.enrolment_hash === hash && (await context.canDispatch(locked));
+            });
+          });
+          return current ? { ...prepared, enrolmentToken } : null;
+        }
         try {
           const ticket = await enrolments.issue({
             sandboxId,
@@ -796,12 +828,13 @@ export async function runModalLaunch(
               if (!(await context.canDispatch(tx)))
                 throw new Error("Modal bootstrap dispatch is no longer authorized.");
             },
+            recordIssued: (tx, enrolmentToken) => recordModalBootstrapTicket(tx, job.id, enrolmentToken, encryptionKey),
             ticketGuard: {
               lockPrerequisites,
               async check(tx) {
                 await checkAccountPin(tx);
                 const receipt = await readEnrolment(tx);
-                if (receipt.enrolled || receipt.check_after) throw enrolmentInProgress;
+                if (receipt?.enrolled || receipt?.check_after) throw enrolmentInProgress;
               },
             },
           });
@@ -827,6 +860,7 @@ export async function runModalLaunch(
       after: afterDispatch.check_after
         ? new Date(afterDispatch.check_after)
         : new Date(Date.now() + ENROLMENT_RETRY_DELAY_MS),
+      ...(afterDispatch.check_after ? { outcome: "modal_bootstrap_acknowledged" } : {}),
     } satisfies JobResult;
   }
 
@@ -851,7 +885,7 @@ export async function runModalLaunch(
     status: "fail",
     reason: MODAL_LAUNCH_FAILURE,
     async commit(tx) {
-      if ((await readEnrolment(tx)).enrolled || !(await startingTarget(tx)))
+      if ((await readEnrolment(tx))?.enrolled || !(await startingTarget(tx)))
         throw new Error("Modal launch settlement target changed.");
       const transition = await transitionSandbox(tx, {
         sandboxId,

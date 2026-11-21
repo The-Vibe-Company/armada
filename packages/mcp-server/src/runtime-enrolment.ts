@@ -184,6 +184,7 @@ export function createRuntimeEnrolments(sql: Sql, encryptionKey: string, options
     expectedGeneration?: number;
     assertClaim?: (tx: Sql) => Promise<void>;
     ticketGuard?: RuntimeTicketGuard;
+    recordIssued?: (tx: Sql, enrolmentToken: string) => Promise<void>;
   }) {
     const serialized = JSON.stringify(input.configuration);
     if (Buffer.byteLength(serialized) > 1048576) throw new RuntimeEnrolmentDenied();
@@ -246,6 +247,7 @@ export function createRuntimeEnrolments(sql: Sql, encryptionKey: string, options
         )
       ).rows[0];
       if (!row) throw new RuntimeEnrolmentDenied();
+      await input.recordIssued?.(tx, enrolmentToken);
       await input.assertClaim?.(tx);
       return { epoch: String(BigInt(row.epoch) + 1n), lifecycleGeneration: sandbox.lifecycle_generation };
     });

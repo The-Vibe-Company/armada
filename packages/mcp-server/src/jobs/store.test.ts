@@ -2143,12 +2143,30 @@ test.each(["create response", "bootstrap dispatch", "bootstrap response"] as con
     if (failure === "bootstrap response") {
       await f.db.query("update jobs set deadline_at='-infinity' where id=$1", [jobId]);
     }
-    if (failure === "bootstrap dispatch") {
-      await f.db.query("update runtime_enrolments set enrolment_expires_at='-infinity' where sandbox_id=$1", [id]);
-    }
+    const pendingTicket =
+      failure === "bootstrap dispatch"
+        ? (
+            await f.db.query<{ enrolment_hash: string }>(
+              "select enrolment_hash from runtime_enrolments where sandbox_id=$1 and enrolment_expires_at>now()",
+              [id],
+            )
+          ).rows[0]
+        : undefined;
+    if (failure === "bootstrap dispatch") expect(pendingTicket).toBeDefined();
 
     expect(await lifecycle.reconcileOne()).toBe(false);
-    const successor = makeRunner();
+    const successor = makeRunner(async (step) => {
+      if (pendingTicket && step === "bootstrap dispatch") {
+        expect(
+          (
+            await f.db.query(
+              "select enrolment_hash=$2 as same_ticket from runtime_enrolments where sandbox_id=$1 and enrolment_expires_at>now()",
+              [id, pendingTicket.enrolment_hash],
+            )
+          ).rows,
+        ).toEqual([{ same_ticket: true }]);
+      }
+    });
     expect(await successor.reconcileOne(signal)).toBe(true);
     await successor.drain();
     expect(effects().allocations).toBe(1);
@@ -2156,11 +2174,12 @@ test.each(["create response", "bootstrap dispatch", "bootstrap response"] as con
     expect(effects().observed).toBe(failure === "bootstrap response" ? 0 : 1);
     expect(
       (
-        await f.db.query("select s.status, j.state from sandboxes s join jobs j on j.sandbox_id=s.id where j.id=$1", [
-          jobId,
-        ])
+        await f.db.query(
+          "select s.status, j.state, j.outcome ? 'bootstrap_ticket_enc' as has_ticket from sandboxes s join jobs j on j.sandbox_id=s.id where j.id=$1",
+          [jobId],
+        )
       ).rows,
-    ).toEqual([{ status: "ready", state: "done" }]);
+    ).toEqual([{ status: "ready", state: "done", has_ticket: false }]);
   },
 );
 
@@ -2243,6 +2262,38 @@ test.each([
     }
   },
 );
+
+test("interrupted Modal bootstrap ticket issuance rolls back the ticket and its replay material", async () => {
+  const { f, id, jobId, makeRunner, effects } = await modalLaunchFixture(await modalAdmissionFixture());
+  const interrupted: Sql = {
+    ...f.sql,
+    transaction: (work) =>
+      f.sql.transaction!(async (tx) =>
+        work({
+          ...tx,
+          async query<T>(query: string, params?: unknown[]) {
+            const result = await tx.query<T>(query, params);
+            if (query.includes("jsonb_build_object('bootstrap_ticket_enc'"))
+              throw new Error("Launch worker lost before ticket commit");
+            return result;
+          },
+        }),
+      ),
+  };
+  const first = makeRunner(undefined, interrupted);
+  expect(await first.reconcileOne(signal)).toBe(true);
+  await first.drain();
+  expect((await f.db.query("select sandbox_id from runtime_enrolments where sandbox_id=$1", [id])).rows).toEqual([]);
+  expect(effects().bootstrapped).toEqual([]);
+
+  await f.db.query("update jobs set lease_until='-infinity' where id=$1", [jobId]);
+  const replacement = makeRunner();
+  expect(await replacement.reconcileOne(signal)).toBe(true);
+  await replacement.drain();
+  expect(effects().allocations).toBe(1);
+  expect(effects().bootstrapped).toEqual(["physical"]);
+  expect((await f.db.query("select status from sandboxes where id=$1", [id])).rows).toEqual([{ status: "ready" }]);
+});
 
 test("interrupted Modal enrolment rolls back readiness and leaves its ticket usable", async () => {
   const { f, id, makeRunner, enrolPending } = await modalLaunchFixture();
