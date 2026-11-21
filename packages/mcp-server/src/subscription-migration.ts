@@ -6,7 +6,7 @@ import {
   sshPrivateAuthState,
   VaultError,
 } from "@armada/core/server";
-import { recordNativeWorkspaceCommand, settleNativeWorkspaceCommand } from "./data.ts";
+import { nativeWorkspaceCommandPending, recordNativeWorkspaceCommand, settleNativeWorkspaceCommand } from "./data.ts";
 import {
   hasStrictNativeDrainStop,
   requestNativeSubscriptionStop,
@@ -112,7 +112,7 @@ export function createSubscriptionMigration(
     const stopEpoch = await transaction(async (tx) => {
       const currentEpoch = await recheckLocked(source, tx, true);
       if (!(await recordNativeWorkspaceCommand(tx, source.id, source.lifecycle_generation)))
-        throw new VaultError("conflict", "Native workspace command outcome is unresolved.");
+        throw new SubscriptionTemporaryError();
       return currentEpoch;
     });
     const recheckCommand = async (tx: Sql) => {
@@ -125,7 +125,6 @@ export function createSubscriptionMigration(
         if (!(await settleNativeWorkspaceCommand(tx, source.id, source.lifecycle_generation)))
           throw new VaultError("conflict", "Native workspace command evidence changed.");
       });
-    // Another replica may have upgraded this workspace after the initial probe.
     const mode = await readMode().catch(async (error: unknown) => {
       await settleCommand();
       throw error;
@@ -276,6 +275,12 @@ export function createSubscriptionMigration(
           await once(source, () => resolveStoredSandbox(sql, source.id), version);
         } catch (error) {
           if (error instanceof SubscriptionTemporaryError) throw error;
+          if (
+            source.provider === "boat" &&
+            source.credential_version === version &&
+            (await nativeWorkspaceCommandPending(sql, source.id))
+          )
+            throw new SubscriptionTemporaryError();
           // WARNING: A competing admission can advance the generation before this replica rechecks its source.
           if (
             (needsSubscriptionCheckpoint(source) || source.credential_version !== version) &&

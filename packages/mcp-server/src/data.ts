@@ -81,7 +81,14 @@ import { preserveBeforeStop, readWorkRecovery, type StopAuthority } from "./work
 const currentNativeExec = `exists(select 1 from public.sandbox_native_exec_attempts e
   where e.sandbox_id=s.id and e.generation=s.lifecycle_generation)`;
 
-/** Caller holds the sandbox row lock and has validated the command's source. */
+export async function nativeWorkspaceCommandPending(sql: Sql, sandboxId: string) {
+  const { rows } = await sql.query<{ pending: boolean }>(
+    "select exists(select 1 from public.sandbox_native_exec_attempts where sandbox_id=$1) as pending",
+    [sandboxId],
+  );
+  return rows[0]?.pending === true;
+}
+
 export async function recordNativeWorkspaceCommand(tx: Sql, sandboxId: string, generation: number) {
   const { rows } = await tx.query(
     `insert into public.sandbox_native_exec_attempts(sandbox_id,generation)

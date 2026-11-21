@@ -840,6 +840,11 @@ test.each([
   "lost admission reply",
   "lost pause reply",
   "lost configuration reply",
+  "configuration readback failed",
+  "stop epoch advanced",
+  "generation advanced",
+  "settlement rolled back",
+  "lost settlement reply",
 ] as const)("Boat subscription workspace commands fence strict drain: %s", async (outcome) => {
   const { db, people } = await database();
   const actor: GoldenActor = { userId: people.owner, orgId: people.org, role: "member" };
@@ -867,14 +872,34 @@ test.each([
     credentialVersion: 1,
     expiresAt: new Date(Date.now() + 60_000).toISOString(),
   });
-  const tryDrain = () => requestNativeDrainStop(db, sandbox, "boat", actor.userId);
+  const tryDrain = async () => {
+    const { rows } = await db.query<{ generation: number }>(
+      "select lifecycle_generation::int as generation from sandboxes where id=$1",
+      [sandbox.id],
+    );
+    return requestNativeDrainStop(db, { ...sandbox, lifecycleGeneration: rows[0]!.generation }, "boat", actor.userId);
+  };
   const calls: string[] = [];
   let configured = false;
   let probed = false;
   const sql: Sql = {
     query: db.query.bind(db),
     async transaction(run) {
-      const result = await db.transaction!(run);
+      let settled = false;
+      const result = await db.transaction!((tx) =>
+        run({
+          ...tx,
+          query: async (statement, params) => {
+            const result = await tx.query(statement, params);
+            if (statement.includes("delete from public.sandbox_native_exec_attempts")) {
+              settled = true;
+              if (outcome === "settlement rolled back") throw Error("Synthetic settlement rollback");
+            }
+            return result;
+          },
+        }),
+      );
+      if (settled && outcome === "lost settlement reply") throw Error("Synthetic lost settlement reply");
       if (outcome === "lost admission reply" && !calls.length) {
         const { rows } = await db.query<{ id: string }>(
           "select sandbox_id as id from sandbox_native_exec_attempts where sandbox_id=$1",
@@ -885,45 +910,89 @@ test.each([
       return result;
     },
   };
-  const migration = createSubscriptionMigration(
-    sql,
-    async () => ({ provider, providerSandboxId: physical.id }),
-    async () => [],
-    {
-      configuration: () => ({ url: "https://armada.example", capability: "test" }),
-      transferLegacy: async () => {},
+  const target = async () => ({ provider, providerSandboxId: physical.id });
+  const authority = {
+    configuration: () => ({ url: "https://armada.example", capability: "test" }),
+    transferLegacy: async () => {},
+  };
+  const transports: SubscriptionMigrationTransports = {
+    read: async () => {
+      if (configured && outcome === "configuration readback failed") throw Error("Synthetic readback failed");
+      if (configured || (probed && outcome === "configured after probe")) return "null";
+      probed = true;
+      return native(0);
     },
-    {
-      read: async () => {
-        if (configured || (probed && outcome === "configured after probe")) return "null";
-        probed = true;
-        return native(0);
-      },
-      admission: async () => {
-        calls.push("pause");
-        expect(await tryDrain()).toBe(false);
-        if (outcome === "lost pause reply") throw Error("Synthetic lost pause reply");
-      },
-      configure: async () => {
-        calls.push("configure");
-        expect(await tryDrain()).toBe(false);
-        configured = true;
-        if (outcome === "lost configuration reply") throw Error("Synthetic lost configuration reply");
-      },
+    admission: async () => {
+      calls.push("pause");
+      expect(await tryDrain()).toBe(false);
+      if (outcome === "acknowledged") {
+        let extraPauses = 0;
+        const otherReplica = createSubscriptionMigration(db, target, async () => [], authority, {
+          ...transports,
+          admission: async () => {
+            extraPauses++;
+            throw Error("The second replica must not pause the writer");
+          },
+        });
+        await expect(otherReplica.prepareAccount(actor, account.id, 1)).rejects.toMatchObject({
+          code: "unavailable",
+        });
+        expect(extraPauses).toBe(0);
+      }
+      if (outcome === "lost pause reply") throw Error("Synthetic lost pause reply");
     },
-  );
+    configure: async () => {
+      calls.push("configure");
+      expect(await tryDrain()).toBe(false);
+      configured = true;
+      if (outcome === "stop epoch advanced")
+        await db.query("update sandboxes set stop_generation=stop_generation+1 where id=$1", [sandbox.id]);
+      if (outcome === "generation advanced")
+        await db.query("update sandboxes set lifecycle_generation=lifecycle_generation+1 where id=$1", [sandbox.id]);
+      if (outcome === "lost configuration reply") throw Error("Synthetic lost configuration reply");
+    },
+  };
+  const migration = createSubscriptionMigration(sql, target, async () => [], authority, transports);
 
-  const preparing = migration.prepareTurn(provider, physical.id, actor);
-  const success = outcome === "acknowledged" || outcome === "configured after probe";
-  if (success) await preparing;
-  else await expect(preparing).rejects.toThrow(/Synthetic lost/);
-  const expectedCalls = {
-    acknowledged: ["pause", "configure"],
-    "configured after probe": [],
-    "lost admission reply": [],
-    "lost pause reply": ["pause"],
-    "lost configuration reply": ["pause", "configure"],
-  }[outcome];
-  expect(calls).toEqual(expectedCalls);
-  expect(await tryDrain()).toBe(success);
+  const preparing =
+    outcome === "lost pause reply"
+      ? migration.prepareAccount(actor, account.id, 1)
+      : migration.prepareTurn(provider, physical.id, actor);
+  const results = {
+    acknowledged: { calls: ["pause", "configure"], drain: true },
+    "configured after probe": { calls: [], drain: true },
+    "lost admission reply": { calls: [], error: /Synthetic lost admission reply/ },
+    "lost pause reply": { calls: ["pause"], error: /Model sign-in is temporarily unavailable/ },
+    "lost configuration reply": { calls: ["pause", "configure"], error: /Synthetic lost configuration reply/ },
+    "configuration readback failed": { calls: ["pause", "configure"], error: /Synthetic readback failed/ },
+    "stop epoch advanced": { calls: ["pause", "configure"], error: /stopped during native upgrade/ },
+    "generation advanced": { calls: ["pause", "configure"], error: /changed during native upgrade/ },
+    "settlement rolled back": { calls: ["pause", "configure"], error: /Synthetic settlement rollback/ },
+    "lost settlement reply": { calls: ["pause", "configure"], error: /Synthetic lost settlement reply/, drain: true },
+  };
+  const expected = results[outcome];
+  if ("error" in expected) await expect(preparing).rejects.toThrow(expected.error);
+  else await preparing;
+  expect(calls).toEqual(expected.calls);
+  expect(await tryDrain()).toBe("drain" in expected);
+  if (outcome === "stop epoch advanced" || outcome === "lost settlement reply") {
+    await db.query(
+      `update sandboxes set status='stopped',stopped_at=now(),stop_requested_at=null,
+         reconcile_after='infinity',lifecycle_generation=lifecycle_generation+1,preservation_stop_generation=stop_generation
+       where id=$1`,
+      [sandbox.id],
+    );
+    await db.query(
+      `insert into sandbox_native_preservation_receipts
+         (sandbox_id,generation,stop_generation,capture_generation,capture_stop_generation,capture_acknowledgements)
+       select id,lifecycle_generation,stop_generation,lifecycle_generation,stop_generation,'{"completedPrompts":[]}'
+       from sandboxes where id=$1`,
+      [sandbox.id],
+    );
+    const { rows } = await db.query<{ outcome: string }>(
+      "select copy_native_drain_recovery(id,lifecycle_generation) as outcome from sandboxes where id=$1",
+      [sandbox.id],
+    );
+    expect(rows[0]?.outcome).toBe(outcome === "stop epoch advanced" ? "ineligible" : "clean");
+  }
 });
