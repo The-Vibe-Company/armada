@@ -111,7 +111,7 @@ export async function prepareLaunch(argv: readonly string[], auth: AuthIo): Prom
     );
     const account = await choose(
       `${org}/${agent}/account`,
-      "Model account (connect one with armada creds --help)",
+      "Model account (connect one with armada account --help)",
       rows.flatMap((c) => (c.id ? [{ value: c.id, label: c.name ?? c.kind }] : [])),
       rows.find((c) => c.isDefault)?.id,
     );
@@ -248,15 +248,15 @@ export async function setupStatus(org: string | undefined, json: boolean, auth: 
     const accounts = await control<{ user: CredentialInfo[]; orgs: OrgCredentials[] }>(auth, "creds/list", { org });
     const models = [...accounts.user, ...accounts.orgs.flatMap((o) => o.credentials)].filter((c) => c.id);
     if (!models.length)
-      add("Model accounts", "failed", "No named model accounts. Run armada creds --help to connect one.");
+      add("Model accounts", "failed", "No named model accounts. Run armada account --help to connect one.");
     for (const model of models)
       add(
         `Account ${model.name ?? model.kind}`,
         model.status ?? "unknown",
-        `${model.kind}; metadata only. Run armada creds list to inspect or test the connection.`,
+        `${model.kind}; metadata only. Run armada account ls to inspect or test the connection.`,
       );
   } catch {
-    add("Model accounts", "unknown", "Could not read model accounts. Run armada creds list.");
+    add("Model accounts", "unknown", "Could not read model accounts. Run armada account ls.");
   }
   auth.out(
     json

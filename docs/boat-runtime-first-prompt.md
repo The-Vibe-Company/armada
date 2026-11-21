@@ -738,7 +738,7 @@ from staging/release gates. These are acceptance instructions, not live evidence
 
 ### API-key model connection checks on running Boat runtimes (#2052)
 
-The existing `sandbox/test-model-connection` API and `armada creds test SANDBOX_UUID --model DEPLOYMENT_MODEL`
+The existing `sandbox/test-model-connection` API and `armada account test SANDBOX_UUID --model DEPLOYMENT_MODEL`
 now support an already-running, owner-controlled Boat shared-runtime sandbox. No
 start, resume, native Boat model API or SSH/exec fallback is used. Native Modal
 checks retain their existing path. The dashboard now lists matching running Boat

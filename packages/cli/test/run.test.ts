@@ -79,7 +79,6 @@ describe("run", () => {
     "token",
     "org",
     "account",
-    "creds",
   ])("%s help needs no login or server request", async (command) => {
     const { code, out, err } = await capture([command, "--help"]);
     expect(code).toBe(0);
@@ -107,6 +106,7 @@ describe("run", () => {
     for (const [args, command, checkHelp] of [
       [["frobnicate"], "frobnicate"],
       [["--profile", "unconfigured", "github", "connect"], "github"],
+      [["--profile", "unconfigured", "creds", "list"], "creds", true],
       [["list"], "list", true],
       [["send"], "send", true],
       [["steer"], "steer", true],
@@ -147,7 +147,7 @@ describe("run", () => {
         }
       }
       if (checkHelp) {
-        const help = await capture([...args.slice(0, 2), "--help"], deps);
+        const help = await capture([...args.slice(0, args[0] === "--profile" ? 4 : 2), "--help"], deps);
         expect(help.code).toBe(2);
         expect(help.out).toBe("");
         expect(help.err).toContain(`unknown command '${command}'`);

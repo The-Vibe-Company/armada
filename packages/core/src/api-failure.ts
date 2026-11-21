@@ -66,7 +66,7 @@ export class GitHubHydrationError extends Error {
 }
 
 export const LAUNCH_CREDENTIAL_BINDING_GUIDANCE =
-  "This launch requires a bound model account. In the dashboard, open Models → Add account, then select the account when launching. In the CLI, re-add it with armada creds set <kind> --name <name> --file <path>, find its ID with armada creds list, and retry armada new with --credential-id <account-uuid>.";
+  "This launch requires a bound model account. In the dashboard, open Models → Add account, then select the account when launching. In the CLI, re-add it with armada account add <kind> --name <name> --file <path>, find its ID with armada account ls, and retry armada new with --credential-id <account-uuid>.";
 
 /** Closed launch guidance; never relay provider or guest diagnostics. Typed causes precede HTTP fallback. */
 const LAUNCH_FAILURE_HELP: Record<string, string> = {

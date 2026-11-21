@@ -1,17 +1,22 @@
 import { AuthError } from "@armada/auth";
-import { acceptedOptions, flag, parseArgs, single } from "./args.ts";
+import { acceptedOptions, flag, type parseArgs, single } from "./args.ts";
 import type { AuthIo } from "./auth-commands.ts";
 import { logoutCommand } from "./auth-commands.ts";
 import { authorizationUrl } from "./connection-authorization.ts";
 import { control } from "./control.ts";
+import { modelAccountCommand, parseAccountArgs, type VaultIo } from "./vault-commands.ts";
 
 interface GitHubStatus {
   connection: { status: string; installations: { id: number; account: string; account_type: string }[] };
   flowStatus?: string;
 }
-export async function accountCommand(argv: readonly string[], auth: AuthIo) {
-  const args = parseArgs(argv);
+export async function accountCommand(argv: readonly string[], io: VaultIo) {
+  const args = parseAccountArgs(argv);
   const [verb, target, ...extra] = args.positionals;
+  if (target !== "github" && verb !== "status" && verb !== "logout") {
+    return modelAccountCommand(verb, { ...args, positionals: args.positionals.slice(1) }, io);
+  }
+  const { auth } = io;
   const github = target === "github" && !extra.length;
   if (!target && (verb === "status" || verb === "logout")) {
     acceptedOptions(args, `account ${verb}`, ["--json"]);

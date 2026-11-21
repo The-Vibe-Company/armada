@@ -25,9 +25,9 @@ export function sandboxFailure(path: string, status: number, serverCode: unknown
       "No turn is running. Check armada status ID; use armada prompt ID TEXT to start a turn without --steer.",
     unsupported: `This operation is not supported by the selected sandbox provider or harness. ${inspect}`,
     credential_refused:
-      "The selected account cannot be used. Check that it is active, accessible, and supports this agent and current model with armada creds list.",
+      "The selected account cannot be used. Check that it is active, accessible, and supports this agent and current model with armada account ls.",
     credential_binding_required:
-      "The sandbox needs an account binding. Ask its owner to inspect armada creds list and use armada bind-credential after stopping safely.",
+      "The sandbox needs an account binding. Ask its owner to inspect armada account ls and use armada bind-credential after stopping safely.",
     credential_binding_unsupported:
       "This native Boat sandbox cannot refresh model accounts safely yet. Launch a new sandbox using the chosen account; existing work is unchanged (tracked by #1579).",
     credential_binding_unsafe:

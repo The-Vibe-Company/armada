@@ -60,7 +60,7 @@ Session API-cost estimates are not subscription balances.
 preserves that reported spend without inventing an allowance window. Native
 terminal capability fields are produced separately by #604:
 
-    {"hostedOAuth": false, "nativeCLI": {"codex_auth": "armada creds login codex"}}
+    {"hostedOAuth": false, "nativeCLI": {"codex_auth": "armada account login codex"}}
 
 The terminal value is a base command; #618 adds its quoted --name itself.
 

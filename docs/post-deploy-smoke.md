@@ -1050,7 +1050,7 @@ providers/harnesses. Morph defaults to 2; other account kinds to unlimited.
 Stopped/idle-paused sandboxes do not count. Busy-account admission refuses; it
 does not silently switch billing. Lowering a cap does not stop existing agents.
 For deliberate owner-authorized configuration, use
-`armada creds limits ACCOUNT_UUID --max-agents N` or `--unlimited`; do not raise
+`armada account limits ACCOUNT_UUID --max-agents N` or `--unlimited`; do not raise
 caps or reset bindings just to force a smoke pass. Account caps are distinct from
 provider snapshot-build and Docker-host capacity.
 
@@ -1148,18 +1148,18 @@ export AZURE_V1_URL='https://YOUR-RESOURCE.openai.azure.com/openai/v1'
 export AZURE_DEPLOYMENT='YOUR-ACTUAL-DEPLOYMENT-NAME'
 export AZURE_KEY_FILE='/private/azure-key'
 
-bun run armada creds connect azure-foundry --name 'Azure Codex' \
+bun run armada account add --preset azure-foundry --name 'Azure Codex' \
   --base-url "$AZURE_V1_URL" --models "$AZURE_DEPLOYMENT" \
   --file "$AZURE_KEY_FILE"
 
-bun run armada creds connect opencode-azure --name 'Azure OpenCode' \
+bun run armada account add --preset opencode-azure --name 'Azure OpenCode' \
   --base-url "$AZURE_V1_URL" --models "$AZURE_DEPLOYMENT" \
   < "$AZURE_KEY_FILE"
 ```
 
 These create separate personal accounts, not a mutation of a retained sandbox's
 billing account. Neither command accepts a secret in argv; omit `--file` to read
-stdin. Use a CLI containing `creds connect` (the source command avoids an old
+stdin. Use a CLI containing `account add --preset` (the source command avoids an old
 installed CLI). OpenCode uses API-key authentication and the v1 Responses path;
 legacy versioned Azure URLs and interactive Entra sign-in are not supported by
 that preset. Both commands use the same mandatory server admission as the
@@ -1168,7 +1168,7 @@ native Responses receipt, **not** that answer/follow-up/resume with a harness is
 proven. See Microsoft’s [v1 endpoint/deployment guidance](https://learn.microsoft.com/en-us/azure/ai-foundry/model-inference/concepts/endpoints).
 
 The older **OpenAI API key → Use a custom endpoint** route now also requires an
-explicit deployment/model list. CLI `creds set openai --base-url` requires
+explicit deployment/model list. CLI `account add openai --base-url` requires
 `--models`; direct named/legacy API writes cannot omit the list or bypass the
 Azure check. Existing sealed accounts remain readable; they are not rewritten,
 automatically verified or rebound. For an old undeclared Azure account, choose
@@ -1189,7 +1189,7 @@ they do not fabricate sandbox usage/cost receipts. An account name alone does no
 establish its sealed endpoint or authentication.
 
 For Codex, dashboard **Test connection** (or
-`bun run armada creds test SANDBOX_ID --model "$AZURE_DEPLOYMENT"`) sends a tiny
+`bun run armada account test SANDBOX_ID --model "$AZURE_DEPLOYMENT"`) sends a tiny
 billable request through an already idle Modal sandbox pinned to that account
 and revision; it does not launch/resume a machine or prove the full harness
 lifecycle. Custom OpenCode connections with declared models also support this
@@ -1930,7 +1930,7 @@ Startup requires the Railway environment name `staging` and the pinned staging
 public origin. Leave the flag unset in production.
 
 Provision a staging named OpenAI API-key account using
-`armada creds set openai --name scripted --base-url
+`armada account add openai --name scripted --base-url
 https://armada-mcp-staging.up.railway.app/internal/scripted-model/v1 --models scripted`. Pass the
 same bearer privately on stdin. Keep the bearer out of the smoke configuration,
 logs and command arguments. Before the smoke wiring is deployed, set

@@ -24,7 +24,7 @@ test.each([
     return Response.json(response);
   }) as typeof fetch;
   const args = [
-    "creds",
+    "account",
     "limits",
     "account_id",
     "--model",

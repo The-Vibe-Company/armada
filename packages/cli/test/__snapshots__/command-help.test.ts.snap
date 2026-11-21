@@ -113,6 +113,7 @@ Usage:
   armada org setup [--org <name>]          Show organization provider setup status
   armada org connect boat|modal [--org <name>] [--file <path>]
                                            Connect an org provider using hidden input, stdin or a file
+  armada account --help                      Discover encrypted model account commands
   armada account ls|add|login|rm github      GitHub connection and installation
   armada account status|logout               Armada identity / revoke current login session
   armada org invitations create <email> [--role admin|member] [--org <name|UUID>] [--json]
@@ -126,43 +127,11 @@ Usage:
   armada org members list|add|remove|role  [--org <name>] add <email> [--role admin|member]
                                            Direct membership administration; add requires an existing account,
                                            grants membership immediately and does not send an invitation.
-  armada creds login codex --name <name> [--org <name>]
-                                           Native local device login; up to 16 minutes after the device code.
-                                           Keep this terminal open; Ctrl-C/shell exit cancels.
-  armada creds import claude|codex --name <name> [--file <path>] [--org <name>]
-                                           Import a locally obtained native token/auth.json; never pass secrets as arguments
-  armada creds limits <account-id> [--model <model-id>] (--max-agents N | --unlimited) [--org <name>]
-                                           Set the maximum simultaneous running agents for a model account
-  armada creds presets [--json]             List the same model connection providers as the dashboard
-  armada creds connect <preset> --name NAME [--file PATH] [--org NAME]
-                                           Provider key from hidden input, stdin/file; custom providers take --models and --base-url
-                                           Azure models are resource deployment names; official Azure addresses are tested
-                                           with a tiny billable request per deployment. A failed check saves nothing.
-  armada creds set <kind> [--org <name>] [--file <path>]
-                                           Store an encrypted credential; use hidden terminal input, stdin or a file
-                                           Model accounts: --max-agents N or --unlimited (Morph defaults to 2; others unlimited)
-                                           Model accounts: --name NAME creates; --id UUID --expected-version N replaces
-                                           Codex: --base-url URL --models deployment,model [--api-version VERSION]
-                                           Key from hidden input, stdin/file; Azure requires actual deployment names, not model catalog IDs
-                                           Codex endpoints require the Responses API
-                                           Custom endpoints run on Modal, Docker or runtime-backed Boat
-                                           Claude: --base-url URL [--endpoint-auth bearer|api-key] (default bearer)
-                                           Claude gateways support Claude models only
-                                           Endpoint prices: --price-model ID --price-input USD --price-output USD
-                                           [--price-cached-input USD]; decimal USD per million tokens, omitted = unknown
-                                           Replacing a connection replaces its prices too; re-enter all rates to keep them
   armada routine --help                    Create, inspect, enable, pause and manage scheduled template launches
   armada template --help                   Manage templates and launch published versions
   armada vars --help                       Readable variables: set/list/read; stdin/file writes only
   armada secrets --help                    Write-only application secrets: set/list/rotate/revoke/delete
                                            Personal or --org scope. JSON includes values only for vars read; no sandbox delivery.
-  armada creds test <sandbox-id> --model <deployment-model> [--org <name>] [--json]
-                                           Checks the bound API-key connection on a running Modal or runtime-backed Boat sandbox; may incur a charge
-  armada creds list [--org <name>]         Account IDs, names, defaults and safe metadata; never values
-  armada creds rename <id> <name> [--org <name>]
-  armada creds default|remove <id> [--org <name>]
-  armada creds rm <kind> [--org <name>]
-                                           kinds: claude-oauth, anthropic, openai, codex-auth, boat, modal, skillpack
 
 Every command after 'armada login' acts as the user who signed in. snapshot commands take --org <name>
 when you belong to more than one org.
@@ -484,35 +453,36 @@ Use snapshot show to inspect the build later. --json prints a single receipt.
 "
 `;
 
-exports[`armada creds help preserves its output 1`] = `
-"Usage: armada creds <command> [arguments]
-Manage encrypted model/provider credentials, not application variables/secrets.
-Use a leaf command with --help or -h for its flags and secure input instructions.
-Native subscription accounts:
-  login codex  Authorize native Codex in your browser; keep the terminal open.
-  import       Import an existing Claude token or Codex auth JSON securely.
-API connections:
-  presets      List built-in provider choices without login.
-  connect      Store a named API connection using a preset, such as morph.
-  set          Store a supported credential kind or custom endpoint.
-  test         Test a sandbox's bound model connection; may incur a provider charge.
-Account metadata:
-  list         List metadata/IDs, never credential values.
-  limits       Set the maximum simultaneous agents for an account or model.
-  rename       Rename by account ID.
-  default      Select a default account by ID.
-  remove       Remove an account by ID.
-  rm           Legacy kind-scoped removal; not an alias for remove <id>.
-Native subscriptions require eligible subscription access; API keys use provider billing.
-Read secret inputs from stdin/hidden input or private files, never command arguments.
-For application environment values use vars or secrets instead. Server authorization still applies.
-Example: armada creds presets --json
-Example: armada creds import --help
+exports[`armada account help preserves its output 1`] = `
+"Usage: armada account <command> [arguments]
+Manage model credentials, GitHub access or your personal Armada session.
+  ls            List credential metadata. Use --presets for connection choices.
+  add           Store a credential kind or use --preset for a named connection.
+  login codex   Authorize native Codex in your browser.
+  import        Import native Claude or Codex credentials securely.
+  default       Select a default model account by ID.
+  limits        Set an account or model concurrency cap.
+  rm            Remove a named account by ID or a credential with --kind.
+  test          Check a sandbox's bound API-key connection.
+Supply API keys and imported credentials through hidden input, stdin or a private file.
+  ls github      Inspect your GitHub connection and installations.
+  add github     Start GitHub App installation and wait for a new installation.
+  login github  Authorize or reauthorize GitHub.
+  rm github      Disconnect your GitHub account.
+Use leaf --help/-h for exact syntax and authorization requirements.
+  status  Read account status from the server as JSON.
+  logout  Sign out the current personal session remotely, then clear local login.
+For local-only session clearing, use armada logout instead.
+Account logout requires a personal session, not service-token authentication;
+remove ARMADA_TOKEN from that command's environment when using saved personal login.
+Help makes no server requests and does not sign anything out.
+Example: armada account login github --help
+Example: armada account logout --help
 "
 `;
 
-exports[`armada creds import claude help preserves its output 1`] = `
-"Usage: armada creds import claude (--name <name> | --id <id> --expected-version <version>) [--file <path>] [--org <name>]
+exports[`armada account import claude help preserves its output 1`] = `
+"Usage: armada account import claude (--name <name> | --id <id> --expected-version <version>) [--file <path>] [--org <name>]
 Import an existing native credential after Armada login; no native login is started.
 Claude: run claude setup-token locally. Codex: supply native auth JSON.
 Read the credential from stdin/hidden input or a private --file, never command arguments.
@@ -520,27 +490,23 @@ Use --name to create; replacement requires --id and a positive integer --expecte
 Set the account cap with --max-agents N or --unlimited.
 Omit --org for personal scope; pass it for organization scope.
 Credentials are stored encrypted; allowance information may be unavailable.
-Example: armada creds import claude --name personal --file /private/native-credential
+Example: armada account import claude --name personal --file /private/native-credential
 "
 `;
 
-exports[`armada creds connect help preserves its output 1`] = `
-"Usage: armada creds connect <preset> --name <name> [--file <path>] [--org <name>] [--json]
-  [--models <id,...>] [--base-url <HTTPS-url>] [--api-version <version>]
-  [--max-agents <positive-integer> | --unlimited]
-Store a named connection after Armada login. Choose a preset with armada creds presets --json.
-Supply only the API key through stdin/hidden input or a private --file, never command arguments or JSON.
-Presets with harness models reject --models, --base-url and --api-version.
-Chosen-model presets require --models and, unless fixed by the preset, --base-url.
-Fixed-address presets reject --base-url; --api-version is only accepted by supporting presets.
-Official Azure addresses are tested with a tiny billable request per deployment before saving;
-a failed check saves nothing. Omit --org for personal scope.
-Morph defaults to 2 simultaneous agents; other accounts default to unlimited.
-Use --max-agents N or --unlimited on connect, import, login and set.
-Change an existing cap with armada creds limits ACCOUNT_UUID --max-agents 2 or --unlimited.
-Morph: armada creds connect morph --name shared --file /private/morph-key
-Use Claude Code, Codex or OpenCode on Modal, Docker or runtime-backed Boat.
-At launch choose --credential-id ACCOUNT_UUID and a Morph plan model with --model.
-Example: armada creds connect openai --name personal --file /private/api-key
+exports[`armada account add help preserves its output 1`] = `
+"Usage: armada account add <kind> [--name NAME | --id UUID --expected-version N] [--org NAME] [--file PATH]
+       armada account add --preset <id> --name NAME [--org NAME] [--file PATH]
+Read credentials from stdin, hidden input or a private file. Omit --org for personal scope.
+List presets and their model requirements with armada account ls --presets --json.
+Presets with a custom address take --base-url and --models. Fixed addresses take --models
+only when required by the preset. Use --api-version only with a supported preset or OpenAI endpoint.
+Official Azure addresses make a tiny billable request per deployment before storing the account.
+Custom OpenAI and OpenCode endpoints require --base-url and exact --models IDs.
+Claude gateways take --base-url and optional --endpoint-auth bearer|api-key (default bearer).
+Custom endpoints accept --price-model, --price-input, --price-output and optional --price-cached-input
+in USD per million tokens. Re-enter prices when replacing a connection.
+Set a named account cap with --max-agents N or --unlimited. Morph defaults to 2.
+Example: armada account add --preset morph --name shared --file /private/morph-key
 "
 `;

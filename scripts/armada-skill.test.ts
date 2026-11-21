@@ -82,6 +82,7 @@ test("published Armada skill commands and flags match the live CLI usage contrac
   const contract: Command[] = [];
   for (const prefix of [
     [],
+    ...["ls", "add", "login", "import", "default", "limits", "rm", "test"].map((action) => ["account", action]),
     ["template"],
     ...["create", "list", "get", "publish", "delete", "launch"].map((action) => ["template", action]),
     ["routine"],
@@ -134,6 +135,7 @@ test("published Armada skill commands and flags match the live CLI usage contrac
   expect(validate("armada unknown-command", contract)).toContain("Unknown command");
   expect(validate("armada golden nonexistent-subcommand", contract)).toContain("Unknown command");
   expect(validate("armada template nonexistent-subcommand", contract)).toContain("Unknown command");
+  expect(validate("armada account rename ACCOUNT_UUID NAME", contract)).toContain("Unknown command");
   expect(validate("armada template list --request-key accidental", contract)).toContain("Unknown flag");
   expect(validate("armada new example --nonexistent-flag", contract)).toContain("Unknown flag");
   expect(validate("armada stop sandbox --skill team/example@1.0.0", contract)).toContain("Unknown flag");

@@ -29,7 +29,7 @@ window can do whatever that key allows on Skillpack, not only read skills.
 Native CLI presently does not enforce its `--confirm-secrets` flag; a broader
 key can also authorize secret projection. Use only trusted skills and sandboxes.
 
-Use `armada creds set skillpack --file <private-file>` or pipe the value on
+Use `armada account add skillpack --file <private-file>` or pipe the value on
 stdin. Add `--org <organization>` for an org default (admin only). Your own
 credential wins over the org's, and a refused personal key never silently falls
 back to wider org authority. Storage uses the existing AES-GCM encrypted vault;

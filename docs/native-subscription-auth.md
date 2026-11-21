@@ -23,9 +23,9 @@ redacted from public events and command output.
 ## Connect an account
 
 ```sh
-armada creds login codex --name "Personal ChatGPT"
-armada creds import codex --name "Existing ChatGPT" --file "$HOME/.codex/auth.json"
-armada creds import claude --name "Personal Claude" --file /private/path/claude-token
+armada account login codex --name "Personal ChatGPT"
+armada account import codex --name "Existing ChatGPT" --file "$HOME/.codex/auth.json"
+armada account import claude --name "Personal Claude" --file /private/path/claude-token
 ```
 
 Use the official local Codex device flow or Claude `setup-token`. Never put
@@ -49,7 +49,7 @@ For the owner's staging retry, from a checkout containing this CLI fix:
 ```sh
 export ARMADA_URL=https://armada-mcp-staging.up.railway.app
 # Keep the owner's Armada staging login/token configured; no provider token in argv.
-bun run armada creds login codex --name hello --org STAGING_ORG_NAME
+bun run armada account login codex --name hello --org STAGING_ORG_NAME
 ```
 
 The app-server has 30 seconds to initialize and return a device challenge. Once
@@ -113,7 +113,7 @@ Use this decision order:
    stage/code; do not paste native provider errors or `auth.json` into an issue.
 4. **Native login succeeds, Armada publication fails:** check the selected
    Armada server, org UUID and account-write permissions. For an uncertain API
-   outcome, inspect `armada creds list --org ORG_UUID` before importing again.
+   outcome, inspect `armada account ls --org ORG_UUID` before importing again.
    A native success alone does not prove an Armada account exists.
 
 ### Standalone native login, then secure import
@@ -133,7 +133,7 @@ Do not enable shell tracing (`set -x`).
   codex -c 'cli_auth_credentials_store="file"' login --device-auth
   # Only continue after Codex reports a successful sign-in.
   test -s "$CODEX_HOME/auth.json"
-  armada creds import codex --name "Personal ChatGPT" \
+  armada account import codex --name "Personal ChatGPT" \
     --file "$CODEX_HOME/auth.json" --org ORG_UUID
 )
 ```
@@ -152,7 +152,7 @@ a later attempt requires a new native login.
 
 - Complete browser approval with 0.166.0 in the foreground and wait for Armada's
   imported-account confirmation (not just the browser's success page).
-- Confirm the intended named account in `armada creds list --org ORG_UUID`.
+- Confirm the intended named account in `armada account ls --org ORG_UUID`.
 - Coordinator only: launch/follow up on Modal or the authorized Docker host with
   that account and record the safe result. No Boat staging probe.
 

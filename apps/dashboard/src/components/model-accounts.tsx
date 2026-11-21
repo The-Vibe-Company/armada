@@ -1604,7 +1604,7 @@ export function AddAccountDialog({
   const subscription = info.billing === "subscription";
   const pasteSignIn = PASTE_SIGN_IN[kind];
   const command = subscription
-    ? `${kind === "claude_oauth" ? "claude setup-token && armada creds import claude" : "armada creds login codex"} --name ${shellQuote(name.trim() || info.label)}${scope === "org" ? ` --org ${shellQuote(orgId)}` : ""}${maxAgents ? ` --max-agents ${Number(maxAgents)}` : " --unlimited"}`
+    ? `${kind === "claude_oauth" ? "claude setup-token && armada account import claude" : "armada account login codex"} --name ${shellQuote(name.trim() || info.label)}${scope === "org" ? ` --org ${shellQuote(orgId)}` : ""}${maxAgents ? ` --max-agents ${Number(maxAgents)}` : " --unlimited"}`
     : null;
 
   useEffect(() => {
