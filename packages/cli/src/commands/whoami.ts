@@ -1,6 +1,6 @@
 import { AuthError } from "@armada/auth";
 import { tokenOperations } from "@armada/core/contract/tokens";
-import { createArmadaApiClient } from "../armada-api.ts";
+import { createSdkCommandClient } from "../sdk-session.ts";
 import { parseAuth, rejectUnknown } from "./auth-args.ts";
 import type { Command } from "./command.ts";
 
@@ -13,7 +13,7 @@ export default {
     const { position, flags } = parseAuth(argv);
     rejectUnknown(flags, ["json"]);
     if (position.length) throw new AuthError("Usage: armada whoami [--json]", "usage");
-    const api = await createArmadaApiClient(auth);
+    const api = await createSdkCommandClient(auth);
     const result = tokenOperations.whoami.output.parse(
       await api.request(tokenOperations.whoami.route.path, { method: tokenOperations.whoami.route.method }),
     );

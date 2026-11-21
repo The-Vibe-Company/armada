@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import type { ResourceAdvice } from "@armada/core";
-import { createArmadaApiClient } from "../src/armada-api.ts";
 import { printOptionalResourceAdvice, resourceAdviceText } from "../src/resource-advice.ts";
+import { createSdkCommandClient } from "../src/sdk-session.ts";
 import { memorySessionStore } from "../src/session.ts";
 
 const evidence: ResourceAdvice = {
@@ -69,7 +69,7 @@ test("optional launch guidance uses actual advice route and fails open silently 
     { advice: { ...evidence, reason: "collection_unavailable", recommendedSize: null } },
     new Error("offline"),
   ];
-  const client = await createArmadaApiClient({
+  const client = await createSdkCommandClient({
     env: { ARMADA_TOKEN: "test_token" },
     session: memorySessionStore(),
     fetch: async (input, init) => {

@@ -1,10 +1,9 @@
 import { type LaunchTemplate, type OrgSummary, parseMachineSize, templateRefusalHelp, VaultError } from "@armada/core";
 import { flag, parseArgs, single } from "./args.ts";
-import { createArmadaApiClient } from "./armada-api.ts";
 import type { AuthIo } from "./auth-commands.ts";
 import { control } from "./control.ts";
 import { parseTtl } from "./operations.ts";
-import { resolveArmadaOrigin } from "./sdk-session.ts";
+import { createSdkCommandClient, resolveArmadaOrigin } from "./sdk-session.ts";
 
 const ACTIONS = ["list", "get", "launch"];
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -98,7 +97,7 @@ export async function templateCommand(argv: readonly string[], auth: AuthIo): Pr
   let result: Record<string, unknown>;
   if (action === "launch") {
     const signal = AbortSignal.timeout(10 * 60_000);
-    const client = await createArmadaApiClient(auth);
+    const client = await createSdkCommandClient(auth);
     result = await client.launchFromTemplate(body, signal);
   } else {
     result = await control(auth, `templates/${action}`, body);

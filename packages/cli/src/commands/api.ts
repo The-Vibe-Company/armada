@@ -1,6 +1,7 @@
 import { AuthError } from "@armada/auth";
 import { commandClient } from "@armada/sdk/commands";
-import { ArmadaApiError, type ArmadaApiIo, authenticatedSession } from "../sdk-session.ts";
+import { ArmadaApiError } from "../api-responses.ts";
+import { type ArmadaApiIo, authenticatedSession } from "../sdk-session.ts";
 import type { Command } from "./command.ts";
 
 const usage = "  armada api ROUTE [JSON|-]";

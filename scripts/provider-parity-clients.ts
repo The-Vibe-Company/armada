@@ -1,10 +1,10 @@
 import { createControlClient } from "../apps/dashboard/src/lib/control.ts";
 import { createGateway, GatewayError, sandboxGateway } from "../apps/dashboard/src/lib/gateway.ts";
 import { AuthError } from "../packages/auth/src/index.ts";
-import { createArmadaApiClient } from "../packages/cli/src/armada-api.ts";
+import { ArmadaApiError } from "../packages/cli/src/api-responses.ts";
 import prompt from "../packages/cli/src/commands/prompt.ts";
 import { operation } from "../packages/cli/src/operations.ts";
-import { ArmadaApiError } from "../packages/cli/src/sdk-session.ts";
+import { createSdkCommandClient } from "../packages/cli/src/sdk-session.ts";
 
 export type ProofClient = "dashboard" | "cli";
 export class ClientProofError extends Error {
@@ -104,7 +104,7 @@ export async function createParityClients(
     },
     err: () => {},
   };
-  const api = await createArmadaApiClient(auth);
+  const api = await createSdkCommandClient(auth);
   const dashboard = sandboxGateway(
     createGateway({ url: `${input.origin}/mcp`, token: input.token, fetch: relay as typeof fetch }),
     createControlClient({ serverUrl: input.origin, token: input.token, fetch: relay as typeof fetch }),

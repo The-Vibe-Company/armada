@@ -2,6 +2,7 @@ import { AuthError } from "@armada/auth";
 import { Armada, ArmadaError } from "@armada/sdk";
 import { authClient } from "@armada/sdk/auth";
 import { commandClient } from "@armada/sdk/commands";
+import { ArmadaApiError, decodeApiResponse } from "./api-responses.ts";
 import type { Session, SessionStore } from "./session.ts";
 
 const DEFAULT_ARMADA_API_URL = "https://armada.thevibecompany.co";
@@ -12,29 +13,6 @@ export interface ArmadaApiIo {
   fetch: (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
   session: SessionStore;
   timeoutMs?: number;
-}
-
-export class ArmadaApiError extends AuthError {
-  constructor(
-    readonly serverCode: string,
-    readonly status: number,
-    message: string,
-    readonly details?: Readonly<{ phase: string }>,
-    exitCode?: 1 | 2,
-  ) {
-    super(
-      message,
-      exitCode === 2
-        ? "usage"
-        : exitCode === 1
-          ? "unavailable"
-          : status === 400
-            ? "usage"
-            : status === 409 || status === 403
-              ? "conflict"
-              : "unavailable",
-    );
-  }
 }
 
 export async function authenticatedSession(
@@ -63,12 +41,11 @@ export async function authenticatedSession(
   return { origin, timeoutMs, environmentToken, token: () => token, renewToken };
 }
 
-export type SdkCommandResponse = Parameters<Parameters<typeof commandClient>[2]>[0];
+export type ArmadaCommandClient = Awaited<ReturnType<typeof createSdkCommandClient>>;
 
 export async function createSdkCommandClient(
   io: ArmadaApiIo,
-  decode: (result: SdkCommandResponse, path: string, url: URL, environmentToken: string | undefined) => unknown,
-  options?: { url?: string; safeRefreshErrors?: boolean },
+  options: { url?: string; preserveServerErrors?: boolean } = {},
 ) {
   const { origin, timeoutMs, environmentToken, token, renewToken } = await authenticatedSession(io, options);
   return commandClient(
@@ -82,7 +59,7 @@ export async function createSdkCommandClient(
       },
       ...(renewToken ? { renewToken } : {}),
     },
-    (result, path, url) => decode(result, path, url, environmentToken),
+    (result, path, url) => decodeApiResponse(result, path, url, environmentToken, options.preserveServerErrors),
   );
 }
 

@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { createArmadaApiClient } from "../src/armada-api.ts";
+import { createSdkCommandClient } from "../src/sdk-session.ts";
 import { memorySessionStore } from "../src/session.ts";
 
 test.each([
@@ -8,7 +8,7 @@ test.each([
   ["/api/v1/org/invitations/list", { error: "Not found." }],
   ["/api/v1/github/refresh", { error: { code: "unknown_route", message: "untrusted text" } }],
 ] as const)("route 404 at %s reports deployment drift before resource-specific errors", async (path, payload) => {
-  const client = await createArmadaApiClient({
+  const client = await createSdkCommandClient({
     env: { ARMADA_TOKEN: "fixture-token", ARMADA_URL: "https://armada.test" },
     session: memorySessionStore(),
     fetch: async () => Response.json(payload, { status: 404 }),

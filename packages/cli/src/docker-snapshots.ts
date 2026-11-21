@@ -1,8 +1,8 @@
 import { type GoldenConfig, GoldenError, parseDockerSnapshotRecord, snapshotUpdateAvailable } from "@armada/core";
 import { type Args, flag, single, uuid } from "./args.ts";
-import { createArmadaApiClient } from "./armada-api.ts";
 import type { AuthIo } from "./auth-commands.ts";
 import { resolveHost } from "./host-commands.ts";
+import { createSdkCommandClient } from "./sdk-session.ts";
 import { waitForSnapshot } from "./snapshot-wait.ts";
 export async function dockerSnapshotCommand(
   operation: "ls" | "new" | "update" | "rebuild" | "rm" | "show",
@@ -29,7 +29,7 @@ export async function dockerSnapshotCommand(
   const org = single(args, "--org");
   if (!org || !/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i.test(org))
     throw new GoldenError("invalid_config", "Docker snapshots require --org UUID.");
-  const client = await createArmadaApiClient(auth);
+  const client = await createSdkCommandClient(auth);
   const post = (operation: Parameters<typeof client.dockerSnapshot>[0], body: object, signal?: AbortSignal) =>
     client.control<Record<string, unknown>>(`docker/snapshots/${operation}`, { org, ...body }, signal);
   if (operation === "ls") {

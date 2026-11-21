@@ -14,6 +14,7 @@ import {
   VaultError,
   VERSION,
 } from "@armada/core";
+import { ArmadaApiError } from "./api-responses.ts";
 import {
   type Args,
   acceptedOptions,
@@ -27,7 +28,6 @@ import {
   values,
   withJsonFlag,
 } from "./args.ts";
-import { createArmadaApiClient } from "./armada-api.ts";
 import { type AuthIo, loginCommand, productionAuthIo } from "./auth-commands.ts";
 import { commandWords, HELP } from "./command-catalog.ts";
 import { findCommand, focusedHelp } from "./commands/index.ts";
@@ -36,7 +36,7 @@ import { dockerSnapshotCommand } from "./docker-snapshots.ts";
 import { failureHint } from "./failure-hint.ts";
 import { type LocalHostIo, localHostCommand, productionLocalHostIo } from "./local-host.ts";
 import { profileStores, selectProfile } from "./profiles.ts";
-import { ArmadaApiError, resolveArmadaOrigin } from "./sdk-session.ts";
+import { createSdkCommandClient, resolveArmadaOrigin } from "./sdk-session.ts";
 import { skillCommand } from "./skill-install.ts";
 import { snapshotText } from "./snapshot-text.ts";
 import { waitForSnapshot } from "./snapshot-wait.ts";
@@ -136,7 +136,7 @@ export async function run(argv: readonly string[], io: Io, deps: Deps = {}): Pro
     auth = authOf(io, deps);
     try {
       if (argv.length === 0) {
-        const client = await createArmadaApiClient(auth);
+        const client = await createSdkCommandClient(auth);
         await client.control("account/status", {});
       }
       return finish(await dispatch(argv, io, deps));
@@ -320,7 +320,7 @@ export async function snapshotCommand([verb, ...rest]: readonly string[], io: Io
         "Use snapshot show --build JOB_ID or --idempotency-key KEY --org ORG_UUID.",
       );
     if (idempotencyKey !== undefined) uuid(org, "--org");
-    const client = await createArmadaApiClient({ ...auth, fetch: deps.fetch ?? auth.fetch });
+    const client = await createSdkCommandClient({ ...auth, fetch: deps.fetch ?? auth.fetch });
     const job = await client.golden<GoldenBuildStatus>("build/status", { jobId, idempotencyKey, org });
     io.out(`${JSON.stringify(job)}\n`);
     if (job.state === "failed" || job.state === "recovery_required")
@@ -329,7 +329,7 @@ export async function snapshotCommand([verb, ...rest]: readonly string[], io: Io
   }
 
   const selector = oneName(args.positionals);
-  const client = await createArmadaApiClient({ ...auth, fetch: deps.fetch ?? auth.fetch });
+  const client = await createSdkCommandClient({ ...auth, fetch: deps.fetch ?? auth.fetch });
   const isId = /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i.test(selector);
   if (operation === "rm" && isId && !provider) {
     io.out(`${JSON.stringify(await client.golden("remove", { id: selector, org }))}\n`);
@@ -368,7 +368,7 @@ function buildWaitSeconds(args: Args) {
 }
 
 async function admitGoldenBuild(
-  client: import("./armada-api.ts").ArmadaCommandClient,
+  client: import("./sdk-session.ts").ArmadaCommandClient,
   args: ReturnType<typeof parseArgs>,
   io: Io,
   deps: Deps,
@@ -469,7 +469,7 @@ async function update(positionals: string[], args: ReturnType<typeof parseArgs>,
     }
   }
   const auth = authOf(io, deps);
-  const client = await createArmadaApiClient(
+  const client = await createSdkCommandClient(
     { env: auth.env, fetch: deps.fetch ?? auth.fetch, session: auth.session },
     { preserveServerErrors: true },
   );
@@ -531,7 +531,7 @@ async function create(positionals: string[], args: ReturnType<typeof parseArgs>,
     }
   }
   const auth = authOf(io, deps);
-  const client = await createArmadaApiClient(
+  const client = await createSdkCommandClient(
     { env: auth.env, fetch: deps.fetch ?? auth.fetch, session: auth.session },
     { preserveServerErrors: true },
   );
@@ -557,7 +557,7 @@ async function create(positionals: string[], args: ReturnType<typeof parseArgs>,
 async function list(args: ReturnType<typeof parseArgs>, io: Io, deps: Deps): Promise<number> {
   if (args.positionals.length > 0) throw new GoldenError("invalid_config", "snapshot ls takes no name.");
   const auth = authOf(io, deps);
-  const client = await createArmadaApiClient({
+  const client = await createSdkCommandClient({
     env: auth.env,
     fetch: deps.fetch ?? auth.fetch,
     session: auth.session,

@@ -1,6 +1,6 @@
 import { MODEL_ACCOUNT_WRITE_TIMEOUT_MS } from "@armada/core";
-import { createArmadaApiClient } from "./armada-api.ts";
 import type { AuthIo } from "./auth-commands.ts";
+import { createSdkCommandClient } from "./sdk-session.ts";
 
 export async function control<T>(
   auth: AuthIo,
@@ -8,7 +8,7 @@ export async function control<T>(
   body: Record<string, unknown>,
   signal?: AbortSignal,
 ): Promise<T> {
-  const client = await createArmadaApiClient(auth);
+  const client = await createSdkCommandClient(auth);
   const deadline =
     signal ??
     (route === "creds/accounts/set" || route === "creds/set"

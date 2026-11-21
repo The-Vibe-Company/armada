@@ -11,8 +11,8 @@ import {
   validDockerHostResources,
 } from "@armada/core";
 import { flag, parseArgs, single } from "./args.ts";
-import { type ArmadaCommandClient, createArmadaApiClient } from "./armada-api.ts";
 import type { AuthIo } from "./auth-commands.ts";
+import { type ArmadaCommandClient, createSdkCommandClient } from "./sdk-session.ts";
 
 const UUID = /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i;
 const HELP = "Usage: armada host add|ls|limits|rm. Run armada host --help for options.\n";
@@ -107,7 +107,7 @@ export async function hostCommand(argv: readonly string[], auth: AuthIo): Promis
     return invalid("--name requires 1..64 visible characters.");
   const hostId = args.positionals[0];
   if (operation === "rm" && (!hostId || !UUID.test(hostId))) return invalid("host rm requires a host UUID.");
-  const client = await createArmadaApiClient(auth);
+  const client = await createSdkCommandClient(auth);
   if (operation === "ls") {
     const result = await listHosts(client, org);
     if (hostId !== undefined) {

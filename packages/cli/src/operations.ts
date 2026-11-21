@@ -9,8 +9,8 @@ import {
 } from "@armada/core/contract";
 import { sandboxListInput } from "@armada/core/contract/sandbox";
 import { invalidAgentMessage } from "./agent-validation.ts";
+import { ArmadaApiError } from "./api-responses.ts";
 import { acceptedOptions, flag, parseArgs, single, uuid } from "./args.ts";
-import { type ArmadaCommandClient, createArmadaApiClient } from "./armada-api.ts";
 import type { AuthIo } from "./auth-commands.ts";
 import {
   type CurrentSandboxFile,
@@ -21,7 +21,7 @@ import {
 import { setupStatus } from "./devx.ts";
 import { mcpCommand } from "./mcp-commands.ts";
 import { sandboxListText } from "./sandbox-list.ts";
-import { ArmadaApiError } from "./sdk-session.ts";
+import { type ArmadaCommandClient, createSdkCommandClient } from "./sdk-session.ts";
 
 export async function operation(
   command:
@@ -107,7 +107,7 @@ export async function operation(
     if (setup || (!sandboxRequested && !current)) return setupStatus(org, flag(args, "--json"), auth);
   }
   let api: Promise<ArmadaCommandClient> | undefined;
-  const client = () => (api ??= createArmadaApiClient(auth));
+  const client = () => (api ??= createSdkCommandClient(auth));
   const list = async (body: ListInput) => (await client()).sandboxes.list<ListResult>(body);
   const resolveId = (id: string | undefined) =>
     command === "info"
