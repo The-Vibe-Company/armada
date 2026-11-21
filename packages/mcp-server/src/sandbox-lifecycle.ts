@@ -976,7 +976,7 @@ export async function requestNativeDrainStop(
   });
 }
 
-export async function hasPreservedModalDrainIncarnation(tx: Sql, id: string, pending: boolean) {
+export async function fencePreservedModalDrainIncarnation(tx: Sql, id: string, pending: boolean) {
   // WARNING: The journal lock must not wait while holding the sandbox lock because Modal ingest takes them in reverse order.
   const { rows } = await tx.query<{ eligible: boolean }>(
     `with journal as materialized (
@@ -997,12 +997,22 @@ export async function hasPreservedModalDrainIncarnation(tx: Sql, id: string, pen
            and r.stop_generation=s.stop_generation and r.stop_generation=s.preservation_stop_generation
            and r.capture_generation=r.generation and r.capture_stop_generation=r.stop_generation
            and r.capture_acknowledgements->>'physicalGeneration'=j.record->>'generation'
+           and (not $2 or r.capture_acknowledgements->>'drainAdmissionGeneration'=j.record->>'generation')
        )
      ) as eligible
      from journal j cross join public.sandboxes s where s.id=$1`,
     [id, pending],
   );
-  return rows.length === 1 && rows[0]?.eligible === true;
+  if (rows.length !== 1 || rows[0]?.eligible !== true) return false;
+  if (!pending)
+    await tx.query(
+      `update public.sandbox_native_preservation_receipts
+       set capture_acknowledgements=jsonb_set(capture_acknowledgements,
+         '{drainAdmissionGeneration}',capture_acknowledgements->'physicalGeneration')
+       where sandbox_id=$1`,
+      [id],
+    );
+  return true;
 }
 
 export async function markNativeDrainDispatchUnclaimed(tx: Sql, id: string) {

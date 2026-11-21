@@ -57,9 +57,9 @@ import {
   carryNativePreservationAcrossStop,
   completeSandboxDeletion,
   expireAfterExtension,
+  fencePreservedModalDrainIncarnation,
   finishLaunchFailure,
   finishLaunchSuccess,
-  hasPreservedModalDrainIncarnation,
   markNativeDrainDispatchUnclaimed,
   nativeDrainDispatch,
   publishNativeResumeAdmission,
@@ -1288,7 +1288,7 @@ export function createSqlData(
             if (!locked) throw new DataError("Sandbox is not eligible for native drain deletion.", "sandbox_not_ready");
             if (
               locked.requires_incarnation_proof &&
-              !(await hasPreservedModalDrainIncarnation(tx, id, locked.native_drain_pending))
+              !(await fencePreservedModalDrainIncarnation(tx, id, locked.native_drain_pending))
             )
               throw new DataError("Modal drain requires the preserved stopped incarnation.", "sandbox_not_ready");
             if (locked.native_drain_pending) {
