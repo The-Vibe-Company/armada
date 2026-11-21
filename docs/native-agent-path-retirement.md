@@ -76,8 +76,11 @@ access. Select `boat` for the Boat cohort.
 
 For a real pass, wait for the selected provider's release and checklist gate,
 disable new native admissions, and drain every replica that could still admit
-or finish a native launch from before the cutover. Include replicas that
-predate the native delete intent fence. Prepare the checkout with
+or finish a native launch from before the cutover. Apply the strict-stop migration
+and deploy the strict-stop worker before running the real command. Drain all
+older lifecycle workers and wait for their in-flight work to finish, including
+replicas with native launches disabled. Older workers can claim a native stop
+request without enforcing preservation. Prepare the checkout with
 `bun scripts/prepare-runtime.ts`. Set the server's `ARMADA_DATABASE_URL`,
 `ARMADA_ENCRYPTION_KEY` and `ARMADA_PUBLIC_URL`, and set
 `ARMADA_DRAIN_ACTOR_ID` to a user authorized to delete each candidate.

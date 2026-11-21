@@ -1025,6 +1025,50 @@ test.each(["clean", "failed"] as const)(
   },
 );
 
+test("active native drain retains an expired historical activity with unknown outcome", async () => {
+  const { db, context, sandboxId } = await nativeToolFixture(fakeBoat().provider, "bx_drain_historical_activity");
+  const token = crypto.randomUUID();
+  await db.query("update sandboxes set activity_lease_id=$2, activity_until='-infinity' where id=$1", [
+    sandboxId,
+    token,
+  ]);
+  const caller = context.caller;
+  const drain = configureNativeDrain(bunLikeSql(db), "boat", caller.userId, {
+    ARMADA_ENCRYPTION_KEY: ENCRYPTION_KEY,
+    ARMADA_PUBLIC_URL: PUBLIC_URL,
+  });
+
+  await expect(drain.remove({ id: sandboxId, org_id: caller.orgs[0]!.orgId, role: "admin" })).rejects.toThrow(
+    "could not admit strict preservation",
+  );
+  expect((await db.query("select status, activity_lease_id from sandboxes where id=$1", [sandboxId])).rows).toEqual([
+    { status: "ready", activity_lease_id: token },
+  ]);
+});
+
+test("active native drain can request preservation after a pending prompt settles", async () => {
+  const placement = "bx_drain_pending_prompt";
+  const { db, context, sandboxId } = await nativeToolFixture(fakeBoat().provider, placement);
+  const caller = context.caller;
+  const candidate = { id: sandboxId, org_id: caller.orgs[0]!.orgId, role: "admin" as const };
+  await db.query(
+    `insert into native_webhook_prompts(sandbox_id,prompt_id,provider,provider_sandbox_id,org_id,owner_id)
+     values($1,'pending-prompt','boat',$2,$3,$4)`,
+    [sandboxId, placement, candidate.org_id, caller.userId],
+  );
+  const drain = configureNativeDrain(bunLikeSql(db), "boat", caller.userId, {
+    ARMADA_ENCRYPTION_KEY: ENCRYPTION_KEY,
+    ARMADA_PUBLIC_URL: PUBLIC_URL,
+  });
+  const sandbox = () => context.data.sandboxes.get(sandboxId);
+
+  await expect(drain.remove(candidate)).rejects.toThrow("could not admit strict preservation");
+  expect((await sandbox())?.status).toBe("ready");
+  await db.query("update native_webhook_prompts set completed_at=now() where sandbox_id=$1", [sandboxId]);
+  await expect(drain.remove(candidate)).rejects.toThrow("before preservation and stop are confirmed");
+  expect((await sandbox())?.status).toBe("stopping");
+});
+
 test.each(["boat", "modal"])("ordinary native exec excludes owner stop on %s", async (providerId) => {
   const boat = fakeBoat();
   const machine = await boat.provider.fork({

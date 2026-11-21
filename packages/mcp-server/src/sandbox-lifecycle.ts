@@ -920,6 +920,7 @@ export async function requestNativeDrainStop(
          and ${NATIVE_WORK_ROUTE} and s.status in ('ready','running') and s.stop_requested_at is null
          and s.stopped_at is null and s.deleted_at is null and not s.application_secret_tainted
          and not s.native_drain_pending and s.expires_at>clock_timestamp()
+         and s.activity_lease_id is null
          and (s.activity_until is null or s.activity_until<=clock_timestamp())
          and (s.reconcile_lease_until is null or s.reconcile_lease_until<=clock_timestamp())
          and not exists(select 1 from public.orchestrators o where o.sandbox_id=s.id)
@@ -930,6 +931,11 @@ export async function requestNativeDrainStop(
            where q.sandbox_id=s.id and q.state in ('queued','dispatching'))
          and not exists(select 1 from public.sandbox_native_exec_attempts e where e.sandbox_id=s.id)
          and not exists(select 1 from public.sandbox_native_send_attempts a where a.sandbox_id=s.id)
+         and not exists(select 1 from public.native_steer_cursors c
+           where c.sandbox_id=s.id and c.pending_since is not null)
+         and not exists(select 1 from public.native_webhook_prompts p
+           where p.sandbox_id=s.id and p.provider=s.provider and p.provider_sandbox_id=s.provider_sandbox_id
+             and p.owner_id=s.owner_id and p.org_id=s.org_id and p.completed_at is null)
        returning status, lifecycle_generation::text as generation`,
       [id, lifecycleGeneration, providerSandboxId, provider, actorId, token],
     );
@@ -1684,8 +1690,7 @@ export function createSandboxLifecycle(
       if (!row) return false;
       let strictNativeStop = false;
       if (row.status === "stopping" && row.stop_requested_at !== null) {
-        // A claim can recheck the updated sandbox row after its statement snapshot.
-        // Read the matching intent after claiming so an older snapshot cannot miss it.
+        // WARNING: Read intent after claiming because SQL can recheck the sandbox against a newer version than the marker snapshot.
         const {
           rows: [owned],
         } = await sql.query<{ strict: boolean }>(
@@ -2215,9 +2220,8 @@ export function createSandboxLifecycle(
             return true;
           }
         }
-        // A definitive absence for the exact registered identity is terminal.
-        // Never infer absence from transport errors or discover resources by name.
         if (
+          !strictNativeStop &&
           resolved &&
           !rollbackRetainedResume &&
           (!row.checkpointed_stop || expired) &&
@@ -2227,9 +2231,7 @@ export function createSandboxLifecycle(
         ) {
           terminal = true;
           if (providerId === "boat") physicalExit = true;
-        }
-        // No provider exception text: SDK errors may contain credential-bearing requests.
-        else error = "Provider lifecycle observation unavailable. Retrying without deleting retained data.";
+        } else error = "Provider lifecycle observation unavailable. Retrying without deleting retained data.";
       }
       return settle();
     } finally {
