@@ -43,7 +43,8 @@ staging_armada --help
 
 For both staging paths, set `sandbox_create_command` to the top-level sandbox creation command shown by
 `staging_armada --help` for the installed version. Current releases use `new`.
-The rehearsed 2.57.2 binary below uses `launch`.
+The rehearsed 2.57.2 binary below uses `launch`. Current releases use `info` to
+inspect a sandbox. The rehearsed binary uses `status`.
 
 ```bash
 read -r -p 'Sandbox creation command from pinned CLI help: ' sandbox_create_command

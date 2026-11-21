@@ -175,7 +175,7 @@ Send starts a new turn in the sandbox's conversation. Launch another sandbox
 for a separate conversation. The dashboard transcript shows sandbox history
 and its composer targets the sandbox automatically. Steer redirects an active turn:
 `armada prompt --steer SANDBOX "Keep the public API unchanged"`. Use
-`armada interrupt SANDBOX` to request interruption, then inspect status before
+`armada interrupt SANDBOX` to request interruption, then run `armada info SANDBOX` before
 sending replacement work. Do not treat steer as a guaranteed new turn or send
 as a safe interruption mechanism. Capture returned prompt/turn identifiers.
 
@@ -190,8 +190,8 @@ Use blocking wait instead of tight status loops. --timeout is in seconds,
 accepts 0–600 and defaults to 60; the example waits at most 120 seconds. A
 still-running result can be waited on again, not relaunched. A wait response is
 an observation, not proof tests passed or work was pushed; inspect outcome and
-logs. If a send times out ambiguously, inspect detail, status and logs before
-considering another send; do not replay a possibly accepted instruction. Use
+logs. If a send times out ambiguously, use `armada info SANDBOX --live` and
+`armada events SANDBOX --tail 50` before considering another send; do not replay a possibly accepted instruction. Use
 `armada events SANDBOX -f` to follow until settled, or `armada events SANDBOX --tail N`
 for bounded diagnostics. Piped output is JSON
 Lines, with one event per line. Use `armada exec SANDBOX -- "git status --short"`
