@@ -2,6 +2,7 @@ import { sandboxCheckOperations } from "@armada/core/contract";
 import { createSqlVaultStore, type Harness, resolveCredentials, type Sql, VaultError } from "@armada/core/server";
 import type { Machine } from "@armada/provider-modal";
 import type { Caller } from "./caller.ts";
+import { hasStrictNativeDrainStop } from "./sandbox-lifecycle.ts";
 
 export interface CredentialBindingRecoveryInput {
   id: string;
@@ -61,6 +62,8 @@ export function createCredentialBindingRecovery(
       ]);
       if (!member.rows.length) throw new VaultError("forbidden", "Organization membership is required.");
       if (sandbox.native_drain_pending) throw new VaultError("conflict", "Native sandbox deletion is pending.");
+      if (await hasStrictNativeDrainStop(tx, sandbox.id))
+        throw new VaultError("conflict", "Native sandbox preservation is pending.");
       if (sandbox.credential_id !== null || sandbox.credential_version !== null)
         throw new VaultError("conflict", "This sandbox is already bound; its account cannot change.");
       const policies = await tx.query<{
