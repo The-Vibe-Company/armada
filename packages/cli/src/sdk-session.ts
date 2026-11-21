@@ -1,6 +1,7 @@
 import { AuthError } from "@armada/auth";
 import { Armada, ArmadaError } from "@armada/sdk";
 import { authClient } from "@armada/sdk/auth";
+import { commandClient } from "@armada/sdk/commands";
 import type { Session, SessionStore } from "./session.ts";
 
 const DEFAULT_ARMADA_API_URL = "https://armada.thevibecompany.co";
@@ -60,6 +61,29 @@ export async function authenticatedSession(
       }
     : undefined;
   return { origin, timeoutMs, environmentToken, token: () => token, renewToken };
+}
+
+export type SdkCommandResponse = Parameters<Parameters<typeof commandClient>[2]>[0];
+
+export async function createSdkCommandClient(
+  io: ArmadaApiIo,
+  decode: (result: SdkCommandResponse, path: string, url: URL, environmentToken: string | undefined) => unknown,
+  options?: { url?: string; safeRefreshErrors?: boolean },
+) {
+  const { origin, timeoutMs, environmentToken, token, renewToken } = await authenticatedSession(io, options);
+  return commandClient(
+    origin,
+    {
+      fetch: (input, options) => io.fetch(input, { ...options, ...{ timeout: false } }),
+      token,
+      timeoutMs,
+      invalidPath: (error) => {
+        throw new AuthError(error.message, "usage");
+      },
+      ...(renewToken ? { renewToken } : {}),
+    },
+    (result, path, url) => decode(result, path, url, environmentToken),
+  );
 }
 
 export async function createArmadaSdkReader(io: ArmadaApiIo) {
