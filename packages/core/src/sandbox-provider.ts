@@ -32,24 +32,41 @@ export function isSandboxProvider(value: unknown): value is SandboxProviderId {
 export function launchInfrastructure(id: string) {
   const transports: Record<
     string,
-    { nativeCli: boolean; nativeRuntime: boolean; authPath?: string; managedNativeAuthWriter: boolean }
+    {
+      nativeCli: boolean;
+      nativeRuntime: boolean;
+      authPath?: string;
+      managedNativeAuthWriter: boolean;
+      privateSshBootstrap: boolean;
+      terminalPromptEventIsBoundary: boolean;
+    }
   > = {
     boat: {
       nativeCli: true,
       nativeRuntime: false,
       authPath: "/home/user/.codex/auth.json",
       managedNativeAuthWriter: true,
+      privateSshBootstrap: true,
+      terminalPromptEventIsBoundary: true,
     },
     modal: {
       nativeCli: false,
       nativeRuntime: true,
       authPath: "/home/user/.armada-runtime/codex/auth.json",
       managedNativeAuthWriter: false,
+      privateSshBootstrap: false,
+      terminalPromptEventIsBoundary: false,
     },
   };
   return Object.hasOwn(transports, id)
     ? transports[id]!
-    : { nativeCli: false, nativeRuntime: false, managedNativeAuthWriter: false };
+    : {
+        nativeCli: false,
+        nativeRuntime: false,
+        managedNativeAuthWriter: false,
+        privateSshBootstrap: false,
+        terminalPromptEventIsBoundary: false,
+      };
 }
 
 /** What a provider's infrastructure allows, independent of any agent capability. */
