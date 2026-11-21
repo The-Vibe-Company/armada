@@ -2,7 +2,7 @@ import { ProviderError, retainFailureDiagnostic, type Sql, sandboxActivity, Vaul
 import type { Caller } from "./caller.ts";
 import { createSqlData } from "./data.ts";
 import { createGoldenRuntimeEnvironment } from "./golden-runtime-environment.ts";
-import { assertModalLaunchSetup, MODAL_LAUNCH_SETUP_STATE } from "./jobs/modal-launch-setup.ts";
+import { assertModalLaunchSetup, MODAL_LAUNCH_SETUP_KEY, ModalLaunchSetupConflict } from "./jobs/modal-launch-setup.ts";
 import { runtimeBridgeTarget } from "./provider-runtime-admission.ts";
 import { lockRuntimeAccount } from "./runtime-account-admission.ts";
 import { runtimeAgentFor } from "./runtime-agent.ts";
@@ -127,12 +127,17 @@ export function createRuntimeFollowup(
     if (!claim && found.provider === "modal" && previous.state === "missing") {
       const {
         rows: [setup],
-      } = await sql.query<{ state: string | null }>(
-        `select ${MODAL_LAUNCH_SETUP_STATE} as state from public.sandboxes s
+      } = await sql.query<{ state: string; prompt_pending: boolean }>(
+        `select j.state, exists (
+           select 1 from public.account_turn_queue q
+           where q.sandbox_id=s.id and q.request_id=j.id and q.state in ('queued','dispatching')
+         ) as prompt_pending
+         from public.sandboxes s join public.jobs j on j.idem_key=${MODAL_LAUNCH_SETUP_KEY}
          where s.id=$1 and s.owner_id=$2 and s.org_id=$3 and s.lifecycle_generation=$4`,
         [found.id, caller.userId, found.orgId, found.lifecycleGeneration],
       );
       assertModalLaunchSetup(setup?.state);
+      if (setup?.prompt_pending) throw new ModalLaunchSetupConflict("modal_launch_prompt_pending");
     }
     if (previous.state === "missing" && found.taskPromptId) {
       const last = await agent.getPrompt({ sandboxId: found.providerSandboxId, promptId: found.taskPromptId });

@@ -1,5 +1,6 @@
 import { describe, expect, jest, test } from "bun:test";
 import { failureDiagnostic, type Sql } from "@armada/core/server";
+import { createAccountTurnQueue } from "../src/account-turn-queue.ts";
 import { createSqlData } from "../src/data.ts";
 import { createJobsStore } from "../src/jobs/store.ts";
 import { createRuntimeFollowup } from "../src/runtime-followup.ts";
@@ -140,7 +141,18 @@ describe("direct Modal runtime admission", () => {
     await refused("Modal launch setup is still in progress.");
     await f.db.query("update public.jobs set state='failed' where id=$1", [setupId]);
     await refused("Modal launch setup failed.");
+    const queue = createAccountTurnQueue(f.sql, ENCRYPTION_KEY);
+    expect(
+      await queue.acceptInitialLaunch(
+        f.caller,
+        { id: request.id, request_id: setupId, prompt: "initial launch prompt" },
+        lifecycleGeneration!,
+        async () => true,
+      ),
+    ).toBe(true);
     await f.db.query("update public.jobs set state='done' where id=$1", [setupId]);
+    await refused("Modal launch prompt is awaiting dispatch.");
+    await queue.cancelQueued(f.caller, request.id);
     const receipt = await f.send(f.caller, request);
     expect(receipt.promptId).not.toBe(f.first.promptId);
     expect(f.starts).toHaveLength(2);

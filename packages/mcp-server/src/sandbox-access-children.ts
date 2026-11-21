@@ -404,9 +404,7 @@ export function createSandboxChildren(sql: Sql, authority: ChildAuthority, execu
       else {
         const refusalCode = notDispatched
           ? setupRefused
-            ? error.state === "failed"
-              ? "modal_launch_setup_failed"
-              : "modal_launch_setup_pending"
+            ? error.reason
             : error.cause instanceof DataError && error.cause.code === "sandbox_not_ready"
               ? "sandbox_not_ready"
               : "native_admission_error"
