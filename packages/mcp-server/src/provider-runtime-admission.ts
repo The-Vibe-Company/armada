@@ -23,5 +23,4 @@ export function runtimeConfigurationFailure(id: unknown) {
   return `${typeof id === "string" && Object.hasOwn(names, id) ? names[id] : "Runtime"} configuration is unavailable.`;
 }
 
-/** Native providers that honor exec cancellation before dispatch and on retry. */
 export const nativeExecCancellation: Readonly<Partial<Record<SandboxProviderId, true>>> = { boat: true };
