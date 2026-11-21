@@ -570,6 +570,8 @@ test("a reconciliation refusal settles each fresh child mutation without replayi
       orgId: p.org,
       ownerId: p.owner,
       harness: "codex",
+      model: parent.model,
+      reasoningEffort: "high",
       status: "ready",
     });
     await db.query("insert into orchestrator_children values($1,$2,$3,$4)", [child.id, id, p.org, p.owner]);
