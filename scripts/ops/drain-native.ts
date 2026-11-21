@@ -1,11 +1,12 @@
 import { SQL } from "bun";
 import { SANDBOX_STATES, type SandboxState } from "../../packages/core/src/provider.ts";
 
-type NativeProvider = "modal" | "boat";
+const nativeProviders = ["modal", "boat"] as const;
+type NativeProvider = (typeof nativeProviders)[number];
 type StatusCount = { status: SandboxState; count: number };
 type InventoryQuery = (statement: string, provider: NativeProvider) => Promise<StatusCount[]>;
 
-const usage = "Usage: bun scripts/ops/drain-native.ts --provider modal|boat --dry-run";
+const usage = `Usage: bun scripts/ops/drain-native.ts --provider ${nativeProviders.join("|")} --dry-run`;
 const inventoryQuery = `
   select s.status::text as status, count(*)::int as count
   from public.sandboxes s
@@ -18,8 +19,9 @@ const inventoryQuery = `
 `;
 
 export async function runNativeDrain(args: readonly string[], query: InventoryQuery) {
-  const [flag, provider, mode] = args;
-  if (flag !== "--provider" || (provider !== "modal" && provider !== "boat") || args.length > 3) throw new Error(usage);
+  const [flag, requestedProvider, mode] = args;
+  const provider = nativeProviders.find((candidate) => candidate === requestedProvider);
+  if (flag !== "--provider" || !provider || args.length > 3) throw new Error(usage);
   if (mode === undefined) throw new Error("Destructive drain is unavailable. Use --dry-run for inventory.");
   if (mode !== "--dry-run") throw new Error(usage);
 
