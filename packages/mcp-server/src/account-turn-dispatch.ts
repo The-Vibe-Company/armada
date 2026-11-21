@@ -102,7 +102,7 @@ export const UNSETTLED_TASK = `s.task_prompt_id is not null
 export const NATIVE_DISPATCH_UNCERTAIN = `(not coalesce(${RUNTIME_LANE},false)
   and (s.lifecycle_generation is distinct from q.dispatch_generation
     or s.activity_lease_id is not null or ${QUEUED_DISPATCH_EVIDENCE}))`;
-export const DISPATCH_ABANDONED = `(q.dispatch_until <= clock_timestamp()
+export const DISPATCH_ABANDONED = `((q.dispatch_until is null or q.dispatch_until <= clock_timestamp())
   and s.stop_requested_at is null and s.deleted_at is null and s.expires_at > clock_timestamp()
   and (s.status in ('ready','running') or (s.status='stopped' and s.lifecycle_generation=q.queued_generation
     and not (s.provider='docker' and exists(
@@ -275,7 +275,7 @@ export async function admitAccountTurn(sql: Sql, candidate: AdmissionEntry, clai
         const { rows } = await tx.query(
           `select q.request_id from public.account_turn_queue q join public.sandboxes s on s.id=q.sandbox_id
            where q.sandbox_id=$1 and q.request_id=$2
-             and (${TURN_RECOVERY_ELIGIBLE} or ${COMPLETED_RUNTIME_WAKE} or ${ENROLLED_PENDING_RUNTIME_WAKE}
+             and (${DISPATCH_ABANDONED} or ${TURN_RECOVERY_ELIGIBLE} or ${COMPLETED_RUNTIME_WAKE} or ${ENROLLED_PENDING_RUNTIME_WAKE}
                or ${CONFIRMED_WAKE_WITHOUT_TICKET} or ${DOCKER_RESUME_WITHOUT_DISPATCH_DEADLINE})`,
           [candidate.sandbox_id, candidate.request_id],
         );

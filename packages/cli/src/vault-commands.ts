@@ -38,23 +38,11 @@ type ListedCredential = CredentialInfo & {
   monthlySpend?: { periodStart: string; usd: string; unpricedTurns: number };
 };
 
-export function vaultIo(auth: AuthIo, deps: Pick<Deps, "readFile" | "readStdin">, strictUtf8 = false) {
+export function vaultIo(auth: AuthIo, deps: Pick<Deps, "readFile" | "readStdin">) {
   return {
     auth,
-    readFile:
-      deps.readFile ??
-      (async (path) =>
-        strictUtf8
-          ? new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(await Bun.file(path).arrayBuffer())
-          : Bun.file(path).text()),
-    readStdin:
-      deps.readStdin ??
-      (async () => {
-        if (process.stdin.isTTY) return promptSecret();
-        return strictUtf8
-          ? new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(await Bun.stdin.arrayBuffer())
-          : Bun.stdin.text();
-      }),
+    readFile: deps.readFile ?? ((path) => Bun.file(path).text()),
+    readStdin: deps.readStdin ?? (() => (process.stdin.isTTY ? promptSecret() : Bun.stdin.text())),
   } satisfies VaultIo;
 }
 

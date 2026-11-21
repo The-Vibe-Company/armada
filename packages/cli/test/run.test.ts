@@ -102,6 +102,10 @@ describe("run", () => {
       [["frobnicate"], "frobnicate"],
       [["token", "create"], "token", true],
       [["routine", "create"], "routine", true],
+      [["vars"], "vars", true],
+      [["vars", "set"], "vars", true],
+      [["secrets"], "secrets", true],
+      [["secrets", "set"], "secrets", true],
       [["org", "create"], "org create", true],
       [["--profile", "unconfigured", "org", "members", "list"], "org members", true],
       [["org", "invitations", "accept"], "org invitations", true],
@@ -164,7 +168,7 @@ test("bare discovery families succeed without profile, account or input I/O", as
   const forbidden = () => {
     throw new Error("Usage attempted external I/O");
   };
-  for (const command of ["host", "template", "vars", "secrets"]) {
+  for (const command of ["host", "template"]) {
     const result = await capture(["--profile", "new-user", command], {
       env: {},
       fetch: Object.assign(forbidden, { preconnect: forbidden }),

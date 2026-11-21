@@ -12,7 +12,6 @@ export type UsageGroup =
   | "session"
   | "account"
   | "automation"
-  | "vault"
   | "mcp"
   | "mcp-bindings"
   | "bind-credential"

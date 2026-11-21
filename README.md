@@ -246,12 +246,11 @@ lifecycle. `recovery --help` also works before login.
 
 Scripts sending a bearer directly to `/mcp` do not use the CLI session store or its refresh/retry path. They must manage their own credential lifecycle: refresh OAuth credentials or renew expiring credentials, and replace revoked service tokens.
 
-### Variables and secrets help
+### Variables and secrets
 
-Use `armada vars -h` or `armada secrets rotate -h` to see the same reference as
-`--help`, before login or value input. The short alias does not reinterpret an
-option value such as `--file -h`, or literal arguments after `--`, as a help request.
-Secret values remain stdin/file-only and are never printed by help.
+Manage application variables and secrets in the dashboard or use the
+[vault API commands](docs/cli-admin.md#application-variables-and-secrets)
+for scripts.
 
 ## Contributing
 

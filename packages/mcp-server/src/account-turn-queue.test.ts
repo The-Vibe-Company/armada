@@ -361,20 +361,28 @@ test.each([
   expect((await sql.query("select sandbox_id from account_agent_reservations")).rows).toEqual([]);
 });
 
-test("shared recovery returns a newly expired dispatch without intent to FIFO", async () => {
-  const sandboxId = ids[0]!;
-  const requestId = requests[0]!;
-  await queue.accept(caller, { id: sandboxId, request_id: requestId, prompt: "next" });
-  const claim = await claimTurn(requestId);
-  await sql.query("update sandboxes set provider='boat',boat_runtime=true where id=$1", [sandboxId]);
-  await sql.query("update account_turn_queue set state='dispatching',dispatch_generation=1,dispatch_until='-infinity'");
-  await sql.query("insert into account_agent_reservations(sandbox_id,account_id) values($1,$2)", [sandboxId, account]);
-  expect(await admitClaimedAccountTurn(sql, claim)).toBeNull();
-  expect((await sql.query("select state,dispatch_until from account_turn_queue")).rows).toEqual([
-    { state: "queued", dispatch_until: null },
-  ]);
-  expect((await sql.query("select sandbox_id from account_agent_reservations")).rows).toEqual([]);
-});
+test.each(["-infinity", null])(
+  "shared admission resets a window of %s after claim when there is no intent",
+  async (until) => {
+    const sandboxId = ids[0]!;
+    const requestId = requests[0]!;
+    await queue.accept(caller, { id: sandboxId, request_id: requestId, prompt: "next" });
+    const claim = await claimTurn(requestId);
+    await sql.query("update sandboxes set provider='boat',boat_runtime=true where id=$1", [sandboxId]);
+    await sql.query("update account_turn_queue set state='dispatching',dispatch_generation=1,dispatch_until=$1", [
+      until,
+    ]);
+    await sql.query("insert into account_agent_reservations(sandbox_id,account_id) values($1,$2)", [
+      sandboxId,
+      account,
+    ]);
+    expect(await admitClaimedAccountTurn(sql, claim)).toBeNull();
+    expect((await sql.query("select state,dispatch_until from account_turn_queue")).rows).toEqual([
+      { state: "queued", dispatch_until: null },
+    ]);
+    expect((await sql.query("select sandbox_id from account_agent_reservations")).rows).toEqual([]);
+  },
+);
 
 test.each([null, true, false])("stopped Docker wake settlement follows host claim outcome %s", async (accepted) => {
   const sandboxId = ids[0]!;

@@ -992,3 +992,69 @@ test.each(["prompt", "steer", "queued", "dispatching"] as const)(
     expect(await copy()).toBe("archived");
   },
 );
+
+test.each([
+  ["Dispatch outcome uncertain; inspect sandbox history before resending.", false, "ineligible", false],
+  [
+    "Queued receipt already has dispatch evidence; inspect sandbox history before resending.",
+    false,
+    "ineligible",
+    false,
+  ],
+  ["Dispatch cancelled by confirmed stop.", false, "ineligible", false],
+  ["Dispatch refused by owner stop.", true, "ineligible", false],
+  ["Dispatch refused by owner stop.", false, "archived", false],
+  ["Queued prompt was cancelled.", false, "ineligible", true],
+] as const)(
+  "native handoff classifies failed receipt %s with retained claim %p",
+  async (reason, claimed, outcome, currentTask) => {
+    const { db, sandboxId, copy } = await seedNativeDrainReceipt();
+    const requestId = crypto.randomUUID();
+    await db.query(
+      `insert into account_turn_queue(sandbox_id,request_id,account_id,owner_id,org_id,
+       actor_epoch,credential_version,input_hash,input_enc,conversation_id,state,
+       dispatch_generation,dispatch_until,failure_reason)
+     select s.id,$5,c.id,s.owner_id,s.org_id,1,c.version,'input',$4,'conversation','failed',
+       case when $2 then s.lifecycle_generation end,case when $2 then now() end,$3
+     from sandboxes s join credentials c on c.owner_id=s.org_id and c.kind='openai'
+     where s.id=$1 limit 1`,
+      [sandboxId, claimed, reason, new Uint8Array([1]), requestId],
+    );
+    if (currentTask) {
+      await db.query("update sandboxes set task_prompt_id=$2 where id=$1", [sandboxId, requestId]);
+      await db.query("update native_webhook_prompts set completed_at=now() where sandbox_id=$1", [sandboxId]);
+    }
+    await db.query("update sandboxes set stopped_at=now() where id=$1", [sandboxId]);
+
+    expect(await copy()).toBe(outcome);
+    if (outcome === "ineligible")
+      expect((await db.query("select 1 from native_drain_recovery where sandbox_id=$1", [sandboxId])).rows).toEqual([]);
+  },
+);
+
+test("native handoff refuses a failed receipt even when an unrelated prompt was aliased and settled", async () => {
+  const { db, sandboxId, copy } = await seedNativeDrainReceipt();
+  await db.query(
+    `insert into account_turn_queue(sandbox_id,request_id,account_id,owner_id,org_id,
+       actor_epoch,credential_version,input_hash,input_enc,conversation_id,state,dispatch_generation,dispatch_until)
+     select s.id,gen_random_uuid(),c.id,s.owner_id,s.org_id,1,c.version,'input',$2,'conversation',
+       'dispatching',s.lifecycle_generation,now()
+     from sandboxes s join credentials c on c.owner_id=s.org_id and c.kind='openai'
+     where s.id=$1 limit 1`,
+    [sandboxId, new Uint8Array([1])],
+  );
+  await db.query("update sandboxes set task_prompt_id='unrelated-turn' where id=$1", [sandboxId]);
+  await db.query(
+    "update native_webhook_prompts set completed_at=now() where sandbox_id=$1 and prompt_id='unrelated-turn'",
+    [sandboxId],
+  );
+  const { rows } = await db.query(
+    `update account_turn_queue set state='failed', dispatch_generation=null, dispatch_until=null
+     where sandbox_id=$1 returning native_prompt_id`,
+    [sandboxId],
+  );
+  expect(rows).toEqual([{ native_prompt_id: "unrelated-turn" }]);
+
+  expect(await copy()).toBe("ineligible");
+  expect((await db.query("select 1 from native_drain_recovery where sandbox_id=$1", [sandboxId])).rows).toEqual([]);
+});

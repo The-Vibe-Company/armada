@@ -33,11 +33,15 @@ Example: armada api org/list
     if (input === "-" && !deps.readStdin && process.stdin.isTTY)
       throw new AuthError("Pipe or redirect a JSON body to stdin.", "usage");
 
-    let body: string;
-    try {
-      body = input === "-" ? await (deps.readStdin ?? (() => Bun.stdin.text()))() : (input ?? "{}");
-    } catch {
-      throw new AuthError("Could not read the JSON body from stdin.", "usage");
+    let body = input ?? "{}";
+    if (input === "-") {
+      try {
+        body = deps.readStdin
+          ? await deps.readStdin()
+          : new TextDecoder("utf-8", { fatal: true }).decode(await Bun.stdin.arrayBuffer());
+      } catch {
+        throw new AuthError("Could not read a valid UTF-8 JSON body from stdin.", "usage");
+      }
     }
     try {
       JSON.parse(body);

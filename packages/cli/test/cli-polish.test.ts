@@ -30,7 +30,7 @@ async function invoke(argv: string[], token = false, response?: Response) {
 }
 
 test("bare families share login-free successful discovery", async () => {
-  for (const family of ["snapshot", "host", "template", "vars", "secrets", "mcp", "org", "account", "skill"]) {
+  for (const family of ["snapshot", "host", "template", "mcp", "org", "account", "skill"]) {
     const bare = await invoke([family]);
     const help = await invoke([family, "--help"]);
     expect(bare).toEqual(help);
