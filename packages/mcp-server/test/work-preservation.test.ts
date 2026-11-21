@@ -1307,14 +1307,15 @@ test.each(["missing proof", "rolled-back admission", "lost commit response", "ve
     const state = async () =>
       (
         await db.query(
-          "select status, lifecycle_generation::int as generation, native_boat_drain_operation_id from sandboxes where id=$1",
+          `select s.status, s.lifecycle_generation::int as generation, o.operation_id as drain_operation_id
+           from sandboxes s left join native_boat_drain_operations o on o.sandbox_id=s.id where s.id=$1`,
           [sandboxId],
         )
       ).rows[0];
     const remove = mock(async () => {
       if (scenario === "verified proof") {
         expect((await detached()).rows).toEqual([{ archive_id: archiveId }]);
-        expect(await state()).toEqual({ status: "stopped", generation: 5, native_boat_drain_operation_id: null });
+        expect(await state()).toEqual({ status: "stopped", generation: 5, drain_operation_id: null });
       }
       return { status: "deleted" as const, operationId: "deletion-operation" };
     });
@@ -1343,12 +1344,12 @@ test.each(["missing proof", "rolled-back admission", "lost commit response", "ve
       if (scenario === "verified proof") {
         expect(await deletion).toEqual({ id: sandboxId, status: "deleted" });
         expect(remove).toHaveBeenCalledTimes(1);
-        expect(await state()).toEqual({ status: "deleted", generation: 6, native_boat_drain_operation_id: null });
+        expect(await state()).toEqual({ status: "deleted", generation: 6, drain_operation_id: null });
         expect((await detached()).rows).toEqual([{ archive_id: archiveId }]);
       } else if (scenario === "lost commit response") {
         await expect(deletion).rejects.toThrow("Delete admission commit response lost");
         expect(remove).not.toHaveBeenCalled();
-        expect(await state()).toEqual({ status: "stopped", generation: 5, native_boat_drain_operation_id: null });
+        expect(await state()).toEqual({ status: "stopped", generation: 5, drain_operation_id: null });
         expect((await detached()).rows).toEqual([{ archive_id: archiveId }]);
         expect((await db.query("select activity_lease_id from sandboxes where id=$1", [sandboxId])).rows[0]).toEqual({
           activity_lease_id: expect.any(String),
@@ -1356,7 +1357,7 @@ test.each(["missing proof", "rolled-back admission", "lost commit response", "ve
       } else {
         await expect(deletion).rejects.toMatchObject({ code: "sandbox_not_ready" });
         expect(remove).not.toHaveBeenCalled();
-        expect(await state()).toEqual({ status: "stopped", generation: 4, native_boat_drain_operation_id: null });
+        expect(await state()).toEqual({ status: "stopped", generation: 4, drain_operation_id: null });
         expect((await detached()).rows).toEqual([]);
       }
     } finally {
@@ -1369,7 +1370,7 @@ test.each(["missing proof", "rolled-back admission", "lost commit response", "ve
 test.each(["not_found", "pending", "settlement failure"] as const)(
   "native drain keeps its row, archive and lease after %s",
   async (outcome) => {
-    const providerId = outcome === "not_found" ? "boat" : "modal";
+    const providerId = outcome === "pending" ? "modal" : "boat";
     const { db, people, sandboxId, archiveId } = await seedNativeDrainReceipt(undefined, providerId);
     const caller: Caller = { via: "service", userId: people.owner, orgs: [{ orgId: people.org, role: "member" }] };
     const sql = bunLikeSql(db);
@@ -1394,7 +1395,7 @@ test.each(["not_found", "pending", "settlement failure"] as const)(
             message: "Delete target unavailable",
             retryable: false,
           });
-        return { status: outcome === "pending" ? "pending" : "deleted" };
+        return { status: outcome === "pending" ? "pending" : "deleted", operationId: "deletion-operation" };
       }),
     };
     const { sandboxes } = createSqlData(sql)(caller);
@@ -1416,6 +1417,10 @@ test.each(["not_found", "pending", "settlement failure"] as const)(
     expect(state.rows).toEqual([{ status: "stopped", generation: 5, leased: true }]);
     const archive = await db.query("select archive_id from native_drain_recovery where sandbox_id=$1", [sandboxId]);
     expect(archive.rows).toEqual([{ archive_id: archiveId }]);
+    const evidence = await db.query("select operation_id from native_boat_drain_operations where sandbox_id=$1", [
+      sandboxId,
+    ]);
+    expect(evidence.rows).toEqual(outcome === "settlement failure" ? [{ operation_id: "deletion-operation" }] : []);
   },
 );
 
@@ -1445,7 +1450,7 @@ test.each([
   };
   const query = sql.query;
   sql.query = async <T>(statement: string, params?: unknown[]) => {
-    if (statement.includes("set native_boat_drain_operation_id")) {
+    if (statement.includes("insert into public.native_boat_drain_operations")) {
       if (scenario === "Boat lost evidence write") throw new Error("Operation evidence write unavailable");
       if (scenario === "Boat lost evidence acknowledgement") {
         await query(statement, params);
@@ -1506,20 +1511,33 @@ test.each([
     expect(provider.delete).toHaveBeenLastCalledWith({ sandboxId: `bx_${sandboxId}`, generation: 6 });
   }
   const { rows } = await db.query(
-    `select s.status,s.native_drain_pending,s.native_boat_drain_operation_id,r.archive_id
-       from sandboxes s join native_drain_recovery r on r.sandbox_id=s.id where s.id=$1`,
+    `select s.status,s.native_drain_pending,o.operation_id as drain_operation_id,o.placement,r.archive_id
+       from sandboxes s join native_drain_recovery r on r.sandbox_id=s.id
+       left join native_boat_drain_operations o on o.sandbox_id=s.id where s.id=$1`,
     [sandboxId],
   );
   const pending = providerId === "boat" || scenario === "unavailable provider";
+  const recorded = scenario === "Boat pending" || scenario === "Boat lost evidence acknowledgement";
   expect(rows).toEqual([
     {
       status: pending ? "stopped" : "deleted",
       native_drain_pending: pending,
-      native_boat_drain_operation_id:
-        scenario === "Boat pending" || scenario === "Boat lost evidence acknowledgement" ? "deletion-operation" : null,
+      drain_operation_id: recorded ? "deletion-operation" : null,
+      placement: recorded ? `bx_${sandboxId}` : null,
       archive_id: archiveId,
     },
   ]);
+});
+
+test("Boat drain operation evidence is service-only", async () => {
+  const { db } = sharedDatabase();
+  const { rows } = await db.query(
+    `select
+       has_table_privilege('authenticated','public.native_boat_drain_operations','select,insert,delete') as jwt_access,
+       has_table_privilege('anon','public.native_boat_drain_operations','select,insert,delete') as anon_access,
+       has_table_privilege('service_role','public.native_boat_drain_operations','select') as service_read`,
+  );
+  expect(rows).toEqual([{ jwt_access: false, anon_access: false, service_read: true }]);
 });
 
 test.each([

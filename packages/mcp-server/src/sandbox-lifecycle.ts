@@ -887,14 +887,19 @@ export async function recordNativeBoatDrainOperation(
   operation: { placement: string; id: string },
 ) {
   const { rows } = await sql.query(
-    `update public.sandboxes s set native_boat_drain_operation_id=$7
-     where s.id=$3::uuid and ${SANDBOX_VISIBLE}
-       and s.lifecycle_generation=$4 and s.activity_lease_id=$5
-       and s.activity_until>clock_timestamp() and s.native_drain_pending
-       and s.provider='boat' and s.provider_sandbox_id=$6 and not s.boat_runtime
-       and s.runtime_transport is distinct from 'dialout' and s.deleted_at is null
-       and s.native_boat_drain_operation_id is null
-     returning s.id`,
+    `with owned as materialized (
+       select s.id, s.provider_sandbox_id, s.activity_until
+       from public.sandboxes s
+       where s.id=$3::uuid and ${SANDBOX_VISIBLE}
+         and s.lifecycle_generation=$4 and s.activity_lease_id=$5 and s.native_drain_pending
+         and s.provider='boat' and s.provider_sandbox_id=$6 and not s.boat_runtime
+         and s.runtime_transport is distinct from 'dialout' and s.deleted_at is null
+       for update of s
+     )
+     insert into public.native_boat_drain_operations (sandbox_id, placement, operation_id)
+     select id, provider_sandbox_id, $7 from owned where activity_until>clock_timestamp()
+     on conflict (sandbox_id) do nothing
+     returning sandbox_id`,
     [...scope, sandboxId, generation, activityToken, operation.placement, operation.id],
   );
   return rows.length > 0;
@@ -909,16 +914,25 @@ export async function completeSandboxDeletion(
   nativeDrain: boolean,
 ) {
   const { rows } = await tx.query<{ generation: string }>(
-    `update public.sandboxes s set
-       lifecycle_generation=s.lifecycle_generation+1, native_drain_pending=false, native_boat_drain_operation_id=null,
+    `with owned as materialized (
+       select s.id, s.activity_until from public.sandboxes s
+       where s.id=$3 and ${SANDBOX_VISIBLE} and s.status in ('stopped','failed')
+         and s.lifecycle_generation=$4 and s.activity_lease_id=$5 and s.native_drain_pending=$6::boolean
+       for update of s
+     ), settled as (update public.sandboxes s set
+       lifecycle_generation=s.lifecycle_generation+1, native_drain_pending=false,
        activity_lease_id=null, activity_until=null, preservation_note=null,
        usage_runtime_seconds=case when s.stopped_at is null then null else s.usage_runtime_seconds end,
        usage_running_since=case when s.stopped_at is null then null else s.usage_running_since end,
        stopped_at=coalesce(s.stopped_at, clock_timestamp())
-     where s.id=$3 and ${SANDBOX_VISIBLE} and s.status in ('stopped','failed')
-       and s.lifecycle_generation=$4 and s.activity_lease_id=$5
-       and s.native_drain_pending=$6::boolean and (not $6::boolean or s.activity_until>clock_timestamp())
-     returning s.lifecycle_generation::text as generation`,
+     from owned
+     where s.id=owned.id and (not $6::boolean or owned.activity_until>clock_timestamp())
+     returning s.id, s.lifecycle_generation::text as generation
+     ), cleared as (
+       delete from public.native_boat_drain_operations o using settled
+       where $6::boolean and o.sandbox_id=settled.id
+     )
+     select generation from settled`,
     [...scope, sandboxId, generation, activityToken, nativeDrain],
   );
   const receipt = rows[0];

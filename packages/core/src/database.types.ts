@@ -2759,6 +2759,32 @@ export type Database = {
           },
         ];
       };
+      native_boat_drain_operations: {
+        Row: {
+          sandbox_id: string;
+          placement: string;
+          operation_id: string;
+        };
+        Insert: {
+          sandbox_id: string;
+          placement: string;
+          operation_id: string;
+        };
+        Update: {
+          sandbox_id?: string;
+          placement?: string;
+          operation_id?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "native_boat_drain_operations_sandbox_id_fkey";
+            columns: ["sandbox_id"];
+            isOneToOne: true;
+            referencedRelation: "sandboxes";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
       native_drain_recovery: {
         Row: {
           archive_id: string;
@@ -5295,7 +5321,6 @@ export type Database = {
           outputs_retained_generation: number | null;
           outputs_attempt_count: number;
           native_drain_pending: boolean;
-          native_boat_drain_operation_id: string | null;
         };
         Insert: {
           id?: string;
@@ -5374,7 +5399,6 @@ export type Database = {
           outputs_retained_generation?: number | null;
           outputs_attempt_count?: number;
           native_drain_pending?: boolean;
-          native_boat_drain_operation_id?: string | null;
         };
         Update: {
           id?: string;
@@ -5453,7 +5477,6 @@ export type Database = {
           outputs_retained_generation?: number | null;
           outputs_attempt_count?: number;
           native_drain_pending?: boolean;
-          native_boat_drain_operation_id?: string | null;
         };
         Relationships: [
           {
