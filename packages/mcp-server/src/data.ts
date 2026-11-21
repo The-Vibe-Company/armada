@@ -75,6 +75,7 @@ export interface SandboxView extends SandboxRecord {
 
 export interface ServerSandboxPatch extends SandboxPatch {
   deleteCompleted?: true;
+  requireNativeDrainRecovery?: true;
   expireAfterExtension?: true;
   nativeExecAdmission?: { provider: SandboxRecord["provider"]; placement: string };
   nativeExecCompleted?: true;
@@ -1155,7 +1156,32 @@ export function createSqlData(
           ]);
         };
         let result: Awaited<ReturnType<typeof applyUpdate>>;
-        if (stopStatus !== undefined || patch.modalRuntimeExtensionTarget !== undefined) {
+        if (patch.requireNativeDrainRecovery) {
+          const { expectedGeneration } = patch;
+          if (!sql.transaction || !patch.deleteRequested || !admission || expectedGeneration === undefined)
+            throw new DataError("Native drain requires its delete admission fence.");
+          result = await sql.transaction(async (tx) => {
+            const locked = await tx.query<{ id: string }>(
+              `select s.id from public.sandboxes s where s.id=$3::uuid and ${SANDBOX_VISIBLE}
+                 and exists(select 1 from public.members m where m.org_id=s.org_id and m.user_id=$2::uuid
+                   and (s.owner_id=$2::uuid or m.role='admin')) for update of s`,
+              [...scope, id],
+            );
+            if (!locked.rows.length) throw new DataError("Sandbox deletion access denied.", "sandbox_not_ready");
+            const {
+              rows: [recovery],
+            } = await tx.query<{ outcome: string }>(
+              "select public.copy_native_drain_recovery($1::uuid,$2::bigint) as outcome",
+              [id, expectedGeneration],
+            );
+            if (recovery?.outcome !== "clean" && recovery?.outcome !== "archived")
+              throw new DataError("Native sandbox work preservation could not be verified.", "sandbox_not_ready");
+            const updated = await applyUpdate(tx);
+            if (!updated.rows[0]?.id)
+              throw new DataError("Sandbox deletion admission changed during recovery handoff.", "sandbox_not_ready");
+            return updated;
+          });
+        } else if (stopStatus !== undefined || patch.modalRuntimeExtensionTarget !== undefined) {
           if (!sql.transaction) throw new Error("Fenced sandbox admission requires a transaction.");
           result = await sql.transaction(async (tx) => {
             // WARNING: The queue check needs a fresh statement snapshot after acquiring the sandbox lock.
