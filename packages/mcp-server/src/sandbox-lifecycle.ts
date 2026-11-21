@@ -928,7 +928,7 @@ export async function requestBoatSubscriptionStop(tx: Sql, id: string, generatio
      returning s.status, s.lifecycle_generation::text as generation`,
     [id, generation, token],
   );
-  if (!admitted) return;
+  if (!admitted) return false;
   await publishOwnerStop(tx, {
     sandboxId: id,
     generation: admitted.generation,
@@ -941,6 +941,7 @@ export async function requestBoatSubscriptionStop(tx: Sql, id: string, generatio
      where id=$1 and lifecycle_generation=$2 and activity_lease_id=$3`,
     [id, admitted.generation, token],
   );
+  return true;
 }
 
 export async function requestNativeDrainStop(
