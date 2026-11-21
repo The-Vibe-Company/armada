@@ -1045,6 +1045,28 @@ export async function requestNativeDrainStop(
   });
 }
 
+const NATIVE_DRAIN_DETACHED_PROOF = `(r.archive_id is null or exists (
+  select 1 from public.native_drain_recovery a
+  where a.archive_id=r.archive_id and a.sandbox_id=s.id
+    and a.org_id=s.org_id and a.owner_id=s.owner_id
+  for share of a
+))`;
+
+export async function fencePreservedBoatDrainReplay(tx: Sql, id: string): Promise<boolean> {
+  const { rows } = await tx.query<{ eligible: boolean }>(
+    `select exists (
+       select 1 from public.sandboxes s
+       join public.sandbox_native_preservation_receipts r on r.sandbox_id=s.id
+       where s.id=$1 and r.generation<s.lifecycle_generation
+         and r.stop_generation=s.stop_generation and r.stop_generation=s.preservation_stop_generation
+         and r.capture_generation=r.generation and r.capture_stop_generation=r.stop_generation
+         and ${NATIVE_DRAIN_DETACHED_PROOF}
+     ) as eligible`,
+    [id],
+  );
+  return rows[0]?.eligible === true;
+}
+
 export async function fencePreservedModalDrainIncarnation(tx: Sql, id: string, pending: boolean) {
   // WARNING: The journal lock must not wait while holding the sandbox lock because Modal ingest takes them in reverse order.
   const { rows } = await tx.query<{
@@ -1066,12 +1088,7 @@ export async function fencePreservedModalDrainIncarnation(tx: Sql, id: string, p
        j.owner_id=s.owner_id
        and j.record->>'commonRuntime' is distinct from 'true'
        and r.capture_acknowledgements->>'physicalGeneration'=j.record->>'generation'
-       and (not $2 or r.archive_id is null or exists (
-         select 1 from public.native_drain_recovery a
-         where a.archive_id=r.archive_id and a.sandbox_id=s.id
-           and a.org_id=s.org_id and a.owner_id=s.owner_id
-         for share of a
-       ))
+       and (not $2 or ${NATIVE_DRAIN_DETACHED_PROOF})
        and case
          when $2 and r.capture_acknowledgements ? 'drainAdmissionGeneration' then
            j.record->>'phase' in ('stopped','deleting','deleted')

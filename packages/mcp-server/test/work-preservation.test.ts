@@ -987,29 +987,46 @@ test.each([
   ).toEqual(previouslyPending ? [{ archive_id: archiveId }] : []);
 });
 
-test("stamped Modal drain refuses replay after losing its detached archive", async () => {
-  const { db, people, sandboxId, archiveId } = await seedNativeDrainReceipt(undefined, "modal");
-  const caller: Caller = { via: "service", userId: people.owner, orgs: [{ orgId: people.org, role: "member" }] };
-  const { sandboxes } = createSqlData(bunLikeSql(db))(caller);
-  const remove = mock(async () => ({ status: "pending" }));
-  const providers = { resolve: async () => ({ ...fakeBoat().provider, id: "modal" as const, delete: remove }) };
-  const drain = () => deleteSandboxWithActivity(sandboxes, providers, sandboxId, "native-drain");
+test.each(["Modal stamped", "Boat unclaimed", "Boat acknowledged"] as const)(
+  "%s drain refuses replay after losing its detached archive",
+  async (scenario) => {
+    const providerId = scenario === "Modal stamped" ? "modal" : "boat";
+    const unclaimed = scenario === "Boat unclaimed";
+    const { db, people, sandboxId, archiveId } = await seedNativeDrainReceipt(undefined, providerId);
+    const caller: Caller = { via: "service", userId: people.owner, orgs: [{ orgId: people.org, role: "member" }] };
+    const { sandboxes } = createSqlData(bunLikeSql(db))(caller);
+    const remove = mock(async () => ({
+      status: "pending",
+      ...(providerId === "boat" ? { operationId: "deletion-operation" } : {}),
+    }));
+    const observeSandboxDeletion = mock(async () => ({ status: "completed" }));
+    let firstPass = true;
+    const providers = {
+      resolve: async () => ({ ...fakeBoat().provider, id: providerId, delete: remove, observeSandboxDeletion }),
+      beforeNativeDrainDelete: async () => {
+        if (firstPass && unclaimed) throw new Error("Scoped cleanup unavailable");
+      },
+    };
+    const drain = () => deleteSandboxWithActivity(sandboxes, providers, sandboxId, "native-drain");
 
-  await expect(drain()).rejects.toThrow("Provider deletion is pending");
-  await db.query("delete from native_drain_recovery where archive_id=$1", [archiveId]);
-  await db.query("update sandboxes set activity_until='2000-01-01' where id=$1", [sandboxId]);
+    await expect(drain()).rejects.toThrow(unclaimed ? "Scoped cleanup unavailable" : "Provider deletion is pending");
+    firstPass = false;
+    await db.query("delete from native_drain_recovery where archive_id=$1", [archiveId]);
+    await db.query("update sandboxes set activity_until='2000-01-01' where id=$1", [sandboxId]);
 
-  await expect(drain()).rejects.toMatchObject({ code: "sandbox_not_ready" });
-  expect(remove).toHaveBeenCalledTimes(1);
-  expect(
-    (
-      await db.query(
-        "select status,native_drain_pending,lifecycle_generation::int as generation from sandboxes where id=$1",
-        [sandboxId],
-      )
-    ).rows,
-  ).toEqual([{ status: "stopped", native_drain_pending: true, generation: 5 }]);
-});
+    await expect(drain()).rejects.toMatchObject({ code: "sandbox_not_ready" });
+    expect(remove).toHaveBeenCalledTimes(unclaimed ? 0 : 1);
+    expect(observeSandboxDeletion).not.toHaveBeenCalled();
+    expect(
+      (
+        await db.query(
+          "select status,native_drain_pending,lifecycle_generation::int as generation from sandboxes where id=$1",
+          [sandboxId],
+        )
+      ).rows,
+    ).toEqual([{ status: "stopped", native_drain_pending: true, generation: 5 }]);
+  },
+);
 
 const unstampedDrainScenarios = [
   "archived",
