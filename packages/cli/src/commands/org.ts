@@ -53,6 +53,7 @@ Example: armada org connect modal --org my-team --file /private/modal.json
 `,
   },
   helpWhenBare: true,
+  requireKnownSubcommand: true,
   useSelectedOrg: (argv) => ["setup", "connect"].includes(argv[0] ?? ""),
   async run(argv, { auth, deps }) {
     return orgCommand(argv, vaultIo(auth, deps));

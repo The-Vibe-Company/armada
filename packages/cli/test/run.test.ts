@@ -107,7 +107,7 @@ describe("run", () => {
       [["token", "create"], "token", true],
       [["routine", "create"], "routine", true],
       [["org", "create"], "org create", true],
-      [["org", "members", "list"], "org members", true],
+      [["--profile", "unconfigured", "org", "members", "list"], "org members", true],
       [["org", "invitations", "accept"], "org invitations", true],
       [["--profile", "unconfigured", "github", "connect"], "github"],
       [["--profile", "unconfigured", "creds", "list"], "creds", true],
@@ -152,7 +152,7 @@ describe("run", () => {
       }
       if (checkHelp) {
         const help = await capture(
-          [...args.slice(0, args[0] === "--profile" ? 4 : args[0] === "org" ? args.length : 2), "--help"],
+          [...args.slice(0, args[0] === "--profile" || args[0] === "org" ? args.length : 2), "--help"],
           deps,
         );
         expect(help.code).toBe(2);

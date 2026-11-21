@@ -199,7 +199,7 @@ describe("armada org and armada account against the control API", () => {
     await withServer(async ({ db, options, cli }) => {
       const admin = cli(STAN);
       const member = cli(ADA);
-      await admin.run(["org", "create", "Setup"]);
+      await admin.run(["api", "org/create", JSON.stringify({ name: "Setup" })]);
       const org = (await options.store.memberships(STAN))[0]!;
       await options.store.addMember(org.id, ADA, "member");
       let calls = 0;
@@ -379,12 +379,16 @@ describe("armada org and armada account against the control API", () => {
       const secrets = [TOKEN_SECRET, "codex-do-not-leak", "boat-org-key", "boat-ada-key"];
       const everything = () => [stan, ada].map((who) => who.out + who.err).join("");
 
-      expect((await stan.run(["org", "create", "Vibe"])).code).toBe(0);
+      expect((await stan.run(["api", "org/create", JSON.stringify({ name: "Vibe" })])).code).toBe(0);
       expect((await stan.run(["org", "list"])).out).toContain("Vibe  admin");
-      expect((await stan.run(["org", "members", "add", "Ada@Example.com"])).out).toContain(
-        "Added ada@example.com as member.",
+      const added = await stan.run(["api", "members/add", JSON.stringify({ org: "Vibe", email: "Ada@Example.com" })]);
+      expect(added.code).toBe(0);
+      expect(JSON.parse(added.out)).toMatchObject({ member: { email: "ada@example.com", role: "member" } });
+      const members = await stan.run(["api", "members/list", JSON.stringify({ org: "Vibe" })]);
+      expect(members.code).toBe(0);
+      expect(JSON.parse(members.out).members).toContainEqual(
+        expect.objectContaining({ email: "ada@example.com", role: "member" }),
       );
-      expect((await stan.run(["org", "members", "list"])).out).toContain("ada@example.com  member");
 
       expect(
         (await stan.run(["account", "add", "claude-oauth", "--org", "Vibe"], { stdin: `${TOKEN_SECRET}\n` })).code,
@@ -407,7 +411,13 @@ describe("armada org and armada account against the control API", () => {
       expect(denied.code).toBe(1);
       expect(denied.err).toContain("Only an org admin can do that.");
       expect((await ada.run(["account", "rm", "--kind", "claude-oauth", "--org", "Vibe"])).code).toBe(1);
-      expect((await ada.run(["org", "members", "remove", "stan@example.com"])).err).toContain("Only an org admin");
+      const remove = await ada.run([
+        "api",
+        "members/remove",
+        JSON.stringify({ org: "Vibe", email: "stan@example.com" }),
+      ]);
+      expect(remove.code).toBe(1);
+      expect(remove.err).toContain("HTTP 403");
 
       const org = (await options.store.memberships(STAN))[0];
       const resolved = await resolveCredentials(options.store, KEY, {
@@ -475,7 +485,7 @@ describe("armada org and armada account against the control API", () => {
   test("CLI sandbox list shares the MCP scoped operation and rejects unavailable registry features", async () => {
     await withServer(async ({ options, cli }) => {
       const stan = cli(STAN);
-      await stan.run(["org", "create", "SandboxScope"]);
+      await stan.run(["api", "org/create", JSON.stringify({ name: "SandboxScope" })]);
       options.providers = { resolve: async () => fakeProvider() };
       const listed = await stan.run(["ls", "--json"]);
       expect(listed.code).toBe(0);
@@ -492,7 +502,7 @@ describe("armada org and armada account against the control API", () => {
   test("a value is read from stdin or a file, never from an argument", async () => {
     await withServer(async ({ cli }) => {
       const stan = cli(STAN);
-      await stan.run(["org", "create", "Vibe"]);
+      await stan.run(["api", "org/create", JSON.stringify({ name: "Vibe" })]);
       const tty = await stan.run(["account", "add", "openai"], { stdin: null });
       expect(tty.code).toBe(2);
       expect(tty.err).toContain("Pipe the value on stdin");
@@ -1765,7 +1775,7 @@ describe("controlOptionsFromEnv", () => {
 test("CLI removal uses authorized API and returns only the retained-artifact receipt", async () => {
   await withServer(async ({ db, options, cli }) => {
     const stan = cli(STAN);
-    await stan.run(["org", "create", "Removal"]);
+    await stan.run(["api", "org/create", JSON.stringify({ name: "Removal" })]);
     const org = (await options.store.memberships(STAN))[0]!;
     options.authStore.addMembership(STAN, { orgId: org.id, name: org.name, role: "admin" });
     const result = await db.query<{ id: string }>(
@@ -1798,7 +1808,7 @@ test("CLI removal uses authorized API and returns only the retained-artifact rec
 test("public sandbox logs omit account-private native quota and auth records", async () => {
   await withServer(async ({ options, cli }) => {
     const stan = cli(STAN);
-    await stan.run(["org", "create", "Quota privacy"]);
+    await stan.run(["api", "org/create", JSON.stringify({ name: "Quota privacy" })]);
     const boat = fakeBoat();
     boat.provider.get = async (id) => ({ id, name: id, state: "ready", providerState: "ready", labels: {} });
     const types = [
@@ -1849,7 +1859,7 @@ test("public sandbox logs omit account-private native quota and auth records", a
 test("CLI named-account operations preserve safe IDs and CAS through the authenticated API", async () => {
   await withServer(async ({ cli }) => {
     const admin = cli(STAN);
-    await admin.run(["org", "create", "Accounts"]);
+    await admin.run(["api", "org/create", JSON.stringify({ name: "Accounts" })]);
     expect((await admin.run(["account", "add", "openai", "--name", "Work"], { stdin: "work-test-key" })).code).toBe(0);
     expect(
       (await admin.run(["account", "add", "openai", "--name", "Personal"], { stdin: "personal-test-key" })).code,
@@ -1888,7 +1898,7 @@ test.each(["claude", "codex", "privatized"] as const)(
     await withServer(async ({ db, options, cli }) => {
       const admin = cli(STAN),
         owner = cli(ADA);
-      await admin.run(["org", "create", "Recovery"]);
+      await admin.run(["api", "org/create", JSON.stringify({ name: "Recovery" })]);
       const org = (await options.store.memberships(STAN))[0]!;
       await options.store.addMember(org.id, ADA, "member");
       options.authStore.addMembership(STAN, { orgId: org.id, name: org.name, role: "admin" });
@@ -2628,7 +2638,7 @@ test("CLI/API connection checks require the owner and current bound revision, ex
   await withServer(async ({ db, options, cli }) => {
     const owner = cli(STAN),
       other = cli(ADA);
-    await owner.run(["org", "create", "Connection checks"]);
+    await owner.run(["api", "org/create", JSON.stringify({ name: "Connection checks" })]);
     const org = (await options.store.memberships(STAN))[0]!;
     await options.store.addMember(org.id, ADA, "admin");
     options.authStore.addMembership(STAN, { orgId: org.id, name: org.name, role: "admin" });
