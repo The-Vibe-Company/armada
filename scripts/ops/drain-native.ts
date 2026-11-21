@@ -42,7 +42,6 @@ async function queryInventory(statement: string, provider: NativeProvider) {
     const client = new SQL(url, { max: 1, connectionTimeout: 10 });
     try {
       return await client.begin("READ ONLY", async (tx) => {
-        // Fail if RLS would hide part of the coordinator's inventory.
         await tx.unsafe("SET LOCAL row_security = off");
         await tx.unsafe("SET LOCAL statement_timeout = '30s'");
         return tx.unsafe<StatusCount[]>(statement, [provider]);
