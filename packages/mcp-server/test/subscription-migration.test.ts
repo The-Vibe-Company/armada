@@ -837,6 +837,7 @@ test.each([
 test.each([
   "acknowledged",
   "configured after probe",
+  "second probe failed",
   "lost admission reply",
   "lost pause reply",
   "lost configuration reply",
@@ -889,8 +890,8 @@ test.each([
       const result = await db.transaction!((tx) =>
         run({
           ...tx,
-          query: async (statement, params) => {
-            const result = await tx.query(statement, params);
+          query: async <T>(statement: string, params?: unknown[]) => {
+            const result = await tx.query<T>(statement, params);
             if (statement.includes("delete from public.sandbox_native_exec_attempts")) {
               settled = true;
               if (outcome === "settlement rolled back") throw Error("Synthetic settlement rollback");
@@ -917,6 +918,7 @@ test.each([
   };
   const transports: SubscriptionMigrationTransports = {
     read: async () => {
+      if (probed && outcome === "second probe failed") throw Error("Synthetic unavailable probe");
       if (configured && outcome === "configuration readback failed") throw Error("Synthetic readback failed");
       if (configured || (probed && outcome === "configured after probe")) return "null";
       probed = true;
@@ -955,12 +957,13 @@ test.each([
   const migration = createSubscriptionMigration(sql, target, async () => [], authority, transports);
 
   const preparing =
-    outcome === "lost pause reply"
+    outcome === "lost pause reply" || outcome === "second probe failed"
       ? migration.prepareAccount(actor, account.id, 1)
       : migration.prepareTurn(provider, physical.id, actor);
   const results = {
     acknowledged: { calls: ["pause", "configure"], drain: true },
     "configured after probe": { calls: [], drain: true },
+    "second probe failed": { calls: [], error: /Model sign-in is temporarily unavailable/, drain: true },
     "lost admission reply": { calls: [], error: /Synthetic lost admission reply/ },
     "lost pause reply": { calls: ["pause"], error: /Model sign-in is temporarily unavailable/ },
     "lost configuration reply": { calls: ["pause", "configure"], error: /Synthetic lost configuration reply/ },

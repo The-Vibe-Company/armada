@@ -125,9 +125,9 @@ export function createSubscriptionMigration(
         if (!(await settleNativeWorkspaceCommand(tx, source.id, source.lifecycle_generation)))
           throw new VaultError("conflict", "Native workspace command evidence changed.");
       });
-    const mode = await readMode().catch(async (error: unknown) => {
+    const mode = await readMode().catch(async () => {
       await settleCommand();
-      throw error;
+      throw new SubscriptionTemporaryError();
     });
     if (mode === "null") {
       await settleCommand();
@@ -275,18 +275,12 @@ export function createSubscriptionMigration(
           await once(source, () => resolveStoredSandbox(sql, source.id), version);
         } catch (error) {
           if (error instanceof SubscriptionTemporaryError) throw error;
-          if (
-            source.provider === "boat" &&
-            source.credential_version === version &&
-            (await nativeWorkspaceCommandPending(sql, source.id))
-          )
-            throw new SubscriptionTemporaryError();
           // WARNING: A competing admission can advance the generation before this replica rechecks its source.
-          if (
-            (needsSubscriptionCheckpoint(source) || source.credential_version !== version) &&
-            (await subscriptionStopPending(sql, source))
-          )
-            throw new SubscriptionTemporaryError();
+          const requiresStop = needsSubscriptionCheckpoint(source) || source.credential_version !== version;
+          const unresolved = requiresStop
+            ? await subscriptionStopPending(sql, source)
+            : await nativeWorkspaceCommandPending(sql, source.id);
+          if (unresolved) throw new SubscriptionTemporaryError();
         }
       }
     },
