@@ -978,6 +978,66 @@ test.each([
   ).toEqual(previouslyPending ? [{ archive_id: archiveId }] : []);
 });
 
+test.each(["confirmed", "admission rollback", "lost commit reply", "missing detached archive", "deleting journal"])(
+  "unstamped native Modal drain reconciles only a preserved stopped incarnation with %s",
+  async (scenario) => {
+    const { db, people, sandboxId, archiveId, copy } = await seedNativeDrainReceipt(undefined, "modal");
+    expect(await copy()).toBe("archived");
+    await db.query("update sandboxes set native_drain_pending=true,lifecycle_generation=5 where id=$1", [sandboxId]);
+    if (scenario === "missing detached archive")
+      await db.query("delete from native_drain_recovery where archive_id=$1", [archiveId]);
+    if (scenario === "deleting journal")
+      await db.query("update modal_machines set record=jsonb_set(record,'{phase}','\"deleting\"') where id=$1", [
+        `bx_${sandboxId}`,
+      ]);
+
+    const caller: Caller = { via: "service", userId: people.owner, orgs: [{ orgId: people.org, role: "member" }] };
+    let inject = true;
+    const sql = bunLikeSql(db, (statement) => {
+      if (inject && scenario === "admission rollback" && statement.includes("activity_lease_id ="))
+        throw new Error("Activity write failed");
+    });
+    const transaction = sql.transaction;
+    if (!transaction) throw new Error("Missing transaction support");
+    sql.transaction = async (work) => {
+      const result = await transaction(work);
+      if (inject && scenario === "lost commit reply") throw new Error("Admission reply lost");
+      return result;
+    };
+    const { sandboxes } = createSqlData(sql)(caller);
+    const stamp = async () =>
+      (
+        await db.query(
+          "select capture_acknowledgements->>'drainAdmissionGeneration' as stamp from sandbox_native_preservation_receipts where sandbox_id=$1",
+          [sandboxId],
+        )
+      ).rows;
+    const remove = mock(async () => {
+      expect(await stamp()).toEqual([{ stamp: "1" }]);
+      return { status: "deleted" as const };
+    });
+    const providers = { resolve: async () => ({ ...fakeBoat().provider, id: "modal" as const, delete: remove }) };
+    const drain = () => deleteSandboxWithActivity(sandboxes, providers, sandboxId, "native-drain");
+
+    if (scenario === "confirmed") {
+      await expect(drain()).resolves.toEqual({ id: sandboxId, status: "deleted" });
+      expect(remove).toHaveBeenCalledTimes(1);
+      return;
+    }
+    if (scenario === "admission rollback") await expect(drain()).rejects.toThrow("Activity write failed");
+    else if (scenario === "lost commit reply") await expect(drain()).rejects.toThrow("Admission reply lost");
+    else await expect(drain()).rejects.toMatchObject({ code: "sandbox_not_ready" });
+    expect(remove).not.toHaveBeenCalled();
+    expect(await stamp()).toEqual([{ stamp: scenario === "lost commit reply" ? "1" : null }]);
+    if (scenario === "lost commit reply") {
+      inject = false;
+      await db.query("update sandboxes set activity_until='2000-01-01' where id=$1", [sandboxId]);
+      await expect(drain()).resolves.toEqual({ id: sandboxId, status: "deleted" });
+      expect(remove).toHaveBeenCalledTimes(1);
+    }
+  },
+);
+
 async function nativeToolFixture(provider: Provider, placement: string, onQuery?: (statement: string) => void) {
   const { db, people, sharedGoldenId, modalGoldenId, openaiCredentialId } = sharedDatabase();
   const sandboxId = crypto.randomUUID();

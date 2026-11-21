@@ -1019,7 +1019,13 @@ export async function requestNativeDrainStop(
 
 export async function fencePreservedModalDrainIncarnation(tx: Sql, id: string, pending: boolean) {
   // WARNING: The journal lock must not wait while holding the sandbox lock because Modal ingest takes them in reverse order.
-  const { rows } = await tx.query<{ eligible: boolean; scope: string; id: string; lease_id: string | null }>(
+  const { rows } = await tx.query<{
+    eligible: boolean;
+    stamped: boolean;
+    scope: string;
+    id: string;
+    lease_id: string | null;
+  }>(
     `with journal as materialized (
        select m.scope,m.id,m.owner_id,m.record,m.lease_id,m.lease_until
        from public.modal_machines m join public.sandboxes s
@@ -1027,29 +1033,40 @@ export async function fencePreservedModalDrainIncarnation(tx: Sql, id: string, p
        where s.id=$1
        for update of m nowait
      )
-     select j.scope,j.id,j.lease_id,(
+     select j.scope,j.id,j.lease_id,
+       coalesce(r.capture_acknowledgements ? 'drainAdmissionGeneration',false) as stamped,(
        j.owner_id=s.owner_id
        and j.record->>'commonRuntime' is distinct from 'true'
-       and case when $2 then j.record->>'phase' in ('stopped','deleting','deleted')
-         else j.record->>'phase'='stopped' and (
+       and r.capture_acknowledgements->>'physicalGeneration'=j.record->>'generation'
+       and case
+         when not $2 then j.record->>'phase'='stopped' and (
            (j.lease_id is null and j.lease_until is null)
            or (j.lease_id is not null and j.lease_until<=clock_timestamp())
-         ) end
-       and exists (
-         select 1 from public.sandbox_native_preservation_receipts r
-         where r.sandbox_id=s.id and ($2 or r.generation=s.lifecycle_generation)
-           and r.stop_generation=s.stop_generation and r.stop_generation=s.preservation_stop_generation
-           and r.capture_generation=r.generation and r.capture_stop_generation=r.stop_generation
-           and r.capture_acknowledgements->>'physicalGeneration'=j.record->>'generation'
-           and (not $2 or r.capture_acknowledgements->>'drainAdmissionGeneration'=j.record->>'generation')
-       )
+         )
+         when r.capture_acknowledgements ? 'drainAdmissionGeneration' then
+           j.record->>'phase' in ('stopped','deleting','deleted')
+           and r.capture_acknowledgements->>'drainAdmissionGeneration'=j.record->>'generation'
+         else j.record->>'phase'='stopped' and j.lease_id is null and j.lease_until is null
+           and r.generation=s.lifecycle_generation-1
+           and exists (
+             select 1 from public.native_drain_recovery a
+             where a.archive_id=r.archive_id and a.sandbox_id=s.id
+               and a.org_id=s.org_id and a.owner_id=s.owner_id
+             for share of a
+           )
+       end
      ) as eligible
-     from journal j cross join public.sandboxes s where s.id=$1`,
+     from journal j cross join public.sandboxes s
+     left join public.sandbox_native_preservation_receipts r
+       on r.sandbox_id=s.id and ($2 or r.generation=s.lifecycle_generation)
+       and r.stop_generation=s.stop_generation and r.stop_generation=s.preservation_stop_generation
+       and r.capture_generation=r.generation and r.capture_stop_generation=r.stop_generation
+     where s.id=$1`,
     [id, pending],
   );
   const [journal] = rows;
   if (rows.length !== 1 || journal?.eligible !== true) return false;
-  if (!pending) {
+  if (!pending || !journal.stamped) {
     // WARNING: A save started before expiry can still match unless admission withdraws the token under this lock.
     if (journal.lease_id && !(await withdrawExpiredModalDrainLease(tx, journal, journal.lease_id))) return false;
     await tx.query(
