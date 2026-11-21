@@ -218,8 +218,8 @@ export function registerLogsTool(
     async (args) => {
       const found = await visible(args.id);
       if (found.status === "deleted") throw new ToolError("conflict", "Sandbox is deleted.");
-      const storedProvider = context.storedProviders?.[found.provider];
-      const provider = storedProvider ? await storedProvider(found) : await context.provider(found);
+      const resolveProvider = context.logProvider ?? context.storedProviders?.[found.provider] ?? context.provider;
+      const provider = await resolveProvider(found);
       const page = await readLogs(provider, found.providerSandboxId, {
         ...(args.since_cursor ? { since_cursor: args.since_cursor } : {}),
         ...(args.limit ? { limit: args.limit } : {}),

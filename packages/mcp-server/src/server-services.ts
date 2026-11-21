@@ -21,7 +21,7 @@ import { boatRuntimeResume } from "./boat-runtime-resume.ts";
 import { type ConfiguredControlOptions, createQueuedSandboxDispatch } from "./control.ts";
 import { createCredentialBindingRecovery } from "./credential-binding-recovery.ts";
 import { createSqlCredentialList } from "./credential-list-sql.ts";
-import { createScopedSandboxData, createSqlData } from "./data.ts";
+import { createScopedSandboxData, createSqlData, type SandboxView } from "./data.ts";
 import { retryDatabaseBoot } from "./database-boot.ts";
 import { createDatabaseReadiness } from "./database-readiness.ts";
 import { requireDatabaseSchema } from "./database-schema.ts";
@@ -463,11 +463,11 @@ export async function createServerServices(env: Record<string, string | undefine
         })
       : undefined;
   const logProviders = { boat: providers.resolve.bind(providers), modal: modal.storedProviderFor };
-  const httpLogProviders = {
+  const journalLogProviders = {
     ...logProviders,
     boat: async (sandbox: Parameters<typeof logProviders.boat>[0], caller: Parameters<typeof logProviders.boat>[1]) => {
       const provider = await logProviders.boat(sandbox, caller);
-      return sandbox.id && !sandbox.boatRuntime && config.encryptionKey
+      return sandbox.id && !sandbox.boatRuntime && !sandbox.runtimeTransport && config.encryptionKey
         ? withNativeLogJournal(
             sql,
             config.encryptionKey,
@@ -478,6 +478,8 @@ export async function createServerServices(env: Record<string, string | undefine
         : provider;
     },
   };
+  const logProvider = (sandbox: SandboxView, caller: import("./caller.ts").Caller) =>
+    journalLogProviders[sandbox.provider](sandbox, caller);
   const ordinaryLaunchReceipts = createOrdinaryLaunchReceipts(sql);
   const deviceLogin = deviceLoginFromConfig(sql, config.dashboardUrl, env);
   const control: ConfiguredControlOptions = {
@@ -556,7 +558,7 @@ export async function createServerServices(env: Record<string, string | undefine
       const sandbox = await scoped.sandboxes.get(sandboxId);
       if (!sandbox) throw new Error("No such sandbox.");
       return {
-        provider: await httpLogProviders[sandbox.provider](sandbox, caller),
+        provider: await logProvider(sandbox, caller),
         providerSandboxId: sandbox.providerSandboxId,
       };
     },
@@ -601,6 +603,7 @@ export async function createServerServices(env: Record<string, string | undefine
   );
   const handlerOptions: Omit<HandlerOptions, "routes"> = {
     launchDiscovery: control,
+    logProvider,
     readOutputSnapshot: outputs.readSnapshot,
     ...(dockerControls ? { dockerControls } : {}),
     runtimeSend,

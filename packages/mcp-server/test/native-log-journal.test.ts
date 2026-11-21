@@ -2,13 +2,16 @@ import { expect, test } from "bun:test";
 import { readLogsOperation } from "@armada/core/contract";
 import type { Sql } from "@armada/core/server";
 import { createBoatProvider } from "@armada/provider-boat";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { readLogs } from "../src/control-logs.ts";
 import { withNativeLogJournal } from "../src/native-log-journal.ts";
+import { createArmadaServer, type ToolContext } from "../src/tools.ts";
 
 test.each(["forward", "backward"] as const)(
   "serves a persisted %s log page during native activity",
   async (direction) => {
-    const scope = { id: "sandbox", orgId: "org", userId: "owner" };
+    const scope = { id: "10000000-0000-4000-8000-000000000001", orgId: "org", userId: "owner" };
     const caller = { userId: scope.userId, orgs: [{ orgId: scope.orgId, role: "admin" }], via: "service" } as const;
     const key = Buffer.alloc(32, 1).toString("base64");
     const pages = new Map<unknown, unknown>();
@@ -40,9 +43,10 @@ test.each(["forward", "backward"] as const)(
         };
       },
     };
+    const journalProvider = withNativeLogJournal(sql, key, provider, scope, () => {});
     const options = {
       logs: async () => ({
-        provider: withNativeLogJournal(sql, key, provider, scope, () => {}),
+        provider: journalProvider,
         providerSandboxId: "boat-id",
       }),
     };
@@ -62,5 +66,40 @@ test.each(["forward", "backward"] as const)(
       hasMore: true,
       settled: false,
     });
+    if (direction === "backward") {
+      const server = createArmadaServer(
+        {
+          caller,
+          data: {
+            sandboxes: {
+              get: async () => ({ provider: "boat", providerSandboxId: "boat-id", status: "running" }),
+            },
+          },
+          provider: async () => provider,
+          logProvider: async () => journalProvider,
+        } as unknown as ToolContext,
+        "test",
+      );
+      const client = new Client({ name: "test", version: "test" });
+      const [serverTransport, clientTransport] = InMemoryTransport.createLinkedPair();
+      try {
+        await server.connect(serverTransport);
+        await client.connect(clientTransport);
+        const replay = await client.callTool({
+          name: readLogsOperation.toolName,
+          arguments: { id: scope.id, direction, since_cursor: input.cursor },
+        });
+        expect(replay.isError).not.toBe(true);
+        expect(replay.structuredContent).toMatchObject({
+          events: live.events,
+          cursor: live.cursor,
+          olderCursor: live.olderCursor,
+          hasMore: live.hasMore,
+        });
+      } finally {
+        await client.close();
+        await server.close();
+      }
+    }
   },
 );
