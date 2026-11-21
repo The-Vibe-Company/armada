@@ -27,6 +27,34 @@ begin
  return new;
 end $$;
 
+-- The legacy epoch mirror also fires the orchestrator's BEFORE guard.
+create or replace function public.guard_orchestrator_identity()
+returns trigger language plpgsql set search_path=public as $$
+begin
+ if tg_op='UPDATE' then
+  if (new.id,new.org_id,new.owner_id) is distinct from (old.id,old.org_id,old.owner_id) then
+   raise exception 'immutable orchestrator identity' using errcode='23514';
+  end if;
+  if old.sandbox_id is not null and new.sandbox_id is distinct from old.sandbox_id then
+   raise exception 'immutable managed parent' using errcode='23514';
+  end if;
+  if new.state is distinct from old.state and new.state<>'ready' then
+   new.authority_epoch := old.authority_epoch+1;
+  end if;
+  if new.sandbox_id is not distinct from old.sandbox_id then
+   return new;
+  end if;
+ end if;
+ if new.sandbox_id is not null then
+  perform 1 from public.sandboxes s where s.id=new.sandbox_id and s.org_id=new.org_id
+   and s.owner_id=new.owner_id and s.access_owner_id=new.owner_id and s.visibility='private' for no key update;
+  if not found or exists(select 1 from public.orchestrator_children where sandbox_id=new.sandbox_id) then
+   raise exception 'parent must be owner private and not a child' using errcode='23514';
+  end if;
+ end if;
+ return new;
+end $$;
+
 -- Epoch mirroring to the legacy orchestrator fires its reverse sync trigger.
 -- Skip the redundant upsert before its INSERT guard can lock the sandbox.
 create or replace function public.sync_orchestrator_access_parent()
