@@ -713,6 +713,7 @@ test("an unbound Modal launch can publish only its leased allocation receipt", a
 
 type ModalLaunchStep =
   | "open Modal"
+  | "dispatch credential"
   | "create response"
   | "bootstrap dispatch"
   | "bootstrap response"
@@ -869,7 +870,10 @@ async function modalLaunchFixture(initial?: Awaited<ReturnType<typeof modalAdmis
             });
             return {
               ...machine,
-              canUseModalCredential: async () => modalCredentialCurrent,
+              canUseModalCredential: async () => {
+                await atStep?.("dispatch credential");
+                return modalCredentialCurrent;
+              },
               close() {
                 closedClients++;
               },
@@ -2240,7 +2244,10 @@ test.each(["create response", "bootstrap dispatch", "bootstrap response"] as con
           ])
         ).rows,
       ).toEqual([{ machine_id: null }]);
-      await f.db.query("update jobs set lease_until='-infinity' where id=$1", [jobId]);
+      expect((await f.db.query("select state,attempts from jobs where id=$1", [jobId])).rows).toEqual([
+        { state: "queued", attempts: 1 },
+      ]);
+      await f.db.query("update jobs set run_after='-infinity' where id=$1", [jobId]);
     }
     if (pendingTicket) {
       const interruptedReplay = makeRunner(
@@ -2298,6 +2305,10 @@ test.each([
   ["unknown", "sandbox binding"],
   ["stopped", "create response"],
   ["plan unavailable", "create response"],
+  ["credential unavailable before observation", "create response"],
+  ["credential unavailable after observation", "create response"],
+  ["credential unavailable before binding", "create response"],
+  ["credential unavailable after binding", "create response"],
   ["ticket unavailable", "create response"],
   ["ownership unavailable", "create response"],
 ] as const)(
@@ -2330,7 +2341,17 @@ test.each([
     if (observation === "stopped") exitAllocation();
     await f.db.query("update jobs set lease_until='-infinity' where id=$1", [jobId]);
 
+    const credentialFailure =
+      [
+        "credential unavailable before observation",
+        "credential unavailable after observation",
+        "credential unavailable before binding",
+        "credential unavailable after binding",
+      ].indexOf(observation) + 1;
+    let credentialChecks = 0;
     const replacement = makeRunner((step) => {
+      if (step === "dispatch credential" && ++credentialChecks === credentialFailure)
+        throw new Error("Modal credential recheck unavailable");
       if (observation === "unknown" && step === "machine poll") throw new Error("Modal poll unavailable");
       if (observation === "plan unavailable" && step === "open Modal")
         throw new Error("Modal credential read unavailable");
@@ -2341,7 +2362,7 @@ test.each([
     });
     expect(await replacement.reconcileOne(signal)).toBe(true);
     await replacement.drain();
-    const reads = observation === "plan unavailable" ? 0 : 1;
+    const reads = observation === "plan unavailable" || credentialFailure === 1 ? 0 : 1;
     expect(effects()).toEqual({ allocations: 1, observed: reads, bootstrapped: [] });
     if (lostAt === "sandbox binding") {
       expect((await f.db.query("select provider_sandbox_id from sandboxes where id=$1", [id])).rows).toEqual([

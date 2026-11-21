@@ -702,6 +702,10 @@ const RECONCILE_DELAY_MS = 30_000;
 const ENROLMENT_RETRY_DELAY_MS = 1_000;
 const DELETE_DISPATCH_BUDGET_MS = 5 * 60_000;
 
+function hasModalMachineJournal(job: Job) {
+  return typeof job.outcome === "object" && job.outcome !== null && "modal_machine" in job.outcome;
+}
+
 export async function runModalLaunch(
   sql: Sql,
   encryptionKey: string,
@@ -775,7 +779,7 @@ export async function runModalLaunch(
     );
     return row;
   };
-  const hasJournal = typeof job.outcome === "object" && job.outcome !== null && "modal_machine" in job.outcome;
+  const hasJournal = hasModalMachineJournal(job);
   let skipProvider = pending.cancel_without_provider || (!hasJournal && !(await context.canDispatch()));
   let plan: ModalLaunchPlan | undefined;
   if (!skipProvider) {
@@ -973,6 +977,18 @@ async function dispatchModalLaunch(
     if (row && (await plan.canUseModalCredential(tx)) && (await canDispatch(tx))) return row;
   };
   const target = () => withJobLease(sql, job, dispatchTarget);
+  const recovering = hasModalMachineJournal(job);
+  const deferred = { kind: "dispatch_deferred" } as const;
+  async function beforeProviderMutation<T>(work: () => Promise<T>, canDefer: boolean) {
+    try {
+      return await work();
+    } catch (error) {
+      signal.throwIfAborted();
+      if (canDefer && (!(error instanceof ProviderError) || error.retryable) && (await canDispatch()))
+        return "deferred" as const;
+      throw error;
+    }
+  }
   let recoveredAllocation = false;
   let ticketResolutionStarted = false;
   const preparationDeferred = new Error("Modal runtime ticket preparation deferred.");
@@ -997,14 +1013,17 @@ async function dispatchModalLaunch(
   });
   const reconcile = async () => ({ kind: "reconcile", observation: await machine.observe(incarnation) }) as const;
 
-  const current = reconciliationOnly ? undefined : await target();
+  const current = reconciliationOnly ? undefined : await beforeProviderMutation(target, recovering);
+  if (current === "deferred") return deferred;
   if (!current) return reconcile();
 
   const machineId = current.provider_sandbox_id;
   const observed =
     job.attempts > 1 ? await machine.observe({ ...incarnation, ...(machineId ? { machineId } : {}) }) : undefined;
   if (observed) {
-    if (!(await target())) return { kind: "reconcile", observation: observed } as const;
+    const confirmed = await beforeProviderMutation(target, recovering);
+    if (confirmed === "deferred") return deferred;
+    if (!confirmed) return { kind: "reconcile", observation: observed } as const;
     if (observed.kind === "unknown" || (machineId && observed.kind === "absent"))
       return { kind: "dispatch_deferred" } as const;
   }
@@ -1020,21 +1039,27 @@ async function dispatchModalLaunch(
       observed?.kind === "present" ? observed.machine : await machine.create({ ...plan.allocation, ...incarnation });
     if (allocated.sandboxId !== sandboxId || allocated.generation !== generation)
       throw new Error("Modal launch changed the machine incarnation.");
-    const bound = await withJobLease(sql, job, async (tx) => {
-      if ((await dispatchTarget(tx))?.provider_sandbox_id !== null) return false;
-      if (observed?.kind === "present" && !(await adoptObservedModalAllocation(tx, job, allocated.machineId)))
-        return false;
-      return bindModalLaunchMachine(tx, allocated);
-    });
+    const bound = await beforeProviderMutation(
+      () =>
+        withJobLease(sql, job, async (tx) => {
+          if ((await dispatchTarget(tx))?.provider_sandbox_id !== null) return false;
+          if (observed?.kind === "present" && !(await adoptObservedModalAllocation(tx, job, allocated.machineId)))
+            return false;
+          return bindModalLaunchMachine(tx, allocated);
+        }),
+      observed?.kind === "present",
+    );
+    if (bound === "deferred") return deferred;
     if (!bound) return observed?.kind === "present" ? { kind: "reconcile", observation: observed } : reconcile();
   }
 
   if (observed?.kind === "present" && observed.phase === "stopped")
     return { kind: "reconcile", observation: observed } as const;
-  const readyToBootstrap = await target();
+  recoveredAllocation = machineId !== null || observed?.kind === "present";
+  const readyToBootstrap = await beforeProviderMutation(target, recoveredAllocation);
+  if (readyToBootstrap === "deferred") return deferred;
   if (readyToBootstrap?.provider_sandbox_id !== allocated.machineId) return reconcile();
   signal.throwIfAborted();
-  recoveredAllocation = machineId !== null || observed?.kind === "present";
   try {
     await machine.bootstrap({ ...allocated, signal, bindingRef: plan.bindingRef });
   } catch (error) {
