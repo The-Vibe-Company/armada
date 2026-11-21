@@ -12,6 +12,7 @@ import { type Machine, type Scope, scopeKey } from "@armada/provider-modal";
 import { launchCredentials } from "../src/launch-credentials.ts";
 import { modalLaunchEnvironment } from "../src/modal-launch-environment.ts";
 import { createModelAuthOwnership } from "../src/model-auth.ts";
+import { requestNativeDrainStop } from "../src/sandbox-lifecycle.ts";
 import { createSubscriptionMigration, type SubscriptionMigrationTransports } from "../src/subscription-migration.ts";
 import { rowOnlyDatabase } from "./row-only-database.ts";
 import { ENCRYPTION_KEY, fakeBoat } from "./support.ts";
@@ -604,4 +605,121 @@ test("shared subscription admission and native turn repair never inspect an Arma
   expect((await db.query<{ status: string }>("select status from sandboxes where id=$1", [id])).rows[0]?.status).toBe(
     "running",
   );
+});
+
+test.each(["boat", "modal"] as const)("subscription preparation leaves a strict native %s stop alone", async (kind) => {
+  const { db, people } = await database();
+  const actor: GoldenActor = { userId: people.owner, orgId: people.org, role: "member" };
+  const account = (
+    await db.query<{ id: string }>(
+      "insert into credentials(scope,owner_id,kind,value_enc) values('user',$1,'codex_auth',$2) returning id",
+      [people.owner, await encryptSecret(native(0), ENCRYPTION_KEY)],
+    )
+  ).rows[0]!;
+  const mock = fakeBoat();
+  const physical = await mock.provider.fork({ from: "legacy", noEnv: true, env: {}, labels: {}, ttlSeconds: 3600 });
+  const provider = { ...mock.provider, id: kind };
+  const golden = await createSqlGoldenStore(db).insert({
+    orgId: people.org,
+    ownerId: people.owner,
+    name: "strict-source",
+    visibility: "org",
+    provider: kind,
+    modal: kind === "modal" ? { workspace: "ws", environment: "main", appId: "app" } : null,
+    config: { repos: [{ url: "https://github.com/example/web.git", branch: "main", dir: "web" }], init: [] },
+  });
+  const id = crypto.randomUUID();
+  await db.query(
+    `insert into sandboxes(id,org_id,owner_id,golden_id,harness,status,provider,provider_sandbox_id,
+       visibility,credential_id,credential_version,stop_requested_at,stop_generation)
+     values($1,$2,$3,$7,'codex','stopping',$4,$5,'org',$6,1,now(),1)`,
+    [id, people.org, people.owner, kind, physical.id, account.id, golden.id],
+  );
+  await db.query("insert into native_drain_stop_requests(sandbox_id,stop_generation) values($1,1)", [id]);
+  const resolved: string[] = [];
+  const unexpected = async () => {
+    throw Error("subscription must leave the strict source alone");
+  };
+  const migration = createSubscriptionMigration(
+    db,
+    async (_sql, sandboxId) => {
+      resolved.push(sandboxId);
+      return { provider, providerSandboxId: physical.id };
+    },
+    unexpected,
+    {
+      configuration() {
+        throw Error("unexpected native capability");
+      },
+      transferLegacy: unexpected,
+    },
+  );
+
+  await migration.prepareAccount(actor, account.id, 1);
+  expect(resolved).toEqual([]);
+  expect(mock.stops).toEqual([]);
+  if (kind === "boat") {
+    await db.query("update sandboxes set status='stopped', stopped_at=now(), stop_requested_at=null where id=$1", [id]);
+    await expect(migration.prepareTurn(provider, physical.id, actor)).rejects.toMatchObject({ code: "conflict" });
+  }
+});
+
+test("subscription preparation leaves provider stop to a strict drain admitted during output capture", async () => {
+  const { db, people } = await database();
+  const actor: GoldenActor = { userId: people.owner, orgId: people.org, role: "member" };
+  const account = (
+    await db.query<{ id: string }>(
+      "insert into credentials(scope,owner_id,kind,value_enc) values('user',$1,'codex_auth',$2) returning id",
+      [people.owner, await encryptSecret(native(0), ENCRYPTION_KEY)],
+    )
+  ).rows[0]!;
+  const golden = (await createSqlGoldenStore(db).findByName(people.org, "shared"))[0]!;
+  const boat = fakeBoat();
+  const physical = await boat.provider.fork({ from: "legacy", noEnv: true, env: {}, labels: {}, ttlSeconds: 3600 });
+  const sandbox = await createSqlSandboxStore(db).insert({
+    id: crypto.randomUUID(),
+    provider: "boat",
+    providerSandboxId: physical.id,
+    goldenId: golden.id,
+    orgId: actor.orgId,
+    ownerId: actor.userId,
+    harness: "codex",
+    status: "ready",
+    model: "gpt-6.1-sol",
+    reasoningEffort: "high",
+    credentialId: account.id,
+    expiresAt: new Date(Date.now() + 60_000).toISOString(),
+  });
+  let admitted = false;
+  const provider = {
+    ...boat.provider,
+    async readOutputs() {
+      admitted = await requestNativeDrainStop(db, sandbox, "boat", actor.userId);
+      return [];
+    },
+  };
+  const unexpected = async () => {
+    throw Error("an unversioned source must not transfer native auth");
+  };
+  const migration = createSubscriptionMigration(
+    db,
+    async () => ({ provider, providerSandboxId: physical.id }),
+    unexpected,
+    {
+      configuration: () => {
+        throw Error("unexpected native capability");
+      },
+      transferLegacy: unexpected,
+    },
+  );
+  const previousKey = process.env.ARMADA_ENCRYPTION_KEY;
+  process.env.ARMADA_ENCRYPTION_KEY = ENCRYPTION_KEY;
+  try {
+    await migration.prepareAccount(actor, account.id, 1);
+  } finally {
+    if (previousKey === undefined) delete process.env.ARMADA_ENCRYPTION_KEY;
+    else process.env.ARMADA_ENCRYPTION_KEY = previousKey;
+  }
+  expect(admitted).toBe(true);
+  expect(boat.stops).toEqual([]);
 });
