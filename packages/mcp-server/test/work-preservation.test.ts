@@ -839,15 +839,22 @@ test.each(["observe", "capture"] as const)(
   },
 );
 
-async function seedNativeDrainReceipt(ciphertext = new Uint8Array([21, 34, 55])) {
-  const { db, people, sharedGoldenId } = sharedDatabase();
+async function seedNativeDrainReceipt(ciphertext = new Uint8Array([21, 34, 55]), provider: "boat" | "modal" = "boat") {
+  const { db, people, sharedGoldenId, modalGoldenId } = sharedDatabase();
   const sandboxId = crypto.randomUUID();
   const archiveId = crypto.randomUUID();
   await db.query(
     `insert into sandboxes(id,golden_id,org_id,owner_id,provider,provider_sandbox_id,harness,status,
        stopped_at,lifecycle_generation,stop_generation,preservation_stop_generation)
-     values($1,$2,$3,$4,'boat',$5,'claude','stopped',now(),4,2,2)`,
-    [sandboxId, sharedGoldenId, people.org, people.owner, `bx_${sandboxId}`],
+     values($1,$2,$3,$4,$5,$6,'claude','stopped',now(),4,2,2)`,
+    [
+      sandboxId,
+      provider === "modal" ? modalGoldenId : sharedGoldenId,
+      people.org,
+      people.owner,
+      provider,
+      `bx_${sandboxId}`,
+    ],
   );
   await db.query("insert into sandbox_work_recovery(id,sandbox_id,archive_enc) values($1,$2,$3)", [
     archiveId,
@@ -1350,6 +1357,54 @@ test.each(["missing proof", "rolled-back admission", "lost commit response", "ve
       if (scenario === "rolled-back admission")
         await db.exec("drop trigger refuse_drain_admission on sandboxes; drop function refuse_drain_admission()");
     }
+  },
+);
+
+test.each(["not_found", "pending", "settlement failure"] as const)(
+  "native drain keeps its row, archive and lease after %s",
+  async (outcome) => {
+    const providerId = outcome === "not_found" ? "boat" : "modal";
+    const { db, people, sandboxId, archiveId } = await seedNativeDrainReceipt(undefined, providerId);
+    const caller: Caller = { via: "service", userId: people.owner, orgs: [{ orgId: people.org, role: "member" }] };
+    const sql = bunLikeSql(db);
+    const transaction = sql.transaction;
+    if (!transaction) throw new Error("Missing transaction support");
+    let providerCalled = false;
+    if (outcome === "settlement failure") {
+      sql.transaction = async (work) => {
+        if (providerCalled) throw new Error("Delete settlement unavailable");
+        return transaction(work);
+      };
+    }
+    const provider: Provider = {
+      ...fakeBoat().provider,
+      id: providerId,
+      delete: mock(async () => {
+        providerCalled = true;
+        if (outcome === "not_found")
+          throw new ProviderError({ provider: providerId, code: "not_found", message: "Delete target unavailable" });
+        return { status: outcome === "pending" ? "pending" : "deleted" };
+      }),
+    };
+    const { sandboxes } = createSqlData(sql)(caller);
+    const deletion = deleteSandboxWithActivity(sandboxes, { resolve: async () => provider }, sandboxId, "native-drain");
+    await expect(deletion).rejects.toThrow(
+      {
+        not_found: "Delete target unavailable",
+        pending: "Provider deletion is pending",
+        "settlement failure": "Delete settlement unavailable",
+      }[outcome],
+    );
+    expect(provider.delete).toHaveBeenCalledWith({ sandboxId: `bx_${sandboxId}`, generation: 5 });
+    const state = await db.query(
+      `select status, lifecycle_generation::int as generation,
+         activity_lease_id is not null and activity_until>now() as leased
+       from sandboxes where id=$1`,
+      [sandboxId],
+    );
+    expect(state.rows).toEqual([{ status: "stopped", generation: 5, leased: true }]);
+    const archive = await db.query("select archive_id from native_drain_recovery where sandbox_id=$1", [sandboxId]);
+    expect(archive.rows).toEqual([{ archive_id: archiveId }]);
   },
 );
 
