@@ -138,6 +138,8 @@ export function createAntigravityLogin(
   return {
     async start(caller: LoginCaller, target: LoginTarget) {
       const key = callerKey(caller);
+      const previous = pending.get(key);
+      if (!stopped && previous?.abort.signal.aborted && !previous.closing) await close(key, previous);
       if (stopped) throw new AntigravityLoginError("login_missing");
       if (pending.has(key)) throw new AntigravityLoginError("already_pending");
 

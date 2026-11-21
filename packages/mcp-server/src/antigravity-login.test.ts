@@ -9,7 +9,11 @@ authorization.search = new URLSearchParams({
   state: "matching",
 }).toString();
 
-function fixture(link = authorization.href, token: unknown = { access_token: "access", refresh_token: "refresh" }) {
+function fixture(
+  link = authorization.href,
+  token: unknown = { access_token: "access", refresh_token: "refresh" },
+  onClose?: () => Promise<void>,
+) {
   const deadline = new AbortController();
   const { promise: exited, resolve: exit } = Promise.withResolvers<number>();
   const submitted: string[] = [];
@@ -24,12 +28,13 @@ function fixture(link = authorization.href, token: unknown = { access_token: "ac
       return token;
     },
     async close() {
+      await onClose?.();
       closes++;
       exit(1);
     },
   };
   const login = createAntigravityLogin(async () => child, { now: () => 0, deadline: () => deadline.signal });
-  return { login, child, deadline, submitted, exit, closes: () => closes };
+  return { login, deadline, submitted, exit, closes: () => closes };
 }
 
 test.each([
@@ -119,15 +124,13 @@ test("shutdown closes the pending process and stops new sign-ins", async () => {
 });
 
 test("failed cleanup retains the caller slot until cleanup can be retried", async () => {
-  const { login, child, closes } = fixture();
+  let attempts = 0;
+  const { login, closes } = fixture(undefined, undefined, async () => {
+    if (++attempts < 3) throw Error("private process diagnostic");
+  });
   const { loginId } = await login.start(caller, target);
-  const close = child.close;
-  child.close = async () => {
-    throw Error("private process diagnostic");
-  };
   await expect(login.cancel(caller, loginId)).rejects.toThrow(/^Antigravity sign-in failed\. Start sign-in again\.$/);
-  await expect(login.start(caller, target)).rejects.toThrow("already pending");
-  child.close = close;
+  await expect(login.start(caller, target)).rejects.toThrow(/^Antigravity sign-in failed\. Start sign-in again\.$/);
   await login.shutdown();
   expect(closes()).toBe(1);
 });
@@ -135,13 +138,12 @@ test("failed cleanup retains the caller slot until cleanup can be retried", asyn
 test.each(["cancel", "shutdown", "deadline"] as const)(
   "%s during cleanup suppresses the successful exchange",
   async (reason) => {
-    const { login, child, exit, deadline } = fixture();
     const { promise: closing, resolve: startedClosing } = Promise.withResolvers<void>();
     const { promise: cleanup, resolve: finishCleanup } = Promise.withResolvers<void>();
-    child.close = () => {
+    const { login, exit, deadline } = fixture(undefined, undefined, () => {
       startedClosing();
       return cleanup;
-    };
+    });
     const { loginId } = await login.start(caller, target);
     const complete = login.complete(caller, loginId, "example");
     exit(0);
@@ -155,3 +157,30 @@ test.each(["cancel", "shutdown", "deadline"] as const)(
     await expect(complete).rejects.toThrow("Antigravity sign-in failed.");
   },
 );
+
+test("a new start retries failed cleanup even if the first start never returned a login ID", async () => {
+  let starts = 0;
+  let cleanupAttempts = 0;
+  const login = createAntigravityLogin(
+    async () => {
+      const first = ++starts === 1;
+      const { promise: exited, resolve: exit } = Promise.withResolvers<number>();
+      return {
+        authorizationUrl: Promise.resolve(first ? "https://example.com" : authorization.href),
+        exited,
+        async submitCode() {},
+        async readToken() {},
+        async close() {
+          if (first && ++cleanupAttempts === 1) throw Error("profile in use");
+          exit(1);
+        },
+      };
+    },
+    { now: () => 0, deadline: () => new AbortController().signal },
+  );
+  await expect(login.start(caller, target)).rejects.toThrow("Antigravity sign-in failed.");
+  const next = await login.start(caller, target);
+  expect(next.authorizationUrl).toBe(authorization.href);
+  expect(cleanupAttempts).toBe(2);
+  await login.shutdown();
+});
