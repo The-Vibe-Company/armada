@@ -718,6 +718,7 @@ type ModalLaunchStep =
   | "bootstrap response"
   | "image lookup"
   | "runtime ticket"
+  | "exact machine ownership"
   | "termination response"
   | "machine poll"
   | "cleanup preparation";
@@ -825,7 +826,13 @@ async function modalLaunchFixture(initial?: Awaited<ReturnType<typeof modalAdmis
           if (!visible) throw new Error("Allocation lookup unavailable");
           return sandbox;
         },
-        fromId: async () => sandbox,
+        fromId: async () => ({
+          ...sandbox,
+          async getTags() {
+            await atStep?.("exact machine ownership");
+            return tags;
+          },
+        }),
       },
     } as unknown as ModalMachineOptions["client"];
     const machine: Omit<ModalMachineOptions, "journal"> = {
@@ -2292,6 +2299,7 @@ test.each([
   ["stopped", "create response"],
   ["plan unavailable", "create response"],
   ["ticket unavailable", "create response"],
+  ["ownership unavailable", "create response"],
 ] as const)(
   "a replacement Modal launch claimant defers bootstrap for %s after losing the %s",
   async (observation, lostAt) => {
@@ -2328,6 +2336,8 @@ test.each([
         throw new Error("Modal credential read unavailable");
       if (observation === "ticket unavailable" && step === "runtime ticket")
         throw new Error("Runtime ticket preparation unavailable");
+      if (observation === "ownership unavailable" && step === "exact machine ownership")
+        throw new Error("Modal ownership lookup timed out");
     });
     expect(await replacement.reconcileOne(signal)).toBe(true);
     await replacement.drain();
