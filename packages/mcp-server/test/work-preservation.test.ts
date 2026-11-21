@@ -881,7 +881,11 @@ test("native Modal preservation refuses clean proof from a replacement physical 
   }, "modal-native");
 });
 
-async function seedNativeDrainReceipt(ciphertext = new Uint8Array([21, 34, 55]), provider: "boat" | "modal" = "boat") {
+async function seedNativeDrainReceipt(
+  ciphertext = new Uint8Array([21, 34, 55]),
+  provider: "boat" | "modal" = "boat",
+  outcome: "archived" | "clean" = "archived",
+) {
   const { db, people, sharedGoldenId, modalGoldenId } = sharedDatabase();
   const sandboxId = crypto.randomUUID();
   const archiveId = crypto.randomUUID();
@@ -898,16 +902,21 @@ async function seedNativeDrainReceipt(ciphertext = new Uint8Array([21, 34, 55]),
       `bx_${sandboxId}`,
     ],
   );
-  await db.query("insert into sandbox_work_recovery(id,sandbox_id,archive_enc) values($1,$2,$3)", [
-    archiveId,
-    sandboxId,
-    ciphertext,
-  ]);
+  if (outcome === "archived")
+    await db.query("insert into sandbox_work_recovery(id,sandbox_id,archive_enc) values($1,$2,$3)", [
+      archiveId,
+      sandboxId,
+      ciphertext,
+    ]);
   await db.query(
     `insert into sandbox_native_preservation_receipts
        (sandbox_id,generation,stop_generation,capture_generation,capture_stop_generation,archive_id,capture_acknowledgements)
      values($1,4,2,4,2,$2,$3::jsonb)`,
-    [sandboxId, archiveId, provider === "modal" ? JSON.stringify({ physicalGeneration: "1" }) : null],
+    [
+      sandboxId,
+      outcome === "archived" ? archiveId : null,
+      provider === "modal" ? JSON.stringify({ physicalGeneration: "1" }) : null,
+    ],
   );
   if (provider === "modal")
     await db.query(
@@ -985,19 +994,14 @@ const unstampedDrainScenarios = [
   "lost commit reply",
   "missing detached archive",
   "deleting journal",
-] as const;
+];
 
 test.each(unstampedDrainScenarios)(
   "unstamped native Modal drain reconciles only a preserved stopped incarnation with %s",
   async (scenario) => {
-    const { db, people, sandboxId, archiveId, copy } = await seedNativeDrainReceipt(undefined, "modal");
-    if (scenario === "clean") {
-      await db.query("update sandbox_native_preservation_receipts set archive_id=null where sandbox_id=$1", [
-        sandboxId,
-      ]);
-      await db.query("delete from sandbox_work_recovery where id=$1", [archiveId]);
-    }
-    expect(await copy()).toBe(scenario === "clean" ? "clean" : "archived");
+    const outcome = scenario === "clean" ? "clean" : "archived";
+    const { db, people, sandboxId, archiveId, copy } = await seedNativeDrainReceipt(undefined, "modal", outcome);
+    expect(await copy()).toBe(outcome);
     await db.query("update sandboxes set native_drain_pending=true,lifecycle_generation=5 where id=$1", [sandboxId]);
     if (scenario === "missing detached archive")
       await db.query("delete from native_drain_recovery where archive_id=$1", [archiveId]);
