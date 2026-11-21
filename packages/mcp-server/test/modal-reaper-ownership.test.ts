@@ -11,7 +11,7 @@ const machine = {
   deploymentId: "server",
   createdAt: new Date(0),
 } satisfies ProviderInventoryMachine;
-const binding = { workspace: "work", environment: "env", appId: "ap-bound" };
+const binding = { workspace: "app:ap-bound", environment: "env", appId: "ap-bound" };
 const signal = new AbortController().signal;
 let connection: PGlite | undefined;
 
@@ -43,8 +43,8 @@ beforeAll(async () => {
     create table modal_server_scopes (scope text primary key, context jsonb);
 
     insert into goldens values
-      ('10000000-0000-0000-0000-000000000001','work','env','ap-bound'),
-      ('10000000-0000-0000-0000-000000000002','work','env','ap-other');
+      ('10000000-0000-0000-0000-000000000001','app:ap-bound','env','ap-bound'),
+      ('10000000-0000-0000-0000-000000000002','app:ap-other','env','ap-other');
     insert into sandboxes (id, provider, provider_sandbox_id, status, org_id, owner_id, golden_id) values
       ('20000000-0000-0000-0000-000000000001','modal','modal_logical','failed',
        '30000000-0000-0000-0000-000000000001','40000000-0000-0000-0000-000000000001','10000000-0000-0000-0000-000000000001'),
@@ -57,9 +57,9 @@ beforeAll(async () => {
       ('20000000-0000-0000-0000-000000000005','modal','sb-job-bound','failed',
        '30000000-0000-0000-0000-000000000001','40000000-0000-0000-0000-000000000001','10000000-0000-0000-0000-000000000001');
     insert into modal_server_scopes values
-      ('scope','{"binding":{"workspace":"work","environment":"env","appId":"ap-bound"}}'),
-      ('second_scope','{"binding":{"workspace":"work","environment":"env","appId":"ap-bound"}}'),
-      ('other_scope','{"binding":{"workspace":"work","environment":"env","appId":"ap-other"}}');
+      ('scope','{"binding":{"workspace":"app:ap-bound","environment":"env","appId":"ap-bound"}}'),
+      ('second_scope','{"binding":{"workspace":"app:ap-bound","environment":"env","appId":"ap-bound"}}'),
+      ('other_scope','{"binding":{"workspace":"app:ap-other","environment":"env","appId":"ap-other"}}');
     insert into modal_machines values
       ('scope','modal_logical','{"physicalId":"sb-physical","generation":3}',
        '30000000-0000-0000-0000-000000000001','40000000-0000-0000-0000-000000000001'),
@@ -105,6 +105,11 @@ test.each([
   [
     "job tag with a different physical ID",
     { sandboxId: "20000000-0000-0000-0000-000000000005", machineId: "sb-other" },
+    { kind: "unresolved" },
+  ],
+  [
+    "job tag with an outdated generation",
+    { sandboxId: "20000000-0000-0000-0000-000000000005", machineId: "sb-job-bound", generation: "2" },
     { kind: "unresolved" },
   ],
 ] as const)("Modal reaper ownership for %s", async (_name, inventory, expected) => {

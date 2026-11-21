@@ -86,14 +86,15 @@ export function createModalReaperOwnership(sql: Sql, binding: ModalBinding, forD
     }
     if (!evidence.status) return { kind: "absent" };
     if (evidence.canonical_tag) {
-      if (evidence.canonical_physical_id !== machine.machineId || evidence.logical_id !== null)
-        return { kind: "unresolved" };
       const generation = evidence.canonical_generation;
-      return {
-        kind: "owned",
-        status: evidence.status,
-        ...(generation && generation === machine.generation ? { generation } : {}),
-      };
+      if (
+        evidence.canonical_physical_id !== machine.machineId ||
+        evidence.logical_id !== null ||
+        !generation ||
+        generation !== machine.generation
+      )
+        return { kind: "unresolved" };
+      return { kind: "owned", status: evidence.status, generation };
     }
     const { generation } = evidence;
     const exactGeneration =
