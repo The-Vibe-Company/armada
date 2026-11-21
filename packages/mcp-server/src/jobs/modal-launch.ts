@@ -983,7 +983,6 @@ async function dispatchModalLaunch(
       async (tx) => (await dispatchTarget(tx))?.provider_sandbox_id === null,
     ),
     async resolveRuntimeTicket(request) {
-      // The Machine has verified the exact allocation here and has not called exec.
       ticketResolutionStarted = true;
       const preparation = await plan.prepareRuntimeTicket(request).catch(async (error: unknown) => {
         if (recoveredAllocation && (await target())?.provider_sandbox_id === request.machineId)
