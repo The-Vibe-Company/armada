@@ -69,6 +69,7 @@ export interface TemplateSkillIo {
     done: (value: T) => boolean,
     options: { step: string },
   ): Promise<T>;
+  measuredStep<T>(name: string, action: () => Promise<T>): Promise<T>;
   step<T>(name: string, action: () => Promise<T>): Promise<T>;
   out(line: string): void;
   stopSandbox(id: string): Promise<void>;
@@ -139,14 +140,14 @@ export async function runTemplateSkillCase(item: TemplateSkillCase, io: Template
     }
   }
   try {
-    const account = await io.step("template_model_account", async () => {
+    const account = await io.measuredStep("template_model_account", async () => {
       const rows = metadata(await api<Connections>("creds/list"), item.org);
       const matches = rows.filter((row) => row.id === item.modelAccountId);
       if (matches.length !== 1 || !positive(matches[0]?.version)) fail("invalid_response");
       return { id: item.modelAccountId, version: matches[0].version };
     });
     const privateConfigured = item.privateSkill
-      ? await io.step("private_skill_configuration", async () =>
+      ? await io.measuredStep("private_skill_configuration", async () =>
           metadata(await api<Connections>("skillpack/connection"), item.org).some((row) => row.kind === "skillpack"),
         )
       : false;
@@ -154,7 +155,7 @@ export async function runTemplateSkillCase(item: TemplateSkillCase, io: Template
       io.out(JSON.stringify({ step: "public_skill", skip: true, reason: "skill_pin_not_configured" }));
     if (!item.privateSkill)
       io.out(JSON.stringify({ step: "private_skill", skip: true, reason: "skill_pin_not_configured" }));
-    await io.step("template_variable_create", async () => {
+    await io.measuredStep("template_variable_create", async () => {
       variableAttempted = true;
       const result = await api<{ item: Resource }>("variables/set", { scope: "personal", name: key, value });
       if (typeof result?.item?.id === "string" && result.item.id) variable = result.item;
@@ -171,7 +172,7 @@ export async function runTemplateSkillCase(item: TemplateSkillCase, io: Template
         stopConfirmed: false,
       };
       templates.push(record);
-      await io.step(`${label}_create`, async () => {
+      await io.measuredStep(`${label}_create`, async () => {
         record.attempted = true;
         const result = await api<{ item: Template }>("templates/create", {
           name: record.name,
@@ -271,7 +272,7 @@ export async function runTemplateSkillCase(item: TemplateSkillCase, io: Template
         }),
       );
       if (pin)
-        await io.step(`${kind}_skill_receipt`, async () => {
+        await io.measuredStep(`${kind}_skill_receipt`, async () => {
           verifyReceipts(result.manifest?.skillReceipts, [pin]);
           const status = await api<{ skills?: unknown }>("sandbox/status", { id: record.sandboxId });
           verifyReceipts(status.skills, [pin]);
@@ -295,7 +296,7 @@ export async function runTemplateSkillCase(item: TemplateSkillCase, io: Template
           { step: `${label}_wait` },
         ),
       );
-      await io.step(`${label}_answer`, async () => {
+      await io.measuredStep(`${label}_answer`, async () => {
         type Event = {
           id: string;
           kind: string;
@@ -350,7 +351,7 @@ export async function runTemplateSkillCase(item: TemplateSkillCase, io: Template
         const final = [...messages.values()].filter((message) => !message.partial && message.text.length).at(-1);
         if (final?.text !== value) fail("template_answer_mismatch");
       });
-      await io.step(`${label}_exec_isolation`, async () => {
+      await io.measuredStep(`${label}_exec_isolation`, async () => {
         const result = await api<{ exitCode: number | null; timedOut: boolean }>("sandbox/exec", {
           id: record.sandboxId,
           cwd: item.repo,
@@ -367,6 +368,8 @@ export async function runTemplateSkillCase(item: TemplateSkillCase, io: Template
   } catch {
     passed = false;
   } finally {
+    const leftoverTemplates: string[] = [];
+    let leftoverVariable: string | undefined;
     await io.withCleanup(async () => {
       for (const record of templates.toReversed()) {
         if (record.sandboxId)
@@ -378,34 +381,42 @@ export async function runTemplateSkillCase(item: TemplateSkillCase, io: Template
             const list = await api<{ items: Template[] }>("templates/list");
             if (!Array.isArray(list?.items)) fail("invalid_response");
             const found = list.items.filter((entry) => entry.name === record.name);
-            if (found.length > 1) fail("cleanup_unconfirmed");
-            if (found[0]) record.resource = found[0];
+            if (!found[0] || found.length > 1) fail("cleanup_unconfirmed");
+            record.resource = found[0];
           });
-        if (record.resource)
-          await cleanup("cleanup_template", async () => {
+        if (!record.attempted) continue;
+        const resource = record.resource;
+        const deleted =
+          resource &&
+          (await cleanup("cleanup_template", async () => {
             const result = await api<{ item: { status: string } }>("templates/delete", {
-              id: record.resource!.id,
-              expectedRevision: record.resource!.currentRevision,
+              id: resource.id,
+              expectedRevision: resource.currentRevision,
             });
             if (result?.item?.status !== "deleted") fail("cleanup_unconfirmed");
-          });
+          }));
+        if (!deleted) leftoverTemplates.push(record.name);
       }
       if (!variable && variableAttempted)
         await cleanup("reconcile_template_variable", async () => {
           const list = await api<{ items: (Resource & { name: string })[] }>("variables/list");
           if (!Array.isArray(list?.items)) fail("invalid_response");
           const found = list.items.filter((entry) => entry.name === key);
-          if (found.length > 1) fail("cleanup_unconfirmed");
-          if (found[0]) variable = found[0];
+          if (!found[0] || found.length > 1) fail("cleanup_unconfirmed");
+          variable = found[0];
         });
-      if (variable)
-        await cleanup("cleanup_template_variable", async () => {
+      if (!variableAttempted) return;
+      const resource = variable;
+      const deleted =
+        resource &&
+        (await cleanup("cleanup_template_variable", async () => {
           const result = await api<{ item: { status: string } }>("variables/delete", {
-            id: variable!.id,
-            expectedVersion: variable!.version,
+            id: resource.id,
+            expectedVersion: resource.version,
           });
           if (result?.item?.status !== "deleted") fail("cleanup_unconfirmed");
-        });
+        }));
+      if (!deleted) leftoverVariable = key;
     });
     const leftoverSandboxIds = templates
       .filter((record) => record.sandboxId && !record.stopConfirmed)
@@ -422,9 +433,11 @@ export async function runTemplateSkillCase(item: TemplateSkillCase, io: Template
     io.out(
       JSON.stringify({
         step: "template_cleanup_summary",
-        pass: !leftoverSandboxIds.length && !uncertainLaunches.length,
+        pass: !leftoverSandboxIds.length && !uncertainLaunches.length && !leftoverTemplates.length && !leftoverVariable,
         leftoverSandboxIds,
         uncertainLaunches,
+        ...(leftoverTemplates.length ? { leftoverTemplates } : {}),
+        ...(leftoverVariable ? { leftoverVariable } : {}),
       }),
     );
   }

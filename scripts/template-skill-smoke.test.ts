@@ -32,6 +32,8 @@ type Fault =
   | "lost_launch"
   | "lost_template"
   | "lost_variable"
+  | "unlisted_variable"
+  | "unlisted_template"
   | "cleanup"
   | "uncertain_launch"
   | "missing_handle";
@@ -111,10 +113,12 @@ function fixture(
                 orgs: [{ id: selected.org, credentials: key === "org" ? [{ kind: "skillpack" }] : [] }],
               };
       else if (path === "variables/set") {
+        if (fault === "unlisted_variable") throw new DOMException("create timed out", "TimeoutError");
         variable = { id: "variable", version: 1, name: String(input.name), value: String(input.value) };
         if (fault === "lost_variable") throw new Error("secret failed variable receipt");
         output = { item: variable };
       } else if (path === "templates/create") {
+        if (fault === "unlisted_template") throw new DOMException("create timed out", "TimeoutError");
         const template = {
           id: `template-${++creates}`,
           currentRevision: 1,
@@ -226,6 +230,7 @@ function fixture(
       }
       throw new Error("poll limit");
     },
+    measuredStep: (name, action) => io.step(name, action),
     async step<T>(step: string, action: () => Promise<T>) {
       try {
         const result = await action();
@@ -365,6 +370,26 @@ test("lost metadata receipts reconcile by unique run name; lost compute is never
     expect(JSON.stringify(fake.lines)).not.toContain(fake.value());
   }
 });
+
+test.each(["variable", "template"] as const)(
+  "empty inventory after an uncertain %s create reports unconfirmed cleanup",
+  async (kind) => {
+    const fake = fixture({ fault: `unlisted_${kind}`, key: "absent" });
+    expect(await runTemplateSkillCase(selected, fake.io)).toBe(false);
+    const createPath = kind === "variable" ? "variables/set" : "templates/create";
+    const creates = fake.calls.filter((call) => call.path === createPath);
+    expect(creates).toHaveLength(1);
+    expect(fake.lines).toContainEqual(
+      expect.objectContaining({
+        step: "template_cleanup_summary",
+        pass: false,
+        [kind === "variable" ? "leftoverVariable" : "leftoverTemplates"]:
+          kind === "variable" ? creates[0]!.body.name : [creates[0]!.body.name],
+      }),
+    );
+    if (kind === "template") expect(fake.calls.at(-1)?.path).toBe("variables/delete");
+  },
+);
 
 test("missing pins explicitly skip their checks while the template variable still reaches the agent", async () => {
   for (const missing of ["public", "private", "both"] as const) {
