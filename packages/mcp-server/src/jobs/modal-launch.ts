@@ -720,7 +720,6 @@ export async function runModalLaunch(
       enrolled: boolean;
       check_after: string | null;
       cancel_without_provider: boolean;
-      enrolment_hash: string | null;
       bootstrap_ticket_enc: string | null;
     }>(
       `select s.stop_requested_at is null and e.runtime_hash is not null as enrolled,
@@ -733,7 +732,7 @@ export async function runModalLaunch(
                      and j.deadline_at>clock_timestamp() and s.expires_at>clock_timestamp()
                 then least(e.enrolment_expires_at,j.deadline_at,s.expires_at,clock_timestamp()+interval '1 second')::text
               end as check_after,
-              e.enrolment_hash, j.outcome->>'bootstrap_ticket_enc' as bootstrap_ticket_enc
+              j.outcome->>'bootstrap_ticket_enc' as bootstrap_ticket_enc
        from public.sandboxes s
        join public.jobs j on j.id=$2 and j.sandbox_id=s.id and j.generation=s.lifecycle_generation
          and j.org_id=s.org_id and j.request_owner_id=s.owner_id
@@ -811,7 +810,17 @@ export async function runModalLaunch(
             return withJobLease(scopedRuntimeSql(tx), job, async (locked) => {
               await checkAccountPin(locked);
               const receipt = await readEnrolment(locked);
-              return receipt?.check_after && receipt.enrolment_hash === hash && (await context.canDispatch(locked));
+              if (!receipt?.check_after || !(await context.canDispatch(locked))) return false;
+              const refreshed = await enrolments.refreshModalBootstrapManifest(
+                locked,
+                sandboxId,
+                generation,
+                hash,
+                configuration.artifactManifest,
+              );
+              if (!(await context.canDispatch(locked)))
+                throw new Error("Modal bootstrap dispatch is no longer authorized.");
+              return refreshed;
             });
           });
           return current ? { ...prepared, enrolmentToken } : null;

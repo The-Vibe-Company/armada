@@ -253,6 +253,35 @@ export function createRuntimeEnrolments(sql: Sql, encryptionKey: string, options
     });
     return { enrolmentToken, ...receipt };
   }
+  async function refreshModalBootstrapManifest(
+    tx: Sql,
+    sandboxId: string,
+    generation: number,
+    hash: string,
+    artifactManifest: unknown,
+  ) {
+    const {
+      rows: [pending],
+    } = await tx.query<{ configuration_enc: Uint8Array<ArrayBuffer> }>(
+      `select configuration_enc from public.runtime_enrolments
+       where sandbox_id=$1 and lifecycle_generation=$2 and enrolment_hash=$3
+         and enrolment_expires_at>clock_timestamp() and runtime_hash is null and configuration_enc is not null
+       for update`,
+      [sandboxId, generation, hash],
+    );
+    if (!pending) return false;
+    const configuration = JSON.parse(await decryptSecret(pending.configuration_enc, encryptionKey));
+    const serialized = JSON.stringify({ ...configuration, artifactManifest });
+    if (Buffer.byteLength(serialized) > 1048576) throw new RuntimeEnrolmentDenied();
+    const sealed = await encryptSecret(serialized, encryptionKey);
+    const { rows } = await tx.query(
+      `update public.runtime_enrolments set configuration_enc=$4
+       where sandbox_id=$1 and lifecycle_generation=$2 and enrolment_hash=$3
+         and enrolment_expires_at>clock_timestamp() returning sandbox_id`,
+      [sandboxId, generation, hash, sealed],
+    );
+    return rows.length > 0;
+  }
   async function enrol(enrolmentToken: string, wireProtocol: string | null = String(PROTOCOL_VERSION)) {
     // The original v1 wire request had no protocol header. This encoding ages out with v1.
     const encodedVersion = wireProtocol ?? "1";
@@ -468,6 +497,7 @@ export function createRuntimeEnrolments(sql: Sql, encryptionKey: string, options
   };
   return {
     issue,
+    refreshModalBootstrapManifest,
     enrol,
     withBootstrap,
     withSession,
