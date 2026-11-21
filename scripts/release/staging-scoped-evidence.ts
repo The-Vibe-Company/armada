@@ -8,9 +8,7 @@ function records(jsonl: string, strict = false) {
       const value: unknown = JSON.parse(line);
       if (value !== null && typeof value === "object" && !Array.isArray(value))
         return [value as Record<string, unknown>];
-    } catch {
-      // Smoke stdout can include human-readable notices. Railway output must be JSONL.
-    }
+    } catch {}
     if (strict) throw new Error("Invalid candidate log record.");
     return [];
   });

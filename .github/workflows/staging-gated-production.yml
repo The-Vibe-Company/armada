@@ -221,6 +221,12 @@ jobs:
         env:
           CANDIDATE_DEPLOYMENT_ID: ${{ steps.deployment.outputs.railway_deployment_id }}
         run: bash .release-tools/scripts/release/staging-reaper-evidence.sh "${CANDIDATE_DEPLOYMENT_ID:?Missing candidate deployment ID}"
+      - name: Record staging smoke log window start
+        id: smoke_window
+        if: (steps.evidence.outputs.reused != 'true' && steps.deployment.outputs.superseded != 'true' && steps.reaper.outcome == 'success')
+        continue-on-error: true
+        run: |
+          printf 'started_at=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
       - name: Smoke pinned staging
         id: smoke
         shell: bash
@@ -239,7 +245,6 @@ jobs:
             : > "$RUNNER_TEMP/dashboard-smoke.jsonl"
             exit 1
           fi
-          printf 'started_at=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
           # Read probes receive only the existing staging bearer, never deployment secrets.
           env -i PATH="$PATH" HOME="$HOME" ARMADA_URL="$ARMADA_URL" ARMADA_TOKEN="$ARMADA_TOKEN" \
             ARMADA_SMOKE_CASES="$ARMADA_SMOKE_CASES" bun scripts/dashboard-read-smoke.ts | tee "$RUNNER_TEMP/dashboard-smoke.jsonl" &
@@ -255,7 +260,7 @@ jobs:
         continue-on-error: true
         env:
           CANDIDATE_DEPLOYMENT_ID: ${{ steps.deployment.outputs.railway_deployment_id }}
-          SMOKE_STARTED_AT: ${{ steps.smoke.outputs.started_at }}
+          SMOKE_STARTED_AT: ${{ steps.smoke_window.outputs.started_at }}
         run: |
           set -euo pipefail
           if [[ "$ARMADA_URL" != 'https://armada-mcp-staging.up.railway.app' ||
@@ -273,7 +278,11 @@ jobs:
             echo '{"step":"scoped_server_evidence","code":"no_scoped_correlation_ids"}'
             exit 0
           fi
-          if ! logs=$(timeout 15s railway logs "$CANDIDATE_DEPLOYMENT_ID" --deployment --json --since "${SMOKE_STARTED_AT:?Missing smoke start time}" \
+          if [[ -z "$SMOKE_STARTED_AT" ]]; then
+            echo '{"step":"scoped_server_evidence","code":"smoke_window_unavailable"}'
+            exit 1
+          fi
+          if ! logs=$(timeout 15s railway logs "$CANDIDATE_DEPLOYMENT_ID" --deployment --json --since "$SMOKE_STARTED_AT" \
               --lines 100 --project "$RAILWAY_PROJECT_ID" --environment "$RAILWAY_ENVIRONMENT_ID" \
               --service "$RAILWAY_SERVICE_ID" --filter "$filter" 2>/dev/null); then
             echo '{"step":"scoped_server_evidence","code":"candidate_log_query_failed"}'
