@@ -785,7 +785,6 @@ export async function runModalLaunch(
       context.signal.throwIfAborted();
       if (await context.canDispatch()) {
         if (!hasJournal) throw error;
-        // Preparing the recovery plan cannot dispatch a provider mutation.
         return {
           status: "retry",
           after: new Date(Date.now() + ENROLMENT_RETRY_DELAY_MS),
