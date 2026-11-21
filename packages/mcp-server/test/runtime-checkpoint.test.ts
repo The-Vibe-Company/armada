@@ -13,7 +13,10 @@ import { createRuntimeEnrolments } from "../src/runtime-enrolment.ts";
 import { createRuntimeEvents } from "../src/runtime-events.ts";
 import { createRuntimeHistory } from "../src/runtime-history.ts";
 import { createRuntimeProvider, type RuntimeWorkProvider } from "../src/runtime-provider.ts";
-import { RuntimeReconciliationConflict } from "../src/runtime-reconciliation-conflict.ts";
+import {
+  RuntimeCheckpointActivityConflict,
+  RuntimeReconciliationConflict,
+} from "../src/runtime-reconciliation-conflict.ts";
 import { createSandboxArmadaAccess } from "../src/sandbox-armada-access.ts";
 import { callSharedTool } from "../src/tool-api.ts";
 import { runtimeFixture, runtimeFixtureGolden, scopedRuntimeFixture } from "./runtime.fixture.ts";
@@ -535,35 +538,46 @@ test("an organization admin can still stop another member's runtime compute", as
   }
 });
 
-test("a reconciling Modal runtime refuses checkpoint before reserving its intent", async () => {
-  const f = await checkpointFixture("modal");
-  try {
-    await f.db.query("update sandboxes set reconcile_lease_until='infinity' where id=$1", [f.row.id]);
-    const checkpoint = createRuntimeCheckpoint(f.sql, ENCRYPTION_KEY, f.bridge);
-    const records: unknown[] = [];
-    const response = await observeRequest(
-      async () => {
-        await expect(checkpoint(f.caller, args(f.row.id))).rejects.toBeInstanceOf(RuntimeReconciliationConflict);
-        return new Response(null, { status: 409 });
-      },
-      (line) => records.push(JSON.parse(line)),
-    );
-    expect(records).toContainEqual(
-      expect.objectContaining({
-        requestId: response.headers.get("x-request-id"),
-        sandboxId: f.row.id,
-        phase: "sandbox.checkpoint.refused",
-        refusalCode: "reconcile_lease_held",
-        stopEvidence: expect.objectContaining({ reconcileLeaseHeld: true, activityLeaseId: null }),
-      }),
-    );
-    expect(
-      (await f.db.query("select request_id from runtime_checkpoints where sandbox_id=$1", [f.row.id])).rows,
-    ).toEqual([]);
-  } finally {
-    await f.close();
-  }
-});
+test.each(["reconciliation", "activity"] as const)(
+  "Modal runtime %s blocks checkpoint before reserving its intent",
+  async (owner) => {
+    const f = await checkpointFixture("modal");
+    try {
+      const activityLeaseId = owner === "activity" ? crypto.randomUUID() : null;
+      await f.db.query(
+        `update sandboxes set activity_lease_id=$2,
+        reconcile_lease_until=case when $2::uuid is null then 'infinity'::timestamptz end where id=$1`,
+        [f.row.id, activityLeaseId],
+      );
+      const checkpoint = createRuntimeCheckpoint(f.sql, ENCRYPTION_KEY, f.bridge);
+      const records: unknown[] = [];
+      const response = await observeRequest(
+        async () => {
+          await expect(checkpoint(f.caller, args(f.row.id))).rejects.toBeInstanceOf(
+            owner === "activity" ? RuntimeCheckpointActivityConflict : RuntimeReconciliationConflict,
+          );
+          return new Response(null, { status: 409 });
+        },
+        (line) => records.push(JSON.parse(line)),
+      );
+      expect(response?.status).toBe(409);
+      expect(records).toContainEqual(
+        expect.objectContaining({
+          requestId: response.headers.get("x-request-id"),
+          sandboxId: f.row.id,
+          phase: "sandbox.checkpoint.refused",
+          refusalCode: owner === "activity" ? "activity_lease_present" : "reconcile_lease_held",
+          stopEvidence: expect.objectContaining({ reconcileLeaseHeld: owner === "reconciliation", activityLeaseId }),
+        }),
+      );
+      expect(
+        (await f.db.query("select request_id from runtime_checkpoints where sandbox_id=$1", [f.row.id])).rows,
+      ).toEqual([]);
+    } finally {
+      await f.close();
+    }
+  },
+);
 
 test.each(["boat", "modal"] as const)("%s stop recovers the original checkpoint ACK", async (provider) => {
   const f = await checkpointFixture(provider);

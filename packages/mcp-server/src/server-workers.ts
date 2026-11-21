@@ -1,5 +1,5 @@
 import { JOBS_WAKE } from "./jobs/store.ts";
-import { runtimeWakes, waitForTimeout } from "./wake-bus.ts";
+import { runtimeWakes, SANDBOX_ADMISSION_WAKE, waitForTimeout } from "./wake-bus.ts";
 
 export interface ServerLifecycleLane {
   reconcileOne(signal: AbortSignal): Promise<boolean>;
@@ -41,8 +41,10 @@ export function startServerWorkers(
       } finally {
         clearTimeout(timeout);
       }
-      if (wake) await wake.wait(shutdown.signal, 1000, waitForTimeout);
-      else await waitForTimeout(1000, shutdown.signal);
+      if (wake) {
+        runtimeWakes.notify(SANDBOX_ADMISSION_WAKE);
+        await wake.wait(shutdown.signal, 1000, waitForTimeout);
+      } else await waitForTimeout(1000, shutdown.signal);
     }
     wake?.close();
     // SDKs may not support cancellation after a request has reached the provider. Keep

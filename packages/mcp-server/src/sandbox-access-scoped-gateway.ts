@@ -35,7 +35,7 @@ export function createSandboxScopedGateway(
   finish?: (token: string) => Promise<unknown>,
   runtimeFinish?: (token: string) => Promise<unknown>,
 ): Route {
-  async function call(token: string, name: string, args: unknown): Promise<unknown> {
+  async function call(token: string, name: string, args: unknown, signal: AbortSignal): Promise<unknown> {
     if (waitMethods.has(name)) throw new WaitAuthorityUnavailable();
     if (!isScopedMethod(name) || (token.startsWith("armada_finish_") && name !== "finish"))
       throw new InvalidScopedRequest();
@@ -68,14 +68,14 @@ export function createSandboxScopedGateway(
     }
     if (name === "message") {
       const input = scopedOperations.message.input.parse(args);
-      return children.message(token, input.idempotencyKey, input.sandboxId, input.text);
+      return children.message(token, input.idempotencyKey, input.sandboxId, input.text, signal);
     }
     if (name === "extend") {
       const input = scopedOperations.extend.input.parse(args);
-      return children.extend(token, input.idempotencyKey, input.sandboxId, input.ttlSeconds);
+      return children.extend(token, input.idempotencyKey, input.sandboxId, input.ttlSeconds, signal);
     }
     const input = scopedOperations.stop.input.parse(args);
-    return children.stop(token, input.idempotencyKey, input.sandboxId);
+    return children.stop(token, input.idempotencyKey, input.sandboxId, signal);
   }
   return async (request) => {
     const url = new URL(request.url);
@@ -102,7 +102,10 @@ export function createSandboxScopedGateway(
         const args = headers
           ? { ...input.data, idempotencyKey: headers["Idempotency-Key"].parse(request.headers.get("Idempotency-Key")) }
           : input.data;
-        return Response.json({ result: await call(token, suffix, args) }, { headers: { "cache-control": "no-store" } });
+        return Response.json(
+          { result: await call(token, suffix, args, request.signal) },
+          { headers: { "cache-control": "no-store" } },
+        );
       }
       if (!decoded || typeof decoded !== "object" || Array.isArray(decoded)) throw new InvalidScopedRequest();
       const rpc = decoded as { method?: unknown; params?: { name?: unknown; arguments?: unknown }; id?: unknown };
@@ -134,9 +137,9 @@ export function createSandboxScopedGateway(
             inputSchema: operation.input,
             outputSchema: z.object({ result: z.unknown() }),
           },
-          async (args: unknown): Promise<CallToolResult> => {
+          async (args: unknown, extra: { signal: AbortSignal }): Promise<CallToolResult> => {
             try {
-              const result = { result: await call(token, name, args) };
+              const result = { result: await call(token, name, args, AbortSignal.any([request.signal, extra.signal])) };
               return { structuredContent: result, content: [{ type: "text", text: JSON.stringify(result) }] };
             } catch (error) {
               if (error instanceof DelegatedAuthorityDenied)

@@ -38,7 +38,7 @@ export function createWakeBus() {
     const close = subscribe(key, () => wake.abort());
     return {
       close,
-      async wait(signal: AbortSignal, ms: number, delay: typeof waitForTimeout) {
+      async wait(signal: AbortSignal, ms = 0, delay = waitForAbort) {
         if (!wake.signal.aborted) await delay(ms, AbortSignal.any([signal, wake.signal]));
         const notified = wake.signal.aborted;
         if (notified) wake = new AbortController();
@@ -47,6 +47,11 @@ export function createWakeBus() {
     };
   }
   return { subscribe, notify, wait, watch };
+}
+
+function waitForAbort(_ms: number, signal: AbortSignal) {
+  if (signal.aborted) return Promise.resolve();
+  return new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve(), { once: true }));
 }
 
 export async function waitForTimeout(ms: number, signal: AbortSignal) {
@@ -63,6 +68,8 @@ export async function waitForTimeout(ms: number, signal: AbortSignal) {
 }
 
 export const eventFeedWakeKey = (sandboxId: string) => `events:${sandboxId.toLowerCase()}`;
+
+export const SANDBOX_ADMISSION_WAKE = "sandbox-admission";
 
 export const runtimeWakes = createWakeBus();
 
