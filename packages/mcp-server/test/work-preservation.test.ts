@@ -995,10 +995,13 @@ const unstampedDrainScenarios = [
   "lost commit reply",
   "missing detached archive",
   "deleting journal",
+  "deleting journal with a matching compute exit",
+  "deleted journal with a matching compute exit",
+  "deleting journal with a string compute exit",
 ];
 
 test.each(unstampedDrainScenarios)(
-  "unstamped native Modal drain reconciles only a preserved stopped incarnation with %s",
+  "unstamped native Modal drain reconciles only a preserved incarnation with %s",
   async (scenario) => {
     const outcome = scenario === "clean" ? "clean" : "archived";
     const { db, people, sandboxId, archiveId, copy } = await seedNativeDrainReceipt(undefined, "modal", outcome);
@@ -1006,10 +1009,18 @@ test.each(unstampedDrainScenarios)(
     await db.query("update sandboxes set native_drain_pending=true,lifecycle_generation=5 where id=$1", [sandboxId]);
     if (scenario === "missing detached archive")
       await db.query("delete from native_drain_recovery where archive_id=$1", [archiveId]);
-    if (scenario === "deleting journal")
-      await db.query("update modal_machines set record=jsonb_set(record,'{phase}','\"deleting\"') where id=$1", [
+    const matchingExit = scenario.endsWith("with a matching compute exit");
+    if (scenario.startsWith("delet")) {
+      const record = {
+        phase: scenario.startsWith("deleted") ? "deleted" : "deleting",
+        generation: 1,
+        deletePhysicalExitGeneration: matchingExit ? 1 : scenario.endsWith("string compute exit") ? "1" : undefined,
+      };
+      await db.query("update modal_machines set record=$2::jsonb where id=$1", [
         `bx_${sandboxId}`,
+        JSON.stringify(record),
       ]);
+    }
 
     const expiredToken = crypto.randomUUID();
     const hasExpiredLease = scenario !== "archived" && scenario !== "clean";
@@ -1054,7 +1065,7 @@ test.each(unstampedDrainScenarios)(
     const providers = { resolve: async () => ({ ...fakeBoat().provider, id: "modal" as const, delete: remove }) };
     const drain = () => deleteSandboxWithActivity(sandboxes, providers, sandboxId, "native-drain");
 
-    if (scenario === "archived" || scenario === "clean" || scenario === "expired journal lease") {
+    if (scenario === "archived" || scenario === "clean" || scenario === "expired journal lease" || matchingExit) {
       await expect(drain()).resolves.toEqual({ id: sandboxId, status: "deleted" });
       expect(remove).toHaveBeenCalledTimes(1);
       return;
