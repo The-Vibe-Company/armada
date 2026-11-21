@@ -1850,6 +1850,71 @@ test("lifecycle records readiness and confirms extend/list, closed idle steer re
   expect(fake.lines.join("")).not.toContain("secret");
 });
 
+test.each(["fetch", "error body"])(
+  "a lifecycle stop timeout during %s leaves cleanup to confirm the original stop",
+  async (phase) => {
+    let stops = 0;
+    const fake = lifecycleFixture("none", (call) => {
+      if (call.path === "sandbox/stop" && ++stops === 1) {
+        const timeout = (): never => {
+          fake.advance(deadlines.stop);
+          throw new DOMException("stop response timed out", "TimeoutError");
+        };
+        if (phase === "fetch") return timeout();
+        return Object.assign(json({ error: { code: "outcome_unknown" } }, 503), { json: async () => timeout() });
+      }
+      if (call.path === "sandbox/status" && stops > 0) return json({ status: "stopped", providerState: "stopped" });
+      return undefined;
+    });
+    expect(await fake.run()).toBe(false);
+    expect(stops).toBe(1);
+    expect(fake.receipts()).toContainEqual({ case: 0, step: "stop", pass: false, code: "poll_limit_exceeded" });
+    expect(fake.receipts()).toContainEqual({ case: 0, step: "cleanup_sandbox", pass: true });
+  },
+);
+
+test("lifecycle stop polling yields to cleanup at the measured deadline", async () => {
+  let stopStartedAt: number | undefined;
+  const statusTimes: number[] = [];
+  const fake = lifecycleFixture("none", (call) => {
+    if (call.path === "sandbox/stop") stopStartedAt = fake.io.now();
+    if (call.path === "sandbox/status" && stopStartedAt !== undefined) {
+      statusTimes.push(fake.io.now() - stopStartedAt);
+      if (statusTimes.length === 1) {
+        fake.advance(deadlines.stop - 1);
+        return json({ status: "stopping", providerState: "active" });
+      }
+    }
+    return undefined;
+  });
+  expect(await fake.run()).toBe(false);
+  expect(statusTimes).toEqual([0, deadlines.stop]);
+  expect(fake.receipts()).toContainEqual({ case: 0, step: "stop", pass: false, code: "poll_limit_exceeded" });
+  expect(fake.receipts()).toContainEqual({ case: 0, step: "cleanup_sandbox", pass: true });
+});
+
+test.each([
+  ["stop", 1],
+  ["stop_resumed", 2],
+] as const)("lifecycle %s rejects a late stop status without redispatching", async (step, targetStop) => {
+  let stops = 0;
+  let delayStatus = false;
+  const fake = lifecycleFixture("none", (call) => {
+    if (call.path === "sandbox/stop") delayStatus = ++stops === targetStop;
+    if (call.path === "sandbox/status" && delayStatus) {
+      delayStatus = false;
+      fake.advance(deadlines[step] + 1);
+    }
+    return undefined;
+  });
+  expect(await fake.run()).toBe(false);
+  expect(fake.receipts()).toContainEqual({ case: 0, step, pass: false, code: "poll_limit_exceeded" });
+  expect(stops).toBe(targetStop);
+  expect(fake.receipts()).toContainEqual(
+    expect.objectContaining({ step: "lifecycle_cleanup_summary", pass: true, leftoverSandboxIds: [] }),
+  );
+});
+
 test.each([
   ["list_ready", "sandbox/list"],
   ["steer_refused", "sandbox/steer"],
