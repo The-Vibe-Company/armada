@@ -37,6 +37,7 @@ import { configureBoatGitHub } from "./github-boat.ts";
 import { createSqlGoldenList } from "./golden-list.ts";
 import { type HandlerOptions, providerRegistry, type Route } from "./http.ts";
 import { Invitations } from "./invitations.ts";
+import { modalLaunchTicketGuard } from "./jobs/modal-launch.ts";
 import { createJobsStore } from "./jobs/store.ts";
 import { createLangfuse } from "./langfuse.ts";
 import { launchCredentials } from "./launch-credentials.ts";
@@ -64,6 +65,7 @@ import { createRuntimeFollowup } from "./runtime-followup.ts";
 import { createRuntimeGitHub } from "./runtime-github.ts";
 import { createRuntimeMcp } from "./runtime-mcp.ts";
 import { createRuntimeNativeAuth } from "./runtime-native-auth.ts";
+import { runtimeConfigurationWithVariables } from "./runtime-readable-variables.ts";
 import { createRuntimeResume } from "./runtime-resume.ts";
 import { createRuntimeServing } from "./runtime-serving.ts";
 import { createRuntimeSockets } from "./runtime-sockets.ts";
@@ -314,6 +316,38 @@ export async function createServerServices(env: Record<string, string | undefine
       modelAuth,
     });
   }
+  const modalLaunchCredentials = launchCredentials(store, config.encryptionKey, undefined, modelAuth);
+  const modalLaunchJob =
+    modalRuntime &&
+    modal.launchJob(async (sandbox) => {
+      if (!sandbox.credentialId || !sandbox.credentialVersion) throw new Error("Modal launch account pin is missing.");
+      const actor = { userId: sandbox.ownerId, orgId: sandbox.orgId, role: "member" as const };
+      const credentials = await modalLaunchCredentials.resolve(
+        actor,
+        sandbox.harness,
+        sandbox.credentialId,
+        sandbox.credentialVersion,
+      );
+      const plan = await runtimeConfigurationWithVariables(
+        sql,
+        {
+          actor,
+          sandbox,
+          credentials,
+          manifest: modalRuntime.manifest,
+          architecture: modalRuntime.manifest.architecture,
+          modelAuth,
+        },
+        "modal",
+        "modal_runtime_empty_v1",
+      );
+      return {
+        ...plan,
+        ownerId: sandbox.ownerId,
+        serverUrl: config.publicUrl,
+        ...modalLaunchTicketGuard(sandbox),
+      };
+    });
   const dockerCredentials = launchCredentials(store, config.encryptionKey, undefined, modelAuth, {
     store,
     app: githubApp,
@@ -350,7 +384,7 @@ export async function createServerServices(env: Record<string, string | undefine
   if (config.modalAgentPath === "runtime" && modalRuntimePolicy) {
     launch.modalRuntimeDefault = {
       policy: modalRuntimePolicy,
-      credentials: launchCredentials(store, config.encryptionKey, undefined, modelAuth),
+      credentials: modalLaunchCredentials,
       connections: runtimeMcp.connections,
       provider: (actor, golden) =>
         modalRuntimeHostFor(
@@ -619,6 +653,7 @@ export async function createServerServices(env: Record<string, string | undefine
     delegatedAccess,
     modelAuth,
     modal,
+    modalLaunchJob,
     modalArtifactCache: warmModalArtifacts,
     mcp,
     goldenBuilds,
