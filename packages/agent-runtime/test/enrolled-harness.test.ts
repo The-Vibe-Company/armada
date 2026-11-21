@@ -100,6 +100,7 @@ test.skipIf(process.platform !== "linux" || !["arm64", "x64"].includes(process.a
           serverUrl,
           {
             root,
+            artifactManifest: { antigravity: { url: "https://elsewhere.example/cli.tar.gz" } },
             selectedHarness: "antigravity",
             claudeEnv: {},
             codexEnv: {},
@@ -113,7 +114,8 @@ test.skipIf(process.platform !== "linux" || !["arm64", "x64"].includes(process.a
         ),
       ).rejects.toThrow("runtime_artifact_unavailable");
       expect(requests).toHaveLength(1);
-      expect(requests[0]!.url).toBe(`${serverUrl}/api/runtime/artifacts/${pin.archive.sha256}`);
+      expect(requests[0]!.url).toBe(pin.url);
+      expect(requests[0]!.redirect).toBe("error");
       expect(requests[0]!.method).toBe("GET");
       expect(requests[0]!.body).toBeNull();
       expect(JSON.stringify([...requests[0]!.headers])).not.toContain("fixture-model-material");

@@ -2,7 +2,6 @@ import { createHash } from "node:crypto";
 import { chmod, copyFile, cp, mkdir, rm, symlink } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
-import { stageAntigravityArchive } from "./src/antigravity-build.ts";
 import { OPENCODE_ARTIFACT } from "./src/opencode-artifact.ts";
 
 if (process.platform !== "linux" || (process.arch !== "x64" && process.arch !== "arm64"))
@@ -43,7 +42,6 @@ const opencodeDigest = createHash("sha256")
 if (opencodeDigest !== OPENCODE_ARTIFACT.sha256[process.arch]) throw Error("OpenCode artifact digest mismatch");
 await copyFile(opencode, join(out, "opencode"));
 await chmod(join(out, "opencode"), 0o755);
-const antigravity = await stageAntigravityArchive(out, process.arch);
 await Bun.write(
   join(out, "manifest.json"),
   JSON.stringify({
@@ -53,7 +51,6 @@ await Bun.write(
     claude: "2.1.322",
     codex: "0.167.0",
     opencode: { version: OPENCODE_ARTIFACT.version, sha256: opencodeDigest },
-    antigravity: { [process.arch]: antigravity },
     architecture: process.arch,
   }),
 );
