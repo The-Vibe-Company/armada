@@ -124,22 +124,25 @@ export async function recordModalBootstrapTicket(
   job: Job,
   token: string,
   encryptionKey: string,
-  handoff: ModalLaunchHandoff,
+  machineId: string,
+  handoff: ModalLaunchHandoff | undefined,
 ) {
   const sealed = await encryptSecret(token, encryptionKey);
   const { rows } = await tx.query(
     `update public.jobs set outcome=outcome ||
-       jsonb_build_object('bootstrap_ticket_enc',$2::text,'modal_handoff',$3::jsonb)
+       jsonb_build_object('bootstrap_ticket_enc',$2::text,
+         'modal_handoff',coalesce(outcome->'modal_handoff',$3::jsonb))
      where id=$1 and lease_epoch=$4 and lease_until>clock_timestamp()
        and outcome #>> '{modal_machine,entry,machineId}'=$5
-       and outcome->'bootstrap_ticket_enc' is null and outcome->'modal_handoff' is null
+       and (outcome->'modal_handoff' is not null
+         or ($3::jsonb is not null and outcome->'bootstrap_ticket_enc' is null))
      returning id`,
     [
       job.id,
       Buffer.from(sealed).toString("base64"),
-      JSON.stringify(handoff),
+      handoff ? JSON.stringify(handoff) : null,
       job.lease_epoch,
-      handoff.record.physicalId,
+      machineId,
     ],
   );
   return rows.length === 1;

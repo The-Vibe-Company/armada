@@ -772,6 +772,7 @@ export async function runModalLaunch(
       cancel_without_provider: boolean;
       bootstrap_ticket_enc: string | null;
       handoff_staged: boolean;
+      ticket_issued: boolean;
     }>(
       `select s.stop_requested_at is null and e.runtime_hash is not null as enrolled,
               s.stop_requested_at is not null and (
@@ -784,7 +785,8 @@ export async function runModalLaunch(
                 then least(e.enrolment_expires_at,j.deadline_at,s.expires_at,clock_timestamp()+interval '1 second')::text
               end as check_after,
               j.outcome->>'bootstrap_ticket_enc' as bootstrap_ticket_enc,
-              j.outcome->'modal_handoff' is not null as handoff_staged
+              j.outcome->'modal_handoff' is not null as handoff_staged,
+              e.enrolment_hash is not null as ticket_issued
        from public.sandboxes s
        join public.jobs j on j.id=$2 and j.sandbox_id=s.id and j.generation=s.lifecycle_generation
          and j.org_id=s.org_id and j.request_owner_id=s.owner_id
@@ -860,6 +862,8 @@ export async function runModalLaunch(
     sandboxId,
     generation,
     awaitingEnrolment: Boolean(pending.check_after),
+    handoffStaged: pending.handoff_staged,
+    ticketIssued: pending.ticket_issued,
     replayingTicket: Boolean(pending.check_after && pending.bootstrap_ticket_enc),
   };
   const dispatch = plan
@@ -895,7 +899,7 @@ export async function runModalLaunch(
           });
           return current ? { ...prepared, enrolmentToken } : null;
         }
-        if (!handoff) return null;
+        if (!handoff && !pending.handoff_staged) return null;
         try {
           const ticket = await enrolments.issue({
             sandboxId,
@@ -909,7 +913,9 @@ export async function runModalLaunch(
                 throw new Error("Modal bootstrap dispatch is no longer authorized.");
             },
             async recordIssued(tx, enrolmentToken) {
-              if (!(await recordModalBootstrapTicket(tx, job, enrolmentToken, encryptionKey, handoff)))
+              if (
+                !(await recordModalBootstrapTicket(tx, job, enrolmentToken, encryptionKey, request.machineId, handoff))
+              )
                 throw new ModalBootstrapRefused("Modal launch changed before handoff.");
             },
             ticketGuard: {
@@ -1013,9 +1019,13 @@ async function dispatchModalLaunch(
     sandboxId,
     generation,
     awaitingEnrolment,
+    handoffStaged,
+    ticketIssued,
     replayingTicket,
   }: Pick<MachineIncarnation, "sandboxId" | "generation"> & {
     awaitingEnrolment: boolean;
+    handoffStaged: boolean;
+    ticketIssued: boolean;
     replayingTicket: boolean;
   },
   resolveRuntimeTicket: (
@@ -1064,11 +1074,13 @@ async function dispatchModalLaunch(
     ),
     async resolveRuntimeTicket(request) {
       ticketResolutionStarted = true;
+      if (ticketIssued && !handoffStaged)
+        throw new ModalBootstrapRefused("Modal bootstrap ticket lacks a prepared handoff.");
       if (awaitingEnrolment && !replayingTicket) return null;
       const { preparation, handoff } = await (async () => {
         const preparation = await plan.prepareRuntimeTicket(request);
         const handoff =
-          !replayingTicket && (await canDispatch())
+          !handoffStaged && (await target())?.provider_sandbox_id === request.machineId
             ? await prepareModalLaunchHandoff(request, plan.machine, plan.placement, plan.allocation, signal)
             : undefined;
         return { preparation, handoff };

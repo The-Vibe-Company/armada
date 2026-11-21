@@ -2745,6 +2745,24 @@ test("interrupted Modal enrolment rolls back readiness and the provider handoff 
   expect(await placement()).toEqual([{ id: "physical" }]);
 });
 
+test("an expired Modal bootstrap ticket is replaced without recapturing the process baseline", async () => {
+  const { f, id, jobId, makeRunner, effects, retentionEffects } = await modalLaunchFixture(
+    await modalAdmissionFixture(),
+  );
+  const original = makeRunner(undefined, f.sql, false);
+  expect(await original.reconcileOne(signal)).toBe(true);
+  await original.drain();
+  expect(effects().bootstrapped).toEqual(["physical"]);
+  await f.db.query("update runtime_enrolments set enrolment_expires_at='-infinity' where sandbox_id=$1", [id]);
+  await f.db.query("update jobs set run_after='-infinity' where id=$1", [jobId]);
+  const successor = makeRunner();
+  expect(await successor.reconcileOne(signal)).toBe(true);
+  await successor.drain();
+  expect((await f.db.query("select status from sandboxes where id=$1", [id])).rows).toEqual([{ status: "ready" }]);
+  expect(effects().allocations).toBe(1);
+  expect(retentionEffects().baselineCaptures).toBe(1);
+});
+
 test("Modal bootstrap without enrolment retries, then fails and hands off cleanup when expired", async () => {
   const { f, id, jobId, makeRunner, effects } = await modalLaunchFixture();
   const runner = makeRunner(undefined, f.sql, false);
@@ -2821,10 +2839,11 @@ test.each([
   ["deadline expires", "image lookup"],
   ["deadline expires", "runtime ticket"],
   ["Modal credential is revoked", "image lookup"],
+  ["Modal credential is revoked", "runtime ticket"],
 ] as const)(
   "a Modal launch whose %s during %s cannot dispatch the prepared operation",
   async (change, interruptedAt) => {
-    const { f, jobId, makeRunner, effects, revokeModalCredential } = await modalLaunchFixture();
+    const { f, jobId, makeRunner, effects, retentionEffects, revokeModalCredential } = await modalLaunchFixture();
     const runner = makeRunner(async (step) => {
       if (step !== interruptedAt) return;
       if (change === "Modal credential is revoked") revokeModalCredential();
@@ -2833,6 +2852,7 @@ test.each([
     expect(await runner.reconcileOne(signal)).toBe(true);
     await runner.drain();
     expect(effects().allocations).toBe(interruptedAt === "image lookup" ? 0 : 1);
+    expect(retentionEffects().baselineCaptures).toBe(0);
     expect(effects().bootstrapped).toEqual([]);
   },
 );
