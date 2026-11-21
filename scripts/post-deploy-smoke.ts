@@ -879,7 +879,7 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
     request: ReturnType<typeof createLane>["request"],
     keepHandle: (id: string) => void,
     recover?: (id: string, requestKey: string, until: number) => Promise<T | undefined>,
-  ): Promise<{ result: T; recovered: boolean }> {
+  ) {
     const path = "sandbox/launch";
     const requestKey = `post-deploy-smoke:${crypto.randomUUID()}`;
     const launch = smokeLaunch[item.provider];
