@@ -815,7 +815,7 @@ async function modalLaunchFixture(initial?: Awaited<ReturnType<typeof modalAdmis
         },
       },
       sandboxes: {
-        async create(_app: unknown, _image: unknown, options: { tags: Record<string, string> }) {
+        async experimentalCreate(_app: unknown, _image: unknown, options: { tags: Record<string, string> }) {
           allocations++;
           tags = options.tags;
           await atStep?.("create response");
