@@ -216,16 +216,16 @@ export function createSandboxAccessServices(input: {
       const golden = goldens.find((g) => g.id === chosen.goldenId);
       if (!golden) throw new ChildLaunchNotAllocated("preallocation_rejected", "golden_lookup");
       let placement = input.runtimePlacements?.[golden.provider];
-      if (!placement && golden.provider === "boat") {
-        const parent = (
-          await sql.query<{ boat_runtime: boolean }>(
-            `select s.boat_runtime from public.armada_access_parents p
+      if (!placement) {
+        const enrolledBoatParent = (
+          await sql.query(
+            `select p.id from public.armada_access_parents p
              join public.sandboxes s on s.id=p.sandbox_id
-             where p.id=$1 and p.owner_id=$2 and p.org_id=$3 and s.provider='boat'`,
-            [operation.orchestratorId, operation.ownerId, operation.orgId],
+             where p.id=$1 and p.owner_id=$2 and p.org_id=$3 and s.provider=$4 and s.boat_runtime`,
+            [operation.orchestratorId, operation.ownerId, operation.orgId, golden.provider],
           )
         ).rows[0];
-        if (parent?.boat_runtime) {
+        if (enrolledBoatParent) {
           placement = input.boatEndpointRuntime;
           if (!placement) throw new ChildLaunchNotAllocated("preallocation_rejected", "provider_placement");
         }
