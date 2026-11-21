@@ -48,6 +48,7 @@ for (const mode of [
   "snapshot_wrong_owner",
   "snapshot_wrong_receipt",
   "snapshot_lost_receipt",
+  "snapshot_lost_receipt_wrong_source",
   "snapshot_org_visibility",
   "snapshot_host_unavailable",
   "snapshot_invalid_id",
@@ -204,6 +205,7 @@ for (const mode of [
     const dockerLaunchScenario = mode.startsWith("docker_launch_");
     let dockerLaunchKey: string | undefined;
     let dockerInventoryReads = 0;
+    let snapshotStatusReads = 0;
     const modalLaunchScenario = mode.startsWith("modal_launch_");
     const ordinaryDockerId = "30000000-0000-4000-8000-000000000005";
     const ordinaryModalId = "30000000-0000-4000-8000-000000000004";
@@ -715,8 +717,23 @@ for (const mode of [
               };
               break;
             }
+            case "docker/sandboxes/get":
+              expect(mode.startsWith("snapshot_lost_receipt")).toBe(true);
+              expect(body).toEqual({ org: p, sandboxId: sandboxId(p) });
+              result = {
+                id: sandboxId(p),
+                provider: "docker",
+                snapshotId: mode === "snapshot_lost_receipt" ? snapshotId : "other-snapshot",
+                hostId: "owned-host",
+                image: snapshotImage,
+                orgId: p,
+                ownerId: snapshotOwner,
+                visibility: "private",
+                status: "ready",
+              };
+              break;
             case "sandbox/list":
-              if (mode === "snapshot_lost_receipt" && p === "docker") {
+              if (mode.startsWith("snapshot_lost_receipt") && p === "docker") {
                 expect(body.externalRef).toBe(dockerLaunchKey);
                 result = {
                   sandboxes: [{ id: sandboxId(p), provider: p, externalRef: dockerLaunchKey, status: "ready" }],
@@ -836,9 +853,13 @@ for (const mode of [
               states.set(p, "ready");
               if (p === "modal") ordinaryIds.set(p, ordinaryModalId);
               else if (p === "docker" && body.externalRef) ordinaryIds.set(p, ordinaryDockerId);
-              if (mode === "snapshot_lost_receipt" && p === "docker") {
+              if (mode.startsWith("snapshot_lost_receipt") && p === "docker") {
                 dockerLaunchKey = body.externalRef;
-                throw new DOMException("Timed out", "TimeoutError");
+                await advance(1_500);
+                return Response.json(
+                  { error: { code: "outcome_unknown", message: "The launch may still be in flight." } },
+                  { status: 504, headers: { "x-request-id": launchRequestId } },
+                );
               }
               result = {
                 sandbox: {
@@ -1162,6 +1183,10 @@ for (const mode of [
               result = { exitCode: 0, timedOut: false, stdout: "PARITY_EXEC_OK" };
               break;
             case "sandbox/status":
+              if (mode === "snapshot_lost_receipt" && p === "docker" && snapshotStatusReads++ === 0) {
+                result = { id: sandboxId(p), provider: p, status: "starting" };
+                break;
+              }
               if (mode.startsWith("idle_")) {
                 const n = (idleReads.get(p) ?? 0) + 1;
                 idleReads.set(p, n);
@@ -1770,9 +1795,11 @@ for (const mode of [
         "snapshot_answer_missing",
         "snapshot_wrong_receipt",
         "snapshot_lost_receipt",
+        "snapshot_lost_receipt_wrong_source",
       ].includes(mode);
       const pass = [
         "snapshot_valid",
+        "snapshot_lost_receipt",
         "snapshot_unconfigured",
         "snapshot_not_ready",
         "snapshot_host_unavailable",
@@ -1781,17 +1808,38 @@ for (const mode of [
       expect(passed).toBe(pass);
       expect(report.starts).toBe(Number(modalAllocated) + Number(dockerAllocated));
       expect(report.features["launch-snapshot"].docker.status).toBe(
-        mode === "snapshot_valid" ? "pass" : mode === "snapshot_unsupported" ? "unsupported" : "not-run",
+        mode === "snapshot_valid" || mode === "snapshot_lost_receipt"
+          ? "pass"
+          : mode === "snapshot_unsupported"
+            ? "unsupported"
+            : "not-run",
       );
       for (const provider of providers) {
         const allocated = provider === "modal" ? modalAllocated : dockerAllocated;
         expect(calls.includes(`${provider}:sandbox/launch`)).toBe(allocated);
         if (allocated) {
           expect(report.features.cleanup[provider].status).toBe("pass");
-          if (provider === "docker" && mode === "snapshot_lost_receipt") {
+          if (provider === "docker" && mode.startsWith("snapshot_lost_receipt")) {
             expect(calls).toContain("docker:sandbox/list");
             expect(calls.filter((call) => call === "docker:sandbox/launch")).toHaveLength(1);
-            expect(turns.get(provider)).toBeUndefined();
+            if (mode === "snapshot_lost_receipt") {
+              expect(turns.get(provider)).toHaveLength(1);
+              expect(lines).toContain(
+                JSON.stringify({
+                  step: "parity_docker_snapshot_launch",
+                  provider: "docker",
+                  pass: true,
+                  elapsedMs: 2_500,
+                }),
+              );
+            } else {
+              expect(turns.get(provider)).toBeUndefined();
+              expect(report.features["launch-snapshot"].docker.diagnostic).toMatchObject({
+                code: "invalid_snapshot_source",
+                requestId: launchRequestId,
+                requestKey: dockerLaunchKey,
+              });
+            }
           } else if (mode !== "snapshot_wrong_receipt" || provider !== "docker")
             expect(turns.get(provider)).toHaveLength(1);
         }

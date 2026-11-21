@@ -672,6 +672,28 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
       };
     }
 
+    type LaunchSandbox = {
+      id: string;
+      provider: string;
+      snapshotId?: string;
+      hostId?: string;
+      image?: string;
+      orgId?: string;
+      ownerId?: string;
+      visibility?: string;
+    };
+
+    function matchesSnapshot(receipt: LaunchSandbox, snapshot: NonNullable<typeof dockerSnapshot>) {
+      return (
+        receipt.snapshotId === snapshot.id &&
+        receipt.hostId === snapshot.hostId &&
+        receipt.image === snapshot.image &&
+        receipt.orgId === snapshot.orgId &&
+        receipt.ownerId === snapshot.ownerId &&
+        receipt.visibility === "private"
+      );
+    }
+
     async function launchWithObservation(provider: "modal" | "docker") {
       const started = io.now();
       const requestKey = `post-deploy-smoke:${crypto.randomUUID()}`;
@@ -686,7 +708,8 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
         await io.recordSandbox?.(c.org, sandboxId, requestKey, provider);
       }
 
-      let result: { sandbox: { id: string; provider: string } };
+      const dockerInput = provider === "docker" ? dockerLaunchInput() : undefined;
+      let result: { sandbox: LaunchSandbox };
       try {
         result = await request<typeof result>(
           "sandbox/launch",
@@ -698,7 +721,7 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
             credentialId: c.modelAccountId,
             visibility: "private",
             ttlSeconds: 1800,
-            ...(provider === "docker" ? dockerLaunchInput() : { golden: c.golden, connections: [] }),
+            ...(dockerInput ?? { golden: c.golden, connections: [] }),
             idempotencyKey: requestKey,
             externalRef: requestKey,
           },
@@ -712,6 +735,7 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
           (detail.httpStatus ?? 0) >= 500
         ) {
           const sandbox = await observeSmokeLaunch(Math.min(budget, io.now() + timeoutMs), io, async (remainingMs) => {
+            const readStarted = io.now();
             const inventory = await request<{
               sandboxes?: { id: string; provider: string; externalRef: string; status: string }[];
             }>(
@@ -729,10 +753,36 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
             )
               return;
             if (!id) await claim(row.id);
-            if (row.id === id && (row.status === "ready" || (provider === "docker" && row.status === "running")))
-              return row;
+            if (row.id !== id || (row.status !== "ready" && !(dockerInput && row.status === "running"))) return;
+            if (!dockerInput) return row;
+            const readBudget = () => Math.min(5_000, remainingMs - (io.now() - readStarted));
+            const statusBudget = readBudget();
+            if (statusBudget <= 0) return;
+            const status = await request<{ id: string; status: string }>(
+              "sandbox/status",
+              { org: c.org, id: row.id },
+              statusBudget,
+            ).catch(() => undefined);
+            if (status?.id !== row.id || (status.status !== "ready" && status.status !== "running")) return;
+            if (!dockerSnapshot) return row;
+            const receiptBudget = readBudget();
+            if (receiptBudget <= 0) return;
+            const receipt = await request<LaunchSandbox & { status: string }>(
+              "docker/sandboxes/get",
+              { org: dockerSnapshot.orgId, sandboxId: row.id },
+              receiptBudget,
+            ).catch(() => undefined);
+            if (!receipt) return;
+            if (receipt.id !== row.id || receipt.provider !== provider || !matchesSnapshot(receipt, dockerSnapshot))
+              throw new ParityError({
+                ...detail,
+                code: "invalid_snapshot_source",
+                message: "The recovered sandbox does not match the requested Docker snapshot.",
+                requestKey,
+              });
+            if (receipt.status === "ready" || receipt.status === "running") return receipt;
           });
-          if (sandbox && !dockerSnapshot) result = { sandbox };
+          if (sandbox) result = { sandbox };
           else {
             keyedLaunchUnconfirmed = id === undefined;
             throw new ParityError({ ...detail, requestKey });
@@ -2149,23 +2199,7 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
             throw new Error("invalid_launch_receipt");
           id = result.sandbox.id;
           if (dockerSnapshot) {
-            const receipt = result.sandbox as {
-              snapshotId?: string;
-              hostId?: string;
-              image?: string;
-              orgId?: string;
-              ownerId?: string;
-              visibility?: string;
-            };
-            if (
-              receipt.snapshotId !== dockerSnapshot.id ||
-              receipt.hostId !== dockerSnapshot.hostId ||
-              receipt.image !== dockerSnapshot.image ||
-              receipt.orgId !== dockerSnapshot.orgId ||
-              receipt.ownerId !== dockerSnapshot.ownerId ||
-              receipt.visibility !== "private"
-            )
-              throw new Error("invalid_snapshot_source");
+            if (!matchesSnapshot(result.sandbox, dockerSnapshot)) throw new Error("invalid_snapshot_source");
             io.out(
               JSON.stringify({
                 step: "parity_docker_snapshot_launch",
