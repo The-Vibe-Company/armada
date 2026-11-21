@@ -100,10 +100,17 @@ export function createJobsRunner(
     const scheduleRenewal = () => {
       cancelRenewal = schedule((LEASE_SECONDS * 1000) / 3, () => (renewal = renew()));
     };
+    const settle = async (result: JobResult) => {
+      if (!ownership.aborted && !(await store.complete(job, owner, result)))
+        await store.retireStale(job, owner, result.unattempted ? "no_dispatch" : undefined);
+    };
     try {
       if (signal.aborted) return;
-      const state = await store.inspect(job, owner);
-      if (signal.aborted || state === "lost") return;
+      const state = await store.inspect(job, owner).catch(async (error: unknown) => {
+        if (job.kind !== "launch") throw error;
+        if (!signal.aborted) await settle({ status: "retry", after: new Date(Date.now() + 1_000), unattempted: true });
+      });
+      if (signal.aborted || !state || state === "lost") return;
       if (state === "stale") {
         await store.retireStale(job, owner, "no_dispatch");
         return;
@@ -128,8 +135,7 @@ export function createJobsRunner(
           return generation;
         },
       });
-      if (!ownership.aborted && !(await store.complete(job, owner, result)))
-        await store.retireStale(job, owner, result.unattempted ? "no_dispatch" : undefined);
+      await settle(result);
     } finally {
       lease.abort();
       cancelExpiry();
