@@ -221,7 +221,6 @@ export function createProviderRegistry(
   };
 }
 
-/** Refuses a provider instance that is not the record's own backend. */
 export function assertProviderOf(provider: Provider, expected: SandboxProviderId): void {
   if (provider.id !== expected) {
     throw new ProviderRoutingError(
