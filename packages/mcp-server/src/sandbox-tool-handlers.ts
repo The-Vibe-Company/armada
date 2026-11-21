@@ -424,6 +424,7 @@ export function configureTools(
           "The command started in the background. Check sandbox status before retrying.",
         );
       try {
+        signal?.throwIfAborted();
         const nativeAfter = (!enrolled && (await readNativeSecrets("after"))) || [];
         const secrets = [...(await context.exposedSecrets(found.orgId)), ...nativeBefore, ...nativeAfter];
         const clip = (text: string) => {

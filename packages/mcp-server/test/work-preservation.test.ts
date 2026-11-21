@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, expect, mock, spyOn, test } from "bun:test";
+import { afterAll, beforeAll, expect, jest, mock, spyOn, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { decryptSecret, encryptSecret, type Provider, ProviderError } from "@armada/core/server";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
@@ -1011,6 +1011,35 @@ test.each(["lost command response", "failed redaction", "failed settlement"])(
     expect(lease?.active).toBe(true);
   },
 );
+
+test("ordinary native exec skips post-command provider sampling after the activity deadline", async () => {
+  const fake = fakeBoat();
+  const provider = {
+    ...fake.provider,
+    id: "modal",
+    async exec(request: Parameters<typeof fake.provider.exec>[0]) {
+      const completed = await fake.provider.exec(request);
+      jest.advanceTimersByTime(180_000);
+      return completed;
+    },
+  };
+  const { context, sandboxId, invoke } = await nativeExecFixture(provider, crypto.randomUUID());
+  const sampled: string[] = [];
+  context.launchCredentials.nativeSecrets = async (_actor, _id, _provider, _placement, phase) => {
+    sampled.push(phase);
+    return [];
+  };
+
+  jest.useFakeTimers();
+  try {
+    const result = await invoke("exec", { id: sandboxId, command: "edit workspace" });
+    expect(result.content).toContainEqual({ type: "text", text: "error code: outcome_unknown" });
+    expect(fake.execs).toHaveLength(1);
+    expect(sampled).toEqual(["before"]);
+  } finally {
+    jest.useRealTimers();
+  }
+});
 
 test("owners and admins can recover the exact native archive after normal deletion and handoff replay", async () => {
   const archive = Buffer.from("detached work fixture").toString("base64");
