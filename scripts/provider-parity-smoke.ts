@@ -758,7 +758,6 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
             const readBudget = () => Math.min(5_000, remainingMs - (io.now() - readStarted));
             const statusBudget = readBudget();
             if (statusBudget <= 0) return;
-            // Docker machine readiness can precede completion of launch setup.
             const status = await request<{ id: string; status: string }>(
               "sandbox/status",
               { org: c.org, id: row.id },
