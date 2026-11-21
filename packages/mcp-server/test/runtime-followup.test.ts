@@ -1,4 +1,7 @@
 import { describe, expect, jest, test } from "bun:test";
+import { mkdtemp, readdir, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { failureDiagnostic, type Sql } from "@armada/core/server";
 import { createAccountTurnQueue } from "../src/account-turn-queue.ts";
 import { createSqlData } from "../src/data.ts";
@@ -7,7 +10,7 @@ import { createRuntimeFollowup, RuntimeFollowupConflict } from "../src/runtime-f
 import { RuntimeReconciliationConflict } from "../src/runtime-reconciliation-conflict.ts";
 import { callSharedTool } from "../src/tool-api.ts";
 import { rowOnlyDatabase } from "./row-only-database.ts";
-import { runtimeFixture as fixture, scopedRuntimeFixture } from "./runtime.fixture.ts";
+import { configureRuntimeFixture, runtimeFixture as fixture, scopedRuntimeFixture } from "./runtime.fixture.ts";
 import { ENCRYPTION_KEY } from "./support.ts";
 
 const sharedDatabase = rowOnlyDatabase();
@@ -501,3 +504,46 @@ describe.each([
     expect((await createSqlData(f.sql)(f.caller).sandboxes.get(f.row.id))?.taskPromptId).toBe(next.promptId);
   });
 });
+
+test.each([
+  {
+    phase: "setup",
+    error: "sandbox golden does not exist",
+    prepare: (database: Awaited<ReturnType<typeof sharedDatabase>>) =>
+      fixture(database, "boat", "codex", true, undefined, {
+        goldenId: crypto.randomUUID(),
+        providerSandboxId: "missing-golden",
+      }),
+  },
+  {
+    phase: "configuration",
+    error: "runtime fixture configuration failed",
+    async prepare(database: Awaited<ReturnType<typeof sharedDatabase>>) {
+      const runtime = await fixture(database, "boat", "codex", true, undefined, {
+        goldenId: database.sharedGoldenId,
+        providerSandboxId: crypto.randomUUID(),
+      });
+      return configureRuntimeFixture(runtime, async () => {
+        throw new Error("runtime fixture configuration failed");
+      });
+    },
+  },
+])(
+  "failed runtime $phase removes its journal directory and keeps the caller's database open",
+  async ({ error, prepare }) => {
+    const database = await sharedDatabase();
+    const root = await mkdtemp(join(tmpdir(), "runtime-setup-failure-"));
+    const tempKey = process.platform === "win32" ? "TEMP" : "TMPDIR";
+    const previous = process.env[tempKey];
+    process.env[tempKey] = root;
+    try {
+      await expect(prepare(database)).rejects.toThrow(error);
+      expect(await readdir(root)).toEqual([]);
+      expect(database.db.closed).toBe(false);
+    } finally {
+      if (previous === undefined) delete process.env[tempKey];
+      else process.env[tempKey] = previous;
+      await rm(root, { recursive: true, force: true });
+    }
+  },
+);

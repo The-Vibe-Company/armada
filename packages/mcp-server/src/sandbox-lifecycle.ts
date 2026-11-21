@@ -911,7 +911,12 @@ export async function hasStrictNativeDrainStop(tx: Sql, sandboxId: string) {
   return result.rows.length > 0;
 }
 
-export async function requestBoatSubscriptionStop(tx: Sql, id: string, generation: number) {
+export async function requestNativeSubscriptionStop(
+  tx: Sql,
+  id: string,
+  generation: number,
+  provider: "boat" | "modal",
+) {
   const token = crypto.randomUUID();
   const {
     rows: [admitted],
@@ -920,13 +925,13 @@ export async function requestBoatSubscriptionStop(tx: Sql, id: string, generatio
        activity_lease_id=$3, activity_until=clock_timestamp()+interval '2 minutes',
        stop_generation=stop_generation+1, stop_requested_at=clock_timestamp(), reconcile_after=clock_timestamp()
      where s.id=$1 and s.lifecycle_generation=$2 and s.status in ('ready','running','starting')
-       and s.provider='boat' and ${NATIVE_WORK_ROUTE} and s.stop_requested_at is null and s.stopped_at is null
+       and s.provider=$4 and ${NATIVE_WORK_ROUTE} and s.stop_requested_at is null and s.stopped_at is null
        and s.deleted_at is null and not s.native_drain_pending and s.expires_at>clock_timestamp()
        and s.activity_lease_id is null and (s.activity_until is null or s.activity_until<=clock_timestamp())
        and (s.reconcile_lease_until is null or s.reconcile_lease_until<=clock_timestamp())
        and not exists(select 1 from public.orchestrators o where o.sandbox_id=s.id)
      returning s.status, s.lifecycle_generation::text as generation`,
-    [id, generation, token],
+    [id, generation, token, provider],
   );
   if (!admitted) return false;
   await publishOwnerStop(tx, {
@@ -934,7 +939,7 @@ export async function requestBoatSubscriptionStop(tx: Sql, id: string, generatio
     generation: admitted.generation,
     fromState: admitted.status,
     toState: "stopping",
-    code: "owner_stop_admitted",
+    code: provider === "modal" ? "runtime_retained_stop" : "owner_stop_admitted",
   });
   await tx.query(
     `update public.sandboxes set activity_lease_id=null, activity_until=null
@@ -1865,6 +1870,7 @@ export function createSandboxLifecycle(
       const retainedResume = row.retained_resume;
       const rollbackRetainedResume = retainedResume && row.runtime_transport === "dialout";
       const native = !row.boat_runtime && row.runtime_transport !== "dialout";
+      const retainedNativeStop = native && providerId === "modal" && row.checkpointed_stop;
       // Lease expiry is not evidence a native exec completed. Retain its identity
       // until an owner outcome or explicit/TTL cleanup, rather than inventing idle.
       const retainUnknownActivity =
@@ -2266,6 +2272,7 @@ export function createSandboxLifecycle(
           }
           const requireRetention =
             strictNativeStop ||
+            retainedNativeStop ||
             (!expired &&
               (row.checkpointed_stop ||
                 retainedResume ||
@@ -2318,6 +2325,7 @@ export function createSandboxLifecycle(
         }
         if (
           !strictNativeStop &&
+          !retainedNativeStop &&
           resolved &&
           !rollbackRetainedResume &&
           (!row.checkpointed_stop || expired) &&
