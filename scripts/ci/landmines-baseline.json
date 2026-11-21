@@ -1328,7 +1328,6 @@
     "packages/auth/test/sql.test.ts": 3,
     "packages/cli/src/agent-validation.ts": 2,
     "packages/cli/src/api-receipts.ts": 4,
-    "packages/cli/src/application-vault-commands.ts": 5,
     "packages/cli/src/args.ts": 6,
     "packages/cli/src/armada-api.ts": 8,
     "packages/cli/src/auth-commands.ts": 5,

@@ -9,8 +9,8 @@ the same shape, key restrictions, scope checks and size limits as templates:
 
 Pass an array in the normal launch request's `variables` field, or repeat the
 existing CLI syntax `--variable APP_REGION:UUID:VERSION`. Manage source values
-through the existing `armada vars` stdin/file commands; launch never accepts
-raw environment overrides or model/provider credentials.
+in the dashboard or through the [vault API commands](cli-admin.md#application-variables-and-secrets).
+Launch accepts only variable references for this feature.
 
 Admission resolves authorized personal/org variables in the allocation
 transaction using the shared template resolver. Wrong versions, other owners'

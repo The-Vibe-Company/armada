@@ -573,7 +573,7 @@ fi
 
 The trap removes captured files when the shell exits. For a failure you need to
 investigate later, retain the files only in a protected location before exiting.
-Do not adapt this into logging raw values: `vars read`, token creation and
+Do not adapt this into logging raw values: `armada api variables/read -`, token creation and
 installer output can be sensitive. Never put credential values in arguments.
 For an uncertain launch outcome, inspect existing sandbox/receipt state before
 retrying; template launches must preserve their original request key and body.
