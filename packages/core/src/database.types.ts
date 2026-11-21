@@ -439,6 +439,7 @@ export type Database = {
           generation: number;
           golden_ids: string[];
           credential_ids: string[];
+          modal_drain_cleaned_placement: string | null;
         };
         Insert: {
           id?: string;
@@ -451,6 +452,7 @@ export type Database = {
           generation?: number;
           golden_ids?: string[];
           credential_ids?: string[];
+          modal_drain_cleaned_placement?: string | null;
         };
         Update: {
           id?: string;
@@ -463,6 +465,7 @@ export type Database = {
           generation?: number;
           golden_ids?: string[];
           credential_ids?: string[];
+          modal_drain_cleaned_placement?: string | null;
         };
         Relationships: [
           {
