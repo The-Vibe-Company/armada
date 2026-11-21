@@ -112,6 +112,7 @@ test("uncertain send reconciles the same durable identity/lease; changed input a
 
 describe("direct Modal runtime admission", () => {
   const modalSetupFixture = scopedRuntimeFixture(async () => fixture(await sharedDatabase(), "modal", "codex"), {
+    perTest: true,
     timeout: 20_000,
   });
 
@@ -138,7 +139,21 @@ describe("direct Modal runtime admission", () => {
         (await f.sql.query("select activity_lease_id from public.sandboxes where id=$1", [request.id])).rows,
       ).toEqual([{ activity_lease_id: null }]);
     };
+    await f.db.query(
+      `with template as (
+         insert into launch_templates(org_id,owner_id,scope,name)
+         values($1,$2,'personal','runtime-followup-template') returning id
+       ), revision as (
+         insert into launch_template_revisions(template_id,revision,definition,digest,created_by)
+         select id,1,'{}',repeat('a',64),$2 from template returning id,template_id
+       )
+       insert into template_launch_requests(org_id,actor_id,client_key,digest,template_id,revision_id,
+                                            manifest,golden_operation_fence_id,sandbox_id)
+       select $1,$2,'runtime-followup',repeat('a',64),template_id,id,'{}',$3,$4 from revision`,
+      [f.row.orgId, f.caller.userId, crypto.randomUUID(), request.id],
+    );
     await refused("Modal launch setup is still in progress.");
+    await f.db.query("delete from template_launch_requests where sandbox_id=$1", [request.id]);
     await f.db.query("update public.jobs set state='failed' where id=$1", [setupId]);
     await refused("Modal launch setup failed.");
     const queue = createAccountTurnQueue(f.sql, ENCRYPTION_KEY);
@@ -146,7 +161,7 @@ describe("direct Modal runtime admission", () => {
       await queue.acceptInitialLaunch(
         f.caller,
         { id: request.id, request_id: setupId, prompt: "initial launch prompt" },
-        lifecycleGeneration!,
+        String(lifecycleGeneration),
         async () => true,
       ),
     ).toBe(true);
@@ -156,6 +171,28 @@ describe("direct Modal runtime admission", () => {
     const receipt = await f.send(f.caller, request);
     expect(receipt.promptId).not.toBe(f.first.promptId);
     expect(f.starts).toHaveLength(2);
+  });
+
+  test("a fresh wake cannot bypass setup on a retained Modal sandbox", async () => {
+    const f = await modalSetupFixture();
+    const request = f.input();
+    const { lifecycleGeneration } = (await createSqlData(f.sql)(f.caller).sandboxes.get(request.id))!;
+    await createJobsStore(f.sql, ENCRYPTION_KEY).enqueue(
+      "launch_initial_turn",
+      request.id,
+      lifecycleGeneration!,
+      request.id,
+      {},
+      { orgId: f.row.orgId, maxAttempts: 1 },
+    );
+    await f.db.query("update public.sandboxes set status='stopped',stopped_at=now() where id=$1", [request.id]);
+    const send = createRuntimeFollowup(f.sql, ENCRYPTION_KEY, f.bridge, undefined, async () => {
+      throw new Error("Resume dispatch was reached before launch setup.");
+    });
+    await expect(send(f.caller, request)).rejects.toMatchObject({
+      code: "conflict",
+      message: "Modal launch setup is still in progress.",
+    });
   });
 });
 

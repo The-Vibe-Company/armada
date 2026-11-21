@@ -11,6 +11,7 @@ import {
 } from "@armada/core/server";
 import { createSqlData } from "../src/data.ts";
 import { createEventFeed } from "../src/event-feed.ts";
+import { ModalLaunchSetupConflict } from "../src/jobs/modal-launch-setup.ts";
 import { launchCredentials } from "../src/launch-credentials.ts";
 import { createNativeWebhookPrompts } from "../src/native-webhook-prompts.ts";
 import { observeRequest } from "../src/request-observability.ts";
@@ -451,6 +452,7 @@ test("an uncertain scoped message records a correlated operator diagnostic", asy
     });
     await db.query("insert into orchestrator_children values($1,$2,$3,$4)", [child.id, id, p.org, p.owner]);
     let claimMiss = false;
+    let setupPending = false;
     let admissions = 0;
     let dispatches = 0;
     const children = createSandboxChildren(
@@ -468,6 +470,7 @@ test("an uncertain scoped message records a correlated operator diagnostic", asy
       {
         async message() {
           dispatches++;
+          if (setupPending) throw new ModalLaunchSetupConflict("modal_launch_setup_pending");
           throw new RuntimeFollowupConflict("runtime_reconciliation_active", "private provider response");
         },
         async launch() {
@@ -543,6 +546,12 @@ test("an uncertain scoped message records a correlated operator diagnostic", asy
     );
     expect(claimMissResponse?.status).toBe(200);
     expect(dispatches).toBe(1);
+    claimMiss = false;
+    setupPending = true;
+    const refused = await children.message(token, "message-setup-pending", child.id, "synthetic child prompt");
+    expect(refused.state).toBe("failed");
+    expect(await children.message(token, "message-setup-pending", child.id, "synthetic child prompt")).toEqual(refused);
+    expect(dispatches).toBe(2);
     expect(lines.join("\n")).not.toContain("private provider response");
   } finally {
     await close();
