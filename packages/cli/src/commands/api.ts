@@ -63,7 +63,7 @@ Example: armada api org/list
 
 async function createRawApiClient(io: ArmadaApiIo) {
   const { origin, timeoutMs, token, renewToken } = await authenticatedSession(io, { safeRefreshErrors: true });
-  const rawResponses = new WeakMap<Response, Response>();
+  const rawResponses = new WeakMap<object, Pick<Response, "text">>();
   return commandClient(
     origin,
     {
