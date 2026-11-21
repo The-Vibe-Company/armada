@@ -1060,9 +1060,16 @@ test.each([
     expect(row.rows).toEqual([{ lifecycle_generation: 1, activity_lease_id: null, task_prompt_id: "previous" }]);
   }
   if (outcome === "lost reply") {
-    await db.query("update sandboxes set activity_until=now()-interval '1 second' where id=$1", [sandboxId]);
+    await db.query(
+      "update sandboxes set activity_until=now()-interval '1 second',task_prompt_id='prompt_1' where id=$1",
+      [sandboxId],
+    );
     const later = await invoke("steer", { id: sandboxId, text: "inspect workspace" });
     expect(later.structuredContent).toMatchObject({ promptId: "prompt_2" });
+    const unresolved = await db.query("select generation from sandbox_native_send_attempts where sandbox_id=$1", [
+      sandboxId,
+    ]);
+    expect(unresolved.rows).toEqual([{ generation: 2 }]);
   }
   await db.query("update native_webhook_prompts set completed_at=now() where sandbox_id=$1", [sandboxId]);
   const handoff = await handoffWithLaterCleanCapture(sandboxId);
