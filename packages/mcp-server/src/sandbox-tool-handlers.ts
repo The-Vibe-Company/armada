@@ -433,7 +433,7 @@ export function configureTools(
           return safe.length <= OUTPUT_LIMIT ? safe : `...${safe.slice(-OUTPUT_LIMIT)}`;
         };
         nativeExecCompleted =
-          fencedExec &&
+          fencedExec === true &&
           result.detached === false &&
           result.timedOut === false &&
           Number.isSafeInteger(result.exitCode) &&
