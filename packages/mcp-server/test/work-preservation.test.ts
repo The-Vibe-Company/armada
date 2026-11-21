@@ -1508,8 +1508,8 @@ test.each([
     const result = await transaction((tx) =>
       work({
         ...tx,
-        query: async (statement, params) => {
-          const queried = await tx.query(statement, params);
+        async query<T>(statement: string, params?: unknown[]) {
+          const queried = await tx.query<T>(statement, params);
           if (statement.includes("set modal_drain_cleaned_placement")) {
             recordedCleanup = true;
             if (firstPass && scenario === "rolled back cleanup receipt") throw interruption;
