@@ -87,6 +87,19 @@ class SmokeFailure extends Error {
     super(code);
   }
 }
+class CredentialListSmokeFailure extends SmokeFailure {
+  constructor(
+    failure: SmokeFailure,
+    readonly credentialList: {
+      phase: "headers" | "body";
+      httpStatus?: number;
+      requestId?: string;
+      timeoutMs?: number;
+    },
+  ) {
+    super(failure.code, failure.status, undefined, undefined, failure.transportTimeoutMs);
+  }
+}
 function jsonShape(value: unknown): string {
   if (value === null) return "null";
   if (value === undefined) return "missing";
@@ -336,6 +349,7 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
                   ? error.code
                   : "invalid_response",
               ...(error instanceof TemplateSkillSmokeFailure ? error.details : {}),
+              ...(error instanceof CredentialListSmokeFailure ? { credentialList: error.credentialList } : {}),
               ...(error instanceof SmokeFailure && error.launchResponse
                 ? { launchResponse: error.launchResponse }
                 : {}),
@@ -579,8 +593,9 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
     const signal = AbortSignal.timeout(requestTimeoutMs);
     const timedOut = (error: unknown) =>
       signal.aborted || (error instanceof DOMException && error.name === "TimeoutError");
+    let response: Response | undefined;
     try {
-      const response = await io.fetch(`${origin}/api/v1/${path}`, {
+      response = await io.fetch(`${origin}/api/v1/${path}`, {
         method: body === undefined ? "GET" : "POST",
         headers: {
           authorization: `Bearer ${env.ARMADA_TOKEN}`,
@@ -663,9 +678,27 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
         fail("invalid_response");
       return result as T;
     } catch (error) {
-      if (error instanceof SmokeFailure || error instanceof VaultSmokeFailure) throw error;
-      if (timedOut(error)) throw new SmokeFailure("request_failed", undefined, undefined, undefined, requestTimeoutMs);
-      fail("request_failed");
+      if (error instanceof VaultSmokeFailure) throw error;
+      const failure =
+        error instanceof SmokeFailure
+          ? error
+          : new SmokeFailure(
+              "request_failed",
+              undefined,
+              undefined,
+              undefined,
+              timedOut(error) ? requestTimeoutMs : undefined,
+            );
+      if (path === "creds/list") {
+        const requestId = response?.headers.get("x-request-id");
+        throw new CredentialListSmokeFailure(failure, {
+          phase: response ? "body" : "headers",
+          ...(response ? { httpStatus: response.status } : {}),
+          ...(requestId && SANDBOX_ID.test(requestId) ? { requestId } : {}),
+          ...(failure.transportTimeoutMs === undefined ? {} : { timeoutMs: failure.transportTimeoutMs }),
+        });
+      }
+      throw failure;
     }
   }
   async function poll<T>(

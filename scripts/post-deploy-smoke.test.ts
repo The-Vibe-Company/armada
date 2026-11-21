@@ -1215,6 +1215,45 @@ test("template/skill smoke validates the entire staging case configuration befor
   }
 });
 
+test.each([
+  {
+    mode: "timeout before headers",
+    code: "request_failed",
+    credentialList: { phase: "headers", timeoutMs: deadlines.template_model_account },
+  },
+  {
+    mode: "server failure",
+    code: "api_failed",
+    credentialList: { phase: "body", httpStatus: 500, requestId: sandboxFixtureId },
+  },
+])("template model account identifies $mode without logging response content", async (scenario) => {
+  const fake = fixture(() => {
+    if (scenario.mode === "timeout before headers") throw new DOMException("secret transport detail", "TimeoutError");
+    return Response.json(
+      { error: { message: "secret server detail" } },
+      { status: 500, headers: { "x-request-id": sandboxFixtureId } },
+    );
+  });
+  const staging = "https://armada-mcp-staging.up.railway.app";
+  expect(
+    await postDeploySmoke({ ...env, ARMADA_URL: staging }, ["--templates-skills"], {
+      ...fake.io,
+      fetch: (url, init) => fake.io.fetch(url.replace(staging, env.ARMADA_URL), init),
+    }),
+  ).toBe(false);
+  expect(fake.calls.map(({ path }) => path)).toEqual(["creds/list"]);
+  expect(fake.lines.filter((line) => line !== boatNotice).map((line) => JSON.parse(line))).toContainEqual({
+    case: 0,
+    lane: "templates",
+    step: "template_model_account",
+    elapsedMs: 0,
+    pass: false,
+    code: scenario.code,
+    credentialList: scenario.credentialList,
+  });
+  expect(fake.lines.join("")).not.toContain("secret");
+});
+
 test.each(["configured", "no_pins", "refused", "late_wait", "late_answer"])(
   "template transport %s cleans workers and reports closed verdicts",
   async (mode) => {
