@@ -1,12 +1,9 @@
-import { AuthError } from "@armada/auth";
 import { GoldenError } from "@armada/core";
-import { type LogsInput, type LogsResult, readLogsOperation, sandboxOperations } from "@armada/core/contract";
-import type { Armada } from "@armada/sdk";
-import { validApiReceipt } from "../api-receipts.ts";
+import type { ListResult, LogsInput, LogsResult } from "@armada/core/contract";
+import { decodeApiResponse } from "../api-responses.ts";
 import { acceptedOptions, flag, parseArgs, single } from "../args.ts";
 import { resolveSandboxId } from "../current-sandbox.ts";
-import { sandboxFailure } from "../sandbox-errors.ts";
-import { ArmadaApiError, createArmadaSdkReader, resolveArmadaOrigin } from "../sdk-session.ts";
+import { createSdkCommandClient } from "../sdk-session.ts";
 import type { Command } from "./command.ts";
 
 const events: Command["run"] = async (argv, { io, deps, auth }) => {
@@ -20,48 +17,25 @@ const events: Command["run"] = async (argv, { io, deps, auth }) => {
   const org = single(args, "--org");
   const follow = flag(args, "-f");
   const json = flag(args, "--json");
-  const read = await createArmadaSdkReader({ ...auth, fetch: deps.fetch ?? auth.fetch });
-  const request = async <T>(path: string, call: (sdk: Armada) => Promise<T>, signal?: AbortSignal) => {
-    const invalidReceipt = () =>
-      new AuthError("Armada returned an invalid success receipt. Check the sandbox before retrying.", "unavailable");
-    try {
-      const value = await read(call, signal);
-      if (!validApiReceipt(path, value)) throw invalidReceipt();
-      return value;
-    } catch (error) {
-      if (!(error instanceof ArmadaApiError)) throw error;
-      if (error.status >= 200 && error.status < 300) throw invalidReceipt();
-      if (error.status === 404 && ["unknown_response", "unknown_route"].includes(error.serverCode)) {
-        const origin = await resolveArmadaOrigin(auth);
-        throw new ArmadaApiError(
-          "unavailable",
-          error.status,
-          `This Armada deployment at ${origin} does not serve ${path}; the dashboard or server may be out of date. Ask an administrator to verify the deployment.`,
-        );
-      }
-      const failure = sandboxFailure(path, error.status, error.serverCode, undefined);
-      if (!failure || !error.status) throw error;
-      throw new ArmadaApiError(failure.code, error.status, failure.message, undefined, failure.exitCode);
-    }
-  };
-  const id = await resolveSandboxId(args.positionals[0], auth.env, deps.sandboxFile, org, (input) =>
-    request(sandboxOperations.listSandboxes.route.path, (sdk) => sdk.list(input)),
+  const client = await createSdkCommandClient(
+    { ...auth, fetch: deps.fetch ?? auth.fetch },
+    (result, path, url, environmentToken) => decodeApiResponse(result, path, url, environmentToken),
+  );
+  const id = await resolveSandboxId(
+    args.positionals[0],
+    auth.env,
+    deps.sandboxFile,
+    org,
+    client.sandboxes.list<ListResult>,
   );
   const base: LogsInput = { id, follow, ...(org === undefined ? {} : { org }) };
   let firstTail = tail !== undefined;
   let cursor: string | null = null;
 
   while (true) {
-    const signal = AbortSignal.timeout(600_000);
-    const input: LogsInput = {
-      ...base,
-      ...(firstTail ? { direction: "backward", limit } : {}),
-      ...(cursor === null ? {} : { cursor }),
-    };
-    const page: LogsResult = await request(
-      readLogsOperation.route.path,
-      (sdk) => sdk.logs(input, { signal, timeoutMs: 600_000 }),
-      signal,
+    const page: LogsResult = await client.sandboxes.logs<LogsResult>(
+      { ...base, ...(firstTail ? { direction: "backward", limit } : {}), ...(cursor === null ? {} : { cursor }) },
+      { signal: AbortSignal.timeout(600_000) },
     );
     for (const event of page.events) io.out(`${json ? JSON.stringify(event) : eventText(event)}\n`);
     const hasMore = !firstTail && page.hasMore;
