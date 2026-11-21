@@ -1,6 +1,7 @@
 import { promptFailureReason } from "./native-failure.ts";
 import { type PlanLimit, planLimitData, planLimitFromMessage, planLimitMessage } from "./plan-limit.ts";
 import type { AgentEvent, PromptState, Provider } from "./provider.ts";
+import { launchInfrastructure } from "./sandbox-provider.ts";
 
 /** Event types boat sends when a turn ends "finished" but the agent could not work. */
 const FAILURE_EVENTS = new Set(["usage_limit", "auth_expiry"]);
@@ -116,6 +117,7 @@ export async function readPromptEvents(
   provider: Pick<Provider, "id" | "events">,
   request: { sandboxId: string; promptId: string; conversationId?: string; signal?: AbortSignal },
 ): Promise<{ events: AgentEvent[]; complete: boolean }> {
+  const { terminalPromptEventIsBoundary } = launchInfrastructure(provider.id);
   const all: AgentEvent[] = [];
   let cursor: string | undefined;
   const seen = new Set<string>();
@@ -134,7 +136,7 @@ export async function readPromptEvents(
       (event) =>
         event.kind === "prompt" &&
         event.promptId === request.promptId &&
-        (provider.id === "boat" || event.status === "queued" || event.status === "running"),
+        (terminalPromptEventIsBoundary || event.status === "queued" || event.status === "running"),
     );
     if (foundStart || !read.hasMore)
       return {
