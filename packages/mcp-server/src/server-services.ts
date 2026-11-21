@@ -1,4 +1,5 @@
 import { createSqlAuthStore } from "@armada/auth";
+import { HARNESS_KINDS } from "@armada/core";
 import {
   createApplicationVault,
   createGoldenAdoption,
@@ -340,7 +341,38 @@ export async function createServerServices(env: Record<string, string | undefine
         "modal",
         "modal_runtime_empty_v1",
       );
-      return { ...plan, ownerId: sandbox.ownerId, serverUrl: config.publicUrl };
+      return {
+        ...plan,
+        ownerId: sandbox.ownerId,
+        serverUrl: config.publicUrl,
+        async lockPrerequisites(tx) {
+          const member = await tx.query("select 1 from public.members where org_id=$1 and user_id=$2 for update", [
+            actor.orgId,
+            actor.userId,
+          ]);
+          if (!member.rows.length) throw new Error("Modal launch owner membership is unavailable.");
+          const credential = await tx.query(
+            `select 1 from public.credentials where id=$1 and version=$2 and kind=any($5::public.credential_kind[])
+             and status='active' and (expires_at is null or expires_at>clock_timestamp())
+             and ((scope='user' and owner_id=$3) or (scope='org' and owner_id=$4)) for share`,
+            [
+              sandbox.credentialId,
+              sandbox.credentialVersion,
+              actor.userId,
+              actor.orgId,
+              HARNESS_KINDS[sandbox.harness],
+            ],
+          );
+          if (!credential.rows.length) throw new Error("Modal launch account is unavailable.");
+        },
+        async checkAccountPin(tx) {
+          const current = await tx.query(
+            "select 1 from public.sandboxes where id=$1 and credential_id=$2 and credential_version=$3",
+            [sandbox.id, sandbox.credentialId, sandbox.credentialVersion],
+          );
+          if (!current.rows.length) throw new Error("Modal launch account pin changed.");
+        },
+      };
     });
   const dockerCredentials = launchCredentials(store, config.encryptionKey, undefined, modelAuth, {
     store,

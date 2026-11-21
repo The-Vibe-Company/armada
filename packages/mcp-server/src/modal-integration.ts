@@ -150,9 +150,9 @@ export async function createModalIntegration(options: {
   async function resolveManagementCredentials(
     authority: Pick<ModalManagementAuthority, "credentialScope" | "credentialOwnerId">,
     vault: CredentialReader = options.vault,
-  ): Promise<ResolvedModalManagementCredentials> {
+  ) {
     const row = (await vault.credentials(authority.credentialScope, authority.credentialOwnerId)).find(
-      (candidate) => candidate.kind === "modal",
+      (candidate) => candidate.kind === "modal" && candidate.status === "active",
     );
     if (!row)
       throw new VaultError(
@@ -165,7 +165,9 @@ export async function createModalIntegration(options: {
         ...parseModalTokenPair(value),
         credentialScope: authority.credentialScope,
         credentialOwnerId: authority.credentialOwnerId,
-      };
+        id: row.id,
+        version: row.version,
+      } satisfies ResolvedModalManagementCredentials & { id: string | undefined; version: number | undefined };
     } catch {
       throw new VaultError("unavailable", "The bound Modal credential is invalid. Replace that credential slot.");
     }
@@ -432,11 +434,12 @@ export async function createModalIntegration(options: {
       },
     };
   }
-  const openMachine: Parameters<typeof createModalLaunchCleanupJob>[1] = async (
-    { appName, binding, ...authority },
-    signal,
+  const openMachine = async (
+    { appName, binding, ...authority }: Parameters<Parameters<typeof createModalLaunchCleanupJob>[1]>[0],
+    signal: AbortSignal,
   ) => {
-    const { tokenId, tokenSecret } = await resolveManagementCredentials(authority);
+    const { tokenId, tokenSecret, id, version } = await resolveManagementCredentials(authority);
+    if (!id || !version) throw new Error("Modal platform credential revision is unavailable.");
     signal.throwIfAborted();
     const deploymentId = modalDeploymentId(binding.environment, options.publicUrl);
     const client = new ModalClient({
@@ -457,6 +460,15 @@ export async function createModalIntegration(options: {
       appName,
       binding,
       deploymentId,
+      async canUseModalCredential(tx: Sql) {
+        const { rows } = await tx.query(
+          `select 1 from public.credentials where id=$1 and version=$2 and status='active'
+            and kind='modal' and scope=$3 and owner_id=$4 and (expires_at is null or expires_at>clock_timestamp())
+            for share`,
+          [id, version, authority.credentialScope, authority.credentialOwnerId],
+        );
+        return rows.length > 0;
+      },
       close: () => client.close(),
       resolveRuntimeTicket: async () => null,
       async prepareCheckpoint() {
