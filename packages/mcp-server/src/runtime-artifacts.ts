@@ -52,11 +52,9 @@ export function runtimeArtifactSet(manifest: unknown): RuntimeArtifactSet | unde
     runtime?: unknown;
     harnesses?: unknown;
     opencode?: unknown;
-    antigravity?: { x64?: unknown; arm64?: unknown } | null;
   } | null;
   const runtime = pin(m?.runtime);
   if (!runtime || !m?.harnesses || typeof m.harnesses !== "object") return undefined;
-  if (m.antigravity !== undefined && (!pin(m.antigravity?.x64) || !pin(m.antigravity?.arm64))) return undefined;
   const artifacts = new Map<string, { sha256: string; bytes: number }>();
   for (const harness of Object.values(m.harnesses as Record<string, { archive?: unknown } | null>)) {
     const archive = pin(harness?.archive);

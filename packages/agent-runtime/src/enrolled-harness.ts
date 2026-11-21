@@ -51,7 +51,7 @@ export async function prepareEnrolledHarness(
   if (!root.isDirectory() || root.isSymbolicLink() || root.mode & 0o077) throw Error("enrolled_root_not_private");
   if (credential) {
     const executable = await prepareAntigravity(
-      { serverUrl, cacheDir: join(rootPath, "artifacts", "antigravity-cache"), sharedDir },
+      { cacheDir: join(rootPath, "artifacts", "antigravity-cache") },
       fetcher,
     );
     return {

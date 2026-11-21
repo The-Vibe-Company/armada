@@ -3,9 +3,9 @@ import { constants } from "node:fs";
 import { lstat, mkdir, open, rename, rm } from "node:fs/promises";
 import { isAbsolute, join, resolve } from "node:path";
 import { ANTIGRAVITY_ARTIFACT } from "./antigravity-artifact.ts";
-import { installRuntimeArtifact, type RuntimeArtifact } from "./artifact-cache.ts";
+import { installRuntimeArtifactFromUrl, type RuntimeArtifact } from "./artifact-cache.ts";
 
-type AntigravityPin = { archive: RuntimeArtifact; executable: RuntimeArtifact };
+type AntigravityPin = { url: string; archive: RuntimeArtifact; executable: RuntimeArtifact };
 
 function currentPin() {
   if (process.platform !== "linux" || (process.arch !== "x64" && process.arch !== "arm64"))
@@ -41,15 +41,13 @@ async function verifiedExecutable(path: string, pin: RuntimeArtifact) {
 
 export async function prepareAntigravity(
   input: {
-    serverUrl: string;
     cacheDir: string;
     candidate?: string;
-    sharedDir?: string;
     pin?: AntigravityPin;
   },
-  fetcher: Parameters<typeof installRuntimeArtifact>[1] = fetch,
+  fetcher: Parameters<typeof installRuntimeArtifactFromUrl>[1] = fetch,
 ) {
-  const { cacheDir, candidate, serverUrl, sharedDir, pin = currentPin() } = input;
+  const { cacheDir, candidate, pin = currentPin() } = input;
   if (candidate) {
     const path = resolve(candidate);
     if (await verifiedExecutable(path, pin.executable)) return path;
@@ -60,8 +58,9 @@ export async function prepareAntigravity(
   if (!info.isDirectory() || info.mode & 0o077) throw Error("invalid_antigravity_cache");
   const target = join(cacheDir, `antigravity-${pin.executable.sha256}`);
   if (await verifiedExecutable(target, pin.executable)) return target;
-  const archive = await installRuntimeArtifact(
-    { serverUrl, cacheDir: join(cacheDir, "archives"), artifact: pin.archive, ...(sharedDir ? { sharedDir } : {}) },
+  const archive = await installRuntimeArtifactFromUrl(
+    new URL(pin.url),
+    { cacheDir: join(cacheDir, "archives"), artifact: pin.archive },
     fetcher,
   );
   const executable = (await new Bun.Archive(await Bun.file(archive).bytes()).files()).get("antigravity");
