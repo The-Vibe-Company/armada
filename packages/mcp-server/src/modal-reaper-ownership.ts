@@ -6,6 +6,9 @@ interface OwnershipEvidence {
   logical_id: string | null;
   physical_id: string | null;
   generation: string | null;
+  canonical_tag: boolean | null;
+  canonical_physical_id: string | null;
+  canonical_generation: string | null;
   canonical_binding: boolean | null;
   provider_binding: boolean | null;
   same_owner: boolean | null;
@@ -22,6 +25,9 @@ export function createModalReaperOwnership(sql: Sql, binding: ModalBinding, forD
               m.id as logical_id,
               m.record->>'physicalId' as physical_id,
               m.record->>'generation' as generation,
+              s.id=inventory.sandbox_id as canonical_tag,
+              s.provider_sandbox_id as canonical_physical_id,
+              s.lifecycle_generation::text as canonical_generation,
               (g.modal_workspace=$3 and g.modal_environment=$4 and g.modal_app_id=$5) as canonical_binding,
               (c.context->'binding'->>'workspace'=$3::text
                and c.context->'binding'->>'environment'=$4::text
@@ -43,8 +49,13 @@ export function createModalReaperOwnership(sql: Sql, binding: ModalBinding, forD
                )) as protected`
                   : ""
               }
-       from (values ($1::text,$2::text)) as inventory(logical_id,physical_id)
-       left join public.sandboxes s on s.provider='modal' and s.provider_sandbox_id=inventory.logical_id
+       from (
+         select $1::text as logical_id, $2::text as physical_id,
+                case when $1 ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+                     then $1::uuid end as sandbox_id
+       ) inventory
+       left join public.sandboxes s on s.provider='modal'
+         and (s.id=inventory.sandbox_id or s.provider_sandbox_id=inventory.logical_id)
        left join public.goldens g on g.id=s.golden_id
        left join public.modal_machines m on m.id=inventory.logical_id or m.record->>'physicalId'=inventory.physical_id
        left join public.modal_server_scopes c on c.scope=m.scope
@@ -74,6 +85,17 @@ export function createModalReaperOwnership(sql: Sql, binding: ModalBinding, forD
       return { kind: "unresolved" };
     }
     if (!evidence.status) return { kind: "absent" };
+    if (evidence.canonical_tag) {
+      // Create can be visible in inventory before the launch claimant binds the physical ID.
+      if (evidence.canonical_physical_id !== machine.machineId || evidence.logical_id !== null)
+        return { kind: "unresolved" };
+      const generation = evidence.canonical_generation;
+      return {
+        kind: "owned",
+        status: evidence.status,
+        ...(generation && generation === machine.generation ? { generation } : {}),
+      };
+    }
     const { generation } = evidence;
     const exactGeneration =
       evidence.physical_id === machine.machineId && generation && generation === machine.generation;

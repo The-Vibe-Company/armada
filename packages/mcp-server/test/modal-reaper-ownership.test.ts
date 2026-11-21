@@ -36,7 +36,7 @@ beforeAll(async () => {
     create table goldens (id uuid primary key, modal_workspace text, modal_environment text, modal_app_id text);
     create table sandboxes (
       id uuid primary key, provider text, provider_sandbox_id text, status text,
-      org_id uuid, owner_id uuid, golden_id uuid
+      org_id uuid, owner_id uuid, golden_id uuid, lifecycle_generation bigint default 3
     );
     create table modal_machines (scope text, id text, record jsonb, org_id uuid, owner_id uuid);
     create table ordinary_launch_receipts (id uuid, response jsonb, failure jsonb);
@@ -45,13 +45,17 @@ beforeAll(async () => {
     insert into goldens values
       ('10000000-0000-0000-0000-000000000001','work','env','ap-bound'),
       ('10000000-0000-0000-0000-000000000002','work','env','ap-other');
-    insert into sandboxes values
+    insert into sandboxes (id, provider, provider_sandbox_id, status, org_id, owner_id, golden_id) values
       ('20000000-0000-0000-0000-000000000001','modal','modal_logical','failed',
        '30000000-0000-0000-0000-000000000001','40000000-0000-0000-0000-000000000001','10000000-0000-0000-0000-000000000001'),
       ('20000000-0000-0000-0000-000000000002','modal','modal_foreign','running',
        '30000000-0000-0000-0000-000000000001','40000000-0000-0000-0000-000000000001','10000000-0000-0000-0000-000000000002'),
       ('20000000-0000-0000-0000-000000000003','modal','modal_owner_conflict','failed',
-       '30000000-0000-0000-0000-000000000001','40000000-0000-0000-0000-000000000002','10000000-0000-0000-0000-000000000001');
+       '30000000-0000-0000-0000-000000000001','40000000-0000-0000-0000-000000000002','10000000-0000-0000-0000-000000000001'),
+      ('20000000-0000-0000-0000-000000000004','modal',null,'starting',
+       '30000000-0000-0000-0000-000000000001','40000000-0000-0000-0000-000000000001','10000000-0000-0000-0000-000000000001'),
+      ('20000000-0000-0000-0000-000000000005','modal','sb-job-bound','failed',
+       '30000000-0000-0000-0000-000000000001','40000000-0000-0000-0000-000000000001','10000000-0000-0000-0000-000000000001');
     insert into modal_server_scopes values
       ('scope','{"binding":{"workspace":"work","environment":"env","appId":"ap-bound"}}'),
       ('second_scope','{"binding":{"workspace":"work","environment":"env","appId":"ap-bound"}}'),
@@ -93,6 +97,16 @@ test.each([
     { kind: "unresolved" },
   ],
   ["ambiguous provider records", { sandboxId: "modal_duplicate", machineId: "sb-duplicate" }, { kind: "unresolved" }],
+  [
+    "bound launch job allocation",
+    { sandboxId: "20000000-0000-0000-0000-000000000005", machineId: "sb-job-bound" },
+    { kind: "owned", status: "failed", generation: "3" },
+  ],
+  [
+    "job tag with a different physical ID",
+    { sandboxId: "20000000-0000-0000-0000-000000000005", machineId: "sb-other" },
+    { kind: "unresolved" },
+  ],
 ] as const)("Modal reaper ownership for %s", async (_name, inventory, expected) => {
   expect(await lookup({ ...machine, ...inventory }, signal)).toEqual(expected);
 });
@@ -111,15 +125,18 @@ test("a Modal ownership query failure propagates for the next sweep to retry", a
   await expect(failingLookup(machine, signal)).rejects.toBe(failure);
 });
 
-test("the live Modal reaper excludes conflicting logical ownership from the overdue count", async () => {
+test("the live Modal reaper reaps an orphan while protecting ambiguous and unbound job allocations", async () => {
   const logs: unknown[] = [];
+  const terminated: string[] = [];
   const lane = createModalReaper(
     { query: (statement, params) => database().query(statement, params) },
     "https://armada.test",
     async (_registration, _binding, deploymentId) => ({
-      async openSandbox() {
+      async openSandbox(machineId) {
         return {
-          async terminate() {},
+          async terminate() {
+            terminated.push(machineId);
+          },
           async waitForTermination() {
             return 137;
           },
@@ -127,12 +144,19 @@ test("the live Modal reaper excludes conflicting logical ownership from the over
       },
       async *listInventory() {
         yield { ...machine, deploymentId, sandboxId: "modal_wrong_app", machineId: "sb-unmapped" };
+        yield {
+          ...machine,
+          deploymentId,
+          sandboxId: "20000000-0000-0000-0000-000000000004",
+          machineId: "sb-job-unbound",
+        };
         yield { ...machine, deploymentId, sandboxId: "modal_orphan", machineId: "sb-orphan" };
       },
     }),
     { log: (line) => logs.push(JSON.parse(line)), now: () => 16 * 60_000 },
   );
   await lane.reconcileOne(signal);
+  expect(terminated).toEqual(["sb-orphan"]);
   expect(logs).toContainEqual(
     expect.objectContaining({ event: "reaper_overdue_machines", source: binding.appId, machineIds: ["sb-orphan"] }),
   );
