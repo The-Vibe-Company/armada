@@ -593,9 +593,9 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
     const signal = AbortSignal.timeout(requestTimeoutMs);
     const timedOut = (error: unknown) =>
       signal.aborted || (error instanceof DOMException && error.name === "TimeoutError");
-    let response: Response | undefined;
+    let receivedResponse: Response | undefined;
     try {
-      response = await io.fetch(`${origin}/api/v1/${path}`, {
+      const response = await io.fetch(`${origin}/api/v1/${path}`, {
         method: body === undefined ? "GET" : "POST",
         headers: {
           authorization: `Bearer ${env.ARMADA_TOKEN}`,
@@ -607,6 +607,7 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
         redirect: "error",
         signal,
       });
+      receivedResponse = response;
       const requestId = sandboxLaunch ? response.headers.get("x-request-id") : null;
       const launchResponse = sandboxLaunch
         ? {
@@ -690,10 +691,10 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
               timedOut(error) ? requestTimeoutMs : undefined,
             );
       if (path === "creds/list") {
-        const requestId = response?.headers.get("x-request-id");
+        const requestId = receivedResponse?.headers.get("x-request-id");
         throw new CredentialListSmokeFailure(failure, {
-          phase: response ? "body" : "headers",
-          ...(response ? { httpStatus: response.status } : {}),
+          phase: receivedResponse ? "body" : "headers",
+          ...(receivedResponse ? { httpStatus: receivedResponse.status } : {}),
           ...(requestId && SANDBOX_ID.test(requestId) ? { requestId } : {}),
           ...(failure.transportTimeoutMs === undefined ? {} : { timeoutMs: failure.transportTimeoutMs }),
         });
