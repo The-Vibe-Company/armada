@@ -30,8 +30,8 @@ In **Snapshots**, choose **New** to open **New snapshot**, then **Build snapshot
 to prepare a workspace. **Sandboxes → Launch a sandbox** and a snapshot’s **Launch**
 open the launch dialog. A template’s **Launch** opens **Launch <template name>**
 with its version’s choices fixed; enter the task there. Templates save reusable launch
-settings: each published configuration is an immutable **template version** (CLI flags
-still use `--revision` and `--expected-revision`).
+settings. Each published configuration is an immutable **template version**. Use
+`--revision` to select a version when inspecting or launching a template from the CLI.
 
 In **Routines**, choose **New routine** to schedule a task from a template.
 It keeps the template as it is at creation; later template versions do not update

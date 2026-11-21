@@ -107,7 +107,7 @@ Usage:
   armada account --help                      Discover encrypted model account commands
   armada account ls|add|login|rm github      GitHub connection and installation
   armada account status|logout               Armada identity / revoke current login session
-  armada template --help                   Manage templates and launch published versions
+  armada template --help                   Inspect and launch published versions
   armada vars --help                       Readable variables: set/list/read; stdin/file writes only
   armada secrets --help                    Write-only application secrets: set/list/rotate/revoke/delete
                                            Personal or --org scope. JSON includes values only for vars read; no sandbox delivery.
@@ -317,18 +317,14 @@ Use --org to scope sandbox prefix lookup.
 
 exports[`armada template help preserves its output 1`] = `
 "Usage: armada template <command> [arguments]
-Manage reusable launch definitions and their immutable template versions.
+Inspect reusable launch definitions and launch their immutable template versions.
 
-  create   Create a template from a JSON definition file or definition flags.
   list     List visible IDs, names, scopes, status and current versions.
   get      Inspect metadata or a selected version's definition with --json.
-  publish  Publish a complete new version, guarded by --expected-revision.
-  delete   Mark a template deleted, guarded by --expected-revision.
   launch   Launch a template version using a saved --request-key for safe retries.
 
 Actions require Armada login or ARMADA_TOKEN. Select an organization with --org
-NAME|UUID or armada login --org NAME|UUID. Templates may be personal or organization-scoped;
-organization-scoped writes require administrator permission.
+NAME|UUID or armada login --org NAME|UUID. Templates may be personal or organization-scoped.
 Use IDs from template list when exact names collide across scopes.
 Definitions store variable/secret references; do not put raw secret values in them.
 References resolve into frozen manifests at launch, not publication.

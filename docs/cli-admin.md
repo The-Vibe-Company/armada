@@ -79,3 +79,32 @@ out of command arguments and logs.
 | `org invitations accept` | `armada api org/invitations/accept -` | `token` |
 
 See [organization invitations](cli-invitations.md) for delivery and acceptance details.
+
+## Template authoring
+
+Use the organization UUID in `org` and the template UUID in `id`. Organization
+templates require administrator permission for writes.
+
+| Removed command | Replacement | JSON body fields |
+| --- | --- | --- |
+| `template create` | `armada api templates/create -` | `org`, `name`, `scope` (`personal` or `org`), `definition` |
+| `template publish` | `armada api templates/publish -` | `org`, `id`, `expectedRevision`, complete `definition` |
+| `template delete` | `armada api templates/delete -` | `org`, `id`, `expectedRevision` |
+
+See the [definition fields](templates-cli.md#definition-and-api). Use the current
+revision from `armada template get ID --org ORG_UUID --json` as `expectedRevision`.
+On a conflict, inspect the current template before deciding whether to retry.
+
+## GitHub refresh and snapshot retirement
+
+| Removed command | Replacement | JSON body fields |
+| --- | --- | --- |
+| `github refresh` | `armada api github/refresh -` | Sandbox UUID in `id`, optional `org` |
+| `snapshot retirement dry-run` | `armada api golden/retirement/dry-run -` | Snapshot UUID in `id`, optional `org` and `limit` |
+| `snapshot retirement reconcile` | `armada api golden/retirement/reconcile -` | Snapshot UUID in `id`, reviewed `receipts` as an array of strings, optional `org` and `limit` |
+
+Only the sandbox owner can request GitHub refresh. Review the retirement dry-run
+output and pass the selected receipt strings to reconcile. Reconcile queues
+eligible work. Check the resulting status to confirm deletion. See [historical
+retirement](golden-rebuild-retention.md#historical-dry-run-and-reconciliation) for
+receipt format and authorization.
