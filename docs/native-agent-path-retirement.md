@@ -68,6 +68,22 @@ The coordinator owns the drain run. Existing turn, stop/resume, retention and de
 
 [#2742](https://github.com/The-Vibe-Company/armada/issues/2742) owns the implementation design, including the concrete awaits after durable writes and lease ownership. This note covers the rollout and deletion sequence. Config changes, the drain runner, provider operations, schema changes and deployed verification belong to their respective delivery tickets.
 
+### Modal subscription stop cutover
+
+The first release containing the retained Modal subscription stop handoff
+requires a non-overlapping server cutover. Quiesce subscription traffic, stop
+all older API and worker instances, and confirm their in-flight Modal stop
+operations have settled before starting the new revision. The usual
+[180-second deployment overlap](deployment-draining.md) leaves older dispatchers
+able to retry a failed checkpoint as an ordinary stop and terminate without a
+retained snapshot. Arrange the staging cutover before merging, since staging
+follows main, and the production cutover before approving deployment.
+
+For rollback across this cutover, keep new subscription enrollment quiesced
+while the new workers settle all pending retained native Modal subscription
+stops. Stop the new instances before restarting the older revision. An
+unresolved retained stop blocks rollback to that revision.
+
 ### Coordinator command
 
 Run `bun scripts/ops/drain-native.ts --provider modal --dry-run` with

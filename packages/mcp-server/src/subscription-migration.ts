@@ -26,6 +26,9 @@ type Source = {
   provider: "boat" | "modal";
   provider_sandbox_id: string | null;
 };
+function needsSubscriptionCheckpoint(source: Source) {
+  return source.provider === "modal";
+}
 export interface SubscriptionMigrationTransports {
   admission: typeof sshNativeAuthAdmission;
   read: typeof sshPrivateAuthState;
@@ -167,7 +170,7 @@ export function createSubscriptionMigration(
         verified = true;
         return (
           (await requestNativeSubscriptionStop(tx, source.id, source.lifecycle_generation, source.provider)) ||
-          source.provider === "modal" ||
+          needsSubscriptionCheckpoint(source) ||
           (await subscriptionStopPending(tx, source))
         );
       });
@@ -186,7 +189,7 @@ export function createSubscriptionMigration(
       throw new VaultError("conflict", "Subscription provider identity changed.");
     if (physical.state === "stopped") return;
     await recheck(source);
-    if (source.provider === "modal") {
+    if (needsSubscriptionCheckpoint(source)) {
       await handOffSubscriptionStop(source);
       return;
     }
@@ -239,7 +242,7 @@ export function createSubscriptionMigration(
           if (error instanceof SubscriptionTemporaryError) throw error;
           // WARNING: A competing admission can advance the generation before this replica rechecks its source.
           if (
-            (source.provider === "modal" || source.credential_version !== version) &&
+            (needsSubscriptionCheckpoint(source) || source.credential_version !== version) &&
             (await subscriptionStopPending(sql, source))
           )
             throw new SubscriptionTemporaryError();
