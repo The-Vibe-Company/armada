@@ -879,7 +879,7 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
     request: ReturnType<typeof createLane>["request"],
     keepHandle: (id: string) => void,
     recover?: (id: string, requestKey: string, until: number) => Promise<T | undefined>,
-  ) {
+  ): Promise<{ result: T; recovered: boolean }> {
     const path = "sandbox/launch";
     const requestKey = `post-deploy-smoke:${crypto.randomUUID()}`;
     const launch = smokeLaunch[item.provider];
@@ -954,7 +954,10 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
     // lane gives the account back before its TTL wait, which then overlaps the other lanes.
     return accountSlot(item.modelAccountId.toLowerCase(), (release) =>
       runExpiryCase(item, {
-        launch: (body, keepHandle) => launchWithObservation(item, body, timeoutMs, request, keepHandle),
+        launch: async <T>(body: object, keepHandle: (id: string) => void) => {
+          const { result } = await launchWithObservation<T>(item, body, timeoutMs, request, keepHandle);
+          return result;
+        },
         request: (path, body, remaining = 120_000) => request(path, body, undefined, Math.min(120_000, remaining)),
         deadlineFor: (name) => {
           const budget = (deadlines as Record<string, number>)[name];
@@ -2047,6 +2050,7 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
     io.out(JSON.stringify({ step: "smoke_cleanup_journal", pass: false }));
     return false;
   }
+  // Historical receipts did not record provider. Never contact Boat to classify them.
   const deferred = rows.filter((row) => row.provider !== "modal" && row.provider !== "docker");
   rows = rows.filter((row) => row.provider === "modal" || row.provider === "docker");
   if (deferred.length)
