@@ -30,7 +30,7 @@ import { RuntimeCommandRefused } from "../runtime-commands.ts";
 import type { RuntimeConfigurationTarget } from "../runtime-configuration.ts";
 import { createRuntimeEnrolments, type RuntimeTicketGuard } from "../runtime-enrolment.ts";
 import type { RuntimeGitHub } from "../runtime-github.ts";
-import type { RuntimeMcp } from "../runtime-mcp.ts";
+import { pinnedMcpConnections, type RuntimeMcp } from "../runtime-mcp.ts";
 import { readRuntimeTemplateEnvironment } from "../runtime-readable-variables.ts";
 import { runtimeWorkspace } from "../runtime-workspace.ts";
 import {
@@ -54,6 +54,7 @@ export interface ModalLaunchAdmission {
   sandbox: ModalLaunchSandbox;
   allocation: ModalLaunchAllocation & { source: { kind: "snapshot" } };
   initialPrompt?: string;
+  connections?: string[];
   deadline: Date;
   maxAttempts: number;
 }
@@ -75,8 +76,10 @@ async function lockPinnedModalReservation(sql: Sql, orgId: string, ownerId: stri
     template_scope: string;
     frozen_golden: Pick<GoldenRecord, "id" | "providerSnapshotId" | "modal" | "config"> | null;
     sandbox_exists: boolean;
+    frozen_connections: unknown;
   }>(
     `select r.id,r.sandbox_id,r.digest,r.state,t.scope as template_scope,r.manifest->'golden' as frozen_golden,
+            r.manifest->'connections' as frozen_connections,
             exists(select 1 from public.sandboxes s where s.id=r.sandbox_id) as sandbox_exists
      from public.template_launch_requests r
      join public.launch_templates t on t.id=r.template_id and t.org_id=r.org_id
@@ -90,7 +93,12 @@ async function lockPinnedModalReservation(sql: Sql, orgId: string, ownerId: stri
 }
 
 // WARNING: Activate only after the receipt backfill and launch runner integration.
-export async function admitModalLaunch(sql: Sql, encryptionKey: string, input: ModalLaunchAdmission) {
+export async function admitModalLaunch(
+  sql: Sql,
+  encryptionKey: string,
+  input: ModalLaunchAdmission,
+  { bindLaunch }: Pick<RuntimeMcp, "bindLaunch">,
+) {
   if (!sql.transaction) throw new Error("Modal admission requires a transaction.");
   const { orgId, ownerId, sandbox, allocation, request, templateReceiptId } = input;
   if (request && templateReceiptId) throw new Error("Modal launch admission requires one receipt identity.");
@@ -232,6 +240,8 @@ export async function admitModalLaunch(sql: Sql, encryptionKey: string, input: M
       if (sealed.length) throw new GoldenError("conflict", "Golden snapshot is being retired.");
       if (!image) throw new GoldenError("conflict", "Modal golden snapshot image is unavailable.");
 
+      const visibility = sandbox.visibility === "private" ? "private" : golden.visibility;
+      const actor = { userId: ownerId, orgId };
       await insertStartingModalSandbox(
         tx,
         {
@@ -240,15 +250,22 @@ export async function admitModalLaunch(sql: Sql, encryptionKey: string, input: M
           ownerId,
           generation,
           snapshot,
-          visibility: sandbox.visibility === "private" ? "private" : golden.visibility,
+          visibility,
         },
         sandbox,
       );
       if (reservation) {
-        const actor = { userId: ownerId, orgId };
         const { bindings } = await readRuntimeTemplateEnvironment(tx, actor, sandboxId, "modal");
         await assertLaunchSecretBindings(tx, actor, bindings, reservation.template_scope === "org");
         if (bindings.length) await taintStartingModalSandbox(tx, sandboxId, generation);
+        const pins = pinnedMcpConnections.safeParse(reservation.frozen_connections);
+        if (!pins.success) throw new GoldenError("conflict", "Frozen Modal template MCP connections are invalid.");
+        await bindLaunch(tx, actor, sandboxId, visibility, {
+          pins: pins.data,
+          orgTemplate: reservation.template_scope === "org",
+        });
+      } else {
+        await bindLaunch(tx, actor, sandboxId, visibility, { requested: input.connections });
       }
       const workspace = parseGoldenConfig(reservation ? reservation.frozen_golden?.config : golden.config);
       await store.enqueue(
