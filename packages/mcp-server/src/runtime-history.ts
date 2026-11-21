@@ -98,14 +98,14 @@ export function createRuntimeHistory(
 
 export type SandboxLogReader = Pick<Provider, "events" | "get" | "getPrompt">;
 
-export function createSandboxLogReader(
+export function createModalLogReader(
   sql: Sql,
   key: string,
   resolveProvider: (sandbox: SandboxView, caller: Caller) => Promise<Provider>,
 ) {
   const history = createRuntimeHistory(sql, key);
   const read: (sandbox: SandboxView, caller: Caller) => Promise<SandboxLogReader> = async (sandbox, caller) => {
-    if (sandbox.provider !== "modal" || sandbox.runtimeTransport !== "dialout") return resolveProvider(sandbox, caller);
+    if (sandbox.runtimeTransport !== "dialout") return resolveProvider(sandbox, caller);
 
     let observation: Promise<Provider> | undefined;
     const observe = () => (observation ??= resolveProvider(sandbox, caller));

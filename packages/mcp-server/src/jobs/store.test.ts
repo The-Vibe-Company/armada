@@ -14,7 +14,7 @@ import { createRuntimeCommands } from "../runtime-commands.ts";
 import { createRuntimeEnrolments, scopedRuntimeSql } from "../runtime-enrolment.ts";
 import { createRuntimeEvents } from "../runtime-events.ts";
 import { createRuntimeGitHub } from "../runtime-github.ts";
-import { createSandboxLogReader } from "../runtime-history.ts";
+import { createModalLogReader } from "../runtime-history.ts";
 import { createRuntimeMcp, type RuntimeMcp } from "../runtime-mcp.ts";
 import { createSandboxLifecycle } from "../sandbox-lifecycle.ts";
 import type { LaneFactory } from "../server-worker-modules.ts";
@@ -1550,7 +1550,7 @@ test("REST and MCP read job-owned Modal logs from the runtime journal without a 
   const resolveProvider = async () => {
     throw new Error("A job-owned log read must not resolve a Modal provider.");
   };
-  const resolveLogs = createSandboxLogReader(f.sql, launchEncryptionKey, resolveProvider);
+  const resolveLogs = createModalLogReader(f.sql, launchEncryptionKey, resolveProvider);
   const result = { source: "armada-runtime", events: [{ text: "Job-owned output" }] };
   expect(
     await readLogs(
