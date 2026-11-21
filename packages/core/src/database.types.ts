@@ -2830,6 +2830,26 @@ export type Database = {
           },
         ];
       };
+      native_drain_unclaimed_dispatches: {
+        Row: {
+          sandbox_id: string;
+        };
+        Insert: {
+          sandbox_id: string;
+        };
+        Update: {
+          sandbox_id?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "native_drain_unclaimed_dispatches_sandbox_id_fkey";
+            columns: ["sandbox_id"];
+            isOneToOne: true;
+            referencedRelation: "sandboxes";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
       native_steer_cursors: {
         Row: {
           sandbox_id: string;

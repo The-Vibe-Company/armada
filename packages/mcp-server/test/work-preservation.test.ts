@@ -1430,6 +1430,9 @@ test.each([
   "lost settlement",
   "unavailable provider",
   "Boat completed",
+  "Boat lost admission reply",
+  "Boat failed dispatch claim",
+  "Boat lost dispatch claim reply",
   "Boat pending",
   "Boat lookup unavailable",
   "Boat evidence read failed",
@@ -1438,6 +1441,8 @@ test.each([
   "Boat lost evidence acknowledgement",
 ] as const)("native drain replay handles %s without repeating work preservation", async (scenario) => {
   const providerId = scenario.startsWith("Boat ") ? "boat" : "modal";
+  const lostAdmissionReply = scenario.endsWith("lost admission reply");
+  const dispatchUnclaimed = lostAdmissionReply || scenario === "Boat failed dispatch claim";
   const { db, people, sandboxId, archiveId } = await seedNativeDrainReceipt(undefined, providerId);
   const caller: Caller = { via: "service", userId: people.owner, orgs: [{ orgId: people.org, role: "member" }] };
   const sql = bunLikeSql(db);
@@ -1449,7 +1454,7 @@ test.each([
   sql.transaction = async (work) => {
     if (!retry && scenario === "lost settlement" && providerCalled) throw new Error("Settlement unavailable");
     const result = await transaction(work);
-    if (!retry && scenario === "lost admission reply") throw new Error("Admission reply lost");
+    if (!retry && lostAdmissionReply) throw new Error("Admission reply lost");
     return result;
   };
   const query = sql.query;
@@ -1461,6 +1466,13 @@ test.each([
       statement.includes("select o.operation_id from public.sandboxes")
     ) {
       throw new Error("Operation evidence read unavailable");
+    }
+    if (!retry && statement.includes("select o.operation_id from public.sandboxes")) {
+      if (scenario === "Boat failed dispatch claim") throw new Error("Dispatch claim unavailable");
+      if (scenario === "Boat lost dispatch claim reply") {
+        await query(statement, params);
+        throw new Error("Dispatch claim reply lost");
+      }
     }
     if (statement.includes("insert into public.native_drain_delete_operations")) {
       if (scenario === "Boat lost evidence write") throw new Error("Operation evidence write unavailable");
@@ -1505,7 +1517,8 @@ test.each([
         await db.query("update sandboxes set activity_until=now()-interval '1 second' where id=$1", [sandboxId]);
         await expect(renew()).rejects.toMatchObject({ code: "sandbox_not_ready" });
       }
-      if (providerId === "boat") return { status: "pending", operationId: "deletion-operation" };
+      if (providerId === "boat")
+        return { status: dispatchUnclaimed ? "completed" : "pending", operationId: "deletion-operation" };
       if (!retry && scenario === "lost provider reply") throw new Error("Provider reply lost");
       if (retry && scenario === "unavailable provider")
         throw new ProviderError({
@@ -1521,7 +1534,11 @@ test.each([
   };
   const drain = () =>
     deleteSandboxWithActivity(sandboxes, { resolve: async () => provider }, sandboxId, "native-drain");
-  if (scenario === "Boat stale receipt") {
+  if (scenario === "Boat failed dispatch claim") {
+    await expect(drain()).rejects.toThrow("Dispatch claim unavailable");
+  } else if (scenario === "Boat lost dispatch claim reply") {
+    await expect(drain()).rejects.toThrow("Dispatch claim reply lost");
+  } else if (scenario === "Boat stale receipt") {
     await expect(drain()).rejects.toMatchObject({ code: "sandbox_not_ready" });
   } else if (scenario === "Boat lost evidence write") {
     await expect(drain()).rejects.toThrow("Operation evidence write unavailable");
@@ -1531,7 +1548,7 @@ test.each([
     await expect(drain()).rejects.toThrow();
   }
   retry = true;
-  const callsBeforeRetry = scenario === "lost admission reply" ? 0 : 1;
+  const callsBeforeRetry = dispatchUnclaimed || scenario === "Boat lost dispatch claim reply" ? 0 : 1;
   await expect(drain()).rejects.toMatchObject({ code: "sandbox_not_ready" });
   expect(provider.delete).toHaveBeenCalledTimes(callsBeforeRetry);
   await db.query("update sandboxes set activity_until=now()-interval '1 second' where id=$1", [sandboxId]);
@@ -1542,7 +1559,10 @@ test.each([
     scenario === "Boat evidence read failed" ||
     scenario === "Boat lost evidence acknowledgement";
   if (providerId === "boat") {
-    if (!hasBoatEvidence) await expect(drain()).rejects.toMatchObject({ code: "sandbox_not_ready" });
+    if (dispatchUnclaimed) {
+      await expect(drain()).resolves.toEqual({ id: sandboxId, status: "deleted" });
+      await expect(drain()).resolves.toEqual({ id: sandboxId, status: "deleted" });
+    } else if (!hasBoatEvidence) await expect(drain()).rejects.toMatchObject({ code: "sandbox_not_ready" });
     else if (scenario === "Boat pending") await expect(drain()).rejects.toThrow("Provider deletion is pending");
     else if (scenario === "Boat lookup unavailable") await expect(drain()).rejects.toThrow("Operation unavailable");
     else {
@@ -1566,7 +1586,7 @@ test.each([
       await expect(drain()).resolves.toEqual({ id: sandboxId, status: "deleted" });
       await expect(drain()).resolves.toEqual({ id: sandboxId, status: "deleted" });
     }
-    expect(provider.delete).toHaveBeenCalledTimes(callsBeforeRetry);
+    expect(provider.delete).toHaveBeenCalledTimes(callsBeforeRetry + Number(dispatchUnclaimed));
     expect(observeSandboxDeletion).toHaveBeenCalledTimes(hasBoatEvidence ? 1 : 0);
     if (hasBoatEvidence)
       expect(observeSandboxDeletion).toHaveBeenCalledWith({
@@ -1593,6 +1613,7 @@ test.each([
   );
   const pending =
     (providerId === "boat" &&
+      !dispatchUnclaimed &&
       scenario !== "Boat completed" &&
       scenario !== "Boat evidence read failed" &&
       scenario !== "Boat lost evidence acknowledgement") ||
@@ -1610,16 +1631,20 @@ test.each([
   ]);
 });
 
-test("Boat drain operation evidence is service-only", async () => {
-  const { db } = sharedDatabase();
-  const { rows } = await db.query(
-    `select
-       has_table_privilege('authenticated','public.native_drain_delete_operations','select,insert,delete') as jwt_access,
-       has_table_privilege('anon','public.native_drain_delete_operations','select,insert,delete') as anon_access,
-       has_table_privilege('service_role','public.native_drain_delete_operations','select') as service_read`,
-  );
-  expect(rows).toEqual([{ jwt_access: false, anon_access: false, service_read: true }]);
-});
+test.each(["native_drain_delete_operations", "native_drain_unclaimed_dispatches"])(
+  "Boat drain table %s is service-only",
+  async (table) => {
+    const { db } = sharedDatabase();
+    const { rows } = await db.query(
+      `select
+       has_table_privilege('authenticated',$1,'select,insert,delete') as jwt_access,
+       has_table_privilege('anon',$1,'select,insert,delete') as anon_access,
+       has_table_privilege('service_role',$1,'select') as service_read`,
+      [`public.${table}`],
+    );
+    expect(rows).toEqual([{ jwt_access: false, anon_access: false, service_read: true }]);
+  },
+);
 
 test.each([
   "lost delete reply",
