@@ -1,5 +1,5 @@
 import { launchFailureHelp } from "@armada/core";
-import { launchEnvelope, modalLaunchReceipt } from "@armada/core/contract";
+import { launchEnvelope, parseLaunchAdmissionReceipt } from "@armada/core/contract";
 import { isUuid } from "./action.ts";
 import { type ArmadaApiOptions, ControlError, controlPost, LAUNCH_TIMEOUT_MS } from "./control.ts";
 import { launchedDockerSandbox } from "./docker-launch.ts";
@@ -38,10 +38,8 @@ export async function postSandboxLaunch(
       throw invalidReceipt();
     throw error;
   });
-  if (body.provider === "modal") {
-    const admitted = modalLaunchReceipt.safeParse(payload);
-    if (admitted.success) return admitted.data;
-  }
+  const admitted = parseLaunchAdmissionReceipt(body.provider, payload);
+  if (admitted) return admitted;
   const receipt = launchEnvelope.safeParse(payload);
   if (!receipt.success || !receipt.data.sandbox.id) throw invalidReceipt();
   if (body.provider === "docker" && !launchedDockerSandbox(receipt.data)) throw invalidReceipt();

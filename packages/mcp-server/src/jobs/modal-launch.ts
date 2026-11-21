@@ -130,7 +130,7 @@ export async function admitModalLaunch(
   encryptionKey: string,
   input: ModalLaunchAdmission,
   { bindLaunch }: Pick<RuntimeMcp, "bindLaunch">,
-): Promise<ModalLaunchReceipt> {
+) {
   if (!sql.transaction) throw new Error("Modal admission requires a transaction.");
   const { orgId, ownerId, sandbox, allocation, request, templateReceiptId } = input;
   if (request && templateReceiptId) throw new Error("Modal launch admission requires one receipt identity.");
@@ -138,7 +138,7 @@ export async function admitModalLaunch(
   const store = createJobsStore(sql, encryptionKey);
 
   try {
-    return await sql.transaction(async (tx) => {
+    const receipt: ModalLaunchReceipt = await sql.transaction(async (tx) => {
       const reservation = templateReceiptId
         ? await lockPinnedModalReservation(tx, orgId, ownerId, templateReceiptId)
         : undefined;
@@ -334,6 +334,7 @@ export async function admitModalLaunch(
       }
       return envelope;
     });
+    return receipt;
   } catch (error) {
     if (error instanceof ConflictingJobRequest)
       throw new GoldenError("conflict", "Launch key conflicts with an existing receipt.");

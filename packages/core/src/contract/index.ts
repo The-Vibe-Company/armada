@@ -35,6 +35,7 @@ export {
   launchEnvelope,
   type ModalLaunchReceipt,
   modalLaunchReceipt,
+  parseLaunchAdmissionReceipt,
   templateLaunchResponse,
 } from "./launch-response.ts";
 export { memberOperations } from "./members.ts";

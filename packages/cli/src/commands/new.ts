@@ -1,6 +1,6 @@
 import { AuthError } from "@armada/auth";
 import { GoldenError, HARNESSES, type LaunchResult, MODEL_CATALOG, resolveModelChoice } from "@armada/core";
-import { type ModalLaunchReceipt, modalLaunchReceipt } from "@armada/core/contract";
+import { type ModalLaunchReceipt, parseLaunchAdmissionReceipt } from "@armada/core/contract";
 import { requireLaunchAgent } from "../agent-validation.ts";
 import { flag, parseArgs, providerFlag, single, values } from "../args.ts";
 import { rememberSandbox } from "../current-sandbox.ts";
@@ -110,22 +110,21 @@ const run: Command["run"] = async (argv, { io, deps, auth }) => {
     },
     { signal: AbortSignal.timeout(10 * 60_000) },
   );
-  if (!("golden" in result) && (provider !== "modal" || !modalLaunchReceipt.safeParse(result).success))
+  if (!("golden" in result) && !parseLaunchAdmissionReceipt(provider, result))
     throw new AuthError(
       "Armada returned an invalid launch receipt. Run armada ls to check before retrying.",
       "unavailable",
     );
   if (result.sandbox.status !== "failed" && result.sandbox.status !== "deleted")
     await rememberSandbox(result.sandbox.id, deps.sandboxFile, io);
-  io.out(
-    flag(args, "--json")
-      ? `${JSON.stringify(result, null, 2)}\n`
-      : "golden" in result
-        ? launchText(result, auth.now())
-        : `Sandbox: ${result.sandbox.id}\nStatus: ${result.sandbox.status}\n`,
-  );
-  if (!flag(args, "--json"))
+  if (flag(args, "--json")) {
+    io.out(`${JSON.stringify(result, null, 2)}\n`);
+  } else if ("golden" in result) {
+    io.out(launchText(result, auth.now()));
     await printOptionalResourceAdvice(client, result.sandbox.id, single(args, "--org"), io.err);
+  } else {
+    io.out(`Sandbox: ${result.sandbox.id}\nStatus: ${result.sandbox.status}\n`);
+  }
   return 0;
 };
 
