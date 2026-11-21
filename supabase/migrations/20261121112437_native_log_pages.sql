@@ -5,7 +5,7 @@ revoke all on schema armada_logs from public, anon, authenticated;
 
 create table armada_logs.native_log_pages (
   sandbox_id uuid not null references public.sandboxes(id) on delete cascade,
-  generation bigint not null,
+  provider_sandbox_id text not null,
   slot smallint not null check (slot between 0 and 7),
   request_hash text not null,
   observed_at timestamptz not null,

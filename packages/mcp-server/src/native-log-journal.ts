@@ -50,15 +50,15 @@ export function withNativeLogJournal(
       );
       if (!target) throw new VaultError("not_found", "No authorized native log target.");
 
-      const journalParams = [...params, target.generation, slot, digest];
+      const journalParams = [...params, slot, digest];
       const persisted = async (error: NativeOutputPending) => {
         const {
           rows: [saved],
         } = await sql.query<{ page: string }>(
           `select encode(p.page_enc,'base64') as page
            from public.sandboxes s join armada_logs.native_log_pages p
-             on p.sandbox_id=s.id and p.generation=s.lifecycle_generation
-           where ${authorizedSandbox} and s.lifecycle_generation=$5::bigint and p.slot=$6 and p.request_hash=$7`,
+             on p.sandbox_id=s.id and p.provider_sandbox_id=s.provider_sandbox_id
+           where ${authorizedSandbox} and p.slot=$5 and p.request_hash=$6`,
           journalParams,
         );
         if (!saved) throw error;
@@ -83,15 +83,15 @@ export function withNativeLogJournal(
         if (Buffer.byteLength(body) <= 1_310_720) {
           const sealed = await encryptSecret(body, key);
           await sql.query(
-            `insert into armada_logs.native_log_pages (sandbox_id,generation,slot,request_hash,observed_at,page_enc)
-             select s.id,s.lifecycle_generation,$6,$7,$8::timestamptz,decode($9,'base64')
-             from public.sandboxes s where ${authorizedSandbox} and s.lifecycle_generation=$5::bigint
+            `insert into armada_logs.native_log_pages (sandbox_id,provider_sandbox_id,slot,request_hash,observed_at,page_enc)
+             select s.id,s.provider_sandbox_id,$5,$6,$8::timestamptz,decode($9,'base64')
+             from public.sandboxes s where ${authorizedSandbox} and s.lifecycle_generation=$7::bigint
                and (${pendingCommand}) is not true
              on conflict (sandbox_id,slot) do update
-             set generation=excluded.generation,request_hash=excluded.request_hash,
+             set provider_sandbox_id=excluded.provider_sandbox_id,request_hash=excluded.request_hash,
                  observed_at=excluded.observed_at,page_enc=excluded.page_enc
              where native_log_pages.observed_at<=excluded.observed_at`,
-            [...journalParams, target.observed, Buffer.from(sealed).toString("base64")],
+            [...journalParams, target.generation, target.observed, Buffer.from(sealed).toString("base64")],
           );
         }
       }

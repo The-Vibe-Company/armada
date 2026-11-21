@@ -16,14 +16,14 @@ test.each(["forward", "backward"] as const)(
     const sql: Sql = {
       async query<T>(statement: string, params: unknown[] = []) {
         if (statement.includes("insert into")) {
-          pages.set(params[6], params[8]);
+          pages.set(params[5], params[8]);
           return { rows: [] };
         }
         if (statement.includes("join armada_logs")) {
-          const page = pages.get(params[6]);
+          const page = pages.get(params[5]);
           return { rows: page ? [{ page } as T] : [] };
         }
-        return { rows: [{ generation: "0", pending, observed: "2026-11-21" } as T] };
+        return { rows: [{ generation: pending ? "2" : "1", pending, observed: "2026-11-21" } as T] };
       },
     };
     const provider = {
