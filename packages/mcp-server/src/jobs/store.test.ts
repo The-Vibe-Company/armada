@@ -2300,17 +2300,17 @@ test.each(["create response", "bootstrap dispatch", "bootstrap response"] as con
 );
 
 test.each([
-  ["stopped", "runtime ticket"],
-  ["unknown", "runtime ticket"],
-  ["unknown", "sandbox binding"],
-  ["stopped", "create response"],
-  ["plan unavailable", "create response"],
+  ["stopped", "runtime ticket", undefined],
+  ["unknown", "runtime ticket", undefined],
+  ["unknown", "sandbox binding", undefined],
+  ["stopped", "create response", undefined],
+  ["plan unavailable", "create response", undefined],
   ["credential unavailable before observation", "create response", 1],
   ["credential unavailable after observation", "create response", 2],
   ["credential unavailable before binding", "create response", 3],
   ["credential unavailable after binding", "create response", 4],
-  ["ticket unavailable", "create response"],
-  ["ownership unavailable", "create response"],
+  ["ticket unavailable", "create response", undefined],
+  ["ownership unavailable", "create response", undefined],
   ["ticket and credential unavailable", "create response", 5],
   ["ownership and credential unavailable", "create response", 5],
 ] as const)(
