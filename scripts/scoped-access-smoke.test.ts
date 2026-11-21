@@ -23,7 +23,7 @@ function at<T>(values: T[], index = 0): T {
   return value;
 }
 type WireTool = { id: string; name: string; input: Obj; result: { output: unknown; isError: boolean } };
-function fixture(enabled = true) {
+function fixture(enabled = true, toolEvidenceTimeoutMs?: number) {
   const output: Obj[] = [];
   const stopped: string[] = [];
   const journaled: string[] = [];
@@ -47,6 +47,7 @@ function fixture(enabled = true) {
     sendUnknown: false,
     notReady: false,
     logsFail: false,
+    firstLogReadMs: 0,
     logsTimeout: false,
     logsExhaustBudget: false,
     waitRunning: false,
@@ -79,6 +80,7 @@ function fixture(enabled = true) {
       clock += ms;
     },
     deadline: Number.POSITIVE_INFINITY,
+    toolEvidenceTimeoutMs,
     async request<T>(path: string, input: object, timeoutMs?: number): Promise<T> {
       const body = input as Obj;
       requests.push({ path, body });
@@ -188,6 +190,7 @@ function fixture(enabled = true) {
       }
       if (path === "logs/read") {
         state.logReads++;
+        if (state.logReads === 1) clock += state.firstLogReadMs;
         expect(body.id).toBe(parent);
         expect(body.coalesce).toBe(true);
         expect(body.maxBytes).toBe(1_048_576);
@@ -340,6 +343,14 @@ describe("ordinary scoped Armada smoke", () => {
     await run(f);
     expect(f.state.sends).toBe(1);
     expect(f.state.logReads).toBe(2);
+  });
+
+  test("rejects complete initial tool evidence that arrives after the measured budget", async () => {
+    const f = fixture(true, 1_500);
+    f.state.firstLogReadMs = 1_501;
+    await expect(run(f)).rejects.toThrow("scoped_incomplete_logs");
+    expect(await f.probe.cleanup(parent, true)).toBe(true);
+    expect(f.stopped).toEqual([child]);
   });
 
   test("reports the missing receipt when a log read exhausts the observation window", async () => {
