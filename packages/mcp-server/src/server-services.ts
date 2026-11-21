@@ -64,7 +64,7 @@ import { createRuntimeEnrolments } from "./runtime-enrolment.ts";
 import { createRuntimeEvents } from "./runtime-events.ts";
 import { createRuntimeFollowup } from "./runtime-followup.ts";
 import { createRuntimeGitHub } from "./runtime-github.ts";
-import { createModalLogReader } from "./runtime-history.ts";
+import { createModalJobReader, createModalLogReader } from "./runtime-history.ts";
 import { createRuntimeMcp } from "./runtime-mcp.ts";
 import { createRuntimeNativeAuth } from "./runtime-native-auth.ts";
 import { runtimeConfigurationWithVariables } from "./runtime-readable-variables.ts";
@@ -463,6 +463,7 @@ export async function createServerServices(env: Record<string, string | undefine
           ...(dockerBootstrap ? { bootstrap: dockerBootstrap } : {}),
         })
       : undefined;
+  const modalJobReader = createModalJobReader(sql, config.encryptionKey);
   const logProviders = { boat: providers.resolve.bind(providers), modal: modal.storedProviderFor };
   const journalLogProviders = {
     modal: createModalLogReader(sql, config.encryptionKey, logProviders.modal),
@@ -553,6 +554,7 @@ export async function createServerServices(env: Record<string, string | undefine
     goldenTarget: modal.goldenTarget,
     goldenBuilds,
     goldenAdoption,
+    modalJobReader,
     storedProviderFor: modal.storedProviderFor,
     logs: async (caller, sandboxId) => {
       const scoped = data(caller);
@@ -605,6 +607,7 @@ export async function createServerServices(env: Record<string, string | undefine
   const handlerOptions: Omit<HandlerOptions, "routes"> = {
     launchDiscovery: control,
     logProvider,
+    modalJobReader,
     readOutputSnapshot: outputs.readSnapshot,
     ...(dockerControls ? { dockerControls } : {}),
     runtimeSend,

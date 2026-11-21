@@ -96,13 +96,13 @@ export function configureTools(
 
   tool("report", sandboxOperations.reportSandbox.tool, async (args) => {
     const found = await visible(args.id);
-    const provider =
+    const fenced =
       found.status === "deleted" ||
       found.status === "starting" ||
       isFailedModalLaunch(found) ||
-      (found.status === "failed" && found.stoppedAt !== null)
-        ? null
-        : await context.provider(found);
+      (found.status === "failed" && found.stoppedAt !== null);
+    const jobReader = fenced ? null : await context.modalJobReader?.(found);
+    const provider = fenced ? null : (jobReader ?? (await context.provider(found)));
 
     const target =
       found.taskPromptId === ""
@@ -110,9 +110,15 @@ export function configureTools(
           ? (await latestPrompt(provider, found.providerSandboxId, true))?.promptId
           : null
         : found.taskPromptId;
-    if (!target || target !== args.prompt_id)
+    const queued = jobReader ? await context.accountTurns?.status(caller, found.id, args.prompt_id) : undefined;
+    const promptId = queued && "nativePromptId" in queued ? queued.nativePromptId : args.prompt_id;
+    if (!target || target !== promptId)
       throw new ToolError("conflict", "Report only the latest finished turn, using its prompt id.");
-    const report = await readStatus(provider, data.sandboxes, found, { promptId: target, now: context.now() });
+    const report = await readStatus(provider, data.sandboxes, found, {
+      promptId: target,
+      now: context.now(),
+    });
+    await jobReader?.verify();
     if (report.prompt?.state !== "finished")
       throw new ToolError("conflict", "Report only the latest finished turn, using its prompt id.");
     if (!data.sandboxes.reportTaskOutcome) throw new ToolError("conflict", "Task reporting is unavailable.");
