@@ -803,7 +803,7 @@ test("a shared successor cancelling an in-flight dispatch keeps the model charge
   await queue.accept(caller, first);
   await queue.accept(caller, second);
   await sql.query("update jobs set run_after='-infinity' where sandbox_id=$1", [first.id]);
-  const dispatched: string[] = [];
+  const dispatched: Array<string | undefined> = [];
   const successor = sharedDispatcher(async (_caller, input) => {
     dispatched.push(input.request_id);
     return { promptId: "actual_next", conversationId: "history", status: "running" };
@@ -813,8 +813,12 @@ test("a shared successor cancelling an in-flight dispatch keeps the model charge
       first.id,
     ]);
   const readFirstReceipt = () => queue.status(caller, first.id, first.request_id);
-  let retiredBeforeReply: Awaited<ReturnType<typeof readRetirement>>["rows"] | undefined;
-  let receiptBeforeReply: Awaited<ReturnType<typeof readFirstReceipt>>;
+  let beforeReply:
+    | {
+        jobs: Awaited<ReturnType<typeof readRetirement>>["rows"];
+        receipt: Awaited<ReturnType<typeof readFirstReceipt>>;
+      }
+    | undefined;
   const original = sharedDispatcher(async (_caller, input, claim) => {
     dispatched.push(input.request_id);
     if (!claim) throw new Error("Shared dispatch lost the job authority.");
@@ -835,15 +839,15 @@ test("a shared successor cancelling an in-flight dispatch keeps the model charge
     );
     await sql.query("update jobs set lease_until='-infinity' where sandbox_id=$1", [first.id]);
     await successor();
-    retiredBeforeReply = (await readRetirement()).rows;
-    receiptBeforeReply = await readFirstReceipt();
+    beforeReply = { jobs: (await readRetirement()).rows, receipt: await readFirstReceipt() };
     throw Error("uncertain");
   });
   await original();
-  expect(retiredBeforeReply).toEqual([{ state: "failed", lease_epoch: "2", reason: "cancelled_receipt" }]);
-  expect((await readRetirement()).rows).toEqual(retiredBeforeReply);
-  expect(receiptBeforeReply).toMatchObject({ failed: true });
-  expect(await readFirstReceipt()).toEqual(receiptBeforeReply);
+  expect(beforeReply).toMatchObject({
+    jobs: [{ state: "failed", lease_epoch: "2", reason: "cancelled_receipt" }],
+    receipt: { failed: true },
+  });
+  expect({ jobs: (await readRetirement()).rows, receipt: await readFirstReceipt() }).toEqual(beforeReply);
   const usage = await database().query<{ total: number; default_model: number; override_model: number }>(
     `select ${accountWorkingCountSql("$1")} as total,
       ${accountWorkingCountSql("$1", "null::uuid", "'default_model'")} as default_model,
