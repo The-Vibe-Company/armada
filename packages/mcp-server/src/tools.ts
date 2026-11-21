@@ -8,7 +8,7 @@ import type {
 } from "@armada/core/server";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { Caller } from "./caller.ts";
-import type { ScopedData } from "./data.ts";
+import type { SandboxView, ScopedData } from "./data.ts";
 import type { GoldenLaunchCredentials } from "./launch-account-admission.ts";
 import type { LaunchDiscoveryOptions } from "./launch-options.ts";
 import { registerAgentTools } from "./mcp-operation-projection.ts";
@@ -27,6 +27,7 @@ export interface ToolContext {
   runtimeSend?: RuntimeFollowup;
   runtimeStopCheckpoint?: ReturnType<typeof import("./runtime-checkpoint.ts").createRuntimeStopCheckpoint>;
   measure?: import("./request-timing.ts").RequestTiming["measure"];
+  logProvider?(target: SandboxView): Promise<Provider>;
   storedProviders?: Partial<Record<SandboxProviderId, ToolContext["provider"]>>;
   skillDefaults?: SkillDefaultsService;
   caller: Caller;

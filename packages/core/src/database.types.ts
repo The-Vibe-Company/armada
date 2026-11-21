@@ -2879,6 +2879,7 @@ export type Database = {
           lease_until: string | null;
           completed_at: string | null;
           created_at: string;
+          acknowledged_request_id: string | null;
         };
         Insert: {
           sandbox_id: string;
@@ -2893,6 +2894,7 @@ export type Database = {
           lease_until?: string | null;
           completed_at?: string | null;
           created_at?: string;
+          acknowledged_request_id?: string | null;
         };
         Update: {
           sandbox_id?: string;
@@ -2907,6 +2909,7 @@ export type Database = {
           lease_until?: string | null;
           completed_at?: string | null;
           created_at?: string;
+          acknowledged_request_id?: string | null;
         };
         Relationships: [
           {

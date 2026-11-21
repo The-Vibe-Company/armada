@@ -264,6 +264,7 @@ export function configureTools(
             nativeSendReceipt: {
               fromState: activationOpened ? "starting" : found.status,
               placement: found.providerSandboxId,
+              ...(args.request_id ? { requestId: args.request_id } : {}),
             },
             taskPromptId: receipt.promptId,
             statusReason: null,
