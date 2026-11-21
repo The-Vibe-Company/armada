@@ -723,7 +723,6 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
               if (cleaning || budget === undefined) return action();
               stepUntil = Math.min(deadline, io.now() + budget);
               try {
-                // Let the probe retain mutation handles and check canaries before rejecting a late success.
                 const result = await action();
                 if (io.now() > stepUntil) fail("poll_limit_exceeded");
                 return result;
