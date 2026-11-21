@@ -1176,7 +1176,7 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
                       if (result.providerState !== "stopped") fail("provider_not_stopped");
                       return true;
                     },
-                    { until },
+                    until === undefined ? undefined : { until },
                   );
                 },
                 { measureCleanup: true },
