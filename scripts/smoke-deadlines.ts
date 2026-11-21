@@ -14,6 +14,10 @@ export function deadlinesFor(table: DeadlineTable, provider: string, lane: strin
   return Object.hasOwn(table, scope) ? table[scope]! : {};
 }
 
+/**
+ * Each derived deadline is max(3 × p99, 10 s). Staging network latency can
+ * exceed twice the p99 measured in the last 20 green runs.
+ */
 export function smokeDeadlines(greenJournalsNewestFirst: readonly string[]) {
   const samples = new Map<string, Map<string, number[]>>();
   for (const journal of greenJournalsNewestFirst.slice(0, GREEN_JOURNAL_LIMIT)) {
@@ -49,8 +53,6 @@ export function smokeDeadlines(greenJournalsNewestFirst: readonly string[]) {
           if (values.length < MIN_STEP_SAMPLES) return [];
           values.sort((a, b) => a - b);
           const p99 = values[Math.ceil(values.length * 0.99) - 1]!;
-          // Use max(3 × p99, 10 s) because staging network latency can exceed
-          // twice the p99 measured in the last 20 green runs.
           return [[step, Math.max(MIN_STEP_DEADLINE_MS, Math.ceil(3 * p99))] as const];
         }),
     );
