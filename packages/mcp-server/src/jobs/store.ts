@@ -22,6 +22,10 @@ import type { Job, JobStore } from "./runner.ts";
 
 export const JOBS_WAKE = "jobs";
 
+export function jobRequestKey(orgId: string, kind: string, ownerId: string, key: string) {
+  return JSON.stringify(["request", orgId, kind, ownerId, key]);
+}
+
 export class ConflictingJobRequest extends Error {
   constructor() {
     super("Conflicting job request.");
@@ -417,11 +421,9 @@ export function createJobsStore(sql: Sql, encryptionKey?: string) {
     ) {
       const db = tx ?? sql;
       const { orgId, request, deadline, maxAttempts } = options;
-      const key = JSON.stringify(
-        request
-          ? ["request", orgId, kind, request.ownerId, idemKey]
-          : ["internal", orgId, kind, sandboxId, generation, idemKey],
-      );
+      const key = request
+        ? jobRequestKey(orgId, kind, request.ownerId, idemKey)
+        : JSON.stringify(["internal", orgId, kind, sandboxId, generation, idemKey]);
       const serialized = JSON.stringify(payload);
       if (serialized === undefined) throw new Error("Job payload must be JSON.");
       const sealed = payload === null ? null : toBytea(await encryptSecret(serialized, encryptionKey));
