@@ -869,7 +869,7 @@ test("native Modal preservation refuses clean proof from a replacement physical 
     const authority = { kind: "activity", token: activity, generation } as const;
     const receipts = () =>
       db.query(
-        "select capture_acknowledgements->>'modalPhysicalGeneration' as generation from sandbox_native_preservation_receipts where sandbox_id=$1",
+        "select capture_acknowledgements->>'physicalGeneration' as generation from sandbox_native_preservation_receipts where sandbox_id=$1",
         [id],
       );
 
@@ -907,7 +907,7 @@ async function seedNativeDrainReceipt(ciphertext = new Uint8Array([21, 34, 55]),
     `insert into sandbox_native_preservation_receipts
        (sandbox_id,generation,stop_generation,capture_generation,capture_stop_generation,archive_id,capture_acknowledgements)
      values($1,4,2,4,2,$2,$3::jsonb)`,
-    [sandboxId, archiveId, provider === "modal" ? JSON.stringify({ modalPhysicalGeneration: "1" }) : null],
+    [sandboxId, archiveId, provider === "modal" ? JSON.stringify({ physicalGeneration: "1" }) : null],
   );
   if (provider === "modal")
     await db.query(

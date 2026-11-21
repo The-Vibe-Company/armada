@@ -157,13 +157,13 @@ export async function readNativeCaptureAcknowledgements(
   fence: StopFence,
   stopToken: string | null,
   captureId: string,
-  modalPhysicalGeneration: string | null,
+  physicalGeneration: string | null,
 ) {
   const { rows } = await sql.query<{ evidence: string }>(
     `select (
        select jsonb_build_object(
          'captureId',$8::text,
-         'modalPhysicalGeneration',$9::text,
+         'physicalGeneration',$9::text,
          'prompts',jsonb_object_agg(p.acknowledged_request_id,p.prompt_id)
            filter (where p.acknowledged_request_id is not null),
          'completedPrompts',jsonb_agg(p.prompt_id)
@@ -175,7 +175,7 @@ export async function readNativeCaptureAcknowledgements(
          and p.completed_at is not null
      )::text as evidence
      from public.sandboxes where ${NOTE_FENCE} and not application_secret_tainted`,
-    [id, ...fence, stopToken, captureId, modalPhysicalGeneration],
+    [id, ...fence, stopToken, captureId, physicalGeneration],
   );
   return rows[0]?.evidence;
 }
@@ -996,7 +996,7 @@ export async function hasPreservedModalDrainIncarnation(tx: Sql, id: string, pen
          where r.sandbox_id=s.id and ($2 or r.generation=s.lifecycle_generation)
            and r.stop_generation=s.stop_generation and r.stop_generation=s.preservation_stop_generation
            and r.capture_generation=r.generation and r.capture_stop_generation=r.stop_generation
-           and r.capture_acknowledgements->>'modalPhysicalGeneration'=j.record->>'generation'
+           and r.capture_acknowledgements->>'physicalGeneration'=j.record->>'generation'
        )
      ) as eligible
      from journal j cross join public.sandboxes s where s.id=$1`,
