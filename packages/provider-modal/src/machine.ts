@@ -68,13 +68,13 @@ type AllocationOptions = Pick<Create, "size" | "computeTtlSeconds"> &
   };
 
 export function allocateModalCompute(
-  client: Pick<ModalClient, "sandboxes">,
+  create: ModalClient["sandboxes"]["create"],
   app: App,
   image: Image,
   { size, computeTtlSeconds, ...options }: AllocationOptions,
 ) {
   const capacity = size === null ? null : machineCapacity("modal", size);
-  return client.sandboxes.create(app, image, {
+  return create(app, image, {
     ...options,
     timeoutMs: computeTtlSeconds * 1000,
     workdir: "/home/user",
@@ -275,7 +275,7 @@ export function createModalMachine(options: ModalMachineOptions) {
       signal?.throwIfAborted();
       entry = await save(request, undefined, { operation, intent, phase: "creating" });
       signal?.throwIfAborted();
-      sandbox = await allocateModalCompute(client, app, image, {
+      sandbox = await allocateModalCompute(client.sandboxes.experimentalCreate.bind(client.sandboxes), app, image, {
         name: name(request),
         tags: tags(request),
         runtime: "vm",
