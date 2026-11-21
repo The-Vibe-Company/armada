@@ -1,8 +1,5 @@
 import { isSandboxPlacementProvider, type SandboxProviderId } from "@armada/core";
 
-/** Native providers that honor exec cancellation before dispatch and on retry. */
-export const nativeExecCancellation: Readonly<Partial<Record<SandboxProviderId, true>>> = { boat: true };
-
 /** Shared runtime capabilities; callers retain placement, transport and authorization guards. */
 export function runtimeBridgeTarget(target: {
   provider: string;
@@ -25,3 +22,6 @@ export function runtimeConfigurationFailure(id: unknown) {
   const names: Record<string, string> = { boat: "Boat runtime", docker: "Docker runtime" };
   return `${typeof id === "string" && Object.hasOwn(names, id) ? names[id] : "Runtime"} configuration is unavailable.`;
 }
+
+/** Native providers that honor exec cancellation before dispatch and on retry. */
+export const nativeExecCancellation: Readonly<Partial<Record<SandboxProviderId, true>>> = { boat: true };
