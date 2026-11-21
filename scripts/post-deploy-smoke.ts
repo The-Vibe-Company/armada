@@ -1263,7 +1263,12 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
           preservationNote = receipt.preservationNote;
         } catch (error) {
           // The stop may already be in flight. Observe it; never replay an unknown mutation.
-          if (!(error instanceof SmokeFailure) || error.code !== "outcome_unknown") throw error;
+          if (
+            !(error instanceof SmokeFailure) ||
+            (error.code !== "outcome_unknown" &&
+              !(error.code === "request_failed" && error.transportTimeoutMs !== undefined))
+          )
+            throw error;
         }
         stopRequested = true;
       }
