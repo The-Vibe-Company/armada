@@ -1,7 +1,9 @@
 import { expect, test } from "bun:test";
+import { readLogsOperation } from "@armada/core/contract";
 import { createSqlVaultStore, decryptSecret, encryptSecret, type GoldenActor, type Sql } from "@armada/core/server";
 import { createBoatProvider } from "@armada/provider-boat";
 import { type Scope, scopeKey } from "@armada/provider-modal";
+import { readLogs } from "../src/control-logs.ts";
 import { launchCredentials } from "../src/launch-credentials.ts";
 import { createModelAuthOwnership } from "../src/model-auth.ts";
 import { createNativeStateStore, nativeState } from "../src/model-auth-state.ts";
@@ -165,7 +167,24 @@ test("real native state publication seals rotation without replacing binding, fe
     [SANDBOX, OTHER],
   );
   await expect(publicProvider.events({ sandboxId: "native" })).rejects.toMatchObject({ code: "unavailable" });
+  const logOptions = { logs: async () => ({ provider: publicProvider, providerSandboxId: "native" }) };
+  const logCaller = { userId: OWNER, orgs: [{ orgId: ORG, role: "admin" }], via: "service" } as const;
+  await expect(
+    readLogs(logOptions, logCaller, SANDBOX, { direction: "backward", cursor: "previous" }),
+  ).rejects.toMatchObject({
+    code: "unavailable",
+  });
+  const logPage = await readLogs(logOptions, logCaller, SANDBOX, { follow: true, cursor: "previous" });
+  expect(readLogsOperation.output.parse(logPage)).toMatchObject({
+    events: [],
+    cursor: "previous",
+    hasMore: false,
+    settled: false,
+  });
   await db.query("update sandboxes set activity_lease_id=null,activity_until=null where id=$1", [SANDBOX]);
+  expect((await readLogs(logOptions, logCaller, SANDBOX, { cursor: "previous" })).events).toMatchObject([
+    { id: "native-output", text: "***" },
+  ]);
   // Auto-archive after a rotation may leave only a stale encrypted sample.
   // It is not a durable quiescence receipt and must not release unseen output.
   eventRevision = 3;
