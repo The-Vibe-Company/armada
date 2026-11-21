@@ -742,9 +742,9 @@ export function createSqlData(
         return preserveBeforeStop(sql, provider, id, providerId, "user_stop", authority);
       },
       async readWorkRecovery(id, recoveryId) {
-        if (!UUID.test(id)) throw new DataError("No such sandbox.");
+        if (!UUID.test(id)) throw new DataError("No such sandbox.", "not_found");
         const archive = await readWorkRecovery(sql, scope, id, recoveryId);
-        if (archive === undefined) throw new DataError("No such sandbox.");
+        if (archive === undefined) throw new DataError("No such sandbox.", "not_found");
         return archive;
       },
       async recordNativePrompt(id, providerSandboxId, promptId, requestId) {

@@ -904,7 +904,9 @@ test("owners and admins can recover the exact native archive after normal deleti
     expect(await owner.readWorkRecovery?.(sandboxId, archiveId)).toBe(archive);
     expect(await data(people.admin).readWorkRecovery?.(sandboxId)).toBe(archive);
     expect(await owner.readWorkRecovery?.(sandboxId, crypto.randomUUID())).toBeNull();
-    await expect(data(people.member).readWorkRecovery?.(sandboxId, archiveId)).rejects.toThrow("No such sandbox.");
+    await expect(data(people.member).readWorkRecovery?.(sandboxId, archiveId)).rejects.toMatchObject({
+      code: "not_found",
+    });
   } finally {
     if (previousKey === undefined) delete process.env.ARMADA_ENCRYPTION_KEY;
     else process.env.ARMADA_ENCRYPTION_KEY = previousKey;
