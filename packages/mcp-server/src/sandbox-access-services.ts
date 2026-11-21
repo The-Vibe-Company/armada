@@ -103,6 +103,7 @@ export function createSandboxAccessServices(input: {
   }
   async function stopChild(operation: ChildOperation, admitRecovery?: StopRecoveryAdmission) {
     const { saved, resolveProvider } = await child(operation.sandboxId, operation.ownerId, operation.orgId);
+    if (saved.boatRuntime && (saved.status === "stopping" || saved.stopRequestedAt)) return;
     const retained =
       saved.runtimeTransport === "dialout" || (saved.boatRuntime && ["ready", "running"].includes(saved.status));
     if (admitRecovery && (!retained || !["ready", "running"].includes(saved.status) || saved.stopRequestedAt))
