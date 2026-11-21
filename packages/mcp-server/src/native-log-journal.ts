@@ -1,14 +1,14 @@
 import { createHash } from "node:crypto";
 import { decryptSecret, type EventPage, encryptSecret, type Provider, type Sql, VaultError } from "@armada/core/server";
 import { NativeOutputPending, persistedNativePages } from "./event-pagination.ts";
+import { SANDBOX_VISIBLE } from "./sandbox-visibility.ts";
 
 const authorizedSandbox = `
-  s.id=$1::uuid and s.org_id=$2::uuid and s.provider_sandbox_id=$3
+  ${SANDBOX_VISIBLE} and s.id=$3::uuid and s.provider_sandbox_id=$4
   and s.provider='boat' and not s.boat_runtime and s.runtime_transport is null
   and s.deleted_at is null and s.status<>'deleted'
-  and exists(select 1 from public.members m where m.org_id=s.org_id and m.user_id=$4::uuid)
   and (coalesce(s.visibility,(select g.visibility from public.goldens g where g.id=s.golden_id))='org'
-       or s.owner_id=$4::uuid)
+       or s.owner_id=$2::uuid)
 `;
 
 const pendingCommand = `
@@ -27,7 +27,7 @@ export function withNativeLogJournal(
   const journalProvider: Provider = {
     ...provider,
     async events(request) {
-      const params = [scope.id, scope.orgId, request.sandboxId, scope.userId];
+      const params = [[scope.orgId], scope.userId, scope.id, request.sandboxId];
       const digest = createHash("sha256")
         .update(
           JSON.stringify([
