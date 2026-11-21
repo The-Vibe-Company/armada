@@ -1,11 +1,11 @@
 "use server";
 
-import { type Golden, isSandboxProvider } from "@armada/core";
+import { isSandboxProvider } from "@armada/core";
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { type ActionResult, done, explainDbError, fail, formString, isUuid } from "@/lib/action";
 import { ControlError, createControlClient, isGoldenBuildStatus, isGoldenRemoval } from "@/lib/control";
-import { listGoldens } from "@/lib/data/goldens";
+import { type GoldenRow, listGoldens } from "@/lib/data/goldens";
 import { newWorkBlocker } from "@/lib/data/provider-setup";
 import { isSelectedOrganization } from "@/lib/data/selected-org";
 import { listMemberships, requireViewer } from "@/lib/data/viewer";
@@ -47,7 +47,7 @@ export async function buildGolden(_previous: ActionResult | null, data: FormData
   const serverUrl = mcpUrl();
   if (!serverUrl || !viewer.token) return fail("The Armada server is not configured for this dashboard.");
 
-  let target: Golden | undefined;
+  let target: GoldenRow | undefined;
   if (mode === "update") {
     const goldenId = formString(data, "golden");
     if (!isUuid(goldenId)) return fail("That request is not valid.");
