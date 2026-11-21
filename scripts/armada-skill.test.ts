@@ -84,7 +84,7 @@ test("published Armada skill commands and flags match the live CLI usage contrac
     [],
     ...["ls", "add", "login", "import", "default", "limits", "rm", "test"].map((action) => ["account", action]),
     ["template"],
-    ...["create", "list", "get", "publish", "delete", "launch"].map((action) => ["template", action]),
+    ...["list", "get", "launch"].map((action) => ["template", action]),
     ["vars"],
     ...["set", "list", "read"].map((action) => ["vars", action]),
     ["secrets"],

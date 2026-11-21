@@ -13,7 +13,6 @@ async function invoke(
   options: {
     response?: unknown;
     status?: number;
-    file?: string;
     fetchError?: Error;
     unreadableReply?: boolean;
     beforeLaunch?: (stderr: string) => void;
@@ -57,26 +56,14 @@ async function invoke(
           });
         },
       },
-      readFile: async () => options.file ?? JSON.stringify(definition),
     },
   );
   return { code, out, err, requests };
 }
 
-test("template commands use the API contracts for all six dashboard-proxied operations", async () => {
+test("template commands use the API contracts for list, get and launch", async () => {
   const cases = [
-    {
-      args: ["create", "preset", "--file", "definition.json"],
-      action: "create",
-      body: { org, scope: "personal", name: "preset", definition },
-    },
     { args: ["get", id, "--revision", "1"], action: "get", body: { org, id, revision: 1 } },
-    {
-      args: ["publish", id, "--expected-revision", "2", "--file", "definition.json"],
-      action: "publish",
-      body: { org, id, expectedRevision: 2, definition },
-    },
-    { args: ["delete", id, "--expected-revision", "2"], action: "delete", body: { org, id, expectedRevision: 2 } },
     {
       args: [
         "launch",
@@ -122,133 +109,36 @@ test("template commands use the API contracts for all six dashboard-proxied oper
   }
 });
 
-test.each([undefined, id])(
-  "template JSON forwards Docker host placement and optional snapshot (%s)",
-  async (snapshotId) => {
-    const docker = {
-      provider: "docker",
-      hostId: golden,
-      harness: "codex",
-      ...(snapshotId === undefined ? {} : { snapshotId }),
-    };
-    const result = await invoke(["template", "create", "docker", "--file", "docker.json", "--json"], {
-      file: JSON.stringify(docker),
-      response: {
-        item: template,
-        revision: { revision: 1, definition: { ...docker, goldenId: null, goldenBinding: null } },
-      },
-    });
-    expect(result.code).toBe(0);
-    const request = result.requests[0];
-    if (!request) throw Error("missing template request");
-    expect(((await request.json()) as { definition: unknown }).definition).toEqual(docker);
-    expect(JSON.parse(result.out).revision.definition).toMatchObject({ ...docker, goldenId: null });
-  },
-);
+test.each(["create", "publish", "delete"])("template %s is unknown, including with help", async (verb) => {
+  for (const suffix of [[id], ["--help"]]) {
+    const result = await invoke(["template", verb, ...suffix]);
+    expect(result.code).toBe(2);
+    expect(result.err).toContain(`unknown command 'template ${verb}'`);
+    expect(result.out).toBe("");
+    expect(result.requests).toHaveLength(0);
+  }
+});
 
-test.each(["create", "publish"])(
-  "Docker template %s flags forward host placement and shared bindings",
-  async (action) => {
-    const result = await invoke([
-      "template",
-      action,
-      action === "create" ? "docker" : id,
-      ...(action === "publish" ? ["--expected-revision", "2"] : []),
-      "--host",
-      golden,
-      "--provider",
-      "docker",
-      "--agent",
-      "codex",
-      "--connection",
-      id,
-      "--skill",
-      "catalog/notes@1.0.0",
-      "--variable",
-      `PUBLIC_LABEL:${id}:1`,
-      "--secret",
-      `APP_TOKEN:${id}:2`,
-      "--json",
-    ]);
-    expect(result.code).toBe(0);
-    expect(result.requests).toHaveLength(1);
-    expect(await result.requests[0]!.json()).toEqual({
-      org,
-      ...(action === "create" ? { name: "docker", scope: "personal" } : { id, expectedRevision: 2 }),
-      definition: {
-        provider: "docker",
-        goldenId: null,
-        hostId: golden,
-        harness: "codex",
-        connections: [id],
-        skills: ["catalog/notes@1.0.0"],
-        variables: [{ key: "PUBLIC_LABEL", variableId: id, version: 1 }],
-        secrets: [{ key: "APP_TOKEN", secretId: id, version: 2 }],
-      },
-    });
-  },
-);
-
-test("template names resolve within the selected organization and flags create a definition", async () => {
+test("template names resolve within the selected organization", async () => {
   const named = await invoke(["template", "get", "preset"]);
   expect(named.code).toBe(0);
   expect(await named.requests[1]?.json()).toEqual({ org, id });
-  const created = await invoke([
-    "template",
-    "create",
-    "preset",
-    "--golden",
-    golden,
-    "--provider",
-    "boat",
-    "--agent",
-    "codex",
-    "--org",
-    org,
-    "--scope",
-    "org",
-  ]);
-  expect(created.code).toBe(0);
-  expect(await created.requests[0]?.json()).toEqual({
-    org,
-    scope: "org",
-    name: "preset",
-    definition: { ...definition, connections: [], variables: [], skills: [] },
-  });
 });
 
-test("template CLI refuses ambiguous scope, invalid revisions, unsupported overrides and inline secret values before mutation", async () => {
-  for (const args of [
-    ["create", "preset", "--org", org, "--file", "definition.json"],
-    ["publish", id, "--expected-revision", "0", "--file", "definition.json"],
-    ["launch", id, "--request-key", "run-1", "--model", "other"],
-    ["launch", id],
-    ["get", "--help", "--unknown"],
-    ["unknown", "--help"],
-    ...[
-      ["--provider", "docker"],
-      ["--provider", "docker", "--host", "not-a-uuid"],
-      ["--provider", "docker", "--golden", golden],
-      ["--provider", "docker", "--host", golden, "--golden", golden],
-      ["--provider", "boat", "--host", golden],
-      ["--provider", "modal", "--golden", golden, "--host", golden],
-      ["--file", "definition.json", "--host", golden],
-    ].map((placement) => ["create", "preset", "--agent", "codex", ...placement]),
-  ]) {
-    const result = await invoke(["template", ...args]);
-    expect(result.code).not.toBe(0);
-    expect(result.requests).toHaveLength(0);
-  }
-  const secret = await invoke(["template", "create", "preset", "--file", "definition.json"], {
-    file: JSON.stringify({ ...definition, secrets: [{ key: "APP_TOKEN", value: true }] }),
-  });
-  expect(secret.code).not.toBe(0);
-  expect(secret.requests).toHaveLength(0);
+test.each([
+  { args: ["launch", id, "--request-key", "run-1", "--model", "other"] },
+  { args: ["launch", id] },
+  { args: ["get", "--help", "--unknown"] },
+  { args: ["unknown", "--help"] },
+])("template rejects invalid arguments before making a request (%j)", async ({ args }) => {
+  const result = await invoke(["template", ...args]);
+  expect(result.code).toBe(2);
+  expect(result.requests).toHaveLength(0);
 });
 
 test("template failures use closed actionable diagnostics without echoing untrusted response text", async () => {
   for (const [message, expected] of [
-    ["Template revision changed.", "revision"],
+    ["Template revision unavailable.", "choose an existing revision"],
     ["Template launch refused: reference_unavailable.", "reference"],
     ["Template launch refused: environment_unavailable.", "snapshot"],
     ["Template launch refused: connection_unavailable.", "connection"],
@@ -369,35 +259,9 @@ test("template get prints readable header and selected revision unless JSON is r
   expect(JSON.parse(json.out)).toEqual({ item: template, revision: { revision: 1, definition } });
 });
 
-test("template CLI sends secret references through repeatable flags and definition files", async () => {
-  const binding = { key: "APP_TOKEN", secretId: id, version: 1 };
-  for (const args of [
-    ["--file", "definition.json"],
-    ["--golden", id, "--provider", "boat", "--agent", "codex", "--secret", `APP_TOKEN:${id}:1`],
-  ]) {
-    const result = await invoke(["template", "create", "secret-preset", ...args], {
-      file: JSON.stringify({ ...definition, secrets: [binding] }),
-    });
-    expect(result.code).toBe(0);
-    expect(((await result.requests.at(-1)!.json()) as { definition: unknown }).definition).toMatchObject({
-      secrets: [binding],
-    });
-  }
-});
-
-test("template help does not swallow literal prompt values or names after the terminator", async () => {
-  for (const entry of [
-    {
-      args: ["template", "launch", id, "--request-key", "literal_prompt", "--prompt", "-h"],
-      field: "prompt",
-      value: "-h",
-    },
-    { args: ["template", "create", "--file", "definition.json", "--", "--help"], field: "name", value: "--help" },
-  ]) {
-    const result = await invoke(entry.args);
-    expect(result.code).toBe(0);
-    expect(result.requests).toHaveLength(1);
-    expect(await result.requests[0]?.json()).toMatchObject({ [entry.field]: entry.value });
-    expect(result.out).not.toContain("Launch templates (");
-  }
+test("template help does not swallow a literal prompt value", async () => {
+  const result = await invoke(["template", "launch", id, "--request-key", "literal_prompt", "--prompt", "-h"]);
+  expect(result.code).toBe(0);
+  expect(result.requests).toHaveLength(1);
+  expect(await result.requests[0]?.json()).toMatchObject({ prompt: "-h" });
 });
