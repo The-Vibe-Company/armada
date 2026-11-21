@@ -1593,7 +1593,7 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
                   code: error.code,
                   attempts,
                   lastResponse,
-                  ...(SANDBOX_ID.test(sandboxId) ? { sandboxId } : {}),
+                  ...(sandboxId && SANDBOX_ID.test(sandboxId) ? { sandboxId } : {}),
                   ...(SANDBOX_ID.test(turn.promptId) ? { promptId: turn.promptId } : {}),
                 }),
               );
