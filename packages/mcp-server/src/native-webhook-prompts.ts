@@ -226,8 +226,6 @@ function nativeObservationLane(observe: (signal: AbortSignal) => Promise<boolean
   };
 }
 
-/** Called under the sandbox lock by native send settlement. The sandbox-level
- * queue alias can name a different turn, so use the acknowledged prompt ID. */
 export async function bindNativePromptRequest(tx: Sql, sandboxId: string, promptId: string, requestId: string) {
   await tx.query(
     `update public.native_webhook_prompts p set acknowledged_request_id=q.request_id
