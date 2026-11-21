@@ -41,7 +41,6 @@ export async function readEventPages(
     } catch (error) {
       if (!pauseOnNativeLease || !(error instanceof NativeBoatOutputPending)) throw error;
       paused = true;
-      hasMore = false;
       break;
     }
     if (page.source) source = page.source;
