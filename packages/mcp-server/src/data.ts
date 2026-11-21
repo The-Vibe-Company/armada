@@ -55,12 +55,12 @@ import {
 } from "./runtime-reconciliation-conflict.ts";
 import {
   carryNativePreservationAcrossStop,
-  claimNativeDrainDispatch,
   completeSandboxDeletion,
   expireAfterExtension,
   finishLaunchFailure,
   finishLaunchSuccess,
   markNativeDrainDispatchUnclaimed,
+  nativeDrainDispatch,
   publishNativeResumeAdmission,
   publishNativeTurn,
   publishOwnerStop,
@@ -145,11 +145,12 @@ export interface ServerSandboxStore extends SandboxStore {
   launchTiming?(id: string): Promise<LaunchTiming | null>;
   assertExtensionAllowed?(id: string): Promise<void>;
   assertDeletionAllowed?(id: string): Promise<void>;
-  claimNativeDrainDispatch?(
+  nativeDrainDispatch?(
     id: string,
     placement: string,
     generation: number,
     activityToken: string,
+    action: "inspect" | "claim",
   ): Promise<string | null>;
   getForStop?(id: string): Promise<{ sandbox: SandboxView; busy: boolean } | null>;
   requestStartingModalStop?(sandbox: SandboxRecord, signal?: AbortSignal): ReturnType<typeof requestStartingModalStop>;
@@ -609,8 +610,8 @@ export function createSqlData(
         if (!["stopped", "failed", "deleted"].includes(row.status))
           throw new GoldenError("conflict", "Stop the sandbox before deleting it.");
       },
-      async claimNativeDrainDispatch(id, placement, generation, activityToken) {
-        const owned = await claimNativeDrainDispatch(sql, scope, id, placement, generation, activityToken);
+      async nativeDrainDispatch(id, placement, generation, activityToken, action) {
+        const owned = await nativeDrainDispatch(sql, scope, id, placement, generation, activityToken, action);
         if (!owned) throw new DataError("Native drain no longer owns this placement.", "sandbox_not_ready");
         return owned.operation_id;
       },

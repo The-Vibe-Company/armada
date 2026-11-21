@@ -25,8 +25,7 @@ export function configureNativeDrain(
   const providers = providerRegistry({
     vault,
     encryptionKey,
-    providerFor: (apiKey) =>
-      scopedAccess.wrap(createObservedBoatProvider({ apiKey, ...(deploymentId ? { deploymentId } : {}) })),
+    providerFor: (apiKey) => createObservedBoatProvider({ apiKey, ...(deploymentId ? { deploymentId } : {}) }),
     modalTokensFor: async (target, caller) => (await modalIntegration()).modalTokensFor(target, caller),
     modalProviderFor: async (tokens, binding, context) => {
       const sandboxId = context.target.id;
@@ -35,6 +34,10 @@ export function configureNativeDrain(
       return { ...ports, provider: scopedAccess.wrap(ports.provider, sandboxId) };
     },
   });
+  const deletionPreparation = {
+    boat: { beforeNativeDrainDelete: scopedAccess.beforeNativeDrainDelete },
+    modal: {},
+  }[provider];
   const data = createSqlData(sql);
   const remove = async (row: { id: string; org_id: string; role: MemberRole | null }) => {
     if (!row.role) throw new Error("The operator has no organization membership.");
@@ -42,6 +45,7 @@ export function configureNativeDrain(
     await deleteSandboxWithActivity(
       sandboxes,
       {
+        ...deletionPreparation,
         async resolve(target, caller) {
           if (target.provider !== provider || target.boatRuntime || target.runtimeTransport === "dialout")
             throw new Error("The sandbox route changed after inventory.");
