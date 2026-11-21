@@ -341,19 +341,16 @@ async function captureAndStore(
     if (expired()) return;
     observed("observed", current.state);
     if (["stopped", "deleted"].includes(current.state) || current.physicalExitConfirmed) return;
-    const nativeModal = provider.id === "modal" && !stop.modal_runtime;
-    const physicalGeneration = nativeModal ? current.physicalGeneration : undefined;
+    const fencedNativeCapture = !stop.modal_runtime && provider.supportsExecPhysicalGeneration;
+    const physicalGeneration = fencedNativeCapture ? current.physicalGeneration : undefined;
     if (
-      nativeModal &&
-      (current.id !== providerId ||
-        current.providerState !== "active" ||
-        !physicalGeneration ||
-        !provider.supportsExecPhysicalGeneration)
+      fencedNativeCapture &&
+      (current.id !== providerId || !["ready", "running"].includes(current.state) || !physicalGeneration)
     )
       throw new ProviderError({
         provider: provider.id,
         code: "sandbox_not_ready",
-        message: "Native work capture requires the exact active Modal incarnation.",
+        message: "Native work capture requires the exact active physical incarnation.",
         retryable: false,
       });
     if (stop.modal_runtime) {
