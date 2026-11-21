@@ -38,10 +38,13 @@ shared environment.
 
 ## Templates, readable variables and secrets
 
-Use `armada template create NAME --file definition.json` to create a definition;
-`armada template publish TEMPLATE --expected-revision 1 --file definition.json`
-publishes another immutable revision with optimistic concurrency protection.
-Inspect current state before retrying a revision conflict.
+Create, publish and delete template definitions in the dashboard or use
+`armada api templates/create -`, `armada api templates/publish -` and
+`armada api templates/delete -` with JSON on stdin. Send the organization UUID in
+`org` on each request. Create takes `name`, `scope` (`personal` or `org`) and
+`definition`. Publish takes the template UUID in `id`, the current
+`expectedRevision` and a complete `definition`. Delete takes `id` and
+`expectedRevision`. Inspect current state before retrying a revision conflict.
 
 Readable configuration is not secret: `armada vars set SETTING --file VALUE_FILE`
 and `armada vars list --json` manage references; `armada vars read VARIABLE_ID`

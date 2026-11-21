@@ -83,7 +83,7 @@ It is not a workflow engine or privileged service identity.
    read isolation and authorization. No timer, launch, or enabling endpoint is
    shipped. The API is a foundation, not completion of #1006.
 2. **Slice 2 (#1014):** server scheduler, durable run history/claims, pause/resume and cost guards.
-3. **CLI + coordinator checks (#1027):** API-only `armada routine …` commands and a bounded coordinator staging check.
+3. **CLI + coordinator checks (#1027):** authenticated routine API access and a bounded coordinator staging check.
 4. **Dashboard (also #1027):** Run > Routines using CreateDialog; optional read-only iPhone last.
 
 ## Configuration and identity
@@ -231,14 +231,10 @@ For rollback, stop the scheduler-enabled server before removing any of its schem
 retain occurrence history and template claim keys so recovery cannot refire a run.
 
 
-## CLI and bounded coordinator check
+## API and bounded coordinator check
 
-`armada routine --help` documents create/list/show/update/enable/pause/delete/runs.
-Every command supports `--json`; all requests go through the authenticated Armada
-API. Mutations require the current `--expected-version` (except initial create).
-Update is a complete mutable-configuration JSON file, not a patch or an exported
-show envelope. Prompt files preserve whitespace; use `--prompt-file -` for piped
-stdin. Explicit `--org` creation also requires explicit `--scope`.
+The [CLI API route reference](../cli-admin.md#routines) maps routine operations
+to their authenticated routes and documents the required request fields.
 
 The coordinator can run the Python 3.9+ stdlib check on macOS or Linux:
 

@@ -22,20 +22,6 @@ test("the compiled binary prints the version", () => {
   expect(result.stdout.toString()).toBe(`${VERSION}\n`);
 });
 
-test("compiled invitation CLI is discoverable and rejects token argv without server setup", () => {
-  const help = Bun.spawnSync([binary, "--help"], { env: {} });
-  expect(help.exitCode).toBe(0);
-  expect(help.stdout.toString()).toContain("org invitations create");
-  expect(help.stdout.toString()).toContain("org invitations accept");
-  const rejected = Bun.spawnSync([binary, "org", "invitations", "accept", "fixture-private-token", "--json"], {
-    env: {},
-  });
-  expect(rejected.exitCode).toBe(2);
-  expect(rejected.stdout.toString()).toBe("");
-  expect(rejected.stderr.toString()).not.toContain("fixture-private-token");
-  expect(JSON.parse(rejected.stderr.toString()).error.message).toContain("stdin or a file");
-});
-
 test("compiled launch preserves account selection and owner defaults without allocating resources", async () => {
   const requests: { path: string; body: Record<string, unknown> }[] = [];
   const credentialId = "33333333-3333-4333-8333-333333333333";

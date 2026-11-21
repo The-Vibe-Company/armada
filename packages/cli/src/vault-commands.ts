@@ -1,3 +1,4 @@
+import { AuthError } from "@armada/auth";
 import {
   CONNECTION_PRESETS,
   type CredentialInfo,
@@ -6,7 +7,6 @@ import {
   harnessesForCredential,
   harnessForCredential,
   isModelConnectionTestResult,
-  type MemberInfo,
   type OrgCredentials,
   type OrgSummary,
   parseClaudeEndpoint,
@@ -16,14 +16,12 @@ import {
   parseCredentialValue,
   parseModelPriceOverrides,
   parseOpenCodeEndpoint,
-  parseRole,
   presetConnectionValue,
   VaultError,
 } from "@armada/core";
 import { flag, parseArgs, single } from "./args.ts";
 import type { AuthIo } from "./auth-commands.ts";
 import { control } from "./control.ts";
-import { invitationCommand } from "./invitation-commands.ts";
 import { validateNativeCodexAuth } from "./native-login-protocol.ts";
 import { nativeCodexLogin } from "./native-model-login.ts";
 import type { Deps } from "./run.ts";
@@ -85,17 +83,6 @@ export async function orgCommand(argv: readonly string[], io: VaultIo): Promise<
       );
       return 0;
     }
-    case "create": {
-      const args = parseArgs(rest);
-      const name = one(args.positionals, "armada org create <name>");
-      const { org } = await control<{ org: OrgSummary }>(io.auth, "org/create", { name });
-      io.auth.out(
-        flag(args, "--json")
-          ? `${JSON.stringify({ org })}\n`
-          : `Created org ${org.name}. You are its admin.\nid: ${org.id}\nRequired next: pipe a provider credential into armada org connect boat|modal --org ${org.id}.\n`,
-      );
-      return 0;
-    }
     case "list": {
       const args = parseArgs(rest);
       const { orgs } = await control<{ orgs: OrgSummary[] }>(io.auth, "org/list", {});
@@ -108,64 +95,8 @@ export async function orgCommand(argv: readonly string[], io: VaultIo): Promise<
       );
       return 0;
     }
-    case "invitations":
-      return invitationCommand(rest, io);
-    case "members":
-      return members(rest, io);
     default:
-      throw usage("Run armada org create, list, setup, connect, invitations or members.");
-  }
-}
-
-async function members(argv: readonly string[], io: VaultIo): Promise<number> {
-  const [sub, ...rest] = argv;
-  const args = parseArgs(rest);
-  const org = single(args, "--org");
-  switch (sub) {
-    case "list": {
-      expect(args.positionals, 0, "armada org members list [--org <name>]");
-      const listed = await control<{ org: OrgSummary; members: MemberInfo[] }>(io.auth, "members/list", { org });
-      if (flag(args, "--json")) {
-        io.auth.out(`${JSON.stringify(listed)}\n`);
-        return 0;
-      }
-      const lines = listed.members.map((member) => `${member.email ?? member.userId}  ${member.role}`);
-      io.auth.out(`${listed.org.name}\n${lines.join("\n")}\n`);
-      return 0;
-    }
-    case "add": {
-      const [email] = expect(
-        args.positionals,
-        1,
-        "armada org members add <email> [--role admin|member] [--org <name>]",
-      );
-      const role = parseRole(single(args, "--role") ?? "member");
-      const { member } = await control<{ member: MemberInfo }>(io.auth, "members/add", { org, email, role });
-      io.auth.out(
-        flag(args, "--json")
-          ? `${JSON.stringify({ member })}\n`
-          : `Added ${member.email ?? email} as ${member.role}.\n`,
-      );
-      return 0;
-    }
-    case "role": {
-      const [email, role] = expect(
-        args.positionals,
-        2,
-        "armada org members role <email> <admin|member> [--org <name>]",
-      );
-      await control(io.auth, "members/role", { org, email, role: parseRole(role ?? "") });
-      io.auth.out(flag(args, "--json") ? `${JSON.stringify({ ok: true })}\n` : `${email} is now ${role}.\n`);
-      return 0;
-    }
-    case "remove": {
-      const [email] = expect(args.positionals, 1, "armada org members remove <email> [--org <name>]");
-      await control(io.auth, "members/remove", { org, email });
-      io.auth.out(flag(args, "--json") ? `${JSON.stringify({ ok: true })}\n` : `Removed ${email}.\n`);
-      return 0;
-    }
-    default:
-      throw usage("Run armada org members list, add, role or remove.");
+      throw new AuthError(`unknown command 'org ${sub}'. Run 'armada --help'.`, "usage");
   }
 }
 

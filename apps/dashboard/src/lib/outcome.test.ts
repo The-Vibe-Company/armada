@@ -147,7 +147,7 @@ describe("preservationView", () => {
     expect(preservationView(preserved, "stopped", ID, true)).toEqual({
       kind: "preserved",
       text: "Unpushed work preserved",
-      command: `armada recovery ${ID} > armada-recovery.json`,
+      command: `armada api sandbox/recovery '{"id":"${ID}"}' > armada-recovery.json`,
     });
     expect(preservationView(preserved, "stopped", ID, false)).toMatchObject({ kind: "preserved", command: null });
   });

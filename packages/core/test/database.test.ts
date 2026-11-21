@@ -255,6 +255,7 @@ describe("database", () => {
         "mcp_grants.value_enc",
         "mcp_pending_oauth.payload_enc",
         "model_auth_state.state_enc",
+        "native_drain_recovery.archive_enc",
         "notify_subscriptions.secret_enc",
         "org_langfuse.config_enc",
         "organization_invitations.token_enc",

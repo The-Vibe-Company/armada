@@ -25,11 +25,11 @@ Quick start / common examples:
   armada login
   armada org list
   armada login --org my-team
-  armada status --setup
+  armada info --setup
   armada host add --name my-workstation
   armada new
   armada ls
-  armada status SANDBOX_ID
+  armada info SANDBOX_ID
   armada prompt SANDBOX_ID "Continue the task"
   armada events SANDBOX_ID --tail 20
   armada stop SANDBOX_ID
@@ -47,14 +47,12 @@ ${sandboxUsage("snapshots")}
 ${sandboxUsage("new")}
 ${sandboxUsage("ls")}
 ${sandboxUsage("mcp-bindings")}
-${sandboxUsage("advice")}
 ${sandboxUsage("bind-credential")}
 ${sandboxUsage("sandbox")}
 ${sandboxUsage("mcp")}
 ${sandboxUsage("session")}
 ${sandboxUsage("org")}
 ${sandboxUsage("account")}
-${sandboxUsage("invitations")}
 ${sandboxUsage("automation")}
 ${sandboxUsage("vault")}
                                            Personal or --org scope. JSON includes values only for vars read; no sandbox delivery.
@@ -63,9 +61,10 @@ Every command after 'armada login' acts as the user who signed in. snapshot comm
 when you belong to more than one org.
 
 Give an agent access:
-  Create an API key with armada token create --name <name>. Set ARMADA_URL and inject the key
-  as ARMADA_TOKEN from a secret store. Verify with armada whoami. From a personal login,
-  find the key ID with armada token ls and revoke it with armada token revoke <id>.
+  Create an API key in Dashboard Settings or run:
+  armada api token/create '{"label":"worker","org":"ORG_UUID"}'
+  Store the response's token securely. Set ARMADA_URL and inject the key as ARMADA_TOKEN.
+  Verify with armada whoami.
 
 Environment:
   ARMADA_TOKEN                             API token for non-interactive authentication. Takes precedence over

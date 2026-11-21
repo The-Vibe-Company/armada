@@ -124,7 +124,7 @@ export function registerStatusTools(
       return {
         ...publicReport(recordedStatus(found)),
         ...logicalExpiry(found.expiresAt, context.now()),
-        statusMessage: `Recorded state only; use armada status ${sandboxId} --live for provider and prompt details.`,
+        statusMessage: `Recorded state only; use armada info ${sandboxId} --live for provider and prompt details.`,
       };
     try {
       const storedProvider = stored ? context.storedProviders?.[found.provider] : undefined;

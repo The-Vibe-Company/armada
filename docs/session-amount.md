@@ -11,7 +11,7 @@ cannot become new pricing evidence.
 ## Returned fields
 
 `POST /api/v1/sandbox/status`, MCP `status`, API/MCP list, and
-`armada status <id> --json` return:
+`armada info <id> --json` return:
 
 - `usage.turns[].pricing.usd`: persisted exact decimal USD string or null.
 - `usage.turns[].pricing.snapshot`: the frozen applied rates and source revision.
@@ -48,8 +48,8 @@ with the sandbox ID from the launch receipt.
 
 ```sh
 armada new MODAL_SNAPSHOT --provider modal --agent claude "Reply OK"
-armada wait SANDBOX_UUID --json
-armada status SANDBOX_UUID --json | jq '{cost:.usage.cost, turns:.usage.turns}'
+armada info --wait SANDBOX_UUID --json
+armada info SANDBOX_UUID --json | jq '{cost:.usage.cost, turns:.usage.turns}'
 armada ls --json
 ```
 

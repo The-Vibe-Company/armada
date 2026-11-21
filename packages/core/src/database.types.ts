@@ -2785,6 +2785,48 @@ export type Database = {
           },
         ];
       };
+      native_drain_recovery: {
+        Row: {
+          archive_id: string;
+          sandbox_id: string;
+          org_id: string;
+          owner_id: string;
+          archive_enc: string;
+          created_at: string;
+        };
+        Insert: {
+          archive_id: string;
+          sandbox_id: string;
+          org_id: string;
+          owner_id: string;
+          archive_enc: string;
+          created_at?: string;
+        };
+        Update: {
+          archive_id?: string;
+          sandbox_id?: string;
+          org_id?: string;
+          owner_id?: string;
+          archive_enc?: string;
+          created_at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "native_drain_recovery_org_id_fkey";
+            columns: ["org_id"];
+            isOneToOne: false;
+            referencedRelation: "orgs";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "native_drain_recovery_owner_id_fkey";
+            columns: ["owner_id"];
+            isOneToOne: false;
+            referencedRelation: "users";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
       native_steer_cursors: {
         Row: {
           sandbox_id: string;

@@ -23,11 +23,11 @@ Quick start / common examples:
   armada login
   armada org list
   armada login --org my-team
-  armada status --setup
+  armada info --setup
   armada host add --name my-workstation
   armada new
   armada ls
-  armada status SANDBOX_ID
+  armada info SANDBOX_ID
   armada prompt SANDBOX_ID "Continue the task"
   armada events SANDBOX_ID --tail 20
   armada stop SANDBOX_ID
@@ -41,7 +41,7 @@ Usage:
   armada host rm UUID [--org UUID]
   armada new [prompt] --provider docker [--host UUID|NAME | --golden snapshot-UUID] --agent claude|codex|opencode [--credential-id UUID] [--org NAME|UUID] [--repo owner/repo[@branch] ...] [--variable KEY:UUID:VERSION ...] [--secret KEY:UUID:VERSION ...] [--idempotency-key KEY] [--json]
                                            Docker launch through the normal Armada API using the official Armada environment.
-  armada status [--setup] [--org UUID] [--json]  Check identity, server, GitHub, hosts and accounts
+  armada info --setup [--org UUID] [--json]  Check identity, server, GitHub, hosts and accounts
   armada completion bash|zsh|fish           Print a shell completion script
   armada --version                         Print the version
   armada --help                            Show this help (also -h or help); no login required
@@ -73,20 +73,15 @@ Usage:
                                            Default page size 25; --json keeps {sandboxes:[...]}; --page-info adds exact totals
   armada mcp sandbox-connections <sandbox-uuid> [--org UUID] [--json]
                                            Read actual bound connection metadata, never mutate bindings
-  armada advice <sandbox-id> [--org UUID] [--json]
-                                           Last-10 comparable-session resource evidence; collects one bounded sample.
-                                           Missing/partial evidence abstains. Never resizes or changes defaults.
-                                           Human launch guidance uses stderr only; --json launch never requests advice.
   armada bind-credential <sandbox-id> --credential-id UUID [--org UUID] [--json]
                                            Owner-only legacy Modal binding recovery; stop safely first; no restart
+  armada info [sandbox-id] [--live | --wait [--timeout seconds]] [--org UUID] [--json]
+                                           Inspect recorded state, probe the provider or wait for activity
   armada rm <sandbox-id> --yes [--org UUID] [--json]  Permanently delete a stopped sandbox and its recovery archives
   armada extend <sandbox-id> --ttl <duration> [--org UUID] [--json]
                                            TTL is measured from now, not added to the old deadline; must extend it.
-  armada status <sandbox-id> [--live] [--org UUID] [--json]
-                                           Recorded state by default (no provider probe); --live reads provider/prompt details
-  armada detail|recovery|stop|interrupt <sandbox-id> [--org UUID] [--json]
-  armada wait <sandbox-id> [--timeout <seconds>] [--org UUID] [--json]
-                                           Timeout is 0–600 seconds, default 60.
+  armada stop [sandbox-id] [--org UUID] [--json]
+  armada interrupt [sandbox-id] [--org UUID] [--json]
   armada report [sandbox-id] ready|blocked --prompt-id ID [--reason TEXT] [--pr-number N] [--pr-url URL] [--head-sha SHA]
   armada prompt [--steer] <sandbox-id> <text>
                                            Start a turn or redirect a running turn
@@ -104,11 +99,7 @@ Usage:
   armada mcp list|add|update|connect|status|reconnect|enable|disable|revoke|delete [id] [--org UUID] [--file JSON]
   armada login [--url <url>] [--org NAME|UUID|none]        Sign in and authorize the CLI in your browser
   armada logout
-  armada token create --name <name> [--org <org>] [--expires 30d|90d|1y|never] [--json]
-  armada token ls [--json]
-  armada token revoke <id> [--json]
   armada whoami [--json]
-  armada org create <name>                 Create an org; you are its first admin
   armada org list
   armada org setup [--org <name>]          Show organization provider setup status
   armada org connect boat|modal [--org <name>] [--file <path>]
@@ -116,19 +107,7 @@ Usage:
   armada account --help                      Discover encrypted model account commands
   armada account ls|add|login|rm github      GitHub connection and installation
   armada account status|logout               Armada identity / revoke current login session
-  armada org invitations create <email> [--role admin|member] [--org <name|UUID>] [--json]
-  armada org invitations list [--org <name|UUID>] [--json]
-  armada org invitations resend|revoke <id> [--org <name|UUID>] [--json]
-                                           Admin invitation management; --org overrides the saved selection.
-                                           Email sent means provider accepted, not confirmed inbox delivery.
-  armada org invitations accept [--file <path>] [--json]
-                                           Token from stdin/file only; log in personally with the matching
-                                           verified email first. Opening a link never joins an organization.
-  armada org members list|add|remove|role  [--org <name>] add <email> [--role admin|member]
-                                           Direct membership administration; add requires an existing account,
-                                           grants membership immediately and does not send an invitation.
-  armada routine --help                    Create, inspect, enable, pause and manage scheduled template launches
-  armada template --help                   Manage templates and launch published versions
+  armada template --help                   Inspect and launch published versions
   armada vars --help                       Readable variables: set/list/read; stdin/file writes only
   armada secrets --help                    Write-only application secrets: set/list/rotate/revoke/delete
                                            Personal or --org scope. JSON includes values only for vars read; no sandbox delivery.
@@ -137,9 +116,10 @@ Every command after 'armada login' acts as the user who signed in. snapshot comm
 when you belong to more than one org.
 
 Give an agent access:
-  Create an API key with armada token create --name <name>. Set ARMADA_URL and inject the key
-  as ARMADA_TOKEN from a secret store. Verify with armada whoami. From a personal login,
-  find the key ID with armada token ls and revoke it with armada token revoke <id>.
+  Create an API key in Dashboard Settings or run:
+  armada api token/create '{"label":"worker","org":"ORG_UUID"}'
+  Store the response's token securely. Set ARMADA_URL and inject the key as ARMADA_TOKEN.
+  Verify with armada whoami.
 
 Environment:
   ARMADA_TOKEN                             API token for non-interactive authentication. Takes precedence over
@@ -224,21 +204,9 @@ Deleted sandboxes are excluded by default; request --status deleted to include t
 Page is 1–1000000; limit is 1–200 (default page size 25). This is one page, not all results.
 Human output is a table. --json returns {sandboxes:[...]}; --page-info returns full
 page metadata and exact totals as JSON even without --json.
-Use --org to override a saved selection. Reuse returned IDs with status, events, or prompt.
+Use --org to override a saved selection. Reuse returned IDs with info, events, or prompt.
 Example: armada ls --owner me --page 1 --limit 25 --json
 Example: armada ls --org ORG_UUID --page 2 --page-info
-"
-`;
-
-exports[`armada advice help preserves its output 1`] = `
-"Usage: armada advice <sandbox-id> [--org UUID] [--json]
-Read resource-sizing advice after Armada login and server authorization.
-Collects one bounded sample and considers up to the last 10 comparable sessions.
-Missing or partial evidence can produce no recommendation; do not treat unknowns as measured headroom.
-This never resizes a running machine or changes defaults; recommendations concern future launches.
-Human output summarizes supported advice or the no-recommendation reason.
-Use --json to inspect the full evidence response. Use a sandbox ID from armada ls.
-Example: armada advice SANDBOX_UUID --org ORG_UUID --json
 "
 `;
 
@@ -263,37 +231,16 @@ Example: armada extend SANDBOX_UUID --ttl 30m --org ORG_UUID --json
 "
 `;
 
-exports[`armada status help preserves its output 1`] = `
-"Usage: armada status [--setup] [--org UUID] [--json]
-       armada status [sandbox-id] [--live] [--org UUID] [--json]
-Without a sandbox ID or current sandbox, check identity, selected organization,
-server, GitHub, hosts and model accounts. Use --setup to inspect setup from a
-sandbox workspace. Setup reports metadata and exits 1 if a check fails.
-An explicit ID, ARMADA_SANDBOX or .armada/sandbox selects sandbox status.
-Default: recorded state, without a provider probe. --live reads provider/prompt details.
-Use a sandbox ID from armada ls --json. Output is JSON even without --json.
-Recorded state is not proof of current provider readiness.
-Example: armada status --setup --org ORG_UUID --json
-Example: armada status SANDBOX_UUID --org ORG_UUID --json
-Example: armada status SANDBOX_UUID --live --org ORG_UUID
-"
-`;
-
-exports[`armada detail help preserves its output 1`] = `
-"Usage: armada detail <sandbox-id> [--org UUID] [--json]
-Read detailed sandbox information after Armada login and server authorization.
-Use a sandbox ID from armada ls --json. Output is JSON even without --json.
-For recorded status without a provider probe, use armada status instead.
-Example: armada detail SANDBOX_UUID --org ORG_UUID --json
-"
-`;
-
-exports[`armada recovery help preserves its output 1`] = `
-"Usage: armada recovery <sandbox-id> [--org UUID] [--json]
-Read sandbox work-recovery information after Armada login and server authorization.
-Output is JSON even without --json. This is not credential-account rebinding.
-Use a sandbox ID from armada ls --json.
-Example: armada recovery SANDBOX_UUID --org ORG_UUID --json
+exports[`armada info help preserves its output 1`] = `
+"Usage: armada info [--setup] [--org UUID] [--json]
+       armada info [sandbox-id] [--live | --wait [--timeout seconds]] [--prompt-id ID] [--org UUID] [--json]
+An explicit ID, ARMADA_SANDBOX or .armada/sandbox selects a sandbox.
+Without a sandbox, inspect Armada setup. Use --setup to force setup inspection.
+--live reads current provider and prompt details. The default reads recorded state.
+--wait waits for sandbox activity. Timeout is 0–600 seconds, default 60.
+A bounded wait is not proof that the task is complete. Inspect the returned state.
+Use --json for machine-readable sandbox output. Setup reports its checks and exits 1 if a check fails.
+Example: armada info SANDBOX_UUID --wait --timeout 60 --org ORG_UUID --json
 "
 `;
 
@@ -302,7 +249,7 @@ exports[`armada stop help preserves its output 1`] = `
 Stop the machine after Armada login and server authorization, not just the running turn.
 Modal retains its disk only if checkpoint succeeds; fallback termination cannot resume.
 Inspect the returned status/preservation note; do not assume disk retention.
-After an uncertain outcome, inspect status/list before retrying. This is not permanent rm deletion.
+After an uncertain outcome, run armada info or armada ls before retrying. This is not permanent rm deletion.
 Output is JSON even without --json.
 Example: armada stop SANDBOX_UUID --org ORG_UUID --json
 "
@@ -315,16 +262,6 @@ The sandbox stays up for the next send. This does not stop or delete the machine
 Availability depends on the provider/harness; the server can refuse unsupported interruption.
 Output is JSON even without --json.
 Example: armada interrupt SANDBOX_UUID --org ORG_UUID --json
-"
-`;
-
-exports[`armada wait help preserves its output 1`] = `
-"Usage: armada wait <sandbox-id> [--timeout <seconds>] [--org UUID] [--json]
-Wait for sandbox activity through the server after Armada login and authorization.
-Timeout is an integer from 0 to 600 seconds (default 60); zero is accepted.
-Use a sandbox ID from armada ls --json. Output is JSON even without --json.
-Inspect the returned state; a bounded wait is not proof that your task is complete.
-Example: armada wait SANDBOX_UUID --timeout 60 --org ORG_UUID --json
 "
 `;
 
@@ -378,46 +315,16 @@ Use --org to scope sandbox prefix lookup.
 "
 `;
 
-exports[`armada routine help preserves its output 1`] = `
-"Usage: armada routine <command> [arguments]
-Manage scheduled template launches that run as the routine owner.
-
-  create  Create a paused routine from file or inline configuration.
-  list    List visible IDs, names, status, versions and next occurrences.
-  show    Inspect configuration, prompt and current version.
-  update  Replace configuration from file, or change only the inline schedule.
-  enable  Schedule the next occurrence, not an immediate manual launch.
-  pause   Stop new admissions; already admitted runs may finish.
-  delete  Mark deleted; does not stop or delete running sandboxes.
-  runs    Read the latest 100 decisions and original-prompt outcomes.
-
-Actions require Armada login or ARMADA_TOKEN. Select an organization with --org
-NAME|UUID or armada login --org NAME|UUID. Organization-scoped writes require administrator permission.
-Use IDs from routine list when exact names collide; keep IDs for history after deletion.
-Updates and state changes require --expected-version from routine show/list;
-conflicts are not retried automatically. Prompts are readable configuration, not secrets.
-Schedules use five-field cron and IANA time zones, with runs at least one hour apart.
-Launch success is not task success; unknown is not success. Inspect routine runs.
-Inspect a command's options with armada routine <command> --help.
-Example: armada routine list --org ORG_UUID --json
-Example: armada routine runs ROUTINE_UUID --org ORG_UUID --json
-"
-`;
-
 exports[`armada template help preserves its output 1`] = `
 "Usage: armada template <command> [arguments]
-Manage reusable launch definitions and their immutable template versions.
+Inspect reusable launch definitions and launch their immutable template versions.
 
-  create   Create a template from a JSON definition file or definition flags.
   list     List visible IDs, names, scopes, status and current versions.
   get      Inspect metadata or a selected version's definition with --json.
-  publish  Publish a complete new version, guarded by --expected-revision.
-  delete   Mark a template deleted, guarded by --expected-revision.
   launch   Launch a template version using a saved --request-key for safe retries.
 
 Actions require Armada login or ARMADA_TOKEN. Select an organization with --org
-NAME|UUID or armada login --org NAME|UUID. Templates may be personal or organization-scoped;
-organization-scoped writes require administrator permission.
+NAME|UUID or armada login --org NAME|UUID. Templates may be personal or organization-scoped.
 Use IDs from template list when exact names collide across scopes.
 Definitions store variable/secret references; do not put raw secret values in them.
 References resolve into frozen manifests at launch, not publication.

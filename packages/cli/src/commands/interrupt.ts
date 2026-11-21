@@ -3,7 +3,7 @@ import { sandboxOperation } from "./sandbox-operation.ts";
 export default sandboxOperation({
   name: "interrupt",
   summary: "Interrupt a running turn",
-  usage: ``,
+  usage: `  armada interrupt [sandbox-id] [--org UUID] [--json]`,
   help: `Usage: armada interrupt <sandbox-id> [--org UUID] [--json]
 Interrupt the sandbox's running turn after Armada login and authorization.
 The sandbox stays up for the next send. This does not stop or delete the machine.

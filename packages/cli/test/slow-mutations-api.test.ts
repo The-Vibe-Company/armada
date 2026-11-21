@@ -19,7 +19,7 @@ const cases = [
     name: "sandbox stop",
     args: ["stop", "sandbox-1", "--json"],
     path: "/api/v1/sandbox/stop",
-    check: "armada status sandbox-1",
+    check: "armada info sandbox-1",
     response: { id: "sandbox-1", status: "stopped" },
   },
 ];
