@@ -1659,7 +1659,7 @@ test("managed child stop clears its epoch only after physical confirmation", asy
 
 // Scoped child messages share ordinary send's native receipt registration, so the
 // shared settlement boundary admits the turn to Langfuse export.
-const childSendScenarios = ["accepted", "stale", "abort", "lost response", "settlement abort"] as const;
+const childSendScenarios = ["accepted", "stale", "abort", "lost response", "settlement abort"];
 test.each(childSendScenarios)("native child send (%s)", async (scenario) => {
   const { close, db, sql, p, id, token, golden } = await fixture(
     "running",
@@ -1729,7 +1729,6 @@ test.each(childSendScenarios)("native child send (%s)", async (scenario) => {
     );
     if (scenario === "settlement abort")
       await db.exec("alter table sandboxes add constraint reject_child_prompt check (task_prompt_id <> 'prompt_1')");
-    // Isolate the unresolved send from the other handoff guards.
     async function laterPreservationHandoff() {
       await db.query("update native_webhook_prompts set completed_at=now() where sandbox_id=$1", [child.id]);
       await db.query(
