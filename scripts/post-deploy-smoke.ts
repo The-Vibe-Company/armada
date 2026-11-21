@@ -699,14 +699,17 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
   }
   const defaultPins = new Map<number, string[]>();
   if (defaultSkills) {
-    const { request } = createLane();
+    const { request, withStepDeadline } = createLane();
     for (const [index, item] of cases.entries()) {
       try {
         const pins = await readDefaultPins(item.org, item.goldenId!, {
           request,
-          step: async (name, action) => {
-            return timedSmokeStep(action, io.now, (elapsedMs, error) => report(index, name, error, elapsedMs));
-          },
+          step: (name, action) =>
+            timedSmokeStep(
+              () => withStepDeadline(name, action),
+              io.now,
+              (elapsedMs, error) => report(index, name, error, elapsedMs),
+            ),
         });
         defaultPins.set(index, pins);
         report(index, "default_skills_policy");
@@ -1096,7 +1099,7 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
     index: number,
     item: SmokeCase,
     dirty: boolean,
-    { request, withCleanup, step, io }: ReturnType<typeof unit>,
+    { request, withCleanup, withStepDeadline, step, io }: ReturnType<typeof unit>,
     scope?: "enabled" | "no_option",
   ): Promise<boolean> {
     let passed = true;
@@ -1385,10 +1388,13 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
         await step("github_launch_access", () => checkedExec(`${git} ls-remote origin HEAD >/dev/null 2>&1`));
       if (defaultSkills) {
         const expected = defaultPins.get(index)!;
-        await step(dirty ? "default_skills_opt_out_receipts" : "default_skills_receipts", async () => {
-          const status = await sandbox<{ skills?: unknown }>("status", { id: sandboxId });
-          verifyDefaultReceipts(launchSkills, status.skills, dirty ? [] : expected);
-        });
+        const receiptStep = dirty ? "default_skills_opt_out_receipts" : "default_skills_receipts";
+        await step(receiptStep, () =>
+          withStepDeadline(receiptStep, async () => {
+            const status = await sandbox<{ skills?: unknown }>("status", { id: sandboxId });
+            verifyDefaultReceipts(launchSkills, status.skills, dirty ? [] : expected);
+          }),
+        );
         if (!expected.length)
           io.out(
             JSON.stringify({
