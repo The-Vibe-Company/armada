@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { decryptSecret, encryptSecret, type Sql } from "@armada/core/server";
+import { createSqlVaultStore, decryptSecret, encryptSecret, type Sql } from "@armada/core/server";
 import { type ModalMachineOptions, scopeKey } from "@armada/provider-modal";
 import { rowOnlyDatabase } from "../../test/row-only-database.ts";
 import { createTurnDispatchJob, type DispatchTurn } from "../account-turn-dispatch.ts";
@@ -9,6 +9,7 @@ import { createOrdinaryLaunchReceipts } from "../ordinary-launch-receipts.ts";
 import { retentionMaintenanceJob, seedRetentionMaintenance } from "../retention-maintenance.ts";
 import { createRuntimeCommands } from "../runtime-commands.ts";
 import { createRuntimeEnrolments, scopedRuntimeSql } from "../runtime-enrolment.ts";
+import { createRuntimeGitHub } from "../runtime-github.ts";
 import { createSandboxLifecycle } from "../sandbox-lifecycle.ts";
 import type { LaneFactory } from "../server-worker-modules.ts";
 import { sqlOver } from "../sql.ts";
@@ -125,14 +126,19 @@ async function unboundModalSandbox(f: Awaited<ReturnType<typeof fixture>>) {
 
 const launchEncryptionKey = btoa("\0".repeat(32));
 
+const workspaceConfig = {
+  repos: [{ url: "https://github.com/example/workspace", dir: "workspace", branch: "main" }],
+  init: ["printf initialized"],
+};
+
 async function modalAdmissionFixture() {
   const f = await fixture();
   const goldenId = crypto.randomUUID();
   await f.db.query(
     `insert into goldens
-       (id, org_id, owner_id, name, visibility, provider, modal_workspace, modal_environment, modal_app_id, provider_snapshot_id)
-     values ($1,$2,$3,'modal-admission','private','modal','workspace','main','ap-test','snapshot')`,
-    [goldenId, f.people.org, f.people.owner],
+       (id, org_id, owner_id, name, visibility, provider, modal_workspace, modal_environment, modal_app_id, provider_snapshot_id, config)
+     values ($1,$2,$3,'modal-admission','private','modal','workspace','main','ap-test','snapshot',$4)`,
+    [goldenId, f.people.org, f.people.owner, workspaceConfig],
   );
   const scope = scopeKey({
     orgId: f.people.org,
@@ -311,6 +317,7 @@ test.each(["active secret", "revoked secret", "changed snapshot"] as const)(
             id: input.sandbox.goldenId,
             provider: "modal",
             providerSnapshotId: input.allocation.source.ref,
+            config: workspaceConfig,
             modal: { workspace: "workspace", environment: "main", appId: "ap-test" },
           },
           account: { id: openaiCredentialId, version: 1 },
@@ -413,6 +420,7 @@ test("Modal admission commits an unbound sandbox, scoped job and encrypted turn 
   expect(JSON.parse(await decryptSecret(turn!.payload_enc, launchEncryptionKey))).toEqual({
     launchJobId: job!.id,
     prompt: input.initialPrompt,
+    workspace: workspaceConfig,
   });
 });
 
@@ -719,15 +727,35 @@ async function modalLaunchFixture(initial?: Awaited<ReturnType<typeof modalAdmis
   };
 }
 
+const fixtureWorkspaceCommands: Pick<ReturnType<typeof createRuntimeCommands>, "call"> = {
+  async call(_owner, request, options) {
+    const epoch = options?.expectedEpoch ?? "";
+    const result =
+      request.op === "health"
+        ? { ready: true, generation: epoch, workspaceVersion: 1 }
+        : { detached: false, exitCode: 0, stdout: "", stderr: "" };
+    return {
+      epoch,
+      requestId: request.requestId,
+      status: 200,
+      body: { version: 1, requestId: request.requestId, result },
+    };
+  },
+};
+
 async function modalFirstTurnLane(
   f: Awaited<ReturnType<typeof fixture>>,
   accountTurns: Pick<ReturnType<typeof createAccountTurnQueue>, "acceptInitialLaunch">,
+  runtimeCommands = fixtureWorkspaceCommands,
+  runtimeGitHub?: ReturnType<typeof createRuntimeGitHub>,
 ) {
   const factory = await registeredJobsLane();
   return factory({
     sql: f.sql,
     jobs: f.store,
     accountTurns,
+    runtimeCommands,
+    runtimeGitHub,
     config: { encryptionKey: launchEncryptionKey },
     options: { logError: () => {} },
     control: {},
@@ -817,6 +845,109 @@ test.each(["before", "after"] as const)(
   },
 );
 
+test("a replacement Modal setup claimant replays workspace commands before admitting the first turn", async () => {
+  const { f, id, makeRunner, activeRuntime } = await modalLaunchFixture(await modalAdmissionFixture());
+  const launch = makeRunner();
+  expect(await launch.reconcileOne(signal)).toBe(true);
+  await launch.drain();
+
+  const { runtimeToken, epoch } = activeRuntime();
+  const authority = createRuntimeEnrolments(f.sql, launchEncryptionKey);
+  const turns = async () =>
+    (await f.db.query("select request_id from account_turn_queue where sandbox_id=$1", [id])).rows;
+  const commandsSeen: string[] = [];
+  let pendingRepository = "";
+  let capability: { url: string; value: string } | undefined;
+  const queue = createAccountTurnQueue(f.sql, launchEncryptionKey);
+  await f.db.query(
+    `insert into github_connections(user_id,github_id,login,name,refresh_token_enc,access_token_enc,access_expires_at)
+     values($1,123,'owner','Owner',$2,$2,'2100-01-01')`,
+    [f.people.owner, await encryptSecret("fixture", launchEncryptionKey)],
+  );
+  const caller = { userId: f.people.owner, orgs: [{ orgId: f.people.org, role: "member" }], via: "service" } as const;
+  const runSetup = async (interrupt: boolean) => {
+    const bridge = createRuntimeCommands(authority, launchEncryptionKey, {
+      now: () => 0,
+      async wait() {
+        const { command } = await bridge.next(runtimeToken, epoch);
+        if (!command) throw new Error("Expected a runtime command.");
+        expect(await turns()).toEqual([]);
+        commandsSeen.push(command.op === "workspaceExec" ? command.input.phase : command.op);
+        if (command.op === "configureGitHub") {
+          const config = command.configuration;
+          expect(config?.repositories).toEqual(["example/workspace"]);
+          if (!config) throw Error("Expected an active GitHub configuration.");
+          capability = { url: config.url, value: config.capability };
+        }
+        if (command.op === "workspaceExec" && command.input.phase === "repository") {
+          if (interrupt) {
+            pendingRepository = command.requestId;
+            throw Error("Worker lost while the repository command was pending.");
+          }
+          expect(command.requestId).toBe(pendingRepository);
+          if (!capability) throw Error("Expected the original GitHub capability.");
+          const redeem = (repository: string) =>
+            github.route(
+              new Request(capability!.url, {
+                method: "POST",
+                headers: { authorization: `Bearer ${capability!.value}` },
+                body: JSON.stringify({ version: 1, repository, operation: "git" }),
+              }),
+            );
+          expect((await redeem("example/workspace"))?.status).toBe(200);
+          expect((await redeem("example/replacement"))?.status).toBe(403);
+        }
+        if (command.op === "workspaceExec" && command.input.phase === "init")
+          expect(command.input.command).toBe(workspaceConfig.init[0]!);
+        const result =
+          command.op === "health"
+            ? { ready: true, generation: epoch, workspaceVersion: 1 }
+            : command.op === "configureGitHub"
+              ? { acknowledged: true }
+              : { detached: false, exitCode: 0, stdout: "", stderr: "" };
+        await bridge.complete(runtimeToken, epoch, {
+          epoch,
+          requestId: command.requestId,
+          status: 200,
+          body: { version: 1, requestId: command.requestId, result },
+        });
+      },
+    });
+    const github = createRuntimeGitHub({
+      sql: f.sql,
+      key: launchEncryptionKey,
+      origin: "https://armada.test",
+      commands: bridge,
+      github: {
+        store: createSqlVaultStore(f.sql),
+        encryptionKey: launchEncryptionKey,
+        app: { clientId: "app", clientSecret: "fixture" },
+        fetch: Object.assign(async () => Response.json({ id: 123, login: "owner", name: "Owner" }), {
+          preconnect: () => {},
+        }),
+      },
+    });
+    const lane = await modalFirstTurnLane(f, queue, bridge, github);
+    expect(await lane.reconcileOne(signal)).toBe(true);
+    await lane.drain();
+    expect(await github.status({ ...caller, orgs: [...caller.orgs] }, id)).toMatchObject({ configured: true });
+  };
+
+  await runSetup(true);
+  expect(commandsSeen).toEqual(["health", "configureGitHub", "repository"]);
+  expect(await turns()).toEqual([]);
+  await f.db.query("update goldens set config=$1 where name='modal-admission'", [
+    {
+      repos: [{ ...workspaceConfig.repos[0], url: "https://github.com/example/replacement" }],
+      init: ["printf replacement"],
+    },
+  ]);
+  await f.db.query("update jobs set lease_until='-infinity' where sandbox_id=$1 and kind=$2", [id, MODAL_INITIAL_TURN]);
+  await runSetup(false);
+  expect(commandsSeen).toEqual(["health", "configureGitHub", "repository", "repository", "init"]);
+  expect(await turns()).toHaveLength(1);
+});
+
 test.each(["acknowledgement lost", "promptless takeover", "secret revoked", "sandbox untainted"] as const)(
   "the Modal first-turn worker fences runtime configuration when %s",
   async (scenario) => {
@@ -893,6 +1024,7 @@ test.each(["acknowledgement lost", "promptless takeover", "secret revoked", "san
             sql,
             queue,
             createGoldenRuntimeEnvironment(sql, launchEncryptionKey, { now: () => 0, wait }),
+            fixtureWorkspaceCommands,
           ),
         },
         () => {},

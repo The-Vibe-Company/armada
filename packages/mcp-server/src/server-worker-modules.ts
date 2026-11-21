@@ -48,6 +48,7 @@ const jobsLane: LaneFactory = ({
   config,
   lifecycleProvider,
   runtimeCommands,
+  runtimeGitHub,
   webhooks,
   options,
   outputs,
@@ -108,6 +109,8 @@ const jobsLane: LaneFactory = ({
               sql,
               accountTurns,
               createGoldenRuntimeEnvironment(sql, config.encryptionKey),
+              runtimeCommands,
+              runtimeGitHub,
             ),
           }
         : {}),
