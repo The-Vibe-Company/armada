@@ -9,6 +9,7 @@ import { runtimeAgentFor } from "./runtime-agent.ts";
 import type { createRuntimeCommands } from "./runtime-commands.ts";
 import { createRuntimeEnrolments, runtimeTransaction } from "./runtime-enrolment.ts";
 import type { RuntimeMcp } from "./runtime-mcp.ts";
+import { RuntimeReconciliationConflict } from "./runtime-reconciliation-conflict.ts";
 import type { RuntimeResume, RuntimeTurnClaim } from "./runtime-resume.ts";
 import { appendConversation } from "./sandbox-activity.ts";
 import type { RestoreScopedRuntimeAccess } from "./sandbox-armada-access.ts";
@@ -182,7 +183,6 @@ export function createRuntimeFollowup(
           current.lifecycleGeneration === undefined ||
           current.lifecycleGeneration !== found.lifecycleGeneration ||
           !lease ||
-          lease.reconciling ||
           !["ready", "running"].includes(current.status) ||
           current.credentialId !== found.credentialId ||
           current.credentialVersion !== found.credentialVersion ||
@@ -194,7 +194,7 @@ export function createRuntimeFollowup(
           )
         )
           throw new RuntimeFollowupConflict(
-            lease?.reconciling ? "runtime_reconciliation_active" : "runtime_admission_changed",
+            "runtime_admission_changed",
             "Runtime admission changed; inspect status before retrying.",
           );
         // The durable command identity decides first: an admitted turn may have executed, so the
@@ -205,6 +205,18 @@ export function createRuntimeFollowup(
             [found.id, commandId],
           )
         ).rows[0];
+        if (lease.reconciling) {
+          const wake = await locked.query(
+            "select 1 from public.runtime_resumes where sandbox_id=$1 and request_id=$2",
+            [found.id, requestId],
+          );
+          if (saved || previous.state !== "missing" || lease.activity_lease_id === requestId || wake.rows.length)
+            throw new RuntimeFollowupConflict(
+              "runtime_reconciliation_active",
+              "Runtime admission changed; inspect status before retrying.",
+            );
+          throw new RuntimeReconciliationConflict();
+        }
         const checkpoint =
           !saved &&
           (

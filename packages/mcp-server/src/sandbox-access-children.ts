@@ -14,6 +14,7 @@ import { DataError } from "./data.ts";
 import { ModalLaunchSetupConflict } from "./jobs/modal-launch-setup.ts";
 import { recordOperatorDiagnostic } from "./request-observability.ts";
 import { RuntimeFollowupConflict } from "./runtime-followup.ts";
+import { RuntimeReconciliationConflict } from "./runtime-reconciliation-conflict.ts";
 import { ChildLaunchNotAllocated } from "./sandbox-access-child-launch.ts";
 import { trackedOperations } from "./tracked-operations.ts";
 
@@ -393,7 +394,15 @@ export function createSandboxChildren(sql: Sql, authority: ChildAuthority, execu
     } catch (error) {
       const noAllocation = input.action === "launch" && error instanceof ChildLaunchNotAllocated;
       const setupRefused = error instanceof ModalLaunchSetupConflict;
-      const notDispatched = input.action === "message" && (setupRefused || error instanceof ChildMessageNotDispatched);
+      const refusal = error instanceof DataError ? error.cause : error;
+      const reconciliationRefused =
+        !recovery &&
+        phase === "execution" &&
+        input.action !== "launch" &&
+        refusal instanceof RuntimeReconciliationConflict;
+      const notDispatched =
+        reconciliationRefused ||
+        (input.action === "message" && (setupRefused || error instanceof ChildMessageNotDispatched));
       const state = noAllocation || notDispatched ? "failed" : "uncertain";
       const code = noAllocation
         ? `child_${error.reason}`
@@ -402,21 +411,25 @@ export function createSandboxChildren(sql: Sql, authority: ChildAuthority, execu
           : "child_outcome_unconfirmed";
       if (noAllocation) error.record(operation, code);
       else {
-        const refusalCode = notDispatched
-          ? setupRefused
-            ? error.reason
-            : error.cause instanceof DataError && error.cause.code === "sandbox_not_ready"
-              ? "sandbox_not_ready"
-              : "native_admission_error"
-          : undefined;
-        const causeCode =
-          state === "uncertain"
-            ? error instanceof RuntimeFollowupConflict
+        const refusalCode = reconciliationRefused
+          ? refusal.reason
+          : notDispatched
+            ? setupRefused
               ? error.reason
-              : phase === "completion"
-                ? "completion_unconfirmed"
-                : "execution_unconfirmed"
+              : error instanceof ChildMessageNotDispatched &&
+                  error.cause instanceof DataError &&
+                  error.cause.code === "sandbox_not_ready"
+                ? "sandbox_not_ready"
+                : "native_admission_error"
             : undefined;
+        const executionCause =
+          error instanceof RuntimeFollowupConflict
+            ? error.reason
+            : refusal instanceof RuntimeReconciliationConflict
+              ? refusal.reason
+              : "execution_unconfirmed";
+        const causeCode =
+          state === "uncertain" ? (phase === "completion" ? "completion_unconfirmed" : executionCause) : undefined;
         recordOperatorDiagnostic(`scoped.child_${input.action}.${phase}`, failureDiagnostic(error), {
           sandboxId: operation.sandboxId,
           operationId: operation.id,
