@@ -585,7 +585,7 @@ export class ProviderError extends Error {
 /** The provider's known pre-admission start-limit signal, not an ambiguous transport failure. */
 export function isProviderStartRateLimit(error: ProviderError): boolean {
   if (!isSandboxProvider(error.provider) || error.code !== "rate_limited") return false;
-  const status = HOST_CAPABILITIES[error.provider].startRateLimitStatus;
+  const status = HOST_CAPABILITIES[error.provider].startRateLimit?.status;
   return status !== undefined && error.status === status;
 }
 
