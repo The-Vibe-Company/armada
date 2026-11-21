@@ -5,7 +5,7 @@ import { rowOnlyDatabase } from "../../test/row-only-database.ts";
 import { createTurnDispatchJob, type DispatchTurn } from "../account-turn-dispatch.ts";
 import { createAccountTurnQueue } from "../account-turn-queue.ts";
 import { retentionMaintenanceJob, seedRetentionMaintenance } from "../retention-maintenance.ts";
-import { scopedRuntimeSql } from "../runtime-enrolment.ts";
+import { createRuntimeEnrolments, scopedRuntimeSql } from "../runtime-enrolment.ts";
 import type { LaneFactory } from "../server-worker-modules.ts";
 import { sqlOver } from "../sql.ts";
 import { runtimeWakes } from "../wake-bus.ts";
@@ -284,6 +284,7 @@ test("an unbound Modal launch can publish only its leased allocation receipt", a
 type ModalLaunchStep =
   | "create response"
   | "bootstrap dispatch"
+  | "bootstrap response"
   | "image lookup"
   | "runtime ticket"
   | "termination response"
@@ -306,7 +307,9 @@ async function modalLaunchFixture() {
   let cleanupPreparations = 0;
   let tags: Record<string, string> = {};
   const bootstrapped: string[] = [];
-  const makeRunner = (atStep?: (step: ModalLaunchStep) => void | Promise<void>, jobsSql = f.sql) => {
+  const enrolments = createRuntimeEnrolments(f.sql, launchEncryptionKey);
+  const makeRunner = (atStep?: (step: ModalLaunchStep) => void | Promise<void>, jobsSql = f.sql, enrol = true) => {
+    let enrolmentToken: string;
     const sandbox = {
       sandboxId: "physical",
       getTags: async () => tags,
@@ -326,7 +329,14 @@ async function modalLaunchFixture() {
           [id],
         );
         bootstrapped.push(rows[0]!.provider_sandbox_id);
-        return { stdin: { writeText: async () => {}, close: async () => {} }, wait: async () => 0 };
+        return {
+          stdin: { writeText: async () => {}, close: async () => {} },
+          async wait() {
+            if (enrol) await enrolments.enrol(enrolmentToken);
+            await atStep?.("bootstrap response");
+            return 0;
+          },
+        };
       },
     };
     const client = {
@@ -358,11 +368,18 @@ async function modalLaunchFixture() {
       deploymentId: "deployment",
       async resolveRuntimeTicket() {
         await atStep?.("runtime ticket");
+        ({ enrolmentToken } = await enrolments.issue({
+          sandboxId: id,
+          ownerId: f.people.owner,
+          expectedGeneration: 2,
+          expectedProviderSandboxId: "physical",
+          configuration: {},
+        }));
         return {
           serverUrl: "https://armada.invalid",
           artifact: { sha256: "a".repeat(64), bytes: 1 },
           cacheDir: "/home/user/runtime-cache",
-          enrolmentToken: `armada_enrol_${"b".repeat(64)}`,
+          enrolmentToken,
         };
       },
       prepareCheckpoint: async () => {},
@@ -593,7 +610,7 @@ test("an interrupted Modal failure handoff rolls back the failure and delete job
   expect(cleanupEffects()).toEqual({ terminations: 0, cleanupPreparations: 0 });
 });
 
-test.each(["create response", "bootstrap dispatch"] as const)(
+test.each(["create response", "bootstrap dispatch", "bootstrap response"] as const)(
   "a replacement Modal launch runner completes after losing the %s",
   async (failure) => {
     const { f, jobId, makeRunner, effects } = await modalLaunchFixture();
@@ -603,9 +620,12 @@ test.each(["create response", "bootstrap dispatch"] as const)(
     expect(await first.reconcileOne(signal)).toBe(true);
     await first.drain();
     expect(effects().allocations).toBe(1);
-    expect(effects().bootstrapped).toEqual([]);
+    expect(effects().bootstrapped).toEqual(failure === "bootstrap response" ? ["physical"] : []);
     expect((await f.db.query("select state from jobs where id=$1", [jobId])).rows).toEqual([{ state: "leased" }]);
     await f.db.query("update jobs set lease_until='-infinity' where id=$1", [jobId]);
+    if (failure === "bootstrap response") {
+      await f.db.query("update jobs set deadline_at='-infinity' where id=$1", [jobId]);
+    }
 
     const successor = makeRunner();
     expect(await successor.reconcileOne(signal)).toBe(true);
@@ -622,6 +642,24 @@ test.each(["create response", "bootstrap dispatch"] as const)(
     ).toEqual([{ status: "starting", state: "done" }]);
   },
 );
+
+test("Modal bootstrap without enrolment retries, then fails and hands off cleanup when expired", async () => {
+  const { f, id, jobId, makeRunner, effects } = await modalLaunchFixture();
+  const runner = makeRunner(undefined, f.sql, false);
+  expect(await runner.reconcileOne(signal)).toBe(true);
+  await runner.drain();
+  expect(effects().bootstrapped).toEqual(["physical"]);
+  expect((await f.db.query("select state from jobs where id=$1", [jobId])).rows).toEqual([{ state: "queued" }]);
+
+  await f.db.query("update jobs set run_after='-infinity', deadline_at='-infinity' where id=$1", [jobId]);
+  expect(await runner.reconcileOne(signal)).toBe(true);
+  await runner.drain();
+  expect((await f.db.query("select status from sandboxes where id=$1", [id])).rows).toEqual([{ status: "failed" }]);
+  expect((await f.db.query("select state from jobs where kind='delete' and sandbox_id=$1", [id])).rows).toEqual([
+    { state: "queued" },
+  ]);
+  expect(effects().bootstrapped).toEqual(["physical"]);
+});
 
 test.each(["image lookup", "runtime ticket"] as const)(
   "a Modal launch whose job deadline expires during %s cannot dispatch the prepared operation",

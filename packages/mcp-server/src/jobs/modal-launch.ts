@@ -147,6 +147,7 @@ interface ModalLaunchPlan {
 const LAUNCH_FAILURE = "modal_launch_failed";
 const RECONCILING_ALLOCATION = "modal_launch_reconciling";
 const RECONCILE_DELAY_MS = 30_000;
+const ENROLMENT_RETRY_DELAY_MS = 1_000;
 const DELETE_DISPATCH_BUDGET_MS = 5 * 60_000;
 
 export async function runModalLaunch(
@@ -161,8 +162,45 @@ export async function runModalLaunch(
   if (job.kind !== "launch" || !sandboxId || !Number.isSafeInteger(generation) || generation < 1)
     throw new Error("Invalid Modal launch claim.");
 
-  const dispatch = await dispatchModalLaunch(sql, job, context, plan, { sandboxId, generation });
-  if (dispatch.kind === "bootstrapped") return { status: "done" } satisfies JobResult;
+  const hasEnrolled = async (tx: Sql) => {
+    const { rows } = await tx.query(
+      `select 1 from public.sandboxes s
+       join public.jobs j on j.id=$2 and j.sandbox_id=s.id and j.generation=s.lifecycle_generation
+         and j.org_id=s.org_id and j.request_owner_id=s.owner_id
+       join public.runtime_enrolments e on e.sandbox_id=s.id and e.lifecycle_generation=s.lifecycle_generation
+       where s.id=$1 and s.provider='modal' and s.runtime_transport='dialout'
+         and s.provider_sandbox_id is not null and e.runtime_hash is not null
+         and s.status in ('starting','ready','running') and s.deleted_at is null and s.stop_requested_at is null`,
+      [sandboxId, job.id],
+    );
+    return rows.length > 0;
+  };
+  const done = { status: "done" } satisfies JobResult;
+  const enrolledUnderLease = () => withJobLease(sql, job, hasEnrolled);
+  const beforeDispatch = await enrolledUnderLease();
+  context.signal.throwIfAborted();
+  if (beforeDispatch !== false) return done;
+
+  const checkedPlan: ModalLaunchPlan = {
+    ...plan,
+    machine: {
+      ...plan.machine,
+      async resolveRuntimeTicket(request) {
+        if ((await enrolledUnderLease()) !== false) return;
+        return plan.machine.resolveRuntimeTicket(request);
+      },
+    },
+  };
+  const dispatch = await dispatchModalLaunch(sql, job, context, checkedPlan, { sandboxId, generation });
+  const afterDispatch = await enrolledUnderLease();
+  context.signal.throwIfAborted();
+  if (afterDispatch !== false) return done;
+  if (dispatch.kind === "bootstrapped") {
+    return {
+      status: "retry",
+      after: new Date(Date.now() + ENROLMENT_RETRY_DELAY_MS),
+    } satisfies JobResult;
+  }
 
   const startingTarget = async (tx: Sql) => {
     const {
@@ -206,7 +244,9 @@ export async function runModalLaunch(
     status: "fail",
     reason: LAUNCH_FAILURE,
     async commit(tx) {
-      if (!(await startingTarget(tx))) throw new Error("Modal launch settlement target changed.");
+      // complete_job holds the sandbox lock that enrolment also takes before writing its receipt.
+      if ((await hasEnrolled(tx)) || !(await startingTarget(tx)))
+        throw new Error("Modal launch settlement target changed.");
       const transition = await transitionSandbox(tx, {
         sandboxId,
         expectedGeneration: generation,
