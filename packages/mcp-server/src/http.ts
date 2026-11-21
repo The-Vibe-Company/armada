@@ -29,6 +29,7 @@ import { diagnosticSandboxId } from "./provider-sandbox-target.ts";
 import { REQUEST_BODY_LIMIT_BYTES, withRequestBodyCeiling } from "./request-body-ceiling.ts";
 import { observeRequest, recordOperatorFailure } from "./request-observability.ts";
 import type { RuntimeFollowup } from "./runtime-followup.ts";
+import type { SandboxLogReader } from "./runtime-history.ts";
 import { createArmadaServer, type ToolContext } from "./tools.ts";
 
 export const MCP_PATH = "/mcp";
@@ -58,7 +59,7 @@ export interface HandlerOptions {
     caller: { userId: string },
     captureRuntimeWork?: ModalConnectionPorts["captureRuntimeWork"],
   ) => Promise<Provider>;
-  logProvider?(target: SandboxView, caller: Caller): Promise<Provider>;
+  logProvider?(target: SandboxView, caller: Caller): Promise<SandboxLogReader>;
   storedProviderFor?: (target: ProviderTarget, caller: { userId: string }) => Promise<Provider>;
   /** Runtime readiness of the serving database pool; no credentials in the result. */
   ready?: () => Promise<boolean>;

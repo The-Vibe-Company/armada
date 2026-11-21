@@ -234,7 +234,7 @@ export function registerLogsTool(
 }
 
 async function readLogs(
-  provider: Provider,
+  provider: Pick<Provider, "events">,
   sandboxId: string,
   args: {
     since_cursor?: string;

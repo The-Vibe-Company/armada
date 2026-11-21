@@ -4,11 +4,12 @@ import {
   type EventPage,
   type EventsRequest,
   eventPageOptions,
+  type Provider,
   ProviderError,
 } from "@armada/core";
 import { decryptSecret, type Sql } from "@armada/core/server";
 import type { Caller } from "./caller.ts";
-import { createSqlData } from "./data.ts";
+import { createSqlData, type SandboxView } from "./data.ts";
 
 /** Durable journal reads, never live host/native-agent observations. */
 export function createRuntimeHistory(
@@ -93,4 +94,26 @@ export function createRuntimeHistory(
       source: "armada-runtime",
     };
   };
+}
+
+export type SandboxLogReader = Pick<Provider, "events" | "get" | "getPrompt">;
+
+export function createModalLogReader(
+  sql: Sql,
+  key: string,
+  resolveProvider: (sandbox: SandboxView, caller: Caller) => Promise<Provider>,
+) {
+  const history = createRuntimeHistory(sql, key);
+  const read: (sandbox: SandboxView, caller: Caller) => Promise<SandboxLogReader> = async (sandbox, caller) => {
+    if (sandbox.runtimeTransport !== "dialout") return resolveProvider(sandbox, caller);
+
+    let observation: Promise<Provider> | undefined;
+    const observe = () => (observation ??= resolveProvider(sandbox, caller));
+    return {
+      events: ({ sandboxId: _placement, ...pagination }) => history(caller, sandbox.id, pagination),
+      get: async (...args) => (await observe()).get(...args),
+      getPrompt: async (request) => (await observe()).getPrompt(request),
+    };
+  };
+  return read;
 }

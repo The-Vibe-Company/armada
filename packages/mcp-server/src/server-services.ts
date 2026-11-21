@@ -64,6 +64,7 @@ import { createRuntimeEnrolments } from "./runtime-enrolment.ts";
 import { createRuntimeEvents } from "./runtime-events.ts";
 import { createRuntimeFollowup } from "./runtime-followup.ts";
 import { createRuntimeGitHub } from "./runtime-github.ts";
+import { createModalLogReader } from "./runtime-history.ts";
 import { createRuntimeMcp } from "./runtime-mcp.ts";
 import { createRuntimeNativeAuth } from "./runtime-native-auth.ts";
 import { runtimeConfigurationWithVariables } from "./runtime-readable-variables.ts";
@@ -464,7 +465,7 @@ export async function createServerServices(env: Record<string, string | undefine
       : undefined;
   const logProviders = { boat: providers.resolve.bind(providers), modal: modal.storedProviderFor };
   const journalLogProviders = {
-    ...logProviders,
+    modal: createModalLogReader(sql, config.encryptionKey, logProviders.modal),
     boat: async (sandbox: Parameters<typeof logProviders.boat>[0], caller: Parameters<typeof logProviders.boat>[1]) => {
       const provider = await logProviders.boat(sandbox, caller);
       return sandbox.id && !sandbox.boatRuntime && !sandbox.runtimeTransport && config.encryptionKey
