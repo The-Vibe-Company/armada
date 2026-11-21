@@ -150,14 +150,14 @@ async function ensurePrivilegedGitHubPython(): Promise<void> {
   if ((await ready()) === 0) return;
 
   const repair = `umask 077
-exec /usr/bin/timeout --signal=KILL 8s /usr/bin/flock -x --no-fork /run/armada-github-python.lock /bin/sh -c '
+exec /usr/bin/flock -x -w 2 --no-fork /run/armada-github-python.lock /usr/bin/timeout --signal=KILL 8s /bin/sh -c '
   umask 022
   if "$@"; then exit 0; fi
   /usr/bin/apt-get -o DPkg::Lock::Timeout=5 update &&
   /usr/bin/apt-get -o DPkg::Lock::Timeout=5 -o Dpkg::Use-Pty=0 install -y --no-install-recommends --reinstall python3 python3-minimal
 ' sh "$@"`;
-  if ((await run(["/bin/sh", "-c", repair, "sh", ...pythonCheck])) !== 0 || (await ready()) !== 0)
-    throw Error("github_tools_python_unavailable");
+  await run(["/bin/sh", "-c", repair, "sh", ...pythonCheck]);
+  if ((await ready()) !== 0) throw Error("github_tools_python_unavailable");
 }
 
 /** Code and socket address only. Credential bytes arrive exclusively on owner-private IPC. */
