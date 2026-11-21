@@ -1408,11 +1408,11 @@ test("stranded receipts settle without replay while safe unlimited and paused wo
 
 test.each(["boat", "modal"])("native %s restart replays only a proven pre-dispatch claim", async (provider) => {
   const input = { id: ids[1]!, request_id: requests[0]!, prompt: "recover abandoned claim" };
-  await database().query("update sandboxes set provider=$2 where id=$1", [input.id, provider]);
+  const next = { id: ids[2]!, request_id: requests[1]!, prompt: "wait behind recovered claim" };
+  await sql.query("update sandboxes set provider=$3,model=null where id in ($1,$2)", [input.id, next.id, provider]);
   await queue.accept(caller, input);
   const original = await claimTurn(input.request_id);
   expect(await admitClaimedAccountTurn(sql, original)).not.toBeNull();
-  const next = { id: ids[2]!, request_id: requests[1]!, prompt: "wait behind recovered claim" };
   expect(await queue.accept(caller, next)).toMatchObject({ status: "queued" });
   await sql.query("update jobs set run_after='-infinity' where id=$1", [original.job.id]);
   await sql.query("update account_turn_queue set dispatch_until='-infinity' where sandbox_id=$1", [input.id]);
