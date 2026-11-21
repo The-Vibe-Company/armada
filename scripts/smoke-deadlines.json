@@ -39,6 +39,8 @@
   "scoped_child_cleanup": 3579,
   "scoped_native_turn": 118935,
   "scoped_parent_launch": 109490,
+  "scoped_parent_ready": 3334,
+  "scoped_parent_stop": 29572,
   "scoped_snapshot": 5444,
   "scoped_tool_evidence": 2000,
   "send": 2000,
