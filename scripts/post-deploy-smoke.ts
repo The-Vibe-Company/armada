@@ -567,12 +567,12 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
         if (remaining <= 0) fail("poll_limit_exceeded");
         return send<T>(cleaning, path, body, key, Math.min(timeoutMs ?? remaining, remaining), usageRead);
       },
-      withStepDeadline: async <T>(name: string, action: () => Promise<T>) => {
+      withStepDeadline: async <T>(name: string, action: (until?: number) => Promise<T>) => {
         const budget = (deadlines as Record<string, number>)[name];
         if (cleaning || budget === undefined) return action();
         stepUntil = Math.min(deadline, io.now() + budget);
         try {
-          const result = await action();
+          const result = await action(stepUntil);
           if (io.now() > stepUntil) fail("poll_limit_exceeded");
           return result;
         } finally {
@@ -1178,7 +1178,7 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
     let passed = true;
     const sandbox = <T>(action: string, body: object, timeoutMs?: number) =>
       request<T>(`sandbox/${action}`, { org: item.org, ...body }, undefined, timeoutMs);
-    const measuredStep = <T>(name: keyof typeof deadlines, action: () => Promise<T>) =>
+    const measuredStep = <T>(name: keyof typeof deadlines, action: (until?: number) => Promise<T>) =>
       step(name, () => withStepDeadline(name, action));
     let parentCredentialVersion: number | undefined;
     const scoped = scope
@@ -1256,14 +1256,18 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
     let stopped = false;
     let stopRequested = false;
     let preservationNote: string | undefined;
-    async function stopSandbox() {
+    async function stopSandbox(until?: number) {
       if (!stopRequested) {
         try {
           const receipt = await sandbox<{ preservationNote?: string }>("stop", { id: sandboxId });
           preservationNote = receipt.preservationNote;
         } catch (error) {
           // The stop may already be in flight. Observe it; never replay an unknown mutation.
-          if (!(error instanceof SmokeFailure) || error.code !== "outcome_unknown") throw error;
+          if (
+            !(error instanceof SmokeFailure) ||
+            (error.code !== "outcome_unknown" && error.transportTimeoutMs === undefined)
+          )
+            throw error;
         }
         stopRequested = true;
       }
@@ -1285,6 +1289,7 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
           preservationNote = status.preservationNote ?? preservationNote;
           return true;
         },
+        until === undefined ? undefined : { until },
       );
       stopped = true;
     }
@@ -1832,7 +1837,7 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
             fail("invalid_receipt");
           commit = result.stdout.trim();
         });
-      if (!github) await step("stop", stopSandbox);
+      if (!github) await measuredStep("stop", stopSandbox);
       if (preservation) {
         // Recovery is a read-only operation, but do not reuse the earlier stop
         // receipt if verification fails or a regression wakes the worker.
@@ -1903,7 +1908,7 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
         preservationNote = undefined;
         await nativeTurn(true, "resume");
         await measuredStep("list_resumed", () => consistent("ready"));
-        await step("stop_resumed", stopSandbox);
+        await measuredStep("stop_resumed", stopSandbox);
         await measuredStep("list_stopped_final", () => consistent("stopped"));
       }
     }
