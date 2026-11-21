@@ -560,19 +560,44 @@ test.each(["allocated", "deleting", "deleted"] as const)(
   },
 );
 
-test("Modal cleanup does not use another user's registered App credentials", async () => {
-  const { f, id, jobId, makeRunner, cleanupEffects } = await modalLaunchFixture();
+async function failedModalLaunchFixture() {
+  const fixture = await modalLaunchFixture();
+  const { f, jobId, makeRunner } = fixture;
   const launch = makeRunner((step) => {
     if (step === "bootstrap dispatch") throw new Error("Lost bootstrap response");
   });
-  await launch.reconcileOne(signal);
+  expect(await launch.reconcileOne(signal)).toBe(true);
   await launch.drain();
   await f.db.query("update jobs set lease_until='-infinity', deadline_at='-infinity' where id=$1", [jobId]);
   const successor = makeRunner();
-  await successor.reconcileOne(signal);
+  expect(await successor.reconcileOne(signal)).toBe(true);
   await successor.drain();
+  return fixture;
+}
+
+test("a replacement Modal cleanup claimant continues after client preparation fails", async () => {
+  const { f, id, makeRunner, cleanupEffects } = await failedModalLaunchFixture();
+  const initial = makeRunner((step) => {
+    if (step === "cleanup preparation") throw new Error("Modal credentials temporarily unavailable.");
+  });
+  expect(await initial.reconcileOne(signal)).toBe(true);
+  await initial.drain();
+  expect(cleanupEffects()).toEqual({ terminations: 0, cleanupPreparations: 1 });
+  await f.db.query("update jobs set lease_until='-infinity' where sandbox_id=$1 and kind='delete'", [id]);
+  const successor = makeRunner();
+  expect(await successor.reconcileOne(signal)).toBe(true);
+  await successor.drain();
+  expect(cleanupEffects()).toEqual({ terminations: 1, cleanupPreparations: 2 });
+  expect((await f.db.query("select state from jobs where sandbox_id=$1 and kind='delete'", [id])).rows).toEqual([
+    { state: "done" },
+  ]);
+});
+
+test("Modal cleanup does not use another user's registered App credentials", async () => {
+  const { f, id, makeRunner, cleanupEffects } = await failedModalLaunchFixture();
   await f.db.query("update modal_server_apps set authority_owner_id=$1 where org_id=$1", [f.people.org]);
   await f.db.query("update jobs set deadline_at='-infinity' where sandbox_id=$1 and kind='delete'", [id]);
+  const successor = makeRunner();
   expect(await successor.reconcileOne(signal)).toBe(true);
   await successor.drain();
   expect(cleanupEffects()).toEqual({ terminations: 0, cleanupPreparations: 0 });
@@ -586,17 +611,7 @@ test("Modal cleanup does not use another user's registered App credentials", asy
 });
 
 test("Modal cleanup does not terminate when its budget expires during the running poll", async () => {
-  const { f, id, jobId, makeRunner, cleanupEffects } = await modalLaunchFixture();
-  const launch = makeRunner((step) => {
-    if (step === "bootstrap dispatch") throw new Error("Worker lost the bootstrap response");
-  });
-  expect(await launch.reconcileOne(signal)).toBe(true);
-  await launch.drain();
-  await f.db.query("update jobs set lease_until='-infinity', deadline_at='-infinity' where id=$1", [jobId]);
-  const failure = makeRunner();
-  expect(await failure.reconcileOne(signal)).toBe(true);
-  await failure.drain();
-
+  const { f, id, makeRunner, cleanupEffects } = await failedModalLaunchFixture();
   const cleanup = makeRunner(async (step) => {
     if (step === "machine poll") {
       await f.db.query("update jobs set deadline_at='-infinity' where kind='delete' and sandbox_id=$1", [id]);
