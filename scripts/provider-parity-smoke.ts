@@ -708,6 +708,7 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
         await io.recordSandbox?.(c.org, sandboxId, requestKey, provider);
       }
 
+      const dockerInput = provider === "docker" ? dockerLaunchInput() : undefined;
       let result: { sandbox: LaunchSandbox };
       try {
         result = await request<typeof result>(
@@ -720,7 +721,7 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
             credentialId: c.modelAccountId,
             visibility: "private",
             ttlSeconds: 1800,
-            ...(provider === "docker" ? dockerLaunchInput() : { golden: c.golden, connections: [] }),
+            ...(dockerInput ?? { golden: c.golden, connections: [] }),
             idempotencyKey: requestKey,
             externalRef: requestKey,
           },
@@ -752,9 +753,8 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
             )
               return;
             if (!id) await claim(row.id);
-            if (row.id !== id || (row.status !== "ready" && !(provider === "docker" && row.status === "running")))
-              return;
-            if (provider !== "docker") return row;
+            if (row.id !== id || (row.status !== "ready" && !(dockerInput && row.status === "running"))) return;
+            if (!dockerInput) return row;
             const readBudget = () => Math.min(5_000, remainingMs - (io.now() - readStarted));
             const statusBudget = readBudget();
             if (statusBudget <= 0) return;
