@@ -9,6 +9,7 @@ test("machine capabilities match the approved runtime provider matrix", () => {
     docker: capabilities("docker"),
   }).toEqual({
     boat: {
+      launchSource: "golden",
       maxTtlSeconds: 2_592_000,
       stopRetention: "disk",
       snapshots: "required",
@@ -20,6 +21,7 @@ test("machine capabilities match the approved runtime provider matrix", () => {
       sizes: catalogSizes,
     },
     modal: {
+      launchSource: "golden",
       maxTtlSeconds: 86_400,
       stopRetention: "image",
       snapshots: "optional",
@@ -31,6 +33,7 @@ test("machine capabilities match the approved runtime provider matrix", () => {
       sizes: catalogSizes,
     },
     docker: {
+      launchSource: "host",
       maxTtlSeconds: 86_400,
       stopRetention: "container",
       snapshots: "optional",
