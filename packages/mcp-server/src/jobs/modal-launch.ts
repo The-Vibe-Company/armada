@@ -236,7 +236,6 @@ export function createModalInitialTurnJob(
           context.signal,
           async (tx) => {
             if (!(await context.canDispatch(tx))) throw new Error("Modal initial turn lost its job claim.");
-            // The shared delivery calls this only when it is admitting application secrets.
             const { rows } = await tx.query(
               "select 1 from public.sandboxes where id=$1 and lifecycle_generation=$2 and application_secret_tainted",
               [sandboxId, generation],
