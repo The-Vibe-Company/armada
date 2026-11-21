@@ -4815,16 +4815,25 @@ export type Database = {
           sandbox_id: string;
           generation: number;
           stop_generation: number;
+          capture_generation: number | null;
+          capture_stop_generation: number | null;
+          archive_id: string | null;
         };
         Insert: {
           sandbox_id: string;
           generation: number;
           stop_generation: number;
+          capture_generation?: number | null;
+          capture_stop_generation?: number | null;
+          archive_id?: string | null;
         };
         Update: {
           sandbox_id?: string;
           generation?: number;
           stop_generation?: number;
+          capture_generation?: number | null;
+          capture_stop_generation?: number | null;
+          archive_id?: string | null;
         };
         Relationships: [
           {
