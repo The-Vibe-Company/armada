@@ -1275,20 +1275,33 @@ test("a restarted Docker runner waits for the claim lease before recovering a di
 
 test("explicit owner stop cancels waiting prompts before Docker no-op routing, but idle cleanup stays intact", async () => {
   const input = { id: ids[1]!, request_id: requests[0]!, prompt: "do not wake after explicit stop" };
+  const waiting = { ...input, request_id: requests[1]! };
   await queue.accept(caller, input);
+  const failuresAtRouting: (boolean | undefined)[][] = [];
   const context = {
     caller,
     accountTurns: queue,
-    dockerControls: { invoke: async () => ({ handled: true, result: { id: input.id, status: "stopped" } }) },
+    dockerControls: {
+      invoke: async () => {
+        failuresAtRouting.push([
+          (await queue.status(caller, input.id, input.request_id))?.failed,
+          (await queue.status(caller, waiting.id, waiting.request_id))?.failed,
+        ]);
+        return { handled: true, result: { id: input.id, status: "stopped" } };
+      },
+    },
   } as unknown as ToolContext;
   await callSharedTool(context, "stop", { id: input.id, only_if_idle: true });
   expect((await queue.status(caller, input.id, input.request_id))?.failed).toBe(false);
   const claim = await claimTurn(input.request_id);
   expect((await admitClaimedAccountTurn(sql, claim))?.entry.request_id).toBe(input.request_id);
-  const waiting = { ...input, request_id: requests[1]! };
   expect(await queue.accept(caller, waiting)).toMatchObject({ status: "queued" });
 
   await callSharedTool(context, "stop", { id: input.id });
+  expect(failuresAtRouting).toEqual([
+    [false, undefined],
+    [true, true],
+  ]);
   await sql.query("update jobs set lease_until='-infinity' where id=$1", [claim.job.id]);
   const sent: string[] = [];
   const dispatch = sharedDispatcher(async (_caller, prompt) => {
@@ -1313,21 +1326,22 @@ test("unlimited accounts dispatch three turns without waiting for another dispat
   await database().exec("update credentials set max_agents=null");
   const started: string[] = [];
   const release = Promise.withResolvers<void>();
-  let entered = Promise.withResolvers<void>();
-  const runner = sharedRunner(async (_caller, input) => {
-    started.push(input.id);
-    entered.resolve();
-    await release.promise;
-    return { promptId: input.request_id, conversationId: "history", status: "running" };
-  });
+  const workers: ReturnType<typeof sharedRunner>[] = [];
   const signal = new AbortController().signal;
   const waiting = { id: ids[0]!, request_id: requests[1]!, prompt: "behind the busy sandbox" };
   try {
     for (const id of ids) {
       expect(await queue.accept(caller, { id, prompt: "next" })).toMatchObject({ status: "queued" });
-      entered = Promise.withResolvers<void>();
-      expect(await runner.reconcileOne(signal)).toBe(true);
-      await entered.promise;
+      const entered = Promise.withResolvers<"sent">();
+      const worker = sharedRunner(async (_caller, input) => {
+        started.push(input.id);
+        entered.resolve("sent");
+        await release.promise;
+        return { promptId: input.request_id, conversationId: "history", status: "running" };
+      });
+      workers.push(worker);
+      expect(await worker.reconcileOne(signal)).toBe(true);
+      expect(await Promise.race([entered.promise, worker.drain().then(() => "settled without sending")])).toBe("sent");
     }
     expect(started).toEqual(ids);
     expect(await queue.accept(caller, waiting)).toMatchObject({ status: "queued" });
@@ -1342,13 +1356,15 @@ test("unlimited accounts dispatch three turns without waiting for another dispat
     });
   } finally {
     release.resolve();
-    await runner.drain();
+    await Promise.all(workers.map((worker) => worker.drain()));
   }
 
   await sql.query("update jobs set run_after='-infinity' where state='queued'");
-  expect(await runner.reconcileOne(signal)).toBe(true);
-  await runner.drain();
-  expect(started).toEqual([...ids, waiting.id]);
+  await sharedDispatcher(async (_caller, input) => ({
+    promptId: input.request_id,
+    conversationId: "history",
+    status: "running",
+  }))();
   expect(await queue.status(caller, waiting.id, waiting.request_id)).toEqual({ nativePromptId: waiting.request_id });
 });
 
