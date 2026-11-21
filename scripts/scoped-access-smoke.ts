@@ -17,6 +17,7 @@ export interface ScopedProbeIo {
   now(): number;
   sleep(ms: number): Promise<void>;
   deadline: number;
+  toolEvidenceTimeoutMs: number | undefined;
   poll<T>(read: () => Promise<T>, done: (value: T) => boolean): Promise<T>;
   step<T>(name: string, action: () => Promise<T>): Promise<T>;
   withCleanup<T>(action: () => Promise<T>): Promise<T>;
@@ -426,7 +427,12 @@ export function createScopedProbe(item: ScopedProbeCase, enabled: boolean, io: S
         }
       });
       await io.step("scoped_tool_evidence", async () => {
-        await logs(id, "initial_evidence");
+        const evidenceDeadline =
+          io.toolEvidenceTimeoutMs === undefined
+            ? undefined
+            : Math.min(io.deadline, io.now() + io.toolEvidenceTimeoutMs);
+        await logs(id, "initial_evidence", evidenceDeadline);
+        if (evidenceDeadline !== undefined && io.now() > evidenceDeadline) fail("scoped_incomplete_logs");
         evidenceUnknown = false;
         adopt();
         let tools = calls(true);
@@ -458,7 +464,7 @@ export function createScopedProbe(item: ScopedProbeCase, enabled: boolean, io: S
           );
         };
         if (enabled && !evidenceReady(tools)) {
-          const until = Math.min(io.deadline, io.now() + 10_000);
+          const until = evidenceDeadline ?? Math.min(io.deadline, io.now() + 10_000);
           const updated = await observeSmokeLaunch(until, io, async () => {
             try {
               await logs(id, "tool_evidence", until);
