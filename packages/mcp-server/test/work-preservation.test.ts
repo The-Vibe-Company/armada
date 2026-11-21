@@ -1153,12 +1153,17 @@ test.each(["retained", "no recovery image", "unreleased restore", "generation mi
     await expect(drain.remove(candidate)).rejects.toThrow("before preservation and stop are confirmed");
     expect((await inventory())?.status).toBe("stopping");
     expect(stop).not.toHaveBeenCalled();
-    await db.query("update sandboxes set reconcile_after='-infinity' where id=$1", [sandboxId]);
+    // The shared database includes other lifecycle fixtures; only this row is due.
+    await db.query(
+      "update sandboxes set reconcile_after=case when id=$1 then '-infinity'::timestamptz else 'infinity' end",
+      [sandboxId],
+    );
     const worker = createSandboxLifecycle(sql, async (id) => {
       expect(id).toBe(sandboxId);
       return provider;
     });
     expect(await worker.reconcileOne()).toBe(true);
+    expect(observed).toBe(true);
     if (scenario === "generation mismatch") {
       expect(stop).not.toHaveBeenCalled();
       expect((await inventory())?.status).toBe("stopping");
