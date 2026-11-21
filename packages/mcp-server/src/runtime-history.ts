@@ -104,11 +104,9 @@ export function createSandboxLogReader(
   resolveProvider: (sandbox: SandboxView, caller: Caller) => Promise<Provider>,
 ) {
   const history = createRuntimeHistory(sql, key);
-  return async (sandbox: SandboxView, caller: Caller): Promise<SandboxLogReader> => {
+  const read: (sandbox: SandboxView, caller: Caller) => Promise<SandboxLogReader> = async (sandbox, caller) => {
     if (sandbox.provider !== "modal" || sandbox.runtimeTransport !== "dialout") return resolveProvider(sandbox, caller);
 
-    // Follow may still need stored compute and prompt observations. Ordinary
-    // history reads never initialize those ports or resolve their credentials.
     let observation: Promise<Provider> | undefined;
     const observe = () => (observation ??= resolveProvider(sandbox, caller));
     return {
@@ -117,4 +115,5 @@ export function createSandboxLogReader(
       getPrompt: async (request) => (await observe()).getPrompt(request),
     };
   };
+  return read;
 }
