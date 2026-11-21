@@ -23,11 +23,11 @@ function at<T>(values: T[], index = 0): T {
   return value;
 }
 type WireTool = { id: string; name: string; input: Obj; result: { output: unknown; isError: boolean } };
-function fixture(enabled = true) {
+function fixture(enabled = true, toolEvidenceTimeoutMs?: number) {
   const output: Obj[] = [];
   const stopped: string[] = [];
   const journaled: string[] = [];
-  const requests: { path: string; body: Obj }[] = [];
+  const requests: { path: string; body: Obj; timeoutMs: number | undefined }[] = [];
   const state = {
     before: [] as string[],
     after: [parent, child],
@@ -47,6 +47,7 @@ function fixture(enabled = true) {
     sendUnknown: false,
     notReady: false,
     logsFail: false,
+    firstLogReadMs: 0,
     logsTimeout: false,
     logsExhaustBudget: false,
     waitRunning: false,
@@ -79,9 +80,10 @@ function fixture(enabled = true) {
       clock += ms;
     },
     deadline: Number.POSITIVE_INFINITY,
+    toolEvidenceTimeoutMs,
     async request<T>(path: string, input: object, timeoutMs?: number): Promise<T> {
       const body = input as Obj;
-      requests.push({ path, body });
+      requests.push({ path, body, timeoutMs });
       expect(body.org).toBe(item.org);
       if (path === "sandbox/list") {
         expect(body.owner).toBe("me");
@@ -188,6 +190,7 @@ function fixture(enabled = true) {
       }
       if (path === "logs/read") {
         state.logReads++;
+        if (state.logReads === 1) clock += state.firstLogReadMs;
         expect(body.id).toBe(parent);
         expect(body.coalesce).toBe(true);
         expect(body.maxBytes).toBe(1_048_576);
@@ -342,16 +345,32 @@ describe("ordinary scoped Armada smoke", () => {
     expect(f.state.logReads).toBe(2);
   });
 
-  test("reports the missing receipt when a log read exhausts the observation window", async () => {
-    const f = fixture();
-    f.state.lateLogs = true;
-    f.state.logsExhaustBudget = true;
-    await expect(run(f)).rejects.toThrow("scoped_launch_unproven");
-    expect(f.state.sends).toBe(1);
-    expect(f.output).toContainEqual(
-      expect.objectContaining({ step: "scoped_logs_diagnostic", transportTimeoutMs: 75 }),
-    );
+  test("rejects complete initial tool evidence that arrives after the measured budget", async () => {
+    const f = fixture(true, 1_500);
+    f.state.firstLogReadMs = 1_501;
+    await expect(run(f)).rejects.toThrow("scoped_incomplete_logs");
+    expect(await f.probe.cleanup(parent, true)).toBe(true);
+    expect(f.stopped).toEqual([child]);
   });
+
+  test.each([
+    { mode: "fallback", budget: undefined, firstReadMs: 0, lastReadBudget: 75 },
+    { mode: "measured", budget: 10_500, firstReadMs: 200, lastReadBudget: 375 },
+  ])(
+    "reports the missing receipt when a log read exhausts the $mode window",
+    async ({ budget, firstReadMs, lastReadBudget }) => {
+      const f = fixture(true, budget);
+      f.state.firstLogReadMs = firstReadMs;
+      f.state.lateLogs = true;
+      f.state.logsExhaustBudget = true;
+      await expect(run(f)).rejects.toThrow("scoped_launch_unproven");
+      expect(f.state.sends).toBe(1);
+      expect(f.requests.find((request) => request.path === "logs/read")?.timeoutMs).toBe(budget);
+      expect(f.output).toContainEqual(
+        expect.objectContaining({ step: "scoped_logs_diagnostic", transportTimeoutMs: lastReadBudget }),
+      );
+    },
+  );
 
   test("identifies a transport timeout while waiting for scoped launch evidence", async () => {
     const f = fixture();

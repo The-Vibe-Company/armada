@@ -27,6 +27,12 @@ import { runtimeBridgeTarget } from "./provider-runtime-admission.ts";
 
 export const INTERRUPTED_LAUNCH_REASON =
   "Launch interrupted before completion; provider cleanup is retried until confirmed.";
+export const MODAL_LAUNCH_FAILURE = "modal_launch_failed";
+
+export function isFailedModalLaunch(sandbox: Pick<SandboxView, "status" | "statusReason">) {
+  return sandbox.status === "failed" && sandbox.statusReason === MODAL_LAUNCH_FAILURE;
+}
+
 export function isInterruptedLaunch(sandbox: Pick<SandboxView, "status" | "statusReason">): boolean {
   return sandbox.status === "failed" && sandbox.statusReason === INTERRUPTED_LAUNCH_REASON;
 }
@@ -39,6 +45,7 @@ export function isStatusReadFenced(sandbox: SandboxView): boolean {
     sandbox.status === "stopping" ||
     Boolean(sandbox.stopRequestedAt) ||
     isInterruptedLaunch(sandbox) ||
+    isFailedModalLaunch(sandbox) ||
     (sandbox.status === "failed" && sandbox.stoppedAt !== null)
   );
 }
