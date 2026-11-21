@@ -31,13 +31,20 @@ export function createNativeLifecycle({
   physicalLifecycle: { create, physical },
 }: NativeLifecycleOptions) {
   const { store, distribution } = options;
-  async function readyLeased(row: Machine, save: (row: Machine) => Promise<void>, onResumeStage?: ResumeStageObserver) {
+  async function readyLeased(
+    row: Machine,
+    save: (row: Machine) => Promise<void>,
+    onResumeStage?: ResumeStageObserver,
+    signal?: AbortSignal,
+  ) {
+    signal?.throwIfAborted();
     assertMachineSource(row);
     if (row.golden && row.quiesced) throw refusal("sandbox_not_ready", "Sealed golden admission cannot be reopened.");
     if (row.phase === "stopped") {
       if (row.commonRuntime) throw refusal("invalid_request", "Enrolled Modal resume is not enabled.");
       if (!row.recoveryImageId) throw refusal("conflict", "Stopped sandbox has no durable recovery image.");
       await onResumeStage?.("accepted");
+      signal?.throwIfAborted();
       await options.beforeResume?.(provider(), row.info.id);
       row.generation++;
       row.quiesced = false;
@@ -51,14 +58,20 @@ export function createNativeLifecycle({
       delete row.physicalId;
       delete row.processBaseline;
       try {
+        signal?.throwIfAborted();
         await save(row);
       } catch (error) {
         await options.resumeRefused?.(provider(), row.info.id);
         throw error;
       }
     }
-    if (row.generation > 1 && ["reserved", "creating", "booting"].includes(row.phase))
-      await create(row, save, await distribution.restoreEnv(row), onResumeStage);
+    if (row.generation > 1 && ["reserved", "creating", "booting"].includes(row.phase)) {
+      signal?.throwIfAborted();
+      const env = await distribution.restoreEnv(row);
+      signal?.throwIfAborted();
+      await create(row, save, env, onResumeStage);
+    }
+    signal?.throwIfAborted();
     if (row.phase !== "active") throw refusal("sandbox_not_ready", "Sandbox lifecycle is not active.");
     if ((await (await physical(row)).poll()) !== null)
       throw refusal(
@@ -67,13 +80,20 @@ export function createNativeLifecycle({
       );
     return row;
   }
-  async function ready(id: string) {
+  async function ready(id: string, signal?: AbortSignal) {
+    signal?.throwIfAborted();
     const row = await store.get(id);
+    signal?.throwIfAborted();
     if (row.phase === "stopped" || (row.generation > 1 && ["reserved", "creating", "booting"].includes(row.phase)))
-      return store.lease(id, readyLeased);
-    return readyLeased(row, async () => {
-      throw refusal("conflict", "Activation requires a lifecycle lease.");
-    });
+      return store.lease(id, (leased, save) => readyLeased(leased, save, undefined, signal));
+    return readyLeased(
+      row,
+      async () => {
+        throw refusal("conflict", "Activation requires a lifecycle lease.");
+      },
+      undefined,
+      signal,
+    );
   }
   async function healthyAdmission(
     row: Machine,
@@ -104,8 +124,9 @@ export function createNativeLifecycle({
       }
     }
   }
-  async function call<T>(id: string, op: string, input: object) {
-    const row = await ready(id);
+  async function call<T>(id: string, op: string, input: object, signal?: AbortSignal) {
+    const row = await ready(id, signal);
+    signal?.throwIfAborted();
     if (row.commonRuntime) throw refusal("invalid_request", "Enrolled runtime commands require the common transport.");
     return runner.call<T>(row, op, input);
   }
