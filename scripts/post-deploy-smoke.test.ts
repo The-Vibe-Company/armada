@@ -1875,6 +1875,7 @@ test.each([
 ] as const)("a late %s exec receipt fails and the sandbox is stopped", async (step, command, args) => {
   const fake = lifecycleFixture("none", (call) => {
     if (call.path === "sandbox/exec" && String(call.body.command).includes(command)) fake.advance(deadlines[step] + 1);
+    return undefined;
   });
   expect(await fake.run([selected], [...args])).toBe(false);
   expect(fake.receipts()).toContainEqual({ case: 0, step, pass: false, code: "poll_limit_exceeded" });
