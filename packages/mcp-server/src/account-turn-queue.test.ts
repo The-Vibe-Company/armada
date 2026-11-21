@@ -1409,9 +1409,16 @@ test("forward repair fails historical stopped rows and preserves live queued wor
   );
   expect(await queue.status(caller, ids[0]!)).toMatchObject({ failed: true });
   expect(await queue.status(caller, ids[1]!)).toMatchObject({ failed: false });
-  queue.setDispatch(async (_caller, input) => ({ promptId: input.request_id, status: "running" }));
-  expect(await queue.reconcileOne(new AbortController().signal)).toBe(true);
-  await queue.drain();
+  const sent: string[] = [];
+  const dispatch = sharedDispatcher(async (_caller, input) => {
+    sent.push(input.id);
+    return { promptId: "preserved_history", status: "running" };
+  });
+  await dispatch();
+  await dispatch();
+  expect(sent).toEqual([ids[1]!]);
+  expect(await queue.status(caller, ids[0]!)).toMatchObject({ failed: true });
+  expect(await queue.status(caller, ids[1]!)).toMatchObject({ nativePromptId: "preserved_history" });
 });
 
 test("stranded receipts settle without replay while safe unlimited and paused work dispatches", async () => {
@@ -1447,13 +1454,15 @@ test("stranded receipts settle without replay while safe unlimited and paused wo
   );
   expect(await queue.status(caller, ids[0]!, requests[0])).toMatchObject({ failed: true });
   const sent: string[] = [];
-  queue.setDispatch(async (_caller, input) => {
+  const dispatch = sharedDispatcher(async (_caller, input) => {
     sent.push(input.id);
     if (input.id === ids[2]) throw new VaultError("invalid", "Invalid historical input");
-    return { promptId: input.request_id, status: "running" };
+    return { promptId: "preserved_paused_turn", status: "running" };
   });
-  while (await queue.reconcileOne(new AbortController().signal)) await queue.drain();
-  expect(sent).toEqual([ids[1]!, ids[2]!]);
+  for (const _id of ids) await dispatch();
+  expect(sent.toSorted()).toEqual([ids[1]!, ids[2]!]);
+  expect(await queue.status(caller, ids[0]!, requests[0])).toMatchObject({ failed: true });
+  expect(await queue.status(caller, ids[1]!, requests[0])).toMatchObject({ nativePromptId: "preserved_paused_turn" });
   expect(await queue.status(caller, ids[2]!, requests[0])).toMatchObject({ failed: true });
 });
 
