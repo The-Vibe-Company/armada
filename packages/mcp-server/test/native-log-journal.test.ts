@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { readLogsOperation } from "@armada/core/contract";
-import type { Provider, Sql } from "@armada/core/server";
+import type { Sql } from "@armada/core/server";
+import { createBoatProvider } from "@armada/provider-boat";
 import { readLogs } from "../src/control-logs.ts";
 import { withNativeLogJournal } from "../src/native-log-journal.ts";
 
@@ -26,17 +27,17 @@ test.each(["forward", "backward"] as const)(
       },
     };
     const provider = {
-      id: "boat",
+      ...createBoatProvider({ apiKey: "fixture" }),
       async events() {
         if (pending) throw new Error("The provider must not be read during native activity.");
         return {
-          events: [{ kind: "other", id: "event", at: 1, type: "example", data: {} }],
+          events: [{ kind: "other" as const, id: "event", at: 1, type: "example", data: {} }],
           cursor: "next",
           ...(direction === "backward" ? { olderCursor: "older" } : {}),
           hasMore: true,
         };
       },
-    } as Provider;
+    };
     const options = {
       logs: async () => ({ provider: withNativeLogJournal(sql, key, provider, scope), providerSandboxId: "boat-id" }),
     };
