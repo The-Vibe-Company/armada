@@ -135,7 +135,7 @@ const RECORD_NATIVE_PRESERVATION = `
     select id,$4::bigint,$7::bigint from accepted where native and $2::text is not null
   on conflict(sandbox_id) do update set generation=excluded.generation,stop_generation=excluded.stop_generation`;
 
-export function lockedNativePreservationWriter(sql: Sql, id: string): Sql {
+export function lockedNativePreservationWriter(sql: Sql, id: string) {
   return {
     async query<T>(statement: string, params?: unknown[]) {
       if (!sql.transaction) throw new Error("Native preservation writes require a transaction.");
@@ -145,7 +145,7 @@ export function lockedNativePreservationWriter(sql: Sql, id: string): Sql {
         return tx.query<T>(statement, params);
       });
     },
-  };
+  } satisfies Sql;
 }
 
 export function writePreservationNote(
