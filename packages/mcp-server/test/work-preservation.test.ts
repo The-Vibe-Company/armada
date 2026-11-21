@@ -1592,6 +1592,10 @@ test.each([
       );
       expect(await copy()).toBe("ineligible");
     }
+    if (outcome === "clean" && !requestId) {
+      await db.query("update sandbox_native_preservation_receipts set archive_id=null where sandbox_id=$1", [id]);
+      expect(await copy()).toBe("ineligible");
+    }
   });
 });
 
