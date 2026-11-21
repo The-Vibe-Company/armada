@@ -518,6 +518,7 @@ export function configureTools(
       const checkpoint = needsCheckpoint
         ? await context.runtimeStopCheckpoint!(caller, found, args.only_if_idle === true).catch((error) => {
             if (error instanceof RuntimeCheckpointRejected) return null;
+            recordOperatorFailure("sandbox.stop.checkpoint", error, { sandboxId: found.id });
             throw error;
           })
         : undefined;
