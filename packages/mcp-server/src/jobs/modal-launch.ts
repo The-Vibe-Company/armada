@@ -974,6 +974,7 @@ async function dispatchModalLaunch(
   };
   const target = () => withJobLease(sql, job, dispatchTarget);
   let recoveredAllocation = false;
+  let ticketResolutionStarted = false;
   const preparationDeferred = new Error("Modal runtime ticket preparation deferred.");
   const machine = createModalMachine({
     ...plan.machine,
@@ -982,6 +983,7 @@ async function dispatchModalLaunch(
       async (tx) => (await dispatchTarget(tx))?.provider_sandbox_id === null,
     ),
     async resolveRuntimeTicket(request) {
+      ticketResolutionStarted = true;
       const preparation = await plan.prepareRuntimeTicket(request).catch(async (error: unknown) => {
         if (recoveredAllocation && (await target())?.provider_sandbox_id === request.machineId)
           throw preparationDeferred;
@@ -1037,6 +1039,14 @@ async function dispatchModalLaunch(
     await machine.bootstrap({ ...allocated, signal, bindingRef: plan.bindingRef });
   } catch (error) {
     if (error === preparationDeferred) return { kind: "dispatch_deferred" } as const;
+    if (
+      recoveredAllocation &&
+      !ticketResolutionStarted &&
+      (!(error instanceof ProviderError) || error.retryable) &&
+      (await target())?.provider_sandbox_id === allocated.machineId
+    ) {
+      return { kind: "dispatch_deferred" } as const;
+    }
     throw error;
   }
   return { kind: "bootstrapped" } as const;
