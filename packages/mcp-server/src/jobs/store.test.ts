@@ -628,7 +628,7 @@ async function modalFirstTurnLane(
     control: {},
     langfuse: { exportJob: { concurrency: 1 } },
     webhooks: {},
-    outputs: { drain: async () => {} },
+    outputs: { drain: async () => {}, captureJob: { concurrency: 1 } },
     modal: { launchCleanupJob: { concurrency: 1 } },
   } as unknown as Parameters<LaneFactory>[0])!;
 }
@@ -719,9 +719,10 @@ test("a Modal launch prompt waits for the enrolled runtime to acknowledge its en
     f.store,
     {
       [MODAL_INITIAL_TURN]: createModalInitialTurnJob(f.sql, queue, {
-        async deliver() {
+        async deliver(_provider, _actor, _id, epoch) {
           expect(await turns()).toEqual([]);
           if (!acknowledged) throw new Error("Runtime acknowledgement lost");
+          return epoch;
         },
       }),
     },
