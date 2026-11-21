@@ -86,7 +86,7 @@ describe("run", () => {
     expect(out).toContain(command);
   });
 
-  test("unknown root or snapshot commands use the human or JSON usage error contract", async () => {
+  test("unknown commands use the human or JSON usage error contract", async () => {
     const forbidden = () => {
       throw new Error("Unknown command attempted I/O");
     };
@@ -106,6 +106,9 @@ describe("run", () => {
       [["frobnicate"], "frobnicate"],
       [["token", "create"], "token", true],
       [["routine", "create"], "routine", true],
+      [["org", "create"], "org create", true],
+      [["org", "members", "list"], "org members", true],
+      [["org", "invitations", "accept"], "org invitations", true],
       [["--profile", "unconfigured", "github", "connect"], "github"],
       [["--profile", "unconfigured", "creds", "list"], "creds", true],
       [["list"], "list", true],
@@ -148,7 +151,10 @@ describe("run", () => {
         }
       }
       if (checkHelp) {
-        const help = await capture([...args.slice(0, args[0] === "--profile" ? 4 : 2), "--help"], deps);
+        const help = await capture(
+          [...args.slice(0, args[0] === "--profile" ? 4 : args[0] === "org" ? args.length : 2), "--help"],
+          deps,
+        );
         expect(help.code).toBe(2);
         expect(help.out).toBe("");
         expect(help.err).toContain(`unknown command '${command}'`);

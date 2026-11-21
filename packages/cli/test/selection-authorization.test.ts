@@ -140,7 +140,7 @@ test.each(["current", "use"])("org %s is rejected before an API request", async 
     throw new Error("Unexpected request");
   });
   expect(await h.run(["org", verb, ...(verb === "use" ? ["Team"] : [])])).toBe(2);
-  expect(h.output().err).toContain("Run armada org create, list, setup, connect, invitations or members.");
+  expect(h.output().err).toContain(`unknown command 'org ${verb}'. Run 'armada --help'.`);
 });
 
 test("MCP connect opens once and polls authenticated canonical status until actually connected", async () => {

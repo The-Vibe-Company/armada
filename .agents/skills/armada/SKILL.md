@@ -39,6 +39,11 @@ Manage snapshots, templates, default skill pins, variables and application secre
 the dashboard or the authenticated REST API. Launch an existing template with
 `armada template launch` or `POST /api/v1/templates/launch` and reuse its request key on retry.
 
+Use the dashboard for organization creation, membership and invitations. In scripts,
+use `armada api org/create`, `armada api members/...` and `armada api org/invitations/...`.
+Supply the organization explicitly in JSON where required. For invitation acceptance,
+use a personal login and pass the JSON body containing the token through stdin.
+
 For GitHub repair, run `armada api github/refresh '{"id":"<sandbox>"}'`. Read broker status via
 `POST /api/v1/github/runtime-status`.
 

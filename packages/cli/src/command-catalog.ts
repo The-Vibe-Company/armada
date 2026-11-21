@@ -54,7 +54,6 @@ ${sandboxUsage("mcp")}
 ${sandboxUsage("session")}
 ${sandboxUsage("org")}
 ${sandboxUsage("account")}
-${sandboxUsage("invitations")}
 ${sandboxUsage("automation")}
 ${sandboxUsage("vault")}
                                            Personal or --org scope. JSON includes values only for vars read; no sandbox delivery.

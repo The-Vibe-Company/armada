@@ -71,14 +71,13 @@ doesn't open automatically, use the printed link on any machine.
 
 The session (the Armada URL, an access token and a refresh token) is saved in `~/.config/armada/session.json` (`$XDG_CONFIG_HOME/armada` when set), readable only by you. Later commands reuse it and refresh it automatically. `armada logout` deletes it. For scripts and CI, set `ARMADA_TOKEN` to a service token (step 7) instead: it takes precedence over the saved session.
 
-This first sign-in creates your Armada account. An admin can invite you before you have one (step 4); adding you directly from the CLI needs it.
+This first sign-in creates your Armada account. An admin can invite you before you have one (step 4); adding you directly through the membership API needs it.
 
 ## 4. Create or select an org
 
-For a new organization, choose a name (this guide uses `my-team`) and run:
+For a new organization, create it in the dashboard (this guide uses `my-team`), then run:
 
 ```sh
-armada org create my-team
 armada login --org my-team
 armada status --setup
 ```
@@ -90,23 +89,14 @@ run `armada login --org <org>`; an admin must complete its provider setup.
 
 ### Joining an existing org
 
-An org admin invites you by email, from the dashboard or with `armada org invitations create <email> [--role admin|member] [--org <name|UUID>]`, or adds an existing account directly from the CLI:
-
-- **Invitation (dashboard or CLI)**: an admin uses **Invite a teammate** on the org's dashboard page or the invitation command above. This creates a pending invitation, including for someone without an account; it does not grant membership. Email delivery is explicitly opt-in through Supabase Auth: see [mail configuration prerequisites](organization-invitations.md#mail-configuration-explicitly-opt-in). When configured, the Auth email can contain a sign-in link that opens the invitation and may authenticate you, but never joins the org. Sign in personally with the invited address as your verified primary email, review the organization, then click **Accept and join**. Opening the link, signing in or previewing it never grants membership.
-- **Delivery state**: admins can inspect pending invitations and resend or revoke them. `not_configured` means mail or encryption is unavailable; `pending` means delivery is queued; `failed` means the request was rejected or its transport outcome is uncertain. None means email was sent. `sent` means Supabase accepted the request, not that it reached your inbox. If delivery is not configured, the integration owner must configure it before resending; creating an invitation does not provide a separate token-delivery path.
-- **Direct add (CLI)**: an admin runs `armada org members add you@example.com --org <org> [--role member|admin]`. This adds an existing account at once, without an invitation or invitation email, so you must have signed in at least once (step 3); otherwise it says "No Armada account has that email. The person signs in with 'armada login' first."
-
-See [CLI invitation management and acceptance](cli-invitations.md) for the command workflow. Acceptance requires your personal login, not a service token.
+An org admin can invite you from the dashboard. Sign in personally with the invited address, review the organization and select **Accept and join**. An admin can also add an existing account directly through the membership API. See [invitation delivery and acceptance](cli-invitations.md).
 
 Once you are a member, check using your org name in place of `my-team`:
 
 ```sh
 armada org list                          # your orgs: name, your role, id
-armada org members list --org my-team
 armada snapshot ls --org my-team           # the snapshots you can launch
 ```
-
-Admins also manage roles (`armada org members role <email> admin|member --org <org>`) and removal (`armada org members remove <email> --org <org>`). Anyone can create an org with `armada org create <name>` and becomes its first admin.
 
 ## 5. Prepare a first Modal snapshot
 
@@ -429,7 +419,7 @@ A typical coordination loop is `launch` with a prompt, then `status` with `wait:
 
 ### Organization provider setup and recovery
 
-After `armada org create`, connect at least one organization provider before creating new work. Replace `my-team` and the private file paths with your own:
+After creating the organization in the dashboard, connect at least one organization provider before creating new work. Replace `my-team` and the private file paths with your own:
 
 ```sh
 armada org setup --org my-team
@@ -519,11 +509,8 @@ Keep inputs in stdin/hidden input or private files, never command arguments.
 ### Organization command discovery
 
 `armada org --help` provides the organization command index.
-`armada org members -h` and `armada org invitations -h` show their existing
-subcommands; use leaf help for flags and authorization requirements.
-These explicit help requests do not read saved selections, start login or
-perform membership/invitation operations. Bare no-argument invocations retain
-their previous behavior.
+For organization creation, membership and invitations, use the dashboard or
+[the organization administration routes](cli-admin.md#organizations-and-membership).
 
 ### MCP command discovery
 

@@ -44,3 +44,38 @@ A full update supplies `name`, `templateId`, `templateRevision`, `prompt`, `cron
 fields you intend to retain. Creation starts paused. Enabling schedules the
 next occurrence. Pause and delete prevent new admissions while admitted
 runs can finish. Use the history route to see admission and task outcomes.
+
+## Organizations and membership
+
+Sign in personally. Include the organization name or UUID in `org` for the
+membership routes. Adding a member directly requires an existing Armada account
+and grants membership immediately. Use an invitation to invite someone by email.
+
+| Removed command | Replacement | JSON body fields |
+| --- | --- | --- |
+| `org create` | `armada api org/create -` | `name` |
+| `org members list` | `armada api members/list -` | `org` |
+| `org members add` | `armada api members/add -` | `org`, `email`, `role` |
+| `org members role` | `armada api members/role -` | `org`, `email`, `role` |
+| `org members remove` | `armada api members/remove -` | `org`, `email` |
+
+Use `member` or `admin` for the role. Creating an organization makes you its
+first admin.
+
+## Organization invitations
+
+Use an organization UUID in `org`. Use the invitation ID from the list response
+to resend or revoke. Creating an invitation leaves membership pending until the
+recipient explicitly accepts. The recipient must sign in personally with the
+matching verified email. Supply acceptance JSON through stdin and keep the token
+out of command arguments and logs.
+
+| Removed command | Replacement | JSON body fields |
+| --- | --- | --- |
+| `org invitations create` | `armada api org/invitations/create -` | `org`, `email`, `role` (`member` or `admin`) |
+| `org invitations list` | `armada api org/invitations/list -` | `org` |
+| `org invitations resend` | `armada api org/invitations/resend -` | `org`, `id` |
+| `org invitations revoke` | `armada api org/invitations/revoke -` | `org`, `id` |
+| `org invitations accept` | `armada api org/invitations/accept -` | `token` |
+
+See [organization invitations](cli-invitations.md) for delivery and acceptance details.

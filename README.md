@@ -73,10 +73,9 @@ covers Tools, template versions and routines. CLI command names below are unchan
 armada login
 ```
 
-**2. Choose an organization and connect a sandbox provider.** Create one (you become its admin) or ask an admin to add you with `armada org members add <your-email> --org <org>` after your first sign-in. An admin connects Boat or Modal once for the whole organization; the key is read from stdin or `--file`, never from an argument.
+**2. Choose an organization and connect a sandbox provider.** Create one in the dashboard (you become its admin) or ask an admin to invite you. An admin connects Boat or Modal once for the whole organization; the key is read from stdin or `--file`, never from an argument.
 
 ```sh
-armada org create acme
 armada login --org acme
 printenv BOAT_API_KEY | armada org connect boat --org acme
 # Modal instead: printf '%s %s' "$MODAL_TOKEN_ID" "$MODAL_TOKEN_SECRET" | armada org connect modal --org acme
@@ -182,7 +181,7 @@ The response contains the key once. Capture it in a secret store. Your coordinat
 | Create private snapshots and private sandboxes | ✓ | ✓ |
 | Change organization snapshots, members and provider keys | ✓ | |
 
-Snapshots and sandboxes follow two separate rules. A private snapshot is visible only to its owner, not even to admins. A sandbox's interior (transcript, logs and outputs) is readable by its owner and by organization admins, whether the sandbox is private or not, and admins can also stop it. Sending prompts is reserved to the owner: an admin's send to a colleague's sandbox is always refused, usually with `404 not_found`, or with `409 credential_binding_required` or `409 sandbox_terminal` when an earlier send check fails first (see [Embed Armada](docs/api/README.md#drive-the-sandbox-from-your-backend)). Ordinary members see only the metadata of sandboxes they do not own, such as status, agent and owner, in the organization's list. Admins can add an existing account immediately with `armada org members add` (no invitation email), or create a pending invitation, including before the recipient has an account. An invitation grants membership only after explicit acceptance by a personal login with the matching verified email; opening its link does not join. See [invitations and acceptance](docs/cli-invitations.md#accept-an-invitation).
+Snapshots and sandboxes follow two separate rules. A private snapshot is visible only to its owner, not even to admins. A sandbox's interior (transcript, logs and outputs) is readable by its owner and by organization admins, whether the sandbox is private or not, and admins can also stop it. Sending prompts is reserved to the owner: an admin's send to a colleague's sandbox is always refused, usually with `404 not_found`, or with `409 credential_binding_required` or `409 sandbox_terminal` when an earlier send check fails first (see [Embed Armada](docs/api/README.md#drive-the-sandbox-from-your-backend)). Ordinary members see only the metadata of sandboxes they do not own, such as status, agent and owner, in the organization's list. Admins can add an existing account immediately with the `members/add` API route (no invitation email), or create a pending invitation, including before the recipient has an account. An invitation grants membership only after explicit acceptance by a personal login with the matching verified email; opening its link does not join. See [invitations and acceptance](docs/cli-invitations.md#accept-an-invitation).
 
 ## Documentation
 
