@@ -398,6 +398,43 @@ test("an unreadable runtime checkpoint acknowledgement never allows compute clea
   }
 });
 
+test.each([
+  ["ready", "sandbox.checkpoint.refused", "activity_lease_present", "conflict"],
+  ["starting", "sandbox.stop.admission", "stop_fence_rejected", "sandbox_not_ready"],
+] as const)("owner stop identifies activity ownership while %s", async (state, phase, refusalCode, code) => {
+  const f = await checkpointFixture("modal", true);
+  try {
+    const activityLeaseId = crypto.randomUUID();
+    await f.db.query("update sandboxes set status=$2,activity_lease_id=$3,activity_until='infinity' where id=$1", [
+      f.row.id,
+      state,
+      activityLeaseId,
+    ]);
+    const stop = stopPort(f);
+    const records: unknown[] = [];
+    const response = await observeRequest(
+      async () => {
+        await expect(callSharedTool(stop.context, "stop", { id: f.row.id })).rejects.toMatchObject({ code });
+        return new Response(null, { status: 409 });
+      },
+      (line) => records.push(JSON.parse(line)),
+    );
+    expect(records).toContainEqual(
+      expect.objectContaining({
+        event: "operator_failure",
+        requestId: response.headers.get("x-request-id"),
+        sandboxId: f.row.id,
+        phase,
+        refusalCode,
+        stopEvidence: expect.objectContaining({ state, activityLeaseId, activityLeaseHeld: true }),
+      }),
+    );
+    expect(stop.calls()).toBe(0);
+  } finally {
+    await f.close();
+  }
+});
+
 test("idle-only stop refuses a queued turn before creating a checkpoint", async () => {
   const f = await checkpointFixture("modal", true);
   try {
