@@ -2305,6 +2305,7 @@ test.each([
   ["unknown", "sandbox binding", undefined],
   ["stopped", "create response", undefined],
   ["plan unavailable", "create response", undefined],
+  ["claim inspection unavailable", "create response", undefined],
   ["credential unavailable before observation", "create response", 1],
   ["credential unavailable after observation", "create response", 2],
   ["credential unavailable before binding", "create response", 3],
@@ -2344,6 +2345,21 @@ test.each([
     await f.db.query("update jobs set lease_until='-infinity' where id=$1", [jobId]);
 
     let credentialChecks = 0;
+    let inspectionFailed = false;
+    const replacementSql = {
+      ...f.sql,
+      async query<T>(query: string, params?: unknown[]) {
+        if (
+          observation === "claim inspection unavailable" &&
+          !inspectionFailed &&
+          query.includes("else 'dispatch' end as state")
+        ) {
+          inspectionFailed = true;
+          throw new Error("Initial job inspection unavailable");
+        }
+        return f.sql.query<T>(query, params);
+      },
+    } satisfies Sql;
     const replacement = makeRunner((step) => {
       if (step === "dispatch credential" && ++credentialChecks === credentialFailure)
         throw new Error("Modal credential recheck unavailable");
@@ -2360,10 +2376,14 @@ test.each([
         step === "exact machine ownership"
       )
         throw new Error("Modal ownership lookup timed out");
-    });
+    }, replacementSql);
     expect(await replacement.reconcileOne(signal)).toBe(true);
     await replacement.drain();
-    const reads = observation === "plan unavailable" || credentialFailure === 1 ? 0 : 1;
+    expect(inspectionFailed).toBe(observation === "claim inspection unavailable");
+    const reads =
+      observation === "plan unavailable" || observation === "claim inspection unavailable" || credentialFailure === 1
+        ? 0
+        : 1;
     expect(effects()).toEqual({ allocations: 1, observed: reads, bootstrapped: [] });
     if (lostAt === "sandbox binding") {
       expect((await f.db.query("select provider_sandbox_id from sandboxes where id=$1", [id])).rows).toEqual([
