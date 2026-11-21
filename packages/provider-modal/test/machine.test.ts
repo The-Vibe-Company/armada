@@ -262,6 +262,7 @@ for (const recovery of ["bootstrap", "delete"] as const) {
 
 test("Modal Machine recovers a lost create reply with the SDK profile set to V1", async () => {
   type CreateV2 = Parameters<ModalClient["cpClient"]["sandboxCreateV2"]>[0];
+  type GetByNameV2 = Parameters<ModalClient["cpClient"]["sandboxGetFromNameV2"]>[0];
   let v2: CreateV2 | undefined;
   let allocations = 0;
   const machineId = "sbv2-allocation";
@@ -278,7 +279,7 @@ test("Modal Machine recovers a lost create reply with the SDK profile set to V1"
         v2 = request;
         loseReply();
       },
-      async sandboxGetFromNameV2({ sandboxName, includeTerminated }) {
+      async sandboxGetFromNameV2({ sandboxName, includeTerminated }: GetByNameV2) {
         if (!includeTerminated || !v2 || sandboxName !== v2.definition?.name)
           throw new Error("V2 allocation is unavailable by name");
         return { sandboxId: machineId };
@@ -289,7 +290,7 @@ test("Modal Machine recovers a lost create reply with the SDK profile set to V1"
       async sandboxWaitV2() {
         return {};
       },
-    } as ModalClient["cpClient"],
+    } as unknown as ModalClient["cpClient"],
   });
   sdk.profile.sandboxV2 = false;
   const entries = new Map<string, Entry>();
@@ -297,8 +298,8 @@ test("Modal Machine recovers a lost create reply with the SDK profile set to V1"
     createModalMachine({
       client: {
         ...sdk,
-        apps: { fromName: async () => ({ appId: "app-id" }) } as SDK["apps"],
-        images: { fromId: async () => ({ imageId: "source", async build() {} }) } as SDK["images"],
+        apps: { fromName: async () => ({ appId: "app-id" }) } as unknown as SDK["apps"],
+        images: { fromId: async () => ({ imageId: "source", async build() {} }) } as unknown as SDK["images"],
       },
       appName: "app",
       binding: { appId: "app-id", workspace: "workspace", environment: "test" },
