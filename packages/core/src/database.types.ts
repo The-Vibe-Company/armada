@@ -2721,35 +2721,6 @@ export type Database = {
         };
         Relationships: [];
       };
-      model_auth_ownership: {
-        Row: {
-          account_id: string;
-          account_version: number;
-          sandbox_id: string;
-          assigned_at: string;
-        };
-        Insert: {
-          account_id: string;
-          account_version: number;
-          sandbox_id: string;
-          assigned_at?: string;
-        };
-        Update: {
-          account_id?: string;
-          account_version?: number;
-          sandbox_id?: string;
-          assigned_at?: string;
-        };
-        Relationships: [
-          {
-            foreignKeyName: "model_auth_ownership_account_id_fkey";
-            columns: ["account_id"];
-            isOneToOne: true;
-            referencedRelation: "credentials";
-            referencedColumns: ["id"];
-          },
-        ];
-      };
       model_auth_state: {
         Row: {
           account_id: string;
