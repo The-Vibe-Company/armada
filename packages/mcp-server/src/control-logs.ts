@@ -66,6 +66,10 @@ export async function readLogs(
   const target = await measureRequestPhase(options.timing, "logs_target", () => options.logs!(caller, id));
   const page = parseLogInput(nativePageInput, { ...body, all: body.all === true, follow: body.follow === true });
   const backward = page.direction === "backward";
+  const sampledSettlement =
+    page.follow && target.provider.followSettled
+      ? await measureRequestPhase(options.timing, "state", () => target.provider.followSettled!())
+      : undefined;
   const { events, cursor, hasMore, source, runtimeFailure, olderCursor, paused } = await readEventPages(
     (cursor) =>
       measureRequestPhase(options.timing, "events", () =>
@@ -84,14 +88,16 @@ export async function readLogs(
   );
   // Ordinary history reads need only the authorized event stream. Live compute is
   // consulted solely to decide whether a follow request should keep waiting.
+  const checkingFollow = page.follow && !paused && !runtimeFailure;
+  const durableSettled = checkingFollow ? sampledSettlement : undefined;
   const info =
-    page.follow && !paused && !runtimeFailure
+    checkingFollow && durableSettled === undefined
       ? await measureRequestPhase(options.timing, "state", () => target.provider.get(target.providerSandboxId))
       : null;
   const latest = latestPromptEvent(events)?.promptId ?? null;
   // A live sandbox with no turn is idle, so following has nothing to wait for.
   const prompt =
-    page.follow && !paused && !runtimeFailure && latest && info?.state !== "stopped" && info?.state !== "failed"
+    checkingFollow && durableSettled === undefined && latest && info?.state !== "stopped" && info?.state !== "failed"
       ? await measureRequestPhase(options.timing, "prompt", () =>
           target.provider.getPrompt({ sandboxId: target.providerSandboxId, promptId: latest }),
         )
@@ -107,11 +113,12 @@ export async function readLogs(
     hasMore,
     settled:
       !page.follow ||
-      (!paused &&
-        (runtimeFailure !== undefined ||
-          info?.state === "stopped" ||
-          info?.state === "failed" ||
-          (latest === null ? info?.state !== "running" && info?.state !== "starting" : prompt?.done === true))),
+      (durableSettled ??
+        (!paused &&
+          (runtimeFailure !== undefined ||
+            info?.state === "stopped" ||
+            info?.state === "failed" ||
+            (latest === null ? info?.state !== "running" && info?.state !== "starting" : prompt?.done === true)))),
   };
 }
 

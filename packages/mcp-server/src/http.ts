@@ -60,6 +60,7 @@ export interface HandlerOptions {
     captureRuntimeWork?: ModalConnectionPorts["captureRuntimeWork"],
   ) => Promise<Provider>;
   logProvider?(target: SandboxView, caller: Caller): Promise<SandboxLogReader>;
+  modalJobReader?: ReturnType<typeof import("./runtime-history.ts").createModalJobReader>;
   storedProviderFor?: (target: ProviderTarget, caller: { userId: string }) => Promise<Provider>;
   /** Runtime readiness of the serving database pool; no credentials in the result. */
   ready?: () => Promise<boolean>;
@@ -208,6 +209,7 @@ export function createHandler(options: HandlerOptions): (request: Request) => Pr
         exposedSecrets: (orgId) =>
           exposedSecrets(options.vault, options.encryptionKey, { userId: caller.userId, orgId }),
         ...(options.logProvider ? { logProvider: (target) => options.logProvider!(target, caller) } : {}),
+        ...(options.modalJobReader ? { modalJobReader: (target) => options.modalJobReader!(target, caller) } : {}),
         storedProviders: options.storedProviderFor
           ? { modal: (target) => options.storedProviderFor!(target, caller) }
           : {},
