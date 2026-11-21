@@ -1,3 +1,6 @@
+import { capabilities } from "./machine-capabilities.ts";
+import { isSandboxPlacementProvider } from "./sandbox-provider.ts";
+
 /** Refuse before queue admission, capacity reservation or provider access. */
 export function sandboxControlRefusal(
   sandbox: {
@@ -13,44 +16,21 @@ export function sandboxControlRefusal(
   operation = "send",
 ): string | null {
   const expired = !!sandbox.expiresAt && new Date(sandbox.expiresAt).getTime() <= now.getTime();
-  if (
-    operation === "send" &&
-    sandbox.status === "stopped" &&
-    !expired &&
-    ["boat", "modal"].includes(sandbox.provider) &&
-    sandbox.preservationNote !== "checkpoint_failed_disk_not_retained"
-  )
-    return null;
-  // Idle suspension is an intentional retained-compute wake path, not a finished
-  // sandbox. A merge stop is admitted through the same idle checkpoint.
+  const machine = isSandboxPlacementProvider(sandbox.provider) ? capabilities(sandbox.provider) : undefined;
+  // Idle suspension and merge stops can wake through a retained checkpoint.
   const retained = sandbox.statusReason === "idle_paused" || sandbox.statusReason === "work_merged";
-  if (
-    operation === "send" &&
-    sandbox.status === "stopped" &&
-    retained &&
-    !expired &&
-    sandbox.preservationNote !== "checkpoint_failed_disk_not_retained"
-  )
-    return null;
+  const stoppedWithWork =
+    sandbox.status === "stopped" && !expired && sandbox.preservationNote !== "checkpoint_failed_disk_not_retained";
+  if (operation === "send" && stoppedWithWork && (retained || machine?.resumeAfterStop)) return null;
   if (!expired && !["stopped", "failed", "expired", "deleted", "removed"].includes(sandbox.status)) return null;
   const reason = expired ? "expired" : sandbox.status;
   const prefix = `Cannot control ${sandbox.provider} sandbox: ${reason}. `;
-  if (
-    sandbox.provider === "docker" &&
-    sandbox.status === "stopped" &&
-    retained &&
-    !expired &&
-    sandbox.preservationNote !== "checkpoint_failed_disk_not_retained"
-  )
-    return `${prefix}Send a message to resume its retained idle checkpoint before using this operation.`;
-  if (sandbox.provider === "docker")
+  if (machine?.stopRetention === "container") {
+    if (stoppedWithWork && retained)
+      return `${prefix}Send a message to resume its retained idle checkpoint before using this operation.`;
     return `${prefix}Its container is removed after finish/stop; start a new sandbox on the same branch.`;
-  if (
-    sandbox.status === "stopped" &&
-    !expired &&
-    ["boat", "modal"].includes(sandbox.provider) &&
-    sandbox.preservationNote !== "checkpoint_failed_disk_not_retained"
-  )
+  }
+  if (stoppedWithWork && machine?.resumeAfterStop)
     return `${prefix}Send a message to resume its preserved work; start a new sandbox on the same branch if recovery is unavailable.`;
   if (sandbox.boatRuntime || sandbox.runtimeTransport === "dialout")
     return `${prefix}Use runtime_resume with a synchronized retained checkpoint if available; otherwise start a new sandbox on the same branch.`;

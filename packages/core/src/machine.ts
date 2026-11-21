@@ -1,51 +1,7 @@
-import { MACHINE_SIZES, type MachineSize } from "./machine-size.ts";
+import type { MachineCapabilities, MachineSize } from "./machine-capabilities.ts";
 import type { ProviderInventoryMachine } from "./provider.ts";
-import { PROVIDER_LIMITS, type SandboxPlacementProviderId } from "./sandbox-provider.ts";
 
-export interface MachineCapabilities {
-  readonly maxTtlSeconds: number;
-  readonly stopRetention: "disk" | "image" | "container";
-  readonly snapshots: "required" | "optional";
-  readonly extendLifetime: boolean;
-  readonly humanSsh: boolean;
-  readonly resourceSampler: boolean;
-  readonly sizes: readonly MachineSize[];
-}
-
-const catalogSizes = Object.freeze([...MACHINE_SIZES]);
-const machineCapabilities: Readonly<Record<SandboxPlacementProviderId, MachineCapabilities>> = {
-  boat: Object.freeze({
-    maxTtlSeconds: PROVIDER_LIMITS.boat.maxTtlSeconds,
-    stopRetention: "disk",
-    snapshots: "required",
-    extendLifetime: true,
-    humanSsh: true,
-    resourceSampler: true,
-    sizes: catalogSizes,
-  }),
-  modal: Object.freeze({
-    maxTtlSeconds: PROVIDER_LIMITS.modal.maxTtlSeconds,
-    stopRetention: "image",
-    snapshots: "optional",
-    extendLifetime: true,
-    humanSsh: true,
-    resourceSampler: true,
-    sizes: catalogSizes,
-  }),
-  docker: Object.freeze({
-    maxTtlSeconds: PROVIDER_LIMITS.docker.maxTtlSeconds,
-    stopRetention: "container",
-    snapshots: "optional",
-    extendLifetime: false,
-    humanSsh: false,
-    resourceSampler: false,
-    sizes: Object.freeze([]),
-  }),
-};
-
-export function capabilities(providerId: SandboxPlacementProviderId) {
-  return machineCapabilities[providerId];
-}
+export { capabilities, type MachineCapabilities } from "./machine-capabilities.ts";
 
 export interface MachineIncarnation {
   readonly sandboxId: string;

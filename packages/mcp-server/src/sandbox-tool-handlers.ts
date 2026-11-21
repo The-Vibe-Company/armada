@@ -183,10 +183,10 @@ export function configureTools(
     );
     const generation = found.lifecycleGeneration;
     let acknowledged = false;
-    const admission: Pick<ServerSandboxPatch, "nativeResumeAdmission" | "nativeSendAdmission"> =
+    const admission: Pick<ServerSandboxPatch, "nativeResumeAdmission" | "nativePromptAdmission"> =
       machine.state === "stopped"
         ? { nativeResumeAdmission: found.providerSandboxId }
-        : { nativeSendAdmission: { fromState: found.status, placement: found.providerSandboxId } };
+        : { nativePromptAdmission: { fromState: found.status, placement: found.providerSandboxId } };
     return sandboxActivity(
       data.sandboxes,
       found,
@@ -312,22 +312,33 @@ export function configureTools(
       const member = caller.orgs.find((entry) => entry.orgId === found.orgId);
       if (!member) throw new ToolError("forbidden", "No current organization membership.");
       let acknowledged = false;
+      const admission: ServerSandboxPatch = {
+        clearTaskOutcome: true,
+        nativePromptAdmission: { fromState: found.status, placement: found.providerSandboxId },
+      };
       return sandboxActivity(
         data.sandboxes,
         found,
-        { clearTaskOutcome: true },
+        admission,
         async (signal) => {
           await prepareConnections(provider, found, member.role);
+          signal.throwIfAborted();
 
           const receipt = await dispatchSteer();
           acknowledged = true;
 
-          const taskPromptId = await steeredRun(provider, found, receipt.promptId, delivery, signal);
+          const { taskPromptId, verifiedReplacement } = await steeredRun(
+            provider,
+            found,
+            receipt.promptId,
+            delivery,
+            signal,
+          );
           if (taskPromptId) await data.sandboxes.recordNativePrompt?.(found.id, found.providerSandboxId, taskPromptId);
           else await data.sandboxes.recordPendingSteer?.(found.id, found.providerSandboxId, found.taskPromptId || null);
           return {
             patch: {
-              nativeSteerReceipt: { fromState: found.status, placement: found.providerSandboxId },
+              nativeSteerReceipt: { fromState: found.status, placement: found.providerSandboxId, verifiedReplacement },
               statusReason: null,
               taskPromptId,
               conversationIds: appendConversation(found.conversationIds, receipt.conversationId),
@@ -719,13 +730,19 @@ async function steeredRun(
 ) {
   try {
     const run = await provider.getPrompt({ sandboxId: found.providerSandboxId, promptId, signal });
-    if (run.promptId === promptId) return promptId;
+    if (promptId && run.promptId === promptId)
+      return {
+        taskPromptId: promptId,
+        verifiedReplacement: Boolean(found.taskPromptId && found.taskPromptId !== promptId),
+      };
   } catch {}
 
-  if (!found.taskPromptId) return "";
-  try {
-    const latest = (await latestPrompt(provider, found.providerSandboxId, true, signal))?.promptId;
-    if (latest && (delivery === "native" || latest !== found.taskPromptId)) return latest;
-  } catch {}
-  return "";
+  if (found.taskPromptId) {
+    try {
+      const latest = (await latestPrompt(provider, found.providerSandboxId, true, signal))?.promptId;
+      if (latest && (delivery === "native" || latest !== found.taskPromptId))
+        return { taskPromptId: latest, verifiedReplacement: false };
+    } catch {}
+  }
+  return { taskPromptId: "", verifiedReplacement: false };
 }
