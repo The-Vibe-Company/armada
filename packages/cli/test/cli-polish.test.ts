@@ -30,19 +30,7 @@ async function invoke(argv: string[], token = false, response?: Response) {
 }
 
 test("bare families share login-free successful discovery", async () => {
-  for (const family of [
-    "snapshot",
-    "host",
-    "template",
-    "routine",
-    "vars",
-    "secrets",
-    "mcp",
-    "org",
-    "account",
-    "token",
-    "skill",
-  ]) {
+  for (const family of ["snapshot", "host", "template", "vars", "secrets", "mcp", "org", "account", "skill"]) {
     const bare = await invoke([family]);
     const help = await invoke([family, "--help"]);
     expect(bare).toEqual(help);
@@ -61,8 +49,7 @@ test("completion covers every root help command and options in every shell", asy
     for (const command of ["recovery", "interrupt", "prompt", "exec"]) expect(result.out).toContain(command);
     expect(result.out).toContain(shell === "fish" ? "-l 'request-id'" : "--request-id");
     expect(result.out).toContain(shell === "fish" ? "-l 'page-info'" : "--page-info");
-    for (const option of ["tail", "prompt-file", "cron", "timezone", "max-runs-per-day"])
-      expect(result.out).toContain(shell === "fish" ? `-l '${option}'` : `--${option}`);
+    expect(result.out).toContain(shell === "fish" ? "-l 'tail'" : "--tail");
   }
 });
 

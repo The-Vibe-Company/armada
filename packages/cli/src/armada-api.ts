@@ -192,21 +192,6 @@ export async function createArmadaApiClient(
             "Application vault unavailable. Check entry status before retrying.",
         );
       }
-      if (path.startsWith("/api/v1/routines/")) {
-        const messages: Record<number, string> = {
-          400: "Invalid routine request. Check the configuration, IDs, integer limits and expected version.",
-          401: "Run armada login or update ARMADA_TOKEN.",
-          403: "Routine access denied. Current membership is required; only admins can mutate organization routines.",
-          404: "Routine, template revision or organization not found or not visible.",
-          409: "Routine conflict. Show the routine and check owner access, references and the current --expected-version before retrying.",
-        };
-        throw new ArmadaApiError(
-          resourceFailureCode(response.status),
-          response.status,
-          messages[response.status] ??
-            "Routine operation unavailable. Inspect the routine before retrying; a mutation may have been accepted.",
-        );
-      }
       if (path === "/api/v1/templates/launch" && response.status >= 500)
         throw new ArmadaApiError("unavailable", response.status, TEMPLATE_LAUNCH_UNKNOWN);
       if (path.startsWith("/api/v1/templates/")) {

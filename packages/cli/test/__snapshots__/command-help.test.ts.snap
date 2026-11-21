@@ -104,9 +104,6 @@ Usage:
   armada mcp list|add|update|connect|status|reconnect|enable|disable|revoke|delete [id] [--org UUID] [--file JSON]
   armada login [--url <url>] [--org NAME|UUID|none]        Sign in and authorize the CLI in your browser
   armada logout
-  armada token create --name <name> [--org <org>] [--expires 30d|90d|1y|never] [--json]
-  armada token ls [--json]
-  armada token revoke <id> [--json]
   armada whoami [--json]
   armada org create <name>                 Create an org; you are its first admin
   armada org list
@@ -127,7 +124,6 @@ Usage:
   armada org members list|add|remove|role  [--org <name>] add <email> [--role admin|member]
                                            Direct membership administration; add requires an existing account,
                                            grants membership immediately and does not send an invitation.
-  armada routine --help                    Create, inspect, enable, pause and manage scheduled template launches
   armada template --help                   Manage templates and launch published versions
   armada vars --help                       Readable variables: set/list/read; stdin/file writes only
   armada secrets --help                    Write-only application secrets: set/list/rotate/revoke/delete
@@ -137,9 +133,10 @@ Every command after 'armada login' acts as the user who signed in. snapshot comm
 when you belong to more than one org.
 
 Give an agent access:
-  Create an API key with armada token create --name <name>. Set ARMADA_URL and inject the key
-  as ARMADA_TOKEN from a secret store. Verify with armada whoami. From a personal login,
-  find the key ID with armada token ls and revoke it with armada token revoke <id>.
+  Create an API key in Dashboard Settings or run:
+  armada api token/create '{"label":"worker","org":"ORG_UUID"}'
+  Store the response's token securely. Set ARMADA_URL and inject the key as ARMADA_TOKEN.
+  Verify with armada whoami.
 
 Environment:
   ARMADA_TOKEN                             API token for non-interactive authentication. Takes precedence over
@@ -375,32 +372,6 @@ List saved outputs for the current sandbox or the sandbox selected with --id.
 With NAME, download the file into DIR (default the current directory).
 Choose a directory without a file of the same name.
 Use --org to scope sandbox prefix lookup.
-"
-`;
-
-exports[`armada routine help preserves its output 1`] = `
-"Usage: armada routine <command> [arguments]
-Manage scheduled template launches that run as the routine owner.
-
-  create  Create a paused routine from file or inline configuration.
-  list    List visible IDs, names, status, versions and next occurrences.
-  show    Inspect configuration, prompt and current version.
-  update  Replace configuration from file, or change only the inline schedule.
-  enable  Schedule the next occurrence, not an immediate manual launch.
-  pause   Stop new admissions; already admitted runs may finish.
-  delete  Mark deleted; does not stop or delete running sandboxes.
-  runs    Read the latest 100 decisions and original-prompt outcomes.
-
-Actions require Armada login or ARMADA_TOKEN. Select an organization with --org
-NAME|UUID or armada login --org NAME|UUID. Organization-scoped writes require administrator permission.
-Use IDs from routine list when exact names collide; keep IDs for history after deletion.
-Updates and state changes require --expected-version from routine show/list;
-conflicts are not retried automatically. Prompts are readable configuration, not secrets.
-Schedules use five-field cron and IANA time zones, with runs at least one hour apart.
-Launch success is not task success; unknown is not success. Inspect routine runs.
-Inspect a command's options with armada routine <command> --help.
-Example: armada routine list --org ORG_UUID --json
-Example: armada routine runs ROUTINE_UUID --org ORG_UUID --json
 "
 `;
 

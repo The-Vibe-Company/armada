@@ -1350,7 +1350,6 @@
     "packages/cli/src/preferences.ts": 2,
     "packages/cli/src/profiles.ts": 1,
     "packages/cli/src/resource-advice.ts": 2,
-    "packages/cli/src/routine-commands.ts": 5,
     "packages/cli/src/run.ts": 10,
     "packages/cli/src/sandbox-list.ts": 2,
     "packages/cli/src/secret-input.ts": 1,

@@ -168,10 +168,10 @@ Armada is also a remote MCP server. Add it to Claude Code, Codex, Cursor or your
 MCP clients sign in with OAuth; bots and CI use a service token bound to one organization:
 
 ```sh
-armada token create --org acme --name ci   # printed once; Armada keeps only its hash
+armada api token/create '{"org":"acme","label":"ci"}'
 ```
 
-Your coordinator decides what to work on and when to merge; Armada gives each task a sandbox, an agent and a live event stream to drive. Endpoints and client configuration: [Connect an MCP client](docs/dave-onboarding.md#7-connect-an-mcp-client).
+The response contains the key once. Capture it in a secret store. Your coordinator decides what to work on and when to merge; Armada gives each task a sandbox, an agent and a live event stream to drive. Endpoints and client configuration: [Connect an MCP client](docs/dave-onboarding.md#7-connect-an-mcp-client).
 
 ## Teams
 
