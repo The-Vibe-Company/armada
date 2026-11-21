@@ -947,9 +947,9 @@ export function createSqlData(
         }
         if (
           patch.finishActivity &&
-          (stopStatus === "stopped" || stopStatus === "failed") &&
-          patch.stopRequested === false &&
-          patch.stoppedAt
+          stopStatus !== undefined &&
+          (patch.stopRequested === true ||
+            (patch.stopRequested === false && stopStatus !== "stopping" && patch.stoppedAt))
         )
           sets.push(`native_preservation_generation = case
             when s.stop_requested_at is not null and not s.application_secret_tainted

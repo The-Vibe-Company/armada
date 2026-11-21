@@ -125,8 +125,30 @@ test("recovery receipts retain encrypted versions and only current interior owne
     );
     expect(await owner.readWorkRecovery?.(id)).toBe(archive);
 
+    await owner.update(id, {
+      ownerStop: true,
+      status: "stopping",
+      stopRequested: true,
+      finishActivity: true,
+      expectedGeneration: authority.generation,
+      activityToken: token,
+    });
+    const handoff = (
+      await db.query<{ current: boolean; lifecycle_generation: number }>(
+        `select lifecycle_generation, native_preservation_generation = lifecycle_generation as current
+         from sandboxes where id=$1`,
+        [id],
+      )
+    ).rows[0];
+    expect(handoff?.current).toBe(true);
+    authority.generation = handoff!.lifecycle_generation;
+
     // A clean retry clears the current banner without losing recovery data.
-    await db.query("update sandboxes set stop_generation=2, preservation_note='old failure' where id=$1", [id]);
+    await db.query(
+      `update sandboxes set stop_generation=2, preservation_note='old failure',
+       activity_lease_id=$2, activity_until=now()+interval '2 minutes' where id=$1`,
+      [id, token],
+    );
     // Clean stops do not create archives; historical archives remain retrievable.
     boat.setExecOutput({ stdout: JSON.stringify({ status: "clean" }) });
     await preserveBeforeStop(sql, provider, id, "bx_recovery", "user_stop", authority);
