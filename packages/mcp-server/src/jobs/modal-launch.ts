@@ -1,4 +1,4 @@
-import { MACHINE_SIZES, type MemberRole, type ModalBinding, type SandboxStatus } from "@armada/core";
+import { HARNESS_KINDS, MACHINE_SIZES, type MemberRole, type ModalBinding, type SandboxStatus } from "@armada/core";
 import {
   GoldenError,
   LaunchError,
@@ -255,6 +255,38 @@ type OpenModalMachine = (
   app: { binding: ModalBinding; appName: string; credentialScope: "org" | "user"; credentialOwnerId: string },
   signal: AbortSignal,
 ) => Promise<ModalMachineRuntime & { close(): void }>;
+
+export function modalLaunchTicketGuard(sandbox: RuntimeConfigurationTarget) {
+  return {
+    async lockPrerequisites(tx: Sql) {
+      const member = await tx.query("select 1 from public.members where org_id=$1 and user_id=$2 for update", [
+        sandbox.orgId,
+        sandbox.ownerId,
+      ]);
+      if (!member.rows.length) throw new Error("Modal launch owner membership is unavailable.");
+      const credential = await tx.query(
+        `select 1 from public.credentials where id=$1 and version=$2 and kind=any($5::public.credential_kind[])
+             and status='active' and (expires_at is null or expires_at>clock_timestamp())
+             and ((scope='user' and owner_id=$3) or (scope='org' and owner_id=$4)) for share`,
+        [
+          sandbox.credentialId,
+          sandbox.credentialVersion,
+          sandbox.ownerId,
+          sandbox.orgId,
+          HARNESS_KINDS[sandbox.harness],
+        ],
+      );
+      if (!credential.rows.length) throw new Error("Modal launch account is unavailable.");
+    },
+    async checkAccountPin(tx: Sql) {
+      const current = await tx.query(
+        "select 1 from public.sandboxes where id=$1 and credential_id=$2 and credential_version=$3",
+        [sandbox.id, sandbox.credentialId, sandbox.credentialVersion],
+      );
+      if (!current.rows.length) throw new Error("Modal launch account pin changed.");
+    },
+  };
+}
 
 const launchPayload = z.object({
   allocation: z.object({

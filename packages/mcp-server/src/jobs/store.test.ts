@@ -14,6 +14,7 @@ import {
   createModalLaunchCleanupJob,
   createModalLaunchJob,
   type ModalLaunchAdmission,
+  modalLaunchTicketGuard,
   runModalLaunch,
 } from "./modal-launch.ts";
 import { createJobsRunner, type Job, type JobContext } from "./runner.ts";
@@ -508,7 +509,7 @@ async function modalLaunchFixture(initial?: Awaited<ReturnType<typeof modalAdmis
               },
             };
           },
-          prepareRuntimeTicket,
+          async (target) => ({ ...(await prepareRuntimeTicket()), ...modalLaunchTicketGuard(target) }),
         )
       : {
           concurrency: 1,
@@ -1115,6 +1116,24 @@ test.each([
     await runner.drain();
     expect(effects().allocations).toBe(interruptedAt === "image lookup" ? 0 : 1);
     expect(effects().bootstrapped).toEqual([]);
+  },
+);
+
+test.each(["credential rotation", "sandbox account change"] as const)(
+  "Modal ticket issuance rejects %s after configuration",
+  async (change) => {
+    const { f, id, makeRunner, effects } = await modalLaunchFixture(await modalAdmissionFixture());
+    const runner = makeRunner(async (step) => {
+      if (step !== "runtime ticket") return;
+      if (change === "credential rotation")
+        await f.db.query("update credentials set value_enc=decode('00','hex') where id=$1", [f.openaiCredentialId]);
+      else await f.db.query("update sandboxes set credential_version=credential_version+1 where id=$1", [id]);
+    });
+    expect(await runner.reconcileOne(signal)).toBe(true);
+    await runner.drain();
+    expect(effects().allocations).toBe(1);
+    expect(effects().bootstrapped).toEqual([]);
+    expect((await f.db.query("select sandbox_id from runtime_enrolments where sandbox_id=$1", [id])).rows).toEqual([]);
   },
 );
 
