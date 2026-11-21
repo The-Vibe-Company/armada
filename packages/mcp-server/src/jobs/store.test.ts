@@ -1690,8 +1690,49 @@ test.each([
     const job = (await store.claim("turn_dispatch", owner, 30, 1))!;
     expect(job).toMatchObject({ id, generation: recover ? "3" : "2", payload: { requestId } });
     expect(await store.inspect(job, owner)).toBe(recover ? "dispatch" : "stale");
-    if (scenario === "pending after readiness" || hostJobOnly || resumeClaimOnly)
-      await store.retireStale(job, owner, "no_dispatch");
+    const lateAck = scenario === "pending after readiness" || scenario === "pending without a deadline";
+    const rollback = scenario === "pending without a deadline";
+    let retireOwner = owner;
+    let retireJob = job;
+    if (rollback) {
+      const interrupted = createJobsStore(
+        {
+          ...f.sql,
+          transaction: (work) =>
+            f.sql.transaction!(async (tx) => {
+              await work(tx);
+              throw new Error("Connection lost before ACK deferral committed.");
+            }),
+        },
+        btoa("\0".repeat(32)),
+      );
+      await expect(interrupted.retireStale(job, owner, "no_dispatch")).rejects.toThrow("Connection lost");
+      expect(await store.inspect(job, owner)).toBe("stale");
+      await db.query("update jobs set lease_until='-infinity' where id=$1", [id]);
+      retireOwner = crypto.randomUUID();
+      retireJob = (await store.claim("turn_dispatch", retireOwner, 30, 1))!;
+      expect(await store.inspect(retireJob, retireOwner)).toBe("stale");
+    }
+    if (lateAck || hostJobOnly || resumeClaimOnly) await store.retireStale(retireJob, retireOwner, "no_dispatch");
+    if (lateAck) {
+      expect(
+        (
+          await db.query(
+            `select state, attempts, generation::text, lease_owner, run_after > created_at as deferred
+         from jobs where id=$1`,
+            [id],
+          )
+        ).rows,
+      ).toEqual([{ state: "queued", attempts: rollback ? 1 : 0, generation: "2", lease_owner: null, deferred: true }]);
+      await db.query("update docker_host_jobs set outcome='completed',completed_at=now() where request_id=$1", [
+        resumeId,
+      ]);
+      await db.query("update jobs set run_after='-infinity' where id=$1", [id]);
+      const successor = crypto.randomUUID();
+      const resumed = await store.claim("turn_dispatch", successor, 30, 1);
+      expect(resumed).toMatchObject({ id, generation: "3", payload: { requestId } });
+      expect(await store.inspect(resumed!, successor)).toBe("dispatch");
+    }
     expect(
       (
         await db.query(

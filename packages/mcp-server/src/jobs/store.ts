@@ -10,6 +10,7 @@ import {
   ENROLLED_PENDING_RUNTIME_WAKE,
   failTurnReceipt,
   NATIVE_DISPATCH_UNCERTAIN,
+  PENDING_READY_DOCKER_RESUME_ACK,
   QUEUED_DISPATCH_EVIDENCE,
   QUEUED_TURN_CANCELLED,
   RUNTIME_LANE,
@@ -148,7 +149,7 @@ export function createJobsStore(sql: Sql, encryptionKey?: string) {
           native_uncertain: boolean;
           abandoned: boolean;
           unrecoverable_dispatch: boolean;
-          open_dispatch_until: string | null;
+          defer_dispatch_until: string | null;
         }>(
           `select s.lifecycle_generation::text as generation,
                   case when q.state = 'queued' then ${QUEUED_TURN_CANCELLED}
@@ -169,7 +170,10 @@ export function createJobsStore(sql: Sql, encryptionKey?: string) {
                       or (s.status = 'starting'
                         and s.activity_lease_id is null and ${CURRENT_DOCKER_RESUME_JOB}))
                     and isfinite(q.dispatch_until) and q.dispatch_until > statement_timestamp()
-                    then q.dispatch_until::text end as open_dispatch_until
+                    then q.dispatch_until::text
+                    when ${ADJACENT_RUNTIME_DISPATCH} and ${PENDING_READY_DOCKER_RESUME_ACK}
+                    then least(s.expires_at, statement_timestamp() + interval '1 second')::text
+                  end as defer_dispatch_until
            from public.sandboxes s join public.account_turn_queue q on q.sandbox_id = s.id
            where s.id = $1 and q.request_id = $2`,
           [sandboxId, requestId, job.generation],
@@ -229,12 +233,12 @@ export function createJobsStore(sql: Sql, encryptionKey?: string) {
           if (updated) return { ...job, generation: updated.generation };
           if (reset) throw new Error("Abandoned turn reset lost its generation fence.");
         }
-        if (retiring && sandbox?.open_dispatch_until) {
+        if (retiring && sandbox?.defer_dispatch_until) {
           const { rows } = await tx.query(
             `update public.jobs j set state = 'queued', lease_owner = null, lease_until = null, run_after = $4,
                attempts = case when $6::boolean then j.attempts - 1 else j.attempts end
              where ${fence} and j.generation < $5 returning j.id`,
-            [...claimIdentity(job, owner), sandbox.open_dispatch_until, sandbox.generation, phase === "no_dispatch"],
+            [...claimIdentity(job, owner), sandbox.defer_dispatch_until, sandbox.generation, phase === "no_dispatch"],
           );
           if (rows.length) return job;
         }
