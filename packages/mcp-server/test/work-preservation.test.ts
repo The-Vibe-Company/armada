@@ -982,8 +982,13 @@ async function handoffWithLaterCleanCapture(sandboxId: string) {
   );
   await db.query(
     `insert into sandbox_native_preservation_receipts
-         (sandbox_id,generation,stop_generation,capture_generation,capture_stop_generation)
-       select id,lifecycle_generation,1,lifecycle_generation,1 from sandboxes where id=$1`,
+         (sandbox_id,generation,stop_generation,capture_generation,capture_stop_generation,capture_acknowledgements)
+       select id,lifecycle_generation,1,lifecycle_generation,1,
+         jsonb_build_object('completedPrompts',(
+           select jsonb_agg(p.prompt_id) from native_webhook_prompts p
+           where p.sandbox_id=sandboxes.id and p.completed_at is not null
+         ))
+       from sandboxes where id=$1`,
     [sandboxId],
   );
   return db.query("select copy_native_drain_recovery(id,lifecycle_generation) as outcome from sandboxes where id=$1", [
@@ -1395,9 +1400,22 @@ test.each(["prompt", "steer", "queued", "dispatching"] as const)(
     expect(await copy()).toBe("ineligible");
     expect((await db.query("select 1 from native_drain_recovery where sandbox_id=$1", [sandboxId])).rows).toEqual([]);
     await db.query(settle, [sandboxId]);
-    expect(await copy()).toBe("archived");
+    expect(await copy()).toBe(kind === "prompt" ? "ineligible" : "archived");
   },
 );
+
+async function seedCompletedPromptProof(
+  db: ReturnType<typeof sharedDatabase>["db"],
+  sandboxId: string,
+  promptId: string,
+) {
+  await db.query(
+    `update sandbox_native_preservation_receipts
+     set capture_acknowledgements=jsonb_build_object('completedPrompts',jsonb_build_array($2::text))
+     where sandbox_id=$1`,
+    [sandboxId, promptId],
+  );
+}
 
 test.each([
   ["Dispatch outcome uncertain; inspect sandbox history before resending.", false, "ineligible", false],
@@ -1429,6 +1447,7 @@ test.each([
     if (currentTask) {
       await db.query("update sandboxes set task_prompt_id=$2 where id=$1", [sandboxId, requestId]);
       await db.query("update native_webhook_prompts set completed_at=now() where sandbox_id=$1", [sandboxId]);
+      await seedCompletedPromptProof(db, sandboxId, requestId);
     }
     await db.query("update sandboxes set stopped_at=now() where id=$1", [sandboxId]);
 
@@ -1460,27 +1479,31 @@ test("native handoff refuses a failed receipt even when an unrelated prompt was 
     [sandboxId],
   );
   expect(rows).toEqual([{ native_prompt_id: "unrelated-turn" }]);
+  await seedCompletedPromptProof(db, sandboxId, "unrelated-turn");
 
   expect(await copy()).toBe("ineligible");
   expect((await db.query("select 1 from native_drain_recovery where sandbox_id=$1", [sandboxId])).rows).toEqual([]);
 });
 
 test.each([
-  ["before clean capture", "clean"],
-  ["during clean capture", "ineligible"],
-  ["before archive capture", "archived"],
-] as const)("failed native dispatch settled %s requires matching capture evidence", async (settlement, outcome) => {
+  ["failed dispatch", "before clean capture", "clean"],
+  ["ordinary prompt", "before clean capture", "clean"],
+  ["failed dispatch", "during clean capture", "ineligible"],
+  ["ordinary prompt", "during clean capture", "ineligible"],
+  ["failed dispatch", "before archive capture", "archived"],
+] as const)("native %s settled %s requires matching capture evidence", async (kind, settlement, outcome) => {
   await withPreservationRow(async ({ db, id, physical, sql, boat, provider, generation }) => {
     const token = crypto.randomUUID();
-    const requestId = crypto.randomUUID();
-    await db.query(
-      `insert into account_turn_queue(sandbox_id,request_id,account_id,owner_id,org_id,
+    const requestId = kind === "failed dispatch" ? crypto.randomUUID() : null;
+    if (requestId)
+      await db.query(
+        `insert into account_turn_queue(sandbox_id,request_id,account_id,owner_id,org_id,
            actor_epoch,credential_version,input_hash,input_enc,conversation_id,state,dispatch_generation)
          select s.id,$2,c.id,s.owner_id,s.org_id,1,c.version,'input',$3,'conversation',
            'dispatching',s.lifecycle_generation
          from sandboxes s join credentials c on c.owner_id=s.org_id and c.kind='openai' where s.id=$1 limit 1`,
-      [id, requestId, new Uint8Array([1])],
-    );
+        [id, requestId, new Uint8Array([1])],
+      );
     await db.query(
       `insert into native_webhook_prompts
            (sandbox_id,prompt_id,provider,provider_sandbox_id,owner_id,org_id,acknowledged_request_id)
@@ -1561,10 +1584,16 @@ test.each([
       expect(detached).toBeDefined();
       expect(await decryptSecret(detached!.archive_enc, ENCRYPTION_KEY)).toBe(archive);
     }
-    if (outcome === "clean") {
-      const publishWithoutAcknowledgements = () =>
-        db.query("update sandbox_native_preservation_receipts set archive_id=null where sandbox_id=$1", [id]);
-      await publishWithoutAcknowledgements();
+    if (outcome === "clean" && requestId) {
+      await db.query(
+        `update sandbox_native_preservation_receipts
+         set capture_acknowledgements=capture_acknowledgements-'prompts' where sandbox_id=$1`,
+        [id],
+      );
+      expect(await copy()).toBe("ineligible");
+    }
+    if (outcome === "clean" && !requestId) {
+      await db.query("update sandbox_native_preservation_receipts set archive_id=null where sandbox_id=$1", [id]);
       expect(await copy()).toBe("ineligible");
     }
   });
