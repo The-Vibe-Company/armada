@@ -13,8 +13,10 @@ import { sqlOver } from "../sql.ts";
 import { runtimeWakes } from "../wake-bus.ts";
 import {
   admitModalLaunch,
+  createModalInitialTurnJob,
   createModalLaunchCleanupJob,
   createModalLaunchJob,
+  MODAL_INITIAL_TURN,
   type ModalLaunchAdmission,
   modalLaunchTicketGuard,
   runModalLaunch,
@@ -621,7 +623,7 @@ async function modalFirstTurnLane(
     sql: f.sql,
     jobs: f.store,
     accountTurns,
-    config: {},
+    config: { encryptionKey: launchEncryptionKey },
     options: { logError: () => {} },
     control: {},
     langfuse: { exportJob: { concurrency: 1 } },
@@ -702,6 +704,40 @@ test.each(["before", "after"] as const)(
     expect((await dispatchJobs()).rows).toEqual([{ kind: "turn_dispatch" }]);
   },
 );
+
+test("a Modal launch prompt waits for the enrolled runtime to acknowledge its environment", async () => {
+  const { f, id, makeRunner } = await modalLaunchFixture(await modalAdmissionFixture());
+  const launch = makeRunner();
+  expect(await launch.reconcileOne(signal)).toBe(true);
+  await launch.drain();
+
+  const turns = async () =>
+    (await f.db.query("select request_id from account_turn_queue where sandbox_id=$1", [id])).rows;
+  const queue = createAccountTurnQueue(f.sql, launchEncryptionKey);
+  let acknowledged = false;
+  const firstTurn = createJobsRunner(
+    f.store,
+    {
+      [MODAL_INITIAL_TURN]: createModalInitialTurnJob(f.sql, queue, {
+        async deliver() {
+          expect(await turns()).toEqual([]);
+          if (!acknowledged) throw new Error("Runtime acknowledgement lost");
+        },
+      }),
+    },
+    () => {},
+    () => () => {},
+  );
+  expect(await firstTurn.reconcileOne(signal)).toBe(true);
+  await firstTurn.drain();
+  expect(await turns()).toEqual([]);
+
+  acknowledged = true;
+  await f.db.query("update jobs set lease_until='-infinity' where sandbox_id=$1 and kind=$2", [id, MODAL_INITIAL_TURN]);
+  expect(await firstTurn.reconcileOne(signal)).toBe(true);
+  await firstTurn.drain();
+  expect(await turns()).toHaveLength(1);
+});
 
 test.each(["without current enrolment", "after stop"] as const)(
   "the registered Modal first-turn job declines a completed launch %s",

@@ -1,5 +1,6 @@
 import { createDockerHostStore } from "./docker-host-store.ts";
 import { captureDockerStopOutputs } from "./docker-outputs.ts";
+import { createGoldenRuntimeEnvironment } from "./golden-runtime-environment.ts";
 import { createGoldenBuildJob } from "./golden-worker.ts";
 import { startInvitationWorker } from "./invitations.ts";
 import { createModalInitialTurnJob, MODAL_INITIAL_TURN } from "./jobs/modal-launch.ts";
@@ -101,7 +102,15 @@ const jobsLane: LaneFactory = ({
     {
       delete: modal.launchCleanupJob,
       ...(modalLaunchJob ? { launch: modalLaunchJob } : {}),
-      [MODAL_INITIAL_TURN]: createModalInitialTurnJob(sql, accountTurns),
+      ...(config.encryptionKey
+        ? {
+            [MODAL_INITIAL_TURN]: createModalInitialTurnJob(
+              sql,
+              accountTurns,
+              createGoldenRuntimeEnvironment(sql, config.encryptionKey),
+            ),
+          }
+        : {}),
       golden_build: createGoldenBuildJob(goldenBuilds),
       langfuse_export: langfuse.exportJob,
       maintenance: retentionMaintenanceJob(sql, control.applicationVault, options.logError),
