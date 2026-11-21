@@ -814,7 +814,7 @@ export async function requestStartingModalStop(
     } = await tx.query<{ allowed: boolean }>(
       `select (s.owner_id=m.user_id or m.role='admin') as allowed
        from public.sandboxes s join public.members m on m.org_id=s.org_id and m.user_id=$2
-       join public.jobs j on j.sandbox_id=s.id and j.generation=$4 and j.kind='launch'
+       join public.jobs j on j.sandbox_id=s.id and j.generation=$4 and j.kind='launch' and j.payload_enc is not null
          and j.org_id=s.org_id and j.request_owner_id=s.owner_id
        where s.id=$3 and s.org_id=any($1::uuid[]) and s.provider='modal'
          and s.runtime_transport='dialout' for share of m`,
