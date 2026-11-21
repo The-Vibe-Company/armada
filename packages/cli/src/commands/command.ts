@@ -8,7 +8,6 @@ export type UsageGroup =
   | "docker-launch"
   | "new"
   | "ls"
-  | "advice"
   | "sandbox"
   | "setup"
   | "session"

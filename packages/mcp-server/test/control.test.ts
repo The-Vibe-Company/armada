@@ -460,14 +460,14 @@ describe("armada org and armada account against the control API", () => {
         },
       };
       const stan = cli(STAN);
-      const cached = await stan.run(["status", id, "--json"]);
+      const cached = await stan.run(["info", id, "--json"]);
       expect(cached.code).toBe(0);
       expect(JSON.parse(cached.out)).toMatchObject({ id, status: "ready", providerState: null, prompt: null });
       expect(probes).toBe(0);
-      const live = await stan.run(["status", id, "--live", "--json"]);
+      const live = await stan.run(["info", id, "--live", "--json"]);
       expect(live.code).toBe(0);
       expect(probes).toBe(1);
-      expect((await cli(ADA).run(["status", id])).code).not.toBe(0);
+      expect((await cli(ADA).run(["info", id])).code).not.toBe(0);
       expect(probes).toBe(1);
     });
   });
@@ -480,7 +480,7 @@ describe("armada org and armada account against the control API", () => {
       const listed = await stan.run(["ls", "--json"]);
       expect(listed.code).toBe(0);
       expect(JSON.parse(listed.out)).toEqual({ sandboxes: [] });
-      const missing = await stan.run(["status", "33333333-3333-4333-8333-333333333333"]);
+      const missing = await stan.run(["info", "33333333-3333-4333-8333-333333333333"]);
       expect(missing.code).not.toBe(0);
       expect(missing.out).toBe("");
       const mcp = await stan.run(["mcp", "list"]);

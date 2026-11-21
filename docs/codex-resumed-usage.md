@@ -25,10 +25,10 @@ with the sandbox ID from the launch receipt.
 
 ```sh
 armada new MODAL_SNAPSHOT --provider modal --agent codex "Reply OK"
-armada wait SANDBOX_UUID
+armada info --wait SANDBOX_UUID
 armada prompt SANDBOX_UUID "Reply OK again"
-armada wait SANDBOX_UUID
-armada status SANDBOX_UUID --json
+armada info --wait SANDBOX_UUID
+armada info SANDBOX_UUID --json
 ```
 
 Stop/resume the sandbox and send another prompt. If the native peer reports a

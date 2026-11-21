@@ -2,7 +2,6 @@ import { expect, test } from "bun:test";
 import type { ResourceAdvice } from "@armada/core";
 import { createArmadaApiClient } from "../src/armada-api.ts";
 import { printOptionalResourceAdvice, resourceAdviceText } from "../src/resource-advice.ts";
-import { run } from "../src/run.ts";
 import { memorySessionStore } from "../src/session.ts";
 
 const evidence: ResourceAdvice = {
@@ -95,45 +94,4 @@ test("optional launch guidance uses actual advice route and fails open silently 
     expect(await call.json()).toEqual(index === 0 ? request : { id: request.id });
     expect(signal).toBeInstanceOf(AbortSignal);
   }
-});
-
-test("explicit advice JSON preserves the actual versioned producer response with no prose", async () => {
-  let out = "";
-  let err = "";
-  const calls: Request[] = [];
-  const code = await run(
-    ["advice", "sandbox", "--org", "org", "--json"],
-    {
-      out: (text) => {
-        out += text;
-      },
-      err: (text) => {
-        err += text;
-      },
-    },
-    {
-      auth: {
-        out: (text) => {
-          out += text;
-        },
-        err: (text) => {
-          err += text;
-        },
-        env: { ARMADA_TOKEN: "test-token" },
-        session: memorySessionStore(),
-        now: () => new Date(),
-        open: () => undefined,
-        fetch: async (input, init) => {
-          calls.push(new Request(String(input), init));
-          return Response.json({ advice: evidence });
-        },
-      },
-    },
-  );
-  expect(code).toBe(0);
-  expect(err).toBe("");
-  expect(JSON.parse(out)).toEqual({ advice: evidence });
-  expect(calls).toHaveLength(1);
-  expect(calls[0]?.url).toEndWith("/api/v1/sandbox/advice");
-  expect(await calls[0]?.json()).toEqual({ id: "sandbox", org: "org" });
 });

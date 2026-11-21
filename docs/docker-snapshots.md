@@ -280,7 +280,7 @@ Sign in as that same person against the same Armada server, then run
 `armada account ls github` to inspect connection state and installations.
 Use `armada account login github` to authorize again or `armada account add github` to install the App.
 Manage existing installations in GitHub's settings. Status is not a per-repository access
-probe, and `armada status --setup` reports the connection and installation scope, but does not
+probe, and `armada info --setup` reports the connection and installation scope, but does not
 probe access to a particular repository. Account-management commands require a personal login, not a service
 bearer. `armada api github/refresh '{"id":"SANDBOX_ID"}'` configures an existing sandbox; it is
 not a read-only access check.

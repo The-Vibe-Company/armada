@@ -17,5 +17,5 @@ export function failureHint(error: unknown, argv: readonly string[], token: bool
   }
   if (code === "unsupported" || code === "not_implemented")
     return "Next step: ask an administrator to verify and update the Armada deployment.\n";
-  return "Next step: check the server connection and run armada status --setup.\n";
+  return "Next step: check the server connection and run armada info --setup.\n";
 }

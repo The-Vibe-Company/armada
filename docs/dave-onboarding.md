@@ -80,7 +80,7 @@ For a new organization, choose a name (this guide uses `my-team`) and run:
 ```sh
 armada org create my-team
 armada login --org my-team
-armada status --setup
+armada info --setup
 ```
 
 Creation makes you its first admin. Selection persists for this Armada server; the examples
@@ -318,7 +318,7 @@ armada new first-modal --org my-team --provider modal --agent codex \
 ```
 
 `armada new` asks the server to resolve credentials and fork the snapshot. It prints the sandbox id
-(`--json` prints the full record). Use that ID for `armada status <sandbox-id>`,
+(`--json` prints the full record). Use that ID for `armada info <sandbox-id>`,
 `armada events <sandbox-id>` and, when finished, `armada stop <sandbox-id>` to stop charges.
 Omit the prompt to leave the sandbox waiting for your first `armada prompt` instead. Optional `--repo` selects one repository already recorded in the
 snapshot, by `owner/repo` or by its configured directory, and starts the agent there: the

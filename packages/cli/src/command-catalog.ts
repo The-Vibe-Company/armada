@@ -25,11 +25,11 @@ Quick start / common examples:
   armada login
   armada org list
   armada login --org my-team
-  armada status --setup
+  armada info --setup
   armada host add --name my-workstation
   armada new
   armada ls
-  armada status SANDBOX_ID
+  armada info SANDBOX_ID
   armada prompt SANDBOX_ID "Continue the task"
   armada events SANDBOX_ID --tail 20
   armada stop SANDBOX_ID
@@ -47,7 +47,6 @@ ${sandboxUsage("snapshots")}
 ${sandboxUsage("new")}
 ${sandboxUsage("ls")}
 ${sandboxUsage("mcp-bindings")}
-${sandboxUsage("advice")}
 ${sandboxUsage("bind-credential")}
 ${sandboxUsage("sandbox")}
 ${sandboxUsage("mcp")}

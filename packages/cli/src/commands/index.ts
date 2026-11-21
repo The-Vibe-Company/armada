@@ -1,13 +1,12 @@
 import { bindCredential, mcp } from "../operation-commands.ts";
 import account from "./account.ts";
-import advice from "./advice.ts";
 import api from "./api.ts";
 import { secrets, vars } from "./application-vault.ts";
 import type { Command, UsageGroup } from "./command.ts";
 import completion from "./completion.ts";
-import detail from "./detail.ts";
 import extend from "./extend.ts";
 import host from "./host.ts";
+import info from "./info.ts";
 import interrupt from "./interrupt.ts";
 import login from "./login.ts";
 import logout from "./logout.ts";
@@ -15,29 +14,22 @@ import ls from "./ls.ts";
 import newSandbox from "./new.ts";
 import org from "./org.ts";
 import prompt from "./prompt.ts";
-import recovery from "./recovery.ts";
 import report from "./report.ts";
 import rm from "./rm.ts";
 import { sandboxInspectionCommands } from "./sandbox-inspection.ts";
 import snapshot from "./snapshot.ts";
-import status from "./status.ts";
 import stop from "./stop.ts";
 import template from "./template.ts";
-import wait from "./wait.ts";
 import whoami from "./whoami.ts";
 
 export const commands: readonly Command[] = [
   newSandbox,
   ls,
-  advice,
+  info,
   rm,
   extend,
-  status,
-  detail,
-  recovery,
   stop,
   interrupt,
-  wait,
   report,
   prompt,
   ...sandboxInspectionCommands,
