@@ -61,6 +61,29 @@ export const CONFIRMED_WAKE_WITHOUT_TICKET = `(
       and r.phase='dispatched' and r.receipt is null and r.activated_at is not null
       and e.runtime_hash is null and e.enrolment_hash is null and e.lifecycle_generation<s.lifecycle_generation
   ))`;
+export const CURRENT_DOCKER_RESUME_JOB = `(s.provider = 'docker' and exists(
+  select 1 from public.docker_resume_claims c
+  join public.docker_host_jobs h_job on h_job.request_id = c.request_id
+    and h_job.bound_sandbox_id = c.sandbox_id and h_job.bound_actor_id = c.actor_id and h_job.host_id = c.host_id
+  join public.docker_hosts h on h.id = c.host_id and h.org_id = s.org_id and h.installation_id = c.installation_id
+  join public.members issuer on issuer.org_id = h.org_id and issuer.user_id = h.owner_id
+  join public.members actor on actor.org_id = s.org_id and actor.user_id = c.actor_id
+  join public.mcp_actor_epochs a on a.org_id = actor.org_id and a.user_id = actor.user_id
+  where c.request_id = q.request_id and c.sandbox_id = s.id and c.actor_id = s.owner_id and c.actor_id = q.owner_id
+    and c.host_id = s.docker_host_id and c.installation_id = s.docker_installation_id
+    and c.generation = s.docker_generation and c.accepted
+    and c.lifecycle_generation = q.dispatch_generation and c.lifecycle_generation + 1 = s.lifecycle_generation
+    and h_job.bound_operation = 'resume' and h_job.bound_actor_epoch = a.epoch
+    and h_job.cancelled_at is null and h_job.refused_resume_generation is null
+    and (h_job.outcome = 'completed' or (h_job.outcome is null and s.status = 'starting'))
+    and h.hash is not null and h.registration_hash is null and h.revoked_at is null
+    and not exists(select 1 from public.runtime_commands p
+      where p.sandbox_id = s.id and p.request_id = 'docker_prompt_' || q.request_id::text)
+))`;
+
+export const DOCKER_RESUME_WITHOUT_DISPATCH_DEADLINE = `(q.state='dispatching'
+  and q.dispatch_until is null and s.status in ('ready','running')
+  and s.activity_lease_id is null and ${CURRENT_DOCKER_RESUME_JOB})`;
 export const TURN_RECOVERY_ELIGIBLE = `(q.dispatch_until<=now() and q.dispatch_generation is not null
   and ((${RUNTIME_LANE} and ${RUNTIME_REQUEST_EVIDENCE})
     or (s.lifecycle_generation=q.dispatch_generation and s.activity_lease_id is null
@@ -247,7 +270,7 @@ export async function admitAccountTurn(sql: Sql, candidate: AdmissionEntry, clai
           `select q.request_id from public.account_turn_queue q join public.sandboxes s on s.id=q.sandbox_id
            where q.sandbox_id=$1 and q.request_id=$2
              and (${TURN_RECOVERY_ELIGIBLE} or ${COMPLETED_RUNTIME_WAKE} or ${ENROLLED_PENDING_RUNTIME_WAKE}
-               or ${CONFIRMED_WAKE_WITHOUT_TICKET})`,
+               or ${CONFIRMED_WAKE_WITHOUT_TICKET} or ${DOCKER_RESUME_WITHOUT_DISPATCH_DEADLINE})`,
           [candidate.sandbox_id, candidate.request_id],
         );
         if (!rows.length) return null;
