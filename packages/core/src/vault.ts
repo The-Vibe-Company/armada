@@ -306,7 +306,7 @@ export async function mutateCredentialAccount(
     throw new VaultError("invalid", "maxAgents is required.");
   if (input.id !== undefined && !UUID.test(input.id)) throw new VaultError("invalid", "Account id must be a UUID.");
   if (!store.mutateAccount) throw new VaultError("unavailable", "Named accounts are unavailable.");
-  if (CREDENTIAL_KINDS[input.kind].singleton)
+  if (input.kind !== undefined && CREDENTIAL_KINDS[input.kind].singleton)
     throw new VaultError("invalid", "Provider and registry credentials are singletons.");
   if (input.name !== undefined && (input.name.trim().length < 1 || input.name.trim().length > 120))
     throw new VaultError("invalid", "An account name is 1 to 120 characters.");
