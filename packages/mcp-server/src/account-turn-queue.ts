@@ -24,6 +24,7 @@ import {
 } from "./account-turn-dispatch.ts";
 import type { Caller } from "./caller.ts";
 import { DOCKER_SEND_REFUSAL, DOCKER_SEND_REQUEST } from "./docker-send-request-schema.ts";
+import { assertModalLaunchSetup, MODAL_LAUNCH_SETUP_KEY } from "./jobs/modal-launch-setup.ts";
 import type { JobContext } from "./jobs/runner.ts";
 import { createJobsStore } from "./jobs/store.ts";
 import { queuedPromptAliases } from "./queued-prompt-ids.ts";
@@ -171,9 +172,7 @@ export function createAccountTurnQueue(sql: Sql, key: string) {
           `select s.status,s.status_reason,s.preservation_note,s.expires_at,s.harness,s.provider,s.boat_runtime,
                   s.runtime_transport,s.model,s.reasoning_effort,s.credential_id,s.credential_version,s.org_id,
                   case when s.provider='modal' and not $3::boolean then (
-                    select j.state from public.jobs j where j.idem_key=
-                      format('["internal","%s","launch_initial_turn","%s",%s,"%s"]',
-                             s.org_id,s.id,s.lifecycle_generation,s.id)
+                    select j.state from public.jobs j where j.idem_key=${MODAL_LAUNCH_SETUP_KEY}
                   ) end as launch_setup_state
            from public.sandboxes s
            join public.members m on m.org_id=s.org_id and m.user_id=$2
@@ -195,9 +194,7 @@ export function createAccountTurnQueue(sql: Sql, key: string) {
         new Date(),
       );
       if (refusal) throw new VaultError("conflict", refusal);
-      if (target.launch_setup_state === "queued" || target.launch_setup_state === "leased")
-        throw new VaultError("conflict", "Modal launch setup is still in progress.");
-      if (target.launch_setup_state === "failed") throw new VaultError("conflict", "Modal launch setup failed.");
+      assertModalLaunchSetup(target.launch_setup_state);
       // Docker admission rules apply to the normalized request before anything is persisted. A keyless
       // send keeps its server-generated request_id, as installed clients (earlier iOS builds) rely on.
       if (target.provider === "docker" && !DOCKER_SEND_REQUEST.safeParse(normalized).success)

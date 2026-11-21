@@ -129,6 +129,37 @@ export async function installUserGitHubTools(input: {
   await replace(join(input.root, "..", "github-native-proxy"), `#!/bin/sh\n${commands.native} "$@"\n`, 0o700);
 }
 
+const systemPython = "/usr/bin/python3";
+const pythonCheck = [
+  systemPython,
+  "-I",
+  "-c",
+  "import os,sys,json,socket,http.client,subprocess,re,threading,pwd,signal,time,errno,shlex",
+];
+
+async function ensurePrivilegedGitHubPython(): Promise<void> {
+  const run = (argv: string[]) =>
+    Bun.spawn(argv, {
+      stdin: "ignore",
+      stdout: "ignore",
+      stderr: "ignore",
+      cwd: "/",
+      env: { PATH: "/usr/sbin:/usr/bin:/sbin:/bin", DEBIAN_FRONTEND: "noninteractive" },
+    }).exited;
+  const ready = () => run(["/usr/bin/timeout", "--signal=KILL", "1s", ...pythonCheck]);
+  if ((await ready()) === 0) return;
+
+  const repair = `umask 077
+exec /usr/bin/flock -x -w 2 --no-fork /run/armada-github-python.lock /usr/bin/timeout --signal=KILL 8s /bin/sh -c '
+  umask 022
+  if "$@"; then exit 0; fi
+  /usr/bin/apt-get -o DPkg::Lock::Timeout=5 update &&
+  /usr/bin/apt-get -o DPkg::Lock::Timeout=5 -o Dpkg::Use-Pty=0 install -y --no-install-recommends --reinstall python3 python3-minimal
+' sh "$@"`;
+  await run(["/bin/sh", "-c", repair, "sh", ...pythonCheck]);
+  if ((await ready()) !== 0) throw Error("github_tools_python_unavailable");
+}
+
 /** Code and socket address only. Credential bytes arrive exclusively on owner-private IPC. */
 async function installGitHubTools(input: {
   root: string;
@@ -142,6 +173,7 @@ async function installGitHubTools(input: {
   identity?: { name: string; email: string };
 }): Promise<void> {
   if (process.getuid?.() !== 0) throw Error("github_tools_privilege_required");
+  await ensurePrivilegedGitHubPython();
   await mkdir(input.root, { recursive: true, mode: 0o700 });
   const directory = await lstat(input.root);
   if (
@@ -151,7 +183,7 @@ async function installGitHubTools(input: {
     directory.mode & 0o077
   )
     throw Error("github_tools_denied");
-  async function preserve(path: string): Promise<string> {
+  async function preserve(path: string) {
     const original = `${path}.armada-original`;
     const saved = await lstat(original).catch(() => undefined);
     if (saved) {
@@ -176,7 +208,7 @@ async function installGitHubTools(input: {
     flag: "wx",
   });
   await rename(temporary, client);
-  const privileged = "/usr/bin/python3 -I";
+  const privileged = `${systemPython} -I`;
   if (ghOriginal) {
     const wrapper = `#!/bin/sh\nexec ${privileged} ${q(client)} elevate gh ${q(input.socket)} ${q(ghOriginal)} "$@"\n`;
     const info = await lstat(input.ghWrapper).catch(() => undefined);
@@ -246,7 +278,7 @@ async function installGitHubTools(input: {
   const proxy = join(input.root, "..", "github-native-proxy");
   await writeFile(
     proxy,
-    `#!/bin/sh\nexec /usr/bin/python3 -I ${q(client)} native ${q(join(input.root, "redact.sock"))} "$@"\n`,
+    `#!/bin/sh\nexec ${privileged} ${q(client)} native ${q(join(input.root, "redact.sock"))} "$@"\n`,
     { mode: 0o755 },
   );
   await chmod(proxy, 0o755);
@@ -311,7 +343,7 @@ if len(sys.argv)>1 and sys.argv[1]=='git-run':
 # Only variable NAMES cross argv; values remain in the inherited private environment.
 if len(sys.argv)>1 and (sys.argv[1]=='elevate' or (sys.argv[1]=='git-run' and os.getuid()!=0)):
     names=','.join(key for key in os.environ if re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*',key) and not key.startswith('SUDO_'))
-    os.execv('/usr/bin/sudo',['sudo','-n','--preserve-env='+names,'/usr/bin/python3','-I',os.path.abspath(__file__)]+(sys.argv[2:] if sys.argv[1]=='elevate' else sys.argv[1:]))
+    os.execv('/usr/bin/sudo',['sudo','-n','--preserve-env='+names,'${systemPython}','-I',os.path.abspath(__file__)]+(sys.argv[2:] if sys.argv[1]=='elevate' else sys.argv[1:]))
 local_secrets=set(value.encode() for key,value in os.environ.items() if key in ("GH_TOKEN","GITHUB_TOKEN") and value)
 class Connection(http.client.HTTPConnection):
     def __init__(self,name,path=None):

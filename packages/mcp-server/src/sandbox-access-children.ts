@@ -11,6 +11,7 @@ import {
 } from "@armada/core/server";
 import type { ChildAuthority } from "./child-authority.ts";
 import { DataError } from "./data.ts";
+import { ModalLaunchSetupConflict } from "./jobs/modal-launch-setup.ts";
 import { recordOperatorDiagnostic } from "./request-observability.ts";
 import { RuntimeFollowupConflict } from "./runtime-followup.ts";
 import { ChildLaunchNotAllocated } from "./sandbox-access-child-launch.ts";
@@ -391,7 +392,8 @@ export function createSandboxChildren(sql: Sql, authority: ChildAuthority, execu
       return { id: row.id, state: "succeeded", sandboxId: row.target_id };
     } catch (error) {
       const noAllocation = input.action === "launch" && error instanceof ChildLaunchNotAllocated;
-      const notDispatched = input.action === "message" && error instanceof ChildMessageNotDispatched;
+      const setupRefused = error instanceof ModalLaunchSetupConflict;
+      const notDispatched = input.action === "message" && (setupRefused || error instanceof ChildMessageNotDispatched);
       const state = noAllocation || notDispatched ? "failed" : "uncertain";
       const code = noAllocation
         ? `child_${error.reason}`
@@ -401,9 +403,11 @@ export function createSandboxChildren(sql: Sql, authority: ChildAuthority, execu
       if (noAllocation) error.record(operation, code);
       else {
         const refusalCode = notDispatched
-          ? error.cause instanceof DataError && error.cause.code === "sandbox_not_ready"
-            ? "sandbox_not_ready"
-            : "native_admission_error"
+          ? setupRefused
+            ? error.reason
+            : error.cause instanceof DataError && error.cause.code === "sandbox_not_ready"
+              ? "sandbox_not_ready"
+              : "native_admission_error"
           : undefined;
         const causeCode =
           state === "uncertain"
