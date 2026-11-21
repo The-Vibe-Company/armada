@@ -11,13 +11,13 @@ import {
   validateSkillPins,
 } from "@armada/core";
 import { requireLaunchAgent } from "./agent-validation.ts";
+import { ArmadaApiError } from "./api-responses.ts";
 import { type Args, flag, single, values } from "./args.ts";
-import { createArmadaApiClient } from "./armada-api.ts";
 import type { AuthIo } from "./auth-commands.ts";
 import { type CurrentSandboxFile, rememberSandbox } from "./current-sandbox.ts";
 import { resolveHost, resolveHostOrganization } from "./host-commands.ts";
 import { parseTtl } from "./operations.ts";
-import { ArmadaApiError } from "./sdk-session.ts";
+import { createSdkCommandClient } from "./sdk-session.ts";
 
 const uuid = /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i;
 export async function launchDocker(
@@ -121,7 +121,7 @@ export async function launchDocker(
   const selected = connections?.split(",").map((id) => id.trim());
   if (selected && (selected.length > MAX_MCP_CONNECTIONS || selected.some((id) => !uuid.test(id))))
     throw new GoldenError("invalid_config", `Connections require 1–${MAX_MCP_CONNECTIONS} comma-separated UUIDs.`);
-  const client = await createArmadaApiClient(auth, { preserveServerErrors: true });
+  const client = await createSdkCommandClient(auth, { preserveServerErrors: true });
   const hostId = selector
     ? uuid.test(selector)
       ? selector.toLowerCase()

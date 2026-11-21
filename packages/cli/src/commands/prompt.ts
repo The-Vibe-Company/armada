@@ -1,8 +1,8 @@
 import { AuthError } from "@armada/auth";
 import { GoldenError } from "@armada/core";
 import { acceptedOptions, flag, parseArgs, single, uuid } from "../args.ts";
-import { type ArmadaCommandClient, createArmadaApiClient } from "../armada-api.ts";
 import { resolveSandboxId } from "../current-sandbox.ts";
+import { type ArmadaCommandClient, createSdkCommandClient } from "../sdk-session.ts";
 import type { Command } from "./command.ts";
 
 export default {
@@ -47,7 +47,7 @@ Example: armada prompt SANDBOX_UUID --steer -- "Focus on the failing test"
     const model = single(args, "--model");
     const effort = single(args, "--reasoning-effort");
     let api: Promise<ArmadaCommandClient> | undefined;
-    const client = () => (api ??= createArmadaApiClient(auth));
+    const client = () => (api ??= createSdkCommandClient(auth));
     const id = await resolveSandboxId(selector, auth.env, deps.sandboxFile, org, async (body) =>
       (await client()).sandboxes.list(body),
     );

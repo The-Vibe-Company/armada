@@ -9,11 +9,10 @@ import {
 } from "@armada/core";
 import { accountOperations, controlRouteKey } from "@armada/core/contract";
 import { parseArgs, single } from "./args.ts";
-import { createArmadaApiClient } from "./armada-api.ts";
 import type { AuthIo } from "./auth-commands.ts";
 import { control } from "./control.ts";
 import { listHosts, resolveHostOrganization } from "./host-commands.ts";
-import { resolveArmadaOrigin } from "./sdk-session.ts";
+import { createSdkCommandClient, resolveArmadaOrigin } from "./sdk-session.ts";
 export async function prepareLaunch(argv: readonly string[], auth: AuthIo): Promise<readonly string[]> {
   if (!auth.interactive || !auth.chooseLaunch || argv.includes("--json") || argv.includes("--")) return argv;
   const args = parseArgs(
@@ -86,7 +85,7 @@ export async function prepareLaunch(argv: readonly string[], auth: AuthIo): Prom
   }
   if (provider === "docker") {
     if (!single(args, "--host") && !single(args, "--golden")) {
-      const client = await createArmadaApiClient(auth);
+      const client = await createSdkCommandClient(auth);
       const hosts = await listHosts(client, await resolveHostOrganization(client, org));
       const host = await choose(
         `${org}/host`,
@@ -224,7 +223,7 @@ export async function setupStatus(org: string | undefined, json: boolean, auth: 
     add("Hosts", "unknown", "Select an organization with --org UUID. Find IDs with armada org list.");
   } else {
     try {
-      const hosts = await listHosts(await createArmadaApiClient(auth), org);
+      const hosts = await listHosts(await createSdkCommandClient(auth), org);
       if (!hosts.hosts.length)
         add("Hosts", "optional", "No Docker hosts. Run armada host add for a host; Modal does not need one.");
       for (const host of hosts.hosts.filter((h) => h.state !== "revoked"))

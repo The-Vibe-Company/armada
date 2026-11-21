@@ -3,8 +3,8 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AuthError } from "@armada/auth";
-import { createArmadaApiClient } from "../src/armada-api.ts";
-import { ArmadaApiError, armadaApiUrl } from "../src/sdk-session.ts";
+import { ArmadaApiError } from "../src/api-responses.ts";
+import { armadaApiUrl, createSdkCommandClient } from "../src/sdk-session.ts";
 import { fileSessionStore, memorySessionStore } from "../src/session.ts";
 
 const token = "secret-token-that-must-not-leak";
@@ -22,14 +22,14 @@ function io(env: NodeJS.ProcessEnv = {}) {
   };
 }
 
-describe("Armada API client", () => {
+describe("Authenticated SDK command transport", () => {
   test("uses --url over ARMADA_URL and the saved session", async () => {
     const calls: Request[] = [];
     const fetchImpl = (async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
       calls.push(new Request(String(input), init));
       return Response.json({ ok: true });
     }) as unknown as typeof fetch;
-    const client = await createArmadaApiClient(
+    const client = await createSdkCommandClient(
       { ...io({ ARMADA_URL: "https://environment.armada.test", ARMADA_TOKEN: token }), fetch: fetchImpl },
       { url: "https://flag.armada.test" },
     );
@@ -43,7 +43,7 @@ describe("Armada API client", () => {
   });
 
   test("maps a 401 without exposing the token", async () => {
-    const client = await createArmadaApiClient({
+    const client = await createSdkCommandClient({
       ...io({ ARMADA_TOKEN: token }),
       fetch: (async () => new Response(null, { status: 401 })) as unknown as typeof fetch,
     });
@@ -58,11 +58,11 @@ describe("Armada API client", () => {
   });
 });
 
-describe("API client origin and session safety", () => {
+describe("SDK command origin and session safety", () => {
   test("uses ARMADA_TOKEN without reading the saved session", async () => {
     let reads = 0;
     let authorization = "";
-    const client = await createArmadaApiClient({
+    const client = await createSdkCommandClient({
       env: { ARMADA_TOKEN: token },
       session: {
         read: async () => {
@@ -83,7 +83,7 @@ describe("API client origin and session safety", () => {
   });
 
   test("golden list rejects a receipt missing the provider", async () => {
-    const client = await createArmadaApiClient({
+    const client = await createSdkCommandClient({
       ...io({ ARMADA_TOKEN: token }),
       fetch: async () => Response.json({ goldens: [{ name: "web", config: { repos: [] } }] }),
     });
@@ -91,7 +91,7 @@ describe("API client origin and session safety", () => {
   });
 
   test("refuses protocol-relative and backslash paths that escape the API origin", async () => {
-    const client = await createArmadaApiClient({
+    const client = await createSdkCommandClient({
       ...io({ ARMADA_TOKEN: token }),
       fetch: async () => Response.json({}),
     });
@@ -103,7 +103,7 @@ describe("API client origin and session safety", () => {
 test("API calls leave the explicit signal as the only client-side deadline", async () => {
   const controller = new AbortController();
   let options: RequestInit | undefined;
-  const client = await createArmadaApiClient({
+  const client = await createSdkCommandClient({
     ...io({ ARMADA_TOKEN: token }),
     fetch: async (_input, init) => {
       options = init;
@@ -118,7 +118,7 @@ test("request cancellation also cancels saved-session refresh, preserving option
   const controller = new AbortController();
   let refreshAborted = false;
   let calls = 0;
-  const client = await createArmadaApiClient({
+  const client = await createSdkCommandClient({
     ...io({}),
     fetch: async (_input, init) => {
       calls++;
@@ -149,7 +149,7 @@ for (const path of [
 ]) {
   for (const status of [403, 404, 500]) {
     test(`${path} ${status} never relays raw interior failures`, async () => {
-      const client = await createArmadaApiClient({
+      const client = await createSdkCommandClient({
         ...io({ ARMADA_TOKEN: token }),
         fetch: (async () =>
           Response.json(
@@ -183,7 +183,7 @@ test("a long-lived client uses the rotated refresh token on later requests and p
   const refreshes: string[] = [];
   const keys: (string | null)[] = [];
   let reads = 0;
-  const client = await createArmadaApiClient({
+  const client = await createSdkCommandClient({
     env: {},
     session,
     fetch: async (_input, init) => {
@@ -222,7 +222,7 @@ for (const failure of ["500", "502", "network", "timeout"] as const) {
       if (failure === "timeout") throw new DOMException(token, "TimeoutError");
       return Response.json({ error: { code: "unavailable", message: token } }, { status: Number(failure) });
     }) as unknown as typeof fetch;
-    const client = await createArmadaApiClient(state);
+    const client = await createSdkCommandClient(state);
     const error = await client.request(`/api/v1/sandbox/launch`, { method: "POST" }).catch((error) => error);
     expect(error).toBeInstanceOf(AuthError);
     expect((error as Error).message).toContain("Run armada ls to check before retrying.");
@@ -239,7 +239,7 @@ for (const [status, code] of [
   [400, "start_failed"],
 ] as const) {
   test(`known allocation refusal keeps its code and closed help (${code})`, async () => {
-    const client = await createArmadaApiClient({
+    const client = await createSdkCommandClient({
       ...io({ ARMADA_TOKEN: token }),
       fetch: async () =>
         Response.json(
@@ -281,7 +281,7 @@ test("closed server failures give actionable CLI help without parsing free text"
     ["dependency_unavailable", 503, "Try again later"],
     ["outcome_unknown", 503, "Check its status before retrying"],
   ] as const) {
-    const client = await createArmadaApiClient({
+    const client = await createSdkCommandClient({
       ...io({ ARMADA_TOKEN: token }),
       fetch: async () => Response.json({ error: { code, message: "credential_refused revoked expired" } }, { status }),
     });
@@ -298,7 +298,7 @@ test("closed server failures give actionable CLI help without parsing free text"
 
 test("GitHub repair exposes only a closed server phase to its owner", async () => {
   for (const phase of ["sudo", "directories", "synthetic-secret", null]) {
-    const client = await createArmadaApiClient({
+    const client = await createSdkCommandClient({
       ...io({ ARMADA_TOKEN: token }),
       fetch: async () =>
         Response.json(
@@ -367,8 +367,8 @@ for (const armadaUrl of [undefined, "https://armada.thevibecompany.co/"]) {
         return Response.json({ ok: true });
       };
       const [first, other] = await Promise.all([
-        createArmadaApiClient({ env: {}, session: commandStore(firstStore), fetch }),
-        createArmadaApiClient({ env: {}, session: commandStore(secondStore), fetch }),
+        createSdkCommandClient({ env: {}, session: commandStore(firstStore), fetch }),
+        createSdkCommandClient({ env: {}, session: commandStore(secondStore), fetch }),
       ]);
       await Promise.all([first.request("/api/v1/example"), other.request("/api/v1/example")]);
       expect(refreshes).toBe(1);
@@ -396,7 +396,7 @@ test("a stale client refreshes an expired rotated winner before retrying its req
       return Response.json({}, { status: 401 });
     return Response.json({ ok: true });
   }) as unknown as typeof fetch;
-  const client = await createArmadaApiClient(state);
+  const client = await createSdkCommandClient(state);
   await state.session.write({
     ...initial,
     accessToken: "expired-rotated",
@@ -418,7 +418,7 @@ test("a pending request never switches to a replacement login at the same origin
     calls++;
     return Response.json({}, { status: 401 });
   }) as unknown as typeof fetch;
-  const client = await createArmadaApiClient(state);
+  const client = await createSdkCommandClient(state);
   const replacement = {
     ...initial,
     loginId: "replacement-login",
@@ -460,7 +460,7 @@ describe("saved login server binding", () => {
         }
         return Response.json({});
       }) as unknown as typeof fetch;
-      const client = await createArmadaApiClient(state);
+      const client = await createSdkCommandClient(state);
       await client.request("/api/v1/example");
       expect(paths.filter((path) => path.endsWith("/refresh"))).toHaveLength(mode === "fresh" ? 0 : 1);
     },
@@ -476,7 +476,7 @@ describe("saved login server binding", () => {
         return Response.json({});
       }) as unknown as typeof fetch;
       await expect(
-        createArmadaApiClient(state, source === "option" ? { url: "https://other.test" } : {}),
+        createSdkCommandClient(state, source === "option" ? { url: "https://other.test" } : {}),
       ).rejects.toThrow("another server");
       expect(calls).toBe(0);
     },
@@ -489,13 +489,13 @@ describe("saved login server binding", () => {
       refreshToken: "legacy_refresh",
       expiresAt: "2099-01-01",
     });
-    await expect(createArmadaApiClient(state)).rejects.toThrow("another server");
+    await expect(createSdkCommandClient(state)).rejects.toThrow("another server");
   });
 });
 
 test("refresh refuses a replacement unbound legacy login under the session lock", async () => {
   const state = io();
-  const client = await createArmadaApiClient({
+  const client = await createSdkCommandClient({
     ...state,
     fetch: async () => new Response(null, { status: 401 }),
   });
@@ -536,12 +536,12 @@ test("session renewal preserves typed auth failures and rejects malformed sessio
       armadaUrl: "https://saved.armada.test",
     });
     state.fetch = (async () => Response.json(payload, { status })) as unknown as typeof fetch;
-    await expect(createArmadaApiClient(state)).rejects.toMatchObject({ code, message });
+    await expect(createSdkCommandClient(state)).rejects.toMatchObject({ code, message });
   }
 });
 
 test("launch validation retains its typed code and specific public validation reason", async () => {
-  const client = await createArmadaApiClient({
+  const client = await createSdkCommandClient({
     ...io({ ARMADA_TOKEN: token }),
     fetch: async () =>
       Response.json(

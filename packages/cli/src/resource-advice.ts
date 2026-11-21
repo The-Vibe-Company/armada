@@ -1,5 +1,5 @@
 import type { ResourceAdvice, ResourceAdviceRequest, ResourceAdviceResponse } from "@armada/core";
-import type { ArmadaCommandClient } from "./armada-api.ts";
+import type { ArmadaCommandClient } from "./sdk-session.ts";
 
 export function resourceAdviceText(advice: ResourceAdvice): string | null {
   if (

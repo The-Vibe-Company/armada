@@ -6,9 +6,34 @@ import {
   launchFailureHelp,
   TEMPLATE_REFUSAL_HELP,
 } from "@armada/core";
+import type { commandClient } from "@armada/sdk/commands";
 import { validApiReceipt } from "./api-receipts.ts";
 import { sandboxFailure } from "./sandbox-errors.ts";
-import { ArmadaApiError, type SdkCommandResponse } from "./sdk-session.ts";
+
+export class ArmadaApiError extends AuthError {
+  constructor(
+    readonly serverCode: string,
+    readonly status: number,
+    message: string,
+    readonly details?: Readonly<{ phase: string }>,
+    exitCode?: 1 | 2,
+  ) {
+    super(
+      message,
+      exitCode === 2
+        ? "usage"
+        : exitCode === 1
+          ? "unavailable"
+          : status === 400
+            ? "usage"
+            : status === 409 || status === 403
+              ? "conflict"
+              : "unavailable",
+    );
+  }
+}
+
+type SdkCommandResponse = Parameters<Parameters<typeof commandClient>[2]>[0];
 
 function isSandboxLaunchPath(path: string) {
   return path === "/api/v1/sandbox/launch";
