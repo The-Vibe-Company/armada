@@ -22,7 +22,7 @@ export function continueRequest<T>(id: string | undefined, work: () => Promise<T
   return id && serverId.test(id) ? current.run({ id, log }, work) : current.exit(work);
 }
 
-function requestLogForStatus(status: number): Log {
+function requestLogForStatus(status: number) {
   if (status >= 500) return console.error;
   if (status >= 400) return console.warn;
   return console.info;
@@ -44,7 +44,6 @@ export function observeRequest<T extends Response | undefined>(work: () => T | P
       response = Response.json({ error: "internal" }, { status: 500 });
     }
     const status = response?.status ?? 101;
-    // Server failures are errors, client failures are warnings, and other responses are informational.
     const requestLog = log ?? requestLogForStatus(status);
     requestLog(
       JSON.stringify({

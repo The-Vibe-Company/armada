@@ -118,9 +118,9 @@ test.each([
   [503, "error"],
 ] as const)("logs HTTP %i at %s", async (status, level) => {
   const sinks = {
-    info: spyOn(console, "info").mockImplementation(() => {}),
-    warn: spyOn(console, "warn").mockImplementation(() => {}),
-    error: spyOn(console, "error").mockImplementation(() => {}),
+    info: spyOn(console, "info"),
+    warn: spyOn(console, "warn"),
+    error: spyOn(console, "error"),
   };
   try {
     const handle = handler({ routes: [async () => new Response(null, { status })] });
