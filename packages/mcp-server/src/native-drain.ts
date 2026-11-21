@@ -6,6 +6,7 @@ import { providerRegistry } from "./http.ts";
 import { createModalIntegration } from "./modal-integration.ts";
 import { createObservedBoatProvider } from "./observed-boat.ts";
 import { createSandboxArmadaAccess } from "./sandbox-armada-access.ts";
+import { requestNativeDrainStop } from "./sandbox-lifecycle.ts";
 import { deleteSandboxWithActivity } from "./sandbox-rest-controls.ts";
 
 export function configureNativeDrain(
@@ -42,6 +43,14 @@ export function configureNativeDrain(
   const remove = async (row: { id: string; org_id: string; role: MemberRole | null }) => {
     if (!row.role) throw new Error("The operator has no organization membership.");
     const { sandboxes } = data({ userId: actorId, orgs: [{ orgId: row.org_id, role: row.role }], via: "service" });
+    const target = await sandboxes.get(row.id);
+    if (target && (target.status === "ready" || target.status === "running")) {
+      if (!(await requestNativeDrainStop(sql, target, provider, actorId)))
+        throw new Error("Native drain could not admit strict preservation.");
+      throw new Error("Native drain cannot delete before preservation and stop are confirmed.");
+    }
+    if (target?.stopRequestedAt || target?.status === "stopping")
+      throw new Error("Native drain is waiting for the stop to settle.");
     await deleteSandboxWithActivity(
       sandboxes,
       {

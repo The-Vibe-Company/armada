@@ -2830,6 +2830,29 @@ export type Database = {
           },
         ];
       };
+      native_drain_stop_requests: {
+        Row: {
+          sandbox_id: string;
+          stop_generation: number;
+        };
+        Insert: {
+          sandbox_id: string;
+          stop_generation: number;
+        };
+        Update: {
+          sandbox_id?: string;
+          stop_generation?: number;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "native_drain_stop_requests_sandbox_id_fkey";
+            columns: ["sandbox_id"];
+            isOneToOne: true;
+            referencedRelation: "sandboxes";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
       native_drain_unclaimed_dispatches: {
         Row: {
           sandbox_id: string;

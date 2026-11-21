@@ -896,6 +896,66 @@ export async function publishOwnerStop(
   if (result.kind === "conflict") throw new Error("Locked owner stop could not transition.");
 }
 
+export async function requestNativeDrainStop(
+  sql: Sql,
+  sandbox: SandboxRecord,
+  provider: "boat" | "modal",
+  actorId: string,
+) {
+  if (!sql.transaction) throw new Error("Native drain stop requires a transaction.");
+  const { id, lifecycleGeneration, providerSandboxId } = sandbox;
+  if (lifecycleGeneration === undefined || !providerSandboxId) return false;
+
+  return sql.transaction(async (tx) => {
+    const locked = await tx.query(`select id from public.sandboxes where id=$1 for update`, [id]);
+    if (!locked.rows.length) return false;
+    const token = crypto.randomUUID();
+    const {
+      rows: [admitted],
+    } = await tx.query<{ status: SandboxStatus; generation: string }>(
+      `update public.sandboxes s set activity_lease_id=$6, activity_until=clock_timestamp()+interval '2 minutes',
+         lifecycle_generation=lifecycle_generation+1, stop_generation=stop_generation+1,
+         stop_requested_at=clock_timestamp(), reconcile_after=clock_timestamp(), status_reason=null
+       where s.id=$1 and s.lifecycle_generation=$2 and s.provider_sandbox_id=$3 and s.provider=$4
+         and ${NATIVE_WORK_ROUTE} and s.status in ('ready','running') and s.stop_requested_at is null
+         and s.stopped_at is null and s.deleted_at is null and not s.application_secret_tainted
+         and not s.native_drain_pending and s.expires_at>clock_timestamp()
+         and (s.activity_until is null or s.activity_until<=clock_timestamp())
+         and (s.reconcile_lease_until is null or s.reconcile_lease_until<=clock_timestamp())
+         and not exists(select 1 from public.orchestrators o where o.sandbox_id=s.id)
+         and exists(select 1 from public.members m where m.org_id=s.org_id and m.user_id=$5
+           and (m.user_id=s.owner_id or m.role='admin'))
+         and exists(select 1 from public.members m where m.org_id=s.org_id and m.user_id=s.owner_id)
+         and not exists(select 1 from public.account_turn_queue q
+           where q.sandbox_id=s.id and q.state in ('queued','dispatching'))
+         and not exists(select 1 from public.sandbox_native_exec_attempts e where e.sandbox_id=s.id)
+         and not exists(select 1 from public.sandbox_native_send_attempts a where a.sandbox_id=s.id)
+       returning status, lifecycle_generation::text as generation`,
+      [id, lifecycleGeneration, providerSandboxId, provider, actorId, token],
+    );
+    if (!admitted) return false;
+    await publishOwnerStop(tx, {
+      sandboxId: id,
+      generation: admitted.generation,
+      fromState: admitted.status,
+      toState: "stopping",
+      code: "owner_stop_admitted",
+    });
+    await tx.query(
+      `insert into public.native_drain_stop_requests (sandbox_id, stop_generation)
+       select id, stop_generation from public.sandboxes where id=$1
+       on conflict (sandbox_id) do update set stop_generation=excluded.stop_generation`,
+      [id],
+    );
+    await tx.query(
+      `update public.sandboxes set activity_lease_id=null, activity_until=null
+       where id=$1 and lifecycle_generation=$2 and activity_lease_id=$3`,
+      [id, admitted.generation, token],
+    );
+    return true;
+  });
+}
+
 export async function markNativeDrainDispatchUnclaimed(tx: Sql, id: string) {
   await tx.query(
     `insert into public.native_drain_unclaimed_dispatches (sandbox_id)
@@ -1556,6 +1616,7 @@ export function createSandboxLifecycle(
           owner_is_member: boolean;
           retained_resume: boolean;
           checkpointed_stop: boolean;
+          strict_native_stop: boolean;
           interrupted_resume: boolean;
           protected_resume: boolean;
           work_merged: boolean | null;
@@ -1608,6 +1669,10 @@ export function createSandboxLifecycle(
         returning s.id,s.provider_sandbox_id,s.runtime_transport,s.boat_runtime,s.lifecycle_generation,s.expires_at,s.status::text as status,s.status_reason,s.task_prompt_id,s.activity_lease_id,s.application_secret_tainted,s.credential_id,s.credential_version,s.stop_requested_at,s.preservation_note,
           ${mergedWorkProof("s")} as work_merged,due.retained_resume,
           due.modal_resume as protected_resume,
+          (s.status='stopping' and s.stop_requested_at is not null and exists(
+            select 1 from public.native_drain_stop_requests r where r.sandbox_id=s.id
+              and r.stop_generation=s.stop_generation
+          )) as strict_native_stop,
           (s.status='stopping' and s.stop_requested_at is not null and exists(
             select 1 from public.sandbox_transitions t where t.sandbox_id=s.id
               and t.generation between s.lifecycle_generation-1 and s.lifecycle_generation
@@ -1845,6 +1910,8 @@ export function createSandboxLifecycle(
         };
         let info = await observe();
         initialObservation = false;
+        if (row.strict_native_stop && (info.id !== row.provider_sandbox_id || provider.id !== providerId))
+          throw new Error("Strict native stop observation changed placement.");
         if (
           canDeferInterruptedResume &&
           info.id === row.provider_sandbox_id &&
@@ -1925,6 +1992,7 @@ export function createSandboxLifecycle(
         const workMerged = row.work_merged === true && !row.stop_requested_at;
         const idleStop =
           native &&
+          !row.strict_native_stop &&
           !expired &&
           (["idle_paused", "work_merged"].includes(row.status_reason ?? "") ||
             (!row.stop_requested_at &&
@@ -2037,6 +2105,7 @@ export function createSandboxLifecycle(
           // Automatic idle stop may observe quiescence, never interrupt a turn.
           if (
             !idleStop &&
+            !row.strict_native_stop &&
             !row.boat_runtime &&
             row.runtime_transport !== "dialout" &&
             ["ready", "running"].includes(info.state)
@@ -2062,17 +2131,38 @@ export function createSandboxLifecycle(
             });
           signal?.throwIfAborted();
           if (idleStop && !reconcilingStop) await operation(signal, requireIdle);
+          if (row.strict_native_stop) {
+            const verified = await sql.query(
+              `select 1 from public.sandboxes s
+               where s.id=$1 and s.reconcile_lease=$2::uuid and s.lifecycle_generation=$3
+                 and s.provider_sandbox_id=$4 and s.status='stopping' and s.stop_requested_at is not null
+                 and not s.application_secret_tainted and s.deleted_at is null
+                 and exists(select 1 from public.native_drain_stop_requests r where r.sandbox_id=s.id
+                   and r.stop_generation=s.stop_generation)
+                 and exists(select 1 from public.native_drain_work_proof(s.id,s.lifecycle_generation)
+                   where outcome in ('clean','archived'))
+                 and s.reconcile_lease_until>clock_timestamp()`,
+              [row.id, token, row.lifecycle_generation, row.provider_sandbox_id],
+            );
+            if (!verified.rows.length) {
+              error = "Strict native stop is waiting for verified work preservation.";
+              return settle();
+            }
+            signal?.throwIfAborted();
+          }
           const requireRetention =
-            !expired &&
-            (row.checkpointed_stop ||
-              retainedResume ||
-              idleStop ||
-              ["idle_paused", "work_merged"].includes(row.status_reason ?? ""));
+            row.strict_native_stop ||
+            (!expired &&
+              (row.checkpointed_stop ||
+                retainedResume ||
+                idleStop ||
+                ["idle_paused", "work_merged"].includes(row.status_reason ?? "")));
           recordStopDispatch(row.id, row.provider_sandbox_id, "lifecycle_stop");
           await operation(signal, () =>
             provider.stop({
               sandboxId: row.provider_sandbox_id,
               ...(requireRetention ? { requireRetention: true } : {}),
+              ...(row.strict_native_stop ? { generation: row.lifecycle_generation } : {}),
             }),
           );
           info = await observe();

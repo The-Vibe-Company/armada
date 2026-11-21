@@ -85,8 +85,12 @@ Then run `bun scripts/ops/drain-native.ts --provider modal` (or `--provider boat
 
 The real command reports the selected, deleted and failed counts. A nonzero
 failed count leaves the drain incomplete and returns a failing exit status.
-The command handles rows with current preservation proof. Active rows and rows
-with missing or uncertain proof require reconciliation before deletion. For a
+For eligible ready or running rows, the command requests strict preservation
+through the lifecycle worker and reports the row as incomplete on that pass.
+The worker requires current preservation proof and settled work before requesting
+a retained stop. Rerun after the stop settles to delete through the existing
+recovery handoff. Stopped rows with missing or uncertain proof require operator
+reconciliation before deletion. For a
 scoped Modal parent, the drain records scoped cleanup before provider deletion.
 If the delete response is lost, a later pass can use the pinned Modal journal
 after the activity lease expires. Verify the result with a fresh inventory. A
