@@ -154,14 +154,14 @@ export async function runModalLaunch(
   job: Job,
   context: DispatchContext,
   plan: ModalLaunchPlan,
-): Promise<JobResult> {
+) {
   const sandboxId = job.sandbox_id;
   const generation = Number(job.generation);
   if (job.kind !== "launch" || !sandboxId || !Number.isSafeInteger(generation) || generation < 1)
     throw new Error("Invalid Modal launch claim.");
 
   const dispatch = await dispatchModalLaunch(sql, job, context, plan, { sandboxId, generation });
-  if (dispatch.kind === "bootstrapped") return { status: "done" };
+  if (dispatch.kind === "bootstrapped") return { status: "done" } satisfies JobResult;
 
   const startingTarget = async (tx: Sql) => {
     const {
@@ -185,7 +185,7 @@ export async function runModalLaunch(
   };
   const target = await withJobLease(sql, job, startingTarget);
   context.signal.throwIfAborted();
-  if (!target) return { status: "done" };
+  if (!target) return { status: "done" } satisfies JobResult;
 
   const observed = dispatch.observation.kind === "present" ? dispatch.observation.machine.machineId : null;
   const known = target.provider_sandbox_id ?? target.journaled_id;
@@ -194,14 +194,17 @@ export async function runModalLaunch(
     (known && observed && known !== observed) ||
     (!known && (target.has_intent ? !observed : observed !== null))
   ) {
-    return { status: "retry", after: new Date(Date.now() + RECONCILE_DELAY_MS), outcome: RECONCILING_ALLOCATION };
+    return {
+      status: "retry",
+      after: new Date(Date.now() + RECONCILE_DELAY_MS),
+      outcome: RECONCILING_ALLOCATION,
+    } satisfies JobResult;
   }
 
   return {
     status: "fail",
     reason: LAUNCH_FAILURE,
     async commit(tx) {
-      // Job completion holds the sandbox and launch job rows until commit.
       if (!(await startingTarget(tx))) throw new Error("Modal launch settlement target changed.");
       const transition = await transitionSandbox(tx, {
         sandboxId,
@@ -227,7 +230,7 @@ export async function runModalLaunch(
         tx,
       );
     },
-  };
+  } satisfies JobResult;
 }
 
 async function dispatchModalLaunch(
