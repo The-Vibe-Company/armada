@@ -157,7 +157,7 @@ Send starts a new turn in the sandbox's conversation. Launch another sandbox
 for a separate conversation. The dashboard transcript shows sandbox history
 and its composer targets the sandbox automatically. Steer redirects an active turn:
 `armada prompt --steer SANDBOX "Keep the public API unchanged"`. Use
-`armada interrupt SANDBOX` to request interruption, then run `armada info SANDBOX` before
+`armada stop SANDBOX --turn` to request interruption, then run `armada info SANDBOX` before
 sending replacement work. Do not treat steer as a guaranteed new turn or send
 as a safe interruption mechanism. Capture returned prompt/turn identifiers.
 
@@ -186,9 +186,10 @@ Fetch message content with `POST /api/v1/viewer/logs` and its separate log curso
 
 ## 4. Preserve work and manage lifetime
 
-Use `armada extend SANDBOX --ttl 1h --json` before expiry if more time is
-justified. Direct API callers use `POST /api/v1/sandbox/extend` with `id` and
-`ttlSeconds`. Confirm the returned expiry.
+Use `armada api sandbox/extend '{"id":"SANDBOX","ttlSeconds":3600}'` before
+expiry if more time is justified. Include `org` in the body when targeting an
+organization. Confirm the returned expiry. Use `armada stop SANDBOX --after`
+to wait for the turn to settle before requesting an idle-only stop.
 Ask the agent to commit and push, and verify branch/PR/head SHA independently
 before `armada stop SANDBOX`. Stop is not delete, but provider retention is not
 a substitute for a pushed branch. Modal retains disk only after a successful
