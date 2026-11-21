@@ -635,9 +635,9 @@ export function createBoatProvider(options: BoatProviderOptions): BoatProvider &
           event: "boat_retention_unconfirmed",
           providerSandboxId: sandboxId,
           retention: info.retainedSnapshot,
-          stopStatus: stopStatus == null ? null : STOP_STATUSES.has(stopStatus) ? stopStatus : "unknown",
+          stopStatus: stopStatus == null || STOP_STATUSES.has(stopStatus) ? (stopStatus ?? null) : "unknown",
           snapshotStatus:
-            snapshotStatus == null ? null : SNAPSHOT_STATUSES.has(snapshotStatus) ? snapshotStatus : "unknown",
+            snapshotStatus == null || SNAPSHOT_STATUSES.has(snapshotStatus) ? (snapshotStatus ?? null) : "unknown",
           snapshotAvailable: current.snapshotAvailable === true,
           snapshotsDisabled: current.snapshots === false,
           dataExpired: Boolean(current.dataExpiredAt),
