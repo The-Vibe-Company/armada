@@ -833,3 +833,179 @@ test.each([
   expect(boat.stops).toEqual([physical.id]);
   await migration.prepareAccount(actor, account.id, 1);
 });
+
+test.each([
+  "acknowledged",
+  "configured after probe",
+  "second probe failed",
+  "second probe failed and settlement reply lost",
+  "lost admission reply",
+  "lost pause reply",
+  "lost configuration reply",
+  "configuration readback failed",
+  "stop epoch advanced",
+  "generation advanced",
+  "settlement rolled back",
+  "lost settlement reply",
+] as const)("Boat subscription workspace commands fence strict drain: %s", async (outcome) => {
+  const { db, people } = await database();
+  const actor: GoldenActor = { userId: people.owner, orgId: people.org, role: "member" };
+  const account = (
+    await db.query<{ id: string }>(
+      "insert into credentials(scope,owner_id,kind,value_enc) values('user',$1,'codex_auth',$2) returning id",
+      [people.owner, await encryptSecret(native(0), ENCRYPTION_KEY)],
+    )
+  ).rows[0]!;
+  const golden = (await createSqlGoldenStore(db).findByName(people.org, "shared"))[0]!;
+  const { provider } = fakeBoat();
+  const physical = await provider.fork({ from: "legacy", noEnv: true, env: {}, labels: {}, ttlSeconds: 3600 });
+  const sandbox = await createSqlSandboxStore(db).insert({
+    id: crypto.randomUUID(),
+    provider: "boat",
+    providerSandboxId: physical.id,
+    goldenId: golden.id,
+    orgId: actor.orgId,
+    ownerId: actor.userId,
+    harness: "codex",
+    status: "ready",
+    model: "gpt-6.1-sol",
+    reasoningEffort: "high",
+    credentialId: account.id,
+    credentialVersion: 1,
+    expiresAt: new Date(Date.now() + 60_000).toISOString(),
+  });
+  const tryDrain = async () => {
+    const { rows } = await db.query<{ generation: number }>(
+      "select lifecycle_generation::int as generation from sandboxes where id=$1",
+      [sandbox.id],
+    );
+    return requestNativeDrainStop(db, { ...sandbox, lifecycleGeneration: rows[0]!.generation }, "boat", actor.userId);
+  };
+  const calls: string[] = [];
+  const secondProbeFailed =
+    outcome === "second probe failed" || outcome === "second probe failed and settlement reply lost";
+  const settlementReplyLost =
+    outcome === "lost settlement reply" || outcome === "second probe failed and settlement reply lost";
+  let configured = false;
+  let probed = false;
+  const sql: Sql = {
+    query: db.query.bind(db),
+    async transaction(run) {
+      let settled = false;
+      const result = await db.transaction!((tx) =>
+        run({
+          ...tx,
+          query: async <T>(statement: string, params?: unknown[]) => {
+            const result = await tx.query<T>(statement, params);
+            if (statement.includes("delete from public.sandbox_native_exec_attempts")) {
+              settled = true;
+              if (outcome === "settlement rolled back") throw Error("Synthetic settlement rollback");
+            }
+            return result;
+          },
+        }),
+      );
+      if (settled && settlementReplyLost) throw Error("Synthetic lost settlement reply");
+      if (outcome === "lost admission reply" && !calls.length) {
+        const { rows } = await db.query<{ id: string }>(
+          "select sandbox_id as id from sandbox_native_exec_attempts where sandbox_id=$1",
+          [sandbox.id],
+        );
+        if (rows.length) throw Error("Synthetic lost admission reply");
+      }
+      return result;
+    },
+  };
+  const target = async () => ({ provider, providerSandboxId: physical.id });
+  const authority = {
+    configuration: () => ({ url: "https://armada.example", capability: "test" }),
+    transferLegacy: async () => {},
+  };
+  const transports: SubscriptionMigrationTransports = {
+    read: async () => {
+      if (probed && secondProbeFailed) throw Error("Synthetic unavailable probe");
+      if (configured && outcome === "configuration readback failed") throw Error("Synthetic readback failed");
+      if (configured || (probed && outcome === "configured after probe")) return "null";
+      probed = true;
+      return native(0);
+    },
+    admission: async () => {
+      calls.push("pause");
+      expect(await tryDrain()).toBe(false);
+      if (outcome === "acknowledged") {
+        let extraPauses = 0;
+        const otherReplica = createSubscriptionMigration(db, target, async () => [], authority, {
+          ...transports,
+          admission: async () => {
+            extraPauses++;
+            throw Error("The second replica must not pause the writer");
+          },
+        });
+        await expect(otherReplica.prepareAccount(actor, account.id, 1)).rejects.toMatchObject({
+          code: "unavailable",
+        });
+        expect(extraPauses).toBe(0);
+      }
+      if (outcome === "lost pause reply") throw Error("Synthetic lost pause reply");
+    },
+    configure: async () => {
+      calls.push("configure");
+      expect(await tryDrain()).toBe(false);
+      configured = true;
+      if (outcome === "stop epoch advanced")
+        await db.query("update sandboxes set stop_generation=stop_generation+1 where id=$1", [sandbox.id]);
+      if (outcome === "generation advanced")
+        await db.query("update sandboxes set lifecycle_generation=lifecycle_generation+1 where id=$1", [sandbox.id]);
+      if (outcome === "lost configuration reply") throw Error("Synthetic lost configuration reply");
+    },
+  };
+  const migration = createSubscriptionMigration(sql, target, async () => [], authority, transports);
+
+  const preparing =
+    outcome === "lost pause reply" || secondProbeFailed
+      ? migration.prepareAccount(actor, account.id, 1)
+      : migration.prepareTurn(provider, physical.id, actor);
+  const results = {
+    acknowledged: { calls: ["pause", "configure"], drain: true },
+    "configured after probe": { calls: [], drain: true },
+    "second probe failed": { calls: [], error: /Model sign-in is temporarily unavailable/, drain: true },
+    "second probe failed and settlement reply lost": {
+      calls: [],
+      error: /Model sign-in is temporarily unavailable/,
+      drain: true,
+    },
+    "lost admission reply": { calls: [], error: /Synthetic lost admission reply/ },
+    "lost pause reply": { calls: ["pause"], error: /Model sign-in is temporarily unavailable/ },
+    "lost configuration reply": { calls: ["pause", "configure"], error: /Synthetic lost configuration reply/ },
+    "configuration readback failed": { calls: ["pause", "configure"], error: /Synthetic readback failed/ },
+    "stop epoch advanced": { calls: ["pause", "configure"], error: /stopped during native upgrade/ },
+    "generation advanced": { calls: ["pause", "configure"], error: /changed during native upgrade/ },
+    "settlement rolled back": { calls: ["pause", "configure"], error: /Synthetic settlement rollback/ },
+    "lost settlement reply": { calls: ["pause", "configure"], error: /Synthetic lost settlement reply/, drain: true },
+  };
+  const expected = results[outcome];
+  if ("error" in expected) await expect(preparing).rejects.toThrow(expected.error);
+  else await preparing;
+  expect(calls).toEqual(expected.calls);
+  expect(await tryDrain()).toBe("drain" in expected);
+  if (outcome === "stop epoch advanced" || outcome === "lost settlement reply") {
+    await db.query(
+      `update sandboxes set status='stopped',stopped_at=now(),stop_requested_at=null,
+         reconcile_after='infinity',lifecycle_generation=lifecycle_generation+1,preservation_stop_generation=stop_generation
+       where id=$1`,
+      [sandbox.id],
+    );
+    await db.query(
+      `insert into sandbox_native_preservation_receipts
+         (sandbox_id,generation,stop_generation,capture_generation,capture_stop_generation,capture_acknowledgements)
+       select id,lifecycle_generation,stop_generation,lifecycle_generation,stop_generation,'{"completedPrompts":[]}'
+       from sandboxes where id=$1`,
+      [sandbox.id],
+    );
+    const { rows } = await db.query<{ outcome: string }>(
+      "select copy_native_drain_recovery(id,lifecycle_generation) as outcome from sandboxes where id=$1",
+      [sandbox.id],
+    );
+    expect(rows[0]?.outcome).toBe(outcome === "stop epoch advanced" ? "ineligible" : "clean");
+  }
+});
