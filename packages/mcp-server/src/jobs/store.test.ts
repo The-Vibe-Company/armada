@@ -727,6 +727,7 @@ type ModalLaunchStep =
   | "bootstrap response"
   | "image lookup"
   | "runtime ticket"
+  | "baseline capture response"
   | "exact machine ownership"
   | "termination response"
   | "machine poll"
@@ -831,6 +832,7 @@ async function modalLaunchFixture(initial?: Awaited<ReturnType<typeof modalAdmis
             },
             stdout: {
               async readText() {
+                if (input.op === "capture") await atStep?.("baseline capture response");
                 return input.op === "capture"
                   ? JSON.stringify({
                       version: 1,
@@ -2743,6 +2745,27 @@ test("interrupted Modal enrolment rolls back readiness and the provider handoff 
   await expect(enrolPending()).resolves.toMatchObject({ sandboxId: id });
   expect((await f.db.query("select status from sandboxes where id=$1", [id])).rows).toEqual([{ status: "ready" }]);
   expect(await placement()).toEqual([{ id: "physical" }]);
+});
+
+test("Modal takeover after a lost baseline capture response enrols the original machine", async () => {
+  const { f, id, jobId, makeRunner, effects, retentionEffects } = await modalLaunchFixture(
+    await modalAdmissionFixture(),
+  );
+  const first = makeRunner((step) => {
+    if (step === "baseline capture response") throw new Error("Lost process baseline response");
+  });
+  expect(await first.reconcileOne(signal)).toBe(true);
+  await first.drain();
+  expect((await f.db.query("select 1 from runtime_enrolments where sandbox_id=$1", [id])).rows).toEqual([]);
+  expect(effects().bootstrapped).toEqual([]);
+
+  await f.db.query("update jobs set lease_until='-infinity' where id=$1", [jobId]);
+  const successor = makeRunner();
+  expect(await successor.reconcileOne(signal)).toBe(true);
+  await successor.drain();
+  expect((await f.db.query("select status from sandboxes where id=$1", [id])).rows).toEqual([{ status: "ready" }]);
+  expect(effects()).toMatchObject({ allocations: 1, bootstrapped: ["physical"] });
+  expect(retentionEffects().baselineCaptures).toBe(2);
 });
 
 test("an expired Modal bootstrap ticket is replaced without recapturing the process baseline", async () => {
