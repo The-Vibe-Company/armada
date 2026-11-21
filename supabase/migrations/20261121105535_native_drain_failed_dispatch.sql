@@ -47,6 +47,7 @@ begin
         -- publication trigger does not bind it to the exact queue request.
         and (q.dispatch_generation is not null or q.dispatch_until is not null
           or q.native_prompt_id is not null
+          or v_sandbox.task_prompt_id = q.request_id::text
           or q.failure_reason in (
             'Dispatch outcome uncertain; inspect sandbox history before resending.',
             'Queued receipt already has dispatch evidence; inspect sandbox history before resending.',

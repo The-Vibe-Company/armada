@@ -999,24 +999,33 @@ test.each([
   ["Dispatch cancelled by confirmed stop.", false, "ineligible"],
   ["Dispatch refused by owner stop.", true, "ineligible"],
   ["Dispatch refused by owner stop.", false, "archived"],
-] as const)("native handoff classifies failed receipt %s with retained claim %s", async (reason, claimed, outcome) => {
-  const { db, sandboxId, copy } = await seedNativeDrainReceipt();
-  await db.query(
-    `insert into account_turn_queue(sandbox_id,request_id,account_id,owner_id,org_id,
+  ["Queued prompt was cancelled.", false, "ineligible", true],
+] as const)(
+  "native handoff classifies failed receipt %s with retained claim %p",
+  async (reason, claimed, outcome, currentTask) => {
+    const { db, sandboxId, copy } = await seedNativeDrainReceipt();
+    const requestId = crypto.randomUUID();
+    await db.query(
+      `insert into account_turn_queue(sandbox_id,request_id,account_id,owner_id,org_id,
        actor_epoch,credential_version,input_hash,input_enc,conversation_id,state,
        dispatch_generation,dispatch_until,failure_reason)
-     select s.id,gen_random_uuid(),c.id,s.owner_id,s.org_id,1,c.version,'input',$4,'conversation','failed',
+     select s.id,$5,c.id,s.owner_id,s.org_id,1,c.version,'input',$4,'conversation','failed',
        case when $2 then s.lifecycle_generation end,case when $2 then now() end,$3
      from sandboxes s join credentials c on c.owner_id=s.org_id and c.kind='openai'
      where s.id=$1 limit 1`,
-    [sandboxId, claimed, reason, new Uint8Array([1])],
-  );
-  await db.query("update sandboxes set stopped_at=now() where id=$1", [sandboxId]);
+      [sandboxId, claimed, reason, new Uint8Array([1]), requestId],
+    );
+    if (currentTask) {
+      await db.query("update sandboxes set task_prompt_id=$2 where id=$1", [sandboxId, requestId]);
+      await db.query("update native_webhook_prompts set completed_at=now() where sandbox_id=$1", [sandboxId]);
+    }
+    await db.query("update sandboxes set stopped_at=now() where id=$1", [sandboxId]);
 
-  expect(await copy()).toBe(outcome);
-  if (outcome === "ineligible")
-    expect((await db.query("select 1 from native_drain_recovery where sandbox_id=$1", [sandboxId])).rows).toEqual([]);
-});
+    expect(await copy()).toBe(outcome);
+    if (outcome === "ineligible")
+      expect((await db.query("select 1 from native_drain_recovery where sandbox_id=$1", [sandboxId])).rows).toEqual([]);
+  },
+);
 
 test("native handoff refuses a failed receipt even when an unrelated prompt was aliased and settled", async () => {
   const { db, sandboxId, copy } = await seedNativeDrainReceipt();
