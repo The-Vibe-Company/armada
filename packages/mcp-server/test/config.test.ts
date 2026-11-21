@@ -194,6 +194,23 @@ test("startup checks PostgreSQL client URL syntax without connecting", async () 
   ).rejects.toThrow("ARMADA_DATABASE_URL must be a valid PostgreSQL connection URL.");
 });
 
+test("native startup accepts a sealed runtime artifact directory when dial-out is disabled", async () => {
+  const { config, sql } = await readStartupConfiguration({
+    ...ENV,
+    ARMADA_BOAT_AGENT_PATH: "native",
+    ARMADA_MODAL_AGENT_PATH: "native",
+    ARMADA_MODAL_DIALOUT: undefined,
+    get ARMADA_RUNTIME_ARTIFACT_DIR(): never {
+      throw new Error("Cannot validate sealed Railway variable ARMADA_RUNTIME_ARTIFACT_DIR.");
+    },
+  });
+  try {
+    expect(config.boatAgentPath).toBe("native");
+  } finally {
+    await sql.close();
+  }
+});
+
 test("startup requires an explicit dashboard origin when invitation mail is enabled", async () => {
   await expect(
     readStartupConfiguration({
