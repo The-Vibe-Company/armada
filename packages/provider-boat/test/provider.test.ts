@@ -260,10 +260,16 @@ describe("sandboxes", () => {
       expected: "pending",
     },
     {
-      name: "a failed snapshot attempt with an older artifact",
+      name: "a failed snapshot attempt despite recent verification",
+      stopStatus: StopOperationStatusEnum.Completed,
+      snapshot: { lastSnapshotStatus: SandboxLastSnapshotStatusEnum.Failed },
+      expected: "unconfirmed",
+    },
+    {
+      name: "a completed snapshot predating the current stop",
       stopStatus: StopOperationStatusEnum.Completed,
       snapshot: {
-        lastSnapshotStatus: SandboxLastSnapshotStatusEnum.Failed,
+        lastSnapshotStatus: SandboxLastSnapshotStatusEnum.Completed,
         snapshotVerifiedAt: "2026-11-09T09:30:00Z",
       },
       expected: "unconfirmed",
@@ -285,7 +291,7 @@ describe("sandboxes", () => {
           stop: {
             id: "stop-1",
             status: stopStatus,
-            requestedAt: "2026-11-09T09:59:00Z",
+            requestedAt: ended ? null : "2026-11-09T09:59:00Z",
             lastAttemptAt: "2026-11-09T10:00:00Z",
             endedAt: ended ? "2026-11-09T10:00:00Z" : null,
             error: ended ? null : "archival attempt failed",

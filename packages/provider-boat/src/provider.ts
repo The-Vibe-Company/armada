@@ -125,15 +125,14 @@ function sandboxState(providerState: string): SandboxState {
   return "starting";
 }
 
-function stopInFlight(status: StopOperationStatusEnum | undefined): boolean {
+function stopInFlight(status: StopOperationStatusEnum | undefined) {
   return status === StopOperationStatusEnum.Pending || status === StopOperationStatusEnum.Failing;
 }
 
-function archivedRetention(sandbox: Sandbox): NonNullable<SandboxInfo["retainedSnapshot"]> {
+function archivedRetention(sandbox: Sandbox) {
   if (sandbox.dataExpiredAt || sandbox.snapshots === false) return "unconfirmed";
   const stopStatus = sandbox.stop?.status;
   const snapshotStatus = sandbox.lastSnapshotStatus;
-  // An archived sandbox can still report its last requested stop, including a terminal one.
   if (
     stopInFlight(stopStatus) ||
     snapshotStatus === SandboxLastSnapshotStatusEnum.Queued ||
