@@ -20,13 +20,7 @@ import { ENCRYPTION_KEY } from "./support.ts";
 
 const sharedDatabase = rowOnlyDatabase();
 
-async function fixture({
-  provider = "boat",
-  pinAccount = false,
-}: {
-  provider?: "boat" | "modal";
-  pinAccount?: boolean;
-} = {}) {
+async function fixture({ provider = "boat" }: { provider?: "boat" | "modal" } = {}) {
   const { db, people, openaiCredentialId } = await sharedDatabase();
   const id = crypto.randomUUID();
   if (provider === "modal") {
@@ -50,13 +44,6 @@ async function fixture({
       [id, people.owner],
     );
   }
-  const account = { id: openaiCredentialId, version: 1 };
-  if (pinAccount)
-    await db.query("update sandboxes set credential_id=$2, credential_version=$3 where id=$1", [
-      id,
-      account.id,
-      account.version,
-    ]);
   const queries: string[] = [];
   const sql = sqlOver({
     unsafe: async (q, v) => (await db.query(q, v)).rows,
@@ -128,7 +115,7 @@ async function fixture({
     sql,
     people,
     id,
-    account,
+    openaiCredentialId,
     authority,
     enrol,
     route,
@@ -1497,12 +1484,18 @@ test("runtime batches survive a deploy handover exactly once in event_log and th
 });
 
 async function accountEventFixture() {
-  const f = await fixture({ pinAccount: true });
+  const f = await fixture();
+  const account = { id: f.openaiCredentialId, version: 1 };
+  await f.db.query("update sandboxes set credential_id=$2, credential_version=$3 where id=$1", [
+    f.id,
+    account.id,
+    account.version,
+  ]);
   const active = await f.enrol();
   const { append } = createRuntimeEvents(f.authority, ENCRYPTION_KEY);
   const send = (events: { sequence: number; event: AgentEvent }[]) =>
     append(active.runtimeToken, active.epoch, { sandboxId: f.id, generation: active.epoch, events });
-  return { ...f, send };
+  return { ...f, account, send };
 }
 
 function exhaustion(sequence: number, at: number, data: Record<string, unknown>) {
