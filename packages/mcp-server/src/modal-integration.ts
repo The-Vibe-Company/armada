@@ -445,8 +445,8 @@ export async function createModalIntegration(options: {
           async function* (call, rpc) {
             const requestSignal = rpc.signal ? AbortSignal.any([rpc.signal, signal]) : signal;
             requestSignal.throwIfAborted();
-            // The job reconciles ambiguous termination under a fresh fence. The SDK must not replay it.
-            return yield* call.next(call.request, { ...rpc, signal: requestSignal, retries: 0, timeoutMs: 10_000 });
+            const cleanupRpc = { ...rpc, signal: requestSignal, retries: 0, timeoutMs: 10_000 };
+            return yield* call.next(call.request, cleanupRpc);
           },
         ],
       });
