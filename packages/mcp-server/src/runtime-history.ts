@@ -152,9 +152,11 @@ export function createModalJobReader(sql: Sql, key: string) {
       return null;
     }
     const events: Provider["events"] = async ({ sandboxId: _placement, ...pagination }) => {
-      const page = await history(caller, sandbox.id, pagination);
-      await current();
-      return page;
+      try {
+        return await history(caller, sandbox.id, pagination);
+      } finally {
+        await current();
+      }
     };
     const reader = {
       id: sandbox.provider,

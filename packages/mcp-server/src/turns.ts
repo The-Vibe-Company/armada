@@ -255,7 +255,6 @@ export async function readStatus(
       /* Status stays available. The next observation can retry telemetry storage. */
     }
     try {
-      // Runtime event ingestion owns the retry projection for journal-only reads.
       if (info)
         await store.recordAccountRateLimit?.(
           sandbox.id,
@@ -594,7 +593,7 @@ export async function collectSandboxUsage(
       // twenty times for an archived sandbox. Exec still guards races after this read.
       const compute = prompts.size ? await provider.get?.(sandbox.providerSandboxId).catch(() => null) : null;
       const inactive =
-        compute !== null && (compute.physicalExitConfirmed === true || !["ready", "running"].includes(compute.state));
+        compute != null && (compute.physicalExitConfirmed === true || !["ready", "running"].includes(compute.state));
       // A native read is bounded independently of provider event history.
       for (const [promptId, conversationId] of [...prompts].slice(-20)) {
         try {

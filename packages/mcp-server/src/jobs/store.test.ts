@@ -1628,12 +1628,23 @@ test("enrolled Modal launch jobs report and settle turns from the runtime journa
       throw new Error("A finished turn must settle immediately.");
     },
   } satisfies Parameters<typeof callSharedTool>[0];
-  const follow = (cursor?: string) =>
+  const follow = (cursor?: string, afterPage?: () => Promise<unknown>) =>
     readLogs(
       {
         logs: async (actor, id) => {
           const sandbox = (await data.sandboxes.get(id))!;
-          return { provider: await logReader(sandbox, actor), providerSandboxId: sandbox.providerSandboxId };
+          const provider = await logReader(sandbox, actor);
+          return {
+            provider: {
+              ...provider,
+              async events(request) {
+                const page = await provider.events(request);
+                await afterPage?.();
+                return page;
+              },
+            },
+            providerSandboxId: sandbox.providerSandboxId,
+          };
         },
       },
       caller,
@@ -1649,13 +1660,23 @@ test("enrolled Modal launch jobs report and settle turns from the runtime journa
   expect(await follow()).toMatchObject({ settled: false });
 
   const setup = await modalFirstTurnLane(f, queue);
-  expect(await setup.reconcileOne(signal)).toBe(true);
-  await setup.drain();
+  const snapshotThenEnqueue = {
+    ...queue,
+    async status(...args: Parameters<typeof queue.status>) {
+      const snapshot = await queue.status(...args);
+      expect(await setup.reconcileOne(signal)).toBe(true);
+      await setup.drain();
+      return snapshot;
+    },
+  };
+  expect(await callSharedTool({ ...context, accountTurns: snapshotThenEnqueue }, "status", { id })).toMatchObject({
+    status: "ready",
+    settled: false,
+  });
   const {
     rows: [turn],
   } = await f.db.query<{ request_id: string }>("select request_id from account_turn_queue where sandbox_id=$1", [id]);
   const publicPromptId = turn!.request_id;
-  // The dispatch receipt may be durable before the first runtime event reaches the server.
   await f.db.query("update sandboxes set task_prompt_id=$2 where id=$1", [id, promptId]);
   await f.db.query("update account_turn_queue set state='admitted',result_enc=$2 where sandbox_id=$1", [
     id,
@@ -1681,14 +1702,14 @@ test("enrolled Modal launch jobs report and settle turns from the runtime journa
   expect(await follow(active.cursor!)).toMatchObject({ events: [], settled: false });
   await expect(report()).rejects.toMatchObject({ code: "conflict" });
 
-  await append(2, "finished");
+  expect(await follow(active.cursor!, () => append(2, "finished"))).toMatchObject({ events: [], settled: false });
   expect(await callSharedTool(context, "wait", { id, prompt_id: publicPromptId })).toMatchObject({
     id,
     providerState: null,
     prompt: { promptId: publicPromptId, state: "finished" },
     settled: true,
   });
-  expect(await follow()).toMatchObject({ settled: true });
+  expect(await follow(active.cursor!)).toMatchObject({ events: [{ status: "finished" }], settled: true });
   expect(await report()).toMatchObject({ id, taskOutcome: { state: "ready" } });
 });
 

@@ -66,6 +66,10 @@ export async function readLogs(
   const target = await measureRequestPhase(options.timing, "logs_target", () => options.logs!(caller, id));
   const page = parseLogInput(nativePageInput, { ...body, all: body.all === true, follow: body.follow === true });
   const backward = page.direction === "backward";
+  const sampledSettlement =
+    page.follow && target.provider.followSettled
+      ? await measureRequestPhase(options.timing, "state", () => target.provider.followSettled!())
+      : undefined;
   const { events, cursor, hasMore, source, runtimeFailure, olderCursor, paused } = await readEventPages(
     (cursor) =>
       measureRequestPhase(options.timing, "events", () =>
@@ -85,10 +89,7 @@ export async function readLogs(
   // Ordinary history reads need only the authorized event stream. Live compute is
   // consulted solely to decide whether a follow request should keep waiting.
   const checkingFollow = page.follow && !paused && !runtimeFailure;
-  const durableSettled =
-    checkingFollow && target.provider.followSettled
-      ? await measureRequestPhase(options.timing, "state", () => target.provider.followSettled!())
-      : undefined;
+  const durableSettled = checkingFollow ? sampledSettlement : undefined;
   const info =
     checkingFollow && durableSettled === undefined
       ? await measureRequestPhase(options.timing, "state", () => target.provider.get(target.providerSandboxId))
