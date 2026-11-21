@@ -68,6 +68,26 @@ The coordinator owns the drain run. Existing turn, stop/resume, retention and de
 
 [#2742](https://github.com/The-Vibe-Company/armada/issues/2742) owns the implementation design, including the concrete awaits after durable writes and lease ownership. This note covers the rollout and deletion sequence. Config changes, the drain runner, provider operations, schema changes and deployed verification belong to their respective delivery tickets.
 
+### Coordinator command
+
+Run `bun scripts/ops/drain-native.ts --provider modal --dry-run` with
+`ARMADA_DRAIN_READ_ONLY_DATABASE_URL` set to a role with unfiltered inventory
+access. Select `boat` for the Boat cohort.
+
+For a real pass, wait for the selected provider's release and checklist gate,
+disable new native admissions, and wait for any replicas that predate the
+native delete intent fence to drain. Prepare the checkout with
+`bun scripts/prepare-runtime.ts`. Set the server's `ARMADA_DATABASE_URL`,
+`ARMADA_ENCRYPTION_KEY` and `ARMADA_PUBLIC_URL`, and set
+`ARMADA_DRAIN_ACTOR_ID` to a user authorized to delete each candidate.
+Then run `bun scripts/ops/drain-native.ts --provider modal` (or `--provider boat`).
+
+The real command reports the selected, deleted and failed counts. A nonzero
+failed count leaves the drain incomplete and returns a failing exit status.
+The command handles rows with current preservation proof. Active rows and rows
+with missing or uncertain proof require reconciliation before deletion. Verify
+the result with a fresh inventory. A complete rerun reports zero candidates.
+
 ### Coordinator ledger
 
 [Railway IaC](../.railway/railway.ts) leaves these settings owner-managed. Record effective selector values (including unset), Modal dial-out enablement, runtime artifact version, deployment SHA and UTC timestamp. Cross-check authenticated `launch/options` while the discovery fields exist. A repository default does not establish a deployed setting.
