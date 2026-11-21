@@ -862,7 +862,11 @@ export async function runModalLaunch(
   context.signal.throwIfAborted();
   if (!target) return done;
   if (dispatch?.kind === "observation_pending" && !target.stop_requested) {
-    return { status: "retry", after: new Date(Date.now() + ENROLMENT_RETRY_DELAY_MS) } satisfies JobResult;
+    return {
+      status: "retry",
+      after: new Date(Date.now() + ENROLMENT_RETRY_DELAY_MS),
+      unattempted: true,
+    } satisfies JobResult;
   }
   if (dispatch?.kind === "bootstrapped" && !target.stop_requested) {
     return {
