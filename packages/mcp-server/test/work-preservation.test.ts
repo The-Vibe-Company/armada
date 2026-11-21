@@ -927,7 +927,7 @@ async function seedNativeDrainReceipt(ciphertext = new Uint8Array([21, 34, 55]),
 
 test.each([
   "live restore lease",
-  "expired restore lease",
+  "incomplete restore lease",
   "replacement",
   "historical receipt",
   "old pending admission",
@@ -935,7 +935,7 @@ test.each([
   const { db, people, sandboxId, archiveId, copy } = await seedNativeDrainReceipt(undefined, "modal");
   const previouslyPending = scenario === "old pending admission";
   const deadline =
-    scenario === "expired restore lease"
+    scenario === "incomplete restore lease"
       ? "2000-01-01"
       : previouslyPending || scenario === "live restore lease"
         ? "2099-01-01"
@@ -948,7 +948,12 @@ test.each([
     `update modal_machines set record=jsonb_set(record,'{generation}',$2::jsonb),
          lease_id=case when $3::timestamptz is not null then $4::uuid end, lease_until=$3
        where id=$1`,
-    ["bx_" + sandboxId, scenario === "replacement" ? "2" : "1", deadline, crypto.randomUUID()],
+    [
+      "bx_" + sandboxId,
+      scenario === "replacement" ? "2" : "1",
+      deadline,
+      scenario === "incomplete restore lease" ? null : crypto.randomUUID(),
+    ],
   );
   if (scenario === "historical receipt")
     await db.query(
@@ -1492,12 +1497,28 @@ test("ordinary native exec skips post-command provider sampling after the activi
   }
 });
 
-test.each(["missing proof", "Boat rollback", "Modal rollback", "lost commit response", "verified proof"])(
+const drainAdmissionScenarios = [
+  "missing proof",
+  "Boat rollback",
+  "Modal rollback",
+  "lost commit response",
+  "verified proof",
+  "expired Modal journal lease",
+];
+
+test.each(drainAdmissionScenarios)(
   "native drain deletion commits preservation and admission together with %s",
   async (scenario) => {
-    const providerId = scenario === "Modal rollback" ? "modal" : "boat";
+    const providerId = scenario === "Modal rollback" || scenario === "expired Modal journal lease" ? "modal" : "boat";
     const rolledBack = scenario === "Boat rollback" || scenario === "Modal rollback";
     const { db, people, sandboxId, archiveId } = await seedNativeDrainReceipt(undefined, providerId);
+    const abandonedToken = crypto.randomUUID();
+    const placement = "bx_" + sandboxId;
+    if (providerId === "modal")
+      await db.query("update modal_machines set lease_id=$2,lease_until='2000-01-01' where id=$1", [
+        placement,
+        abandonedToken,
+      ]);
     const caller: Caller = { via: "service", userId: people.owner, orgs: [{ orgId: people.org, role: "member" }] };
     const sql = bunLikeSql(db);
     if (scenario === "lost commit response") {
@@ -1520,7 +1541,15 @@ test.each(["missing proof", "Boat rollback", "Modal rollback", "lost commit resp
         )
       ).rows[0];
     const remove = mock(async () => {
-      if (scenario === "verified proof") {
+      if (scenario === "expired Modal journal lease") {
+        const saveStartedBeforeExpiry = await db.query(
+          `update modal_machines set record=jsonb_set(record,'{generation}','2') where id=$1 and lease_id=$2
+           and lease_until>'1999-12-31'::timestamptz returning id`,
+          [placement, abandonedToken],
+        );
+        expect(saveStartedBeforeExpiry.rows).toEqual([]);
+      }
+      if (scenario === "verified proof" || scenario === "expired Modal journal lease") {
         expect((await detached()).rows).toEqual([{ archive_id: archiveId }]);
         expect(await state()).toEqual({ status: "stopped", generation: 5, drain_operation_id: null });
       }
@@ -1548,7 +1577,7 @@ test.each(["missing proof", "Boat rollback", "Modal rollback", "lost commit resp
         sandboxId,
         "native-drain",
       );
-      if (scenario === "verified proof") {
+      if (scenario === "verified proof" || scenario === "expired Modal journal lease") {
         expect(await deletion).toEqual({ id: sandboxId, status: "deleted" });
         expect(remove).toHaveBeenCalledTimes(1);
         expect(await state()).toEqual({ status: "deleted", generation: 6, drain_operation_id: null });
@@ -1569,6 +1598,9 @@ test.each(["missing proof", "Boat rollback", "Modal rollback", "lost commit resp
             [sandboxId],
           );
           expect(rows).toEqual([{ stamp: null }]);
+          expect((await db.query("select lease_id from modal_machines where id=$1", [placement])).rows).toEqual([
+            { lease_id: abandonedToken },
+          ]);
         } else await expect(deletion).rejects.toMatchObject({ code: "sandbox_not_ready" });
         expect(remove).not.toHaveBeenCalled();
         expect(await state()).toEqual({ status: "stopped", generation: 4, drain_operation_id: null });
