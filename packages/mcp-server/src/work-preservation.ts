@@ -389,6 +389,7 @@ async function captureAndStore(
             progress.fence,
             progress.stopToken,
             context.captureId,
+            physicalGeneration ?? null,
           );
           if (expired() || evidence === undefined) return "pending";
           acknowledgements = evidence;

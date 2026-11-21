@@ -57,6 +57,7 @@ import {
   carryNativePreservationAcrossStop,
   completeSandboxDeletion,
   expireAfterExtension,
+  fencePreservedModalDrainIncarnation,
   finishLaunchFailure,
   finishLaunchSuccess,
   markNativeDrainDispatchUnclaimed,
@@ -1273,8 +1274,9 @@ export function createSqlData(
           result = await sql.transaction(async (tx) => {
             const {
               rows: [locked],
-            } = await tx.query<{ native_drain_pending: boolean }>(
-              `select s.native_drain_pending from public.sandboxes s where s.id=$3::uuid and ${SANDBOX_VISIBLE}
+            } = await tx.query<{ native_drain_pending: boolean; requires_incarnation_proof: boolean }>(
+              `select s.native_drain_pending, s.provider='modal' as requires_incarnation_proof
+               from public.sandboxes s where s.id=$3::uuid and ${SANDBOX_VISIBLE}
                  and s.provider=$4::public.sandbox_provider and s.provider_sandbox_id=$5
                  and s.provider in ('boat','modal') and not s.boat_runtime and s.runtime_transport is distinct from 'dialout'
                  and s.stopped_at is not null and s.stop_requested_at is null
@@ -1284,6 +1286,11 @@ export function createSqlData(
               [...scope, id, provider, placement],
             );
             if (!locked) throw new DataError("Sandbox is not eligible for native drain deletion.", "sandbox_not_ready");
+            if (
+              locked.requires_incarnation_proof &&
+              !(await fencePreservedModalDrainIncarnation(tx, id, locked.native_drain_pending))
+            )
+              throw new DataError("Modal drain requires the preserved stopped incarnation.", "sandbox_not_ready");
             if (locked.native_drain_pending) {
               const {
                 rows: [retry],
