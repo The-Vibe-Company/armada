@@ -282,7 +282,7 @@ test("coordinator drain refuses scoped Modal deletion before provider resolution
     `with golden as (
        insert into public.goldens(org_id, owner_id, name, visibility, provider, provider_snapshot_id,
          modal_workspace, modal_environment, modal_app_id, config)
-       values ($1, $2, 'modal-drain', 'private', 'modal', 'image', 'workspace', 'main', 'app', '{"repos":[],"init":[]}')
+       values ($1, $2, 'modal-drain', 'private', 'modal', 'drain-test-image', 'workspace', 'main', 'app', '{"repos":[],"init":[]}')
        returning id
      )
      insert into public.sandboxes(id, golden_id, org_id, owner_id, provider, provider_sandbox_id, harness, status, stopped_at)
