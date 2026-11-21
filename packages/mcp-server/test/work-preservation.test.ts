@@ -2009,6 +2009,95 @@ test.each(["activity", "queue", "provider observation", "owner row update", "ord
   },
 );
 
+test.each(["activity", "queue", "provider observation", "ordinary delete"] as const)(
+  "a confirmed strict stop preserves its drain proof against %s",
+  async (attempt) => {
+    const { db, people, sandboxId, copy } = await seedNativeDrainReceipt();
+    const { openaiCredentialId } = sharedDatabase();
+    await db.query("update sandboxes set credential_id=$2, credential_version=1, expires_at='2099-01-01' where id=$1", [
+      sandboxId,
+      openaiCredentialId,
+    ]);
+    await db.query(
+      `insert into native_drain_stop_requests(sandbox_id,stop_generation)
+       select id,stop_generation from sandboxes where id=$1`,
+      [sandboxId],
+    );
+    const caller: Caller = { via: "service", userId: people.owner, orgs: [{ orgId: people.org, role: "member" }] };
+    const sql = bunLikeSql(db);
+    const { sandboxes } = createSqlData(sql)(caller);
+    const placement = `bx_${sandboxId}`;
+    if (attempt === "activity") {
+      await expect(
+        sandboxes.update(sandboxId, {
+          advanceGeneration: true,
+          expectedGeneration: 4,
+          activityToken: crypto.randomUUID(),
+          stopRequested: false,
+          nativeResumeAdmission: placement,
+        }),
+      ).rejects.toMatchObject({ code: "sandbox_not_ready" });
+    } else if (attempt === "provider observation") {
+      await expect(
+        sandboxes.update(sandboxId, {
+          status: "ready",
+          statusReason: null,
+          expectedGeneration: 4,
+          providerObservation: { fromState: "stopped", providerRunPlacement: placement },
+        }),
+      ).rejects.toMatchObject({ code: "sandbox_not_ready" });
+    } else if (attempt === "queue") {
+      const queue = createAccountTurnQueue(sql, ENCRYPTION_KEY);
+      await expect(queue.accept(caller, { id: sandboxId, prompt: "new work" })).rejects.toThrow(
+        "Sandbox cannot accept a queued prompt.",
+      );
+    } else {
+      const remove = mock(async () => ({ status: "deleted" as const }));
+      const providers = { resolve: async () => ({ ...fakeBoat().provider, delete: remove }) };
+      await expect(deleteSandboxWithActivity(sandboxes, providers, sandboxId)).rejects.toMatchObject({
+        code: "sandbox_not_ready",
+      });
+      expect(remove).not.toHaveBeenCalled();
+      await expect(deleteSandboxWithActivity(sandboxes, providers, sandboxId, "native-drain")).resolves.toMatchObject({
+        status: "deleted",
+      });
+      expect(remove).toHaveBeenCalledTimes(1);
+      return;
+    }
+    expect(await copy()).toBe("archived");
+  },
+);
+
+test("a native prompt cannot cancel a strict stop awaiting capture", async () => {
+  const provider = fakeBoat().provider;
+  const placement = "bx_strict_stopping_prompt";
+  const { context, db, sandboxId } = await nativeToolFixture(provider, placement);
+  const caller = context.caller;
+  const drain = configureNativeDrain(bunLikeSql(db), "boat", caller.userId, {
+    ARMADA_ENCRYPTION_KEY: ENCRYPTION_KEY,
+    ARMADA_PUBLIC_URL: PUBLIC_URL,
+  });
+  await expect(drain.remove({ id: sandboxId, org_id: caller.orgs[0]!.orgId, role: "admin" })).rejects.toThrow(
+    "before preservation and stop are confirmed",
+  );
+  const { sandboxes } = context.data;
+  await expect(
+    sandboxes.update(sandboxId, {
+      advanceGeneration: true,
+      expectedGeneration: 2,
+      activityToken: crypto.randomUUID(),
+      stopRequested: false,
+      nativePromptAdmission: { fromState: "stopping", placement },
+    }),
+  ).rejects.toMatchObject({ code: "sandbox_not_ready" });
+  expect(await sandboxes.get(sandboxId)).toMatchObject({
+    status: "stopping",
+    lifecycleGeneration: 2,
+    stopRequestedAt: expect.any(String),
+  });
+  await db.query("update sandboxes set reconcile_after='infinity' where id=$1", [sandboxId]);
+});
+
 test("owners and admins can recover the exact native archive after normal deletion and handoff replay", async () => {
   const archive = Buffer.from("detached work fixture").toString("base64");
   const previousKey = process.env.ARMADA_ENCRYPTION_KEY;

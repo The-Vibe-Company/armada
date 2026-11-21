@@ -127,6 +127,11 @@ export const WORK_STOP_OWNER = `stop_requested_at is not null and deleted_at is 
 export const STOP_EPOCH = `id=$1::uuid
   and (case when stop_requested_at is null then null else stop_generation end) is not distinct from $7::bigint
   and ($2::text is null or (${WORK_STOP_OWNER}))`;
+export const STRICT_NATIVE_DRAIN_STOP = `exists (
+  select 1 from public.native_drain_stop_requests r
+  where r.sandbox_id=s.id and r.stop_generation=s.stop_generation
+)`;
+
 const NATIVE_WORK_ROUTE = `provider in ('boat','modal') and not boat_runtime
   and runtime_transport is distinct from 'dialout'`;
 
@@ -896,6 +901,13 @@ export async function publishOwnerStop(
   if (result.kind === "conflict") throw new Error("Locked owner stop could not transition.");
 }
 
+export async function hasStrictNativeDrainStop(tx: Sql, sandboxId: string) {
+  const result = await tx.query(`select 1 from public.sandboxes s where s.id=$1 and ${STRICT_NATIVE_DRAIN_STOP}`, [
+    sandboxId,
+  ]);
+  return result.rows.length > 0;
+}
+
 export async function requestNativeDrainStop(
   sql: Sql,
   sandbox: SandboxRecord,
@@ -1241,7 +1253,8 @@ export async function recordObservedProviderState(
        for update of s`,
       [...scope, sandboxId, providerRunPlacement ?? null, nativeStop],
     );
-    if (!eligible.rows.length) return { kind: "conflict" } satisfies SandboxTransitionResult;
+    if (!eligible.rows.length || (await hasStrictNativeDrainStop(tx, sandboxId)))
+      return { kind: "conflict" } satisfies SandboxTransitionResult;
     const path = providerRunPlacement === undefined ? "runtime" : "native";
     const settlesExit = toState === "stopped" || nativeFailure;
     const providerActor = settlesExit ? "runtime_observation" : "lifecycle_runner";
