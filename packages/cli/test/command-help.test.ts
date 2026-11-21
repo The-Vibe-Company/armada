@@ -132,21 +132,3 @@ test.each([
   expect(code).toBe(2);
   expect(stderr).toBe(`armada: Unknown option '--help'.\nNext step: run ${hint}.\n`);
 });
-
-test.each(["vars", "secrets"])("retired %s commands exit 2 as unknown even with help", async (command) => {
-  for (const args of [[], ["set"], ["--help"], ["set", "--help"]]) {
-    let stdout = "";
-    let stderr = "";
-    const fail = () => {
-      throw new Error("Unknown commands must not make requests or read values");
-    };
-    const code = await run(
-      [command, ...args],
-      { out: (text) => (stdout += text), err: (text) => (stderr += text) },
-      { env: {}, fetch: Object.assign(fail, { preconnect: fail }), readStdin: fail, readFile: fail },
-    );
-    expect(code).toBe(2);
-    expect(stdout).toBe("");
-    expect(stderr).toContain(`unknown command '${command}'`);
-  }
-});

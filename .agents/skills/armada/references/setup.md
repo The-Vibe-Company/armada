@@ -53,8 +53,10 @@ Both routes take `org` (the organization UUID), `scope` (`personal` or `org`),
 `armada api secrets/list -` with `org` to get IDs and versions. Reading a
 variable with `armada api variables/read -` (body fields `org` and `id`) prints
 its value. Keep that output out of shared logs. Templates can reference readable
-variables by ID and version. Launch freezes readable values and current connected
-grants in its manifest.
+variables by ID and version and pin skills. Launch freezes readable values and
+current connected grants in its manifest. On the native Boat path, readable
+configuration is delivered through a world-readable file. Use that channel
+only for values safe to expose inside the sandbox.
 
 To rotate, revoke, or delete a secret, use `armada api secrets/rotate -`,
 `armada api secrets/revoke -`, or `armada api secrets/delete -`. Send `org`, `id`,
