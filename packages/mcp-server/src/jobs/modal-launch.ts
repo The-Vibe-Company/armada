@@ -1,8 +1,19 @@
 import type { SandboxStatus } from "@armada/core";
-import { GoldenError, type Machine, type MachineIdentity, type Sql } from "@armada/core/server";
+import {
+  GoldenError,
+  type Machine,
+  type MachineIdentity,
+  type MachineIncarnation,
+  type Sql,
+} from "@armada/core/server";
 import { createModalMachine, type ModalMachineOptions } from "@armada/provider-modal";
-import { bindModalLaunchMachine, insertStartingModalSandbox, type ModalLaunchSandbox } from "../sandbox-lifecycle.ts";
-import type { Job, JobContext } from "./runner.ts";
+import {
+  bindModalLaunchMachine,
+  insertStartingModalSandbox,
+  type ModalLaunchSandbox,
+  transitionSandbox,
+} from "../sandbox-lifecycle.ts";
+import type { Job, JobContext, JobResult } from "./runner.ts";
 import { ConflictingJobRequest, createJobsStore, withJobLease } from "./store.ts";
 
 export type ModalLaunchAllocation = Omit<Parameters<Machine["create"]>[0], "sandboxId" | "generation" | "signal">;
@@ -132,14 +143,110 @@ interface ModalLaunchPlan {
   machine: Omit<ModalMachineOptions, "journal">;
 }
 
-export async function dispatchModalLaunch(sql: Sql, job: Job, context: DispatchContext, plan: ModalLaunchPlan) {
+const LAUNCH_FAILURE = "modal_launch_failed";
+const RECONCILING_ALLOCATION = "modal_launch_reconciling";
+const RECONCILE_DELAY_MS = 30_000;
+const DELETE_DISPATCH_BUDGET_MS = 5 * 60_000;
+
+export async function runModalLaunch(
+  sql: Sql,
+  encryptionKey: string,
+  job: Job,
+  context: DispatchContext,
+  plan: ModalLaunchPlan,
+) {
   const sandboxId = job.sandbox_id;
   const generation = Number(job.generation);
   if (job.kind !== "launch" || !sandboxId || !Number.isSafeInteger(generation) || generation < 1)
     throw new Error("Invalid Modal launch claim.");
 
+  const dispatch = await dispatchModalLaunch(sql, job, context, plan, { sandboxId, generation });
+  if (dispatch.kind === "bootstrapped") return { status: "done" } satisfies JobResult;
+
+  const startingTarget = async (tx: Sql) => {
+    const {
+      rows: [row],
+    } = await tx.query<{
+      org_id: string;
+      provider_sandbox_id: string | null;
+      journaled_id: string | null;
+      has_intent: boolean;
+    }>(
+      `select s.org_id, s.provider_sandbox_id,
+              j.outcome #>> '{modal_machine,entry,machineId}' as journaled_id,
+              j.outcome #> '{modal_machine,entry}' is not null as has_intent
+       from public.sandboxes s join public.jobs j on j.id=$2 and j.sandbox_id=s.id
+         and j.org_id=s.org_id and j.request_owner_id=s.owner_id and j.generation=s.lifecycle_generation
+       where s.id=$1 and s.provider='modal' and s.runtime_transport='dialout'
+         and s.status='starting' and s.deleted_at is null and s.stop_requested_at is null`,
+      [sandboxId, job.id],
+    );
+    return row;
+  };
+  const target = await withJobLease(sql, job, startingTarget);
+  context.signal.throwIfAborted();
+  if (!target) return { status: "done" } satisfies JobResult;
+
+  const observed = dispatch.observation.kind === "present" ? dispatch.observation.machine.machineId : null;
+  const known = target.provider_sandbox_id ?? target.journaled_id;
+  if (
+    (target.provider_sandbox_id && target.journaled_id && target.provider_sandbox_id !== target.journaled_id) ||
+    (known && observed && known !== observed) ||
+    (!known && (target.has_intent ? !observed : observed !== null))
+  ) {
+    return {
+      status: "retry",
+      after: new Date(Date.now() + RECONCILE_DELAY_MS),
+      outcome: RECONCILING_ALLOCATION,
+    } satisfies JobResult;
+  }
+
+  return {
+    status: "fail",
+    reason: LAUNCH_FAILURE,
+    async commit(tx) {
+      if (!(await startingTarget(tx))) throw new Error("Modal launch settlement target changed.");
+      const transition = await transitionSandbox(tx, {
+        sandboxId,
+        expectedGeneration: generation,
+        fromStates: ["starting"],
+        toState: "failed",
+        actor: "lifecycle_runner",
+        code: LAUNCH_FAILURE,
+        effects: [],
+      });
+      if (transition.kind !== "applied") throw new Error("Modal launch failure lost its generation.");
+      await createJobsStore(sql, encryptionKey).enqueue(
+        "delete",
+        sandboxId,
+        generation,
+        "modal-launch-failure",
+        { launchJobId: job.id, machineId: known ?? observed },
+        {
+          orgId: target.org_id,
+          deadline: new Date(Date.now() + DELETE_DISPATCH_BUDGET_MS),
+          maxAttempts: job.max_attempts,
+        },
+        tx,
+      );
+    },
+  } satisfies JobResult;
+}
+
+async function dispatchModalLaunch(
+  sql: Sql,
+  job: Job,
+  context: DispatchContext,
+  plan: ModalLaunchPlan,
+  { sandboxId, generation }: Pick<MachineIncarnation, "sandboxId" | "generation">,
+) {
   const { signal, canDispatch } = context;
   const incarnation = { sandboxId, generation, signal };
+  const reconciliationOnly =
+    typeof job.outcome === "object" &&
+    job.outcome !== null &&
+    "result" in job.outcome &&
+    job.outcome.result === RECONCILING_ALLOCATION;
   const dispatchTarget = async (tx: Sql) => {
     const {
       rows: [row],
@@ -171,7 +278,7 @@ export async function dispatchModalLaunch(sql: Sql, job: Job, context: DispatchC
   });
   const reconcile = async () => ({ kind: "reconcile", observation: await machine.observe(incarnation) }) as const;
 
-  const current = await target();
+  const current = reconciliationOnly ? undefined : await target();
   if (!current) return reconcile();
 
   let allocated: MachineIdentity;
