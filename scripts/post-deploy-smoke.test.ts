@@ -1390,7 +1390,7 @@ test.each(["canary echo", "late create"] as const)("vault rejects %s and cleans 
         if (fault === "late create") fake.advance(deadlines.vault_variable_set + 1);
         return json({ item: variable });
       case "variables/list":
-        return json({ items: variable ? [variable] : [] });
+        return json({ items: variable && fault !== "late create" ? [variable] : [] });
       case "variables/read":
         return json({ item: variable, value: readable });
       case "secrets/set":
@@ -1428,6 +1428,7 @@ test.each(["canary echo", "late create"] as const)("vault rejects %s and cleans 
   ).toBe(false);
   if (fault === "late create") {
     expect(fake.calls.map((call) => call.path)).toEqual(["variables/set", "variables/list", "variables/delete"]);
+    expect(fake.calls.at(-1)?.body).toEqual({ org, id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", expectedVersion: 1 });
     expect(fake.receipts()).toContainEqual({
       case: 0,
       step: "vault_variable_set",
