@@ -18,7 +18,7 @@ and store its `token` field securely. This field is returned only at creation.
 | `token revoke` | `armada api token/revoke '{"id":"TOKEN_UUID"}'` |
 
 Expiry accepts `30d` (default), `90d`, `1y`, or `never`.
-Use `armada whoami --json` to verify the active login or API key.
+After injecting the key as `ARMADA_TOKEN`, verify it with `armada whoami --json` in the agent environment.
 
 ## Routines
 
