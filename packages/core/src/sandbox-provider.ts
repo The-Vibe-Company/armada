@@ -64,7 +64,7 @@ export interface HostCapabilities {
   readonly requiresPinnedGoldenBinding: boolean;
   readonly canonicalGoldenAdoption: boolean;
   readonly templateReceiptTransport?: "dialout";
-  readonly startRateLimitStatus?: number;
+  readonly startRateLimit?: { readonly status: number; readonly detailsProvider: "boat" };
   readonly snapshotSourceBusyCode?: string;
   readonly builderImageFailureCode?: string;
   /** Install the baseline on the live builder or verify the preinstalled baseline as the image user. */
@@ -104,7 +104,7 @@ export const HOST_CAPABILITIES: Readonly<Record<SandboxProviderId, HostCapabilit
   boat: {
     requiresPinnedGoldenBinding: false,
     canonicalGoldenAdoption: true,
-    startRateLimitStatus: 429,
+    startRateLimit: { status: 429, detailsProvider: "boat" },
     goldenBuilderBaseline: "install-at-build",
     revalidateGoldenManagementAtAdmission: false,
     goldenRestore: "fresh-fork",
