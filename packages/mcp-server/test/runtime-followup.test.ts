@@ -3,7 +3,8 @@ import { failureDiagnostic, type Sql } from "@armada/core/server";
 import { createAccountTurnQueue } from "../src/account-turn-queue.ts";
 import { createSqlData } from "../src/data.ts";
 import { createJobsStore } from "../src/jobs/store.ts";
-import { createRuntimeFollowup } from "../src/runtime-followup.ts";
+import { createRuntimeFollowup, RuntimeFollowupConflict } from "../src/runtime-followup.ts";
+import { RuntimeReconciliationConflict } from "../src/runtime-reconciliation-conflict.ts";
 import { callSharedTool } from "../src/tool-api.ts";
 import { rowOnlyDatabase } from "./row-only-database.ts";
 import { runtimeFixture as fixture, scopedRuntimeFixture } from "./runtime.fixture.ts";
@@ -419,15 +420,15 @@ test("a competing accepted turn invalidates an older finished probe before admis
   }
 });
 
-test("an active lifecycle reconciliation reports a closed cause before runtime prompt dispatch", async () => {
+test("reconciliation refuses fresh sends before dispatch and preserves prior command uncertainty", async () => {
   const f = await fixture(await sharedDatabase());
   try {
+    const prior = f.input("accepted before reconciliation");
+    await f.send(f.caller, prior);
     await f.db.query("update sandboxes set reconcile_lease_until='infinity' where id=$1", [f.row.id]);
-    await expect(f.send(f.caller, f.input())).rejects.toMatchObject({
-      code: "conflict",
-      reason: "runtime_reconciliation_active",
-    });
-    expect(f.starts).toHaveLength(1);
+    await expect(f.send(f.caller, f.input())).rejects.toBeInstanceOf(RuntimeReconciliationConflict);
+    await expect(f.send(f.caller, prior)).rejects.toBeInstanceOf(RuntimeFollowupConflict);
+    expect(f.starts).toHaveLength(2);
   } finally {
     await f.close();
   }
