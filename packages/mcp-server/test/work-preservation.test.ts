@@ -1404,6 +1404,20 @@ test.each(["prompt", "steer", "queued", "dispatching"] as const)(
   },
 );
 
+// These cases isolate the failed-dispatch check from the independent prompt guard.
+async function seedCompletedPromptProof(
+  db: ReturnType<typeof sharedDatabase>["db"],
+  sandboxId: string,
+  promptId: string,
+) {
+  await db.query(
+    `update sandbox_native_preservation_receipts
+     set capture_acknowledgements=jsonb_build_object('completedPrompts',jsonb_build_array($2::text))
+     where sandbox_id=$1`,
+    [sandboxId, promptId],
+  );
+}
+
 test.each([
   ["Dispatch outcome uncertain; inspect sandbox history before resending.", false, "ineligible", false],
   [
@@ -1434,6 +1448,7 @@ test.each([
     if (currentTask) {
       await db.query("update sandboxes set task_prompt_id=$2 where id=$1", [sandboxId, requestId]);
       await db.query("update native_webhook_prompts set completed_at=now() where sandbox_id=$1", [sandboxId]);
+      await seedCompletedPromptProof(db, sandboxId, requestId);
     }
     await db.query("update sandboxes set stopped_at=now() where id=$1", [sandboxId]);
 
@@ -1465,6 +1480,7 @@ test("native handoff refuses a failed receipt even when an unrelated prompt was 
     [sandboxId],
   );
   expect(rows).toEqual([{ native_prompt_id: "unrelated-turn" }]);
+  await seedCompletedPromptProof(db, sandboxId, "unrelated-turn");
 
   expect(await copy()).toBe("ineligible");
   expect((await db.query("select 1 from native_drain_recovery where sandbox_id=$1", [sandboxId])).rows).toEqual([]);
@@ -1570,9 +1586,11 @@ test.each([
       expect(await decryptSecret(detached!.archive_enc, ENCRYPTION_KEY)).toBe(archive);
     }
     if (outcome === "clean" && requestId) {
-      const publishWithoutAcknowledgements = () =>
-        db.query("update sandbox_native_preservation_receipts set archive_id=null where sandbox_id=$1", [id]);
-      await publishWithoutAcknowledgements();
+      await db.query(
+        `update sandbox_native_preservation_receipts
+         set capture_acknowledgements=capture_acknowledgements-'prompts' where sandbox_id=$1`,
+        [id],
+      );
       expect(await copy()).toBe("ineligible");
     }
   });
