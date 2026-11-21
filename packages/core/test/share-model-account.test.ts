@@ -97,6 +97,28 @@ test("sharing preserves account identity and removes defaults that no longer app
   ]);
 });
 
+test("a named Antigravity account can be shared and returned to its creator", async () => {
+  const id = crypto.randomUUID();
+  const backup = crypto.randomUUID();
+  await db.query(
+    `insert into public.credentials(id,scope,owner_id,created_by,kind,value_enc,is_default,name)
+     values($1,'user',$3,$3,'antigravity',decode('aa','hex'),true,'Primary'),
+           ($2,'user',$3,$3,'antigravity',decode('bb','hex'),false,'Backup')`,
+    [id, backup, owner],
+  );
+
+  expect((await db.query("select public.share_model_account($1,$2,$3) as id", [owner, id, org])).rows).toEqual([
+    { id },
+  ]);
+  await db.query("delete from public.credentials where id=$1", [backup]);
+  expect((await db.query("select public.make_model_account_private($1,$2,$3) as id", [owner, id, org])).rows).toEqual([
+    { id },
+  ]);
+  expect((await db.query("select scope,owner_id,is_default from public.credentials where id=$1", [id])).rows).toEqual([
+    { scope: "user", owner_id: owner, is_default: false },
+  ]);
+});
+
 test("sharing requires destination admin membership", async () => {
   await db.query("update public.members set role='admin' where org_id=$1 and user_id=$2", [org, member]);
   await db.query("update public.members set role='member' where org_id=$1 and user_id=$2", [org, owner]);
