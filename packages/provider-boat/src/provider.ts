@@ -132,8 +132,8 @@ function stopInFlight(status: StopOperationStatusEnum | undefined) {
   return status === StopOperationStatusEnum.Pending || status === StopOperationStatusEnum.Failing;
 }
 
-function archivedRetention(sandbox: Sandbox) {
-  if (sandbox.dataExpiredAt || sandbox.snapshots === false) return "unconfirmed";
+function archivedSnapshotVerification(sandbox: Sandbox) {
+  if (sandbox.dataExpiredAt || sandbox.snapshots === false) return "unconfirmed" as const;
   const stopStatus = sandbox.stop?.status;
   const snapshotStatus = sandbox.lastSnapshotStatus;
   if (
@@ -141,7 +141,7 @@ function archivedRetention(sandbox: Sandbox) {
     snapshotStatus === SandboxLastSnapshotStatusEnum.Queued ||
     snapshotStatus === SandboxLastSnapshotStatusEnum.InProgress
   )
-    return "pending";
+    return "pending" as const;
   if (
     (sandbox.stop &&
       stopStatus !== StopOperationStatusEnum.Completed &&
@@ -149,10 +149,17 @@ function archivedRetention(sandbox: Sandbox) {
     sandbox.snapshotAvailable !== true ||
     (snapshotStatus && snapshotStatus !== SandboxLastSnapshotStatusEnum.Completed)
   )
-    return "unconfirmed";
+    return "unconfirmed" as const;
   const stoppedAt = sandbox.stoppedAt?.getTime();
   const verifiedAt = (sandbox.snapshotVerifiedAt ?? sandbox.snapshotCompletedAt)?.getTime();
-  return stoppedAt !== undefined && verifiedAt !== undefined && verifiedAt >= stoppedAt ? "usable" : "unconfirmed";
+  if (
+    stoppedAt === undefined ||
+    verifiedAt === undefined ||
+    !Number.isFinite(stoppedAt) ||
+    !Number.isFinite(verifiedAt)
+  )
+    return "unconfirmed" as const;
+  return { stoppedAt, verifiedAt };
 }
 
 function sandboxInfo(sandbox: Sandbox): SandboxInfo {
@@ -163,7 +170,6 @@ function sandboxInfo(sandbox: Sandbox): SandboxInfo {
     providerState: sandbox.state,
     labels: sandbox.labels ?? {},
   };
-  if (sandbox.state === "archived") info.retainedSnapshot = archivedRetention(sandbox);
   if (sandbox.error) info.error = sandbox.error;
   if (sandbox.createdAt) info.createdAt = sandbox.createdAt;
   if (sandbox.stoppedAt && Number.isFinite(sandbox.stoppedAt.getTime())) info.stoppedAt = sandbox.stoppedAt;
@@ -351,6 +357,52 @@ export function createBoatProvider(options: BoatProviderOptions): BoatProvider &
     }
   }
 
+  async function observeArchivedRetention(sandbox: Sandbox, signal: AbortSignal) {
+    const verification = archivedSnapshotVerification(sandbox);
+    if (typeof verification === "string") return verification;
+    const { stoppedAt, verifiedAt } = verification;
+    if (verifiedAt >= stoppedAt) return "usable";
+
+    const lastSnapshotAttemptAt = sandbox.lastSnapshotAttemptAt?.getTime();
+    if (
+      sandbox.lastSnapshotStatus !== SandboxLastSnapshotStatusEnum.Completed ||
+      (lastSnapshotAttemptAt !== undefined &&
+        (!Number.isFinite(lastSnapshotAttemptAt) || lastSnapshotAttemptAt > verifiedAt))
+    )
+      return "unconfirmed";
+
+    const stop = sandbox.stop;
+    const endedAt = stop?.endedAt?.getTime();
+    if (
+      !stop?.id ||
+      stop.status !== StopOperationStatusEnum.Completed ||
+      endedAt === undefined ||
+      !Number.isFinite(endedAt) ||
+      endedAt < stoppedAt
+    )
+      return "unconfirmed";
+
+    const observed = await call(() => api.getStop({ sandboxId: sandbox.id, stopId: stop.id }, { signal })).catch(
+      (error: unknown) => {
+        if (error instanceof ProviderError && error.status === 404 && error.code === "not_found") return null;
+        throw error;
+      },
+    );
+    if (!observed) return "pending";
+    const operation = observed.stop;
+    const requestedAt = operation?.requestedAt?.getTime();
+    return observed.ok === true &&
+      observed.id === sandbox.id &&
+      operation?.id === stop.id &&
+      operation.status === StopOperationStatusEnum.Completed &&
+      operation.endedAt?.getTime() === endedAt &&
+      requestedAt !== undefined &&
+      Number.isFinite(requestedAt) &&
+      requestedAt <= verifiedAt
+      ? "usable"
+      : "unconfirmed";
+  }
+
   async function archive(sandboxId: string): Promise<void> {
     const signal = AbortSignal.timeout(150_000);
     // The generated SandboxActionResponse omits the documented top-level stop.
@@ -525,8 +577,9 @@ export function createBoatProvider(options: BoatProviderOptions): BoatProvider &
       if (current?.id !== sandboxId) throw unexpectedAnswer("retained sandbox");
       if (current.state === "cancelled" || current.dataExpiredAt || current.snapshots === false) return "gone";
       if (current.state !== "archived") return "pending";
-      const retention = archivedRetention(current);
-      if (retention !== "usable") return retention === "pending" ? "pending" : "gone";
+      const verification = archivedSnapshotVerification(current);
+      if (verification === "pending") return "pending";
+      if (verification === "unconfirmed" || verification.verifiedAt < verification.stoppedAt) return "gone";
       const latest = await call(() => api.getLatestSandboxSnapshot({ sandboxId }, { signal })).catch(
         missingRetainedResource,
       );
@@ -622,19 +675,13 @@ export function createBoatProvider(options: BoatProviderOptions): BoatProvider &
       };
     },
     async get(sandboxId: string, requestOptions?: { signal?: AbortSignal }): Promise<SandboxInfo> {
-      const response = await call(() =>
-        api.get(
-          { sandboxId },
-          {
-            signal: requestOptions?.signal
-              ? AbortSignal.any([requestOptions.signal, AbortSignal.timeout(10_000)])
-              : AbortSignal.timeout(10_000),
-          },
-        ),
-      );
+      const timeout = AbortSignal.timeout(10_000);
+      const signal = requestOptions?.signal ? AbortSignal.any([requestOptions.signal, timeout]) : timeout;
+      const response = await call(() => api.get({ sandboxId }, { signal }));
       if (!response.sandbox?.id || response.sandbox.id !== sandboxId) throw unexpectedAnswer("sandbox");
       const current = response.sandbox;
       const info = sandboxInfo(current);
+      if (current.state === "archived") info.retainedSnapshot = await observeArchivedRetention(current, signal);
       if (info.retainedSnapshot && info.retainedSnapshot !== "usable") {
         const stopStatus = current.stop?.status;
         const snapshotStatus = current.lastSnapshotStatus;

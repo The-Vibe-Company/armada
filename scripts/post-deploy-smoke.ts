@@ -567,10 +567,14 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
         if (remaining <= 0) fail("poll_limit_exceeded");
         return send<T>(cleaning, path, body, key, Math.min(timeoutMs ?? remaining, remaining), usageRead);
       },
-      withStepDeadline: async <T>(name: string, action: (until?: number) => Promise<T>) => {
+      withStepDeadline: async <T>(
+        name: string,
+        action: (until?: number) => Promise<T>,
+        { measureCleanup = false } = {},
+      ) => {
         const budget = (deadlines as Record<string, number>)[name];
-        if (cleaning || budget === undefined) return action();
-        stepUntil = Math.min(deadline, io.now() + budget);
+        if ((cleaning && !measureCleanup) || budget === undefined) return action();
+        stepUntil = Math.min(cleaning ? cleanupDeadline : deadline, io.now() + budget);
         try {
           const result = await action(stepUntil);
           if (io.now() > stepUntil) fail("poll_limit_exceeded");
@@ -1039,7 +1043,8 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
     (await settled([...modelUnits, ...templateUnits, ...expiryUnits, ...scopedUnits, ...lifecycleUnits])) && vaultPassed
   );
   async function realModelUnit(index: number, item: RealModelCase, source: RealModelLaunchSource) {
-    const { request, withCleanup, step, out } = unit(index, "real-model");
+    const { request, withCleanup, withStepDeadline, step, out } = unit(index, "real-model");
+    const budgets: Record<string, number | undefined> = deadlines;
     const isAuthRefusal = (reason?: string) =>
       typeof reason === "string" &&
       (reason.startsWith("Authentication failed. ") ||
@@ -1065,7 +1070,7 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
             ttlSeconds: 1800,
             ...source,
           },
-          (deadlines as Record<string, number>)[`parity_${item.provider}_launch`] ?? TEMPLATE_LAUNCH_TIMEOUT_MS,
+          budgets.real_model_launch ?? budgets[`parity_${item.provider}_launch`] ?? TEMPLATE_LAUNCH_TIMEOUT_MS,
           request,
           (handle) => {
             id = handle;
@@ -1074,22 +1079,28 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
         id = result.sandbox.id;
       });
       await step("real_model_ready", () =>
-        poll(status, (result) => {
-          if (isAuthRefusal(result.statusReason)) fail("model_authentication_refused");
-          if (["failed", "stopped", "deleted"].includes(result.status)) fail("sandbox_not_ready");
-          return smokeLaunch[item.provider].ready.includes(result.status);
+        poll(
+          status,
+          (result) => {
+            if (isAuthRefusal(result.statusReason)) fail("model_authentication_refused");
+            if (["failed", "stopped", "deleted"].includes(result.status)) fail("sandbox_not_ready");
+            return smokeLaunch[item.provider].ready.includes(result.status);
+          },
+          { step: "real_model_ready" },
+        ),
+      );
+      const turn = await step("real_model_send", () =>
+        withStepDeadline("real_model_send", async () => {
+          const result = await sandbox<{ promptId: string }>("send", {
+            prompt: "Say hello in a short sentence. Do not use tools.",
+            request_id: crypto.randomUUID(),
+          }).catch(refuseModelCredentials);
+          if (typeof result?.promptId !== "string" || !result.promptId) fail("invalid_response");
+          return result;
         }),
       );
-      const turn = await step("real_model_send", async () => {
-        const result = await sandbox<{ promptId: string }>("send", {
-          prompt: "Say hello in a short sentence. Do not use tools.",
-          request_id: crypto.randomUUID(),
-        }).catch(refuseModelCredentials);
-        if (typeof result?.promptId !== "string" || !result.promptId) fail("invalid_response");
-        return result;
-      });
       await step("real_model_wait", async () => {
-        const until = Math.min(deadline, io.now() + deadlines.wait);
+        const until = Math.min(deadline, io.now() + (budgets.real_model_wait ?? deadlines.wait));
         let finished = false;
         await poll(
           async (timeoutMs) => {
@@ -1149,18 +1160,28 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
       if (id) {
         try {
           await withCleanup(() =>
-            step("real_model_stop", async () => {
-              try {
-                await sandbox("stop", { request_id: crypto.randomUUID() });
-              } catch (error) {
-                if (!(error instanceof SmokeFailure) || error.code !== "outcome_unknown") throw error;
-              }
-              await poll(status, (result) => {
-                if (!["stopped", "failed"].includes(result.status)) return false;
-                if (result.providerState !== "stopped") fail("provider_not_stopped");
-                return true;
-              });
-            }),
+            step("real_model_stop", () =>
+              withStepDeadline(
+                "real_model_stop",
+                async (until) => {
+                  try {
+                    await sandbox("stop", { request_id: crypto.randomUUID() });
+                  } catch (error) {
+                    if (!(error instanceof SmokeFailure) || error.code !== "outcome_unknown") throw error;
+                  }
+                  await poll(
+                    status,
+                    (result) => {
+                      if (!["stopped", "failed"].includes(result.status)) return false;
+                      if (result.providerState !== "stopped") fail("provider_not_stopped");
+                      return true;
+                    },
+                    until === undefined ? undefined : { until },
+                  );
+                },
+                { measureCleanup: true },
+              ),
+            ),
           );
         } catch {
           passed = false;

@@ -73,6 +73,7 @@ Read one page of agent events. --tail N starts with the last N events (1–1000)
 Piped output and --json emit one JSON object per event.
 `,
   automaticJson: true,
+  useSelectedOrg: true,
   validateProfileForHelp: true,
   run: events,
 } satisfies Command;
