@@ -13,6 +13,7 @@ import { z } from "zod";
 import type { AccountTurnQueue } from "../account-turn-queue.ts";
 import type { createGoldenRuntimeEnvironment } from "../golden-runtime-environment.ts";
 import { type OrdinaryLaunchFailure, replayOrdinaryLaunchFailure } from "../ordinary-launch-receipts.ts";
+import { RuntimeCommandRefused } from "../runtime-commands.ts";
 import type { RuntimeConfigurationTarget } from "../runtime-configuration.ts";
 import { createRuntimeEnrolments, type RuntimeTicketGuard } from "../runtime-enrolment.ts";
 import {
@@ -226,17 +227,28 @@ export function createModalInitialTurnJob(
 
       const { epoch } = target;
       if (epoch === null) return { status: "fail", reason: "modal_initial_turn_unavailable" };
-      const assertClaim = async (tx: Sql) => {
-        if (!(await context.canDispatch(tx))) throw new Error("Modal initial turn lost its job claim.");
-      };
-      await environment.deliver(
-        "modal",
-        { userId: target.owner_id, orgId: target.org_id },
-        sandboxId,
-        epoch,
-        context.signal,
-        assertClaim,
-      );
+      try {
+        await environment.deliver(
+          "modal",
+          { userId: target.owner_id, orgId: target.org_id },
+          sandboxId,
+          epoch,
+          context.signal,
+          async (tx) => {
+            if (!(await context.canDispatch(tx))) throw new Error("Modal initial turn lost its job claim.");
+            // The shared delivery calls this only when it is admitting application secrets.
+            const { rows } = await tx.query(
+              "select 1 from public.sandboxes where id=$1 and lifecycle_generation=$2 and application_secret_tainted",
+              [sandboxId, generation],
+            );
+            if (!rows.length) throw new VaultError("conflict", "Application-secret restrictions are missing.");
+          },
+        );
+      } catch (error) {
+        if (error instanceof RuntimeCommandRefused || (error instanceof VaultError && error.code === "conflict"))
+          return { status: "fail", reason: "modal_initial_turn_environment_refused" };
+        throw error;
+      }
 
       try {
         const accepted = await queue.acceptInitialLaunch(
