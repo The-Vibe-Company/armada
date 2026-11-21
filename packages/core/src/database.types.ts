@@ -4863,6 +4863,7 @@ export type Database = {
           capture_generation: number | null;
           capture_stop_generation: number | null;
           archive_id: string | null;
+          capture_acknowledgements: Json | null;
         };
         Insert: {
           sandbox_id: string;
@@ -4871,6 +4872,7 @@ export type Database = {
           capture_generation?: number | null;
           capture_stop_generation?: number | null;
           archive_id?: string | null;
+          capture_acknowledgements?: Json | null;
         };
         Update: {
           sandbox_id?: string;
@@ -4879,6 +4881,7 @@ export type Database = {
           capture_generation?: number | null;
           capture_stop_generation?: number | null;
           archive_id?: string | null;
+          capture_acknowledgements?: Json | null;
         };
         Relationships: [
           {
