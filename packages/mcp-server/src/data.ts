@@ -143,7 +143,7 @@ export interface ServerSandboxStore extends SandboxStore {
   launchTiming?(id: string): Promise<LaunchTiming | null>;
   assertExtensionAllowed?(id: string): Promise<void>;
   assertDeletionAllowed?(id: string): Promise<void>;
-  nativeDrainBoatOperation?(
+  nativeDrainOperation?(
     id: string,
     placement: string,
     generation: number,
@@ -607,13 +607,13 @@ export function createSqlData(
         if (!["stopped", "failed", "deleted"].includes(row.status))
           throw new GoldenError("conflict", "Stop the sandbox before deleting it.");
       },
-      async nativeDrainBoatOperation(id, placement, generation, activityToken) {
+      async nativeDrainOperation(id, placement, generation, activityToken) {
         const {
           rows: [owned],
         } = await sql.query<{ operation_id: string | null }>(
           `select o.operation_id from public.sandboxes s
            left join public.native_drain_delete_operations o on o.sandbox_id=s.id
-           where s.id=$3::uuid and ${SANDBOX_VISIBLE} and s.provider='boat'
+           where s.id=$3::uuid and ${SANDBOX_VISIBLE} and s.provider in ('boat','modal')
              and s.provider_sandbox_id=$4 and s.lifecycle_generation=$5 and s.activity_lease_id=$6
              and s.activity_until>clock_timestamp() and s.native_drain_pending
              and not s.boat_runtime and s.runtime_transport is distinct from 'dialout'

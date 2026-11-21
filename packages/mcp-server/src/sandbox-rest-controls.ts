@@ -208,15 +208,10 @@ export async function deleteSandboxWithActivity(
             ...(found.lifecycleGeneration !== undefined ? { generation: found.lifecycleGeneration + 1 } : {}),
           };
           let operationId: string | null = null;
-          if (nativeDrain && found.provider === "boat") {
-            if (!sandboxes.nativeDrainBoatOperation || target.generation === undefined)
-              throw new ToolError("unavailable", "Native Boat deletion evidence is unavailable.");
-            operationId = await sandboxes.nativeDrainBoatOperation(
-              id,
-              target.sandboxId,
-              target.generation,
-              activityToken,
-            );
+          if (nativeDrain) {
+            if (!sandboxes.nativeDrainOperation || target.generation === undefined)
+              throw new ToolError("unavailable", "Native drain deletion evidence is unavailable.");
+            operationId = await sandboxes.nativeDrainOperation(id, target.sandboxId, target.generation, activityToken);
             signal.throwIfAborted();
           }
           const boat = provider as Partial<BoatProvider>;
