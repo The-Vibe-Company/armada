@@ -958,8 +958,8 @@ async function nativeToolFixture(provider: Provider, placement: string, onQuery?
   return { db, context, sandboxId, invoke };
 }
 
-test.each(["clean", "failed"] as const)(
-  "active native drain requires positive capture before stop (%s)",
+test.each(["clean", "failed", "wrong-placement"] as const)(
+  "active native drain requires capture and exact stop evidence (%s)",
   async (capture) => {
     const boat = fakeBoat();
     const placement = `bx_active_drain_${capture}`;
@@ -969,7 +969,7 @@ test.each(["clean", "failed"] as const)(
     });
     boat.setExecOutput({
       stdout: JSON.stringify(
-        capture === "clean"
+        capture !== "failed"
           ? { status: "clean" }
           : {
               status: "failed",
@@ -982,7 +982,7 @@ test.each(["clean", "failed"] as const)(
       async quiesce() {},
       async get() {
         return {
-          id: placement,
+          id: stopped && capture === "wrong-placement" ? "bx_unrelated" : placement,
           name: "active drain fixture",
           labels: {},
           state: stopped ? "stopped" : "ready",
@@ -1013,7 +1013,7 @@ test.each(["clean", "failed"] as const)(
     });
     expect(await worker.reconcileOne()).toBe(true);
     expect((await inventory())?.status).toBe(capture === "clean" ? "stopped" : "stopping");
-    expect(stop).toHaveBeenCalledTimes(capture === "clean" ? 1 : 0);
+    expect(stop).toHaveBeenCalledTimes(capture === "failed" ? 0 : 1);
     if (capture === "clean") {
       const row = await inventory();
       const proof = await db.query("select copy_native_drain_recovery($1,$2) as outcome", [

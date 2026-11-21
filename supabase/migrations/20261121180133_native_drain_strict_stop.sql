@@ -13,7 +13,7 @@ create policy "Service owns native drain stop requests" on public.native_drain_s
 -- Both callers check lifecycle ownership before using the same preservation proof.
 create function public.native_drain_work_proof(p_sandbox_id uuid, p_generation bigint)
 returns table(outcome text, archive_id uuid)
-language plpgsql security definer set search_path = '' as $$
+language plpgsql stable security definer set search_path = '' as $$
 declare
   v_sandbox public.sandboxes%rowtype;
   v_archive_id uuid;
@@ -24,7 +24,7 @@ begin
     return;
   end if;
 
-  -- Read all pending work from one post-lock snapshot. Steer reconciliation
+  -- Keep these reads in the caller's statement snapshot. Steer reconciliation
   -- can turn a pending cursor into a prompt receipt in a single transaction.
   if exists (
     select 1 from public.sandbox_native_exec_attempts e where e.sandbox_id = p_sandbox_id
@@ -86,7 +86,7 @@ begin
     return query select 'ineligible'::text, null::uuid; return;
   end if;
 
-  -- Read the receipt after taking the row lock. Never substitute an older archive.
+  -- Never substitute an older archive.
   select r.archive_id into v_archive_id
   from public.sandbox_native_preservation_receipts r
   where r.sandbox_id = p_sandbox_id
