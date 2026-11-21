@@ -1,4 +1,11 @@
-import { HARNESS_KINDS, MACHINE_SIZES, type MemberRole, type ModalBinding, type SandboxStatus } from "@armada/core";
+import {
+  type GoldenRecord,
+  HARNESS_KINDS,
+  MACHINE_SIZES,
+  type MemberRole,
+  type ModalBinding,
+  type SandboxStatus,
+} from "@armada/core";
 import {
   assertLaunchSecretBindings,
   GoldenError,
@@ -57,9 +64,10 @@ async function lockPinnedModalReservation(sql: Sql, orgId: string, ownerId: stri
     digest: string;
     state: string;
     template_scope: string;
+    frozen_golden: Pick<GoldenRecord, "id" | "providerSnapshotId" | "modal"> | null;
     sandbox_exists: boolean;
   }>(
-    `select r.id,r.sandbox_id,r.digest,r.state,t.scope as template_scope,
+    `select r.id,r.sandbox_id,r.digest,r.state,t.scope as template_scope,r.manifest->'golden' as frozen_golden,
             exists(select 1 from public.sandboxes s where s.id=r.sandbox_id) as sandbox_exists
      from public.template_launch_requests r
      join public.launch_templates t on t.id=r.template_id and t.org_id=r.org_id
@@ -138,6 +146,18 @@ export async function admitModalLaunch(sql: Sql, encryptionKey: string, input: M
         environment: golden.modal_environment,
         appId: golden.modal_app_id,
       };
+      if (reservation) {
+        const frozen = reservation.frozen_golden;
+        if (
+          frozen?.id !== sandbox.goldenId ||
+          frozen.providerSnapshotId !== snapshot ||
+          frozen.modal?.workspace !== modal.workspace ||
+          frozen.modal.environment !== modal.environment ||
+          frozen.modal.appId !== modal.appId
+        ) {
+          throw new GoldenError("conflict", "Frozen Modal template snapshot or App binding changed.");
+        }
+      }
       if (golden.provider_snapshot_id === snapshot)
         await tx.query("select public.lock_golden_snapshot('modal', $1)", [snapshot]);
       const sourceScope = scopeKey({ orgId, userId: ownerId, visibility: golden.visibility, binding: modal });

@@ -269,8 +269,8 @@ test.each(["boat", "modal"] as const)("a %s reservation excludes the competing l
   expect((await db.query("select id from sandboxes")).rows).toEqual([{ id: sandbox.id }]);
 });
 
-test.each(["active", "revoked"] as const)(
-  "pinned Modal admission handles a %s secret before dispatch",
+test.each(["active secret", "revoked secret", "changed snapshot"] as const)(
+  "pinned Modal admission handles %s before dispatch",
   async (status) => {
     const { sql, db, people, input, openaiCredentialId } = await modalAdmissionFixture();
     const sandboxId = crypto.randomUUID();
@@ -307,7 +307,12 @@ test.each(["active", "revoked"] as const)(
           version: 1,
           actorId: people.owner,
           actorEpoch: actor?.epoch ?? 0,
-          golden: { id: input.sandbox.goldenId, provider: "modal" },
+          golden: {
+            id: input.sandbox.goldenId,
+            provider: "modal",
+            providerSnapshotId: input.allocation.source.ref,
+            modal: { workspace: "workspace", environment: "main", appId: "ap-test" },
+          },
           account: { id: openaiCredentialId, version: 1 },
           definition: {
             provider: "modal",
@@ -330,9 +335,19 @@ test.each(["active", "revoked"] as const)(
       sandbox: { ...input.sandbox, credentialId: openaiCredentialId, credentialVersion: 1 },
     };
     const admit = () => admitModalLaunch(sql, launchEncryptionKey, pinned);
-    if (status === "revoked") {
-      await db.query("update application_secrets set status='revoked',value_enc=null where id=$1", [secret!.id]);
-      await expect(admit()).rejects.toMatchObject({ code: "conflict", reason: "secret_unavailable" });
+    if (status !== "active secret") {
+      if (status === "revoked secret") {
+        await db.query("update application_secrets set status='revoked',value_enc=null where id=$1", [secret!.id]);
+        await expect(admit()).rejects.toMatchObject({ code: "conflict", reason: "secret_unavailable" });
+      } else {
+        await db.query("update goldens set provider_snapshot_id='replacement' where id=$1", [pinned.sandbox.goldenId]);
+        await db.query(
+          `insert into modal_images(scope,name,source_id,record)
+           select scope,'replacement',source_id,record from modal_images where name='snapshot'`,
+        );
+        pinned.allocation = { ...pinned.allocation, source: { kind: "snapshot", ref: "replacement" } };
+        await expect(admit()).rejects.toThrow("Frozen Modal template snapshot or App binding changed.");
+      }
       expect((await db.query("select id from sandboxes where id=$1", [sandboxId])).rows).toEqual([]);
       expect((await db.query("select id from jobs where sandbox_id=$1", [sandboxId])).rows).toEqual([]);
       return;
