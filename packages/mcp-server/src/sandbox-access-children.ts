@@ -19,6 +19,8 @@ import { ChildLaunchNotAllocated } from "./sandbox-access-child-launch.ts";
 import { trackedOperations } from "./tracked-operations.ts";
 import { runtimeWakes, SANDBOX_ADMISSION_WAKE } from "./wake-bus.ts";
 
+const CHILD_ADMISSION_TIMEOUT_MS = 120_000;
+
 function recordUncertainMessageReceipt(
   receipt: { id: string; sandboxId: string },
   causeCode: "prior_uncertain_receipt" | "dispatch_claim_missing",
@@ -234,8 +236,9 @@ export function createSandboxChildren(sql: Sql, authority: ChildAuthority, execu
       const target = input.action === "launch" ? crypto.randomUUID() : input.sandboxId;
       await tx.query(
         `insert into public.orchestrator_child_operations
-          (id,orchestrator_id,owner_id,org_id,parent_generation,action,target_id,idempotency_key,request_digest,scope_target,parent_epoch)
-          values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+          (id,orchestrator_id,owner_id,org_id,parent_generation,action,target_id,idempotency_key,request_digest,scope_target,parent_epoch,reconcile_after)
+          values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,
+            clock_timestamp() + case when $6='launch' then interval '0 seconds' else $12::integer * interval '1 millisecond' end)`,
         [
           id,
           principal.orchestratorId,
@@ -248,6 +251,7 @@ export function createSandboxChildren(sql: Sql, authority: ChildAuthority, execu
           digest,
           input.action === "launch" ? principal.orchestratorId : input.sandboxId,
           parent.parent_epoch,
+          CHILD_ADMISSION_TIMEOUT_MS,
         ],
       );
       // Children have independent receipts; never invalidate a pending owner prompt's revision.
@@ -266,7 +270,7 @@ export function createSandboxChildren(sql: Sql, authority: ChildAuthority, execu
         recordUncertainMessageReceipt(receipt, "prior_uncertain_receipt");
       return { id: receipt.id, state: receipt.state, sandboxId: receipt.sandboxId };
     }
-    const deadline = AbortSignal.timeout(120_000);
+    const deadline = AbortSignal.timeout(CHILD_ADMISSION_TIMEOUT_MS);
     const admissionSignal = AbortSignal.any([shutdown.signal, deadline, ...(signal ? [signal] : [])]);
     async function admitDispatch(resumingAdmission: boolean) {
       const wake = runtimeWakes.watch(SANDBOX_ADMISSION_WAKE);
@@ -290,7 +294,8 @@ export function createSandboxChildren(sql: Sql, authority: ChildAuthority, execu
             const {
               rows: [dispatch],
             } = await tx.query<ChildDispatch>(
-              `update public.orchestrator_child_operations c set dispatched_at=coalesce(c.dispatched_at,now())
+              `update public.orchestrator_child_operations c set dispatched_at=coalesce(c.dispatched_at,now()),
+                 reconcile_after=case when $2 then c.reconcile_after else now() end
                from public.armada_access_parents o join public.sandboxes s on s.id=o.sandbox_id
                where c.id=$1 and o.id=c.orchestrator_id and o.authority_epoch=c.parent_epoch
                  and (case when o.kind='sandbox' then o.generation else s.lifecycle_generation end)=c.parent_generation
@@ -337,6 +342,13 @@ export function createSandboxChildren(sql: Sql, authority: ChildAuthority, execu
       }
     }
     if (!row) {
+      const {
+        rows: [current],
+      } = await sql.query<{ state: string }>("select state from public.orchestrator_child_operations where id=$1", [
+        receipt.id,
+      ]);
+      if (current?.state === "failed" || current?.state === "succeeded")
+        return { id: receipt.id, state: current.state, sandboxId: receipt.sandboxId };
       if (input.action === "message") recordUncertainMessageReceipt(receipt, "dispatch_claim_missing");
       return { id: receipt.id, state: "uncertain", sandboxId: receipt.sandboxId };
     }
@@ -524,16 +536,27 @@ export function createSandboxChildren(sql: Sql, authority: ChildAuthority, execu
           action: ChildOperation["action"];
           target_id: string;
           provider_sandbox_id: string | null;
+          abandoned: boolean;
         }>(
-          `update public.orchestrator_child_operations set reconcile_lease=$1,reconcile_until=now()+interval '2 minutes'
-        where id=(select id from public.orchestrator_child_operations where state in ('pending','uncertain')
-          and reconcile_after<=now() and (reconcile_until is null or reconcile_until<now())
-          order by created_at for update skip locked limit 1)
-        returning id,orchestrator_id,owner_id,org_id,parent_generation,parent_epoch,action,target_id,provider_sandbox_id`,
+          `with candidate as (
+          select id,(action<>'launch' and state='pending' and dispatched_at is null) as abandoned
+          from public.orchestrator_child_operations where state in ('pending','uncertain')
+            and reconcile_after<=now() and (reconcile_until is null or reconcile_until<now())
+          order by created_at for update skip locked limit 1
+        )
+        update public.orchestrator_child_operations c
+          set state=case when candidate.abandoned then 'failed' else c.state end,
+              error_code=case when candidate.abandoned then 'child_dispatch_not_admitted' else c.error_code end,
+              reconcile_lease=case when not candidate.abandoned then $1::uuid end,
+              reconcile_until=case when not candidate.abandoned then now()+interval '2 minutes' end
+        from candidate where c.id=candidate.id
+        returning c.id,c.orchestrator_id,c.owner_id,c.org_id,c.parent_generation,c.parent_epoch,c.action,
+                  c.target_id,c.provider_sandbox_id,candidate.abandoned`,
           [lease],
         )
       ).rows[0];
       if (!row) return false;
+      if (row.abandoned) return true;
       const operation: ChildOperation = {
         id: row.id,
         orchestratorId: row.orchestrator_id,
