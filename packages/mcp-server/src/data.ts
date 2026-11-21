@@ -1285,16 +1285,18 @@ export function createSqlData(
           result = await sql.transaction(async (tx) => {
             const admitted = await applyUpdate(tx);
             const row = admitted.rows[0];
-            if (row?.id && childSend.fromState !== "running") {
+            if (row?.id) {
               if (!row.generation) throw new Error("Native child send admission did not return its generation.");
-              await publishNativeTurn(
-                tx,
-                id,
-                childSend.fromState,
-                row.generation,
-                childSendToken,
-                "native_child_send_admitted",
-              );
+              await recordNativeSendAttempt(tx, row.generation);
+              if (childSend.fromState !== "running")
+                await publishNativeTurn(
+                  tx,
+                  id,
+                  childSend.fromState,
+                  row.generation,
+                  childSendToken,
+                  "native_child_send_admitted",
+                );
             }
             return admitted;
           });

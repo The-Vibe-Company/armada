@@ -323,14 +323,16 @@ export function createSandboxAccessServices(input: {
             // The accepted prompt continues; the structured line carries the request and sandbox IDs.
             recordOperatorFailure("sandbox_access.send.turn_model_record", error, { sandboxId: saved.id });
           }
+          const patch: ServerSandboxPatch = {
+            nativeSendReceipt: { fromState: "running", placement: saved.providerSandboxId },
+            statusReason: null,
+            taskPromptId: receipt.promptId,
+            rearmDeadline: true,
+            conversationIds: [...new Set([...saved.conversationIds, receipt.conversationId])],
+          };
           return {
             result: undefined,
-            patch: {
-              statusReason: null,
-              taskPromptId: receipt.promptId,
-              rearmDeadline: true,
-              conversationIds: [...new Set([...saved.conversationIds, receipt.conversationId])],
-            },
+            patch,
           };
         },
       );
