@@ -1003,7 +1003,7 @@ async function dispatchModalLaunch(
         return false;
       return bindModalLaunchMachine(tx, allocated);
     });
-    if (!bound) return reconcile();
+    if (!bound) return observed?.kind === "present" ? { kind: "reconcile", observation: observed } : reconcile();
   }
 
   if (observed?.kind === "present" && observed.phase === "stopped")

@@ -1628,32 +1628,45 @@ test("owner stop after a lost Modal create reply leaves the exact allocation for
       throw new Error("Owner stop must return without waiting for cleanup");
     },
   } satisfies Parameters<typeof callSharedTool>[0];
-  expect(await callSharedTool(context, "stop", { id })).toEqual({ id, status: "starting" });
-  expect(cleanupEffects().terminations).toBe(0);
-  const stopped = await data.sandboxes.get(id);
-  expect(stopped?.status).toBe("starting");
-  expect(stopped?.stopRequestedAt).toBeTruthy();
-
   await f.db.query("update jobs set lease_until='-infinity' where id=$1", [jobId]);
+  let observed = false;
+  let stopAccepted = false;
   const beforeSettlement: Sql = {
     ...f.sql,
-    transaction: (work) =>
-      f.sql.transaction!((tx) =>
+    async transaction(work) {
+      let checkedDispatchAfterObservation = false;
+      const result = await f.sql.transaction!((tx) =>
         work({
           ...tx,
           async query<T>(query: string, params?: unknown[]) {
             if (query.includes("select public.complete_job")) throw new Error("Worker lost before failure settlement");
+            if (observed && query.includes("select s.provider_sandbox_id from public.sandboxes s"))
+              checkedDispatchAfterObservation = true;
             return tx.query<T>(query, params);
           },
         }),
-      ),
+      );
+      if (checkedDispatchAfterObservation && !stopAccepted) {
+        expect(await callSharedTool(context, "stop", { id })).toEqual({ id, status: "starting" });
+        stopAccepted = true;
+      }
+      return result;
+    },
   };
   const recovering = makeRunner((step) => {
-    if (step === "machine poll") hideAllocation();
+    if (step === "machine poll") {
+      hideAllocation();
+      observed = true;
+    }
   }, beforeSettlement);
   expect(await recovering.reconcileOne(signal)).toBe(true);
   await recovering.drain();
-  expect((await data.sandboxes.get(id))?.status).toBe("starting");
+  expect(stopAccepted).toBe(true);
+  expect(cleanupEffects().terminations).toBe(0);
+  const stopped = await data.sandboxes.get(id);
+  expect(stopped?.status).toBe("starting");
+  expect(stopped?.stopRequestedAt).toBeTruthy();
+  expect((await f.db.query("select state from jobs where id=$1", [jobId])).rows).toEqual([{ state: "leased" }]);
 
   await f.db.query("update jobs set lease_until='-infinity' where id=$1", [jobId]);
   const successor = makeRunner();
