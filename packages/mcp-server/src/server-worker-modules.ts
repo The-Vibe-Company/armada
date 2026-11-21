@@ -2,6 +2,7 @@ import { createDockerHostStore } from "./docker-host-store.ts";
 import { captureDockerStopOutputs } from "./docker-outputs.ts";
 import { createGoldenBuildJob } from "./golden-worker.ts";
 import { startInvitationWorker } from "./invitations.ts";
+import { createModalInitialTurnJob, MODAL_INITIAL_TURN } from "./jobs/modal-launch.ts";
 import { createJobsRunner } from "./jobs/runner.ts";
 import { createMcpSandboxProviderResolver } from "./mcp-sandbox-provider.ts";
 import { createNativeWebhookPrompts } from "./native-webhook-prompts.ts";
@@ -52,6 +53,7 @@ const jobsLane: LaneFactory = ({
   langfuse,
   control,
   modal,
+  accountTurns,
 }) => {
   const prScan = githubApp
     ? createPullRequestScanJob(
@@ -97,6 +99,7 @@ const jobsLane: LaneFactory = ({
     jobs,
     {
       delete: modal.launchCleanupJob,
+      [MODAL_INITIAL_TURN]: createModalInitialTurnJob(sql, accountTurns),
       golden_build: createGoldenBuildJob(goldenBuilds),
       langfuse_export: langfuse.exportJob,
       maintenance: retentionMaintenanceJob(sql, control.applicationVault, options.logError),
