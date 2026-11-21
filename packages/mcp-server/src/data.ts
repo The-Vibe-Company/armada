@@ -811,6 +811,7 @@ export function createSqlData(
         return archive;
       },
       async recordNativePrompt(id, providerSandboxId, promptId, requestId) {
+        // Send attempts use the wall clock. A transaction's start time can predate the attempt.
         await sql.query(
           `with accepted as (
             select s.* from public.sandboxes s join public.goldens g on g.id=s.golden_id
@@ -821,8 +822,8 @@ export function createSqlData(
             update public.account_turn_queue q set native_prompt_id=coalesce(q.native_prompt_id,$5)
             from accepted s where q.sandbox_id=s.id and q.request_id=$6::uuid
               and q.owner_id=s.owner_id and q.org_id=s.org_id
-          ) insert into public.native_webhook_prompts(sandbox_id,prompt_id,provider,provider_sandbox_id,owner_id,org_id)
-            select id,$5,provider,provider_sandbox_id,owner_id,org_id from accepted on conflict do nothing`,
+          ) insert into public.native_webhook_prompts(sandbox_id,prompt_id,provider,provider_sandbox_id,owner_id,org_id,created_at)
+            select id,$5,provider,provider_sandbox_id,owner_id,org_id,clock_timestamp() from accepted on conflict do nothing`,
           [...scope, id, providerSandboxId, promptId, requestId ?? null],
         );
       },
