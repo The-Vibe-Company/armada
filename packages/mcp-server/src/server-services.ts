@@ -21,7 +21,7 @@ import { boatRuntimeResume } from "./boat-runtime-resume.ts";
 import { type ConfiguredControlOptions, createQueuedSandboxDispatch } from "./control.ts";
 import { createCredentialBindingRecovery } from "./credential-binding-recovery.ts";
 import { createSqlCredentialList } from "./credential-list-sql.ts";
-import { createScopedSandboxData, createSqlData, type SandboxView } from "./data.ts";
+import { createScopedSandboxData, createSqlData } from "./data.ts";
 import { retryDatabaseBoot } from "./database-boot.ts";
 import { createDatabaseReadiness } from "./database-readiness.ts";
 import { requireDatabaseSchema } from "./database-schema.ts";
@@ -64,6 +64,7 @@ import { createRuntimeEnrolments } from "./runtime-enrolment.ts";
 import { createRuntimeEvents } from "./runtime-events.ts";
 import { createRuntimeFollowup } from "./runtime-followup.ts";
 import { createRuntimeGitHub } from "./runtime-github.ts";
+import { createSandboxLogReader } from "./runtime-history.ts";
 import { createRuntimeMcp } from "./runtime-mcp.ts";
 import { createRuntimeNativeAuth } from "./runtime-native-auth.ts";
 import { runtimeConfigurationWithVariables } from "./runtime-readable-variables.ts";
@@ -478,8 +479,9 @@ export async function createServerServices(env: Record<string, string | undefine
         : provider;
     },
   };
-  const logProvider = (sandbox: SandboxView, caller: import("./caller.ts").Caller) =>
-    journalLogProviders[sandbox.provider](sandbox, caller);
+  const logProvider = createSandboxLogReader(sql, config.encryptionKey, (sandbox, caller) =>
+    journalLogProviders[sandbox.provider](sandbox, caller),
+  );
   const ordinaryLaunchReceipts = createOrdinaryLaunchReceipts(sql);
   const deviceLogin = deviceLoginFromConfig(sql, config.dashboardUrl, env);
   const control: ConfiguredControlOptions = {

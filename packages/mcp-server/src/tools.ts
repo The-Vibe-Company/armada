@@ -14,6 +14,7 @@ import type { LaunchDiscoveryOptions } from "./launch-options.ts";
 import { registerAgentTools } from "./mcp-operation-projection.ts";
 import type { createOrdinaryLaunchReceipts } from "./ordinary-launch-receipts.ts";
 import type { RuntimeFollowup } from "./runtime-followup.ts";
+import type { SandboxLogReader } from "./runtime-history.ts";
 import { configureTools } from "./sandbox-tool-handlers.ts";
 import type { ToolBinding } from "./tool-registration.ts";
 
@@ -27,7 +28,7 @@ export interface ToolContext {
   runtimeSend?: RuntimeFollowup;
   runtimeStopCheckpoint?: ReturnType<typeof import("./runtime-checkpoint.ts").createRuntimeStopCheckpoint>;
   measure?: import("./request-timing.ts").RequestTiming["measure"];
-  logProvider?(target: SandboxView): Promise<Provider>;
+  logProvider?(target: SandboxView): Promise<SandboxLogReader>;
   storedProviders?: Partial<Record<SandboxProviderId, ToolContext["provider"]>>;
   skillDefaults?: SkillDefaultsService;
   caller: Caller;
