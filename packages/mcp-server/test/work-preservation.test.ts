@@ -701,7 +701,7 @@ test.each([
 test.each(["observe", "capture"] as const)(
   "native stop ownership transfer during %s leaves no stale receipt",
   async (phase) => {
-    await withPreservationRow(async ({ db, id, physical, sql, provider, generation }) => {
+    await withPreservationRow(async ({ db, id, physical, sql, boat, provider, generation }) => {
       const activity = crypto.randomUUID();
       const reconcile = crypto.randomUUID();
       await db.query(
@@ -715,19 +715,20 @@ test.each(["observe", "capture"] as const)(
            reconcile_lease=$2, reconcile_lease_until=now()+interval '2 minutes' where id=$1`,
           [id, reconcile],
         );
+      boat.setExecOutput({ stdout: '{"status":"clean"}' });
       let captures = 0;
       let observations = 0;
-      const host = {
+      const host: typeof provider = {
         ...provider,
         async get() {
           observations++;
           if (phase === "observe" && observations === 1) await takeOver();
           return provider.get(physical);
         },
-        async exec() {
+        async exec(request) {
           captures++;
           if (phase === "capture" && captures === 1) await takeOver();
-          return { exitCode: 0, stdout: '{"status":"clean"}', stderr: "" };
+          return provider.exec(request);
         },
       };
       const readReceipt = async () =>
