@@ -541,7 +541,7 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
         if (remaining <= 0) fail("poll_limit_exceeded");
         return send<T>(cleaning, path, body, key, Math.min(timeoutMs ?? remaining, remaining));
       },
-      withStepDeadline: async <T>(name: string, action: () => Promise<T>): Promise<T> => {
+      withStepDeadline: async <T>(name: string, action: () => Promise<T>) => {
         const budget = (deadlines as Record<string, number>)[name];
         if (cleaning || budget === undefined) return action();
         stepUntil = Math.min(deadline, io.now() + budget);
