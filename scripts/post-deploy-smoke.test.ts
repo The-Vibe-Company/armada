@@ -1850,6 +1850,22 @@ test("lifecycle records readiness and confirms extend/list, closed idle steer re
   expect(fake.lines.join("")).not.toContain("secret");
 });
 
+test.each([
+  ["list_ready", "sandbox/list"],
+  ["steer_refused", "sandbox/steer"],
+  ["extend", "sandbox/extend"],
+] as const)("lifecycle %s rejects a late response and still stops the sandbox", async (step, path) => {
+  const fake = lifecycleFixture("none", (call) => {
+    if (call.path === path) fake.advance(deadlines[step] + 1);
+    return undefined;
+  });
+  expect(await fake.run()).toBe(false);
+  expect(fake.receipts()).toContainEqual({ case: 0, step, pass: false, code: "poll_limit_exceeded" });
+  expect(fake.calls.filter((call) => call.path === path)).toHaveLength(1);
+  expect(fake.calls.at(-2)?.path).toBe("sandbox/stop");
+  expect(fake.calls.at(-1)?.path).toBe("sandbox/status");
+});
+
 test("a resumed send admitted after its measured deadline fails without replay and still cleans up", async () => {
   const fake = lifecycleFixture("none", (call) => {
     if (call.path !== "sandbox/send" || !fake.calls.some((entry) => entry.path === "sandbox/stop")) return;
