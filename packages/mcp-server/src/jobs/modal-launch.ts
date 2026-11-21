@@ -8,6 +8,7 @@ import {
 } from "@armada/core/server";
 import { createModalMachine, type ModalMachineOptions } from "@armada/provider-modal";
 import { z } from "zod";
+import { createRuntimeEnrolments } from "../runtime-enrolment.ts";
 import {
   bindModalLaunchMachine,
   insertStartingModalSandbox,
@@ -138,15 +139,27 @@ export async function admitModalLaunch(sql: Sql, encryptionKey: string, input: M
 
 type DispatchContext = Pick<JobContext, "canDispatch" | "signal">;
 
+type ModalMachineRuntime = Omit<ModalMachineOptions, "journal">;
+type PrepareModalTicket = ModalMachineRuntime["resolveRuntimeTicket"];
+type ModalTicket = NonNullable<Awaited<ReturnType<PrepareModalTicket>>>;
+type IssueRuntimeTicket = Parameters<ReturnType<typeof createRuntimeEnrolments>["issue"]>[0];
+
 interface ModalLaunchPlan {
   allocation: ModalLaunchAllocation;
   bindingRef: string;
-  machine: Omit<ModalMachineOptions, "journal">;
+  machine: Omit<ModalMachineRuntime, "resolveRuntimeTicket">;
+  prepareRuntimeTicket(
+    request: Parameters<PrepareModalTicket>[0],
+  ): Promise<
+    Omit<ModalTicket, "enrolmentToken"> &
+      Pick<IssueRuntimeTicket, "ownerId" | "configuration" | "commandGrantExpiresAt">
+  >;
 }
 
 const LAUNCH_FAILURE = "modal_launch_failed";
 const RECONCILING_ALLOCATION = "modal_launch_reconciling";
 const RECONCILE_DELAY_MS = 30_000;
+const ENROLMENT_RETRY_DELAY_MS = 1_000;
 const DELETE_DISPATCH_BUDGET_MS = 5 * 60_000;
 
 export async function runModalLaunch(
@@ -161,8 +174,74 @@ export async function runModalLaunch(
   if (job.kind !== "launch" || !sandboxId || !Number.isSafeInteger(generation) || generation < 1)
     throw new Error("Invalid Modal launch claim.");
 
-  const dispatch = await dispatchModalLaunch(sql, job, context, plan, { sandboxId, generation });
-  if (dispatch.kind === "bootstrapped") return { status: "done" } satisfies JobResult;
+  const readEnrolment = async (tx: Sql) => {
+    const {
+      rows: [receipt],
+    } = await tx.query<{ enrolled: boolean; check_after: string | null }>(
+      `select e.runtime_hash is not null as enrolled,
+              case when e.enrolment_hash is not null and e.enrolment_expires_at>clock_timestamp()
+                     and j.deadline_at>clock_timestamp() and s.expires_at>clock_timestamp()
+                then least(e.enrolment_expires_at,j.deadline_at,s.expires_at,clock_timestamp()+interval '1 second')::text
+              end as check_after
+       from public.sandboxes s
+       join public.jobs j on j.id=$2 and j.sandbox_id=s.id and j.generation=s.lifecycle_generation
+         and j.org_id=s.org_id and j.request_owner_id=s.owner_id
+       join public.runtime_enrolments e on e.sandbox_id=s.id and e.lifecycle_generation=s.lifecycle_generation
+       where s.id=$1 and s.provider='modal' and s.runtime_transport='dialout'
+         and s.provider_sandbox_id is not null
+         and s.status in ('starting','ready','running') and s.deleted_at is null and s.stop_requested_at is null`,
+      [sandboxId, job.id],
+    );
+    return receipt ?? { enrolled: false, check_after: null };
+  };
+  const done = { status: "done" } satisfies JobResult;
+  const beforeDispatch = await withJobLease(sql, job, readEnrolment);
+  context.signal.throwIfAborted();
+  if (!beforeDispatch || beforeDispatch.enrolled) return done;
+  if (beforeDispatch.check_after) {
+    return { status: "retry", after: new Date(beforeDispatch.check_after), unattempted: true } satisfies JobResult;
+  }
+
+  const enrolmentInProgress = new Error("Modal launch enrolment already issued.");
+  const enrolments = createRuntimeEnrolments(sql, encryptionKey);
+  const dispatch = await dispatchModalLaunch(sql, job, context, plan, { sandboxId, generation }, async (request) => {
+    const { ownerId, configuration, commandGrantExpiresAt, ...prepared } = await plan.prepareRuntimeTicket(request);
+    try {
+      const ticket = await enrolments.issue({
+        sandboxId,
+        ownerId,
+        configuration,
+        ...(commandGrantExpiresAt === undefined ? {} : { commandGrantExpiresAt }),
+        expectedGeneration: generation,
+        expectedProviderSandboxId: request.machineId,
+        async assertClaim(tx) {
+          if (!(await context.canDispatch(tx))) throw new Error("Modal bootstrap dispatch is no longer authorized.");
+        },
+        ticketGuard: {
+          async lockPrerequisites() {},
+          async check(tx) {
+            const receipt = await readEnrolment(tx);
+            if (receipt.enrolled || receipt.check_after) throw enrolmentInProgress;
+          },
+        },
+      });
+      return { ...prepared, enrolmentToken: ticket.enrolmentToken };
+    } catch (error) {
+      if (error === enrolmentInProgress) return null;
+      throw error;
+    }
+  });
+  const afterDispatch = await withJobLease(sql, job, readEnrolment);
+  context.signal.throwIfAborted();
+  if (!afterDispatch || afterDispatch.enrolled) return done;
+  if (dispatch.kind === "bootstrapped") {
+    return {
+      status: "retry",
+      after: afterDispatch.check_after
+        ? new Date(afterDispatch.check_after)
+        : new Date(Date.now() + ENROLMENT_RETRY_DELAY_MS),
+    } satisfies JobResult;
+  }
 
   const startingTarget = async (tx: Sql) => {
     const {
@@ -206,7 +285,8 @@ export async function runModalLaunch(
     status: "fail",
     reason: LAUNCH_FAILURE,
     async commit(tx) {
-      if (!(await startingTarget(tx))) throw new Error("Modal launch settlement target changed.");
+      if ((await readEnrolment(tx)).enrolled || !(await startingTarget(tx)))
+        throw new Error("Modal launch settlement target changed.");
       const transition = await transitionSandbox(tx, {
         sandboxId,
         expectedGeneration: generation,
@@ -240,6 +320,7 @@ async function dispatchModalLaunch(
   context: DispatchContext,
   plan: ModalLaunchPlan,
   { sandboxId, generation }: Pick<MachineIncarnation, "sandboxId" | "generation">,
+  resolveRuntimeTicket: PrepareModalTicket,
 ) {
   const { signal, canDispatch } = context;
   const incarnation = { sandboxId, generation, signal };
@@ -271,7 +352,7 @@ async function dispatchModalLaunch(
       async (tx) => (await dispatchTarget(tx))?.provider_sandbox_id === null,
     ),
     async resolveRuntimeTicket(request) {
-      const ticket = await plan.machine.resolveRuntimeTicket(request);
+      const ticket = await resolveRuntimeTicket(request);
       if (ticket && (await target())?.provider_sandbox_id !== request.machineId)
         throw new Error("Modal bootstrap dispatch is no longer authorized.");
       return ticket;
@@ -314,7 +395,7 @@ export async function runFailedModalLaunchDelete(
   sql: Sql,
   job: Job,
   context: DispatchContext,
-  prepareMachine: () => Promise<ModalLaunchPlan["machine"]>,
+  prepareMachine: () => Promise<ModalMachineRuntime>,
 ) {
   const sandboxId = job.sandbox_id;
   const generation = Number(job.generation);
@@ -369,7 +450,7 @@ export async function runFailedModalLaunchDelete(
   const mayDispatch = () => withJobLease(sql, job, async (tx) => (await isCurrent(tx)) && context.canDispatch(tx));
   const dispatchRevoked = new Error("Modal cleanup dispatch is no longer authorized.");
   const unconfirmed = { status: "fail", reason: "modal_launch_cleanup_unconfirmed" } satisfies JobResult;
-  let options: ModalLaunchPlan["machine"];
+  let options: ModalMachineRuntime;
   try {
     options = await prepareMachine();
   } catch (error) {
@@ -411,10 +492,7 @@ export async function runFailedModalLaunchDelete(
   return unconfirmed;
 }
 
-function guardModalTermination(
-  sandboxes: ModalLaunchPlan["machine"]["client"]["sandboxes"],
-  authorize: () => Promise<void>,
-) {
+function guardModalTermination(sandboxes: ModalMachineRuntime["client"]["sandboxes"], authorize: () => Promise<void>) {
   return new Proxy(sandboxes, {
     get(service, key) {
       if (key === "fromId") {
