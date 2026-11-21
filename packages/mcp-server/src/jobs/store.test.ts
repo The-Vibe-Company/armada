@@ -304,13 +304,13 @@ test("Modal admission commits an unbound sandbox, scoped job and encrypted turn 
   });
   const {
     rows: [turn],
-  } = await db.query<{ idem_key: string; payload_enc: Uint8Array<ArrayBuffer> }>(
-    `select idem_key,payload_enc from jobs
+  } = await db.query<{ payload_enc: Uint8Array<ArrayBuffer> }>(
+    `select payload_enc from jobs
      where sandbox_id=$1 and generation=1 and kind='launch_initial_turn' and state='queued'`,
     [sandbox.id],
   );
-  expect(JSON.parse(turn!.idem_key).at(-1)).toBe(job!.id);
   expect(JSON.parse(await decryptSecret(turn!.payload_enc, launchEncryptionKey))).toEqual({
+    launchJobId: job!.id,
     prompt: input.initialPrompt,
   });
 });

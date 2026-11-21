@@ -195,7 +195,6 @@ export function createAccountTurnQueue(sql: Sql, key: string) {
         new Date(),
       );
       if (refusal) throw new VaultError("conflict", refusal);
-      // The setup worker commits the launch prompt before marking its intent done.
       if (target.launch_setup_state === "queued" || target.launch_setup_state === "leased")
         throw new VaultError("conflict", "Modal launch setup is still in progress.");
       if (target.launch_setup_state === "failed") throw new VaultError("conflict", "Modal launch setup failed.");
