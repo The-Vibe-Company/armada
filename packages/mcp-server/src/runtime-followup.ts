@@ -2,6 +2,7 @@ import { ProviderError, retainFailureDiagnostic, type Sql, sandboxActivity, Vaul
 import type { Caller } from "./caller.ts";
 import { createSqlData } from "./data.ts";
 import { createGoldenRuntimeEnvironment } from "./golden-runtime-environment.ts";
+import { assertModalLaunchSetup, MODAL_LAUNCH_SETUP_KEY, ModalLaunchSetupConflict } from "./jobs/modal-launch-setup.ts";
 import { runtimeBridgeTarget } from "./provider-runtime-admission.ts";
 import { lockRuntimeAccount } from "./runtime-account-admission.ts";
 import { runtimeAgentFor } from "./runtime-agent.ts";
@@ -68,6 +69,27 @@ export function createRuntimeFollowup(
       (input.reasoning_effort !== undefined && (!repeatPinned || input.reasoning_effort !== found.reasoningEffort))
     )
       throw new VaultError("invalid", "Runtime follow-up uses the launch model and effort.");
+    const assertDirectLaunchReady = async () => {
+      if (claim) return;
+      const {
+        rows: [setup],
+      } = await sql.query<{ state: string | null; prompt_pending: boolean }>(
+        `select j.state, exists (
+           select 1 from public.account_turn_queue q
+           where q.sandbox_id=s.id and q.request_id=j.id and q.state in ('queued','dispatching')
+         ) as prompt_pending
+         from public.sandboxes s left join public.jobs j on j.idem_key=${MODAL_LAUNCH_SETUP_KEY}
+         where s.id=$1 and s.owner_id=$2 and s.org_id=$3 and s.lifecycle_generation=$4`,
+        [found.id, caller.userId, found.orgId, found.lifecycleGeneration],
+      );
+      if (!setup)
+        throw new RuntimeFollowupConflict(
+          "runtime_admission_changed",
+          "Runtime admission changed; inspect status before retrying.",
+        );
+      assertModalLaunchSetup(setup.state);
+      if (setup.prompt_pending) throw new ModalLaunchSetupConflict("modal_launch_prompt_pending");
+    };
     // Route replays by durable operation identity, not today's machine state.
     // A completed wake may already be running (or paused again) on retry.
     const waking =
@@ -86,6 +108,7 @@ export function createRuntimeFollowup(
       ).rows[0];
       if (previous)
         throw new VaultError("conflict", "This request_id belongs to an earlier follow-up; use a new ID for new work.");
+      if (!waking) await assertDirectLaunchReady();
       if (!resume) throw new VaultError("unavailable", "Runtime wake-on-send is unavailable.");
       return resume(caller, { id: found.id, request_id: requestId, runtimeVersion: 1, prompt: input.prompt }, claim);
     }
@@ -123,6 +146,7 @@ export function createRuntimeFollowup(
     const commandGuard = claim ? assertClaim : undefined;
     // Read-only probe before admission. Runner still owns the final busy check.
     const previous = await commands.result(caller.userId, found.id, commandId);
+    if (previous.state === "missing") await assertDirectLaunchReady();
     if (previous.state === "missing" && found.taskPromptId) {
       const last = await agent.getPrompt({ sandboxId: found.providerSandboxId, promptId: found.taskPromptId });
       if (!last.done)
