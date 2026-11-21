@@ -16,6 +16,8 @@ import { bootstrapSandboxAccess } from "./sandbox-access-bootstrap.ts";
 import { orchestratorScopedMcpUrl } from "./sandbox-access-scoped-gateway.ts";
 import { createDelegatedTransport, createEnrolledDelegatedTransport } from "./sandbox-access-transport.ts";
 
+type NativeModalDrainDelete = Parameters<Provider["delete"]>[0] & { generation?: number };
+
 const workerScopes = ["worker:launch", "worker:read", "worker:message", "worker:stop", "worker:extend"] as const;
 
 export interface SandboxArmadaAccessOptions {
@@ -287,7 +289,7 @@ export function createSandboxArmadaAccess(input: {
       }),
     );
   }
-  async function deleteNativeModal(provider: Provider, sandboxId: string, request: Parameters<Provider["delete"]>[0]) {
+  async function deleteNativeModal(provider: Provider, sandboxId: string, request: NativeModalDrainDelete) {
     const placement = request.sandboxId;
     async function assertOwner(store: Sql, lock = false) {
       const owned = await store.query(
@@ -324,8 +326,7 @@ export function createSandboxArmadaAccess(input: {
       return new Proxy(provider, {
         get(target, key) {
           if (key === "delete" && modalDrainSandboxId && target.id === "modal")
-            return (request: Parameters<Provider["delete"]>[0]) =>
-              deleteNativeModal(target, modalDrainSandboxId, request);
+            return (request: NativeModalDrainDelete) => deleteNativeModal(target, modalDrainSandboxId, request);
           if (key === "stop" || key === "delete")
             return async (request: { sandboxId: string }) => {
               await scrub(target, request.sandboxId, key);
