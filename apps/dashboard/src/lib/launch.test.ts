@@ -401,3 +401,17 @@ test("typed launch causes override misleading HTTP statuses without exposing dia
     ),
   ).toContain("2026-11-17T00:00:00.000Z");
 });
+
+test("the dashboard opens an admitted Modal sandbox from its ID alone", async () => {
+  const id = "11111111-1111-4111-8111-111111111111";
+  expect(
+    await launchSandbox(answering({ sandbox: { id, status: "starting" } }), { ...args, provider: "modal" }),
+  ).toEqual({ id });
+  await expect(
+    postSandboxLaunch(
+      answering({ sandbox: { id, status: "starting" } }),
+      { provider: "docker" },
+      "launching on Docker hosts",
+    ),
+  ).rejects.toMatchObject({ outcomeUnknown: true });
+});

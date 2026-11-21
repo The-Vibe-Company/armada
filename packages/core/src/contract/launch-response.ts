@@ -1,5 +1,22 @@
 import { z } from "zod";
 import type { GoldenErrorCode } from "../golden-config.ts";
+import { SANDBOX_STATUSES } from "./sandbox.ts";
+
+export const modalLaunchReceipt = z.strictObject({
+  sandbox: z.strictObject({
+    id: z.uuid().describe("Armada sandbox ID."),
+    status: z.enum(SANDBOX_STATUSES),
+  }),
+});
+
+export type ModalLaunchReceipt = z.infer<typeof modalLaunchReceipt>;
+
+const admissionReceipts = new Map([["modal", modalLaunchReceipt]]);
+
+export function parseLaunchAdmissionReceipt(provider: string, value: unknown) {
+  const parsed = admissionReceipts.get(provider)?.safeParse(value);
+  return parsed?.success ? parsed.data : undefined;
+}
 
 export const launchEnvelope = z.strictObject({
   sandbox: z

@@ -282,3 +282,34 @@ test("repository authorization refusal keeps no_credentials and the reconnect re
   expect(failure.error.message).toContain("Repository private");
   expect(failure.error.message).toContain("armada account login github");
 });
+
+test("an admitted Modal launch reports and saves its sandbox before allocation metadata exists", async () => {
+  const id = response.sandbox.id;
+  const receipt = { sandbox: { id, status: "starting" } };
+  let saved: string | undefined;
+  let out = "";
+  const code = await run(
+    ["new", "web", "--provider", "modal", "--agent", "codex", "do it"],
+    { out: (text) => (out += text), err: () => undefined },
+    {
+      sandboxFile: {
+        read: async () => saved,
+        write: async (value) => {
+          saved = value;
+        },
+      },
+      auth: {
+        out: () => undefined,
+        err: () => undefined,
+        env: { ARMADA_TOKEN: token },
+        fetch: async () => Response.json(receipt),
+        now: () => new Date(),
+        open: () => undefined,
+        session: memorySessionStore(),
+      },
+    },
+  );
+  expect(code).toBe(0);
+  expect(out).toBe(`Sandbox: ${id}\nStatus: starting\n`);
+  expect(saved).toBe(id);
+});

@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { modalLaunchReceipt } from "@armada/core/contract";
 import { createSqlVaultStore, decryptSecret, encryptSecret, type Sql } from "@armada/core/server";
 import {
   createModalProvider,
@@ -385,7 +386,7 @@ async function launchConnection(
 test("ordinary Modal admission freezes defaults and honors explicit opt-out", async () => {
   const { db, sql, people, input } = await modalAdmissionFixture();
   const connectionId = await launchConnection(db, people);
-  const admitted = await admitModalLaunch(sql, launchEncryptionKey, input);
+  const admitted = modalLaunchReceipt.parse(await admitModalLaunch(sql, launchEncryptionKey, input));
   await db.query("update mcp_connections set default_for_launch=false where id=$1", [connectionId]);
   const disconnected = await launchConnection(db, people);
   await db.query("update mcp_grants set status='not_connected' where connection_id=$1", [disconnected]);

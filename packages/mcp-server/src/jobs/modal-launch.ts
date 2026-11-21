@@ -12,6 +12,7 @@ import {
   type SandboxStatus,
   validateSkillPins,
 } from "@armada/core";
+import type { ModalLaunchReceipt } from "@armada/core/contract";
 import {
   assertLaunchSecretBindings,
   createSqlSandboxStore,
@@ -137,7 +138,7 @@ export async function admitModalLaunch(
   const store = createJobsStore(sql, encryptionKey);
 
   try {
-    return await sql.transaction(async (tx) => {
+    const receipt: ModalLaunchReceipt = await sql.transaction(async (tx) => {
       const reservation = templateReceiptId
         ? await lockPinnedModalReservation(tx, orgId, ownerId, templateReceiptId)
         : undefined;
@@ -333,6 +334,7 @@ export async function admitModalLaunch(
       }
       return envelope;
     });
+    return receipt;
   } catch (error) {
     if (error instanceof ConflictingJobRequest)
       throw new GoldenError("conflict", "Launch key conflicts with an existing receipt.");
