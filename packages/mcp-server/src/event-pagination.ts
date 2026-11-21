@@ -5,10 +5,10 @@ import { MAX_LOG_PAGES } from "@armada/core/contract";
 type Page = Awaited<ReturnType<Provider["events"]>>;
 type ReadPage = (cursor: string | undefined) => Promise<Page>;
 
-export class NativeBoatOutputPending extends ProviderError {
-  constructor() {
+export class NativeOutputPending extends ProviderError {
+  constructor(provider: Provider["id"]) {
     super({
-      provider: "boat",
+      provider,
       code: "unavailable",
       retryable: true,
       message: "Native output synchronization is pending. Retry after the current operation finishes.",
@@ -39,7 +39,7 @@ export async function readEventPages(
     try {
       page = await read(cursor);
     } catch (error) {
-      if (!pauseOnNativeLease || !(error instanceof NativeBoatOutputPending)) throw error;
+      if (!pauseOnNativeLease || !(error instanceof NativeOutputPending)) throw error;
       paused = true;
       break;
     }

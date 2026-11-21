@@ -10,7 +10,7 @@ import {
 import type { IngestGrantClaims, Scope } from "@armada/provider-modal";
 import { scopeKey } from "@armada/provider-modal";
 import { admitAccountCapacity, admitLaunchAccount, releaseAccountCapacity } from "./account-capacity.ts";
-import { NativeBoatOutputPending } from "./event-pagination.ts";
+import { NativeOutputPending } from "./event-pagination.ts";
 import { chooseLaunchPoolAccount, type LaunchAccountDefault, readLaunchAccountDefault } from "./launch-account-pool.ts";
 import { exposedSecrets } from "./launch-credentials.ts";
 import { createNativeStateStore } from "./model-auth-state.ts";
@@ -331,14 +331,7 @@ export function createModelAuthOwnership(
            and s.activity_lease_id is not null and s.activity_until>now()`,
           [provider.id, providerId, caller.orgId, caller.userId],
         );
-        if (pending.rows.length && provider.id === "boat") throw new NativeBoatOutputPending();
-        if (pending.rows.length)
-          throw new ProviderError({
-            provider: provider.id,
-            code: "unavailable",
-            retryable: true,
-            message: "Native output synchronization is pending. Retry after the current operation finishes.",
-          });
+        if (pending.rows.length) throw new NativeOutputPending(provider.id);
       };
       await pendingCommand();
       const secrets = await this.capture(provider, providerId, caller);
