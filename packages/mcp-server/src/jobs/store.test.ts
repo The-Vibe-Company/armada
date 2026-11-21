@@ -1325,7 +1325,7 @@ test.each([
   ["runtime legacy window still open", 2, null, "infinity", true, false],
   ["runtime dispatch has no evidence", 2, null, "-infinity", true, false],
   ["runtime dispatch has neither a window nor evidence", 2, null, null, true, false],
-  ["runtime dispatch has evidence but no window", 2, "request", null, true, false],
+  ["runtime dispatch has a persisted command but no window", 2, "command", null, true, false],
   ["stopped runtime dispatch has no evidence", 2, null, "-infinity", true, false],
   ["older job for abandoned runtime dispatch", 3, null, "-infinity", true, false],
   ["native receipt has a prompt ID", 2, "prompt", "-infinity", false, true],
