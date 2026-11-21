@@ -1432,6 +1432,7 @@ test.each([
   "Boat completed",
   "Boat pending",
   "Boat lookup unavailable",
+  "Boat evidence read failed",
   "Boat stale receipt",
   "Boat lost evidence write",
   "Boat lost evidence acknowledgement",
@@ -1444,6 +1445,7 @@ test.each([
   if (!transaction) throw new Error("Missing transaction support");
   let retry = false;
   let providerCalled = false;
+  let allowEvidenceRead = false;
   sql.transaction = async (work) => {
     if (!retry && scenario === "lost settlement" && providerCalled) throw new Error("Settlement unavailable");
     const result = await transaction(work);
@@ -1452,6 +1454,14 @@ test.each([
   };
   const query = sql.query;
   sql.query = async <T>(statement: string, params?: unknown[]) => {
+    if (
+      scenario === "Boat evidence read failed" &&
+      retry &&
+      !allowEvidenceRead &&
+      statement.includes("select o.operation_id from public.sandboxes")
+    ) {
+      throw new Error("Operation evidence read unavailable");
+    }
     if (statement.includes("insert into public.native_drain_delete_operations")) {
       if (scenario === "Boat lost evidence write") throw new Error("Operation evidence write unavailable");
       if (scenario === "Boat lost evidence acknowledgement") {
@@ -1529,12 +1539,30 @@ test.each([
     scenario === "Boat completed" ||
     scenario === "Boat pending" ||
     scenario === "Boat lookup unavailable" ||
+    scenario === "Boat evidence read failed" ||
     scenario === "Boat lost evidence acknowledgement";
   if (providerId === "boat") {
     if (!hasBoatEvidence) await expect(drain()).rejects.toMatchObject({ code: "sandbox_not_ready" });
     else if (scenario === "Boat pending") await expect(drain()).rejects.toThrow("Provider deletion is pending");
     else if (scenario === "Boat lookup unavailable") await expect(drain()).rejects.toThrow("Operation unavailable");
     else {
+      if (scenario === "Boat evidence read failed") {
+        await expect(drain()).rejects.toThrow("Operation evidence read unavailable");
+        expect(observeSandboxDeletion).not.toHaveBeenCalled();
+        expect(provider.delete).toHaveBeenCalledTimes(callsBeforeRetry);
+        expect(
+          (
+            await db.query(
+              `select s.native_drain_pending, o.operation_id, r.archive_id from sandboxes s
+           join native_drain_delete_operations o on o.sandbox_id=s.id
+           join native_drain_recovery r on r.sandbox_id=s.id where s.id=$1`,
+              [sandboxId],
+            )
+          ).rows,
+        ).toEqual([{ native_drain_pending: true, operation_id: "deletion-operation", archive_id: archiveId }]);
+        allowEvidenceRead = true;
+        await db.query("update sandboxes set activity_until=now()-interval '1 second' where id=$1", [sandboxId]);
+      }
       await expect(drain()).resolves.toEqual({ id: sandboxId, status: "deleted" });
       await expect(drain()).resolves.toEqual({ id: sandboxId, status: "deleted" });
     }
@@ -1544,7 +1572,7 @@ test.each([
       expect(observeSandboxDeletion).toHaveBeenCalledWith({
         sandboxId: `bx_${sandboxId}`,
         operationId: "deletion-operation",
-        generation: 6,
+        generation: scenario === "Boat evidence read failed" ? 7 : 6,
         signal: expect.any(AbortSignal),
       });
   } else if (scenario === "unavailable provider") {
@@ -1564,7 +1592,10 @@ test.each([
     [sandboxId],
   );
   const pending =
-    (providerId === "boat" && scenario !== "Boat completed" && scenario !== "Boat lost evidence acknowledgement") ||
+    (providerId === "boat" &&
+      scenario !== "Boat completed" &&
+      scenario !== "Boat evidence read failed" &&
+      scenario !== "Boat lost evidence acknowledgement") ||
     scenario === "unavailable provider";
   const recorded = hasBoatEvidence && pending;
   expect(rows).toEqual([
