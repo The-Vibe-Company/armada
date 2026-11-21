@@ -3,8 +3,10 @@ import type { ModalMachineJournal } from "@armada/provider-modal";
 import {
   COMPLETED_RUNTIME_WAKE,
   CONFIRMED_WAKE_WITHOUT_TICKET,
+  CURRENT_DOCKER_RESUME_JOB,
   DISPATCH_ABANDONED,
   DISPATCHING_TURN_CANCELLED,
+  DOCKER_RESUME_WITHOUT_DISPATCH_DEADLINE,
   ENROLLED_PENDING_RUNTIME_WAKE,
   failTurnReceipt,
   NATIVE_DISPATCH_UNCERTAIN,
@@ -70,26 +72,6 @@ const CURRENT_DOCKER_PROMPT_COMMAND = `(s.provider = 'docker' and exists(
     and e.lifecycle_generation = s.lifecycle_generation
     and e.docker_issuer_fence = h.owner_id::text || ':' || a.epoch::text
     and h.hash is not null and h.registration_hash is null and h.revoked_at is null
-))`;
-
-const CURRENT_DOCKER_RESUME_JOB = `(s.provider = 'docker' and exists(
-  select 1 from public.docker_resume_claims c
-  join public.docker_host_jobs h_job on h_job.request_id = c.request_id
-    and h_job.bound_sandbox_id = c.sandbox_id and h_job.bound_actor_id = c.actor_id and h_job.host_id = c.host_id
-  join public.docker_hosts h on h.id = c.host_id and h.org_id = s.org_id and h.installation_id = c.installation_id
-  join public.members issuer on issuer.org_id = h.org_id and issuer.user_id = h.owner_id
-  join public.members actor on actor.org_id = s.org_id and actor.user_id = c.actor_id
-  join public.mcp_actor_epochs a on a.org_id = actor.org_id and a.user_id = actor.user_id
-  where c.request_id = q.request_id and c.sandbox_id = s.id and c.actor_id = s.owner_id and c.actor_id = q.owner_id
-    and c.host_id = s.docker_host_id and c.installation_id = s.docker_installation_id
-    and c.generation = s.docker_generation and c.accepted
-    and c.lifecycle_generation = q.dispatch_generation and c.lifecycle_generation + 1 = s.lifecycle_generation
-    and h_job.bound_operation = 'resume' and h_job.bound_actor_epoch = a.epoch
-    and h_job.cancelled_at is null and h_job.refused_resume_generation is null
-    and (h_job.outcome = 'completed' or (h_job.outcome is null and s.status = 'starting'))
-    and h.hash is not null and h.registration_hash is null and h.revoked_at is null
-    and not exists(select 1 from public.runtime_commands p
-      where p.sandbox_id = s.id and p.request_id = 'docker_prompt_' || q.request_id::text)
 ))`;
 
 export async function withJobLease<T>(sql: Sql, job: Job, write: (tx: Sql) => Promise<T>) {
@@ -229,7 +211,8 @@ export function createJobsStore(sql: Sql, encryptionKey?: string) {
                    and s.status in ('starting','ready','running')
                    and q.dispatch_generation in (s.lifecycle_generation, s.lifecycle_generation - 1)
                    and (${COMPLETED_RUNTIME_WAKE} or ${ENROLLED_PENDING_RUNTIME_WAKE}
-                     or ${CONFIRMED_WAKE_WITHOUT_TICKET} or (q.dispatch_until <= clock_timestamp()
+                     or ${CONFIRMED_WAKE_WITHOUT_TICKET} or ${DOCKER_RESUME_WITHOUT_DISPATCH_DEADLINE}
+                     or (q.dispatch_until <= clock_timestamp()
                      and (s.activity_lease_id = q.request_id
                        or (s.activity_lease_id is null and ${CURRENT_DOCKER_RESUME_JOB})
                        or (s.activity_lease_id is null and s.status in ('ready','running')

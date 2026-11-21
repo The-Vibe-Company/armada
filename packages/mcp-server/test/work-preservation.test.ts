@@ -430,7 +430,13 @@ test("a successful clean check stays silent if clearing the receipt must be retr
 });
 
 test("a late failed pass cannot overwrite a concurrent successful stop receipt", async () => {
-  await withPreservationRow(async ({ db, id, physical, sql, boat, provider }) => {
+  await withPreservationRow(async ({ db, id, physical, sql, boat, provider, generation }) => {
+    const token = crypto.randomUUID();
+    await db.query("update sandboxes set activity_lease_id=$2, activity_until=now()+interval '2 minutes' where id=$1", [
+      id,
+      token,
+    ]);
+    const authority = { kind: "activity", token, generation } as const;
     await db.query("update sandboxes set stop_requested_at='2026-11-11T08:00:00Z',stop_generation=1 where id=$1", [id]);
     let release: (() => void) | undefined;
     let entered: (() => void) | undefined;
@@ -455,10 +461,10 @@ test("a late failed pass cannot overwrite a concurrent successful stop receipt",
         });
       },
     };
-    const failed = preserveBeforeStop(sql, late, id, physical, "lifecycle_stop");
+    const failed = preserveBeforeStop(sql, late, id, physical, "user_stop", authority);
     await ready;
     boat.setExecOutput({ stdout: '{"status":"clean"}' });
-    await preserveBeforeStop(sql, provider, id, physical, "user_stop");
+    await preserveBeforeStop(sql, provider, id, physical, "user_stop", authority);
     release?.();
     await failed;
     expect(
@@ -472,17 +478,23 @@ test("a late failed pass cannot overwrite a concurrent successful stop receipt",
 });
 
 test("a fresh stop epoch does not reuse an earlier clean capture", async () => {
-  await withPreservationRow(async ({ db, id, physical, sql, boat, provider }) => {
+  await withPreservationRow(async ({ db, id, physical, sql, boat, provider, generation }) => {
     boat.setExecOutput({ stdout: '{"status":"clean"}' });
+    const token = crypto.randomUUID();
+    await db.query("update sandboxes set activity_lease_id=$2, activity_until=now()+interval '2 minutes' where id=$1", [
+      id,
+      token,
+    ]);
+    const authority = { kind: "activity", token, generation } as const;
     await db.query(
       `update sandboxes set stop_requested_at='2026-11-11T08:00:00Z',stop_generation=1,
         preservation_stop_generation=1 where id=$1`,
       [id],
     );
-    await preserveBeforeStop(sql, provider, id, physical);
+    await preserveBeforeStop(sql, provider, id, physical, "user_stop", authority);
     expect(boat.execs).toHaveLength(0);
     await db.query("update sandboxes set stop_requested_at='2026-11-11T09:00:00Z',stop_generation=2 where id=$1", [id]);
-    await preserveBeforeStop(sql, provider, id, physical);
+    await preserveBeforeStop(sql, provider, id, physical, "user_stop", authority);
     expect(boat.execs).toHaveLength(1);
   });
 });
@@ -685,3 +697,66 @@ test.each([
     }
   }, "modal");
 });
+
+test.each(["observe", "capture"] as const)(
+  "native stop ownership transfer during %s leaves no stale receipt",
+  async (phase) => {
+    await withPreservationRow(async ({ db, id, physical, sql, boat, provider, generation }) => {
+      const activity = crypto.randomUUID();
+      const reconcile = crypto.randomUUID();
+      await db.query(
+        `update sandboxes set status='stopping', stop_requested_at=now(), stop_generation=1,
+         activity_lease_id=$2, activity_until=now()+interval '2 minutes' where id=$1`,
+        [id, activity],
+      );
+      const takeOver = () =>
+        db.query(
+          `update sandboxes set activity_lease_id=null, activity_until=null,
+           reconcile_lease=$2, reconcile_lease_until=now()+interval '2 minutes' where id=$1`,
+          [id, reconcile],
+        );
+      boat.setExecOutput({ stdout: '{"status":"clean"}' });
+      let captures = 0;
+      let observations = 0;
+      const host: typeof provider = {
+        ...provider,
+        async get() {
+          observations++;
+          if (phase === "observe" && observations === 1) await takeOver();
+          return provider.get(physical);
+        },
+        async exec(request) {
+          captures++;
+          if (phase === "capture" && captures === 1) await takeOver();
+          return provider.exec(request);
+        },
+      };
+      const readReceipt = async () =>
+        (
+          await db.query<{ preservation_stop_generation: number | null }>(
+            "select preservation_stop_generation from sandboxes where id=$1",
+            [id],
+          )
+        ).rows[0]?.preservation_stop_generation;
+      expect(
+        await preserveBeforeStop(sql, host, id, physical, "user_stop", {
+          kind: "activity",
+          token: activity,
+          generation,
+        }),
+      ).toBe("pending");
+      expect(await readReceipt()).toBeNull();
+      const priorCaptures = phase === "observe" ? 0 : 1;
+      expect(captures).toBe(priorCaptures);
+      expect(
+        await preserveBeforeStop(sql, host, id, physical, "lifecycle_stop", {
+          kind: "reconcile",
+          token: reconcile,
+          generation,
+        }),
+      ).toBeUndefined();
+      expect(Number(await readReceipt())).toBe(1);
+      expect(captures).toBe(priorCaptures + 1);
+    });
+  },
+);
