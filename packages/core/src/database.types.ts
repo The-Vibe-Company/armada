@@ -4858,17 +4858,14 @@ export type Database = {
       sandbox_native_exec_attempts: {
         Row: {
           sandbox_id: string;
-          activity_token: string;
           generation: number;
         };
         Insert: {
           sandbox_id: string;
-          activity_token: string;
           generation: number;
         };
         Update: {
           sandbox_id?: string;
-          activity_token?: string;
           generation?: number;
         };
         Relationships: [

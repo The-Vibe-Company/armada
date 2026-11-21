@@ -3,9 +3,8 @@ begin;
 -- Contains only unresolved workspace command attempts, including previous generations.
 create table public.sandbox_native_exec_attempts (
   sandbox_id uuid not null references public.sandboxes(id) on delete cascade,
-  activity_token uuid not null,
   generation bigint not null,
-  primary key (sandbox_id, activity_token)
+  primary key (sandbox_id, generation)
 );
 
 alter table public.sandbox_native_exec_attempts enable row level security;

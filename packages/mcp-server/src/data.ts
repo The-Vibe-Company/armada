@@ -1071,7 +1071,7 @@ export function createSqlData(
         if (patch.renewActivity)
           fence += ` and (s.activity_until>clock_timestamp() or not exists(
             select 1 from public.sandbox_native_exec_attempts e
-            where e.sandbox_id=s.id and e.activity_token=s.activity_lease_id
+            where e.sandbox_id=s.id and e.generation=s.lifecycle_generation
           ))`;
         // A read-only reconciler may overlap list readiness. Admission can supersede
         // that observation, but never a claimed stop or an expired/starting sandbox.
@@ -1193,15 +1193,15 @@ export function createSqlData(
             const updated = await applyUpdate(tx);
             if (!updated.rows[0]?.id) return updated;
             if (patch.nativeExecAdmission) {
-              await tx.query(
-                "insert into public.sandbox_native_exec_attempts(sandbox_id,activity_token,generation) values($1,$2,$3)",
-                [id, activityToken, expectedGeneration + 1],
-              );
+              await tx.query("insert into public.sandbox_native_exec_attempts(sandbox_id,generation) values($1,$2)", [
+                id,
+                expectedGeneration + 1,
+              ]);
             } else {
               const settled = await tx.query(
                 `delete from public.sandbox_native_exec_attempts
-                 where sandbox_id=$1 and activity_token=$2 and generation=$3 returning sandbox_id`,
-                [id, activityToken, expectedGeneration],
+                 where sandbox_id=$1 and generation=$2 returning sandbox_id`,
+                [id, expectedGeneration],
               );
               if (!settled.rows.length) throw new DataError("Native exec evidence changed before completion.");
             }
