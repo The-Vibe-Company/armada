@@ -3,6 +3,10 @@ import { join } from "node:path";
 const GREEN_JOURNAL_LIMIT = 20;
 const MIN_STEP_SAMPLES = 20;
 const MIN_STEP_DEADLINE_MS = 2_000;
+export const USAGE_STATUS_MIN_REQUEST_MS = MIN_STEP_DEADLINE_MS;
+export const SMOKE_POLL_INTERVAL_MS = 1_000;
+const USAGE_POLL_MIN_MS = 2 * USAGE_STATUS_MIN_REQUEST_MS + SMOKE_POLL_INTERVAL_MS;
+const usagePollSteps = new Set(["usage", "usage_second", "resume_usage"]);
 
 export function smokeDeadlines(greenJournalsNewestFirst: readonly string[]) {
   const samples = new Map<string, number[]>();
@@ -30,7 +34,8 @@ export function smokeDeadlines(greenJournalsNewestFirst: readonly string[]) {
         if (values.length < MIN_STEP_SAMPLES) return [];
         values.sort((a, b) => a - b);
         const p99 = values[Math.ceil(values.length * 0.99) - 1]!;
-        return [[step, Math.max(MIN_STEP_DEADLINE_MS, Math.ceil(2 * p99))] as const];
+        const floor = usagePollSteps.has(step) ? USAGE_POLL_MIN_MS : MIN_STEP_DEADLINE_MS;
+        return [[step, Math.max(floor, Math.ceil(2 * p99))] as const];
       }),
   );
 }

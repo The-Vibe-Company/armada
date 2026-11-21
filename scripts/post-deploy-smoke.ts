@@ -29,6 +29,7 @@ import { ExpirySmokeFailure, runExpiryCase } from "./expiry-smoke.ts";
 import { helperProbe, skillpackProbe } from "./golden-runtime-smoke.ts";
 import { createScopedProbe, ScopedAccessSmokeFailure } from "./scoped-access-smoke.ts";
 import deadlines from "./smoke-deadlines.json";
+import { SMOKE_POLL_INTERVAL_MS, USAGE_STATUS_MIN_REQUEST_MS } from "./smoke-deadlines.ts";
 import { observeSmokeLaunch } from "./smoke-launch.ts";
 import { runTemplateSkillCase, TemplateSkillSmokeFailure, verifyReceipts } from "./template-skill-smoke.ts";
 import { runVaultCase, VaultSmokeFailure } from "./vault-smoke.ts";
@@ -720,15 +721,17 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
   async function poll<T>(
     read: (timeoutMs?: number) => Promise<T>,
     done: (value: T) => boolean,
-    options: { limit?: number; step?: string; until?: number } = {},
+    options: { limit?: number; step?: string; until?: number; minRequestMs?: number } = {},
   ): Promise<T> {
     const timeoutMs = options.step === undefined ? undefined : (deadlines as Record<string, number>)[options.step];
     const until = options.until ?? (timeoutMs === undefined ? undefined : Math.min(deadline, io.now() + timeoutMs));
     const limit = options.limit ?? (until === undefined ? POLLS : Number.POSITIVE_INFINITY);
+    const requestDeadline = until ?? (options.minRequestMs === undefined ? undefined : deadline);
+    const minRequestMs = options.minRequestMs ?? 1;
     for (let i = 0; i < limit; i++) {
-      const remaining = until === undefined ? undefined : until - io.now();
-      if (remaining !== undefined && remaining <= 0) break;
-      const value = await read(remaining).catch((error: unknown) => {
+      const remaining = requestDeadline === undefined ? undefined : requestDeadline - io.now();
+      if (remaining !== undefined && remaining < minRequestMs) break;
+      const value = await read(until === undefined ? undefined : remaining).catch((error: unknown) => {
         if (
           error instanceof SmokeFailure &&
           error.code === "request_failed" &&
@@ -746,10 +749,10 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
           );
         throw error;
       });
-      const after = until === undefined ? Number.POSITIVE_INFINITY : until - io.now();
+      const after = requestDeadline === undefined ? Number.POSITIVE_INFINITY : requestDeadline - io.now();
       if (after >= 0 && done(value)) return value;
-      if (after <= 0) break;
-      if (i + 1 < limit) await io.sleep(Math.min(1000, after));
+      if (after <= 0 || (options.minRequestMs !== undefined && after < SMOKE_POLL_INTERVAL_MS + minRequestMs)) break;
+      if (i + 1 < limit) await io.sleep(Math.min(SMOKE_POLL_INTERVAL_MS, after));
     }
     fail("poll_limit_exceeded");
   }
@@ -1636,7 +1639,7 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
                 );
               },
               (accepted) => accepted,
-              { step: usageStep },
+              { step: usageStep, minRequestMs: USAGE_STATUS_MIN_REQUEST_MS },
             );
           } catch (error) {
             if (

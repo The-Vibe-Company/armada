@@ -2765,7 +2765,7 @@ test("Modal smoke refuses a finished turn whose status never reports usage and s
     ),
   ).toBe(false);
   expect(fake.receipts()).toContainEqual({ case: 0, step: "usage", pass: false, code: "poll_limit_exceeded" });
-  expect(fake.io.now()).toBe(deadlines.usage);
+  expect(fake.io.now()).toBe(deadlines.usage - 2_000);
   expect(fake.calls.some((call) => call.path === "sandbox/stop")).toBe(true);
 });
 
@@ -2811,7 +2811,7 @@ test.each(["unknown", "missing", "old", "partial", "measured", "null-totals", "c
         .slice(1)
         .map((line) => JSON.parse(line))
         .find((line) => line.step === "resume_usage");
-      expect(usage?.elapsedMs).toBe(deadlines.resume_usage);
+      expect(usage?.elapsedMs).toBe(deadlines.resume_usage - 2_000);
     }
     expect(fake.receipts().find((line) => line.step === "usage_request_diagnostic")).toEqual(
       accepted
@@ -2839,6 +2839,23 @@ test.each(["unknown", "missing", "old", "partial", "measured", "null-totals", "c
     );
   },
 );
+
+test.each(["usage", "resume_usage"] as const)("a late %s status read leaves no sub-floor retry", async (step) => {
+  const promptId = step === "usage" ? "turn-1" : "turn-2";
+  let checkingUsage = false;
+  let attempts = 0;
+  const fake = lifecycleFixture("none", (call) => {
+    if (call.path === "sandbox/wait" && call.body.prompt_id === promptId) checkingUsage = true;
+    if (call.path === "sandbox/stop") checkingUsage = false;
+    if (call.path !== "sandbox/status" || !checkingUsage) return undefined;
+    attempts++;
+    fake.advance(deadlines[step] - 2_500);
+    return json({ usage: { turns: [], tokenTotals: { inputTokens: null, outputTokens: null } } });
+  });
+  expect(await fake.run([{ ...selected, provider: "modal" }])).toBe(false);
+  expect(fake.receipts()).toContainEqual({ case: 0, step, pass: false, code: "poll_limit_exceeded" });
+  expect(attempts).toBe(1);
+});
 
 test.each(["fetch", "body"])(
   "a resumed usage request that exhausts the poll deadline reports its timeout: %s",
