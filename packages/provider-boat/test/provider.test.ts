@@ -235,6 +235,34 @@ describe("native harness cwd preparation", () => {
 
 describe("sandboxes", () => {
   test.each([
+    ["verification during the current stop", "2026-11-21T19:42:24Z", 1795290158322, "usable"],
+    ["verification before the stop was requested", "2026-11-21T19:42:35Z", 1795290158322, "unconfirmed"],
+    ["a previous completed stop", "2026-11-21T19:42:24Z", 1795290150657, "unconfirmed"],
+  ])("get checks archived retention with %s", async (_name, requestedAt, endedAt, expected) => {
+    const stop = {
+      id: "stop-1",
+      status: StopOperationStatusEnum.Completed,
+      endedAt: new Date(endedAt).toISOString(),
+      lastAttemptAt: new Date(endedAt).toISOString(),
+      error: null,
+    };
+    const boat = fakeBoat(
+      {
+        body: {
+          sandbox: retainedSandbox({
+            stoppedAt: new Date(1795290158322).toISOString(),
+            snapshotVerifiedAt: new Date(1795290150656).toISOString(),
+            lastSnapshotStatus: SandboxLastSnapshotStatusEnum.Completed,
+            stop: { ...stop, requestedAt: null },
+          }),
+        },
+      },
+      { body: { ok: true, type: "stop.status", id: ID, stop: { ...stop, requestedAt } } },
+    );
+    expect(await boat.provider.get(ID)).toMatchObject({ state: "stopped", retainedSnapshot: expected });
+  });
+
+  test.each([
     {
       name: "a completed stop with a recently verified snapshot",
       stopStatus: StopOperationStatusEnum.Completed,
@@ -263,15 +291,6 @@ describe("sandboxes", () => {
       name: "a failed snapshot attempt despite recent verification",
       stopStatus: StopOperationStatusEnum.Completed,
       snapshot: { lastSnapshotStatus: SandboxLastSnapshotStatusEnum.Failed },
-      expected: "unconfirmed",
-    },
-    {
-      name: "a completed snapshot predating the current stop",
-      stopStatus: StopOperationStatusEnum.Completed,
-      snapshot: {
-        lastSnapshotStatus: SandboxLastSnapshotStatusEnum.Completed,
-        snapshotVerifiedAt: "2026-11-09T09:30:00Z",
-      },
       expected: "unconfirmed",
     },
     {
