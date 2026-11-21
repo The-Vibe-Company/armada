@@ -1823,7 +1823,7 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
         });
       }
       if (githubRefresh && !dirty) {
-        await step("github_refresh", async () => {
+        await measuredStep("github_refresh", async () => {
           const receipt = await request<{
             id: string;
             status: string;
