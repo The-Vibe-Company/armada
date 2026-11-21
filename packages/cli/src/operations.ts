@@ -20,7 +20,17 @@ export async function operation(
   command:
     | Exclude<
         keyof ArmadaCommandClient["sandboxes"],
-        "launch" | "list" | "logs" | "send" | "steer" | "status" | "wait" | "advice" | "recovery"
+        | "launch"
+        | "list"
+        | "logs"
+        | "send"
+        | "steer"
+        | "status"
+        | "wait"
+        | "advice"
+        | "recovery"
+        | "extend"
+        | "interrupt"
       >
     | "ls"
     | "info"
@@ -39,14 +49,18 @@ export async function operation(
       ? ["--reason", "--pr-number", "--pr-url", "--head-sha"]
       : command === "ls"
         ? ["--status", "--ref", "--harness", "--golden", "--owner", "--page", "--limit"]
-        : [],
+        : command === "stop"
+          ? ["--after"]
+          : [],
     command === "ls"
       ? ["--page-info"]
       : command === "rm"
         ? ["--yes"]
         : command === "info"
           ? ["--live", "--setup", "--wait"]
-          : [],
+          : command === "stop"
+            ? ["--turn"]
+            : [],
   );
   const end = argv.indexOf("--");
   if (command === "exec" && (end < 0 || end === argv.length - 1 || args.positionals.length > argv.length - end))
@@ -59,10 +73,9 @@ export async function operation(
     ls: ["--status", "--ref", "--agent", "--harness", "--golden", "--owner", "--page", "--limit", "--page-info"],
     info: ["--live", "--prompt-id", "--setup", "--wait", "--timeout"],
     exec: ["--cwd", "--timeout"],
-    stop: [],
+    stop: ["--turn", "--after"],
     report: ["--prompt-id", ...(rest[0] === "blocked" ? ["--reason"] : ["--pr-number", "--pr-url", "--head-sha"])],
     "bind-credential": ["--credential-id"],
-    extend: ["--ttl"],
     rm: ["--yes"],
   };
   acceptedOptions(args, command, ["--org", "--json", ...(options[command] ?? [])]);
@@ -133,12 +146,12 @@ export async function operation(
       throw new GoldenError("invalid_config", `--timeout must be ${minimum}–600 seconds.`);
   }
   if (command === "ls") Object.assign(body, sandboxListFilters(args));
-  if (command === "extend") {
+  const after = single(args, "--after");
+  const turn = flag(args, "--turn");
+  if (after !== undefined && turn) throw new GoldenError("invalid_config", "Choose --turn or --after.");
+  if (after !== undefined) {
     if (org !== undefined) uuid(org, "--org");
-    const ttl = single(args, "--ttl");
-    if (ttl === undefined || [...args.options.keys()].some((key) => !["--ttl", "--org", "--json"].includes(key)))
-      throw new GoldenError("invalid_config", "Run armada extend <sandbox-id> --ttl <duration> [--org UUID] [--json].");
-    body.ttlSeconds = parseTtl(ttl);
+    body.ttlSeconds = parseTtl(after, "--after");
   }
   if (command === "bind-credential") {
     const credentialId = single(args, "--credential-id");
@@ -166,7 +179,7 @@ export async function operation(
   } else if ((command === "ls" && id) || rest.length) throw new GoldenError("invalid_config", "Unexpected arguments.");
   if (command !== "ls") {
     const resolved = await resolveId(id);
-    if (command === "extend") uuid(resolved, "sandbox id");
+    if (after !== undefined) uuid(resolved, "sandbox id");
     body.id = resolved;
   }
   const seconds = wait
@@ -174,21 +187,30 @@ export async function operation(
     : command === "exec"
       ? Number(body.timeout_seconds ?? 120)
       : undefined;
+  let action: keyof ArmadaCommandClient["sandboxes"];
+  switch (command) {
+    case "stop":
+      action = turn ? "interrupt" : after === undefined ? "stop" : "extend";
+      break;
+    case "info":
+      action = wait ? "wait" : "status";
+      break;
+    case "ls":
+      action = "list";
+      break;
+    default:
+      action = command;
+  }
   const signal =
-    command === "stop" || command === "bind-credential"
+    action === "stop" || action === "bind-credential"
       ? AbortSignal.timeout(660_000)
       : seconds === undefined
         ? undefined
         : AbortSignal.timeout((seconds + 15) * 1_000);
-  const request = client().then((client) =>
-    client.sandboxes[command === "info" ? (wait ? "wait" : "status") : command === "ls" ? "list" : command](
-      body,
-      signal ? { signal } : undefined,
-    ),
-  );
+  const request = client().then((client) => client.sandboxes[action](body, signal ? { signal } : undefined));
   const result = await request.catch((error: unknown) => {
     if (
-      command === "stop" &&
+      action === "stop" &&
       error instanceof ArmadaApiError &&
       error.code === "unavailable" &&
       error.status >= 500 &&
@@ -202,7 +224,7 @@ export async function operation(
         1,
       );
     if (
-      command === "stop" &&
+      action === "stop" &&
       error instanceof AuthError &&
       !(error instanceof ArmadaApiError) &&
       error.code === "unavailable"
@@ -291,11 +313,12 @@ function sandboxListFilters(args: ReturnType<typeof parseArgs>): Record<string, 
   return body;
 }
 
-export function parseTtl(value: string): number {
+export function parseTtl(value: string, option = "--ttl"): number {
   const match = /^([1-9][0-9]*)([smhd]?)$/.exec(value);
   const unit = { "": 1, s: 1, m: 60, h: 3600, d: 86_400 }[match?.[2] ?? ""];
-  if (!match?.[1] || unit === undefined) {
-    throw new GoldenError("invalid_config", `--ttl '${value}' is not a duration. Use 90, 30m, 4h or 2d.`);
+  const seconds = Number(match?.[1]) * (unit ?? NaN);
+  if (!Number.isSafeInteger(seconds)) {
+    throw new GoldenError("invalid_config", `${option} '${value}' is not a duration. Use 90, 30m, 4h or 2d.`);
   }
-  return Number(match[1]) * unit;
+  return seconds;
 }

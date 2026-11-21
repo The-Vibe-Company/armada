@@ -133,7 +133,7 @@ armada new web --provider boat --agent claude --model claude-opus-5-5 --reasonin
 armada events SANDBOX_ID -f
 armada prompt --steer SANDBOX_ID "Keep the public API unchanged"
 armada prompt SANDBOX_ID "Now add a regression test" --reasoning-effort xhigh   # this turn only
-armada extend SANDBOX_ID --ttl 270m              # extend the 4h launch to 4h30m from now
+armada stop SANDBOX_ID --after 270m              # extend the 4h launch to 4h30m from now
 armada stop SANDBOX_ID                     # normally retains disk/conversation; Modal checkpoint failure does not
 armada prompt SANDBOX_ID "Push the branch"   # resumes only if the stopped sandbox was retained
 ```

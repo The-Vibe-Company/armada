@@ -63,12 +63,10 @@ describe("run", () => {
     "info",
     "bind-credential",
     "rm",
-    "extend",
     "report",
     "prompt",
     "exec",
     "stop",
-    "interrupt",
     "mcp",
     "login",
     "logout",
@@ -110,7 +108,9 @@ describe("run", () => {
       [["list"], "list", true],
       [["send"], "send", true],
       [["steer"], "steer", true],
-      ...["status", "detail", "wait", "advice", "recovery"].map((verb) => [[verb], verb, true] as const),
+      ...["status", "detail", "wait", "advice", "recovery", "interrupt", "extend"].map(
+        (verb) => [[verb], verb, true] as const,
+      ),
       [["snapshot", "frobnicate", "--org", "org_placeholder"], "snapshot frobnicate"],
       ...[
         "create",

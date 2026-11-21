@@ -26,7 +26,7 @@ Commands below start with `armada`. Select an organization with `login --org NAM
 | Sandbox list | Authorized filters and pages | `list --status STATUS --agent HARNESS --golden UUID --owner UUID\|me --page N --limit N [--json] [--page-info]` |
 | Sandbox detail / status | Sandbox page and prompt status | `detail ID`, `status ID`; actual stored privacy and repository context |
 | Agent turns | Send, steer and interrupt | `send ID PROMPT`, `steer ID TEXT`, `interrupt ID`; model/effort overrides where supported |
-| Stop / wait | Stop and turn progress | `stop ID`, `wait ID --timeout SECONDS [--prompt-id ID]` |
+| Stop / wait | Stop, interrupt, extend and track turn progress | `stop ID`, `stop ID --turn`, `stop ID --after DURATION`, `info ID --wait --timeout SECONDS [--prompt-id ID]` |
 | Events / commands | Event stream and sandbox commands | `events [ID] [-f] [--tail N]`, `exec [ID] -- COMMAND`, `outputs [NAME] [-o DIR]` |
 | MCP definitions | Personal/shared definitions, status and authorization | `mcp list/add/update/connect/status/reconnect/enable/disable/revoke/delete` |
 | Public/OAuth MCP shortcut | Connection creation form | `mcp add NAME URL [--scope personal\|org]`; defaults personal, HTTP, automatic auth discovery |

@@ -4,10 +4,8 @@ import api from "./api.ts";
 import { secrets, vars } from "./application-vault.ts";
 import type { Command, UsageGroup } from "./command.ts";
 import completion from "./completion.ts";
-import extend from "./extend.ts";
 import host from "./host.ts";
 import info from "./info.ts";
-import interrupt from "./interrupt.ts";
 import login from "./login.ts";
 import logout from "./logout.ts";
 import ls from "./ls.ts";
@@ -27,9 +25,7 @@ export const commands: readonly Command[] = [
   ls,
   info,
   rm,
-  extend,
   stop,
-  interrupt,
   report,
   prompt,
   ...sandboxInspectionCommands,

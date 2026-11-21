@@ -4,13 +4,14 @@ import { memorySessionStore } from "../src/session.ts";
 
 test("command boundaries reject recognized but unused flags before making requests", async () => {
   const invocations = [
-    ...["info", "prompt", "exec", "stop", "interrupt", "report", "bind-credential"].map((command) => [
+    ...["info", "prompt", "exec", "stop", "report", "bind-credential"].map((command) => [
       command,
       "sandbox",
       "--ttl",
       "4h",
     ]),
     ...["ls", "new", "update", "rebuild", "rm", "show"].map((command) => ["snapshot", command, "--ttl", "4h"]),
+    ["stop", "sandbox", "--turn", "--after", "1h"],
     ["report", "sandbox", "ready", "--reason", "ignored"],
     ["report", "sandbox", "blocked", "--pr-number", "1"],
     ["account", "status", "--timeout", "4"],

@@ -37,7 +37,7 @@ test.each(
     ["info", id, "--wait"],
     ["events", id],
     ["stop", id],
-    ["interrupt", id],
+    ["stop", id, "--turn"],
     ["prompt", id, "hello"],
     ["prompt", "--steer", id, "hello"],
     ["exec", id, "--", "printf audit"],
