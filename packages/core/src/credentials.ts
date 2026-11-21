@@ -108,6 +108,7 @@ export const CODEX_AUTH_PATH = "/home/user/.codex/auth.json";
 interface KindInfo {
   readonly singleton?: true;
   readonly orgStorage?: "org-boat-key";
+  readonly normalizeValue?: (value: string) => string;
   /** The name `armada account add <name>` takes. */
   name?: string;
   label: string;
@@ -124,7 +125,12 @@ export const CREDENTIAL_KINDS: Readonly<Record<CredentialKind, KindInfo>> = {
   openai: { name: "openai", label: "OpenAI API key for Codex", env: "OPENAI_API_KEY" },
   codex_auth: { name: "codex-auth", label: "Codex auth.json" },
   boat: { name: "boat", label: "boat.dev API key", singleton: true, orgStorage: "org-boat-key" },
-  modal: { name: "modal", label: "Modal token pair (id and secret)", singleton: true },
+  modal: {
+    name: "modal",
+    label: "Modal token pair (id and secret)",
+    singleton: true,
+    normalizeValue: (value) => JSON.stringify(modalPairJson(parseModalTokenPair(value))),
+  },
   skillpack: { name: "skillpack", label: "Skillpack personal access token", singleton: true },
   antigravity: { label: "Antigravity" },
 };
@@ -161,7 +167,8 @@ export function credentialName(kind: CredentialKind): string {
 export function parseCredentialValue(kind: CredentialKind, raw: string): string {
   const value = raw.trim();
   if (value === "") throw new VaultError("invalid", "The value is empty.");
-  if (kind === "modal") return JSON.stringify(modalPairJson(parseModalTokenPair(value)));
+  const normalizeValue = CREDENTIAL_KINDS[kind]?.normalizeValue;
+  if (normalizeValue) return normalizeValue(value);
   if (kind === "skillpack" && !new RegExp(`^${SKILLPACK_TOKEN_PATTERN}$`).test(value)) {
     throw new VaultError(
       "invalid",
@@ -339,7 +346,7 @@ export async function resolveModalTokens(
         ]
       : [["org", input.orgId]];
   for (const [scope, ownerId] of scopes) {
-    const row = (await reader.credentials(scope, ownerId)).find((candidate) => candidate.kind === "modal");
+    const row = await findStoredCredential(reader, scope, ownerId, "modal");
     if (!row) continue;
     const opened = await open(row.valueEnc, encryptionKey);
     let pair: ModalTokenPair;
@@ -372,7 +379,7 @@ export async function resolveSkillpackCredential(
     ["user", input.userId],
     ["org", input.orgId],
   ] as const) {
-    const row = (await reader.credentials(scope, ownerId)).find((candidate) => candidate.kind === "skillpack");
+    const row = await findStoredCredential(reader, scope, ownerId, "skillpack");
     if (!row) continue;
     if (
       (row.status !== undefined && row.status !== "active") ||
@@ -414,6 +421,15 @@ export interface CredentialReader {
   agentDefaults?(userId: string): Promise<AgentDefault[]>;
   credentials(scope: CredentialScope, ownerId: string): Promise<StoredCredential[]>;
   orgBoatKey(orgId: string): Promise<Uint8Array | null>;
+}
+
+async function findStoredCredential(
+  reader: CredentialReader,
+  scope: CredentialScope,
+  ownerId: string,
+  kind: CredentialKind,
+) {
+  return (await reader.credentials(scope, ownerId)).find((candidate) => candidate.kind === kind);
 }
 
 export interface ResolvedCredentials {
@@ -503,7 +519,7 @@ export async function resolveBoatKey(
   input: { userId: string; orgId: string; visibility: Visibility },
 ): Promise<{ key: string; scope: CredentialScope }> {
   if (input.visibility === "private") {
-    const personal = (await reader.credentials("user", input.userId)).find((row) => row.kind === "boat");
+    const personal = await findStoredCredential(reader, "user", input.userId, "boat");
     if (personal) return { key: await open(personal.valueEnc, encryptionKey), scope: "user" };
   }
   const org = await reader.orgBoatKey(input.orgId);
