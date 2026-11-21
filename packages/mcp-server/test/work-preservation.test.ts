@@ -990,6 +990,7 @@ test.each([
 const unstampedDrainScenarios = [
   "archived",
   "clean",
+  "expired journal lease",
   "admission rollback",
   "lost commit reply",
   "missing detached archive",
@@ -1009,6 +1010,20 @@ test.each(unstampedDrainScenarios)(
       await db.query("update modal_machines set record=jsonb_set(record,'{phase}','\"deleting\"') where id=$1", [
         `bx_${sandboxId}`,
       ]);
+
+    const expiredToken = crypto.randomUUID();
+    const hasExpiredLease = ["expired journal lease", "admission rollback", "lost commit reply"].includes(scenario);
+    if (hasExpiredLease)
+      await db.query("update modal_machines set lease_id=$2,lease_until='2000-01-01' where id=$1", [
+        `bx_${sandboxId}`,
+        expiredToken,
+      ]);
+    const journalLease = async () =>
+      (
+        await db.query("select lease_id,lease_until is null as cleared from modal_machines where id=$1", [
+          `bx_${sandboxId}`,
+        ])
+      ).rows;
 
     const caller: Caller = { via: "service", userId: people.owner, orgs: [{ orgId: people.org, role: "member" }] };
     let inject = true;
@@ -1033,12 +1048,13 @@ test.each(unstampedDrainScenarios)(
       ).rows;
     const remove = mock(async () => {
       expect(await stamp()).toEqual([{ stamp: "1" }]);
+      expect(await journalLease()).toEqual([{ lease_id: null, cleared: true }]);
       return { status: "deleted" as const };
     });
     const providers = { resolve: async () => ({ ...fakeBoat().provider, id: "modal" as const, delete: remove }) };
     const drain = () => deleteSandboxWithActivity(sandboxes, providers, sandboxId, "native-drain");
 
-    if (scenario === "archived" || scenario === "clean") {
+    if (scenario === "archived" || scenario === "clean" || scenario === "expired journal lease") {
       await expect(drain()).resolves.toEqual({ id: sandboxId, status: "deleted" });
       expect(remove).toHaveBeenCalledTimes(1);
       return;
@@ -1048,7 +1064,10 @@ test.each(unstampedDrainScenarios)(
     else await expect(drain()).rejects.toMatchObject({ code: "sandbox_not_ready" });
     expect(remove).not.toHaveBeenCalled();
     expect(await stamp()).toEqual([{ stamp: scenario === "lost commit reply" ? "1" : null }]);
+    if (scenario === "admission rollback")
+      expect(await journalLease()).toEqual([{ lease_id: expiredToken, cleared: false }]);
     if (scenario === "lost commit reply") {
+      expect(await journalLease()).toEqual([{ lease_id: null, cleared: true }]);
       inject = false;
       await db.query("update sandboxes set activity_until='2000-01-01' where id=$1", [sandboxId]);
       await expect(drain()).resolves.toEqual({ id: sandboxId, status: "deleted" });
