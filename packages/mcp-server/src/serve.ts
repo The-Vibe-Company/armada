@@ -52,8 +52,6 @@ export async function startServer(env: Record<string, string | undefined>, optio
     },
   );
   // Cold image pulls/bootstrap can exceed Bun's default ten-second idle window.
-  // Only authenticated normal Docker launches opt out; their service deadline
-  // remains bounded, and other providers/routes keep their existing timeouts.
   control.configureDockerLaunchRequest = (request) => server.timeout(ingressRequest(request), 0);
   control.configureScopedMutationRequest = (request) => server.timeout(ingressRequest(request), 0);
   control.configureEventStreamRequest = (request) => server.timeout(ingressRequest(request), 30);
