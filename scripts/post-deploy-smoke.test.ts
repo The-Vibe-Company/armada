@@ -1448,7 +1448,11 @@ type LifecycleFault =
   | "stop_failed"
   | "lost_launch"
   | "recovered_launch";
-function lifecycleFixture(fault: LifecycleFault = "none", handler?: (call: Call) => Response | undefined) {
+function lifecycleFixture(
+  fault: LifecycleFault = "none",
+  handler?: (call: Call) => Response | undefined,
+  launchElapsedMs = 500,
+) {
   // Per-sandbox state: concurrent case lanes interleave their calls.
   interface Life {
     id: string;
@@ -1468,7 +1472,7 @@ function lifecycleFixture(fault: LifecycleFault = "none", handler?: (call: Call)
     if (override) return override;
     if (call.path === "sandbox/launch") {
       launches++;
-      fake.advance(500);
+      fake.advance(launchElapsedMs);
       const life: Life = {
         id: lifecycleId(launches),
         provider: String(call.body.provider),
@@ -2033,7 +2037,8 @@ test("an ambiguous expiry launch reports bounded HTTP correlation without replay
 });
 
 test("independent sandbox lanes run concurrently: the expiry wait overlaps every case's lifecycle, receipts stay attributable", async () => {
-  const fake = lifecycleFixture("none", (call) => expiry(call));
+  // Keep concurrent fake launches instantaneous so they do not advance the shared clock during TTL metadata reads.
+  const fake = lifecycleFixture("none", (call) => expiry(call), 0);
   const expiry = expiryApi(fake.io.now);
   // Distinct model accounts: nothing makes the lanes take turns.
   const cases = ["claude", "codex"].map((harness) => ({ ...selected, harness, modelAccountId: `account-${harness}` }));

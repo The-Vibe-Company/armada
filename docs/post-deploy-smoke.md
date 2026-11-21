@@ -626,9 +626,11 @@ requires operator reconciliation.
 Expected added duration: about 3–5 minutes per pair, overlapping the other lanes; no model
 turns, one extra short-lived worker per pair plus normal retained-disk cost.
 Each request remains bounded by the existing shared 35-minute work deadline
-and five-minute cleanup reserve. Readiness and natural stop proof use the
-measured `expiry_ready` and `expiry_as_stop` budgets. Natural stop proof
-includes the final inventory read. Without a measured entry, readiness allows
+and five-minute cleanup reserve. Readiness, TTL metadata and natural stop proof
+use the measured `expiry_ready`, `expiry_deadline` and `expiry_as_stop` budgets.
+The TTL check shares one deadline across all inventory pages, and natural stop
+proof includes its final inventory read. Without a measured entry, the TTL check
+retains its existing per-request timeout and pagination limit, readiness allows
 120 observations and natural expiry allows 360. Cleanup still allows 120
 observations. Staging operators must budget this extra compute time.
 No production, new capabilities or migrations.

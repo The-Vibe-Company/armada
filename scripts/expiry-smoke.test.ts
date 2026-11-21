@@ -11,6 +11,7 @@ type Fault =
   | "none"
   | "never"
   | "late_ready"
+  | "late_ttl_metadata"
   | "late_stop_metadata"
   | "reason"
   | "early"
@@ -106,6 +107,9 @@ function fixture(provider: "modal", fault: Fault = "none") {
           });
         }
         expect(body.harness).toBe("codex");
+        if (fault === "late_ttl_metadata" && !manualStop) {
+          clock += body.page === 1 ? deadlines.expiry_deadline - 1 : 2;
+        }
         if (body.page === 1) return Response.json({ sandboxes: [], page: 1, hasMore: true, nextPage: 2 });
         const stopped = manualStop || clock >= expiry || (fault === "early" && statusCalls > 2);
         if (fault === "late_stop_metadata" && stopped && !manualStop) clock += deadlines.expiry_as_stop;
@@ -212,6 +216,7 @@ test("Modal expires through the ordinary stop lane without a manual stop or mode
 
 test.each([
   ["late_ready", "expiry_ready"],
+  ["late_ttl_metadata", "expiry_deadline"],
   ["late_stop_metadata", "expiry_as_stop"],
 ] as const)("expiry rejects evidence outside the measured budget: %s", async (fault, step) => {
   const fake = fixture("modal", fault);
