@@ -29,6 +29,7 @@ begin
   if not found
     or v_sandbox.lifecycle_generation is distinct from p_generation
     or v_sandbox.provider not in ('boat', 'modal')
+    or v_sandbox.provider_sandbox_id is null
     or v_sandbox.boat_runtime
     or v_sandbox.runtime_transport is not distinct from 'dialout'
     or v_sandbox.application_secret_tainted
