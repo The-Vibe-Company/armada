@@ -15,6 +15,8 @@ test("machine capabilities match the approved runtime provider matrix", () => {
       extendLifetime: true,
       humanSsh: true,
       resourceSampler: true,
+      sizeResources: "instance-type",
+      resumeAfterStop: true,
       sizes: catalogSizes,
     },
     modal: {
@@ -24,6 +26,8 @@ test("machine capabilities match the approved runtime provider matrix", () => {
       extendLifetime: true,
       humanSsh: true,
       resourceSampler: true,
+      sizeResources: "explicit-limits",
+      resumeAfterStop: true,
       sizes: catalogSizes,
     },
     docker: {
@@ -33,6 +37,8 @@ test("machine capabilities match the approved runtime provider matrix", () => {
       extendLifetime: false,
       humanSsh: false,
       resourceSampler: false,
+      sizeResources: "none",
+      resumeAfterStop: false,
       sizes: [],
     },
   });

@@ -1,13 +1,11 @@
 import { LaunchError } from "./launch-error.ts";
-import { PROVIDER_LIMITS, type SandboxPlacementProviderId } from "./sandbox-provider.ts";
+import { capabilities } from "./machine-capabilities.ts";
+import type { SandboxPlacementProviderId } from "./sandbox-provider.ts";
 import { INVALID_SKILL_PINS_MESSAGE, validateSkillPins } from "./skill-pins.ts";
 
 export function isLaunchTtlSeconds(provider: SandboxPlacementProviderId, value: unknown): value is number {
   return (
-    typeof value === "number" &&
-    Number.isInteger(value) &&
-    value >= 1 &&
-    value <= PROVIDER_LIMITS[provider].maxTtlSeconds
+    typeof value === "number" && Number.isInteger(value) && value >= 1 && value <= capabilities(provider).maxTtlSeconds
   );
 }
 
