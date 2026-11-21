@@ -896,7 +896,12 @@ export async function publishOwnerStop(
   if (result.kind === "conflict") throw new Error("Locked owner stop could not transition.");
 }
 
-export async function requestNativeDrainStop(sql: Sql, sandbox: SandboxRecord, actorId: string) {
+export async function requestNativeDrainStop(
+  sql: Sql,
+  sandbox: SandboxRecord,
+  provider: "boat" | "modal",
+  actorId: string,
+) {
   if (!sql.transaction) throw new Error("Native drain stop requires a transaction.");
   const { id, lifecycleGeneration, providerSandboxId } = sandbox;
   if (lifecycleGeneration === undefined || !providerSandboxId) return false;
@@ -908,10 +913,10 @@ export async function requestNativeDrainStop(sql: Sql, sandbox: SandboxRecord, a
     const {
       rows: [admitted],
     } = await tx.query<{ status: SandboxStatus; generation: string }>(
-      `update public.sandboxes s set activity_lease_id=$5, activity_until=clock_timestamp()+interval '2 minutes',
+      `update public.sandboxes s set activity_lease_id=$6, activity_until=clock_timestamp()+interval '2 minutes',
          lifecycle_generation=lifecycle_generation+1, stop_generation=stop_generation+1,
          stop_requested_at=clock_timestamp(), reconcile_after=clock_timestamp(), status_reason=null
-       where s.id=$1 and s.lifecycle_generation=$2 and s.provider_sandbox_id=$3 and s.provider='boat'
+       where s.id=$1 and s.lifecycle_generation=$2 and s.provider_sandbox_id=$3 and s.provider=$4 and s.provider='boat'
          and ${NATIVE_WORK_ROUTE} and s.status in ('ready','running') and s.stop_requested_at is null
          and s.stopped_at is null and s.deleted_at is null and not s.application_secret_tainted
          and not s.native_drain_pending and s.expires_at>clock_timestamp()
@@ -919,7 +924,7 @@ export async function requestNativeDrainStop(sql: Sql, sandbox: SandboxRecord, a
          and (s.activity_until is null or s.activity_until<=clock_timestamp())
          and (s.reconcile_lease_until is null or s.reconcile_lease_until<=clock_timestamp())
          and not exists(select 1 from public.orchestrators o where o.sandbox_id=s.id)
-         and exists(select 1 from public.members m where m.org_id=s.org_id and m.user_id=$4
+         and exists(select 1 from public.members m where m.org_id=s.org_id and m.user_id=$5
            and (m.user_id=s.owner_id or m.role='admin'))
          and exists(select 1 from public.members m where m.org_id=s.org_id and m.user_id=s.owner_id)
          and not exists(select 1 from public.account_turn_queue q
@@ -932,7 +937,7 @@ export async function requestNativeDrainStop(sql: Sql, sandbox: SandboxRecord, a
            where p.sandbox_id=s.id and p.provider=s.provider and p.provider_sandbox_id=s.provider_sandbox_id
              and p.owner_id=s.owner_id and p.org_id=s.org_id and p.completed_at is null)
        returning status, lifecycle_generation::text as generation`,
-      [id, lifecycleGeneration, providerSandboxId, actorId, token],
+      [id, lifecycleGeneration, providerSandboxId, provider, actorId, token],
     );
     if (!admitted) return false;
     await publishOwnerStop(tx, {

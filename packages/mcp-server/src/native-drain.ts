@@ -45,7 +45,7 @@ export function configureNativeDrain(
     const { sandboxes } = data({ userId: actorId, orgs: [{ orgId: row.org_id, role: row.role }], via: "service" });
     const target = await sandboxes.get(row.id);
     if (target && (target.status === "ready" || target.status === "running")) {
-      if (provider !== "boat" || !(await requestNativeDrainStop(sql, target, actorId)))
+      if (!(await requestNativeDrainStop(sql, target, provider, actorId)))
         throw new Error("Native drain could not admit strict preservation.");
       throw new Error("Native drain cannot delete before preservation and stop are confirmed.");
     }
