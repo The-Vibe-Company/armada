@@ -1793,6 +1793,7 @@ test.each(childSendScenarios)("native child send (%s)", async (scenario) => {
         },
       ]);
       expect((await db.query("select 1 from sandbox_transitions where sandbox_id=$1", [child.id])).rows).toEqual([]);
+      expect((await laterPreservationHandoff()).rows).toEqual([{ outcome: "clean" }]);
       return;
     }
     expect(receipt.state).toBe("succeeded");
