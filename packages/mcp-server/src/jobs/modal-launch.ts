@@ -783,7 +783,15 @@ export async function runModalLaunch(
       plan = await preparePlan();
     } catch (error) {
       context.signal.throwIfAborted();
-      if (await context.canDispatch()) throw error;
+      if (await context.canDispatch()) {
+        if (!hasJournal) throw error;
+        // Preparing the recovery plan cannot dispatch a provider mutation.
+        return {
+          status: "retry",
+          after: new Date(Date.now() + ENROLMENT_RETRY_DELAY_MS),
+          unattempted: true,
+        } satisfies JobResult;
+      }
       const target = await withJobLease(sql, job, startingTarget);
       if (!target) return done;
       if (target.has_intent && !target.provider_sandbox_id && !target.journaled_id) throw error;
