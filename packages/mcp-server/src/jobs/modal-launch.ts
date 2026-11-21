@@ -7,6 +7,7 @@ import {
   type Sql,
 } from "@armada/core/server";
 import { createModalMachine, type ModalMachineOptions } from "@armada/provider-modal";
+import { z } from "zod";
 import {
   bindModalLaunchMachine,
   insertStartingModalSandbox,
@@ -326,7 +327,7 @@ export async function runFailedModalLaunchDelete(
     !payload ||
     typeof payload !== "object" ||
     !("launchJobId" in payload) ||
-    typeof payload.launchJobId !== "string" ||
+    !z.uuid().safeParse(payload.launchJobId).success ||
     !("machineId" in payload) ||
     (payload.machineId !== null && typeof payload.machineId !== "string")
   ) {
@@ -334,11 +335,12 @@ export async function runFailedModalLaunchDelete(
   }
 
   const { launchJobId, machineId } = payload;
-  const isCurrent = async (tx: Sql) => {
-    const { rows } = await tx.query(
-      `select 1 from public.sandboxes s
+  const loadTarget = async (tx: Sql) => {
+    const { rows } = await tx.query<{ deleted: boolean | null }>(
+      `select launch.outcome #>> '{evidence,modal_machine,entry,phase}' = 'deleted' as deleted
+       from public.sandboxes s
        join public.jobs cleanup on cleanup.id=$2 and cleanup.org_id=s.org_id
-       join public.jobs launch on launch.id::text=$3 and launch.kind='launch' and launch.state='failed'
+       join public.jobs launch on launch.id=$3 and launch.kind='launch' and launch.state='failed'
          and launch.sandbox_id=s.id and launch.generation=s.lifecycle_generation
          and launch.org_id=s.org_id and launch.request_owner_id=s.owner_id
        where s.id=$1 and s.provider='modal' and s.runtime_transport='dialout'
@@ -353,24 +355,50 @@ export async function runFailedModalLaunchDelete(
          )`,
       [sandboxId, job.id, launchJobId, machineId, LAUNCH_FAILURE],
     );
-    return rows.length > 0;
+    return rows[0];
   };
-  if (!(await withJobLease(sql, job, isCurrent))) {
+  const current = await withJobLease(sql, job, loadTarget);
+  if (!current) {
     return { status: "fail", reason: "modal_launch_cleanup_target_changed" } satisfies JobResult;
   }
   context.signal.throwIfAborted();
-  if (machineId === null) return { status: "done" } satisfies JobResult;
+  if (machineId === null || current.deleted) return { status: "done" } satisfies JobResult;
 
+  const isCurrent = async (tx: Sql) => Boolean(await loadTarget(tx));
+  const mayDispatch = () => withJobLease(sql, job, async (tx) => (await isCurrent(tx)) && context.canDispatch(tx));
+  const dispatchRevoked = new Error("Modal cleanup dispatch is no longer authorized.");
+  const unconfirmed = { status: "fail", reason: "modal_launch_cleanup_unconfirmed" } satisfies JobResult;
+  let options: ModalLaunchPlan["machine"];
+  try {
+    options = await prepareMachine();
+  } catch (error) {
+    if (await mayDispatch()) throw error;
+    context.signal.throwIfAborted();
+    return unconfirmed;
+  }
   const machine = createModalMachine({
-    ...(await prepareMachine()),
+    ...options,
+    client: {
+      apps: options.client.apps,
+      images: options.client.images,
+      cpClient: options.client.cpClient,
+      sandboxes: guardModalTermination(options.client.sandboxes, async () => {
+        if (!(await mayDispatch())) throw dispatchRevoked;
+        context.signal.throwIfAborted();
+      }),
+    },
     journal: createJobsStore(sql).modalFailedLaunchJournal(job, launchJobId, isCurrent, context.canDispatch),
   });
   const target = { sandboxId, generation, machineId, signal: context.signal };
-  const dispatch = await withJobLease(sql, job, async (tx) => (await isCurrent(tx)) && context.canDispatch(tx));
+  const dispatch = await mayDispatch();
   context.signal.throwIfAborted();
   if (dispatch) {
-    await machine.delete({ ...target, scope: "physical-only" });
-    return { status: "done" } satisfies JobResult;
+    try {
+      await machine.delete({ ...target, scope: "physical-only" });
+      return { status: "done" } satisfies JobResult;
+    } catch (error) {
+      if (error !== dispatchRevoked) throw error;
+    }
   }
 
   const observed = await machine.observe(target);
@@ -379,5 +407,36 @@ export async function runFailedModalLaunchDelete(
     (observed.kind === "present" && observed.phase === "stopped")
   )
     return { status: "done" } satisfies JobResult;
-  return { status: "fail", reason: "modal_launch_cleanup_unconfirmed" } satisfies JobResult;
+  return unconfirmed;
+}
+
+// Keep the SDK receiver for methods that access private fields. The Machine
+// resolves ownership and polls the exact ID before calling terminate.
+function guardModalTermination(
+  sandboxes: ModalLaunchPlan["machine"]["client"]["sandboxes"],
+  authorize: () => Promise<void>,
+) {
+  return new Proxy(sandboxes, {
+    get(service, key) {
+      if (key === "fromId") {
+        return async (...args: Parameters<typeof service.fromId>) => {
+          const sandbox = await service.fromId(...args);
+          return new Proxy(sandbox, {
+            get(instance, property) {
+              if (property === "terminate") {
+                return async (...params: Parameters<typeof instance.terminate>) => {
+                  await authorize();
+                  return instance.terminate(...params);
+                };
+              }
+              const value = Reflect.get(instance, property, instance);
+              return typeof value === "function" ? value.bind(instance) : value;
+            },
+          });
+        };
+      }
+      const value = Reflect.get(service, key, service);
+      return typeof value === "function" ? value.bind(service) : value;
+    },
+  });
 }

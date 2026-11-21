@@ -286,7 +286,9 @@ type ModalLaunchStep =
   | "bootstrap dispatch"
   | "image lookup"
   | "runtime ticket"
-  | "termination response";
+  | "termination response"
+  | "machine poll"
+  | "cleanup preparation";
 
 async function modalLaunchFixture() {
   const f = await fixture();
@@ -310,6 +312,7 @@ async function modalLaunchFixture() {
       getTags: async () => tags,
       poll: async () => {
         observed++;
+        await atStep?.("machine poll");
         return terminations ? 0 : null;
       },
       async terminate() {
@@ -372,6 +375,7 @@ async function modalLaunchFixture() {
           async run(job, context) {
             return runFailedModalLaunchDelete(jobsSql, job, context, async () => {
               cleanupPreparations++;
+              await atStep?.("cleanup preparation");
               return machine;
             });
           },
@@ -459,6 +463,97 @@ test.each(["create response", "bootstrap dispatch"] as const)(
     expect(cleanupEffects().terminations).toBe(1);
   },
 );
+
+test.each(["allocated", "deleting", "deleted"] as const)(
+  "Modal cleanup resumes after a crash at the durable %s checkpoint",
+  async (phase) => {
+    const { f, id, jobId, makeRunner, cleanupEffects } = await modalLaunchFixture();
+    const launch = makeRunner((step) => {
+      if (step === "create response") throw new Error("Lost create response");
+    });
+    expect(await launch.reconcileOne(signal)).toBe(true);
+    await launch.drain();
+    await f.db.query("update jobs set lease_until='-infinity', deadline_at='-infinity' where id=$1", [jobId]);
+    const failure = makeRunner();
+    expect(await failure.reconcileOne(signal)).toBe(true);
+    await failure.drain();
+
+    const crashAfterCheckpoint: Sql = {
+      ...f.sql,
+      async transaction(work) {
+        let checkpointWritten = false;
+        const result = await f.sql.transaction!(async (tx) =>
+          work({
+            ...tx,
+            async query<T>(query: string, params?: unknown[]) {
+              const result = await tx.query<T>(query, params);
+              if (query.includes("set outcome=jsonb_set") && typeof params?.[1] === "string") {
+                checkpointWritten = result.rows.length > 0 && JSON.parse(params[1]).entry.phase === phase;
+              }
+              return result;
+            },
+          }),
+        );
+        if (checkpointWritten) throw new Error("Lost journal commit acknowledgement");
+        return result;
+      },
+    };
+    const lost = makeRunner(undefined, crashAfterCheckpoint);
+    expect(await lost.reconcileOne(signal)).toBe(true);
+    await lost.drain();
+    expect(
+      (
+        await f.db.query("select outcome #>> '{evidence,modal_machine,entry,phase}' as phase from jobs where id=$1", [
+          jobId,
+        ])
+      ).rows,
+    ).toEqual([{ phase }]);
+    expect(cleanupEffects().terminations).toBe(phase === "deleted" ? 1 : 0);
+    await f.db.query("update jobs set lease_until='-infinity' where kind='delete' and sandbox_id=$1", [id]);
+    if (phase === "deleted") {
+      await f.db.query("update jobs set deadline_at='-infinity' where kind='delete' and sandbox_id=$1", [id]);
+    }
+    const successor = makeRunner((step) => {
+      if (phase === "deleted" && step === "cleanup preparation") throw new Error("Modal credentials unavailable");
+    });
+    expect(await successor.reconcileOne(signal)).toBe(true);
+    await successor.drain();
+    expect((await f.db.query("select state from jobs where kind='delete' and sandbox_id=$1", [id])).rows).toEqual([
+      { state: "done" },
+    ]);
+    expect(cleanupEffects().terminations).toBe(1);
+    expect(cleanupEffects().cleanupPreparations).toBe(phase === "deleted" ? 1 : 2);
+  },
+);
+
+test("Modal cleanup does not terminate when its budget expires during the running poll", async () => {
+  const { f, id, jobId, makeRunner, cleanupEffects } = await modalLaunchFixture();
+  const launch = makeRunner((step) => {
+    if (step === "bootstrap dispatch") throw new Error("Worker lost the bootstrap response");
+  });
+  expect(await launch.reconcileOne(signal)).toBe(true);
+  await launch.drain();
+  await f.db.query("update jobs set lease_until='-infinity', deadline_at='-infinity' where id=$1", [jobId]);
+  const failure = makeRunner();
+  expect(await failure.reconcileOne(signal)).toBe(true);
+  await failure.drain();
+
+  const cleanup = makeRunner(async (step) => {
+    if (step === "machine poll") {
+      await f.db.query("update jobs set deadline_at='-infinity' where kind='delete' and sandbox_id=$1", [id]);
+    }
+  });
+  expect(await cleanup.reconcileOne(signal)).toBe(true);
+  await cleanup.drain();
+  expect(
+    (
+      await f.db.query("select state, outcome->>'reason' as reason from jobs where kind='delete' and sandbox_id=$1", [
+        id,
+      ])
+    ).rows,
+  ).toEqual([{ state: "failed", reason: "modal_launch_cleanup_unconfirmed" }]);
+  expect(cleanupEffects().terminations).toBe(0);
+});
 
 test("an interrupted Modal failure handoff rolls back the failure and delete job together", async () => {
   const { f, id, jobId, makeRunner, cleanupEffects } = await modalLaunchFixture();

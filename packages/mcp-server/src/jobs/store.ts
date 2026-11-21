@@ -582,5 +582,11 @@ export function createJobsStore(sql: Sql, encryptionKey?: string) {
   } satisfies JobStore & {
     enqueue: (...args: never[]) => Promise<string>;
     modalLaunchJournal: (job: Job, canCreate?: (tx: Sql) => Promise<boolean>) => ModalMachineJournal;
+    modalFailedLaunchJournal: (
+      job: Job,
+      launchJobId: string,
+      isCurrent: (tx: Sql) => Promise<boolean>,
+      canDispatch: (tx: Sql) => Promise<boolean>,
+    ) => ModalMachineJournal;
   };
 }
