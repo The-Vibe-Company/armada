@@ -176,6 +176,7 @@ test("forwards authenticated CLI operations and MCP control routes", async () =>
     ["mcp", "catalog"],
     ["mcp", "metadata"],
     ["creds", "accounts", "set"],
+    ["creds", "accounts", "limits"],
     ["creds", "accounts", "rename"],
     ["creds", "accounts", "default"],
     ["creds", "accounts", "remove"],
