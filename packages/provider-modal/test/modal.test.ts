@@ -130,6 +130,10 @@ function fixture(
   admissionSleep: NonNullable<ModalProviderOptions["admissionSleep"]> = async () => {
     throw new Error("Unexpected admission retry: supply a fixture barrier for contention.");
   },
+  resumeHooks?: {
+    resumeRefused?: ModalProviderOptions["resumeRefused"];
+    restoreEnv?: RunnerDistribution["restoreEnv"];
+  },
 ) {
   const store = createSqlModalStore(sql, accessScope);
   const log: string[] = [];
@@ -302,7 +306,7 @@ function fixture(
     prepareFreshMachine: async (_sandbox, row) => {
       log.push(`fresh-${row.generation}`);
     },
-    restoreEnv: async () => ({}),
+    restoreEnv: resumeHooks?.restoreEnv ?? (async () => ({})),
     prepareSnapshot: async () => {
       log.push("scrub");
       provisioned = false;
@@ -323,6 +327,7 @@ function fixture(
     ...(commonRuntime ? { commonRuntime } : {}),
     ...(beforePrompt ? { beforePrompt } : {}),
     ...(beforeResume ? { beforeResume } : {}),
+    ...(resumeHooks?.resumeRefused ? { resumeRefused: resumeHooks.resumeRefused } : {}),
     tokenId: "synthetic-id",
     tokenSecret: "synthetic-secret",
     appName: "pinned",
@@ -1768,6 +1773,65 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
     expect(resumed.info.id).toBe(row.id);
     expect(resumed.generation).toBe(2);
     expect(resumed.physicalId).not.toBe(stopped.physicalId);
+  });
+  test("native exec cancelled during resume preparation leaves the retained workspace stopped", async () => {
+    const controller = new AbortController();
+    const refusals: string[] = [];
+    const f = fixture(scope, fixtureSql, undefined, async () => controller.abort(), undefined, undefined, {
+      async resumeRefused(_provider, id) {
+        refusals.push(id);
+      },
+    });
+    const worker = await activeWorker(f);
+    await f.provider.stop({ sandboxId: worker.id });
+    const stopped = await f.store.get(worker.id);
+    const creates = f.creates;
+
+    await expect(
+      f.provider.exec({ sandboxId: worker.id, command: "edit workspace", signal: controller.signal }),
+    ).rejects.toMatchObject({ provider: "modal", code: "unknown" });
+    expect(await f.store.get(worker.id)).toMatchObject({
+      phase: "stopped",
+      generation: stopped.generation,
+      recoveryImageId: stopped.recoveryImageId,
+    });
+    expect(f.creates).toBe(creates);
+    expect(f.log).not.toContain("exec");
+    expect(refusals).toEqual([worker.id]);
+  });
+  test("native exec cancelled during restore environment lookup leaves the reservation replayable", async () => {
+    const controller = new AbortController();
+    const f = fixture(scope, fixtureSql, undefined, undefined, undefined, undefined, {
+      async restoreEnv() {
+        controller.abort();
+        return {};
+      },
+    });
+    const worker = await activeWorker(f);
+    await f.provider.stop({ sandboxId: worker.id });
+    const stopped = await f.store.get(worker.id);
+    const creates = f.creates;
+
+    await expect(
+      f.provider.exec({ sandboxId: worker.id, command: "edit workspace", signal: controller.signal }),
+    ).rejects.toMatchObject({ provider: "modal", code: "unknown" });
+    const reserved = await f.store.get(worker.id);
+    expect(reserved).toMatchObject({
+      phase: "reserved",
+      generation: stopped.generation + 1,
+      imageId: stopped.recoveryImageId,
+    });
+    expect(f.creates).toBe(creates);
+    expect(f.log).not.toContain("exec");
+
+    await f.provider.exec({ sandboxId: worker.id, command: "edit workspace" });
+    expect(await f.store.get(worker.id)).toMatchObject({
+      phase: "active",
+      generation: reserved.generation,
+      physicalName: reserved.physicalName,
+    });
+    expect(f.creates).toBe(creates + 1);
+    expect(f.log.filter((op) => op === "exec")).toHaveLength(1);
   });
   test("stopped prompt reads preserve durable outcomes without restoring compute", async () => {
     const f = fixture();
