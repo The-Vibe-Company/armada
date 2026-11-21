@@ -1066,6 +1066,12 @@ export async function fencePreservedModalDrainIncarnation(tx: Sql, id: string, p
        j.owner_id=s.owner_id
        and j.record->>'commonRuntime' is distinct from 'true'
        and r.capture_acknowledgements->>'physicalGeneration'=j.record->>'generation'
+       and (not $2 or r.archive_id is null or exists (
+         select 1 from public.native_drain_recovery a
+         where a.archive_id=r.archive_id and a.sandbox_id=s.id
+           and a.org_id=s.org_id and a.owner_id=s.owner_id
+         for share of a
+       ))
        and case
          when $2 and r.capture_acknowledgements ? 'drainAdmissionGeneration' then
            j.record->>'phase' in ('stopped','deleting','deleted')
@@ -1080,15 +1086,7 @@ export async function fencePreservedModalDrainIncarnation(tx: Sql, id: string, p
              (j.lease_id is null and j.lease_until is null)
              or (j.lease_id is not null and j.lease_until<=clock_timestamp())
            )
-           and (not $2 or (
-             r.generation=s.lifecycle_generation-1
-             and (r.archive_id is null or exists (
-               select 1 from public.native_drain_recovery a
-               where a.archive_id=r.archive_id and a.sandbox_id=s.id
-                 and a.org_id=s.org_id and a.owner_id=s.owner_id
-               for share of a
-             ))
-           ))
+           and (not $2 or r.generation=s.lifecycle_generation-1)
        end
      ) as eligible
      from journal j cross join public.sandboxes s
