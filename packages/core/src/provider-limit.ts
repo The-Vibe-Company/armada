@@ -16,8 +16,9 @@ export interface ProviderRateLimitDetails {
 export function providerRateLimitDetails(value: unknown): ProviderRateLimitDetails {
   const input = typeof value === "object" && value !== null ? (value as Record<string, unknown>) : {};
   const result: ProviderRateLimitDetails = {};
-  const provider = isSandboxProvider(input.provider)
-    ? HOST_CAPABILITIES[input.provider].startRateLimit?.detailsProvider
+  const inputProvider = input.provider;
+  const provider = isSandboxProvider(inputProvider)
+    ? HOST_CAPABILITIES[inputProvider].startRateLimit?.detailsProvider
     : undefined;
   if (provider) result.provider = provider;
   if (input.window === "minute" || input.window === "hour" || input.window === "day" || input.window === "concurrency")
