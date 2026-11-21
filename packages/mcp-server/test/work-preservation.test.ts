@@ -1504,7 +1504,7 @@ const drainAdmissionScenarios = [
   "lost commit response",
   "verified proof",
   "expired Modal journal lease",
-] as const;
+];
 
 test.each(drainAdmissionScenarios)(
   "native drain deletion commits preservation and admission together with %s",
