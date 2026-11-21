@@ -55,7 +55,7 @@ async function copyShared(sharedDir: string, artifact: RuntimeArtifact, temporar
 export async function installRuntimeArtifact(
   input: ArtifactCache & { serverUrl: string },
   fetcher: ArtifactFetcher = fetch,
-) {
+): Promise<string> {
   const server = new URL(input.serverUrl);
   if (
     server.protocol !== "https:" ||
