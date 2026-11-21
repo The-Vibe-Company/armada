@@ -389,14 +389,13 @@ export function configureTools(
     const { sandbox: found, provider, enrolled } = await liveControl(args);
 
     await data.sandboxes.assertExecAllowed?.(found.id);
-    const managedNative =
-      !enrolled &&
-      (await context.launchCredentials.assertExec?.(
+    if (!enrolled)
+      await context.launchCredentials.assertExec?.(
         { userId: found.ownerId, orgId: found.orgId, role: "member" },
         found.id,
-      ));
+      );
     let acknowledged = false;
-    const execute = async () => {
+    const execute = async (signal?: AbortSignal) => {
       const membership = caller.orgs.find((member) => member.orgId === found.orgId);
       if (!membership) throw new ToolError("forbidden", "No current organization membership.");
       if (!enrolled) await prepareConnections(provider, found, membership.role);
@@ -404,6 +403,7 @@ export function configureTools(
       const readNativeSecrets = (phase: "before" | "after") =>
         context.launchCredentials.nativeSecrets?.(nativeActor, found.id, provider, found.providerSandboxId, phase);
       const nativeBefore = (!enrolled && (await readNativeSecrets("before"))) || [];
+      signal?.throwIfAborted();
       const result = await provider
         .exec({
           sandboxId: found.providerSandboxId,
@@ -442,7 +442,7 @@ export function configureTools(
         );
       }
     };
-    if (!managedNative) {
+    if (enrolled || (found.provider !== "boat" && found.provider !== "modal")) {
       return execute();
     }
 
@@ -452,7 +452,7 @@ export function configureTools(
       {},
       async (signal) => {
         signal.throwIfAborted();
-        const result = await execute();
+        const result = await execute(signal);
         signal.throwIfAborted();
         return { result, patch: {} };
       },

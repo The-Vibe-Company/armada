@@ -1,8 +1,11 @@
 import { afterAll, beforeAll, expect, spyOn, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { decryptSecret, encryptSecret, ProviderError } from "@armada/core/server";
+import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
+import type { Caller } from "../src/caller.ts";
 import { createSqlData } from "../src/data.ts";
 import { createRuntimeProvider, type RuntimeWorkProvider } from "../src/runtime-provider.ts";
+import { bindRestTool, type ToolContext } from "../src/tools.ts";
 import { preserveBeforeStop, readWorkRecovery } from "../src/work-preservation.ts";
 import { closeableFixture } from "./closeable.fixture.ts";
 import { encryptedRecoveryExec } from "./fixtures/recovery-exec.ts";
@@ -865,6 +868,65 @@ async function seedNativeDrainReceipt(ciphertext = new Uint8Array([21, 34, 55]))
   }
   return { db, people, sandboxId, archiveId, ciphertext, copy };
 }
+
+test("ordinary native exec excludes owner stop until workspace mutation finishes", async () => {
+  const { db, people, sharedGoldenId } = sharedDatabase();
+  const boat = fakeBoat();
+  const machine = await boat.provider.fork({
+    from: "fixture-snapshot",
+    noEnv: true,
+    env: {},
+    labels: {},
+    ttlSeconds: 3600,
+  });
+  const sandboxId = crypto.randomUUID();
+  await db.query(
+    `insert into sandboxes(id,golden_id,org_id,owner_id,provider,provider_sandbox_id,harness,status)
+     values($1,$2,$3,$4,'boat',$5,'claude','ready')`,
+    [sandboxId, sharedGoldenId, people.org, people.owner, machine.id],
+  );
+  const caller: Caller = { via: "service", userId: people.owner, orgs: [{ orgId: people.org, role: "admin" }] };
+  let stopDuringExec: CallToolResult | undefined;
+  const provider = {
+    ...boat.provider,
+    async exec(request: Parameters<typeof boat.provider.exec>[0]) {
+      if (request.command === "edit workspace") stopDuringExec = await invoke("stop", { id: sandboxId });
+      return boat.provider.exec(request);
+    },
+  };
+  const context: ToolContext = {
+    caller,
+    data: createSqlData(bunLikeSql(db))(caller),
+    launchCredentials: {
+      async resolve() {
+        throw new Error("Exec does not launch a sandbox.");
+      },
+    },
+    exposedSecrets: async () => [],
+    provider: async () => provider,
+    now: () => new Date(),
+    sleep: async () => {
+      throw new Error("Unexpected wait");
+    },
+  };
+  function invoke(name: string, input: Record<string, unknown>) {
+    let reply: Promise<CallToolResult> | undefined;
+    bindRestTool(context, name, (_, _contract, run) => {
+      reply = run(input as never);
+    });
+    if (!reply) throw new Error(`Missing tool: ${name}`);
+    return reply;
+  }
+
+  const result = await invoke("exec", { id: sandboxId, command: "edit workspace" });
+  expect(stopDuringExec?.isError).toBe(true);
+  expect(boat.stops).toHaveLength(0);
+  expect(result.structuredContent).toMatchObject({ exitCode: 0 });
+  boat.setExecOutput({ stdout: '{"status":"clean"}' });
+  const stopped = await invoke("stop", { id: sandboxId });
+  expect(stopped.structuredContent).toMatchObject({ status: "stopped" });
+  expect(boat.stops).toEqual([machine.id]);
+});
 
 test("owners and admins can recover the exact native archive after normal deletion and handoff replay", async () => {
   const archive = Buffer.from("detached work fixture").toString("base64");
