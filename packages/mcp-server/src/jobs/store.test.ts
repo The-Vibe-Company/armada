@@ -233,7 +233,7 @@ test("Modal backfill preserves accepted, refused and unresolved ordinary keys wi
   };
   const { sandboxes } = createSqlData(sql)(caller);
   const sandbox = (await sandboxes.get(accepted))!;
-  expect(await sandboxes.requestStartingModalStop!(accepted, sandbox.lifecycleGeneration!)).toBeNull();
+  expect(await sandboxes.requestStartingModalStop!(sandbox)).toBeNull();
   expect(await createModalJobReader(sql, launchEncryptionKey)(sandbox, caller)).toBeNull();
 });
 

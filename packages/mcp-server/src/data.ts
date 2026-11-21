@@ -133,7 +133,7 @@ export interface ServerSandboxStore extends SandboxStore {
   launchTiming?(id: string): Promise<LaunchTiming | null>;
   assertExtensionAllowed?(id: string): Promise<void>;
   assertDeletionAllowed?(id: string): Promise<void>;
-  requestStartingModalStop?(id: string, generation: number): ReturnType<typeof requestStartingModalStop>;
+  requestStartingModalStop?(sandbox: SandboxRecord): ReturnType<typeof requestStartingModalStop>;
   /** Refuse taint and stop intent before exec; native Boat and Modal exec also claim the activity lease. */
   assertExecAllowed?(id: string): Promise<void>;
   recordUsage?(
@@ -544,7 +544,7 @@ export function createSqlData(
         if (!row) throw new GoldenError("not_found", "Sandbox not found.");
         if (!row.allowed) throw new GoldenError("forbidden", "You are not allowed to extend this sandbox.");
       },
-      requestStartingModalStop: (id, generation) => requestStartingModalStop(sql, scope, id, generation),
+      requestStartingModalStop: (sandbox) => requestStartingModalStop(sql, scope, sandbox),
       async assertDeletionAllowed(id) {
         if (!UUID.test(id)) throw new GoldenError("not_found", "No such sandbox.");
         const row = (

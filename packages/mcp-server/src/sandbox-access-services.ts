@@ -31,7 +31,6 @@ import {
 import { createSandboxScopedGateway } from "./sandbox-access-scoped-gateway.ts";
 import { extendSandbox } from "./sandbox-extend.ts";
 import { createRuntimeSelfFinish, requestSandboxFinish } from "./sandbox-finish.ts";
-import { isFailedModalLaunch } from "./turns.ts";
 import { preserveBeforeStop, stopAndObserve } from "./work-preservation.ts";
 
 class DelegatedAccessError extends Error {
@@ -112,14 +111,7 @@ export function createSandboxAccessServices(input: {
       orgs: [{ orgId: operation.orgId, role: "member" as const }],
     };
     const scoped = createSqlData(sql)(caller).sandboxes;
-    if (
-      !admitRecovery &&
-      saved.provider === "modal" &&
-      saved.lifecycleGeneration !== undefined &&
-      (saved.status === "starting" || isFailedModalLaunch(saved))
-    ) {
-      if (await scoped.requestStartingModalStop?.(saved.id, saved.lifecycleGeneration)) return;
-    }
+    if (!admitRecovery && (await scoped.requestStartingModalStop?.(saved))) return;
     const provider = await resolveProvider();
     let checkpoint: Awaited<ReturnType<RuntimeCheckpoint>> | undefined;
     if (retained) {
