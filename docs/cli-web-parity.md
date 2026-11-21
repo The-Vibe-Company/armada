@@ -21,12 +21,12 @@ Commands below start with `armada`. Select an organization with `login --org NAM
 | Durable build progress | Admission receipt, bounded status polling and recovery after reload | `snapshot show --build JOB_ID`, or `snapshot show --idempotency-key KEY --org ORG_UUID` |
 | Snapshot builds | Build/rebuild workflow | Use `snapshot update` for Boat/Modal or `snapshot rebuild` for Docker |
 | Snapshot visibility | Owner/admin visibility controls | `armada api golden/visibility` |
-| Launch | Snapshot, agent, model, effort, TTL and MCP connections | `launch PRIVATE_SNAPSHOT --provider boat --agent claude\|codex\|opencode [PROMPT] --model ID --reasoning-effort LEVEL --ttl 4h --connections UUID,UUID`. Ordinary cloud launches inherit snapshot visibility. |
-| Repository context | Select a configured repository directory for a Boat or Modal snapshot | `launch ... --repo DIR` or `--repo owner/repo`; persisted initial working directory, including idle launches |
-| Sandbox list | Authorized filters and pages | `list --status STATUS --agent HARNESS --golden UUID --owner UUID\|me --page N --limit N [--json] [--page-info]` |
-| Sandbox detail / status | Sandbox page and prompt status | `detail ID`, `status ID`; actual stored privacy and repository context |
-| Agent turns | Send, steer and interrupt | `send ID PROMPT`, `steer ID TEXT`, `interrupt ID`; model/effort overrides where supported |
-| Stop / wait | Stop, interrupt, extend and track turn progress | `stop ID`, `stop ID --turn`, `stop ID --after DURATION`, `info ID --wait --timeout SECONDS [--prompt-id ID]` |
+| Launch | Snapshot, agent, model, effort, TTL and MCP connections | `new PRIVATE_SNAPSHOT --provider boat --agent claude\|codex\|opencode [PROMPT] --model ID --reasoning-effort LEVEL --ttl 4h --connections UUID,UUID`. Ordinary cloud launches inherit snapshot visibility. |
+| Repository context | Select a configured repository directory for a Boat or Modal snapshot | `new ... --repo DIR` or `--repo owner/repo`; persisted initial working directory, including idle launches |
+| Sandbox list | Authorized filters and pages | `ls --status STATUS --ref REF --agent HARNESS --golden UUID --owner UUID\|me --page N --limit N [--json] [--page-info]` |
+| Sandbox detail / status | Sandbox page and prompt status | `info ID --live`, `info ID`; actual stored privacy and repository context |
+| Agent turns | Send, steer and interrupt | `prompt ID PROMPT`, `prompt ID --steer TEXT`, `stop ID --turn`; model/effort overrides where supported |
+| Stop / wait | Stop, extend and track turn progress | `stop ID`, `stop ID --after DURATION`, `info ID --wait --timeout SECONDS [--prompt-id ID]` |
 | Events / commands | Event stream and sandbox commands | `events [ID] [-f] [--tail N]`, `exec [ID] -- COMMAND`, `outputs [NAME] [-o DIR]` |
 | MCP definitions | Personal/shared definitions, status and authorization | `mcp list/add/update/connect/status/reconnect/enable/disable/revoke/delete` |
 | Public/OAuth MCP shortcut | Connection creation form | `mcp add NAME URL [--scope personal\|org]`; defaults personal, HTTP, automatic auth discovery |
