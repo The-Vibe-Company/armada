@@ -803,9 +803,9 @@ export async function runModalLaunch(
   const enrolmentInProgress = new Error("Modal launch enrolment already issued.");
   const enrolments = createRuntimeEnrolments(sql, encryptionKey);
   const dispatch = plan
-    ? await dispatchModalLaunch(sql, job, context, plan, { sandboxId, generation }, async (request) => {
+    ? await dispatchModalLaunch(sql, job, context, plan, { sandboxId, generation }, async (request, preparation) => {
         const { ownerId, configuration, commandGrantExpiresAt, lockPrerequisites, checkAccountPin, ...prepared } =
-          await plan.prepareRuntimeTicket(request);
+          preparation;
         if (pending.check_after && pending.bootstrap_ticket_enc) {
           const enrolmentToken = await decryptSecret(
             Uint8Array.from(Buffer.from(pending.bootstrap_ticket_enc, "base64")),
@@ -868,7 +868,7 @@ export async function runModalLaunch(
   const target = await withJobLease(sql, job, startingTarget);
   context.signal.throwIfAborted();
   if (!target) return done;
-  if (dispatch?.kind === "observation_pending" && !target.stop_requested) {
+  if (dispatch?.kind === "dispatch_deferred" && !target.stop_requested) {
     return {
       status: "retry",
       after: new Date(Date.now() + ENROLMENT_RETRY_DELAY_MS),
@@ -945,7 +945,10 @@ async function dispatchModalLaunch(
   context: DispatchContext,
   plan: ModalLaunchPlan,
   { sandboxId, generation }: Pick<MachineIncarnation, "sandboxId" | "generation">,
-  resolveRuntimeTicket: PrepareModalTicket,
+  resolveRuntimeTicket: (
+    request: Parameters<PrepareModalTicket>[0],
+    preparation: Awaited<ReturnType<ModalLaunchPlan["prepareRuntimeTicket"]>>,
+  ) => ReturnType<PrepareModalTicket>,
 ) {
   const { signal, canDispatch } = context;
   const incarnation = { sandboxId, generation, signal };
@@ -970,6 +973,8 @@ async function dispatchModalLaunch(
     if (row && (await plan.canUseModalCredential(tx)) && (await canDispatch(tx))) return row;
   };
   const target = () => withJobLease(sql, job, dispatchTarget);
+  let recoveredAllocation = false;
+  const preparationDeferred = new Error("Modal runtime ticket preparation deferred.");
   const machine = createModalMachine({
     ...plan.machine,
     journal: createJobsStore(sql).modalLaunchJournal(
@@ -977,7 +982,12 @@ async function dispatchModalLaunch(
       async (tx) => (await dispatchTarget(tx))?.provider_sandbox_id === null,
     ),
     async resolveRuntimeTicket(request) {
-      const ticket = await resolveRuntimeTicket(request);
+      const preparation = await plan.prepareRuntimeTicket(request).catch(async (error: unknown) => {
+        if (recoveredAllocation && (await target())?.provider_sandbox_id === request.machineId)
+          throw preparationDeferred;
+        throw error;
+      });
+      const ticket = await resolveRuntimeTicket(request, preparation);
       if (ticket && (await target())?.provider_sandbox_id !== request.machineId)
         throw new Error("Modal bootstrap dispatch is no longer authorized.");
       return ticket;
@@ -994,7 +1004,7 @@ async function dispatchModalLaunch(
   if (observed) {
     if (!(await target())) return { kind: "reconcile", observation: observed } as const;
     if (observed.kind === "unknown" || (machineId && observed.kind === "absent"))
-      return { kind: "observation_pending" } as const;
+      return { kind: "dispatch_deferred" } as const;
   }
 
   let allocated: MachineIdentity;
@@ -1003,7 +1013,7 @@ async function dispatchModalLaunch(
   } else {
     signal.throwIfAborted();
     if (observed?.kind === "present" && observed.receipt?.operation !== "create")
-      return { kind: "observation_pending" } as const;
+      return { kind: "dispatch_deferred" } as const;
     allocated =
       observed?.kind === "present" ? observed.machine : await machine.create({ ...plan.allocation, ...incarnation });
     if (allocated.sandboxId !== sandboxId || allocated.generation !== generation)
@@ -1022,7 +1032,13 @@ async function dispatchModalLaunch(
   const readyToBootstrap = await target();
   if (readyToBootstrap?.provider_sandbox_id !== allocated.machineId) return reconcile();
   signal.throwIfAborted();
-  await machine.bootstrap({ ...allocated, signal, bindingRef: plan.bindingRef });
+  recoveredAllocation = machineId !== null || observed?.kind === "present";
+  try {
+    await machine.bootstrap({ ...allocated, signal, bindingRef: plan.bindingRef });
+  } catch (error) {
+    if (error === preparationDeferred) return { kind: "dispatch_deferred" } as const;
+    throw error;
+  }
   return { kind: "bootstrapped" } as const;
 }
 

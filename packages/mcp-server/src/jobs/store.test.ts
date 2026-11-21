@@ -2291,6 +2291,7 @@ test.each([
   ["unknown", "sandbox binding"],
   ["stopped", "create response"],
   ["plan unavailable", "create response"],
+  ["ticket unavailable", "create response"],
 ] as const)(
   "a replacement Modal launch claimant defers bootstrap for %s after losing the %s",
   async (observation, lostAt) => {
@@ -2325,6 +2326,8 @@ test.each([
       if (observation === "unknown" && step === "machine poll") throw new Error("Modal poll unavailable");
       if (observation === "plan unavailable" && step === "open Modal")
         throw new Error("Modal credential read unavailable");
+      if (observation === "ticket unavailable" && step === "runtime ticket")
+        throw new Error("Runtime ticket preparation unavailable");
     });
     expect(await replacement.reconcileOne(signal)).toBe(true);
     await replacement.drain();
