@@ -425,7 +425,7 @@ async function modalLaunchFixture() {
     },
     effects: () => ({ allocations, observed, bootstrapped }),
     cleanupEffects: () => ({ terminations, cleanupPreparations }),
-    enrolPending: () => enrolments.enrol(enrolmentToken),
+    enrolPending: (authority = enrolments) => authority.enrol(enrolmentToken),
   };
 }
 
@@ -643,9 +643,35 @@ test.each(["create response", "bootstrap dispatch", "bootstrap response"] as con
           jobId,
         ])
       ).rows,
-    ).toEqual([{ status: "starting", state: "done" }]);
+    ).toEqual([{ status: "ready", state: "done" }]);
   },
 );
+
+test("interrupted Modal enrolment rolls back readiness and leaves its ticket usable", async () => {
+  const { f, id, makeRunner, enrolPending } = await modalLaunchFixture();
+  const runner = makeRunner(undefined, f.sql, false);
+  expect(await runner.reconcileOne(signal)).toBe(true);
+  await runner.drain();
+
+  const interrupted = createRuntimeEnrolments(
+    {
+      ...f.sql,
+      transaction: (work) =>
+        f.sql.transaction!(async (tx) => {
+          await work(tx);
+          expect((await tx.query("select status from sandboxes where id=$1", [id])).rows).toEqual([
+            { status: "ready" },
+          ]);
+          throw new Error("Enrolment worker lost before commit");
+        }),
+    },
+    launchEncryptionKey,
+  );
+  await expect(enrolPending(interrupted)).rejects.toThrow("Enrolment worker lost before commit");
+  expect((await f.db.query("select status from sandboxes where id=$1", [id])).rows).toEqual([{ status: "starting" }]);
+  await expect(enrolPending()).resolves.toMatchObject({ sandboxId: id });
+  expect((await f.db.query("select status from sandboxes where id=$1", [id])).rows).toEqual([{ status: "ready" }]);
+});
 
 test("Modal bootstrap without enrolment retries, then fails and hands off cleanup when expired", async () => {
   const { f, id, jobId, makeRunner, effects } = await modalLaunchFixture();

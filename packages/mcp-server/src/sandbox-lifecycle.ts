@@ -350,6 +350,31 @@ export async function publishDockerRuntimeReadiness(
   return transition.kind;
 }
 
+export async function publishModalLaunchReadiness(tx: Sql, sandboxId: string, generation: string) {
+  const { rows } = await tx.query(
+    `select 1 from public.sandboxes s join public.jobs j
+       on j.sandbox_id=s.id and j.org_id=s.org_id and j.request_owner_id=s.owner_id
+       and j.generation=s.lifecycle_generation
+     where s.id=$1 and s.lifecycle_generation=$2 and s.provider='modal' and s.status='starting'
+       and j.kind='launch' and j.state in ('queued','leased')
+       and j.outcome #>> '{modal_machine,entry,operation}'='create'
+       and j.outcome #>> '{modal_machine,entry,phase}'='allocated'
+       and j.outcome #>> '{modal_machine,entry,machineId}'=s.provider_sandbox_id`,
+    [sandboxId, generation],
+  );
+  if (!rows.length) return "skipped";
+  const transition = await transitionSandbox(tx, {
+    sandboxId,
+    expectedGeneration: generation,
+    fromStates: ["starting"],
+    toState: "ready",
+    actor: "runtime_enrolment",
+    code: "runtime_enrolled",
+    effects: [],
+  });
+  return transition.kind;
+}
+
 export async function finishLaunchSuccess(
   tx: Sql,
   scope: [string[], string],

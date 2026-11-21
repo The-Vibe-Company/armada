@@ -6,7 +6,7 @@ import { createDockerHostStore } from "./docker-host-store.ts";
 import type { Route } from "./http.ts";
 import { runtimeHealthMatches } from "./runtime-health.ts";
 import { runtimeHttpFailure } from "./runtime-http-failure.ts";
-import { publishDockerRuntimeReadiness } from "./sandbox-lifecycle.ts";
+import { publishDockerRuntimeReadiness, publishModalLaunchReadiness } from "./sandbox-lifecycle.ts";
 
 const ENROL_PATH = "/api/runtime/enrol";
 const SESSION_PATH = "/api/runtime/session";
@@ -312,11 +312,13 @@ export function createRuntimeEnrolments(sql: Sql, encryptionKey: string, options
         )
       ).rows[0];
       if (!updated) throw new RuntimeEnrolmentDenied();
-      if (
-        sandbox.status === "starting" &&
-        (await publishDockerRuntimeReadiness(tx, sandbox.id, sandbox.lifecycle_generation, "bootstrap")) === "conflict"
-      )
-        throw new RuntimeEnrolmentDenied();
+      if (sandbox.status === "starting") {
+        const publication =
+          sandbox.provider === "modal"
+            ? await publishModalLaunchReadiness(tx, sandbox.id, sandbox.lifecycle_generation)
+            : await publishDockerRuntimeReadiness(tx, sandbox.id, sandbox.lifecycle_generation, "bootstrap");
+        if (publication === "conflict") throw new RuntimeEnrolmentDenied();
+      }
       return { sandboxId: sandbox.id, epoch: updated.epoch, runtimeToken, configuration };
     });
     if (result instanceof RuntimeProtocolUnsupported) throw result;
