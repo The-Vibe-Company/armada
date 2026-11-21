@@ -410,6 +410,13 @@ test.each([
       state,
       activityLeaseId,
     ]);
+    if (state === "starting")
+      await f.db.query(
+        `insert into runtime_resumes
+          (sandbox_id,request_id,source_epoch,target_epoch,watermark,request_hash,conversation_id,model,reasoning_effort)
+          values($1,$2,$3,$3::bigint+1,0,repeat('0',64),'conversation','model','medium')`,
+        [f.row.id, activityLeaseId, f.active.epoch],
+      );
     const stop = stopPort(f);
     const records: unknown[] = [];
     const response = await observeRequest(
@@ -426,7 +433,61 @@ test.each([
         sandboxId: f.row.id,
         phase,
         refusalCode,
-        stopEvidence: expect.objectContaining({ state, activityLeaseId, activityLeaseHeld: true }),
+        stopEvidence: expect.objectContaining({
+          state,
+          activityLeaseId,
+          activityLeaseHeld: true,
+          resumeDispatched: state === "starting",
+        }),
+      }),
+    );
+    expect(stop.calls()).toBe(0);
+  } finally {
+    await f.close();
+  }
+});
+
+test("retained stop identifies a journal append after checkpoint publication", async () => {
+  const f = await checkpointFixture("modal", true);
+  try {
+    const stop = stopPort(f);
+    const checkpoint = stop.context.runtimeStopCheckpoint;
+    const records: unknown[] = [];
+    await observeRequest(
+      async () => {
+        await expect(
+          callSharedTool(
+            {
+              ...stop.context,
+              async runtimeStopCheckpoint(...args) {
+                const receipt = (await checkpoint(...args))!;
+                await createRuntimeEvents(f.authority, ENCRYPTION_KEY).append(f.active.runtimeToken, f.active.epoch, {
+                  sandboxId: f.row.id,
+                  generation: f.active.epoch,
+                  events: [
+                    {
+                      sequence: receipt.checkpoint.watermark + 1,
+                      event: { id: "late", at: 1, kind: "other", type: "late-notification", data: {} },
+                    },
+                  ],
+                });
+                return receipt;
+              },
+            },
+            "stop",
+            { id: f.row.id },
+          ),
+        ).rejects.toMatchObject({ code: "sandbox_not_ready" });
+        return new Response(null, { status: 409 });
+      },
+      (line) => records.push(JSON.parse(line)),
+    );
+    expect(records).toContainEqual(
+      expect.objectContaining({
+        event: "operator_failure",
+        sandboxId: f.row.id,
+        phase: "sandbox.stop.admission",
+        stopEvidence: expect.objectContaining({ retainedCheckpointCurrent: false, deadlineElapsed: false }),
       }),
     );
     expect(stop.calls()).toBe(0);

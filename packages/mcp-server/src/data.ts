@@ -1048,14 +1048,15 @@ export function createSqlData(
           generationParam = params.length;
           fence += ` and s.lifecycle_generation = $${params.length}`;
         }
+        let retainedProof: string | undefined;
         if (patch.retainedRuntimeStop !== undefined) {
           params.push(patch.retainedRuntimeStop);
+          retainedProof = `exists(select 1 from public.runtime_checkpoints p join public.runtime_enrolments r
+            on r.sandbox_id=p.sandbox_id and r.epoch=p.epoch
+            where p.sandbox_id=s.id and p.request_id=$${params.length}::uuid
+            and p.watermark=(select coalesce(max(sequence),0) from public.runtime_events where sandbox_id=s.id))`;
           fence += ` and s.status in ('ready','running') and s.stop_requested_at is null
-            and s.expires_at>clock_timestamp() and not s.application_secret_tainted
-            and exists(select 1 from public.runtime_checkpoints p join public.runtime_enrolments r
-              on r.sandbox_id=p.sandbox_id and r.epoch=p.epoch
-              where p.sandbox_id=s.id and p.request_id=$${params.length}::uuid
-              and p.watermark=(select coalesce(max(sequence),0) from public.runtime_events where sandbox_id=s.id))`;
+            and s.expires_at>clock_timestamp() and not s.application_secret_tainted and ${retainedProof}`;
         }
         if (patch.deleteRequested)
           fence += ` and s.status in ('stopped','failed')
@@ -1155,7 +1156,9 @@ export function createSqlData(
                 ? `with updated as (${update})${effects}
                    select u.id,u.status,u.generation,
                      case when u.id is null then (select row_to_json(e) from
-                       (select ${stopRefusalEvidence}, $${generationParam}::bigint::text as "requestGeneration" from public.sandboxes s
+                       (select ${stopRefusalEvidence}, $${generationParam}::bigint::text as "requestGeneration",
+                         ${retainedProof ?? "null"} as "retainedCheckpointCurrent"
+                         from public.sandboxes s
                          where s.id=$3::uuid and ${SANDBOX_VISIBLE}) e) end as stop_evidence
                    from (values (1)) seed left join updated u on true`
                 : wrapped
