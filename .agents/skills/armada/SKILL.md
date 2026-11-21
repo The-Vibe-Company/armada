@@ -123,44 +123,19 @@ launch defaults; configuration changes require a new published revision.
 
 ## Scheduled routines
 
-A routine pins a template revision and a prompt. Run `armada routine --help` before
-changing one; use a standard five-field cron expression and an IANA time zone.
-Runs must remain at least one hour apart, including DST transitions; this is not
-a fast polling mechanism.
-It runs as its original owner with current access and credentials, even when an
-org admin edits it. Creation is paused; enabling schedules the next matching cron
-occurrence, never an immediate launch. Set a small daily cap and TTL; a previous live or uncertain
-sandbox causes a visible skip rather than another paid launch.
+Manage schedules in Dashboard **Routines**. A routine pins a template version
+and runs as its original owner. Creation starts paused. Use five-field cron and
+an IANA time zone, with runs at least one hour apart.
 
-```sh
-armada routine create nightly --template TEMPLATE_UUID --revision 1 --prompt-file routine-prompt.txt --cron '0 9 * * MON-FRI' --timezone Europe/Paris --ttl 30m --max-runs-per-day 2 --scope personal --json
-armada routine list --json
-armada routine show ROUTINE_UUID --json
-armada routine enable ROUTINE_UUID --expected-version 1 --json
-armada routine pause ROUTINE_UUID --expected-version 2 --json
-armada routine update ROUTINE_UUID --expected-version 3 --cron '0 10 * * MON-FRI' --timezone Europe/Paris --json
-armada routine update ROUTINE_UUID --expected-version 4 --file routine-config.json --json
-armada routine delete ROUTINE_UUID --expected-version 5 --json
-armada routine runs ROUTINE_UUID --json
-```
-
-Copy the actual current version from show/list; the numbers above are examples,
-not retry instructions. Inline update changes only cron and timezone while
-retaining current configuration; its expected version still guards the full
-replacement. Update JSON is a full replacement containing name, templateId,
-templateRevision, prompt, cron, timezone, ttlSeconds and maxRunsPerDay;
-owner, scope and org do not belong in that file. Create JSON omits name (taken
-from NAME), and can omit limits for server defaults. Prompt files preserve
-whitespace; readable configuration is not a place for secrets. With explicit
---org, create also requires explicit --scope.
-Pause/delete forbid new admissions but already admitted launches may finish;
-neither stops a sandbox. Runs includes skip/failure explanations, authorized
-sandbox links and the original prompt outcome separately from launch status.
-Keep uncertainty visible; do not create replacement routines to bypass it.
-List/show print the server schedule description and next run; paused routines have
-no next run. Legacy interval schedules remain readable, but new writes require
-cron and timezone. Deleted routine history remains readable by ID. No triggers
-or orchestration are provided.
+For automation, use `armada api routines/list '{"org":"ORG_UUID"}'` to find IDs
+and `armada api routines/get '{"org":"ORG_UUID","id":"ROUTINE_UUID"}'` to read the
+current configuration and version. Send complete JSON bodies for
+`routines/create` and `routines/update` via `armada api ROUTE -` with redirected
+stdin. Update, enable, pause and delete require `id`, `org` and the current
+`expectedVersion`. Enable schedules the next matching occurrence. Pause and
+delete stop new admissions. Check `routines/history` with the routine ID and
+organization UUID for admission and original prompt outcomes, including skips
+and uncertainty.
 
 ## 3. Drive a turn without busy polling
 
@@ -264,7 +239,9 @@ merge, deploy, delete resources or alter org-wide settings without authorization
 
 ### Give an agent API access
 
-From a personal login, use `armada token create --name <name> [--org <org>] [--expires 30d|90d|1y|never]`.
-Capture the key from stdout once and supply it through the agent's secret store as `ARMADA_TOKEN`
+From a personal login, open Dashboard **Settings → API keys** or run
+`armada api token/create '{"label":"worker","org":"ORG_UUID","expires":"30d"}'`.
+Capture the response's `token` once and supply it through the agent's secret store as `ARMADA_TOKEN`
 with `ARMADA_URL` set to the API origin. Verify with `armada whoami --json`. From a personal login,
-use `armada token ls --json` to find the key ID, then `armada token revoke <id>`.
+use `armada api token/list` to find the key ID, then
+`armada api token/revoke '{"id":"TOKEN_UUID"}'`.

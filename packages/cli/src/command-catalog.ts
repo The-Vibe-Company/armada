@@ -62,9 +62,10 @@ Every command after 'armada login' acts as the user who signed in. snapshot comm
 when you belong to more than one org.
 
 Give an agent access:
-  Create an API key with armada token create --name <name>. Set ARMADA_URL and inject the key
-  as ARMADA_TOKEN from a secret store. Verify with armada whoami. From a personal login,
-  find the key ID with armada token ls and revoke it with armada token revoke <id>.
+  Create an API key in Dashboard Settings or run:
+  armada api token/create '{"label":"worker","org":"ORG_UUID"}'
+  Store the response's token securely. Set ARMADA_URL and inject the key as ARMADA_TOKEN.
+  Verify with armada whoami.
 
 Environment:
   ARMADA_TOKEN                             API token for non-interactive authentication. Takes precedence over

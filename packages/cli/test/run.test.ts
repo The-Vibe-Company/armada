@@ -52,7 +52,7 @@ describe("run", () => {
     expect(out).toContain("armada snapshot new");
     expect(out).toContain("armada new <snapshot> --agent claude|codex");
     expect(out).toContain("armada login");
-    expect(out).toContain("armada token create");
+    expect(out).toContain("armada api token/create");
     expect(out).toContain("--profile overrides ARMADA_PROFILE");
     expect(out).toContain("ARMADA_TOKEN is not isolated by profiles");
   });
@@ -72,7 +72,6 @@ describe("run", () => {
     "mcp",
     "login",
     "logout",
-    "token",
     "org",
     "account",
   ])("%s help needs no login or server request", async (command) => {
@@ -101,6 +100,8 @@ describe("run", () => {
     };
     for (const [args, command, checkHelp] of [
       [["frobnicate"], "frobnicate"],
+      [["token", "create"], "token", true],
+      [["routine", "create"], "routine", true],
       [["--profile", "unconfigured", "github", "connect"], "github"],
       [["--profile", "unconfigured", "creds", "list"], "creds", true],
       [["list"], "list", true],
@@ -157,7 +158,7 @@ test("bare discovery families succeed without profile, account or input I/O", as
   const forbidden = () => {
     throw new Error("Usage attempted external I/O");
   };
-  for (const command of ["host", "template", "routine", "vars", "secrets"]) {
+  for (const command of ["host", "template", "vars", "secrets"]) {
     const result = await capture(["--profile", "new-user", command], {
       env: {},
       fetch: Object.assign(forbidden, { preconnect: forbidden }),

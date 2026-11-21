@@ -697,32 +697,56 @@ test("send replay keeps the original receipt while new sends target the current 
   }
 });
 
-test("uncertain native dispatch is not retried and confirmed stop releases the account for the next queued turn", async () => {
-  for (const stopBeforeFailure of [false, true]) {
-    await database().exec(
-      "delete from jobs; delete from account_turn_queue; delete from account_agent_reservations; update sandboxes set status='ready',stopped_at=null,stop_requested_at=null,lifecycle_generation=1,activity_lease_id=null,model=null",
-    );
+test.each(["after settlement", "before settlement"])(
+  "an uncertain native dispatch never replays when physical stop is confirmed %s",
+  async (stopTiming) => {
+    await database().exec("update sandboxes set model=null");
     const first = { id: ids[1]!, request_id: requests[0]!, prompt: "uncertain instruction", model: "gpt-5.4" };
     const second = { id: ids[2]!, request_id: requests[1]!, prompt: "next instruction", model: "gpt-5.4" };
     await database().exec("update credentials set max_agents=null,model_limits='{\"gpt-5.4\":1}'::jsonb");
     await queue.accept(caller, first);
     await queue.accept(caller, second);
-    let calls = 0;
-    queue.setDispatch(async () => {
-      calls++;
-      await database().query(
-        "update sandboxes set lifecycle_generation=lifecycle_generation+1,model='default_model',activity_lease_id=id where id=$1",
-        [ids[1]],
-      );
+    await sql.query("update jobs set run_after='-infinity' where sandbox_id=$1", [first.id]);
+    const dispatched: string[] = [];
+    const dispatchNext = sharedDispatcher(async (_caller, input, claim) => {
+      dispatched.push(input.id);
+      if (input.request_id === second.request_id) {
+        return { promptId: "actual_next", conversationId: "history", status: "running" };
+      }
+      if (!claim) throw new Error("Shared dispatch lost the job authority.");
+      await claim.handoffGeneration({
+        async lockPrerequisites() {},
+        async advance(tx) {
+          await tx.query(
+            "update sandboxes set lifecycle_generation=lifecycle_generation+1,model='default_model',activity_lease_id=id where id=$1",
+            [first.id],
+          );
+        },
+      });
       // Normal dispatch cleanup releases the transient reservation even on error.
       await database().query("delete from account_agent_reservations where sandbox_id=$1", [ids[1]]);
-      if (stopBeforeFailure)
+      if (stopTiming === "before settlement")
         await database().query("update sandboxes set status='stopped',stopped_at=now() where id=$1", [ids[1]]);
       throw Error("uncertain");
     });
-    expect(await queue.reconcileOne(new AbortController().signal)).toBe(true);
-    await queue.drain();
-    if (!stopBeforeFailure) {
+    await dispatchNext();
+    async function expectCapacityBlocked() {
+      await sql.query("update jobs set run_after='-infinity' where sandbox_id=$1", [second.id]);
+      await dispatchNext();
+      expect(dispatched).toEqual([first.id]);
+      expect(await queue.status(caller, second.id, second.request_id)).toMatchObject({
+        failed: false,
+        message: expect.stringContaining("Waiting for a free agent slot for model gpt-5.4"),
+      });
+    }
+    expect(await queue.status(caller, first.id, first.request_id)).toMatchObject({
+      failed: true,
+      message: "Dispatch outcome uncertain; inspect sandbox history before resending.",
+    });
+    expect((await sql.query("select state,generation::text from jobs where sandbox_id=$1", [first.id])).rows).toEqual([
+      { state: "done", generation: "2" },
+    ]);
+    if (stopTiming === "after settlement") {
       const usage = await database().query<{ total: number; default_model: number; override_model: number }>(
         `select ${accountWorkingCountSql("$1")} as total,
           ${accountWorkingCountSql("$1", "null::uuid", "'default_model'")} as default_model,
@@ -732,11 +756,10 @@ test("uncertain native dispatch is not retried and confirmed stop releases the a
       expect(
         usage.rows.map((row) => [Number(row.total), Number(row.default_model), Number(row.override_model)]),
       ).toEqual([[1, 0, 1]]);
-      expect(await queue.reconcileOne(new AbortController().signal)).toBe(false);
-      expect(calls).toBe(1);
+      await expectCapacityBlocked();
       // Exec/steer can advance generations without resolving the uncertain prompt.
       await database().query("update sandboxes set lifecycle_generation=lifecycle_generation+2 where id=$1", [ids[1]]);
-      expect(await queue.reconcileOne(new AbortController().signal)).toBe(false);
+      await expectCapacityBlocked();
       expect((await queue.status(caller, first.id, first.request_id))?.failed).toBe(true);
       expect(
         (await database().query("select state from account_turn_queue where sandbox_id=$1", [first.id])).rows,
@@ -745,11 +768,9 @@ test("uncertain native dispatch is not retried and confirmed stop releases the a
         "update sandboxes set status='stopping',stop_requested_at=now(),lifecycle_generation=lifecycle_generation+2 where id=$1",
         [ids[1]],
       );
-      expect(await queue.reconcileOne(new AbortController().signal)).toBe(false);
-      expect(calls).toBe(1);
+      await expectCapacityBlocked();
       await database().query("update sandboxes set status='failed' where id=$1", [ids[1]]);
-      expect(await queue.reconcileOne(new AbortController().signal)).toBe(false);
-      expect(calls).toBe(1);
+      await expectCapacityBlocked();
       await database().query(
         "update sandboxes set status='stopped',stopped_at=now(),lifecycle_generation=lifecycle_generation+1 where id=$1",
         [ids[1]],
@@ -760,17 +781,12 @@ test("uncertain native dispatch is not retried and confirmed stop releases the a
       "update sandboxes set status='ready',stopped_at=null,stop_requested_at=null,activity_lease_id=null,lifecycle_generation=lifecycle_generation+1 where id=$1",
       [ids[1]],
     );
-    queue.setDispatch(async (_caller, input) => ({
-      id: input.id,
-      promptId: "actual_next",
-      conversationId: "history",
-      status: "running",
-    }));
-    expect(await queue.reconcileOne(new AbortController().signal)).toBe(true);
-    await queue.drain();
+    await sql.query("update jobs set run_after='-infinity' where sandbox_id=$1", [second.id]);
+    await dispatchNext();
+    expect(dispatched).toEqual([first.id, second.id]);
     expect(await queue.status(caller, ids[2]!, requests[1])).toEqual({ nativePromptId: "actual_next" });
-  }
-});
+  },
+);
 
 // Cancellation can win the race against the dispatch error handler. The receipt is
 // terminalized by the sweep while the handler still owns the claim, so the handler's

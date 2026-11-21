@@ -35,13 +35,9 @@ still use `--revision` and `--expected-revision`).
 
 In **Routines**, choose **New routine** to schedule a task from a template.
 It keeps the template as it is at creation; later template versions do not update
-the routine. To edit it, use `armada routine update NAME|ID --expected-version N`:
-`--file config.json` replaces all mutable configuration (including name), while
-`--cron EXPRESSION --timezone IANA_ZONE` changes the schedule and retains the
-other fields. Copy the current version from `routine show` or `routine list`;
-conflicts are not retried. Updating an enabled routine selects its next matching
-occurrence. Enable/pause control new scheduled admissions; pause/delete do not
-stop already admitted runs. See `armada routine --help` for the complete JSON fields.
+the routine. Edit the schedule in **Routines**. Updating an enabled routine
+selects its next matching occurrence. Pause and delete stop new admissions.
+See the [CLI API routes](cli-admin.md#routines) for scripted changes.
 
 ## 1. Install the CLI
 
@@ -352,7 +348,7 @@ claude mcp add --transport http armada https://armada-mcp-production.up.railway.
 Sign in personally and open **Settings → API keys**, or create a key in the CLI:
 
 ```sh
-armada token create --name coordinator --org my-team --expires 90d
+armada api token/create '{"label":"coordinator","org":"my-team","expires":"90d"}'
 ```
 
 Armada shows the key once and stores its hash. Set `ARMADA_URL` to your Armada API origin
@@ -360,8 +356,8 @@ and inject the key as `ARMADA_TOKEN` through the agent's secret store or CI secr
 Run `armada whoami --json` in that environment to verify the key's name and expiry.
 Avoid shell tracing and keep the key out of command arguments and logs.
 
-From your personal login, use `armada token ls` to find the key ID and
-`armada token revoke TOKEN_ID` to revoke it. You can also revoke it in Settings.
+From your personal login, use `armada api token/list` to find the key ID and
+`armada api token/revoke '{"id":"TOKEN_UUID"}'` to revoke it. You can also revoke it in Settings.
 Revocation takes effect on the next request. The last-used timestamp updates at most once per minute.
 
 For **Claude Code**, edit the project's `.mcp.json` directly (merge this entry with any existing servers). Keep the variable reference literal in the file; Claude Code, not the shell, expands it:
@@ -538,14 +534,10 @@ sandbox-connections takes a sandbox UUID. Launch-default selection is separate
 from authorization; reconnect revokes first. Family help makes no MCP/API
 request and leaves bare no-argument invocation unchanged.
 
-### Service-token command discovery
+### Service-token routes
 
-`armada token --help` (or `-h`) provides the focused service-token index.
-Use leaf help for flags. Create prints the new secret even in JSON mode; keep
-output out of public logs and store it securely. List shows metadata/IDs, and
-revoke takes an ID, not a secret value. Armada service tokens authenticate
-scripts via ARMADA_TOKEN; they are not model/provider API credentials.
-Family help makes no API request or token mutation.
+See the [CLI API routes](cli-admin.md#api-keys) for creation, listing and
+revocation. Service tokens authenticate scripts via `ARMADA_TOKEN`.
 
 ### Account command discovery
 

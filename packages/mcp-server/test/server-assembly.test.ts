@@ -3,6 +3,15 @@ import { assembleServer } from "../src/modules.ts";
 import type { ServerServices } from "../src/server-services.ts";
 import { jobsModule, type LaneFactory } from "../src/server-worker-modules.ts";
 
+const modalCleanup = {
+  launchCleanupJob: {
+    concurrency: 1,
+    async run() {
+      throw new Error("An empty claim must not run Modal cleanup.");
+    },
+  },
+} satisfies Pick<ServerServices["modal"], "launchCleanupJob">;
+
 test("server assembly preserves worker lane order and isolation", () => {
   const neverCall = async () => {
     throw new Error("Planning must not call a provider.");
@@ -33,7 +42,7 @@ test("server assembly preserves worker lane order and isolation", () => {
     delegatedAccess: { childWorker: passiveLane },
     accountTurns: passiveLane,
     langfuse: { exportJob: { concurrency: 1 } },
-    modal: { inventoryReaper: () => ({ ...passiveLane, isolatedSweep: true }) },
+    modal: { ...modalCleanup, inventoryReaper: () => ({ ...passiveLane, isolatedSweep: true }) },
   } as unknown as ServerServices;
 
   expect(assembleServer(services).planWorkers().description).toMatchInlineSnapshot(`
@@ -114,6 +123,7 @@ test("the shared jobs lane claims only configured job kinds", async () => {
       control: {},
       options: {},
       config: { encryptionKey },
+      modal: modalCleanup,
       sql: { query: async () => ({ rows: [] }) },
       jobs: {
         async enqueue() {},
@@ -129,6 +139,6 @@ test("the shared jobs lane claims only configured job kinds", async () => {
       },
     } as unknown as Parameters<LaneFactory>[0]);
     await lane?.reconcileOne(new AbortController().signal);
-    expect(claimed).toEqual(new Set([...expected, "snapshot_retirement"]));
+    expect(claimed).toEqual(new Set(["delete", ...expected, "snapshot_retirement"]));
   }
 });
