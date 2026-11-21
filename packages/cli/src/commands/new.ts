@@ -1,4 +1,6 @@
+import { AuthError } from "@armada/auth";
 import { GoldenError, HARNESSES, type LaunchResult, MODEL_CATALOG, resolveModelChoice } from "@armada/core";
+import { type ModalLaunchReceipt, modalLaunchReceipt } from "@armada/core/contract";
 import { requireLaunchAgent } from "../agent-validation.ts";
 import { flag, parseArgs, providerFlag, single, values } from "../args.ts";
 import { rememberSandbox } from "../current-sandbox.ts";
@@ -79,7 +81,7 @@ const run: Command["run"] = async (argv, { io, deps, auth }) => {
     session: auth.session,
     ...(auth.timeoutMs === undefined ? {} : { timeoutMs: auth.timeoutMs }),
   });
-  const result = await client.sandboxes.launch<LaunchWireResult>(
+  const result = await client.sandboxes.launch<LaunchWireResult | ModalLaunchReceipt>(
     {
       ...(flag(args, "--no-connections") ? { connections: [] } : {}),
       ...(flag(args, "--keep-after-merge") ? { stopWhenWorkMerged: false } : {}),
@@ -108,8 +110,20 @@ const run: Command["run"] = async (argv, { io, deps, auth }) => {
     },
     { signal: AbortSignal.timeout(10 * 60_000) },
   );
-  if (result.sandbox.status !== "failed") await rememberSandbox(result.sandbox.id, deps.sandboxFile, io);
-  io.out(flag(args, "--json") ? `${JSON.stringify(result, null, 2)}\n` : launchText(result, auth.now()));
+  if (!("golden" in result) && (provider !== "modal" || !modalLaunchReceipt.safeParse(result).success))
+    throw new AuthError(
+      "Armada returned an invalid launch receipt. Run armada ls to check before retrying.",
+      "unavailable",
+    );
+  if (result.sandbox.status !== "failed" && result.sandbox.status !== "deleted")
+    await rememberSandbox(result.sandbox.id, deps.sandboxFile, io);
+  io.out(
+    flag(args, "--json")
+      ? `${JSON.stringify(result, null, 2)}\n`
+      : "golden" in result
+        ? launchText(result, auth.now())
+        : `Sandbox: ${result.sandbox.id}\nStatus: ${result.sandbox.status}\n`,
+  );
   if (!flag(args, "--json"))
     await printOptionalResourceAdvice(client, result.sandbox.id, single(args, "--org"), io.err);
   return 0;

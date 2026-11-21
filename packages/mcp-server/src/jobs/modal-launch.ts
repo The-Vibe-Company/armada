@@ -12,6 +12,7 @@ import {
   type SandboxStatus,
   validateSkillPins,
 } from "@armada/core";
+import type { ModalLaunchReceipt } from "@armada/core/contract";
 import {
   assertLaunchSecretBindings,
   createSqlSandboxStore,
@@ -129,7 +130,7 @@ export async function admitModalLaunch(
   encryptionKey: string,
   input: ModalLaunchAdmission,
   { bindLaunch }: Pick<RuntimeMcp, "bindLaunch">,
-) {
+): Promise<ModalLaunchReceipt> {
   if (!sql.transaction) throw new Error("Modal admission requires a transaction.");
   const { orgId, ownerId, sandbox, allocation, request, templateReceiptId } = input;
   if (request && templateReceiptId) throw new Error("Modal launch admission requires one receipt identity.");

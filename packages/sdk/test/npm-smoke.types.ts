@@ -3,6 +3,7 @@ import {
   type FailureCode,
   type GoldenLaunchInput,
   type LaunchResult,
+  type ModalLaunchReceipt,
   type SendInput,
 } from "@the-vibe-company/armada-sdk";
 
@@ -47,13 +48,14 @@ export type LogsInputContract = Assert<
 
 export type SendInputContract = Assert<Equal<Extract<"conversationId" | "conversation_id", keyof SendInput>, never>>;
 
-export type BoatReceiptContract = Assert<Equal<Awaited<ReturnType<typeof boat>>, LaunchResult>>;
-export type PinnedModalReceiptContract = Assert<Equal<Awaited<ReturnType<typeof pinnedModal>>, LaunchResult>>;
+type FullLaunchResult = Exclude<LaunchResult, ModalLaunchReceipt>;
+export type BoatReceiptContract = Assert<Equal<Awaited<ReturnType<typeof boat>>, FullLaunchResult>>;
+export type PinnedModalReceiptContract = Assert<Equal<Awaited<ReturnType<typeof pinnedModal>>, FullLaunchResult>>;
 export type ModalReceiptContract = Assert<Equal<Awaited<ReturnType<typeof modal>>, LaunchResult>>;
-export type DockerReceiptContract = Assert<Equal<Awaited<ReturnType<typeof docker>>, LaunchResult>>;
+export type DockerReceiptContract = Assert<Equal<Awaited<ReturnType<typeof docker>>, FullLaunchResult>>;
 export type LaunchFields = Assert<
   Equal<
-    Pick<LaunchResult, "promptId" | "conversationId" | "expiresAt" | "runtime">,
+    Pick<FullLaunchResult, "promptId" | "conversationId" | "expiresAt" | "runtime">,
     {
       promptId: string | null;
       conversationId: string | null;
@@ -62,10 +64,12 @@ export type LaunchFields = Assert<
     }
   >
 >;
-export type LaunchSandboxIdentity = Assert<Equal<LaunchResult["sandbox"]["providerSandboxId"], string>>;
+export type LaunchSandboxIdentity = Assert<Equal<FullLaunchResult["sandbox"]["providerSandboxId"], string>>;
 
 export type GoldenProviderIsRequired = Assert<Equal<GoldenLaunchInput["provider"], "boat" | "modal">>;
 
 type SandboxListItem = Awaited<ReturnType<Armada["list"]>>["sandboxes"][number];
 export type ListSandboxIdentity = Assert<Equal<SandboxListItem["providerSandboxId"], string | null>>;
 export type ListBoatAliasRemoved = Assert<Equal<Extract<"boatId", keyof SandboxListItem>, never>>;
+
+export type ModalReceiptFields = Assert<Equal<keyof ModalLaunchReceipt, "sandbox">>;

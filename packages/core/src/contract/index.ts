@@ -30,7 +30,13 @@ export {
   type LaunchInput,
   type PinnedModalLaunchInput,
 } from "./launch.ts";
-export { type LaunchEnvelope, launchEnvelope, templateLaunchResponse } from "./launch-response.ts";
+export {
+  type LaunchEnvelope,
+  launchEnvelope,
+  type ModalLaunchReceipt,
+  modalLaunchReceipt,
+  templateLaunchResponse,
+} from "./launch-response.ts";
 export { memberOperations } from "./members.ts";
 export { ORG_PROVIDER_CREDENTIAL_MAX_LENGTH, organizationOperations, orgProvider } from "./organizations.ts";
 export {
