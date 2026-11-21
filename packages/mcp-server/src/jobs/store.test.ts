@@ -709,10 +709,11 @@ test.each(["before", "after"] as const)(
   },
 );
 
-test.each(["acknowledgement lost", "secret revoked", "sandbox untainted"] as const)(
+test.each(["acknowledgement lost", "promptless takeover", "secret revoked", "sandbox untainted"] as const)(
   "the Modal first-turn worker fences runtime configuration when %s",
   async (scenario) => {
     const admission = await modalAdmissionFixture();
+    if (scenario === "promptless takeover") delete admission.input.initialPrompt;
     const { f, id, makeRunner, activeRuntime } = await modalLaunchFixture(admission);
     const { db, people, sql } = f;
     const secretValue = crypto.randomUUID();
@@ -791,7 +792,7 @@ test.each(["acknowledgement lost", "secret revoked", "sandbox untainted"] as con
     expect(await original.reconcileOne(signal)).toBe(true);
     await original.drain();
     expect(await turns()).toEqual([]);
-    if (scenario !== "acknowledgement lost") {
+    if (scenario === "secret revoked" || scenario === "sandbox untainted") {
       expect((await bridge.next(runtimeToken, epoch)).command).toBeNull();
       expect(
         (
@@ -821,7 +822,10 @@ test.each(["acknowledgement lost", "secret revoked", "sandbox untainted"] as con
     });
     expect(await replacement.reconcileOne(signal)).toBe(true);
     await replacement.drain();
-    expect(await turns()).toHaveLength(1);
+    expect(await turns()).toHaveLength(scenario === "promptless takeover" ? 0 : 1);
+    expect(
+      (await db.query("select state from jobs where sandbox_id=$1 and kind=$2", [id, MODAL_INITIAL_TURN])).rows,
+    ).toEqual([{ state: "done" }]);
     expect((await db.query("select request_id from runtime_commands where sandbox_id=$1", [id])).rows).toEqual([
       { request_id: command.requestId },
     ]);
