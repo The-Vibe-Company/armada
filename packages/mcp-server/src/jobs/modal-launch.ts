@@ -7,6 +7,7 @@ import {
   type Sql,
 } from "@armada/core/server";
 import { createModalMachine, type ModalMachineOptions } from "@armada/provider-modal";
+import { z } from "zod";
 import {
   bindModalLaunchMachine,
   insertStartingModalSandbox,
@@ -307,4 +308,134 @@ async function dispatchModalLaunch(
   signal.throwIfAborted();
   await machine.bootstrap({ ...allocated, signal, bindingRef: plan.bindingRef });
   return { kind: "bootstrapped" } as const;
+}
+
+export async function runFailedModalLaunchDelete(
+  sql: Sql,
+  job: Job,
+  context: DispatchContext,
+  prepareMachine: () => Promise<ModalLaunchPlan["machine"]>,
+) {
+  const sandboxId = job.sandbox_id;
+  const generation = Number(job.generation);
+  const payload = job.payload;
+  if (
+    job.kind !== "delete" ||
+    !sandboxId ||
+    !Number.isSafeInteger(generation) ||
+    generation < 1 ||
+    !payload ||
+    typeof payload !== "object" ||
+    !("launchJobId" in payload) ||
+    typeof payload.launchJobId !== "string" ||
+    !z.uuid().safeParse(payload.launchJobId).success ||
+    !("machineId" in payload) ||
+    (payload.machineId !== null && typeof payload.machineId !== "string")
+  ) {
+    return { status: "fail", reason: "invalid_modal_launch_cleanup" } satisfies JobResult;
+  }
+
+  const { launchJobId, machineId } = payload;
+  const loadTarget = async (tx: Sql) => {
+    const { rows } = await tx.query<{ deleted: boolean | null }>(
+      `select launch.outcome #>> '{evidence,modal_machine,entry,phase}' = 'deleted' as deleted
+       from public.sandboxes s
+       join public.jobs cleanup on cleanup.id=$2 and cleanup.org_id=s.org_id
+       join public.jobs launch on launch.id=$3 and launch.kind='launch' and launch.state='failed'
+         and launch.sandbox_id=s.id and launch.generation=s.lifecycle_generation
+         and launch.org_id=s.org_id and launch.request_owner_id=s.owner_id
+       where s.id=$1 and s.provider='modal' and s.runtime_transport='dialout'
+         and s.status='failed' and s.deleted_at is null and s.stop_requested_at is null
+         and launch.outcome->>'reason'=$5
+         and (s.provider_sandbox_id is null or s.provider_sandbox_id=$4)
+         and (
+           ($4::text is null and launch.outcome #> '{evidence,modal_machine}' is null)
+           or (launch.outcome #>> '{evidence,modal_machine,entry,operation}'='create'
+             and (launch.outcome #>> '{evidence,modal_machine,entry,machineId}'=$4
+               or (launch.outcome #>> '{evidence,modal_machine,entry,phase}'='creating' and $4 is not null)))
+         )`,
+      [sandboxId, job.id, launchJobId, machineId, LAUNCH_FAILURE],
+    );
+    return rows[0];
+  };
+  const current = await withJobLease(sql, job, loadTarget);
+  if (!current) {
+    return { status: "fail", reason: "modal_launch_cleanup_target_changed" } satisfies JobResult;
+  }
+  context.signal.throwIfAborted();
+  if (machineId === null || current.deleted) return { status: "done" } satisfies JobResult;
+
+  const isCurrent = async (tx: Sql) => Boolean(await loadTarget(tx));
+  const mayDispatch = () => withJobLease(sql, job, async (tx) => (await isCurrent(tx)) && context.canDispatch(tx));
+  const dispatchRevoked = new Error("Modal cleanup dispatch is no longer authorized.");
+  const unconfirmed = { status: "fail", reason: "modal_launch_cleanup_unconfirmed" } satisfies JobResult;
+  let options: ModalLaunchPlan["machine"];
+  try {
+    options = await prepareMachine();
+  } catch (error) {
+    if (await mayDispatch()) throw error;
+    context.signal.throwIfAborted();
+    return unconfirmed;
+  }
+  const machine = createModalMachine({
+    ...options,
+    client: {
+      apps: options.client.apps,
+      images: options.client.images,
+      cpClient: options.client.cpClient,
+      sandboxes: guardModalTermination(options.client.sandboxes, async () => {
+        if (!(await mayDispatch())) throw dispatchRevoked;
+        context.signal.throwIfAborted();
+      }),
+    },
+    journal: createJobsStore(sql).modalFailedLaunchJournal(job, launchJobId, isCurrent, context.canDispatch),
+  });
+  const target = { sandboxId, generation, machineId, signal: context.signal };
+  const dispatch = await mayDispatch();
+  context.signal.throwIfAborted();
+  if (dispatch) {
+    try {
+      await machine.delete({ ...target, scope: "physical-only" });
+      return { status: "done" } satisfies JobResult;
+    } catch (error) {
+      if (error !== dispatchRevoked) throw error;
+    }
+  }
+
+  const observed = await machine.observe(target);
+  if (
+    (observed.kind === "absent" && observed.receipt?.operation === "delete") ||
+    (observed.kind === "present" && observed.phase === "stopped")
+  )
+    return { status: "done" } satisfies JobResult;
+  return unconfirmed;
+}
+
+function guardModalTermination(
+  sandboxes: ModalLaunchPlan["machine"]["client"]["sandboxes"],
+  authorize: () => Promise<void>,
+) {
+  return new Proxy(sandboxes, {
+    get(service, key) {
+      if (key === "fromId") {
+        return async (...args: Parameters<typeof service.fromId>) => {
+          const sandbox = await service.fromId(...args);
+          return new Proxy(sandbox, {
+            get(instance, property) {
+              if (property === "terminate") {
+                return async (...params: Parameters<typeof instance.terminate>) => {
+                  await authorize();
+                  return instance.terminate(...params);
+                };
+              }
+              const value = Reflect.get(instance, property, instance);
+              return typeof value === "function" ? value.bind(instance) : value;
+            },
+          });
+        };
+      }
+      const value = Reflect.get(service, key, service);
+      return typeof value === "function" ? value.bind(service) : value;
+    },
+  });
 }

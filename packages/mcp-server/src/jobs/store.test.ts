@@ -9,7 +9,12 @@ import { scopedRuntimeSql } from "../runtime-enrolment.ts";
 import type { LaneFactory } from "../server-worker-modules.ts";
 import { sqlOver } from "../sql.ts";
 import { runtimeWakes } from "../wake-bus.ts";
-import { admitModalLaunch, type ModalLaunchAdmission, runModalLaunch } from "./modal-launch.ts";
+import {
+  admitModalLaunch,
+  type ModalLaunchAdmission,
+  runFailedModalLaunchDelete,
+  runModalLaunch,
+} from "./modal-launch.ts";
 import { createJobsRunner, type Job } from "./runner.ts";
 import { createJobsStore, JOBS_WAKE, withJobLease } from "./store.ts";
 
@@ -276,7 +281,14 @@ test("an unbound Modal launch can publish only its leased allocation receipt", a
   await expect(withJobLease(f.sql, successor, (tx) => bind(tx, "guessed"))).rejects.toMatchObject({ code: "23514" });
 });
 
-type ModalLaunchStep = "create response" | "bootstrap dispatch" | "image lookup" | "runtime ticket";
+type ModalLaunchStep =
+  | "create response"
+  | "bootstrap dispatch"
+  | "image lookup"
+  | "runtime ticket"
+  | "termination response"
+  | "machine poll"
+  | "cleanup preparation";
 
 async function modalLaunchFixture() {
   const f = await fixture();
@@ -290,6 +302,8 @@ async function modalLaunchFixture() {
   let allocations = 0;
   let observed = 0;
   let visible = true;
+  let terminations = 0;
+  let cleanupPreparations = 0;
   let tags: Record<string, string> = {};
   const bootstrapped: string[] = [];
   const makeRunner = (atStep?: (step: ModalLaunchStep) => void | Promise<void>, jobsSql = f.sql) => {
@@ -298,7 +312,12 @@ async function modalLaunchFixture() {
       getTags: async () => tags,
       poll: async () => {
         observed++;
-        return null;
+        await atStep?.("machine poll");
+        return terminations ? 0 : null;
+      },
+      async terminate() {
+        terminations++;
+        await atStep?.("termination response");
       },
       async exec() {
         await atStep?.("bootstrap dispatch");
@@ -332,31 +351,42 @@ async function modalLaunchFixture() {
         fromId: async () => sandbox,
       },
     } as unknown as ModalMachineOptions["client"];
+    const machine: Omit<ModalMachineOptions, "journal"> = {
+      client,
+      appName: "test",
+      binding: { appId: "ap-test", workspace: "workspace", environment: "main" },
+      deploymentId: "deployment",
+      async resolveRuntimeTicket() {
+        await atStep?.("runtime ticket");
+        return {
+          serverUrl: "https://armada.invalid",
+          artifact: { sha256: "a".repeat(64), bytes: 1 },
+          cacheDir: "/home/user/runtime-cache",
+          enrolmentToken: `armada_enrol_${"b".repeat(64)}`,
+        };
+      },
+      prepareCheckpoint: async () => {},
+    };
     return createJobsRunner(
       createJobsStore(jobsSql, launchEncryptionKey),
       {
+        delete: {
+          concurrency: 1,
+          async run(job, context) {
+            return runFailedModalLaunchDelete(jobsSql, job, context, async () => {
+              cleanupPreparations++;
+              await atStep?.("cleanup preparation");
+              return machine;
+            });
+          },
+        },
         launch: {
           concurrency: 1,
           async run(job, context) {
             return runModalLaunch(jobsSql, launchEncryptionKey, job, context, {
               allocation: { source: { kind: "image", ref: "image" }, size: null, computeTtlSeconds: 600 },
               bindingRef: job.id,
-              machine: {
-                client,
-                appName: "test",
-                binding: { appId: "ap-test", workspace: "workspace", environment: "main" },
-                deploymentId: "deployment",
-                async resolveRuntimeTicket() {
-                  await atStep?.("runtime ticket");
-                  return {
-                    serverUrl: "https://armada.invalid",
-                    artifact: { sha256: "a".repeat(64), bytes: 1 },
-                    cacheDir: "/home/user/runtime-cache",
-                    enrolmentToken: `armada_enrol_${"b".repeat(64)}`,
-                  };
-                },
-                prepareCheckpoint: async () => {},
-              },
+              machine,
             });
           },
         },
@@ -377,13 +407,15 @@ async function modalLaunchFixture() {
       visible = true;
     },
     effects: () => ({ allocations, observed, bootstrapped }),
+    cleanupEffects: () => ({ terminations, cleanupPreparations }),
   };
 }
 
 test.each(["create response", "bootstrap dispatch"] as const)(
   "an expired Modal launch hands off the exact allocation after losing the %s",
   async (failure) => {
-    const { f, id, jobId, makeRunner, hideAllocation, revealAllocation, effects } = await modalLaunchFixture();
+    const { f, id, jobId, makeRunner, hideAllocation, revealAllocation, effects, cleanupEffects } =
+      await modalLaunchFixture();
     const first = makeRunner((step) => {
       if (step === failure) throw new Error("Lost worker");
     });
@@ -409,16 +441,122 @@ test.each(["create response", "bootstrap dispatch"] as const)(
     expect(effects().allocations).toBe(1);
     expect(effects().bootstrapped).toEqual([]);
     expect((await f.db.query("select status from sandboxes where id=$1", [id])).rows).toEqual([{ status: "failed" }]);
-    expect(await f.store.claim("delete", crypto.randomUUID(), 30, 1)).toMatchObject({
-      sandbox_id: id,
-      generation: "2",
-      payload: { launchJobId: jobId, machineId: "physical" },
+    const {
+      rows: [cleanup],
+    } = await f.db.query<{ id: string }>("select id from jobs where kind='delete' and sandbox_id=$1", [id]);
+    expect(cleanup).toBeDefined();
+    const lost = makeRunner((step) => {
+      if (step === "termination response") throw new Error("Worker lost the termination response");
     });
+    expect(await lost.reconcileOne(signal)).toBe(true);
+    await lost.drain();
+    expect((await f.db.query("select state from jobs where id=$1", [cleanup!.id])).rows).toEqual([{ state: "leased" }]);
+    await f.db.query("update jobs set lease_until='-infinity' where id=$1", [cleanup!.id]);
+
+    if (failure === "bootstrap dispatch") {
+      await f.db.query("update jobs set deadline_at='-infinity' where id=$1", [cleanup!.id]);
+    }
+    const cleanupSuccessor = makeRunner();
+    expect(await cleanupSuccessor.reconcileOne(signal)).toBe(true);
+    await cleanupSuccessor.drain();
+    expect((await f.db.query("select state from jobs where id=$1", [cleanup!.id])).rows).toEqual([{ state: "done" }]);
+    expect(cleanupEffects().terminations).toBe(1);
   },
 );
 
+test.each(["allocated", "deleting", "deleted"] as const)(
+  "Modal cleanup resumes after a crash at the durable %s checkpoint",
+  async (phase) => {
+    const { f, id, jobId, makeRunner, cleanupEffects } = await modalLaunchFixture();
+    const launch = makeRunner((step) => {
+      if (step === "create response") throw new Error("Lost create response");
+    });
+    expect(await launch.reconcileOne(signal)).toBe(true);
+    await launch.drain();
+    await f.db.query("update jobs set lease_until='-infinity', deadline_at='-infinity' where id=$1", [jobId]);
+    const failure = makeRunner();
+    expect(await failure.reconcileOne(signal)).toBe(true);
+    await failure.drain();
+
+    const crashAfterCheckpoint: Sql = {
+      ...f.sql,
+      async transaction(work) {
+        let checkpointWritten = false;
+        const result = await f.sql.transaction!(async (tx) =>
+          work({
+            ...tx,
+            async query<T>(query: string, params?: unknown[]) {
+              const result = await tx.query<T>(query, params);
+              if (query.includes("set outcome=jsonb_set") && typeof params?.[1] === "string") {
+                checkpointWritten = result.rows.length > 0 && JSON.parse(params[1]).entry.phase === phase;
+              }
+              return result;
+            },
+          }),
+        );
+        if (checkpointWritten) throw new Error("Lost journal commit acknowledgement");
+        return result;
+      },
+    };
+    const lost = makeRunner(undefined, crashAfterCheckpoint);
+    expect(await lost.reconcileOne(signal)).toBe(true);
+    await lost.drain();
+    expect(
+      (
+        await f.db.query("select outcome #>> '{evidence,modal_machine,entry,phase}' as phase from jobs where id=$1", [
+          jobId,
+        ])
+      ).rows,
+    ).toEqual([{ phase }]);
+    expect(cleanupEffects().terminations).toBe(phase === "deleted" ? 1 : 0);
+    await f.db.query("update jobs set lease_until='-infinity' where kind='delete' and sandbox_id=$1", [id]);
+    if (phase === "deleted") {
+      await f.db.query("update jobs set deadline_at='-infinity' where kind='delete' and sandbox_id=$1", [id]);
+    }
+    const successor = makeRunner((step) => {
+      if (phase === "deleted" && step === "cleanup preparation") throw new Error("Modal credentials unavailable");
+    });
+    expect(await successor.reconcileOne(signal)).toBe(true);
+    await successor.drain();
+    expect((await f.db.query("select state from jobs where kind='delete' and sandbox_id=$1", [id])).rows).toEqual([
+      { state: "done" },
+    ]);
+    expect(cleanupEffects().terminations).toBe(1);
+    expect(cleanupEffects().cleanupPreparations).toBe(phase === "deleted" ? 1 : 2);
+  },
+);
+
+test("Modal cleanup does not terminate when its budget expires during the running poll", async () => {
+  const { f, id, jobId, makeRunner, cleanupEffects } = await modalLaunchFixture();
+  const launch = makeRunner((step) => {
+    if (step === "bootstrap dispatch") throw new Error("Worker lost the bootstrap response");
+  });
+  expect(await launch.reconcileOne(signal)).toBe(true);
+  await launch.drain();
+  await f.db.query("update jobs set lease_until='-infinity', deadline_at='-infinity' where id=$1", [jobId]);
+  const failure = makeRunner();
+  expect(await failure.reconcileOne(signal)).toBe(true);
+  await failure.drain();
+
+  const cleanup = makeRunner(async (step) => {
+    if (step === "machine poll") {
+      await f.db.query("update jobs set deadline_at='-infinity' where kind='delete' and sandbox_id=$1", [id]);
+    }
+  });
+  expect(await cleanup.reconcileOne(signal)).toBe(true);
+  await cleanup.drain();
+  expect(
+    (
+      await f.db.query("select state, outcome->>'reason' as reason from jobs where kind='delete' and sandbox_id=$1", [
+        id,
+      ])
+    ).rows,
+  ).toEqual([{ state: "failed", reason: "modal_launch_cleanup_unconfirmed" }]);
+  expect(cleanupEffects().terminations).toBe(0);
+});
+
 test("an interrupted Modal failure handoff rolls back the failure and delete job together", async () => {
-  const { f, id, jobId, makeRunner } = await modalLaunchFixture();
+  const { f, id, jobId, makeRunner, cleanupEffects } = await modalLaunchFixture();
   await f.db.query("update jobs set deadline_at='-infinity' where id=$1", [jobId]);
   const interrupted: Sql = {
     ...f.sql,
@@ -447,11 +585,12 @@ test("an interrupted Modal failure handoff rolls back the failure and delete job
   expect(await successor.reconcileOne(signal)).toBe(true);
   await successor.drain();
   expect((await f.db.query("select status from sandboxes where id=$1", [id])).rows).toEqual([{ status: "failed" }]);
-  expect(await f.store.claim("delete", crypto.randomUUID(), 30, 1)).toMatchObject({
-    sandbox_id: id,
-    generation: "2",
-    payload: { launchJobId: jobId, machineId: null },
-  });
+  expect(await successor.reconcileOne(signal)).toBe(true);
+  await successor.drain();
+  expect((await f.db.query("select state from jobs where kind='delete' and sandbox_id=$1", [id])).rows).toEqual([
+    { state: "done" },
+  ]);
+  expect(cleanupEffects()).toEqual({ terminations: 0, cleanupPreparations: 0 });
 });
 
 test.each(["create response", "bootstrap dispatch"] as const)(
