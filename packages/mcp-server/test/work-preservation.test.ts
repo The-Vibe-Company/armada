@@ -868,13 +868,16 @@ test("native Modal preservation refuses clean proof from a replacement physical 
     };
     const authority = { kind: "activity", token: activity, generation } as const;
     const receipts = () =>
-      db.query("select sandbox_id from sandbox_native_preservation_receipts where sandbox_id=$1", [id]);
+      db.query(
+        "select capture_acknowledgements->>'physicalGeneration' as generation from sandbox_native_preservation_receipts where sandbox_id=$1",
+        [id],
+      );
 
     await preserveBeforeStop(sql, host, id, physical, "user_stop", authority);
     expect((await receipts()).rows).toHaveLength(0);
 
     await preserveBeforeStop(sql, host, id, physical, "user_stop", authority);
-    expect((await receipts()).rows).toHaveLength(1);
+    expect((await receipts()).rows).toEqual([{ generation: "8" }]);
   }, "modal-native");
 });
 
@@ -902,10 +905,16 @@ async function seedNativeDrainReceipt(ciphertext = new Uint8Array([21, 34, 55]),
   ]);
   await db.query(
     `insert into sandbox_native_preservation_receipts
-       (sandbox_id,generation,stop_generation,capture_generation,capture_stop_generation,archive_id)
-     values($1,4,2,4,2,$2)`,
-    [sandboxId, archiveId],
+       (sandbox_id,generation,stop_generation,capture_generation,capture_stop_generation,archive_id,capture_acknowledgements)
+     values($1,4,2,4,2,$2,$3::jsonb)`,
+    [sandboxId, archiveId, provider === "modal" ? JSON.stringify({ physicalGeneration: "1" }) : null],
   );
+  if (provider === "modal")
+    await db.query(
+      `insert into modal_machines(scope,org_id,owner_id,visibility,id,request_key,record)
+       values('drain-fixture',$1,$2,'private',$3,$3,'{"phase":"stopped","generation":1}'::jsonb)`,
+      [people.org, people.owner, "bx_" + sandboxId],
+    );
   async function copy(generation = 4) {
     const result = await db.query<{ outcome: string }>("select copy_native_drain_recovery($1,$2) as outcome", [
       sandboxId,
@@ -915,6 +924,54 @@ async function seedNativeDrainReceipt(ciphertext = new Uint8Array([21, 34, 55]),
   }
   return { db, people, sandboxId, archiveId, ciphertext, copy };
 }
+
+test.each([
+  "live restore lease",
+  "expired restore lease",
+  "replacement",
+  "historical receipt",
+  "old pending admission",
+] as const)("native Modal drain leaves work and the row intact with %s", async (scenario) => {
+  const { db, people, sandboxId, archiveId, copy } = await seedNativeDrainReceipt(undefined, "modal");
+  const previouslyPending = scenario === "old pending admission";
+  const deadline =
+    scenario === "expired restore lease"
+      ? "2000-01-01"
+      : previouslyPending || scenario === "live restore lease"
+        ? "2099-01-01"
+        : null;
+  if (previouslyPending) {
+    expect(await copy()).toBe("archived");
+    await db.query("update sandboxes set native_drain_pending=true,lifecycle_generation=5 where id=$1", [sandboxId]);
+  }
+  await db.query(
+    `update modal_machines set record=jsonb_set(record,'{generation}',$2::jsonb),
+         lease_id=case when $3::timestamptz is not null then $4::uuid end, lease_until=$3
+       where id=$1`,
+    ["bx_" + sandboxId, scenario === "replacement" ? "2" : "1", deadline, crypto.randomUUID()],
+  );
+  if (scenario === "historical receipt")
+    await db.query(
+      "update sandbox_native_preservation_receipts set capture_acknowledgements=null where sandbox_id=$1",
+      [sandboxId],
+    );
+
+  const caller: Caller = { via: "service", userId: people.owner, orgs: [{ orgId: people.org, role: "member" }] };
+  const { sandboxes } = createSqlData(bunLikeSql(db))(caller);
+  const remove = mock(async () => ({ status: "deleted" as const }));
+  const providers = { resolve: async () => ({ ...fakeBoat().provider, id: "modal" as const, delete: remove }) };
+
+  await expect(deleteSandboxWithActivity(sandboxes, providers, sandboxId, "native-drain")).rejects.toMatchObject({
+    code: "sandbox_not_ready",
+  });
+  expect(remove).not.toHaveBeenCalled();
+  expect((await db.query("select status,native_drain_pending from sandboxes where id=$1", [sandboxId])).rows).toEqual([
+    { status: "stopped", native_drain_pending: previouslyPending },
+  ]);
+  expect(
+    (await db.query("select archive_id from native_drain_recovery where sandbox_id=$1", [sandboxId])).rows,
+  ).toEqual(previouslyPending ? [{ archive_id: archiveId }] : []);
+});
 
 async function nativeToolFixture(provider: Provider, placement: string, onQuery?: (statement: string) => void) {
   const { db, people, sharedGoldenId, modalGoldenId, openaiCredentialId } = sharedDatabase();
@@ -1435,10 +1492,12 @@ test("ordinary native exec skips post-command provider sampling after the activi
   }
 });
 
-test.each(["missing proof", "rolled-back admission", "lost commit response", "verified proof"])(
+test.each(["missing proof", "Boat rollback", "Modal rollback", "lost commit response", "verified proof"])(
   "native drain deletion commits preservation and admission together with %s",
   async (scenario) => {
-    const { db, people, sandboxId, archiveId } = await seedNativeDrainReceipt();
+    const providerId = scenario === "Modal rollback" ? "modal" : "boat";
+    const rolledBack = scenario === "Boat rollback" || scenario === "Modal rollback";
+    const { db, people, sandboxId, archiveId } = await seedNativeDrainReceipt(undefined, providerId);
     const caller: Caller = { via: "service", userId: people.owner, orgs: [{ orgId: people.org, role: "member" }] };
     const sql = bunLikeSql(db);
     if (scenario === "lost commit response") {
@@ -1450,7 +1509,7 @@ test.each(["missing proof", "rolled-back admission", "lost commit response", "ve
       };
     }
     const { sandboxes } = createSqlData(sql)(caller);
-    const provider = fakeBoat().provider;
+    const provider = { ...fakeBoat().provider, id: providerId };
     const detached = () => db.query("select archive_id from native_drain_recovery where sandbox_id=$1", [sandboxId]);
     const state = async () =>
       (
@@ -1470,7 +1529,7 @@ test.each(["missing proof", "rolled-back admission", "lost commit response", "ve
     provider.delete = remove;
     if (scenario === "missing proof")
       await db.query("delete from sandbox_native_preservation_receipts where sandbox_id=$1", [sandboxId]);
-    if (scenario === "rolled-back admission") {
+    if (rolledBack) {
       await db.exec(`
         create function refuse_drain_admission() returns trigger language plpgsql as $$
         begin
@@ -1503,13 +1562,20 @@ test.each(["missing proof", "rolled-back admission", "lost commit response", "ve
           activity_lease_id: expect.any(String),
         });
       } else {
-        await expect(deletion).rejects.toMatchObject({ code: "sandbox_not_ready" });
+        if (scenario === "Modal rollback") {
+          await expect(deletion).rejects.toThrow("Sandbox deletion admission changed during recovery handoff.");
+          const { rows } = await db.query(
+            "select capture_acknowledgements->>'drainAdmissionGeneration' as stamp from sandbox_native_preservation_receipts where sandbox_id=$1",
+            [sandboxId],
+          );
+          expect(rows).toEqual([{ stamp: null }]);
+        } else await expect(deletion).rejects.toMatchObject({ code: "sandbox_not_ready" });
         expect(remove).not.toHaveBeenCalled();
         expect(await state()).toEqual({ status: "stopped", generation: 4, drain_operation_id: null });
         expect((await detached()).rows).toEqual([]);
       }
     } finally {
-      if (scenario === "rolled-back admission")
+      if (rolledBack)
         await db.exec("drop trigger refuse_drain_admission on sandboxes; drop function refuse_drain_admission()");
     }
   },
@@ -1667,7 +1733,13 @@ test.each([
       }
       if (providerId === "boat")
         return { status: dispatchUnclaimed ? "completed" : "pending", operationId: "deletion-operation" };
-      if (!retry && scenario === "lost provider reply") throw new Error("Provider reply lost");
+      if (!retry) {
+        await db.query("update modal_machines set record=jsonb_set(record,'{phase}',to_jsonb($2::text)) where id=$1", [
+          `bx_${sandboxId}`,
+          scenario === "unavailable provider" ? "deleting" : "deleted",
+        ]);
+        if (scenario === "lost provider reply") throw new Error("Provider reply lost");
+      }
       if (retry && scenario === "unavailable provider")
         throw new ProviderError({
           provider: providerId,
