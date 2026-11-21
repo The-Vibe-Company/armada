@@ -64,7 +64,7 @@ if [ "$PUBLISH" = true ]; then
           echo "Registry tarball for $name@$VERSION differs from the staged artifact." >&2
           return 1
         fi
-        echo "Registry tarball for $name@$VERSION verified in $((SECONDS - started))s after the publish or skip."
+        echo "Registry tarball for $name@$VERSION retrieved in $((SECONDS - started))s after the publish or skip."
         return 0
       fi
       elapsed=$((SECONDS - started))

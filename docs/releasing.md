@@ -32,8 +32,9 @@ so the package has no dependencies.
 
 For the next release, record the elapsed time of the **Publish to npm** job in
 [#2834](https://github.com/The-Vibe-Company/armada/issues/2834) and check it against
-the three-minute target. If it exceeds the target, record the per-package upload
-and registry retrieval durations from the publish step. The launcher waits for
+the three-minute target. If it exceeds the target, record the upload times for
+newly published packages and the registry retrieval times for the four platform
+packages from the publish step. The launcher waits for
 all four platform tarballs because a successful upload can precede download
 availability, leaving new CLI installs without a binary. Use the four
 `npm-tarballs-<version>-<sha>-<target>` artifacts
