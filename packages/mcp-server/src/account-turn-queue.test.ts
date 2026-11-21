@@ -161,14 +161,18 @@ async function claimTurn(requestId: string) {
   };
 }
 
-function sharedDispatcher(send: DispatchTurn) {
+function sharedRunner(send: DispatchTurn) {
   const key = btoa("x".repeat(32));
-  const runner = createJobsRunner(
+  return createJobsRunner(
     createJobsStore(sql, key),
     { turn_dispatch: createTurnDispatchJob(sql, key, send, () => Date.UTC(2070, 0, 1)) },
     console.error,
     () => () => {},
   );
+}
+
+function sharedDispatcher(send: DispatchTurn) {
+  const runner = sharedRunner(send);
   const signal = new AbortController().signal;
   return async () => {
     expect(await runner.reconcileOne(signal)).toBe(true);
@@ -1206,30 +1210,40 @@ test("a native request with its own durable mutating command stays uncertain rat
   expect((await database().query("select * from account_agent_reservations")).rows).toHaveLength(1);
 });
 
-test("runtime dispatch leases survive a server restart without replaying while another dispatcher owns the lease", async () => {
+test("a restarted Docker runner waits for the claim lease before recovering a dispatch without intent", async () => {
   const input = { id: ids[1]!, request_id: requests[0]!, prompt: "recover a claimed instruction" };
   await database().query("update sandboxes set provider='docker' where id=$1", [input.id]);
   await queue.accept(caller, input);
-  await database().query(
-    "update account_turn_queue set state='dispatching',dispatch_generation=1,dispatch_until=now()+interval '1 hour' where sandbox_id=$1",
-    [input.id],
-  );
-  await database().query("insert into account_agent_reservations values($1,$2)", [input.id, account]);
-  const restarted = createAccountTurnQueue(sql, btoa("x".repeat(32)));
-  let calls = 0;
-  restarted.setDispatch(async (_caller, request) => {
-    calls++;
-    expect(request).toEqual(input);
+  const original = await claimTurn(input.request_id);
+  expect(await admitClaimedAccountTurn(sql, original)).not.toBeNull();
+  // Expire the receipt window alone. The shared job lease still owns this request.
+  await sql.query("update account_turn_queue set dispatch_until='-infinity' where sandbox_id=$1", [input.id]);
+  await sql.query("update jobs set lease_until='infinity' where id=$1", [original.job.id]);
+
+  const sent: unknown[] = [];
+  const successor = sharedRunner(async (_caller, request) => {
+    sent.push(request);
     return { promptId: "recovered_prompt", conversationId: "history", status: "running" };
   });
-  expect(await restarted.reconcileOne(new AbortController().signal)).toBe(false);
-  await database().query("update account_turn_queue set dispatch_until=now()-interval '1 second' where sandbox_id=$1", [
-    input.id,
+  const signal = new AbortController().signal;
+  expect(await successor.reconcileOne(signal)).toBe(false);
+  expect(sent).toEqual([]);
+  expect((await sql.query("select state from account_turn_queue where sandbox_id=$1", [input.id])).rows).toEqual([
+    { state: "dispatching" },
   ]);
-  expect(await restarted.reconcileOne(new AbortController().signal)).toBe(true);
-  await restarted.drain();
-  expect(calls).toBe(1);
-  expect(await restarted.status(caller, input.id, input.request_id)).toEqual({ nativePromptId: "recovered_prompt" });
+  expect((await sql.query("select sandbox_id from account_agent_reservations")).rows).toEqual([
+    { sandbox_id: input.id },
+  ]);
+
+  await sql.query("update jobs set lease_until='-infinity' where id=$1", [original.job.id]);
+  expect(await successor.reconcileOne(signal)).toBe(true);
+  await successor.drain();
+  expect(sent).toEqual([input]);
+  expect(await queue.status(caller, input.id, input.request_id)).toEqual({ nativePromptId: "recovered_prompt" });
+  expect((await sql.query("select id, state, lease_epoch::text from jobs")).rows).toEqual([
+    { id: original.job.id, state: "done", lease_epoch: "2" },
+  ]);
+  expect((await sql.query("select sandbox_id from account_agent_reservations")).rows).toEqual([]);
 });
 
 test("explicit owner stop cancels waiting prompts before Docker no-op routing, but idle cleanup stays intact", async () => {
@@ -1365,30 +1379,24 @@ test("stranded receipts settle without replay while safe unlimited and paused wo
   expect(await queue.status(caller, ids[2]!, requests[0])).toMatchObject({ failed: true });
 });
 
-test.each(["boat", "modal"])("native %s restart releases only proven pre-dispatch claims", async (provider) => {
+test.each(["boat", "modal"])("native %s restart replays only a proven pre-dispatch claim", async (provider) => {
   const input = { id: ids[1]!, request_id: requests[0]!, prompt: "recover abandoned claim" };
   await database().query("update sandboxes set provider=$2 where id=$1", [input.id, provider]);
   await queue.accept(caller, input);
-  await database().query(
-    "update account_turn_queue set state='dispatching',dispatch_generation=1,dispatch_until=now()-interval '1 second' where sandbox_id=$1",
-    [input.id],
-  );
-  await database().query("insert into account_agent_reservations values($1,$2)", [input.id, account]);
-  const restarted = createAccountTurnQueue(sql, btoa("x".repeat(32)));
-  let calls = 0;
-  restarted.setDispatch(async () => {
-    calls++;
+  const original = await claimTurn(input.request_id);
+  expect(await admitClaimedAccountTurn(sql, original)).not.toBeNull();
+  await sql.query("update account_turn_queue set dispatch_until='-infinity' where sandbox_id=$1", [input.id]);
+  await sql.query("update jobs set lease_until='-infinity' where id=$1", [original.job.id]);
+
+  const sent: unknown[] = [];
+  await sharedDispatcher(async (_caller, request) => {
+    sent.push(request);
     return { promptId: "recovered_native" };
-  });
-  expect(await restarted.reconcileOne(new AbortController().signal)).toBe(false);
-  expect((await database().query("select * from account_agent_reservations")).rows).toHaveLength(0);
-  expect((await restarted.status(caller, input.id, input.request_id))?.message).toBe(
-    "Prompt accepted; waiting for sandbox dispatch, not an account slot.",
-  );
-  expect(await restarted.reconcileOne(new AbortController().signal)).toBe(true);
-  await restarted.drain();
-  expect(calls).toBe(1);
-  expect(await restarted.status(caller, input.id, input.request_id)).toEqual({ nativePromptId: "recovered_native" });
+  })();
+
+  expect(sent).toEqual([input]);
+  expect(await queue.status(caller, input.id, input.request_id)).toEqual({ nativePromptId: "recovered_native" });
+  expect((await sql.query("select sandbox_id from account_agent_reservations")).rows).toEqual([]);
 });
 
 test.each([
@@ -1562,21 +1570,42 @@ test.each(["boat", "modal"] as const)("stopped %s native send reaches account ad
   expect((await database().query("select * from account_turn_queue")).rows).toHaveLength(1);
 });
 
-test("expired native post-admission claims fail visibly without replay after restart", async () => {
+test.each([
+  ["boat", "matching mutating command"],
+  ["modal", "generation advance"],
+] as const)("native %s restart refuses to replay after a %s", async (provider, evidence) => {
   const input = { id: ids[1]!, request_id: requests[0]!, prompt: "uncertain after restart" };
+  await database().query("update sandboxes set provider=$2 where id=$1", [input.id, provider]);
   await queue.accept(caller, input);
-  await database().query(
-    "update account_turn_queue set state='dispatching',dispatch_generation=1,dispatch_until=now()-interval '1 second' where sandbox_id=$1",
-    [input.id],
-  );
-  await database().query("update sandboxes set lifecycle_generation=2 where id=$1", [input.id]);
-  let calls = 0;
-  queue.setDispatch(async () => {
-    calls++;
+  const original = await claimTurn(input.request_id);
+  expect(await admitClaimedAccountTurn(sql, original)).not.toBeNull();
+  if (evidence === "matching mutating command") {
+    await sql.query("insert into runtime_commands(sandbox_id,sequence,request_id) values($1,1,$2)", [
+      input.id,
+      `follow_${input.request_id}`,
+    ]);
+  } else {
+    await sql.query("update sandboxes set lifecycle_generation=2 where id=$1", [input.id]);
+  }
+  await sql.query("update account_turn_queue set dispatch_until='-infinity' where sandbox_id=$1", [input.id]);
+  await sql.query("update jobs set lease_until='-infinity' where id=$1", [original.job.id]);
+
+  const sent: unknown[] = [];
+  await sharedDispatcher(async (_caller, request) => {
+    sent.push(request);
+  })();
+
+  expect(sent).toEqual([]);
+  expect(await queue.status(caller, input.id, input.request_id)).toMatchObject({
+    failed: true,
+    message: "Dispatch outcome uncertain; inspect sandbox history before resending.",
   });
-  expect(await queue.reconcileOne(new AbortController().signal)).toBe(false);
-  expect(calls).toBe(0);
-  expect((await queue.status(caller, input.id, input.request_id))?.failed).toBe(true);
+  expect((await sql.query("select id,state,outcome->>'reason' as reason from jobs")).rows).toEqual([
+    { id: original.job.id, state: "failed", reason: "native_dispatch_uncertain" },
+  ]);
+  expect((await sql.query("select sandbox_id from account_agent_reservations")).rows).toEqual([
+    { sandbox_id: input.id },
+  ]);
 });
 
 test.each([true, false])("retained stop intent fences new queued work (merged=%s)", async (merged) => {
