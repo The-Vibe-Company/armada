@@ -1366,7 +1366,7 @@ test("scoped access validates its matched control pair and explicit account IDs 
   }
 });
 
-test("vault transport catches canary echoes in error envelopes, cleans metadata and never allocates compute", async () => {
+test.each(["canary echo", "late create"] as const)("vault rejects %s and cleans up", async (fault) => {
   const org = "11111111-1111-4111-8111-111111111111";
   let variable: Record<string, unknown> | undefined;
   let readable = "";
@@ -1387,9 +1387,10 @@ test("vault transport catches canary echoes in error envelopes, cleans metadata 
           createdAt: "2026-11-11T00:00:00Z",
           updatedAt: "2026-11-11T00:00:00Z",
         };
+        if (fault === "late create") fake.advance(deadlines.vault_variable_set + 1);
         return json({ item: variable });
       case "variables/list":
-        return json({ items: variable ? [variable] : [] });
+        return json({ items: variable && fault !== "late create" ? [variable] : [] });
       case "variables/read":
         return json({ item: variable, value: readable });
       case "secrets/set":
@@ -1425,6 +1426,24 @@ test("vault transport catches canary echoes in error envelopes, cleans metadata 
       },
     ),
   ).toBe(false);
+  if (fault === "late create") {
+    expect(fake.calls.map((call) => call.path)).toEqual(["variables/set", "variables/list", "variables/delete"]);
+    expect(fake.calls.at(-1)?.body).toEqual({ org, id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", expectedVersion: 1 });
+    expect(fake.receipts()).toContainEqual({
+      case: 0,
+      step: "vault_variable_set",
+      pass: false,
+      code: "poll_limit_exceeded",
+    });
+    expect(fake.receipts()).toContainEqual({
+      case: 0,
+      step: "vault_cleanup_summary",
+      pass: true,
+      leftoverSecrets: [],
+      leftoverVariables: [],
+    });
+    return;
+  }
   expect(fake.receipts()).toContainEqual({ case: 0, step: "vault_secret_set", pass: false, code: "secret_exposed" });
   expect(fake.calls.some((call) => call.path.startsWith("sandbox/"))).toBe(false);
   expect(fake.calls.filter((call) => call.path === "variables/delete")).toHaveLength(1);
