@@ -410,8 +410,6 @@ export async function runFailedModalLaunchDelete(
   return unconfirmed;
 }
 
-// Keep the SDK receiver for methods that access private fields. The Machine
-// resolves ownership and polls the exact ID before calling terminate.
 function guardModalTermination(
   sandboxes: ModalLaunchPlan["machine"]["client"]["sandboxes"],
   authorize: () => Promise<void>,
