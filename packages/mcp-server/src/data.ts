@@ -43,6 +43,7 @@ import { recordNativeAccountExhaustion } from "./account-exhaustion.ts";
 import { publishAccountSpend, unmeasuredUsage } from "./account-spend.ts";
 import type { Caller } from "./caller.ts";
 import { scopedOrg } from "./control-caller.ts";
+import { bindNativePromptRequest } from "./native-webhook-prompts.ts";
 import { createResourceStore, type ResourceStore } from "./resource-store.ts";
 import { unsettledRuntimeCommands } from "./runtime-idle-evidence.ts";
 import {
@@ -79,7 +80,7 @@ export interface ServerSandboxPatch extends SandboxPatch {
   nativeResumeAdmission?: string;
   nativeSendAdmission?: ServerSandboxPatch["nativeChildSend"];
   nativeChildSend?: { fromState: SandboxStatus; placement: string };
-  nativeSendReceipt?: { fromState: SandboxStatus; placement: string };
+  nativeSendReceipt?: { fromState: SandboxStatus; placement: string; requestId?: string };
   nativeSteerReceipt?: { fromState: SandboxStatus; placement: string };
   ownerStop?: true;
   onlyIfIdle?: boolean;
@@ -1185,6 +1186,8 @@ export function createSqlData(
               [...scope, id, receiptGeneration, receiptToken, nativeReceipt.fromState, nativeReceipt.placement],
             );
             if (!locked.rows.length) return { rows: [] };
+            const requestId = patch.nativeSendReceipt?.requestId;
+            if (requestId && patch.taskPromptId) await bindNativePromptRequest(tx, id, patch.taskPromptId, requestId);
             if (nativeReceipt.fromState !== "running")
               await publishNativeTurn(
                 tx,

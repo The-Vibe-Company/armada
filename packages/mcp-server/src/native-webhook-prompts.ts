@@ -225,3 +225,20 @@ function nativeObservationLane(observe: (signal: AbortSignal) => Promise<boolean
     },
   };
 }
+
+/** Called under the sandbox lock by native send settlement. The sandbox-level
+ * queue alias can name a different turn, so use the acknowledged prompt ID. */
+export async function bindNativePromptRequest(tx: Sql, sandboxId: string, promptId: string, requestId: string) {
+  await tx.query(
+    `update public.native_webhook_prompts p set acknowledged_request_id=q.request_id
+     from public.sandboxes s join public.account_turn_queue q on q.sandbox_id=s.id
+     where s.id=$1 and s.activity_until>clock_timestamp()
+       and q.request_id=$3 and q.state='dispatching' and q.owner_id=s.owner_id and q.org_id=s.org_id
+       and p.sandbox_id=s.id and p.prompt_id=$2
+       and p.provider=s.provider and p.provider_sandbox_id=s.provider_sandbox_id
+       and p.owner_id=s.owner_id and p.org_id=s.org_id and p.acknowledged_request_id is null
+       and not exists(select 1 from public.native_webhook_prompts bound
+         where bound.sandbox_id=s.id and bound.acknowledged_request_id=q.request_id)`,
+    [sandboxId, promptId, requestId],
+  );
+}
