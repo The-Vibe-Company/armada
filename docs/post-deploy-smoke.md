@@ -1891,14 +1891,9 @@ receipts. Each provider, lane, and step needs 20 of its own receipts from the
 limit. After a launch timing contract changes, collect samples under the new
 contract before reusing measured launch or readiness budgets.
 
-The deadline is `max(2 × p99, floor)` using nearest-rank p99 and rounding up to
-milliseconds. At 20 samples the p99 is the largest observation. The regular
-floor is two seconds, and usage polling has a five-second floor. Docker
-real-model readiness has a 60-second floor because the launch can return
-`starting` and the release smoke was still waiting at 40.225 seconds.
-If the first
-`sandbox/status` read finishes within two seconds, the floor allows a
-one-second interval and at least two seconds for the next read.
+The deadline is `max(3 × p99, 10 s)` using nearest-rank p99 and rounding up to
+milliseconds. At 20 samples the p99 is the largest observation. The multiplier
+and floor leave room for staging network latency spikes across runs.
 Usage polling sends another read only when its remaining budget can
 cover at least two seconds. Each read still fits within the enclosing deadline.
 
