@@ -811,7 +811,6 @@ export function createSqlData(
         return archive;
       },
       async recordNativePrompt(id, providerSandboxId, promptId, requestId) {
-        // Send attempts use the wall clock. A transaction's start time can predate the attempt.
         await sql.query(
           `with accepted as (
             select s.* from public.sandboxes s join public.goldens g on g.id=s.golden_id
