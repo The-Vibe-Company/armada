@@ -17,7 +17,7 @@ export interface ScopedProbeIo {
   now(): number;
   sleep(ms: number): Promise<void>;
   deadline: number;
-  toolEvidenceTimeoutMs?: number;
+  toolEvidenceTimeoutMs: number | undefined;
   poll<T>(read: () => Promise<T>, done: (value: T) => boolean): Promise<T>;
   step<T>(name: string, action: () => Promise<T>): Promise<T>;
   withCleanup<T>(action: () => Promise<T>): Promise<T>;
