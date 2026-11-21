@@ -1,4 +1,4 @@
-import type { SandboxStatus } from "@armada/core";
+import type { ModalBinding, SandboxStatus } from "@armada/core";
 import {
   GoldenError,
   type Machine,
@@ -15,7 +15,7 @@ import {
   type ModalLaunchSandbox,
   transitionSandbox,
 } from "../sandbox-lifecycle.ts";
-import type { Job, JobContext, JobResult } from "./runner.ts";
+import type { Job, JobContext, JobKind, JobResult } from "./runner.ts";
 import { ConflictingJobRequest, createJobsStore, withJobLease } from "./store.ts";
 
 export type ModalLaunchAllocation = Omit<Parameters<Machine["create"]>[0], "sandboxId" | "generation" | "signal">;
@@ -391,7 +391,62 @@ async function dispatchModalLaunch(
   return { kind: "bootstrapped" } as const;
 }
 
-export async function runFailedModalLaunchDelete(
+export function createModalLaunchCleanupJob(
+  sql: Sql,
+  openMachine: (
+    app: { binding: ModalBinding; appName: string; credentialScope: "org" | "user"; credentialOwnerId: string },
+    signal: AbortSignal,
+  ) => Promise<ModalMachineRuntime & { close(): void }>,
+) {
+  return {
+    concurrency: 4,
+    async run(job, context) {
+      let machine: Awaited<ReturnType<typeof openMachine>> | undefined;
+      try {
+        return await runFailedModalLaunchDelete(sql, job, context, async () => {
+          const {
+            rows: [app],
+          } = await sql.query<{
+            workspace: string;
+            environment: string;
+            app_id: string;
+            app_name: string;
+            authority_scope: "org" | "user";
+            authority_owner_id: string;
+          }>(
+            `select g.modal_workspace as workspace, a.environment, a.app_id, a.app_name,
+                    a.authority_scope, a.authority_owner_id
+             from public.sandboxes s
+             join public.goldens g on g.id=s.golden_id and g.org_id=s.org_id and g.provider='modal'
+             join public.modal_server_apps a on a.org_id=s.org_id
+               and a.app_id=g.modal_app_id and a.environment=g.modal_environment
+             where s.id=$1 and s.lifecycle_generation=$2 and (
+               (a.authority_scope='org' and a.authority_owner_id=s.org_id)
+               or (a.authority_scope='user' and a.authority_owner_id=s.owner_id)
+             )`,
+            [job.sandbox_id, job.generation],
+          );
+          if (!app) throw new Error("Modal cleanup App authority is unavailable.");
+          context.signal.throwIfAborted();
+          machine = await openMachine(
+            {
+              binding: { workspace: app.workspace, environment: app.environment, appId: app.app_id },
+              appName: app.app_name,
+              credentialScope: app.authority_scope,
+              credentialOwnerId: app.authority_owner_id,
+            },
+            context.signal,
+          );
+          return machine;
+        });
+      } finally {
+        machine?.close();
+      }
+    },
+  } satisfies JobKind;
+}
+
+async function runFailedModalLaunchDelete(
   sql: Sql,
   job: Job,
   context: DispatchContext,
