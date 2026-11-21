@@ -1,6 +1,6 @@
 # Failure triage and recovery
 
-Start with `armada detail SANDBOX --json`, `armada status SANDBOX --json` and
+Start with `armada info SANDBOX --live --json`, `armada info SANDBOX --json` and
 `armada events SANDBOX --tail 100 --json`. Save safe error codes, prompt ID and
 provider identity, not secret-bearing output. Command exit success alone does
 not establish a successful agent outcome.
@@ -20,7 +20,7 @@ not establish a successful agent outcome.
 - Running but unresponsive: inspect logs, steer or interrupt deliberately. A
   transport timeout does not mean the agent stopped; avoid duplicate sends.
 - Stopped/expired with unpushed work: do not delete. Record sandbox/provider IDs,
-  repository/branch and last known SHA; inspect detail/status and the preservation
+  repository/branch and last known SHA; inspect sandbox information and the preservation
   note first. Modal retains disk only if checkpoint succeeds;
   checkpoint_failed_disk_not_retained means the disk was not retained and cannot
   resume. Do not promise recovery from that stopped machine.
@@ -33,7 +33,7 @@ not establish a successful agent outcome.
   authorization through the supported login/credential flow before trying again.
   A credential rejection is not permission to bypass those gates.
 - Ambiguous send: a timeout or transport failure may hide an accepted turn.
-  Inspect detail, status and logs for the prompt/conversation and resulting work;
+  Use info and events for the prompt/conversation and resulting work;
   do not blindly replay the instruction. Once running, verify accessible commits
   and a pushed branch/PR independently before claiming recovery or stopping again.
   A new golden launch is a new environment, not recovery of the old disk.

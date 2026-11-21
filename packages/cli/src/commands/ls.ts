@@ -20,7 +20,7 @@ Deleted sandboxes are excluded by default; request --status deleted to include t
 Page is 1–1000000; limit is 1–200 (default page size 25). This is one page, not all results.
 Human output is a table. --json returns {sandboxes:[...]}; --page-info returns full
 page metadata and exact totals as JSON even without --json.
-Use --org to override a saved selection. Reuse returned IDs with status, events, or prompt.
+Use --org to override a saved selection. Reuse returned IDs with info, events, or prompt.
 Example: armada ls --owner me --page 1 --limit 25 --json
 Example: armada ls --org ORG_UUID --page 2 --page-info
 `,

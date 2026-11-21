@@ -217,7 +217,7 @@ test.each([
           errors += text;
         },
       };
-      const exitCode = await run(["status", launched.sandbox.id, "--json"], io, {
+      const exitCode = await run(["info", launched.sandbox.id, "--json"], io, {
         auth: {
           ...io,
           env: { ARMADA_URL: PUBLIC_URL, ARMADA_TOKEN: token },

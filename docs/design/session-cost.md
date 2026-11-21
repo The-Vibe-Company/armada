@@ -105,8 +105,8 @@ the coordinator alone runs staging checks after normal deployment.
    ```bash
    armada new "$SNAPSHOT_NAME" --provider modal --agent claude "Reply OK"
    armada new "$SNAPSHOT_NAME" --provider modal --agent codex "Reply OK"
-   armada wait "$SANDBOX_ID"
-   armada status "$SANDBOX_ID" --json
+   armada info --wait "$SANDBOX_ID"
+   armada info "$SANDBOX_ID" --json
    ```
 
    Compare each bucket × frozen rate by hand in the PR and inspect the same

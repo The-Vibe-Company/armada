@@ -80,11 +80,11 @@ Source invocations need their own rule.
 ~~~sh
 armada new "$GOLDEN" --provider "$PROVIDER" --repo "$REPO" --agent "$REVIEW_HARNESS" --model "$REVIEW_MODEL" --ttl 30m --no-connections --json "$(cat "$PROMPT_FILE")"
 # Persist returned sandbox UUID immediately, then register cleanup.
-armada status "$REVIEWER_ID" --json
-armada wait "$REVIEWER_ID" --timeout 600 --json
+armada info "$REVIEWER_ID" --json
+armada info --wait "$REVIEWER_ID" --timeout 600 --json
 armada events "$REVIEWER_ID" -f --json
 armada stop "$REVIEWER_ID" --json
-armada status "$REVIEWER_ID" --json
+armada info "$REVIEWER_ID" --json
 ~~~
 
 An **Armada orchestrator parent** uses its existing scoped MCP launch, not a
@@ -103,10 +103,10 @@ and child boundaries. Scope denial never permits fallback to owner credentials.
 
 ## Always stop and close the round
 
-Total review deadline: 15m. CLI wait accepts at most 600 seconds per call; timeout
+Total review deadline: 15m. `armada info --wait` accepts at most 600 seconds per call; timeout
 or exit 0 is not completion. Inspect actual final status and submitted review.
 Register a cleanup trap after capturing the ID; explicitly stop on success,
-failure, timeout and interruption. Confirm stopped via CLI status or scoped read.
+failure, timeout and interruption. Confirm stopped via `armada info` or scoped read.
 TTL is a backstop, not cleanup proof. Missing stop confirmation blocks completion.
 Retain IDs and reconcile uncertain outcomes; never blindly relaunch after a lost
 response. Scoped launch retries reuse the same idempotency key.

@@ -291,7 +291,7 @@ making requests. The existing case format is unchanged: every selected pair runs
 twice, using separate disposable sandboxes. The first must start clean with no
 local-only refs and stop without a preservation note or recovery archive. The
 second creates a single empty, unpushed commit (no remote push), stops, retrieves
-the same recovery endpoint used by `armada recovery`, and checks the in-memory
+the same recovery endpoint used by `armada api sandbox/recovery`, and checks the in-memory
 tar manifest for that exact commit. The selected bundle pack is indexed with Git
 in a private temporary object store, then Git must read the expected commit
 object. Incremental bundle prerequisite parents/trees need not be present; this

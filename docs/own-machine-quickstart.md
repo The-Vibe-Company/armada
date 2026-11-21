@@ -123,7 +123,7 @@ Replace `your-org/your-repo` with an accessible repository. No snapshot is neede
 armada new "Summarize this repository; do not change files" \
   --provider docker --host office --org ORG_UUID --agent codex \
   --repo your-org/your-repo@main
-armada status SANDBOX_ID
+armada info SANDBOX_ID
 armada events SANDBOX_ID -f
 armada stop SANDBOX_ID
 ```
