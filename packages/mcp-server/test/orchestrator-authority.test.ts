@@ -220,7 +220,23 @@ test("epoch admission rechecks scope, membership, generation, ACK, expiry and ch
     const accounts = { claude: crypto.randomUUID(), codex: crypto.randomUUID() };
     const forwarded: unknown[] = [];
     let accountDenied = false;
-    const launchAuthority = new DelegatedAuthority(sql, async (_tx, input) => {
+    // PGlite has one backend, so check the concurrency contract at the SQL
+    // boundary. The competing lifecycle writer already owns the sandbox;
+    // taking its parent before waiting for the sandbox would close the cycle.
+    const launchLocks: string[] = [];
+    const launchSql: Sql = {
+      ...sql,
+      transaction: (work) =>
+        db.transaction((tx) =>
+          work({
+            query: (statement, values) => {
+              if (/\bfor (?:no key update|update|share)\b/i.test(statement)) launchLocks.push(statement);
+              return tx.query(statement, values);
+            },
+          }),
+        ),
+    };
+    const launchAuthority = new DelegatedAuthority(launchSql, async (_tx, input) => {
       forwarded.push(input);
       if (accountDenied) throw new Error("account revoked");
     });
@@ -243,7 +259,13 @@ test("epoch admission rechecks scope, membership, generation, ACK, expiry and ch
         async () => true,
       );
     for (const harness of ["claude", "codex"] as const) {
+      launchLocks.length = 0;
       expect(await launch(harness)).toBe(true);
+      expect(launchLocks.slice(0, 3).map((statement) => statement.match(/\bfrom public\.(\w+)/i)?.[1])).toEqual([
+        "members",
+        "sandboxes",
+        "armada_access_parents",
+      ]);
       expect(forwarded.at(-1)).toEqual({
         userId: p.owner,
         orgId: p.org,

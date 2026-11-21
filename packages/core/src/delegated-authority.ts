@@ -51,9 +51,37 @@ export interface DelegatedAuthorityTransport {
   scrub(tokenHash?: string): Promise<void>;
 }
 
-/** Foundation port, deliberately not mounted in HTTP/MCP or production launch.
- * Epochs last at most 24h, not 15m. Runtime must drain/scrub before epoch expiry
- * and prove native continuity before this can be enabled for either provider. */
+type AuthorityParent = { id: string; sandbox_id: string; owner_id: string; org_id: string };
+
+async function lockAuthorityParent(tx: Sql, parent: AuthorityParent) {
+  // Runtime account admission takes membership before the sandbox. Lifecycle
+  // writes take the sandbox before advancing the access-parent fence.
+  if (
+    !(
+      await tx.query("select 1 from public.members where org_id=$1 and user_id=$2 for share", [
+        parent.org_id,
+        parent.owner_id,
+      ])
+    ).rows.length
+  )
+    return deny();
+  if (
+    !(await tx.query("select 1 from public.sandboxes where id=$1 for no key update", [parent.sandbox_id])).rows.length
+  )
+    return deny();
+  // Child ownership writes hold the child sandbox before checking their FK to
+  // this parent. Permit their KEY SHARE lock while serializing authority writes.
+  if (
+    !(
+      await tx.query("select 1 from public.armada_access_parents where id=$1 and sandbox_id=$2 for no key update", [
+        parent.id,
+        parent.sandbox_id,
+      ])
+    ).rows.length
+  )
+    return deny();
+}
+
 export class DelegatedAuthority {
   constructor(
     private readonly sql: Sql,
@@ -67,18 +95,17 @@ export class DelegatedAuthority {
     return { scopes, kind };
   }
 
-  private async activeGrant(tx: Sql, token: string, scope: DelegatedScope | null) {
-    const result = await tx.query<{
-      id: string;
-      owner_id: string;
-      org_id: string;
-      role: "admin" | "member";
-      golden_ids: string[];
-      account_ids: string[];
-      scopes: DelegatedScope[];
-      kind: string;
-    }>(
-      `select o.id,o.owner_id,o.org_id,m.role,d.golden_ids,d.account_ids,d.scopes,o.kind
+  private async activeGrant(tx: Sql, token: string, scope: DelegatedScope | null, lockDelegation = false) {
+    const result = await tx.query<
+      AuthorityParent & {
+        role: "admin" | "member";
+        golden_ids: string[];
+        account_ids: string[];
+        scopes: DelegatedScope[];
+        kind: string;
+      }
+    >(
+      `select o.id,o.sandbox_id,o.owner_id,o.org_id,m.role,d.golden_ids,d.account_ids,d.scopes,o.kind
         from public.orchestrator_delegations d
         join public.armada_access_parents o on o.id=d.orchestrator_id
         join public.members m on m.org_id=o.org_id and m.user_id=o.owner_id
@@ -87,7 +114,7 @@ export class DelegatedAuthority {
         and d.expires_at>now() and d.epoch=o.authority_epoch and o.state='ready'
         and d.native_generation=s.orchestrator_native_generation and s.status not in ('stopped','deleted','failed')
         and s.stop_requested_at is null and ($2::text is null or $2=any(d.scopes))
-        ${scope === null ? "" : "for update of o,d,s,m"}`,
+        ${lockDelegation ? "for no key update of d" : ""}`,
       [digest(token), scope],
     );
     return result.rows[0] ?? deny();
@@ -104,7 +131,10 @@ export class DelegatedAuthority {
     if (!scope || !/^armada_epoch_[a-f0-9]{64}$/.test(token)) return deny();
     if (!this.sql.transaction) return deny();
     return this.sql.transaction(async (tx) => {
-      const row = await this.activeGrant(tx, token, scope);
+      const candidate = await this.activeGrant(tx, token, scope);
+      await lockAuthorityParent(tx, candidate);
+      const row = await this.activeGrant(tx, token, scope, true);
+      if (row.id !== candidate.id || row.sandbox_id !== candidate.sandbox_id) return deny();
       if (request.method === "launch") {
         if (
           !request.goldenId ||
@@ -142,10 +172,16 @@ export class DelegatedAuthority {
           join public.sandboxes s on s.id=c.sandbox_id
           where c.orchestrator_id=$1 and c.sandbox_id=$2 and c.org_id=$3 and c.owner_id=$4
           and s.org_id=c.org_id and s.owner_id=c.owner_id
-          and not exists(select 1 from public.armada_access_parents parent where parent.sandbox_id=s.id) for update of c,s`,
+          and not exists(select 1 from public.armada_access_parents parent where parent.sandbox_id=s.id)
+          for no key update of s`,
           [row.id, request.childId ?? null, row.org_id, row.owner_id],
         );
         if (!child.rows.length) return deny();
+        const relation = await tx.query(
+          "select 1 from public.orchestrator_children where sandbox_id=$1 and orchestrator_id=$2 for update",
+          [request.childId, row.id],
+        );
+        if (!relation.rows.length) return deny();
       }
       return reserve(tx, {
         kind: "orchestrator",
@@ -169,19 +205,22 @@ export class DelegatedAuthority {
     const secret = newDelegatedEpochSecret();
     const installed = await this.sql.transaction(async (tx) => {
       const parent = (
-        await tx.query<{ sandbox_id: string }>(
-          `select o.sandbox_id from public.armada_access_parents o join public.sandboxes s on s.id=o.sandbox_id
-         join public.members m on m.org_id=o.org_id and m.user_id=o.owner_id
-         where o.id=$1 and o.state='ready' and s.lifecycle_generation=$2
-         and s.stop_requested_at is null and s.status in ('starting','ready','running') for update of o,s,m`,
-          [orchestratorId, transport.lifecycleGeneration],
+        await tx.query<AuthorityParent>(
+          "select id,sandbox_id,org_id,owner_id from public.armada_access_parents where id=$1 and sandbox_id is not null",
+          [orchestratorId],
         )
       ).rows[0];
       if (!parent) return deny();
-      await tx.query(`update public.sandboxes set orchestrator_native_generation=$2 where id=$1`, [
-        parent.sandbox_id,
-        transport.physicalGeneration,
-      ]);
+      await lockAuthorityParent(tx, parent);
+      const binding = await tx.query(
+        `update public.sandboxes s set orchestrator_native_generation=$2
+         where s.id=$1 and s.lifecycle_generation=$3 and s.stop_requested_at is null
+         and s.status in ('starting','ready','running')
+         and exists(select 1 from public.armada_access_parents where id=$4 and state='ready')
+         returning s.id`,
+        [parent.sandbox_id, transport.physicalGeneration, transport.lifecycleGeneration, orchestratorId],
+      );
+      if (!binding.rows.length) return deny();
       const result = await tx.query<{ authority_epoch: string; lifecycle_generation: string }>(
         `update public.armada_access_parents o set authority_epoch=authority_epoch+1
          from public.sandboxes s,public.members m where o.id=$1 and o.state='ready'

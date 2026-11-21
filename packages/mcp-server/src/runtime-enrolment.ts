@@ -210,7 +210,7 @@ export function createRuntimeEnrolments(sql: Sql, encryptionKey: string, options
       ).rows[0];
       if (parent) {
         const locked = await tx.query(
-          "select id from public.armada_access_parents where id=$1 for update skip locked",
+          "select id from public.armada_access_parents where id=$1 for no key update skip locked",
           [parent.id],
         );
         if (!locked.rows.length) throw new RuntimeEnrolmentDenied();

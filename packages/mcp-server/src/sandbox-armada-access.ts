@@ -150,7 +150,7 @@ export function createSandboxArmadaAccess(input: {
       transaction: (write) =>
         writeUnderOwner(async (tx) => {
           const locked = await tx.query(
-            "select id from public.armada_access_parents where id=$1 and state='ready' for update skip locked",
+            "select id from public.armada_access_parents where id=$1 and state='ready' for no key update skip locked",
             [parent.id],
           );
           if (!locked.rows.length) throw new VaultError("conflict", "Scoped parent authority is unavailable.");
