@@ -150,7 +150,7 @@ turn unknown, never an invented partial sum.
 
 1. Migrate/deploy the artifact-bearing image, create the account and launch as above
    on a Modal snapshot. Expect an answer and current-turn input/output tokens in
-   `armada status ID --json`, without any key in logs/events/exec output.
+   `armada info ID --json`, without any key in logs/events/exec output.
 2. Send a follow-up. Start a tool-bearing prompt, steer it while active, then
    start another and interrupt it. Expect one terminal Armada prompt per turn,
    same conversation identity and no duplicated history. Missing interrupted

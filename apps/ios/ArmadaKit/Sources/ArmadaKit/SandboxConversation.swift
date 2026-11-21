@@ -33,7 +33,7 @@ public struct ModelRateLimit: Decodable, Sendable, Equatable {
     public let message: String
 }
 
-/// Interior detail of one sandbox: `POST /api/v1/sandbox/status`, the same route `armada status`
+/// Interior detail of one sandbox: `POST /api/v1/sandbox/status`, the same route `armada info`
 /// uses. Only the owner or a current admin receives it (#680); the server decides on every read.
 /// Fields the app does not need (golden, repository directory, legacy visibility) are not decoded.
 public struct SandboxDetail: Decodable, Sendable, Equatable {

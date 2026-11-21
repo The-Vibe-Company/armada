@@ -312,15 +312,18 @@ test("CLI user POST routes reach the dashboard proxy while machine-token routes 
   }
 });
 
-test("CLI status and stop forward authenticated scope through the public proxy", async () => {
+test("CLI info and stop forward authenticated scope through the public proxy", async () => {
   const org = "22222222-2222-4222-8222-222222222222";
   const token = "fixture-owner";
   const previous = process.env.ARMADA_MCP_URL;
   process.env.ARMADA_MCP_URL = "https://control.test/mcp";
   try {
-    for (const command of ["status", "stop"]) {
-      const expectedBody = command === "status" ? { id, org, recorded: true } : { id, org };
-      const path = `/api/v1/sandbox/${command}`;
+    const cases = [
+      { command: "info", route: "status", expectedBody: { id, org, recorded: true } },
+      { command: "stop", route: "stop", expectedBody: { id, org } },
+    ] as const;
+    for (const { command, route, expectedBody } of cases) {
+      const path = `/api/v1/sandbox/${route}`;
       const forwarded: Request[] = [];
       await operation(
         command,

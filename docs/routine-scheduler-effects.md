@@ -32,11 +32,4 @@ and Docker's reserved lanes progress; stop the worker and confirm cancellation,
 draining and durable recovery without a duplicate allocation. Boat is not part of
 the release gate.
 
-## CLI help and literal inputs
-
-Use `armada routine --help` or `armada routine <action> -h` at the command
-boundary. A help-like token inside an operation is not a help request:
-`--prompt -h` supplies literal prompt text, and
-`routine create --file config.json -- --help` supplies a literal name after
-the terminator. Malformed operations still fail validation rather than silently
-showing help. Scheduling, configuration and admission semantics are unchanged.
+Manage routines in the dashboard or through the [CLI API routes](cli-admin.md#routines).

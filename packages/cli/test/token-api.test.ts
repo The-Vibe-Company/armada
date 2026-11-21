@@ -37,37 +37,6 @@ function fixture(fetch: AuthIo["fetch"], env: AuthIo["env"] = {}) {
   };
 }
 
-test("token create, ls and revoke use the saved login and only creation prints the key", async () => {
-  const token = "one-time-fixture";
-  const summary = { id: "key-id", label: "worker", orgName: "Team", expiresAt };
-  const cli = fixture(async (input, init) => {
-    const request = input instanceof Request ? new Request(input, init) : new Request(input.toString(), init);
-    expect(request.headers.get("authorization")).toBe("Bearer saved-login");
-    switch (new URL(request.url).pathname) {
-      case "/api/v1/token/create":
-        expect(await request.json()).toEqual({ org: "Team", label: "worker", expires: "90d" });
-        return Response.json({ ...summary, token });
-      case "/api/v1/token/list":
-        return Response.json({ tokens: [{ ...summary, lastUsedAt: null, revokedAt: null, createdAt: "2099-01-01" }] });
-      case "/api/v1/token/revoke":
-        expect(await request.json()).toEqual({ id: "key-id" });
-        return Response.json({ ok: true });
-      default:
-        throw new Error("Unexpected token request");
-    }
-  });
-  expect(await cli(["token", "create", "--name", "worker", "--org", "Team", "--expires", "90d"])).toEqual({
-    code: 0,
-    out: `${token}\n`,
-    err: "",
-  });
-  const listed = await cli(["token", "ls", "--json"]);
-  expect(listed.code).toBe(0);
-  expect(JSON.parse(listed.out)).toMatchObject({ tokens: [summary] });
-  expect(listed.out).not.toContain(token);
-  expect(await cli(["token", "revoke", "key-id"])).toMatchObject({ code: 0, out: "Revoked key-id.\n" });
-});
-
 test("whoami uses ARMADA_TOKEN in preference to a saved login", async () => {
   const identity = { userId: "user", auth: "key", key: { name: "worker", expiresAt } };
   const cli = fixture(

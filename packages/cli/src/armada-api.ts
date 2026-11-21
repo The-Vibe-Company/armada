@@ -4,8 +4,6 @@ import {
   APPLICATION_VAULT_CONFLICT_MESSAGES,
   type ApiFailureCode,
   githubHydrationPhase,
-  type InvitationApiError,
-  type InvitationErrorReason,
   launchFailureHelp,
   TEMPLATE_REFUSAL_HELP,
 } from "@armada/core";
@@ -151,7 +149,7 @@ export async function createArmadaApiClient(
           throw new ArmadaApiError(
             "unavailable",
             response.status,
-            "Armada returned an invalid success receipt. The operation may have been accepted; inspect its state before retrying. For sandbox operations, run armada status <id> or armada ls. Do not replay a mutation blindly.",
+            "Armada returned an invalid success receipt. The operation may have been accepted; inspect its state before retrying. For sandbox operations, run armada info <id> or armada ls. Do not replay a mutation blindly.",
           );
         return payload;
       }
@@ -192,27 +190,10 @@ export async function createArmadaApiClient(
             "Application vault unavailable. Check entry status before retrying.",
         );
       }
-      if (path.startsWith("/api/v1/routines/")) {
-        const messages: Record<number, string> = {
-          400: "Invalid routine request. Check the configuration, IDs, integer limits and expected version.",
-          401: "Run armada login or update ARMADA_TOKEN.",
-          403: "Routine access denied. Current membership is required; only admins can mutate organization routines.",
-          404: "Routine, template revision or organization not found or not visible.",
-          409: "Routine conflict. Show the routine and check owner access, references and the current --expected-version before retrying.",
-        };
-        throw new ArmadaApiError(
-          resourceFailureCode(response.status),
-          response.status,
-          messages[response.status] ??
-            "Routine operation unavailable. Inspect the routine before retrying; a mutation may have been accepted.",
-        );
-      }
       if (path === "/api/v1/templates/launch" && response.status >= 500)
         throw new ArmadaApiError("unavailable", response.status, TEMPLATE_LAUNCH_UNKNOWN);
       if (path.startsWith("/api/v1/templates/")) {
         const known: Record<string, string> = {
-          "Template revision changed.":
-            "Template revision changed. Get the current revision and retry with --expected-revision.",
           "Template revision unavailable.":
             "Template revision unavailable. Get the template and choose an existing revision.",
           ...Object.fromEntries(
@@ -289,28 +270,6 @@ export async function createArmadaApiClient(
               ? "Sandbox not found or not accessible."
               : `Sandbox operation failed (${response.status}). Check access and sandbox status before retrying.`,
           denied || response.status === 404 ? "conflict" : "unavailable",
-        );
-      }
-      if (path.startsWith("/api/v1/org/invitations/")) {
-        const messages: Record<number, string> = {
-          400: "Invalid invitation request. Check the email, role or invitation token.",
-          401: "Log in personally with the invitation recipient's verified email to accept; otherwise update your Armada login.",
-          403: "Invitation request forbidden. Management requires an org admin; acceptance requires a personal login with the matching verified email.",
-          404: "Invitation or organization not found or not visible.",
-          409: "Invitation conflict or rate limit. Check membership, expiry, revocation and resend state before retrying.",
-          503: "Invitation service unavailable. Check invitation status before retrying; email may not have been sent.",
-        };
-        throw new AuthError(
-          invitationReasonMessage(payload) ??
-            messages[response.status] ??
-            `Invitation request failed (${response.status}).`,
-          response.status === 401
-            ? "unauthorized"
-            : response.status === 400
-              ? "usage"
-              : response.status === 403 || response.status === 404 || response.status === 409
-                ? "conflict"
-                : "unavailable",
         );
       }
       if (response.status === 401)
@@ -510,38 +469,6 @@ function apiMessage(payload: unknown, fallback: string): string {
   const error = (payload as Record<string, unknown>).error;
   const message = typeof error === "object" && error !== null ? (error as Record<string, unknown>).message : undefined;
   return typeof message === "string" && message.length > 0 ? message : fallback;
-}
-
-function invitationReasonMessage(payload: unknown): string | undefined {
-  if (!payload || typeof payload !== "object" || !("error" in payload)) return undefined;
-  const error = payload.error;
-  if (!error || typeof error !== "object" || !("reason" in error) || typeof error.reason !== "string") return undefined;
-  const messages: Record<InvitationErrorReason, string> = {
-    invalid: "Invalid invitation request. Check the email, role or invitation token.",
-    personal_login_required:
-      "Accept using a personal Armada login, not a service token. Unset ARMADA_TOKEN and run armada login.",
-    wrong_email: "Sign in with the invitation recipient's verified email before accepting.",
-    unverified_email: "Verify your account email before accepting this invitation.",
-    not_found: "Invitation not found. Check the token from the invitation email.",
-    expired: "Invitation expired. Ask an organization admin to resend it.",
-    revoked: "Invitation revoked. Ask an organization admin for a new invitation.",
-    used: "Invitation already used. Check your organization memberships.",
-    already_member: "You are already a member of this organization. Existing membership is unchanged.",
-    rate_limited: "Invitation rate limit reached. Wait before retrying.",
-    pending_exists:
-      "A pending invitation already exists. List invitations and resend or revoke the existing invitation.",
-  };
-  if (!Object.hasOwn(messages, error.reason)) return undefined;
-  const reason = error.reason as InvitationErrorReason;
-  const { retryAfterSeconds } = error as InvitationApiError["error"];
-  const retry =
-    reason === "rate_limited" &&
-    Number.isSafeInteger(retryAfterSeconds) &&
-    typeof retryAfterSeconds === "number" &&
-    retryAfterSeconds >= 0
-      ? ` Retry after ${retryAfterSeconds} seconds.`
-      : "";
-  return `${messages[reason]}${retry}`;
 }
 
 function isSandboxInteriorPath(path: string): boolean {

@@ -101,6 +101,11 @@ export async function run(argv: readonly string[], io: Io, deps: Deps = {}): Pro
       io.out(help);
       return 0;
     }
+    const [name, verb] = localArgs;
+    const family = name ? findCommand(name) : undefined;
+    if (family?.requireKnownSubcommand && verb && !Object.hasOwn(family.subcommandHelp ?? {}, `${name} ${verb}`)) {
+      throw new AuthError(`unknown command '${name} ${verb}'. Run 'armada --help'.`, "usage");
+    }
     const selected = selectProfile(argv, deps.env ?? deps.auth?.env ?? process.env);
     argv = selected.args;
     deps = { ...deps, env: selected.env };

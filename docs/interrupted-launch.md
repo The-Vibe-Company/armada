@@ -14,7 +14,7 @@ this recovery path.
 To retire the reported row after upgrading the server:
 
 ```sh
-armada status 631e164a-77e2-47b9-b152-c6a5d7433c25
+armada info 631e164a-77e2-47b9-b152-c6a5d7433c25
 armada stop 631e164a-77e2-47b9-b152-c6a5d7433c25
 ```
 

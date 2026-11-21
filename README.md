@@ -73,10 +73,9 @@ covers Tools, template versions and routines. CLI command names below are unchan
 armada login
 ```
 
-**2. Choose an organization and connect a sandbox provider.** Create one (you become its admin) or ask an admin to add you with `armada org members add <your-email> --org <org>` after your first sign-in. An admin connects Boat or Modal once for the whole organization; the key is read from stdin or `--file`, never from an argument.
+**2. Choose an organization and connect a sandbox provider.** Create one in the dashboard (you become its admin) or ask an admin to invite you. An admin connects Boat or Modal once for the whole organization; the key is read from stdin or `--file`, never from an argument.
 
 ```sh
-armada org create acme
 armada login --org acme
 printenv BOAT_API_KEY | armada org connect boat --org acme
 # Modal instead: printf '%s %s' "$MODAL_TOKEN_ID" "$MODAL_TOKEN_SECRET" | armada org connect modal --org acme
@@ -104,7 +103,7 @@ or `--unlimited` when adding an account, or change it with
 before allocating a machine; lowering it does not stop existing agents.
 Follow-up sends to existing sandboxes can return a durable queued prompt receipt
 when the account is full; they dispatch FIFO per account after capacity frees.
-Queued is not running or completed: use wait/logs for that sandbox and correlate the returned prompt ID.
+Queued is not running or completed: use `armada info --wait` or `armada events` for that sandbox and correlate the returned prompt ID.
 
 **4. Connect GitHub.** Snapshots are cloned over your own GitHub connection, and sandboxes use it so commits and pull requests come from you.
 
@@ -168,10 +167,10 @@ Armada is also a remote MCP server. Add it to Claude Code, Codex, Cursor or your
 MCP clients sign in with OAuth; bots and CI use a service token bound to one organization:
 
 ```sh
-armada token create --org acme --name ci   # printed once; Armada keeps only its hash
+armada api token/create '{"org":"acme","label":"ci"}'
 ```
 
-Your coordinator decides what to work on and when to merge; Armada gives each task a sandbox, an agent and a live event stream to drive. Endpoints and client configuration: [Connect an MCP client](docs/dave-onboarding.md#7-connect-an-mcp-client).
+The response contains the key once. Capture it in a secret store. Your coordinator decides what to work on and when to merge; Armada gives each task a sandbox, an agent and a live event stream to drive. Endpoints and client configuration: [Connect an MCP client](docs/dave-onboarding.md#7-connect-an-mcp-client).
 
 ## Teams
 
@@ -182,7 +181,7 @@ Your coordinator decides what to work on and when to merge; Armada gives each ta
 | Create private snapshots and private sandboxes | ✓ | ✓ |
 | Change organization snapshots, members and provider keys | ✓ | |
 
-Snapshots and sandboxes follow two separate rules. A private snapshot is visible only to its owner, not even to admins. A sandbox's interior (transcript, logs and outputs) is readable by its owner and by organization admins, whether the sandbox is private or not, and admins can also stop it. Sending prompts is reserved to the owner: an admin's send to a colleague's sandbox is always refused, usually with `404 not_found`, or with `409 credential_binding_required` or `409 sandbox_terminal` when an earlier send check fails first (see [Embed Armada](docs/api/README.md#drive-the-sandbox-from-your-backend)). Ordinary members see only the metadata of sandboxes they do not own, such as status, agent and owner, in the organization's list. Admins can add an existing account immediately with `armada org members add` (no invitation email), or create a pending invitation, including before the recipient has an account. An invitation grants membership only after explicit acceptance by a personal login with the matching verified email; opening its link does not join. See [invitations and acceptance](docs/cli-invitations.md#accept-an-invitation).
+Snapshots and sandboxes follow two separate rules. A private snapshot is visible only to its owner, not even to admins. A sandbox's interior (transcript, logs and outputs) is readable by its owner and by organization admins, whether the sandbox is private or not, and admins can also stop it. Sending prompts is reserved to the owner: an admin's send to a colleague's sandbox is always refused, usually with `404 not_found`, or with `409 credential_binding_required` or `409 sandbox_terminal` when an earlier send check fails first (see [Embed Armada](docs/api/README.md#drive-the-sandbox-from-your-backend)). Ordinary members see only the metadata of sandboxes they do not own, such as status, agent and owner, in the organization's list. Admins can add an existing account immediately with the `members/add` API route (no invitation email), or create a pending invitation, including before the recipient has an account. An invitation grants membership only after explicit acceptance by a personal login with the matching verified email; opening its link does not join. See [invitations and acceptance](docs/cli-invitations.md#accept-an-invitation).
 
 ## Documentation
 
@@ -235,7 +234,7 @@ answers HTTP 401) and no interactive sign-in took place. For example, signed-out
 `armada ls` and `armada ls --json` exit 3, and so does bare `armada`.
 Exit 1 means access denial, state, unsupported operation or service failure.
 Check `armada ls --json` for visible IDs and state; verify your org selection
-with `armada status --setup` or pass `--org UUID`.
+with `armada info --setup` or pass `--org UUID`.
 
 Sandbox mutations are not replayed after transport/server failures or state
 conflicts. Existing authentication recovery may refresh a personal session and
