@@ -17,7 +17,6 @@ Pass - to read JSON from a pipe or redirected file. Use stdin for bodies that co
 Treat stdout as sensitive if the endpoint returns credentials.
 Example: armada api org/list
 `,
-  useSelectedOrg: false,
   async run([route, input, ...extra], { io, deps, auth }) {
     if (!route || extra.length) throw new AuthError(`Usage: ${usage.trim()}`, "usage");
 

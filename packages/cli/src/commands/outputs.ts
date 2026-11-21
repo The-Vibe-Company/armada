@@ -88,5 +88,6 @@ Choose a directory without a file of the same name.
 Use --org to scope sandbox prefix lookup.
 `,
   automaticJson: true,
+  useSelectedOrg: true,
   run: outputs,
 } satisfies Command;

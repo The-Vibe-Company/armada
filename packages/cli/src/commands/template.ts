@@ -72,7 +72,6 @@ Example: armada template get TEMPLATE_UUID --revision 1 --org ORG_UUID --json
   },
   helpWhenBare: true,
   requireKnownSubcommand: true,
-  useSelectedOrg: false,
   async run(argv, { auth }) {
     return templateCommand(argv, auth);
   },

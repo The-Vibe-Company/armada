@@ -14,6 +14,7 @@ function fixture(fetch: AuthIo["fetch"], env: AuthIo["env"] = {}) {
     open: () => {},
     out: () => {},
     err: () => {},
+    preferences: { read: async () => "11111111-1111-4111-8111-111111111111", write: async () => {} },
     session: memorySessionStore({
       accessToken: "saved-login",
       refreshToken: "refresh",
@@ -51,4 +52,15 @@ test("whoami uses ARMADA_TOKEN in preference to a saved login", async () => {
   const result = await cli(["whoami", "--json"]);
   expect(result.code).toBe(0);
   expect(JSON.parse(result.out)).toEqual(identity);
+});
+
+test("whoami works with a saved login and organization", async () => {
+  const cli = fixture(async (input, init) => {
+    const request = input instanceof Request ? new Request(input, init) : new Request(input.toString(), init);
+    expect(request.url).toBe(`${origin}/api/v1/token/whoami`);
+    expect(request.headers.get("authorization")).toBe("Bearer saved-login");
+    return Response.json({ userId: "user", auth: "login" });
+  });
+
+  expect(await cli(["whoami"])).toEqual({ code: 0, out: "user (saved login)\n", err: "" });
 });
