@@ -2105,19 +2105,23 @@ test.each(["create response", "bootstrap dispatch", "bootstrap response"] as con
   },
 );
 
-test.each(["stopped", "unknown"] as const)(
-  "a replacement Modal launch claimant does not bootstrap a bound allocation observed as %s",
-  async (observation) => {
-    const { f, id, jobId, makeRunner, effects, exitAllocation } = await modalLaunchFixture(
+test.each([
+  ["stopped", "runtime ticket"],
+  ["unknown", "runtime ticket"],
+  ["stopped", "create response"],
+] as const)(
+  "a replacement Modal launch claimant skips bootstrap when observation is %s after losing the %s",
+  async (observation, lostAt) => {
+    const { f, id, jobId, makeRunner, effects, exitAllocation, hideAllocation } = await modalLaunchFixture(
       await modalAdmissionFixture(),
     );
     const interrupted = makeRunner((step) => {
-      if (step === "runtime ticket") throw new Error("Worker lost after binding");
+      if (step === lostAt) throw new Error("Worker lost");
     });
     expect(await interrupted.reconcileOne(signal)).toBe(true);
     await interrupted.drain();
     expect((await f.db.query("select provider_sandbox_id from sandboxes where id=$1", [id])).rows).toEqual([
-      { provider_sandbox_id: "physical" },
+      { provider_sandbox_id: lostAt === "create response" ? null : "physical" },
     ]);
     if (observation === "stopped") exitAllocation();
     await f.db.query("update jobs set lease_until='-infinity' where id=$1", [jobId]);
@@ -2130,11 +2134,15 @@ test.each(["stopped", "unknown"] as const)(
     expect(effects()).toEqual({ allocations: 1, observed: 1, bootstrapped: [] });
     const status = observation === "stopped" ? "failed" : "starting";
     expect((await f.db.query("select status from sandboxes where id=$1", [id])).rows).toEqual([{ status }]);
-    const cleanup = await f.store.claim("delete", crypto.randomUUID(), 30, 1);
     if (observation === "stopped") {
-      expect(cleanup?.payload).toEqual({ launchJobId: jobId, machineId: "physical" });
+      hideAllocation();
+      expect(await replacement.reconcileOne(signal)).toBe(true);
+      await replacement.drain();
+      expect(
+        (await f.db.query("select stopped_at is not null as confirmed from sandboxes where id=$1", [id])).rows,
+      ).toEqual([{ confirmed: true }]);
     } else {
-      expect(cleanup).toBeUndefined();
+      expect(await f.store.claim("delete", crypto.randomUUID(), 30, 1)).toBeUndefined();
       await f.db.query("update jobs set run_after='-infinity' where id=$1", [jobId]);
       const next = makeRunner();
       expect(await next.reconcileOne(signal)).toBe(true);

@@ -934,8 +934,7 @@ async function dispatchModalLaunch(
   const observed =
     job.attempts > 1 ? await machine.observe({ ...incarnation, ...(machineId ? { machineId } : {}) }) : undefined;
   if (observed) {
-    if (!(await target()) || (observed.kind === "present" && observed.phase === "stopped"))
-      return { kind: "reconcile", observation: observed } as const;
+    if (!(await target())) return { kind: "reconcile", observation: observed } as const;
     if (machineId && observed.kind !== "present") return { kind: "observation_pending" } as const;
   }
 
@@ -958,6 +957,8 @@ async function dispatchModalLaunch(
     if (!bound) return reconcile();
   }
 
+  if (observed?.kind === "present" && observed.phase === "stopped")
+    return { kind: "reconcile", observation: observed } as const;
   const readyToBootstrap = await target();
   if (readyToBootstrap?.provider_sandbox_id !== allocated.machineId) return reconcile();
   signal.throwIfAborted();
