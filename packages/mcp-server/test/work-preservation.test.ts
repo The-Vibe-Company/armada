@@ -342,11 +342,11 @@ async function withPreservationRow(
     boat: ReturnType<typeof fakeBoat>;
     provider: ReturnType<typeof fakeBoat>["provider"];
   }) => Promise<void>,
-  machine: "boat" | "modal" = "boat",
+  machine: "boat" | "modal" | "modal-native" = "boat",
 ) {
   const { db, people, sharedGoldenId: goldenId, modalGoldenId } = sharedDatabase();
   const id = crypto.randomUUID();
-  const modal = machine === "modal";
+  const modal = machine !== "boat";
   const physical = modal ? `modal_machine_${id}` : `bx_policy_${id}`;
   const activity = modal ? crypto.randomUUID() : null;
   const inserted = await db.query<{ lifecycle_generation: number }>(
@@ -362,11 +362,11 @@ async function withPreservationRow(
       modal ? modalGoldenId : goldenId,
       people.org,
       people.owner,
-      machine,
+      modal ? "modal" : "boat",
       physical,
       modal ? "codex" : "claude",
       modal ? "stopping" : "running",
-      modal ? "dialout" : null,
+      machine === "modal" ? "dialout" : null,
       activity,
     ],
   );
@@ -840,6 +840,39 @@ test.each(["observe", "capture"] as const)(
     });
   },
 );
+
+test("native Modal preservation refuses clean proof from a replacement physical generation", async () => {
+  await withPreservationRow(async ({ db, id, physical, sql, activity, generation, provider, boat }) => {
+    if (!activity) throw new Error("Missing stop authority.");
+    boat.setExecOutput({ stdout: '{"status":"clean"}' });
+    let physicalGeneration = "7";
+    const host: Provider = {
+      ...provider,
+      id: "modal",
+      supportsExecPhysicalGeneration: true,
+      async get() {
+        return { ...(await provider.get(physical)), providerState: "active", physicalGeneration };
+      },
+      async quiesce() {
+        physicalGeneration = "8";
+      },
+      async exec(request) {
+        if (request.expectedPhysicalGeneration && request.expectedPhysicalGeneration !== physicalGeneration)
+          throw new Error("Physical generation changed.");
+        return provider.exec(request);
+      },
+    };
+    const authority = { kind: "activity", token: activity, generation } as const;
+    const receipts = () =>
+      db.query("select sandbox_id from sandbox_native_preservation_receipts where sandbox_id=$1", [id]);
+
+    await preserveBeforeStop(sql, host, id, physical, "user_stop", authority);
+    expect((await receipts()).rows).toHaveLength(0);
+
+    await preserveBeforeStop(sql, host, id, physical, "user_stop", authority);
+    expect((await receipts()).rows).toHaveLength(1);
+  }, "modal-native");
+});
 
 async function seedNativeDrainReceipt(ciphertext = new Uint8Array([21, 34, 55]), provider: "boat" | "modal" = "boat") {
   const { db, people, sharedGoldenId, modalGoldenId } = sharedDatabase();
