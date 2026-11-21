@@ -104,7 +104,7 @@ latest versions. Private pins use bare slug@exact-version in the credential’s 
 org/slug@exact-version pins always use the anonymous public catalog, even when
 a key exists. Private pins require a configured Skillpack credential and
 access to the package; do not put that credential in a golden or prompt. Check
-`armada info SANDBOX --live --json` for recorded skill references/checksums. Do not
+`armada info SANDBOX --json` for recorded skill references/checksums. Do not
 claim a skill is active merely because its package exists locally.
 
 Use `armada ls --status running` to filter by state, or `armada ls --ref REF`
