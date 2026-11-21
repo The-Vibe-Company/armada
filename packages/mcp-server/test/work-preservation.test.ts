@@ -2009,6 +2009,30 @@ test.each(["activity", "queue", "provider observation", "owner row update", "ord
   },
 );
 
+test("authenticated sandbox updates are refused only during the current strict stop epoch", async () => {
+  const { db, people, sandboxId, copy } = await seedNativeDrainReceipt();
+  async function updateAsOwner() {
+    return db.transaction(async (tx) => {
+      await tx.query("select set_config('request.jwt.claim.sub', $1, true)", [people.owner]);
+      await tx.exec("set local role authenticated");
+      return tx.query("update sandboxes set stopped_at=stopped_at + interval '1 second' where id=$1 returning id", [
+        sandboxId,
+      ]);
+    });
+  }
+
+  await db.query("insert into native_drain_stop_requests(sandbox_id,stop_generation) values($1,1)", [sandboxId]);
+  expect((await updateAsOwner()).rows).toEqual([{ id: sandboxId }]);
+
+  await db.query(
+    `update native_drain_stop_requests r set stop_generation=s.stop_generation
+     from sandboxes s where r.sandbox_id=s.id and s.id=$1`,
+    [sandboxId],
+  );
+  await expect(updateAsOwner()).rejects.toMatchObject({ code: "55000" });
+  expect(await copy()).toBe("archived");
+});
+
 test.each(["activity", "queue", "provider observation", "ordinary delete"] as const)(
   "a confirmed strict stop preserves its drain proof against %s",
   async (attempt) => {
