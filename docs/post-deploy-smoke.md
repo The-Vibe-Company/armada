@@ -1884,8 +1884,20 @@ sorts last. Generate the configuration with this command.
 bun scripts/smoke-deadlines.ts /path/to/green-journals > scripts/smoke-deadlines.json
 ```
 
-The generator uses successful `elapsedMs` receipts and rounds up 1.5 times the
-nearest-rank p99. A step with fewer than 20 receipts keeps its existing default. The expiry lane uses `expiry_launch` for the initial response timeout
+The generator uses successful, positive `elapsedMs` receipts. Each step needs
+at least 20 receipts from the 20-run window, and a run can contribute multiple
+receipts. The deadline for each step is the greater of two seconds and twice
+its nearest-rank p99, rounded up to milliseconds. At 20 samples the p99 is the
+largest observation. The extra p99 and the two-second floor give network calls
+and other smoke steps room for latency variation outside that small sample.
+Steps with fewer than 20 receipts use their existing defaults.
+Measured usage polls have a five-second floor. If the first
+`sandbox/status` read finishes within two seconds, the floor allows a
+one-second interval and at least two seconds for the next read.
+Usage polling sends another read only when its remaining budget can
+cover at least two seconds. Each read still fits within the enclosing deadline.
+
+The expiry lane uses `expiry_launch` for the initial response timeout
 and for a separate observation window capped by the overall smoke deadline.
 After an ambiguous response it reads sandbox inventory using the launch's
 unique reference. A recovered launch records the full elapsed time. An

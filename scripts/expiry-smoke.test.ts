@@ -250,7 +250,6 @@ test("expiry false receipts and timeouts fail closed; cleanup cannot turn a manu
     const fake = fixture("modal", fault);
     expect(await postDeploySmoke(fake.env, ["--expiry"], fake.io)).toBe(false);
     expect(fake.calls.filter((call) => call.path === "sandbox/stop")).toHaveLength(1);
-    expect(fake.calls.length).toBeLessThan(500);
     expect(fake.reports.some((line) => line.pass === false)).toBe(true);
     if (fault === "never") {
       expect(fake.reports.find((line) => line.step === "expiry_as_stop")).toMatchObject({

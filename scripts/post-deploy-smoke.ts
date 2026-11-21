@@ -29,6 +29,7 @@ import { ExpirySmokeFailure, runExpiryCase } from "./expiry-smoke.ts";
 import { helperProbe, skillpackProbe } from "./golden-runtime-smoke.ts";
 import { createScopedProbe, ScopedAccessSmokeFailure } from "./scoped-access-smoke.ts";
 import deadlines from "./smoke-deadlines.json";
+import { SMOKE_POLL_INTERVAL_MS, USAGE_STATUS_MIN_REQUEST_MS } from "./smoke-deadlines.ts";
 import { observeSmokeLaunch } from "./smoke-launch.ts";
 import { runTemplateSkillCase, TemplateSkillSmokeFailure, verifyReceipts } from "./template-skill-smoke.ts";
 import { runVaultCase, VaultSmokeFailure } from "./vault-smoke.ts";
@@ -542,19 +543,29 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
   const cleanupDeadline = deadline + 5 * 60_000;
   const protectedCanaries = new Set<string>();
   const launches = createLaunchTracker();
-  function send<T>(cleaning: boolean, path: string, body?: unknown, key?: string, timeoutMs = 120_000): Promise<T> {
-    return launches.track(path, (record) => transport<T>(cleaning, path, body, key, timeoutMs, record));
+  type UsageRead = { deadline: number; onDispatch: () => void };
+  function send<T>(
+    cleaning: boolean,
+    path: string,
+    body?: unknown,
+    key?: string,
+    timeoutMs = 120_000,
+    usageRead?: UsageRead,
+  ): Promise<T> {
+    return launches.track(path, (record) =>
+      transport<T>(cleaning, path, body, key, timeoutMs, record, false, usageRead),
+    );
   }
   /** Each concurrent unit owns its cleanup flag; one unit's cleanup never moves another unit's deadline. */
   function createLane() {
     let cleaning = false;
     let stepUntil: number | undefined;
     return {
-      request: <T>(path: string, body?: unknown, key?: string, timeoutMs?: number) => {
-        if (stepUntil === undefined) return send<T>(cleaning, path, body, key, timeoutMs);
+      request: <T>(path: string, body?: unknown, key?: string, timeoutMs?: number, usageRead?: UsageRead) => {
+        if (stepUntil === undefined) return send<T>(cleaning, path, body, key, timeoutMs, usageRead);
         const remaining = stepUntil - io.now();
         if (remaining <= 0) fail("poll_limit_exceeded");
-        return send<T>(cleaning, path, body, key, Math.min(timeoutMs ?? remaining, remaining));
+        return send<T>(cleaning, path, body, key, Math.min(timeoutMs ?? remaining, remaining), usageRead);
       },
       withStepDeadline: async <T>(name: string, action: () => Promise<T>) => {
         const budget = (deadlines as Record<string, number>)[name];
@@ -586,16 +597,20 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
     timeoutMs: number,
     record: (receipt: unknown) => void,
     requireSandboxUuid = false,
+    usageRead?: UsageRead,
   ): Promise<T> {
-    const remaining = (cleaning ? cleanupDeadline : deadline) - io.now();
-    if (remaining <= 0) fail("poll_limit_exceeded");
+    const outerDeadline = cleaning ? cleanupDeadline : deadline;
+    const remaining = Math.min(outerDeadline, usageRead?.deadline ?? outerDeadline) - io.now();
     const requestTimeoutMs = Math.min(timeoutMs, remaining);
+    if (requestTimeoutMs <= 0 || (usageRead !== undefined && requestTimeoutMs < USAGE_STATUS_MIN_REQUEST_MS))
+      fail("poll_limit_exceeded");
     const sandboxLaunch = path === "sandbox/launch";
     const signal = AbortSignal.timeout(requestTimeoutMs);
     const timedOut = (error: unknown) =>
       signal.aborted || (error instanceof DOMException && error.name === "TimeoutError");
     let receivedResponse: Response | undefined;
     try {
+      usageRead?.onDispatch();
       const response = await io.fetch(`${origin}/api/v1/${path}`, {
         method: body === undefined ? "GET" : "POST",
         headers: {
@@ -718,17 +733,19 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
     }
   }
   async function poll<T>(
-    read: (timeoutMs?: number) => Promise<T>,
+    read: (timeoutMs?: number, requestDeadline?: number) => Promise<T>,
     done: (value: T) => boolean,
-    options: { limit?: number; step?: string; until?: number } = {},
+    options: { limit?: number; step?: string; until?: number; minRequestMs?: number } = {},
   ): Promise<T> {
     const timeoutMs = options.step === undefined ? undefined : (deadlines as Record<string, number>)[options.step];
     const until = options.until ?? (timeoutMs === undefined ? undefined : Math.min(deadline, io.now() + timeoutMs));
     const limit = options.limit ?? (until === undefined ? POLLS : Number.POSITIVE_INFINITY);
+    const requestDeadline = until ?? (options.minRequestMs === undefined ? undefined : deadline);
+    const minRequestMs = options.minRequestMs ?? 1;
     for (let i = 0; i < limit; i++) {
-      const remaining = until === undefined ? undefined : until - io.now();
-      if (remaining !== undefined && remaining <= 0) break;
-      const value = await read(remaining).catch((error: unknown) => {
+      const remaining = requestDeadline === undefined ? undefined : requestDeadline - io.now();
+      if (remaining !== undefined && remaining < minRequestMs) break;
+      const value = await read(until === undefined ? undefined : remaining, requestDeadline).catch((error: unknown) => {
         if (
           error instanceof SmokeFailure &&
           error.code === "request_failed" &&
@@ -746,10 +763,10 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
           );
         throw error;
       });
-      const after = until === undefined ? Number.POSITIVE_INFINITY : until - io.now();
+      const after = requestDeadline === undefined ? Number.POSITIVE_INFINITY : requestDeadline - io.now();
       if (after >= 0 && done(value)) return value;
-      if (after <= 0) break;
-      if (i + 1 < limit) await io.sleep(Math.min(1000, after));
+      if (after <= 0 || (options.minRequestMs !== undefined && after < SMOKE_POLL_INTERVAL_MS + minRequestMs)) break;
+      if (i + 1 < limit) await io.sleep(Math.min(SMOKE_POLL_INTERVAL_MS, after));
     }
     fail("poll_limit_exceeded");
   }
@@ -1597,10 +1614,9 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
           let lastResponse: Record<string, string | boolean | number> | null = null;
           try {
             await poll(
-              async (timeoutMs) => {
-                attempts++;
+              async (timeoutMs, requestDeadline) => {
                 const startedAt = io.now();
-                const result = await sandbox<{
+                const result = await request<{
                   usage?: {
                     turns?: {
                       promptId: string;
@@ -1609,7 +1625,12 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
                     }[];
                     tokenTotals?: { inputTokens: number | null; outputTokens: number | null; incomplete?: boolean };
                   };
-                } | null>("status", { id: sandboxId }, timeoutMs);
+                } | null>("sandbox/status", { org: item.org, id: sandboxId }, undefined, timeoutMs, {
+                  deadline: requestDeadline ?? deadline,
+                  onDispatch: () => {
+                    attempts++;
+                  },
+                });
                 const usage = result?.usage;
                 const row = Array.isArray(usage?.turns)
                   ? usage.turns.find((row) => row?.promptId === turn.promptId)
@@ -1636,7 +1657,7 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
                 );
               },
               (accepted) => accepted,
-              { step: usageStep },
+              { step: usageStep, minRequestMs: USAGE_STATUS_MIN_REQUEST_MS },
             );
           } catch (error) {
             if (

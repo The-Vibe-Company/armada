@@ -2765,7 +2765,8 @@ test("Modal smoke refuses a finished turn whose status never reports usage and s
     ),
   ).toBe(false);
   expect(fake.receipts()).toContainEqual({ case: 0, step: "usage", pass: false, code: "poll_limit_exceeded" });
-  expect(fake.io.now()).toBe(deadlines.usage);
+  expect(fake.io.now()).toBeLessThanOrEqual(deadlines.usage - 2_000);
+  expect(fake.io.now()).toBeGreaterThan(deadlines.usage - 3_000);
   expect(fake.calls.some((call) => call.path === "sandbox/stop")).toBe(true);
 });
 
@@ -2811,7 +2812,8 @@ test.each(["unknown", "missing", "old", "partial", "measured", "null-totals", "c
         .slice(1)
         .map((line) => JSON.parse(line))
         .find((line) => line.step === "resume_usage");
-      expect(usage?.elapsedMs).toBe(deadlines.resume_usage);
+      expect(usage?.elapsedMs).toBeLessThanOrEqual(deadlines.resume_usage - 2_000);
+      expect(usage?.elapsedMs).toBeGreaterThan(deadlines.resume_usage - 3_000);
     }
     expect(fake.receipts().find((line) => line.step === "usage_request_diagnostic")).toEqual(
       accepted
@@ -2839,6 +2841,44 @@ test.each(["unknown", "missing", "old", "partial", "measured", "null-totals", "c
     );
   },
 );
+
+test.each([
+  ["usage", false],
+  ["resume_usage", false],
+  ["resume_usage", true],
+] as const)("a late %s status read leaves no sub-floor retry (clock tick: %s)", async (step, tick) => {
+  const promptId = step === "usage" ? "turn-1" : "turn-2";
+  let checkingUsage = false;
+  let attempts = 0;
+  let tickAt: number | undefined;
+  const fake = lifecycleFixture("none", (call) => {
+    if (call.path === "sandbox/wait" && call.body.prompt_id === promptId) checkingUsage = true;
+    if (call.path === "sandbox/stop") checkingUsage = false;
+    if (call.path !== "sandbox/status" || !checkingUsage) return undefined;
+    attempts++;
+    fake.advance(deadlines[step] - (tick ? 3_000 : 2_500));
+    if (tick) tickAt = fake.io.now() + 1_000;
+    return json({ usage: { turns: [], tokenTotals: { inputTokens: null, outputTokens: null } } });
+  });
+  if (tick) {
+    const { now } = fake.io;
+    fake.io.now = () => {
+      const snapshot = now();
+      if (tickAt !== undefined && snapshot >= tickAt) {
+        tickAt = undefined;
+        fake.advance(1);
+      }
+      return snapshot;
+    };
+  }
+  expect(await fake.run([{ ...selected, provider: "modal" }])).toBe(false);
+  expect(fake.receipts()).toContainEqual({ case: 0, step, pass: false, code: "poll_limit_exceeded" });
+  expect(attempts).toBe(1);
+  expect(fake.receipts().find((receipt) => receipt.step === "usage_request_diagnostic")).toMatchObject({
+    usageStep: step,
+    attempts,
+  });
+});
 
 test.each(["fetch", "body"])(
   "a resumed usage request that exhausts the poll deadline reports its timeout: %s",
