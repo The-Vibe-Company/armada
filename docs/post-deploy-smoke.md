@@ -1910,7 +1910,10 @@ turn completion and token usage use their respective `ready`, `send`,
 `resume_send`, `wait`, `resume_wait`, `usage`, and `resume_usage` entries. Each
 request is capped at the time remaining for the step. Template prompt completion
 uses the corresponding public or private wait entry. A step without a measured
-entry keeps its existing poll limit. Cleanup has a separate budget.
+entry keeps its existing poll limit. Vault functional checks use their named
+step budgets for request timeouts and reject late successful checks. Vault
+checks without a measured entry keep the generic timeout. Cleanup has a
+separate budget.
 
 Ordinary provider parity records launch latency as `parity_modal_launch` and
 `parity_docker_launch`. It uses the corresponding entry for its response and

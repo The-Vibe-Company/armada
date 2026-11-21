@@ -705,16 +705,44 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
   if (vault) {
     const { request, withCleanup } = createLane();
     for (const [index, item] of cases.entries()) {
+      let stepUntil: number | undefined;
+      let cleaning = false;
       const ok = await runVaultCase(item.org, {
-        request,
+        request: <T>(path: string, body: object) => {
+          const remaining = stepUntil === undefined ? undefined : stepUntil - io.now();
+          if (remaining !== undefined && remaining <= 0) fail("poll_limit_exceeded");
+          return request<T>(path, body, undefined, remaining);
+        },
         protect: (value) => protectedCanaries.add(value),
         isFailure: (error, status, code) =>
           error instanceof SmokeFailure && error.status === status && error.code === code,
         step: async (name, action) => {
-          return timedSmokeStep(action, io.now, (elapsedMs, error) => report(index, name, error, elapsedMs));
+          return timedSmokeStep(
+            async () => {
+              const budget = (deadlines as Record<string, number>)[name];
+              if (cleaning || budget === undefined) return action();
+              stepUntil = Math.min(deadline, io.now() + budget);
+              try {
+                const result = await action();
+                if (io.now() > stepUntil) fail("poll_limit_exceeded");
+                return result;
+              } finally {
+                stepUntil = undefined;
+              }
+            },
+            io.now,
+            (elapsedMs, error) => report(index, name, error, elapsedMs),
+          );
         },
         out: (line) => io.out(JSON.stringify({ ...JSON.parse(line), case: index })),
-        withCleanup,
+        withCleanup: async (action) => {
+          cleaning = true;
+          try {
+            return await withCleanup(action);
+          } finally {
+            cleaning = false;
+          }
+        },
       });
       if (!ok) vaultPassed = false;
     }
