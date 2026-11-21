@@ -3515,6 +3515,27 @@ test.each([
           throw Error("Scoped launch must retain its bound account and model");
         const { createSandboxAccessServices } = await import("../src/sandbox-access-services.ts");
         const credentials = launchCredentials(options.store, KEY);
+        const childPlacement: NonNullable<LaunchOptions["boatRuntimeDefault"]> = {
+          credentials,
+          connections: { async validate() {}, async bind() {} },
+          provider: async () => host,
+          policy: {
+            async start({ sandbox }) {
+              expect(sandbox).toMatchObject({ visibility: "private", ...runtimeFields });
+              const ticket = await enrolments.issue({ sandboxId: sandbox.id, ownerId: STAN, configuration: {} });
+              const active = await enrolments.enrol(ticket.enrolmentToken);
+              return {
+                epoch: active.epoch,
+                async prepareWorkspace() {
+                  return { status: "not_connected" };
+                },
+                async prompt() {
+                  throw Error("The delegated child has no initial prompt");
+                },
+              };
+            },
+          },
+        };
         const children = createSandboxAccessServices({
           sql,
           credentials,
@@ -3526,29 +3547,7 @@ test.each([
           },
           encryptionKey: KEY,
           scopedMcpUrl: "https://armada.test",
-          runtimePlacements: {
-            [provider]: {
-              credentials,
-              connections: { async validate() {}, async bind() {} },
-              provider: async () => host,
-              policy: {
-                async start({ sandbox }) {
-                  expect(sandbox).toMatchObject({ visibility: "private", ...runtimeFields });
-                  const ticket = await enrolments.issue({ sandboxId: sandbox.id, ownerId: STAN, configuration: {} });
-                  const active = await enrolments.enrol(ticket.enrolmentToken);
-                  return {
-                    epoch: active.epoch,
-                    async prepareWorkspace() {
-                      return { status: "not_connected" };
-                    },
-                    async prompt() {
-                      throw Error("The delegated child has no initial prompt");
-                    },
-                  };
-                },
-              },
-            } satisfies NonNullable<LaunchOptions["boatRuntimeDefault"]>,
-          },
+          ...(boat ? { boatEndpointRuntime: childPlacement } : { runtimePlacements: { modal: childPlacement } }),
         });
         const child = await children.childWorker.launch(token, "enrolled-child", {
           goldenId: parent.goldenId,

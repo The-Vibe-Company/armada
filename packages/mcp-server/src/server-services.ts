@@ -581,6 +581,7 @@ export async function createServerServices(env: Record<string, string | undefine
     runtimeSend,
     runtimeCheckpoint,
     runtimePlacements: { boat: launch.boatRuntimeDefault, modal: launch.modalRuntimeDefault },
+    boatEndpointRuntime: launch.boatEndpointRuntime,
     encryptionKey: config.encryptionKey,
     connections: mcp.connections,
     publicUrl: config.publicUrl,

@@ -47,6 +47,7 @@ export function createSandboxAccessServices(input: {
   credentials: NamedLaunchCredentials;
   connections: LaunchStores["connections"];
   runtimePlacements?: Partial<Record<SandboxProviderId, LaunchOptions["modalRuntimeDefault"]>>;
+  boatEndpointRuntime?: LaunchOptions["boatEndpointRuntime"];
   runtimeSend?: RuntimeFollowup;
   runtimeCheckpoint?: RuntimeCheckpoint;
   encryptionKey: string;
@@ -213,7 +214,21 @@ export function createSandboxAccessServices(input: {
       });
       const golden = goldens.find((g) => g.id === chosen.goldenId);
       if (!golden) throw new ChildLaunchNotAllocated("preallocation_rejected", "golden_lookup");
-      const placement = input.runtimePlacements?.[golden.provider];
+      let placement = input.runtimePlacements?.[golden.provider];
+      if (!placement && golden.provider === "boat") {
+        const parent = (
+          await sql.query<{ boat_runtime: boolean }>(
+            `select s.boat_runtime from public.armada_access_parents p
+             join public.sandboxes s on s.id=p.sandbox_id
+             where p.id=$1 and p.owner_id=$2 and p.org_id=$3 and s.provider='boat'`,
+            [operation.orchestratorId, operation.ownerId, operation.orgId],
+          )
+        ).rows[0];
+        if (parent?.boat_runtime) {
+          placement = input.boatEndpointRuntime;
+          if (!placement) throw new ChildLaunchNotAllocated("preallocation_rejected", "provider_placement");
+        }
+      }
       const actor = { userId: operation.ownerId, orgId: operation.orgId, role: "member" as const };
       const credentials = placement?.credentials ?? input.credentials;
       const privateTarget = { ...golden, visibility: "private" as const, sourceGoldenVisibility: golden.visibility };
