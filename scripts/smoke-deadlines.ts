@@ -3,6 +3,7 @@ import { isSandboxPlacementProvider } from "../packages/core/src/sandbox-provide
 
 const GREEN_JOURNAL_LIMIT = 20;
 const MIN_STEP_SAMPLES = 20;
+// WARNING: Keep max(3 × p99, 10 s). Staging network spikes repeatedly exceeded twice the measured p99.
 const MIN_STEP_DEADLINE_MS = 10_000;
 export const USAGE_STATUS_MIN_REQUEST_MS = 2_000;
 export const SMOKE_POLL_INTERVAL_MS = 1_000;
@@ -14,10 +15,6 @@ export function deadlinesFor(table: DeadlineTable, provider: string, lane: strin
   return Object.hasOwn(table, scope) ? table[scope]! : {};
 }
 
-/**
- * Each derived deadline is max(3 × p99, 10 s). Staging network latency can
- * exceed twice the p99 measured in the last 20 green runs.
- */
 export function smokeDeadlines(greenJournalsNewestFirst: readonly string[]) {
   const samples = new Map<string, Map<string, number[]>>();
   for (const journal of greenJournalsNewestFirst.slice(0, GREEN_JOURNAL_LIMIT)) {
