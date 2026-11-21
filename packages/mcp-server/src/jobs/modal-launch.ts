@@ -1,5 +1,13 @@
-import { HARNESS_KINDS, MACHINE_SIZES, type MemberRole, type ModalBinding, type SandboxStatus } from "@armada/core";
 import {
+  type GoldenRecord,
+  HARNESS_KINDS,
+  MACHINE_SIZES,
+  type MemberRole,
+  type ModalBinding,
+  type SandboxStatus,
+} from "@armada/core";
+import {
+  assertLaunchSecretBindings,
   GoldenError,
   LaunchError,
   type Machine,
@@ -16,21 +24,24 @@ import { type OrdinaryLaunchFailure, replayOrdinaryLaunchFailure } from "../ordi
 import { RuntimeCommandRefused } from "../runtime-commands.ts";
 import type { RuntimeConfigurationTarget } from "../runtime-configuration.ts";
 import { createRuntimeEnrolments, type RuntimeTicketGuard } from "../runtime-enrolment.ts";
+import { readRuntimeTemplateEnvironment } from "../runtime-readable-variables.ts";
 import {
   bindModalLaunchMachine,
   insertStartingModalSandbox,
   MODAL_LAUNCH_FAILURE,
   type ModalLaunchSandbox,
+  taintStartingModalSandbox,
   transitionSandbox,
 } from "../sandbox-lifecycle.ts";
 import type { Job, JobContext, JobKind, JobResult } from "./runner.ts";
-import { ConflictingJobRequest, createJobsStore, withJobLease } from "./store.ts";
+import { ConflictingJobRequest, createJobsStore, jobRequestKey, withJobLease } from "./store.ts";
 
 export type ModalLaunchAllocation = Omit<Parameters<Machine["create"]>[0], "sandboxId" | "generation" | "signal">;
 export interface ModalLaunchAdmission {
   orgId: string;
   ownerId: string;
   request?: { key: string; digest: string };
+  templateReceiptId?: string;
   sandbox: ModalLaunchSandbox;
   allocation: ModalLaunchAllocation & { source: { kind: "snapshot" } };
   initialPrompt?: string;
@@ -44,19 +55,73 @@ type ArchivedLaunchReceipt =
 
 export const MODAL_INITIAL_TURN = "launch_initial_turn";
 
+async function lockPinnedModalReservation(sql: Sql, orgId: string, ownerId: string, receiptId: string) {
+  const {
+    rows: [reservation],
+  } = await sql.query<{
+    id: string;
+    sandbox_id: string;
+    digest: string;
+    state: string;
+    template_scope: string;
+    frozen_golden: Pick<GoldenRecord, "id" | "providerSnapshotId" | "modal"> | null;
+    sandbox_exists: boolean;
+  }>(
+    `select r.id,r.sandbox_id,r.digest,r.state,t.scope as template_scope,r.manifest->'golden' as frozen_golden,
+            exists(select 1 from public.sandboxes s where s.id=r.sandbox_id) as sandbox_exists
+     from public.template_launch_requests r
+     join public.launch_templates t on t.id=r.template_id and t.org_id=r.org_id
+     join public.members m on m.org_id=r.org_id and m.user_id=r.actor_id
+     where r.id=$1 and r.org_id=$2 and r.actor_id=$3
+     for update of r for share of m`,
+    [receiptId, orgId, ownerId],
+  );
+  if (!reservation) throw new GoldenError("not_found", "Modal template launch reservation not found.");
+  return reservation;
+}
+
 // WARNING: Activate only after the receipt backfill and launch runner integration.
 export async function admitModalLaunch(sql: Sql, encryptionKey: string, input: ModalLaunchAdmission) {
   if (!sql.transaction) throw new Error("Modal admission requires a transaction.");
-  const { orgId, ownerId, sandbox, allocation, request } = input;
-  const sandboxId = crypto.randomUUID();
+  const { orgId, ownerId, sandbox, allocation, request, templateReceiptId } = input;
+  if (request && templateReceiptId) throw new Error("Modal launch admission requires one receipt identity.");
   const generation = 1;
   const store = createJobsStore(sql, encryptionKey);
-  const key = request
-    ? JSON.stringify(["ordinary", Buffer.from(request.key, "utf8").toString("utf8")])
-    : JSON.stringify(["unkeyed", sandboxId]);
 
   try {
     return await sql.transaction(async (tx) => {
+      const reservation = templateReceiptId
+        ? await lockPinnedModalReservation(tx, orgId, ownerId, templateReceiptId)
+        : undefined;
+      const sandboxId = reservation?.sandbox_id ?? crypto.randomUUID();
+      const key = reservation
+        ? JSON.stringify(["template", reservation.id])
+        : request
+          ? JSON.stringify(["ordinary", Buffer.from(request.key, "utf8").toString("utf8")])
+          : JSON.stringify(["unkeyed", sandboxId]);
+      const digest = reservation?.digest ?? request?.digest ?? sandboxId;
+      if (reservation) {
+        const {
+          rows: [existing],
+        } = await tx.query<{
+          sandbox_id: string;
+          request_digest: string;
+          status: SandboxStatus | null;
+        }>(
+          `select j.sandbox_id,j.request_digest,s.status
+           from public.jobs j left join public.sandboxes s
+             on s.id=j.sandbox_id and s.org_id=j.org_id and s.owner_id=j.request_owner_id
+           where j.idem_key=$1 and j.kind='launch' and j.org_id=$2 and j.request_owner_id=$3`,
+          [jobRequestKey(orgId, "launch", ownerId, key), orgId, ownerId],
+        );
+        if (existing) {
+          if (existing.sandbox_id !== sandboxId || existing.request_digest !== digest)
+            throw new GoldenError("conflict", "Modal template launch reservation conflicts with an existing job.");
+          return { sandbox: { id: sandboxId, status: existing.status ?? "deleted" } };
+        }
+        if (reservation.state !== "claimed" || reservation.sandbox_exists)
+          throw new GoldenError("conflict", "Modal template launch reservation is no longer available.");
+      }
       const {
         rows: [golden],
       } = await tx.query<{
@@ -81,6 +146,18 @@ export async function admitModalLaunch(sql: Sql, encryptionKey: string, input: M
         environment: golden.modal_environment,
         appId: golden.modal_app_id,
       };
+      if (reservation) {
+        const frozen = reservation.frozen_golden;
+        if (
+          frozen?.id !== sandbox.goldenId ||
+          frozen.providerSnapshotId !== snapshot ||
+          frozen.modal?.workspace !== modal.workspace ||
+          frozen.modal.environment !== modal.environment ||
+          frozen.modal.appId !== modal.appId
+        ) {
+          throw new GoldenError("conflict", "Frozen Modal template snapshot or App binding changed.");
+        }
+      }
       if (golden.provider_snapshot_id === snapshot)
         await tx.query("select public.lock_golden_snapshot('modal', $1)", [snapshot]);
       const sourceScope = scopeKey({ orgId, userId: ownerId, visibility: golden.visibility, binding: modal });
@@ -106,7 +183,7 @@ export async function admitModalLaunch(sql: Sql, encryptionKey: string, input: M
           orgId,
           deadline: input.deadline,
           maxAttempts: input.maxAttempts,
-          request: { ownerId, digest: request?.digest ?? sandboxId },
+          request: { ownerId, digest },
         },
         tx,
       );
@@ -157,6 +234,12 @@ export async function admitModalLaunch(sql: Sql, encryptionKey: string, input: M
         },
         sandbox,
       );
+      if (reservation) {
+        const actor = { userId: ownerId, orgId };
+        const { bindings } = await readRuntimeTemplateEnvironment(tx, actor, sandboxId, "modal");
+        await assertLaunchSecretBindings(tx, actor, bindings, reservation.template_scope === "org");
+        if (bindings.length) await taintStartingModalSandbox(tx, sandboxId, generation);
+      }
       await store.enqueue(
         MODAL_INITIAL_TURN,
         sandboxId,
