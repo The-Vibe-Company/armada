@@ -2,6 +2,7 @@ import { createHmac, timingSafeEqual } from "node:crypto";
 import { DelegatedAuthorityDenied, type Sql } from "@armada/core/server";
 import { createDockerHostStore } from "./docker-host-store.ts";
 import { captureDockerStopOutputs } from "./docker-outputs.ts";
+import { unresolvedModalLaunch } from "./modal-launch-handoff.ts";
 import { createRuntimeEnrolments, scopedRuntimeSql } from "./runtime-enrolment.ts";
 import { transitionSandbox } from "./sandbox-lifecycle.ts";
 import { runtimePreservationNote } from "./work-preservation.ts";
@@ -36,8 +37,9 @@ function bindingFromToken(key: string, token: string): Binding {
 export async function requestSandboxFinish(sql: Sql, key: string, sandboxId: string, ownerId: string) {
   const row = (
     await sql.query<{ id: string; provider: string; org_id: string; generation: string }>(
-      `select id,provider::text,org_id,lifecycle_generation::text as generation from public.sandboxes
-     where id=$1 and owner_id=$2 and status in ('ready','running') and stop_requested_at is null for update`,
+      `select id,provider::text,org_id,lifecycle_generation::text as generation from public.sandboxes s
+     where id=$1 and owner_id=$2 and status in ('ready','running') and stop_requested_at is null
+       and not ${unresolvedModalLaunch("s")} for update`,
       [sandboxId, ownerId],
     )
   ).rows[0];

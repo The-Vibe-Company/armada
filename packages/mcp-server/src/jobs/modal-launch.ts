@@ -32,6 +32,11 @@ import type { AccountTurnQueue } from "../account-turn-queue.ts";
 import type { Caller } from "../caller.ts";
 import type { createGoldenRuntimeEnvironment } from "../golden-runtime-environment.ts";
 import { launchCredentials } from "../launch-credentials.ts";
+import {
+  type ModalLaunchHandoff,
+  type ModalLaunchPlacement,
+  prepareModalLaunchHandoff,
+} from "../modal-launch-handoff.ts";
 import { type OrdinaryLaunchFailure, replayOrdinaryLaunchFailure } from "../ordinary-launch-receipts.ts";
 import { runtimeAgentFor, workspaceCommandId } from "../runtime-agent.ts";
 import { RuntimeCommandRefused } from "../runtime-commands.ts";
@@ -576,6 +581,7 @@ type ModalTicket = NonNullable<Awaited<ReturnType<PrepareModalTicket>>>;
 type IssueRuntimeTicket = Parameters<ReturnType<typeof createRuntimeEnrolments>["issue"]>[0];
 
 interface ModalLaunchPlan {
+  placement: ModalLaunchPlacement;
   allocation: ModalLaunchAllocation;
   bindingRef: string;
   machine: Omit<ModalMachineRuntime, "resolveRuntimeTicket">;
@@ -661,6 +667,8 @@ export function createModalLaunchJob(
             } = await tx.query<
               RuntimeConfigurationTarget & {
                 appName: string;
+                sourceVisibility: ModalLaunchPlacement["sourceVisibility"];
+                visibility: ModalLaunchPlacement["scope"]["visibility"];
                 credentialScope: "org" | "user";
                 credentialOwnerId: string;
               }
@@ -669,7 +677,7 @@ export function createModalLaunchJob(
                       s.deleted_at as "deletedAt", s.stop_requested_at as "stopRequestedAt",
                       s.expires_at as "expiresAt", s.credential_id as "credentialId",
                       s.credential_version as "credentialVersion", s.repository_dir as "repositoryDir",
-                      s.visibility, a.app_name as "appName", a.authority_scope as "credentialScope",
+                      s.visibility, s.source_golden_visibility as "sourceVisibility", a.app_name as "appName", a.authority_scope as "credentialScope",
                       a.authority_owner_id as "credentialOwnerId"
                from public.sandboxes s
                join public.jobs j on j.id=$2 and j.sandbox_id=s.id and j.generation=s.lifecycle_generation
@@ -688,10 +696,17 @@ export function createModalLaunchJob(
           });
           if (!target) return;
           context.signal.throwIfAborted();
-          const { appName, credentialScope, credentialOwnerId, ...sandbox } = target;
+          const { appName, credentialScope, credentialOwnerId, sourceVisibility, ...sandbox } = target;
           machine = await openMachine({ binding, appName, credentialScope, credentialOwnerId }, context.signal);
           return {
             allocation,
+            placement: {
+              scope: { orgId: sandbox.orgId, userId: sandbox.ownerId, visibility: sandbox.visibility, binding },
+              sourceVisibility,
+              snapshot,
+              imageId: allocation.source.ref,
+              managementAuthority: { credentialScope, credentialOwnerId },
+            },
             bindingRef: job.id,
             machine,
             canUseModalCredential: machine.canUseModalCredential,
@@ -756,6 +771,7 @@ export async function runModalLaunch(
       check_after: string | null;
       cancel_without_provider: boolean;
       bootstrap_ticket_enc: string | null;
+      handoff_staged: boolean;
     }>(
       `select s.stop_requested_at is null and e.runtime_hash is not null as enrolled,
               s.stop_requested_at is not null and (
@@ -767,7 +783,8 @@ export async function runModalLaunch(
                      and j.deadline_at>clock_timestamp() and s.expires_at>clock_timestamp()
                 then least(e.enrolment_expires_at,j.deadline_at,s.expires_at,clock_timestamp()+interval '1 second')::text
               end as check_after,
-              j.outcome->>'bootstrap_ticket_enc' as bootstrap_ticket_enc
+              j.outcome->>'bootstrap_ticket_enc' as bootstrap_ticket_enc,
+              j.outcome->'modal_handoff' is not null as handoff_staged
        from public.sandboxes s
        join public.jobs j on j.id=$2 and j.sandbox_id=s.id and j.generation=s.lifecycle_generation
          and j.org_id=s.org_id and j.request_owner_id=s.owner_id
@@ -842,10 +859,11 @@ export async function runModalLaunch(
   const targetIncarnation = {
     sandboxId,
     generation,
+    awaitingEnrolment: Boolean(pending.check_after),
     replayingTicket: Boolean(pending.check_after && pending.bootstrap_ticket_enc),
   };
   const dispatch = plan
-    ? await dispatchModalLaunch(sql, job, context, plan, targetIncarnation, async (request, preparation) => {
+    ? await dispatchModalLaunch(sql, job, context, plan, targetIncarnation, async (request, preparation, handoff) => {
         const { ownerId, configuration, commandGrantExpiresAt, lockPrerequisites, checkAccountPin, ...prepared } =
           preparation;
         if (pending.check_after && pending.bootstrap_ticket_enc) {
@@ -861,6 +879,8 @@ export async function runModalLaunch(
               await checkAccountPin(locked);
               const receipt = await readEnrolment(locked);
               if (!receipt?.check_after || !(await context.canDispatch(locked))) return false;
+              if (!receipt.handoff_staged)
+                throw new ModalBootstrapRefused("Modal bootstrap replay lacks a prepared handoff.");
               const refreshed = await enrolments.refreshModalBootstrapManifest(
                 locked,
                 sandboxId,
@@ -875,6 +895,7 @@ export async function runModalLaunch(
           });
           return current ? { ...prepared, enrolmentToken } : null;
         }
+        if (!handoff) return null;
         try {
           const ticket = await enrolments.issue({
             sandboxId,
@@ -887,7 +908,10 @@ export async function runModalLaunch(
               if (!(await context.canDispatch(tx)))
                 throw new Error("Modal bootstrap dispatch is no longer authorized.");
             },
-            recordIssued: (tx, enrolmentToken) => recordModalBootstrapTicket(tx, job.id, enrolmentToken, encryptionKey),
+            async recordIssued(tx, enrolmentToken) {
+              if (!(await recordModalBootstrapTicket(tx, job, enrolmentToken, encryptionKey, handoff)))
+                throw new ModalBootstrapRefused("Modal launch changed before handoff.");
+            },
             ticketGuard: {
               lockPrerequisites,
               async check(tx) {
@@ -988,13 +1012,16 @@ async function dispatchModalLaunch(
   {
     sandboxId,
     generation,
+    awaitingEnrolment,
     replayingTicket,
   }: Pick<MachineIncarnation, "sandboxId" | "generation"> & {
+    awaitingEnrolment: boolean;
     replayingTicket: boolean;
   },
   resolveRuntimeTicket: (
     request: Parameters<PrepareModalTicket>[0],
     preparation: Awaited<ReturnType<ModalLaunchPlan["prepareRuntimeTicket"]>>,
+    handoff: ModalLaunchHandoff | undefined,
   ) => ReturnType<PrepareModalTicket>,
 ) {
   const { signal, canDispatch } = context;
@@ -1013,7 +1040,7 @@ async function dispatchModalLaunch(
          join public.members m on m.org_id=s.org_id and m.user_id=s.owner_id
          where s.id=$1 and s.provider='modal' and s.runtime_transport='dialout'
            and s.stop_requested_at is null and s.deleted_at is null and s.expires_at>clock_timestamp()
-           and (s.status='starting' or (s.status in ('ready','running') and s.provider_sandbox_id is not null))
+           and s.status='starting'
          for share of m`,
       [sandboxId, job.id],
     );
@@ -1037,13 +1064,21 @@ async function dispatchModalLaunch(
     ),
     async resolveRuntimeTicket(request) {
       ticketResolutionStarted = true;
-      const preparation = await plan.prepareRuntimeTicket(request).catch(async (error: unknown) => {
+      if (awaitingEnrolment && !replayingTicket) return null;
+      const { preparation, handoff } = await (async () => {
+        const preparation = await plan.prepareRuntimeTicket(request);
+        const handoff =
+          !replayingTicket && (await canDispatch())
+            ? await prepareModalLaunchHandoff(request, plan.machine, plan.placement, plan.allocation, signal)
+            : undefined;
+        return { preparation, handoff };
+      })().catch(async (error: unknown) => {
         if (recoveredAllocation && (await canDeferPreparation(request.machineId))) throw preparationDeferred;
         throw error;
       });
       const canDeferReplay = recoveredAllocation && replayingTicket;
       const ticket = await beforeProviderMutation(context, canDeferReplay, () =>
-        resolveRuntimeTicket(request, preparation),
+        resolveRuntimeTicket(request, preparation, handoff),
       );
       if (ticket === "deferred") throw preparationDeferred;
       if (!ticket) return null;

@@ -44,6 +44,7 @@ import { recordNativeAccountExhaustion } from "./account-exhaustion.ts";
 import { publishAccountSpend, unmeasuredUsage } from "./account-spend.ts";
 import type { Caller } from "./caller.ts";
 import { scopedOrg } from "./control-caller.ts";
+import { unresolvedModalLaunch } from "./modal-launch-handoff.ts";
 import { bindNativePromptRequest } from "./native-webhook-prompts.ts";
 import { recordOperatorDiagnostic } from "./request-observability.ts";
 import { createResourceStore, type ResourceStore } from "./resource-store.ts";
@@ -438,6 +439,7 @@ export function createSqlData(
           forStop
             ? `, (
           coalesce(s.reconcile_lease_until > clock_timestamp(), false)
+          or ${unresolvedModalLaunch("s")}
           or coalesce(s.activity_until > clock_timestamp(), false)
           or ((s.boat_runtime or s.runtime_transport is not distinct from 'dialout')
             and s.status in ('ready','running') and s.activity_lease_id is not null)
@@ -1228,6 +1230,7 @@ export function createSqlData(
             and not exists(${unsettledRuntimeCommands("s.id", "s.lifecycle_generation")})`;
         if (stopStatus !== undefined) {
           fence += " and s.provider in ('boat','modal') and s.deleted_at is null";
+          if (admission) fence += ` and not ${unresolvedModalLaunch("s")}`;
           fence += patch.finishActivity
             ? stopStatus === "failed"
               ? " and s.status in ('stopping','failed')"

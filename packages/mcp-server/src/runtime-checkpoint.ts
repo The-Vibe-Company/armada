@@ -3,6 +3,7 @@ import type { Caller } from "./caller.ts";
 import type { SandboxView } from "./data.ts";
 import { createSqlData } from "./data.ts";
 import { createDockerSandboxService } from "./docker-sandbox-service.ts";
+import { unresolvedModalLaunch } from "./modal-launch-handoff.ts";
 import { runtimeHarnessSupported } from "./provider-runtime-admission.ts";
 import { recordOperatorDiagnostic } from "./request-observability.ts";
 import type { createRuntimeCommands } from "./runtime-commands.ts";
@@ -450,7 +451,7 @@ export function createRuntimeStopCheckpoint(sql: Sql, checkpoint: RuntimeCheckpo
       async (tx) => {
         const eligible = await tx.query(
           `select s.id from public.sandboxes s where s.id=$1 and s.lifecycle_generation=$4 and s.status in ('ready','running')
-             and not s.application_secret_tainted
+             and not s.application_secret_tainted and not ${unresolvedModalLaunch("s")}
              and (not $2::boolean or (s.status='ready'
                and not exists(select 1 from public.account_turn_queue q where q.sandbox_id=s.id
                  and q.state in ('queued','dispatching'))

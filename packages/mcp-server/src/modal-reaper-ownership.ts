@@ -78,7 +78,9 @@ export function createModalReaperOwnership(sql: Sql, binding: ModalBinding, forD
       evidence.protected ||
       (evidence.status && !evidence.canonical_binding) ||
       (evidence.logical_id !== null &&
-        (evidence.logical_id !== machine.sandboxId ||
+        ((evidence.canonical_tag
+          ? evidence.logical_id !== evidence.canonical_physical_id
+          : evidence.logical_id !== machine.sandboxId) ||
           !evidence.provider_binding ||
           (evidence.status && !evidence.same_owner)))
     ) {
@@ -86,10 +88,10 @@ export function createModalReaperOwnership(sql: Sql, binding: ModalBinding, forD
     }
     if (!evidence.status) return { kind: "absent" };
     if (evidence.canonical_tag) {
-      const generation = evidence.canonical_generation;
+      const generation = evidence.logical_id === null ? evidence.canonical_generation : evidence.generation;
       if (
         evidence.canonical_physical_id !== machine.machineId ||
-        evidence.logical_id !== null ||
+        (evidence.logical_id !== null && evidence.physical_id !== machine.machineId) ||
         !generation ||
         generation !== machine.generation
       )

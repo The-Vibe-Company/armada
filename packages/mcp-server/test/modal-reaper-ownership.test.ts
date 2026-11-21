@@ -55,13 +55,18 @@ beforeAll(async () => {
       ('20000000-0000-0000-0000-000000000004','modal',null,'starting',
        '30000000-0000-0000-0000-000000000001','40000000-0000-0000-0000-000000000001','10000000-0000-0000-0000-000000000001'),
       ('20000000-0000-0000-0000-000000000005','modal','sb-job-bound','failed',
+       '30000000-0000-0000-0000-000000000001','40000000-0000-0000-0000-000000000001','10000000-0000-0000-0000-000000000001'),
+      ('20000000-0000-0000-0000-000000000006','modal','sb-job-retained','stopped',
        '30000000-0000-0000-0000-000000000001','40000000-0000-0000-0000-000000000001','10000000-0000-0000-0000-000000000001');
+    update sandboxes set lifecycle_generation=4 where provider_sandbox_id='sb-job-retained';
     insert into modal_server_scopes values
       ('scope','{"binding":{"workspace":"app:ap-bound","environment":"env","appId":"ap-bound"}}'),
       ('second_scope','{"binding":{"workspace":"app:ap-bound","environment":"env","appId":"ap-bound"}}'),
       ('other_scope','{"binding":{"workspace":"app:ap-other","environment":"env","appId":"ap-other"}}');
     insert into modal_machines values
       ('scope','modal_logical','{"physicalId":"sb-physical","generation":3}',
+       '30000000-0000-0000-0000-000000000001','40000000-0000-0000-0000-000000000001'),
+      ('scope','sb-job-retained','{"physicalId":"sb-job-retained","generation":3}',
        '30000000-0000-0000-0000-000000000001','40000000-0000-0000-0000-000000000001'),
       ('scope','modal_pending','{"physicalId":"sb-pending","generation":1}',
        '30000000-0000-0000-0000-000000000001','40000000-0000-0000-0000-000000000001'),
@@ -101,6 +106,11 @@ test.each([
     "bound launch job allocation",
     { sandboxId: "20000000-0000-0000-0000-000000000005", machineId: "sb-job-bound" },
     { kind: "owned", status: "failed", generation: "3" },
+  ],
+  [
+    "retained job allocation after the stop fence advances",
+    { sandboxId: "20000000-0000-0000-0000-000000000006", machineId: "sb-job-retained" },
+    { kind: "owned", status: "stopped", generation: "3" },
   ],
   [
     "job tag with a different physical ID",

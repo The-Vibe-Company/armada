@@ -2,6 +2,7 @@ import { type AgentEvent, isFinalPromptStatus, type Sql } from "@armada/core/ser
 import { hostDrainingSql } from "./docker-host-drain.ts";
 import { supportsDockerHostProtocol } from "./docker-host-version.ts";
 import { mergedWorkProof } from "./merged-work.ts";
+import { unresolvedModalLaunch } from "./modal-launch-handoff.ts";
 import type { RuntimeCheckpoint } from "./runtime-checkpoint.ts";
 import { expiredOutputRead } from "./runtime-commands.ts";
 import { projectRuntimeIdle } from "./runtime-idle-evidence.ts";
@@ -105,6 +106,7 @@ export function createRuntimeIdle(
              and exists(select 1 from public.members hm where hm.org_id=h.org_id and hm.user_id=h.owner_id)
            where (s.boat_runtime or (s.provider='modal' and s.runtime_transport='dialout') or (s.provider='docker' and $2::boolean))
            and s.status in ('ready','running') and s.stop_requested_at is null
+           and not ${unresolvedModalLaunch("s")}
            and s.expires_at>now() and not s.application_secret_tainted
            and s.activity_lease_id is null and (s.reconcile_lease_until is null or s.reconcile_lease_until<now())
            order by case when $1::uuid is null or s.id>$1::uuid then 0 else 1 end,s.id limit 20`,

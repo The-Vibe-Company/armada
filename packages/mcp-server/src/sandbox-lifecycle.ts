@@ -18,6 +18,7 @@ import { isDockerPromptRefusal } from "./docker-prompt-refusal.ts";
 import type { Job } from "./jobs/runner.ts";
 import { mergedWorkProof } from "./merged-work.ts";
 import { strictNativeDrainJournals, withdrawExpiredModalDrainLease } from "./modal-drain-journal.ts";
+import { installModalLaunchHandoff, type ModalLaunchHandoff, unresolvedModalLaunch } from "./modal-launch-handoff.ts";
 import { nativeIdleDue, nativeQuiescent } from "./native-idle.ts";
 import { LIVE_OUTPUT_CANDIDATE } from "./output-transfers.ts";
 import { recordNativeIdleTurn } from "./runtime-idle-evidence.ts";
@@ -422,8 +423,24 @@ export async function publishRuntimeReadiness(
   generation: string,
   enrolment: "bootstrap" | "retained",
 ) {
-  const { rows } = await tx.query(
-    `select 1 from public.sandboxes s
+  const { rows } = await tx.query<{
+    provider: string;
+    provider_sandbox_id: string;
+    org_id: string;
+    owner_id: string;
+    visibility: string;
+    handoff: ModalLaunchHandoff | null;
+  }>(
+    `select s.provider, s.provider_sandbox_id, s.org_id, s.owner_id, s.visibility, launch.handoff from public.sandboxes s
+     left join lateral (
+       select j.id, j.outcome->'modal_handoff' as handoff from public.jobs j
+       where s.provider='modal' and not $2::boolean
+         and j.sandbox_id=s.id and j.org_id=s.org_id and j.request_owner_id=s.owner_id
+         and j.generation=s.lifecycle_generation and j.kind='launch' and j.state in ('queued','leased')
+         and j.outcome #>> '{modal_machine,entry,operation}'='create'
+         and j.outcome #>> '{modal_machine,entry,phase}'='allocated'
+         and j.outcome #>> '{modal_machine,entry,machineId}'=s.provider_sandbox_id
+     ) launch on true
      where s.id=$1 and s.status='starting' and s.lifecycle_generation=$3
        and (
          (s.provider='docker' and $2::boolean = exists(
@@ -433,18 +450,27 @@ export async function publishRuntimeReadiness(
            select 1 from public.docker_host_jobs j where j.bound_sandbox_id=s.id
            and j.bound_operation='create' and j.outcome='completed'
          )))
-         or (s.provider='modal' and not $2::boolean and exists(
-           select 1 from public.jobs j
-           where j.sandbox_id=s.id and j.org_id=s.org_id and j.request_owner_id=s.owner_id
-             and j.generation=s.lifecycle_generation and j.kind='launch' and j.state in ('queued','leased')
-             and j.outcome #>> '{modal_machine,entry,operation}'='create'
-             and j.outcome #>> '{modal_machine,entry,phase}'='allocated'
-             and j.outcome #>> '{modal_machine,entry,machineId}'=s.provider_sandbox_id
-         ))
+         or launch.id is not null
        )`,
     [sandboxId, enrolment === "retained", generation],
   );
-  if (!rows.length) return "skipped";
+  const [row] = rows;
+  if (!row) return "skipped";
+  if (row.provider === "modal") {
+    const handoff = row.handoff;
+    if (
+      rows.length !== 1 ||
+      !handoff ||
+      handoff.scope.orgId !== row.org_id ||
+      handoff.scope.userId !== row.owner_id ||
+      handoff.scope.visibility !== row.visibility ||
+      handoff.record.info.id !== row.provider_sandbox_id ||
+      handoff.record.physicalId !== row.provider_sandbox_id ||
+      String(handoff.record.generation) !== generation
+    )
+      return "conflict";
+    await installModalLaunchHandoff(tx, handoff);
+  }
   const transition = await transitionSandbox(tx, {
     sandboxId,
     expectedGeneration: generation,
@@ -667,10 +693,11 @@ export async function settleRuntimeTurn(tx: Sql, sandboxId: string, generation: 
 }
 
 export async function admitCheckpointedIdleStop(tx: Sql, sandboxId: string, generation: string, requestId: string) {
-  const locked = await tx.query(`select id from public.sandboxes where id=$1 and lifecycle_generation=$2 for update`, [
-    sandboxId,
-    generation,
-  ]);
+  const locked = await tx.query(
+    `select id from public.sandboxes s where id=$1 and lifecycle_generation=$2
+       and not ${unresolvedModalLaunch("s")} for update`,
+    [sandboxId, generation],
+  );
   if (!locked.rows.length) return { kind: "conflict" } satisfies SandboxTransitionResult;
   const {
     rows: [checkpoint],
@@ -1354,6 +1381,7 @@ export async function recordObservedProviderState(
            ((s.provider='boat' and s.boat_runtime) or (s.provider='modal' and s.runtime_transport='dialout'))
          else s.provider_sandbox_id=$4 and not s.boat_runtime and s.runtime_transport is distinct from 'dialout' end
          and ($5::boolean or s.stop_requested_at is null) and s.deleted_at is null and not s.native_drain_pending
+         and not ${unresolvedModalLaunch("s")}
          and (s.activity_until is null or s.activity_until<now())
          and (s.reconcile_lease_until is null or s.reconcile_lease_until<now())
        for update of s`,
@@ -1762,12 +1790,7 @@ export function createSandboxLifecycle(
             )) as modal_resume) recovery
           where candidate.provider = $2 and candidate.status not in ('stopped','deleted')
           -- The launch job owns recovery across retries and worker replacement.
-          and not (candidate.provider='modal' and exists(
-            select 1 from public.jobs launch
-            where launch.kind='launch' and launch.state in ('queued','leased')
-              and launch.sandbox_id=candidate.id and launch.generation=candidate.lifecycle_generation
-              and launch.org_id=candidate.org_id and launch.request_owner_id=candidate.owner_id
-          ))
+          and not ${unresolvedModalLaunch("candidate")}
           -- This transition and the cleanup job commit together.
           and not (candidate.provider='modal' and candidate.status='failed' and exists(
             select 1 from public.sandbox_transitions failure
