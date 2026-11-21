@@ -1404,7 +1404,6 @@ test.each(["prompt", "steer", "queued", "dispatching"] as const)(
   },
 );
 
-// These cases isolate the failed-dispatch check from the independent prompt guard.
 async function seedCompletedPromptProof(
   db: ReturnType<typeof sharedDatabase>["db"],
   sandboxId: string,
