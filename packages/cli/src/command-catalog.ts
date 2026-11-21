@@ -54,8 +54,6 @@ ${sandboxUsage("session")}
 ${sandboxUsage("org")}
 ${sandboxUsage("account")}
 ${sandboxUsage("automation")}
-${sandboxUsage("vault")}
-                                           Personal or --org scope. JSON includes values only for vars read; no sandbox delivery.
 
 Every command after 'armada login' acts as the user who signed in. snapshot commands take --org <name>
 when you belong to more than one org.

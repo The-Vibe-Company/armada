@@ -59,7 +59,7 @@ test.each([
 test("api maps HTTP failures without echoing response text, codes or request secrets", async () => {
   const secret = "private-value";
   const output = await invoke(
-    ["secrets/create", "-"],
+    ["secrets/set", "-"],
     () => Response.json({ error: { code: "private_value", message: `${accessToken} ${secret}` } }, { status: 403 }),
     async () => JSON.stringify({ value: secret }),
   );

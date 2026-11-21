@@ -95,7 +95,6 @@
     "packages/auth/test/bounded-body.test.ts": 0.004,
     "packages/auth/test/oauth.test.ts": 0.024,
     "packages/auth/test/sql.test.ts": 2.512,
-    "packages/cli/test/application-vault-api.test.ts": 0.052,
     "packages/cli/test/armada-api.test.ts": 0.068,
     "packages/cli/test/auth.test.ts": 0.057,
     "packages/cli/test/binary.test.ts": 0.346,

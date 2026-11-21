@@ -1,7 +1,6 @@
 import { AuthError, bearerKind } from "@armada/auth";
 import {
   API_FAILURE_HELP,
-  APPLICATION_VAULT_CONFLICT_MESSAGES,
   type ApiFailureCode,
   githubHydrationPhase,
   launchFailureHelp,
@@ -165,31 +164,6 @@ export async function createArmadaApiClient(
           response.status,
           `This Armada deployment at ${origin} does not serve ${url.pathname}; the dashboard or server may be out of date. Ask an administrator to verify the deployment.`,
         );
-      if (path.startsWith("/api/v1/variables/") || path.startsWith("/api/v1/secrets/")) {
-        const known: Record<string, string> = {
-          [APPLICATION_VAULT_CONFLICT_MESSAGES.versionChanged]:
-            "Version conflict. List entries and retry with the current --expected-version.",
-          [APPLICATION_VAULT_CONFLICT_MESSAGES.inactive]:
-            "Entry revoked or deleted. Revocation is terminal; delete a revoked entry before reusing its name.",
-          [APPLICATION_VAULT_CONFLICT_MESSAGES.nameInUse]:
-            "Name already in use, including revoked entries. Delete the old entry before reusing its name.",
-        };
-        const message = apiMessage(payload, "");
-        const messages: Record<number, string> = {
-          400: "Invalid application vault request. Check the name (uppercase, non-reserved), value (valid UTF-8, no NUL, at most 8 KiB; secrets cannot be empty), ID and version.",
-          401: "Run armada login or update ARMADA_TOKEN.",
-          403: "Application vault access denied. Current membership is required; only admins can mutate organization entries.",
-          404: "Application vault entry or organization not found or not visible.",
-          409: "Application vault conflict. List entries and check the current version, duplicate name or revoked status before retrying.",
-        };
-        throw new ArmadaApiError(
-          resourceFailureCode(response.status),
-          response.status,
-          (response.status === 409 && Object.hasOwn(known, message) ? known[message] : undefined) ??
-            messages[response.status] ??
-            "Application vault unavailable. Check entry status before retrying.",
-        );
-      }
       if (path === "/api/v1/templates/launch" && response.status >= 500)
         throw new ArmadaApiError("unavailable", response.status, TEMPLATE_LAUNCH_UNKNOWN);
       if (path.startsWith("/api/v1/templates/")) {

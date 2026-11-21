@@ -36,7 +36,7 @@ access needs an authorized admin, not a retry loop.
 Read [setup and configuration](references/setup.md) when connecting GitHub,
 selecting model accounts, creating goldens/templates, or configuring variables.
 Manage snapshots, templates, default skill pins, variables and application secrets through
-the dashboard or the authenticated REST API. For template authoring through
+the dashboard or the authenticated REST API. For template and vault administration through
 `armada api`, see [setup](references/setup.md#templates-readable-variables-and-secrets).
 Launch an existing template with
 `armada template launch` or `POST /api/v1/templates/launch` and reuse its request key on retry.

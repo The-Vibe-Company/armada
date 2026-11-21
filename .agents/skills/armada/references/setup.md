@@ -46,18 +46,20 @@ Create, publish and delete template definitions in the dashboard or use
 `expectedRevision` and a complete `definition`. Delete takes `id` and
 `expectedRevision`. Inspect current state before retrying a revision conflict.
 
-Readable configuration is not secret: `armada vars set SETTING --file VALUE_FILE`
-and `armada vars list --json` manage references; `armada vars read VARIABLE_ID`
-prints the value. Do not run read on sensitive values or in shared logs.
-Templates can reference readable variable IDs/versions and pin skills. Resolved
-launch manifests freeze readable values and current connected grants at launch,
-not when the revision is published. Boat delivers readable configuration to the
-native harness through a world-readable file; unrelated exec does not inherit
-its environment but can read the file. It is not a secret channel.
+Manage application variables and write-only secrets in the dashboard or send
+JSON on stdin to `armada api variables/set -` and `armada api secrets/set -`.
+Both routes take `org` (the organization UUID), `scope` (`personal` or `org`),
+`name`, and `value`. Use `armada api variables/list -` or
+`armada api secrets/list -` with `org` to get IDs and versions. Reading a
+variable with `armada api variables/read -` (body fields `org` and `id`) prints
+its value. Keep that output out of shared logs. Templates can reference readable
+variables by ID and version. Launch freezes readable values and current connected
+grants in its manifest.
 
-`armada secrets set SECRET_NAME --file SECRET_FILE` stores write-only application
-secrets; `armada secrets list --json` returns metadata. There is no reveal command
-or automatic sandbox delivery for this secret store. Do not confuse it with model
-credentials, or promise template secret binding. Secret rotation in Armada does
-not rotate the upstream service's key. Never bake any of these secrets into a
-golden, skill, git repository or prompt.
+To rotate, revoke, or delete a secret, use `armada api secrets/rotate -`,
+`armada api secrets/revoke -`, or `armada api secrets/delete -`. Send `org`, `id`,
+and the current `expectedVersion`. Rotation also takes the replacement `value`.
+Inspect metadata before retrying a version conflict. Secret responses contain
+metadata only. Rotation in Armada changes the stored value and leaves the
+upstream service's key as it was. Keep secret values out of command arguments,
+logs, goldens, skills, git repositories, and prompts.

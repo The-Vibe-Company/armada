@@ -108,9 +108,6 @@ Usage:
   armada account ls|add|login|rm github      GitHub connection and installation
   armada account status|logout               Armada identity / revoke current login session
   armada template --help                   Inspect and launch published versions
-  armada vars --help                       Readable variables: set/list/read; stdin/file writes only
-  armada secrets --help                    Write-only application secrets: set/list/rotate/revoke/delete
-                                           Personal or --org scope. JSON includes values only for vars read; no sandbox delivery.
 
 Every command after 'armada login' acts as the user who signed in. snapshot commands take --org <name>
 when you belong to more than one org.

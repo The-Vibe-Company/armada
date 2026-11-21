@@ -108,3 +108,25 @@ output and pass the selected receipt strings to reconcile. Reconcile queues
 eligible work. Check the resulting status to confirm deletion. See [historical
 retirement](golden-rebuild-retention.md#historical-dry-run-and-reconciliation) for
 receipt format and authorization.
+
+## Application variables and secrets
+
+Send the organization UUID in `org` on every request. For new entries, pass
+`personal` or `org` in `scope`. Only organization admins can write
+organization-scoped entries. Lists return metadata, including IDs and versions.
+
+| Removed command | Replacement | JSON body fields |
+| --- | --- | --- |
+| `vars list` | `armada api variables/list -` | `org` |
+| `vars set` | `armada api variables/set -` | `org`, `scope`, `name`, `value` |
+| `vars read` | `armada api variables/read -` | `org`, `id` |
+| `secrets list` | `armada api secrets/list -` | `org` |
+| `secrets set` | `armada api secrets/set -` | `org`, `scope`, `name`, `value`, optional `expiresAt` |
+| `secrets rotate` | `armada api secrets/rotate -` | `org`, `id`, `expectedVersion`, `value`, optional `expiresAt` |
+| `secrets revoke` | `armada api secrets/revoke -` | `org`, `id`, `expectedVersion` |
+| `secrets delete` | `armada api secrets/delete -` | `org`, `id`, `expectedVersion` |
+
+Redirect a private JSON file or pipe JSON on stdin for value-bearing requests.
+Secret responses contain only metadata. Variable reads return JSON with both
+`item` and `value`. After a version conflict, inspect current metadata before
+deciding whether to retry. See the [vault API and limits](vault-cli.md#control-api-and-limits).
