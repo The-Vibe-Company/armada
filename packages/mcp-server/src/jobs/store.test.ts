@@ -713,6 +713,7 @@ test("an unbound Modal launch can publish only its leased allocation receipt", a
 
 type ModalLaunchStep =
   | "open Modal"
+  | "dispatch credential"
   | "create response"
   | "bootstrap dispatch"
   | "bootstrap response"
@@ -869,7 +870,10 @@ async function modalLaunchFixture(initial?: Awaited<ReturnType<typeof modalAdmis
             });
             return {
               ...machine,
-              canUseModalCredential: async () => modalCredentialCurrent,
+              canUseModalCredential: async () => {
+                await atStep?.("dispatch credential");
+                return modalCredentialCurrent;
+              },
               close() {
                 closedClients++;
               },
@@ -2240,7 +2244,10 @@ test.each(["create response", "bootstrap dispatch", "bootstrap response"] as con
           ])
         ).rows,
       ).toEqual([{ machine_id: null }]);
-      await f.db.query("update jobs set lease_until='-infinity' where id=$1", [jobId]);
+      expect((await f.db.query("select state,attempts from jobs where id=$1", [jobId])).rows).toEqual([
+        { state: "queued", attempts: 1 },
+      ]);
+      await f.db.query("update jobs set run_after='-infinity' where id=$1", [jobId]);
     }
     if (pendingTicket) {
       const interruptedReplay = makeRunner(
@@ -2293,16 +2300,22 @@ test.each(["create response", "bootstrap dispatch", "bootstrap response"] as con
 );
 
 test.each([
-  ["stopped", "runtime ticket"],
-  ["unknown", "runtime ticket"],
-  ["unknown", "sandbox binding"],
-  ["stopped", "create response"],
-  ["plan unavailable", "create response"],
-  ["ticket unavailable", "create response"],
-  ["ownership unavailable", "create response"],
+  ["stopped", "runtime ticket", undefined],
+  ["unknown", "runtime ticket", undefined],
+  ["unknown", "sandbox binding", undefined],
+  ["stopped", "create response", undefined],
+  ["plan unavailable", "create response", undefined],
+  ["credential unavailable before observation", "create response", 1],
+  ["credential unavailable after observation", "create response", 2],
+  ["credential unavailable before binding", "create response", 3],
+  ["credential unavailable after binding", "create response", 4],
+  ["ticket unavailable", "create response", undefined],
+  ["ownership unavailable", "create response", undefined],
+  ["ticket and credential unavailable", "create response", 5],
+  ["ownership and credential unavailable", "create response", 5],
 ] as const)(
   "a replacement Modal launch claimant defers bootstrap for %s after losing the %s",
-  async (observation, lostAt) => {
+  async (observation, lostAt, credentialFailure) => {
     const { f, id, jobId, makeRunner, effects, exitAllocation, hideAllocation } = await modalLaunchFixture(
       await modalAdmissionFixture(),
     );
@@ -2330,18 +2343,27 @@ test.each([
     if (observation === "stopped") exitAllocation();
     await f.db.query("update jobs set lease_until='-infinity' where id=$1", [jobId]);
 
+    let credentialChecks = 0;
     const replacement = makeRunner((step) => {
+      if (step === "dispatch credential" && ++credentialChecks === credentialFailure)
+        throw new Error("Modal credential recheck unavailable");
       if (observation === "unknown" && step === "machine poll") throw new Error("Modal poll unavailable");
       if (observation === "plan unavailable" && step === "open Modal")
         throw new Error("Modal credential read unavailable");
-      if (observation === "ticket unavailable" && step === "runtime ticket")
+      if (
+        (observation === "ticket unavailable" || observation === "ticket and credential unavailable") &&
+        step === "runtime ticket"
+      )
         throw new Error("Runtime ticket preparation unavailable");
-      if (observation === "ownership unavailable" && step === "exact machine ownership")
+      if (
+        (observation === "ownership unavailable" || observation === "ownership and credential unavailable") &&
+        step === "exact machine ownership"
+      )
         throw new Error("Modal ownership lookup timed out");
     });
     expect(await replacement.reconcileOne(signal)).toBe(true);
     await replacement.drain();
-    const reads = observation === "plan unavailable" ? 0 : 1;
+    const reads = observation === "plan unavailable" || credentialFailure === 1 ? 0 : 1;
     expect(effects()).toEqual({ allocations: 1, observed: reads, bootstrapped: [] });
     if (lostAt === "sandbox binding") {
       expect((await f.db.query("select provider_sandbox_id from sandboxes where id=$1", [id])).rows).toEqual([
