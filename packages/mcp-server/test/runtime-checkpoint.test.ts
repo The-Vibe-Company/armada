@@ -433,7 +433,6 @@ test.each(["resume", "reconciliation", "late generation change", "scoped parent 
             work({
               ...tx,
               async query<T>(statement: string, params?: unknown[]) {
-                // PGlite serializes transactions. Inject PostgreSQL's SKIP LOCKED result at the lock query.
                 if (
                   blocked &&
                   path === "scoped parent cleanup" &&
@@ -503,6 +502,43 @@ test.each(["resume", "reconciliation", "late generation change", "scoped parent 
     }
   },
 );
+
+test("owner stop observes a concurrent stop that wins before the checkpoint lock", async () => {
+  const f = await checkpointFixture("modal", true);
+  try {
+    const sql: Sql = {
+      ...f.sql,
+      transaction: async (work) => {
+        await f.db.query(
+          "update sandboxes set status='stopping',stop_requested_at=now(),lifecycle_generation=lifecycle_generation+1 where id=$1",
+          [f.row.id],
+        );
+        return f.sql.transaction!(work);
+      },
+    };
+    const stop = stopPort(f, f.bridge, sql);
+    await expect(
+      callSharedTool(
+        {
+          ...stop.context,
+          async runtimeStopCheckpoint(...args) {
+            try {
+              return await stop.context.runtimeStopCheckpoint(...args);
+            } finally {
+              runtimeWakes.notify(SANDBOX_ADMISSION_WAKE);
+            }
+          },
+        },
+        "stop",
+        { id: f.row.id },
+      ),
+    ).resolves.toMatchObject({ id: f.row.id, status: "stopping" });
+    expect(stop.calls()).toBe(0);
+    expect((await f.db.query("select 1 from runtime_checkpoints where sandbox_id=$1", [f.row.id])).rows).toEqual([]);
+  } finally {
+    await f.close();
+  }
+});
 
 test("owner stop cancelled at checkpoint admission leaves the runtime untouched", async () => {
   const f = await checkpointFixture("modal", true);

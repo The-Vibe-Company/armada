@@ -542,7 +542,6 @@ export function configureTools(
             throw error;
           })
         : undefined;
-      // A checkpoint can quiesce or scrub the runtime even when no retention proof was returned.
       checkpointState.attempted = checkpoint !== undefined;
       if (!checkpointState.attempted) signal?.throwIfAborted();
       const stopAdmission: Pick<ServerSandboxPatch, "ownerStop" | "onlyIfIdle" | "ownerStopSignal"> = {

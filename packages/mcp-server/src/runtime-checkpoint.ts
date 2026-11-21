@@ -6,7 +6,7 @@ import { createDockerSandboxService } from "./docker-sandbox-service.ts";
 import { runtimeHarnessSupported } from "./provider-runtime-admission.ts";
 import { recordOperatorDiagnostic } from "./request-observability.ts";
 import type { createRuntimeCommands } from "./runtime-commands.ts";
-import { createRuntimeEnrolments } from "./runtime-enrolment.ts";
+import { createRuntimeEnrolments, RuntimeEnrolmentDenied } from "./runtime-enrolment.ts";
 import { unsettledRuntimeCommands } from "./runtime-idle-evidence.ts";
 import {
   RuntimeCheckpointActivityConflict,
@@ -467,6 +467,27 @@ export function createRuntimeStopCheckpoint(sql: Sql, checkpoint: RuntimeCheckpo
           );
       },
       signal,
-    );
+    ).catch(async (error: unknown) => {
+      if (signal && !current.request_id && error instanceof RuntimeEnrolmentDenied) {
+        const target = await createSqlData(sql)(caller).sandboxes.getForStop?.(sandbox.id);
+        const latest = target?.sandbox;
+        if (
+          latest &&
+          (target.busy ||
+            latest.lifecycleGeneration !== sandbox.lifecycleGeneration ||
+            latest.status !== sandbox.status ||
+            latest.stopRequestedAt ||
+            Date.parse(latest.expiresAt ?? "") <= Date.now())
+        )
+          throw checkpointConflict(
+            sandbox.id,
+            "stop_target_changed",
+            "Sandbox changed before runtime stop.",
+            undefined,
+            new SandboxStopTargetChanged(),
+          );
+      }
+      throw error;
+    });
   };
 }
