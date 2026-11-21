@@ -146,7 +146,7 @@ export class GoldenCreateService {
     if (!isSandboxProvider(provider.id)) throw new GoldenError("invalid_config", "Unknown golden provider.");
     const providerId = provider.id;
     const modal = input.existingGolden?.modal ?? input.modal ?? null;
-    if ((provider.id === "modal") !== (modal !== null))
+    if (HOST_CAPABILITIES[providerId].requiresPinnedGoldenBinding !== (modal !== null))
       throw new GoldenError("invalid_config", "Secure golden creation requires the provider’s pinned binding.");
     if (input.existingGolden) {
       assertProviderOf(provider, input.existingGolden.provider);

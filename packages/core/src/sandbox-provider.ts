@@ -61,6 +61,8 @@ export const PROVIDER_LIMITS: Readonly<Record<SandboxPlacementProviderId, Provid
  * and must never dispose of it. A fresh fork belongs to that restore attempt.
  */
 export interface HostCapabilities {
+  /** The golden target must pin the provider application that owns its snapshots. */
+  readonly requiresPinnedGoldenBinding: boolean;
   /** Re-resolve pinned management authority inside the golden build admission transaction. */
   readonly revalidateGoldenManagementAtAdmission: boolean;
   readonly goldenRestore: "fresh-fork" | "shared-source";
@@ -94,6 +96,7 @@ export interface HostCapabilities {
 
 export const HOST_CAPABILITIES: Readonly<Record<SandboxProviderId, HostCapabilities>> = {
   boat: {
+    requiresPinnedGoldenBinding: false,
     revalidateGoldenManagementAtAdmission: false,
     goldenRestore: "fresh-fork",
     retainSourceOnSnapshotUncertainty: false,
@@ -106,6 +109,7 @@ export const HOST_CAPABILITIES: Readonly<Record<SandboxProviderId, HostCapabilit
     snapshotManagementAuthority: false,
   },
   modal: {
+    requiresPinnedGoldenBinding: true,
     revalidateGoldenManagementAtAdmission: true,
     goldenRestore: "shared-source",
     retainSourceOnSnapshotUncertainty: true,
@@ -137,7 +141,11 @@ export function sandboxRowModalBinding(row: {
   modal_environment?: string | null;
   modal_app_id?: string | null;
 }) {
-  return row.provider === "modal" && row.modal_workspace && row.modal_environment && row.modal_app_id
+  return isSandboxProvider(row.provider) &&
+    HOST_CAPABILITIES[row.provider].requiresPinnedGoldenBinding &&
+    row.modal_workspace &&
+    row.modal_environment &&
+    row.modal_app_id
     ? { workspace: row.modal_workspace, environment: row.modal_environment, appId: row.modal_app_id }
     : null;
 }
@@ -225,11 +233,12 @@ function assertProviderTarget(target: ProviderTarget): void {
   if (!isSandboxProvider(target.provider)) {
     throw new Error("The record names no known sandbox provider.");
   }
-  if ((target.provider === "modal") !== (target.modal !== null)) {
+  const { requiresPinnedGoldenBinding } = HOST_CAPABILITIES[target.provider];
+  if (requiresPinnedGoldenBinding !== (target.modal !== null)) {
     throw new ProviderRoutingError(
       "provider_mismatch",
       target.provider,
-      target.provider === "modal"
+      requiresPinnedGoldenBinding
         ? "This Modal golden has no pinned Modal App binding."
         : "Only a Modal golden carries a Modal binding.",
     );
