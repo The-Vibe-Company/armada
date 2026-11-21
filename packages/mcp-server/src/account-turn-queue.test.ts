@@ -1049,7 +1049,7 @@ test("a full account defers its turn without starving another account", async ()
     prompt: "next instruction",
   };
   const availableAccount = "80000000-0000-4000-8000-000000000001";
-  await database().query("update credentials set max_agents=0 where id=$1", [account]);
+  await database().query("update sandboxes set status='running',task_prompt_id='active_turn' where id=$1", [ids[1]]);
   await database().query("insert into credentials values($1,'Available account',1,1,'active',null,'user',$2)", [
     availableAccount,
     owner,
@@ -1072,6 +1072,13 @@ test("a full account defers its turn without starving another account", async ()
   await dispatch();
   expect(dispatched).toEqual([]);
   expect(await queue.accept(caller, blocked)).toMatchObject({ status: "queued" });
+  const {
+    rows: [deferred],
+  } = await database().query(
+    "select state, attempts, run_after > clock_timestamp() as deferred from jobs where sandbox_id=$1",
+    [blocked.id],
+  );
+  expect(deferred).toEqual({ state: "queued", attempts: 0, deferred: true });
 
   await dispatch();
   expect(dispatched).toEqual([available.id]);
