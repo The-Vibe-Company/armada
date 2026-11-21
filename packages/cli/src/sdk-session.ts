@@ -36,7 +36,10 @@ export class ArmadaApiError extends AuthError {
   }
 }
 
-export async function authenticatedSession(io: ArmadaApiIo, options: { url?: string; rawJson?: boolean } = {}) {
+export async function authenticatedSession(
+  io: ArmadaApiIo,
+  options: { url?: string; safeRefreshErrors?: boolean } = {},
+) {
   const environmentToken = io.env.ARMADA_TOKEN;
   let saved = environmentToken ? null : await io.session.read();
   const origin = await resolveArmadaOrigin(io, options.url, saved);
@@ -45,13 +48,13 @@ export async function authenticatedSession(io: ArmadaApiIo, options: { url?: str
   let token = initial;
   const timeoutMs = io.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   if (!environmentToken && saved && Date.parse(saved.expiresAt) - Date.now() <= 60_000) {
-    saved = await refresh(origin, io, saved.refreshToken, saved, timeoutMs, undefined, options.rawJson);
+    saved = await refresh(origin, io, saved.refreshToken, saved, timeoutMs, undefined, options.safeRefreshErrors);
     token = saved.accessToken;
   }
   const renewToken = saved
     ? async (signal?: AbortSignal) => {
         if (!saved) throw new Error("No saved login to refresh.");
-        saved = await refresh(origin, io, saved.refreshToken, saved, timeoutMs, signal, options.rawJson);
+        saved = await refresh(origin, io, saved.refreshToken, saved, timeoutMs, signal, options.safeRefreshErrors);
         token = saved.accessToken;
         return token;
       }

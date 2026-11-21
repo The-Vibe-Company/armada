@@ -21,7 +21,6 @@ const TEMPLATE_LAUNCH_UNKNOWN =
 interface ArmadaApiOptions {
   url?: string;
   preserveServerErrors?: boolean;
-  rawJson?: boolean;
 }
 
 export type ArmadaCommandClient = ReturnType<typeof commandClient>;
@@ -31,15 +30,10 @@ export async function createArmadaApiClient(
   options: ArmadaApiOptions = {},
 ): Promise<ArmadaCommandClient> {
   const { origin, timeoutMs, environmentToken, token, renewToken } = await authenticatedSession(io, options);
-  const rawResponses = options.rawJson ? new WeakMap<object, Pick<Response, "text">>() : undefined;
   return commandClient(
     origin,
     {
-      fetch: async (input, options) => {
-        const response = await io.fetch(input, { ...options, ...{ timeout: false } });
-        if (rawResponses && response.ok && response.body) rawResponses.set(response, response.clone());
-        return response;
-      },
+      fetch: (input, options) => io.fetch(input, { ...options, ...{ timeout: false } }),
       token,
       timeoutMs,
       invalidPath: (error) => {
@@ -48,23 +42,6 @@ export async function createArmadaApiClient(
       ...(renewToken ? { renewToken } : {}),
     },
     (result, path, url) => {
-      if (options.rawJson) {
-        if (result.kind === "transport")
-          throw new AuthError(
-            result.timedOut ? "Armada API request timed out." : "Armada could not reach the server.",
-            "unavailable",
-          );
-        const { response, payload, bodyReadFailed } = result;
-        if (!response.ok)
-          throw new ArmadaApiError(
-            "api_error",
-            response.status,
-            `Armada API request failed (HTTP ${response.status}).`,
-          );
-        if (bodyReadFailed) throw new AuthError("Armada API response could not be read.", "unavailable");
-        if (response.status === 204 || response.status === 205) return "";
-        return rawJsonText(rawResponses?.get(response), payload);
-      }
       if (result.kind === "transport") {
         throw new AuthError(
           path === "/api/v1/templates/launch"
@@ -209,18 +186,6 @@ export async function createArmadaApiClient(
       throw new AuthError(apiMessage(payload, `Armada server request failed (${response.status}).`), "unavailable");
     },
   );
-}
-
-async function rawJsonText(response: Pick<Response, "text"> | undefined, payload: unknown) {
-  let text: string | undefined;
-  try {
-    text = await response?.text();
-  } catch {
-    throw new AuthError("Armada API response could not be read.", "unavailable");
-  }
-  if (!text || (payload === null && !/^[\t\n\r ]*null[\t\n\r ]*$/.test(text)))
-    throw new AuthError("Armada API response was not valid JSON.", "unavailable");
-  return text;
 }
 
 function resourceFailureCode(status: number) {
