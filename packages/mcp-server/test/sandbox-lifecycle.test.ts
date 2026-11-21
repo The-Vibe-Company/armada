@@ -681,6 +681,7 @@ for (const observation of ["stopped", "expired", "unavailable"] as const) {
           text: "continue",
           signal,
         });
+        await store.recordNativePrompt?.(confirmed.id, confirmed.providerSandboxId, receipt.promptId);
         const patch = {
           nativeSendReceipt: { fromState: "starting", placement: confirmed.providerSandboxId },
           taskPromptId: receipt.promptId,

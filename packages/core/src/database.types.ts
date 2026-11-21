@@ -4916,6 +4916,32 @@ export type Database = {
           },
         ];
       };
+      sandbox_native_send_attempts: {
+        Row: {
+          sandbox_id: string;
+          generation: number;
+          created_at: string;
+        };
+        Insert: {
+          sandbox_id: string;
+          generation: number;
+          created_at?: string;
+        };
+        Update: {
+          sandbox_id?: string;
+          generation?: number;
+          created_at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "sandbox_native_send_attempts_sandbox_id_fkey";
+            columns: ["sandbox_id"];
+            isOneToOne: false;
+            referencedRelation: "sandboxes";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
       sandbox_output_chunks: {
         Row: {
           transfer_id: string;
