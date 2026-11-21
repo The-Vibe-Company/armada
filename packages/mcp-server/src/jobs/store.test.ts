@@ -1332,7 +1332,7 @@ test.each([
   ["native dispatch has no evidence", 2, null, "-infinity", false, false],
   ["older job for abandoned native dispatch", 3, null, "-infinity", false, false],
   ["native dispatch has neither a window nor evidence", 2, null, null, false, false],
-  ["native reset interrupted before commit", 2, null, "-infinity", false, false],
+  ["native reset interrupted before commit", 2, null, null, false, false],
 ] as const)("shared claim reconciles %s", async (scenario, generation, activity, until, runtime, uncertain) => {
   const f = await fixture();
   const { db, people, store } = f;
@@ -1865,7 +1865,10 @@ test.each([
     const requestId = crypto.randomUUID();
     await seedTurn(f, sandboxId, requestId);
     await db.query(
-      "update account_turn_queue set state=$2, dispatch_generation=case when $2='dispatching' then 2 end where request_id=$1",
+      `update account_turn_queue set state=$2,
+         dispatch_generation=case when $2='dispatching' then 2 end,
+         dispatch_until=case when $2='dispatching' then 'infinity'::timestamptz end
+       where request_id=$1`,
       [requestId, state],
     );
     const jobId = await store.enqueue(
