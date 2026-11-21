@@ -1278,12 +1278,21 @@ test("ordinary native exec skips post-command provider sampling after the activi
   }
 });
 
-test.each(["missing proof", "rolled-back admission", "verified proof"])(
+test.each(["missing proof", "rolled-back admission", "lost commit response", "verified proof"])(
   "native drain deletion commits preservation and admission together with %s",
   async (scenario) => {
     const { db, people, sandboxId, archiveId } = await seedNativeDrainReceipt();
     const caller: Caller = { via: "service", userId: people.owner, orgs: [{ orgId: people.org, role: "member" }] };
-    const { sandboxes } = createSqlData(bunLikeSql(db))(caller);
+    const sql = bunLikeSql(db);
+    if (scenario === "lost commit response") {
+      const transaction = sql.transaction;
+      if (!transaction) throw new Error("Missing transaction support");
+      sql.transaction = async (work) => {
+        await transaction(work);
+        throw new Error("Delete admission commit response lost");
+      };
+    }
+    const { sandboxes } = createSqlData(sql)(caller);
     const provider = fakeBoat().provider;
     const detached = () => db.query("select archive_id from native_drain_recovery where sandbox_id=$1", [sandboxId]);
     const state = async () =>
@@ -1323,6 +1332,14 @@ test.each(["missing proof", "rolled-back admission", "verified proof"])(
         expect(remove).toHaveBeenCalledTimes(1);
         expect(await state()).toEqual({ status: "deleted", generation: 6 });
         expect((await detached()).rows).toEqual([{ archive_id: archiveId }]);
+      } else if (scenario === "lost commit response") {
+        await expect(deletion).rejects.toThrow("Delete admission commit response lost");
+        expect(remove).not.toHaveBeenCalled();
+        expect(await state()).toEqual({ status: "stopped", generation: 5 });
+        expect((await detached()).rows).toEqual([{ archive_id: archiveId }]);
+        expect((await db.query("select activity_lease_id from sandboxes where id=$1", [sandboxId])).rows[0]).toEqual({
+          activity_lease_id: expect.any(String),
+        });
       } else {
         await expect(deletion).rejects.toMatchObject({ code: "sandbox_not_ready" });
         expect(remove).not.toHaveBeenCalled();
