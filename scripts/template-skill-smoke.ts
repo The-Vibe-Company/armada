@@ -381,8 +381,7 @@ export async function runTemplateSkillCase(item: TemplateSkillCase, io: Template
             const list = await api<{ items: Template[] }>("templates/list");
             if (!Array.isArray(list?.items)) fail("invalid_response");
             const found = list.items.filter((entry) => entry.name === record.name);
-            // An empty list can race a create that committed after its client timed out.
-            if (found.length !== 1) fail("cleanup_unconfirmed");
+            if (!found[0] || found.length > 1) fail("cleanup_unconfirmed");
             record.resource = found[0];
           });
         if (!record.attempted) continue;
@@ -403,7 +402,7 @@ export async function runTemplateSkillCase(item: TemplateSkillCase, io: Template
           const list = await api<{ items: (Resource & { name: string })[] }>("variables/list");
           if (!Array.isArray(list?.items)) fail("invalid_response");
           const found = list.items.filter((entry) => entry.name === key);
-          if (found.length !== 1) fail("cleanup_unconfirmed");
+          if (!found[0] || found.length > 1) fail("cleanup_unconfirmed");
           variable = found[0];
         });
       if (!variableAttempted) return;
