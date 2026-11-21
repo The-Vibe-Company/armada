@@ -43,6 +43,7 @@ import {
   clearStartingModalStop,
   insertStartingModalSandbox,
   type ModalLaunchSandbox,
+  recordFailedModalLaunchExit,
   taintStartingModalSandbox,
   transitionSandbox,
 } from "../sandbox-lifecycle.ts";
@@ -1037,7 +1038,11 @@ async function runFailedModalLaunchDelete(
     return { status: "fail", reason: "modal_launch_cleanup_target_changed" } satisfies JobResult;
   }
   context.signal.throwIfAborted();
-  if (machineId === null || current.deleted) return { status: "done" } satisfies JobResult;
+  const confirmed = {
+    status: "done",
+    commit: (tx) => recordFailedModalLaunchExit(tx, sandboxId, generation),
+  } satisfies JobResult;
+  if (machineId === null || current.deleted) return confirmed;
 
   const isCurrent = async (tx: Sql) => Boolean(await loadTarget(tx));
   const mayDispatch = () => withJobLease(sql, job, async (tx) => (await isCurrent(tx)) && context.canDispatch(tx));
@@ -1070,7 +1075,7 @@ async function runFailedModalLaunchDelete(
   if (dispatch) {
     try {
       await machine.delete({ ...target, scope: "physical-only" });
-      return { status: "done" } satisfies JobResult;
+      return confirmed;
     } catch (error) {
       if (error !== dispatchRevoked) throw error;
     }
@@ -1081,7 +1086,7 @@ async function runFailedModalLaunchDelete(
     (observed.kind === "absent" && observed.receipt?.operation === "delete") ||
     (observed.kind === "present" && observed.phase === "stopped")
   )
-    return { status: "done" } satisfies JobResult;
+    return confirmed;
   return unconfirmed;
 }
 

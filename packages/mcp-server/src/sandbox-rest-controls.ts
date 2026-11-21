@@ -17,6 +17,7 @@ import { extendSandbox } from "./sandbox-extend.ts";
 import { ToolApiError } from "./tool-api.ts";
 import { ToolError } from "./tool-error.ts";
 import { describeToolFailure } from "./tool-failure.ts";
+import { isFailedModalLaunch } from "./turns.ts";
 
 const contracts = sandboxRestOperations;
 type SandboxRestOperation = keyof typeof contracts;
@@ -174,7 +175,9 @@ export async function deleteSandboxWithActivity(
     deleteRequested: true,
     ...(nativeDrain ? { nativeDrainAdmission: { provider: found.provider, placement: found.providerSandboxId } } : {}),
   };
-  const provider = found.providerSandboxId ? await providers.resolve(found, { userId: found.ownerId }) : null;
+  const exitConfirmed = !nativeDrain && isFailedModalLaunch(found) && found.stoppedAt !== null;
+  const provider =
+    found.providerSandboxId && !exitConfirmed ? await providers.resolve(found, { userId: found.ownerId }) : null;
   const failurePatch = (error: unknown) => {
     if (found.provider === "modal" || isNonMutatingProviderRefusal(error)) return {};
     throw error;

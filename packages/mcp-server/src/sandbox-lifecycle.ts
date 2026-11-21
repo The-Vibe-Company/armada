@@ -686,6 +686,17 @@ export async function admitCheckpointedIdleStop(tx: Sql, sandboxId: string, gene
   });
 }
 
+export async function recordFailedModalLaunchExit(tx: Sql, sandboxId: string, generation: number) {
+  const { rows } = await tx.query(
+    `update public.sandboxes set stopped_at=coalesce(stopped_at, clock_timestamp())
+     where id=$1 and lifecycle_generation=$2 and provider='modal' and runtime_transport='dialout'
+       and status='failed' and status_reason=$3 and deleted_at is null and stop_requested_at is null
+     returning id`,
+    [sandboxId, generation, MODAL_LAUNCH_FAILURE],
+  );
+  if (!rows.length) throw new Error("Failed Modal launch exit target changed.");
+}
+
 export async function recordDockerCleanupReceipt(
   tx: Sql,
   sandboxId: string,
