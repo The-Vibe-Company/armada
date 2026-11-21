@@ -2200,6 +2200,15 @@ test.each([
     expect((await f.db.query("select provider_sandbox_id from sandboxes where id=$1", [id])).rows).toEqual([
       { provider_sandbox_id: lostAt === "runtime ticket" ? "physical" : null },
     ]);
+    if (lostAt === "sandbox binding") {
+      expect(
+        (
+          await f.db.query("select outcome #>> '{modal_machine,entry,machineId}' as machine_id from jobs where id=$1", [
+            jobId,
+          ])
+        ).rows,
+      ).toEqual([{ machine_id: "physical" }]);
+    }
     if (observation === "stopped") exitAllocation();
     await f.db.query("update jobs set lease_until='-infinity' where id=$1", [jobId]);
 
@@ -2209,6 +2218,11 @@ test.each([
     expect(await replacement.reconcileOne(signal)).toBe(true);
     await replacement.drain();
     expect(effects()).toEqual({ allocations: 1, observed: 1, bootstrapped: [] });
+    if (lostAt === "sandbox binding") {
+      expect((await f.db.query("select provider_sandbox_id from sandboxes where id=$1", [id])).rows).toEqual([
+        { provider_sandbox_id: null },
+      ]);
+    }
     const status = observation === "stopped" ? "failed" : "starting";
     expect((await f.db.query("select status from sandboxes where id=$1", [id])).rows).toEqual([{ status }]);
     if (observation === "stopped") {
