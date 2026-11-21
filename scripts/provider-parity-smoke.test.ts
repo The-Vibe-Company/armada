@@ -64,7 +64,7 @@ for (const mode of [
   "template_transport_recovery",
   "template_timeout_recovery",
   "template_first_quota",
-  "template_transport_unknown",
+  "template_timeout_unknown",
   "template_lost_identity",
   "template_forbidden",
   "template_identity",
@@ -638,12 +638,18 @@ for (const mode of [
               expect(body.revision).toBe(2);
               expect(body.prompt).toBeUndefined();
               if (
-                mode === "template_transport_unknown" ||
-                (["template_transport_recovery", "template_lost_identity"].includes(mode) && n === 1)
+                (["template_transport_recovery", "template_lost_identity"].includes(mode) && n === 1) ||
+                (mode === "template_timeout_unknown" && n > 3)
               )
                 throw new Error("transport_placeholder");
-              if (mode === "template_timeout_recovery" && n === 1)
-                return Response.json({ error: { code: "api_failed", message: "Request timed out." } }, { status: 408 });
+              if (mode === "template_timeout_unknown" && n === 2)
+                return new Response("{", { headers: { "x-request-id": "e0000000-0000-4000-8000-000000000002" } });
+              if (mode === "template_timeout_unknown" && n === 3) return new Response(null, { status: 502 });
+              if (mode === "template_timeout_unknown" || (mode === "template_timeout_recovery" && n === 1))
+                return Response.json(
+                  { error: { code: "api_failed", message: "Request timed out." } },
+                  { status: 408, headers: { "x-request-id": "e0000000-0000-4000-8000-000000000001" } },
+                );
               if (mode === "template_first_quota")
                 return Response.json(
                   { error: { code: "rate_limited", message: "Start quota refused." } },
@@ -1945,7 +1951,7 @@ for (const mode of [
         "template_refused",
         "template_no_answer",
         "template_unknown",
-        "template_transport_unknown",
+        "template_timeout_unknown",
         "template_lost_identity",
         "template_forbidden",
         "template_identity",
@@ -1961,7 +1967,7 @@ for (const mode of [
           expect(report.features.templates[provider].reason).toBe("template_revision_not_configured");
         else {
           expect(templateCalls.get(provider)).toBe(
-            mode === "template_unknown" || mode === "template_transport_unknown"
+            mode === "template_unknown" || mode === "template_timeout_unknown"
               ? 600
               : [
                     "template_pending",
@@ -1976,7 +1982,7 @@ for (const mode of [
           );
           if (
             ![
-              "template_transport_unknown",
+              "template_timeout_unknown",
               "template_lost_identity",
               "template_forbidden",
               "template_first_quota",
@@ -1995,7 +2001,23 @@ for (const mode of [
             );
             continue;
           }
-          if (mode === "template_transport_unknown" || mode === "template_lost_identity") {
+          if (mode === "template_timeout_recovery")
+            expect(lines.filter((line) => line.startsWith("{")).map((line) => JSON.parse(line))).toContainEqual({
+              step: `parity_${provider}_templates_launch`,
+              provider,
+              pass: true,
+              elapsedMs: 1000,
+            });
+          if (mode === "template_timeout_unknown")
+            expect(report.features.templates[provider].diagnostic).toMatchObject({
+              code: "launch_response_unreadable",
+              httpStatus: 200,
+              polls: templateCalls.get(provider),
+              message: "Launch response could not be read.",
+              requestId: "e0000000-0000-4000-8000-000000000002",
+              requestKey: (templateRequests.get(provider) as { requestKey: string }).requestKey,
+            });
+          if (mode === "template_timeout_unknown" || mode === "template_lost_identity") {
             expect(report.features.cleanup?.[provider]).toMatchObject({
               status: "fail",
               reason: "allocation_unconfirmed",

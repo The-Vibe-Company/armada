@@ -2002,3 +2002,11 @@ does not print the answer or raw model diagnostics.
 After provisioning, compare the median total smoke step duration of 20
 ordinary green staging runs with the median of 20 ordinary green runs from
 before the change. Record the sample runs and both medians in #2844.
+
+Template-backed parity launches emit `parity_<provider>_<feature>_launch`
+receipts that include time spent observing the launch after a timeout. The same
+step names select the generated deadlines, capped by the lane budget. Parity
+uses the original template request key to read the stored launch receipt
+through the template API. If observation expires, parity reports that key and
+the most recent diagnostic carrying a server request ID, or the last HTTP
+diagnostic if no response carried an ID.
