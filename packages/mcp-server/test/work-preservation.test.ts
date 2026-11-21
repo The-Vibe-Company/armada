@@ -991,63 +991,97 @@ async function handoffWithLaterCleanCapture(sandboxId: string) {
   ]);
 }
 
-test.each(["lost provider response", "acknowledged prompt", "admission write failure", "settlement write failure"])(
-  "native send handoff distinguishes unresolved work after %s",
-  async (outcome) => {
-    const boat = fakeBoat();
-    const machine = await boat.provider.fork({
-      from: "fixture-snapshot",
-      noEnv: true,
-      env: {},
-      labels: {},
-      ttlSeconds: 3600,
-    });
-    const placement = crypto.randomUUID();
-    const provider = {
-      ...boat.provider,
-      async get() {
-        return { ...(await boat.provider.get(machine.id)), id: placement };
-      },
-      async prompt(request: Parameters<typeof boat.provider.prompt>[0]) {
-        const receipt = await boat.provider.prompt({ ...request, sandboxId: machine.id });
-        if (outcome === "lost provider response") throw new Error("Lost response");
-        return receipt;
-      },
-    };
-    const { db, sandboxId, invoke } = await nativeToolFixture(provider, placement, (statement) => {
-      if (
-        outcome === "admission write failure" &&
-        statement.includes("insert into public.sandbox_native_send_attempts")
-      )
-        throw new Error(outcome);
-      if (
-        outcome === "settlement write failure" &&
-        statement.includes("delete from public.sandbox_native_send_attempts")
-      )
-        throw new Error(outcome);
-    });
-    await db.query("update sandboxes set credential_id=null where id=$1", [sandboxId]);
+test.each([
+  "lost provider response",
+  "acknowledged prompt",
+  "admission write failure",
+  "settlement write failure",
+  "expired activity",
+  "stale prompt receipt",
+])("native send handoff distinguishes unresolved work after %s", async (outcome) => {
+  const boat = fakeBoat();
+  const machine = await boat.provider.fork({
+    from: "fixture-snapshot",
+    noEnv: true,
+    env: {},
+    labels: {},
+    ttlSeconds: 3600,
+  });
+  const placement = crypto.randomUUID();
+  let renewalRefused = false;
+  const provider = {
+    ...boat.provider,
+    async get() {
+      return { ...(await boat.provider.get(machine.id)), id: placement };
+    },
+    async prompt(request: Parameters<typeof boat.provider.prompt>[0]) {
+      const receipt = await boat.provider.prompt({ ...request, sandboxId: machine.id });
+      if (outcome === "lost provider response" && boat.prompts.length === 1) throw new Error("Lost response");
+      if (outcome === "expired activity") {
+        const lease = await db.query<{ activity_lease_id: string; lifecycle_generation: number }>(
+          "update sandboxes set activity_until=now()-interval '1 second' where id=$1 returning activity_lease_id,lifecycle_generation",
+          [sandboxId],
+        );
+        const active = lease.rows[0];
+        if (!active) throw new Error("Missing send activity");
+        renewalRefused = await context.data.sandboxes
+          .update(sandboxId, {
+            renewActivity: true,
+            activityToken: active.activity_lease_id,
+            expectedGeneration: active.lifecycle_generation,
+          })
+          .then(
+            () => false,
+            (error: unknown) => error instanceof Error && error.message.includes("lifecycle changed"),
+          );
+      }
+      return receipt;
+    },
+  };
+  let deletingMarker = false;
+  const { db, context, sandboxId, invoke } = await nativeToolFixture(provider, placement, (statement) => {
+    if (outcome === "admission write failure" && statement.includes("insert into public.sandbox_native_send_attempts"))
+      throw new Error(outcome);
+    if (outcome === "settlement write failure" && deletingMarker && statement.includes("task_prompt_id"))
+      throw new Error(outcome);
+    if (statement.includes("delete from public.sandbox_native_send_attempts")) deletingMarker = true;
+  });
+  await db.query("update sandboxes set credential_id=null where id=$1", [sandboxId]);
 
-    const reply = await invoke("send", { id: sandboxId, prompt: "edit workspace" });
-    expect(boat.prompts).toHaveLength(outcome === "admission write failure" ? 0 : 1);
-    if (outcome === "acknowledged prompt") {
-      expect(reply.structuredContent).toMatchObject({ promptId: "prompt_1" });
-    } else {
-      expect(reply.isError).toBe(true);
-    }
-    if (outcome === "admission write failure") {
-      const row = await db.query("select lifecycle_generation, activity_lease_id from sandboxes where id=$1", [
-        sandboxId,
-      ]);
-      expect(row.rows).toEqual([{ lifecycle_generation: 1, activity_lease_id: null }]);
-    }
-    await db.query("update native_webhook_prompts set completed_at=now() where sandbox_id=$1", [sandboxId]);
+  if (outcome === "stale prompt receipt")
+    await db.query(
+      `insert into native_webhook_prompts(sandbox_id,prompt_id,provider,provider_sandbox_id,owner_id,org_id,created_at)
+         select id,'prompt_1',provider,provider_sandbox_id,owner_id,org_id,'2020-01-01' from sandboxes where id=$1`,
+      [sandboxId],
+    );
 
-    const handoff = await handoffWithLaterCleanCapture(sandboxId);
-    const safe = outcome === "acknowledged prompt" || outcome === "admission write failure";
-    expect(handoff.rows).toEqual([{ outcome: safe ? "clean" : "ineligible" }]);
-  },
-);
+  const reply = await invoke("send", { id: sandboxId, prompt: "edit workspace" });
+  expect(boat.prompts).toHaveLength(outcome === "admission write failure" ? 0 : 1);
+  if (outcome === "acknowledged prompt") {
+    expect(reply.structuredContent).toMatchObject({ promptId: "prompt_1" });
+  } else {
+    expect(reply.isError).toBe(true);
+    const row = await db.query("select task_prompt_id from sandboxes where id=$1", [sandboxId]);
+    expect(row.rows).toEqual([{ task_prompt_id: null }]);
+  }
+  if (outcome === "lost provider response") {
+    await db.query("update sandboxes set activity_until=now()-interval '1 second' where id=$1", [sandboxId]);
+    const later = await invoke("send", { id: sandboxId, prompt: "inspect workspace" });
+    expect(later.structuredContent).toMatchObject({ promptId: "prompt_2" });
+  }
+  if (outcome === "expired activity") expect(renewalRefused).toBe(true);
+  if (outcome === "admission write failure") {
+    const row = await db.query("select lifecycle_generation, activity_lease_id from sandboxes where id=$1", [
+      sandboxId,
+    ]);
+    expect(row.rows).toEqual([{ lifecycle_generation: 1, activity_lease_id: null }]);
+  }
+  await db.query("update native_webhook_prompts set completed_at=now() where sandbox_id=$1", [sandboxId]);
+
+  const handoff = await handoffWithLaterCleanCapture(sandboxId);
+  const safe = outcome === "acknowledged prompt" || outcome === "admission write failure";
+  expect(handoff.rows).toEqual([{ outcome: safe ? "clean" : "ineligible" }]);
+});
 
 test.each(["lost command response", "failed redaction", "failed evidence insert", "failed evidence delete"])(
   "ordinary native Modal exec preserves the admission and handoff invariants after %s",
