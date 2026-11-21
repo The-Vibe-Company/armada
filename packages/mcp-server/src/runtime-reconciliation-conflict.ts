@@ -22,8 +22,8 @@ export class RuntimeCheckpointParentConflict extends VaultError {
   }
 }
 
-export class StartingModalStopChanged extends VaultError {
+export class SandboxStopTargetChanged extends VaultError {
   constructor() {
-    super("conflict", "Modal launch changed before stop admission.");
+    super("conflict", "Sandbox changed before stop admission.");
   }
 }

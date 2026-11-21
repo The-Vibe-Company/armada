@@ -23,7 +23,7 @@ import {
   RuntimeCheckpointActivityConflict,
   RuntimeCheckpointParentConflict,
   RuntimeReconciliationConflict,
-  StartingModalStopChanged,
+  SandboxStopTargetChanged,
 } from "./runtime-reconciliation-conflict.ts";
 import { appendConversation, sandboxActivity } from "./sandbox-activity.ts";
 import { refuseConversationSelector } from "./sandbox-conversation.ts";
@@ -501,179 +501,185 @@ export function configureTools(
     ).catch((error) => publicationFailure(error, acknowledged));
   });
 
-  const stopTool = tool(
-    "stop",
-    sandboxOperations.stopSandbox.tool,
-    async (args) => {
-      let checkpointGeneration: number | undefined;
-      if (args.only_if_idle) return stopOnce(await visible(args.id));
-      context.configureStopRequest?.();
-      const deadline = AbortSignal.timeout(SANDBOX_ADMISSION_TIMEOUT_MS);
-      const signal = context.stopSignal ? AbortSignal.any([deadline, context.stopSignal]) : deadline;
-      try {
-        return await waitForSandboxAdmission(signal, async () => {
-          const target = await data.sandboxes.getForStop?.(args.id);
-          const found = target ? target.sandbox : await visible(args.id);
-          if (checkpointGeneration !== undefined && checkpointGeneration !== found.lifecycleGeneration)
-            throw new ToolError("sandbox_not_ready", "Sandbox generation changed after checkpointing.");
-          signal.throwIfAborted();
-          try {
-            if (found.stopRequestedAt || ["stopping", "stopped", "deleted"].includes(found.status))
-              return { busy: false, result: await stopOnce(found) };
-            const startingStop = await data.sandboxes.requestStartingModalStop?.(found);
-            if (startingStop) return { busy: false, result: startingStop };
-            if (target?.busy) return { busy: true };
-            return { busy: false, result: await stopOnce(found, signal) };
-          } catch (error) {
-            const cause = error instanceof DataError ? error.cause : error;
-            if (
-              cause instanceof RuntimeReconciliationConflict ||
-              cause instanceof RuntimeCheckpointActivityConflict ||
-              cause instanceof RuntimeCheckpointParentConflict ||
-              cause instanceof StartingModalStopChanged
-            )
-              return { busy: true };
-            throw error;
-          }
-        });
-      } catch (error) {
-        if (error === signal.reason)
-          throw new ToolError("dependency_unavailable", "Sandbox stop admission ended before compute stop.");
-        throw error;
+  const stopTool = (() => {
+    async function stopOnce(
+      found: SandboxView,
+      onlyIfIdle: boolean,
+      checkpointState: { attempted: boolean },
+      signal?: AbortSignal,
+    ) {
+      const canCheckIdle = found.status === "ready" || (found.status === "running" && runtimeBridgeTarget(found));
+      if (onlyIfIdle && !canCheckIdle && found.status !== "stopped")
+        throw new VaultError(
+          "credential_binding_unsafe",
+          "Wait for the running turn or lifecycle operation to finish before changing accounts.",
+        );
+      if (onlyIfIdle && canCheckIdle && !(await statusOf(found.id, undefined)).settled)
+        throw new VaultError(
+          "credential_binding_unsafe",
+          "Wait for the current turn to finish before changing accounts.",
+        );
+
+      if (onlyIfIdle) {
+        const startingStop = await data.sandboxes.requestStartingModalStop?.(found);
+        if (startingStop) return startingStop;
       }
+      if (found.stopRequestedAt || ["stopping", "stopped"].includes(found.status))
+        return { id: found.id, status: found.status };
+      const { provider } = await live(found.id, true, found);
+      signal?.throwIfAborted();
+      const needsCheckpoint =
+        found.ownerId === caller.userId &&
+        runtimeBridgeTarget(found) &&
+        ["ready", "running"].includes(found.status) &&
+        Date.parse(found.expiresAt ?? "") > context.now().getTime();
+      if (needsCheckpoint && !context.runtimeStopCheckpoint)
+        throw new VaultError("unavailable", "Runtime stop checkpoint is unavailable.");
+      const checkpoint = needsCheckpoint
+        ? await context.runtimeStopCheckpoint!(caller, found, onlyIfIdle, signal).catch((error) => {
+            if (error instanceof RuntimeCheckpointRejected) return null;
+            recordOperatorFailure("sandbox.stop.checkpoint", error, { sandboxId: found.id });
+            throw error;
+          })
+        : undefined;
+      // A checkpoint can quiesce or scrub the runtime even when no retention proof was returned.
+      checkpointState.attempted = checkpoint !== undefined;
+      if (!checkpointState.attempted) signal?.throwIfAborted();
+      const stopAdmission: Pick<ServerSandboxPatch, "ownerStop" | "onlyIfIdle" | "ownerStopSignal"> = {
+        ownerStop: true,
+        onlyIfIdle,
+        ...(signal && !checkpointState.attempted ? { ownerStopSignal: signal } : {}),
+      };
+      const retainedGuard: Pick<ServerSandboxPatch, "retainedRuntimeStop"> = checkpoint
+        ? { retainedRuntimeStop: checkpoint.requestId }
+        : {};
+      return sandboxActivity(
+        data.sandboxes,
+        found,
+        {
+          ...stopAdmission,
+          ...retainedGuard,
+          status: found.status === "failed" ? "failed" : "stopping",
+          stoppedAt: null,
+          stopRequested: true,
+          ...(found.statusReason === "expired" ? { statusReason: "expired" } : {}),
+        },
+        async (signal, token) => {
+          signal.throwIfAborted();
 
-      async function stopOnce(found: SandboxView, signal?: AbortSignal) {
-        const canCheckIdle = found.status === "ready" || (found.status === "running" && runtimeBridgeTarget(found));
-        if (args.only_if_idle && !canCheckIdle && found.status !== "stopped")
-          throw new VaultError(
-            "credential_binding_unsafe",
-            "Wait for the running turn or lifecycle operation to finish before changing accounts.",
-          );
-        if (args.only_if_idle && canCheckIdle && !(await statusOf(args.id, undefined)).settled)
-          throw new VaultError(
-            "credential_binding_unsafe",
-            "Wait for the current turn to finish before changing accounts.",
-          );
-
-        if (args.only_if_idle) {
-          const startingStop = await data.sandboxes.requestStartingModalStop?.(found);
-          if (startingStop) return startingStop;
-        }
-        if (found.stopRequestedAt || ["stopping", "stopped"].includes(found.status))
-          return { id: found.id, status: found.status };
-        const { provider } = await live(args.id, true, found);
-        signal?.throwIfAborted();
-        const needsCheckpoint =
-          found.ownerId === caller.userId &&
-          runtimeBridgeTarget(found) &&
-          ["ready", "running"].includes(found.status) &&
-          Date.parse(found.expiresAt ?? "") > context.now().getTime();
-        if (needsCheckpoint && !context.runtimeStopCheckpoint)
-          throw new VaultError("unavailable", "Runtime stop checkpoint is unavailable.");
-        const checkpoint = needsCheckpoint
-          ? await context.runtimeStopCheckpoint!(caller, found, args.only_if_idle === true).catch((error) => {
-              if (error instanceof RuntimeCheckpointRejected) return null;
-              recordOperatorFailure("sandbox.stop.checkpoint", error, { sandboxId: found.id });
-              throw error;
+          const preservation = await data.sandboxes
+            .preserveWork?.(found.id, provider, found.providerSandboxId, {
+              kind: "activity",
+              token,
+              generation: found.lifecycleGeneration === undefined ? undefined : found.lifecycleGeneration + 1,
+              signal,
             })
-          : undefined;
-        if (checkpoint) checkpointGeneration = found.lifecycleGeneration;
-        else if (checkpoint === undefined) signal?.throwIfAborted();
-        const stopAdmission: Pick<ServerSandboxPatch, "ownerStop" | "onlyIfIdle"> = {
-          ownerStop: true,
-          onlyIfIdle: args.only_if_idle === true,
-        };
-        const retainedGuard: Pick<ServerSandboxPatch, "retainedRuntimeStop"> = checkpoint
-          ? { retainedRuntimeStop: checkpoint.requestId }
-          : {};
-        return sandboxActivity(
-          data.sandboxes,
-          found,
-          {
-            ...stopAdmission,
-            ...retainedGuard,
-            status: found.status === "failed" ? "failed" : "stopping",
-            stoppedAt: null,
-            stopRequested: true,
-            ...(found.statusReason === "expired" ? { statusReason: "expired" } : {}),
-          },
-          async (signal, token) => {
-            signal.throwIfAborted();
-
-            const preservation = await data.sandboxes
-              .preserveWork?.(found.id, provider, found.providerSandboxId, {
-                kind: "activity",
-                token,
-                generation: found.lifecycleGeneration === undefined ? undefined : found.lifecycleGeneration + 1,
-                signal,
-              })
-              .catch(() => "pending" as const);
-            signal.throwIfAborted();
-            if (preservation === "pending")
-              return {
-                result: {
-                  id: found.id,
-                  status: found.status === "failed" ? ("failed" as const) : ("stopping" as const),
-                },
-                patch: {
-                  ownerStop: true as const,
-                  status: found.status === "failed" ? ("failed" as const) : ("stopping" as const),
-                  stopRequested: true,
-                },
-              };
-            let terminal = false;
-            let stoppedAt: Date | undefined;
-            let preservationNote =
-              checkpoint === null ? "Runtime checkpoint was refused. No resumable checkpoint was recorded." : undefined;
-            try {
-              if (provider.collectTurnUsage) await collectSandboxUsage(provider, data.sandboxes, found);
-              signal.throwIfAborted();
-              const observed = await stopAndObserve(
-                provider,
-                found.id,
-                found.providerSandboxId,
-                "user_stop",
-                signal,
-                Boolean(checkpoint),
-              );
-              terminal =
-                observed.state === "stopped" &&
-                (provider.id !== "boat" || observed.retainedSnapshot === "usable" || found.status === "failed");
-              stoppedAt = observed.stoppedAt;
-              preservationNote = observed.stopNote ?? preservationNote;
-            } catch (error) {
-              if (checkpoint || !(error instanceof ProviderError && error.code === "not_found")) throw error;
-              terminal = provider.id !== "boat";
-            }
-            signal.throwIfAborted();
-            const status: SandboxStatus =
-              found.status === "failed" || preservationNote === "checkpoint_failed_disk_not_retained"
-                ? "failed"
-                : terminal
-                  ? "stopped"
-                  : "stopping";
+            .catch(() => "pending" as const);
+          signal.throwIfAborted();
+          if (preservation === "pending")
             return {
-              result: { id: found.id, status, ...(preservationNote ? { preservationNote } : {}) },
+              result: {
+                id: found.id,
+                status: found.status === "failed" ? ("failed" as const) : ("stopping" as const),
+              },
               patch: {
                 ownerStop: true as const,
-                status,
-                stopRequested: !terminal,
-                ...(status === "failed" || found.statusReason === "expired"
-                  ? { statusReason: found.statusReason }
-                  : {}),
-                ...(terminal
-                  ? {
-                      stoppedAt: (stoppedAt ?? context.now()).toISOString(),
-                    }
-                  : {}),
+                status: found.status === "failed" ? ("failed" as const) : ("stopping" as const),
+                stopRequested: true,
               },
             };
-          },
-        );
-      }
-    },
-    true,
-  );
+          let terminal = false;
+          let stoppedAt: Date | undefined;
+          let preservationNote =
+            checkpoint === null ? "Runtime checkpoint was refused. No resumable checkpoint was recorded." : undefined;
+          try {
+            if (provider.collectTurnUsage) await collectSandboxUsage(provider, data.sandboxes, found);
+            signal.throwIfAborted();
+            const observed = await stopAndObserve(
+              provider,
+              found.id,
+              found.providerSandboxId,
+              "user_stop",
+              signal,
+              Boolean(checkpoint),
+            );
+            terminal =
+              observed.state === "stopped" &&
+              (provider.id !== "boat" || observed.retainedSnapshot === "usable" || found.status === "failed");
+            stoppedAt = observed.stoppedAt;
+            preservationNote = observed.stopNote ?? preservationNote;
+          } catch (error) {
+            if (checkpoint || !(error instanceof ProviderError && error.code === "not_found")) throw error;
+            terminal = provider.id !== "boat";
+          }
+          signal.throwIfAborted();
+          const status: SandboxStatus =
+            found.status === "failed" || preservationNote === "checkpoint_failed_disk_not_retained"
+              ? "failed"
+              : terminal
+                ? "stopped"
+                : "stopping";
+          return {
+            result: { id: found.id, status, ...(preservationNote ? { preservationNote } : {}) },
+            patch: {
+              ownerStop: true as const,
+              status,
+              stopRequested: !terminal,
+              ...(status === "failed" || found.statusReason === "expired" ? { statusReason: found.statusReason } : {}),
+              ...(terminal
+                ? {
+                    stoppedAt: (stoppedAt ?? context.now()).toISOString(),
+                  }
+                : {}),
+            },
+          };
+        },
+      );
+    }
+
+    return tool(
+      "stop",
+      sandboxOperations.stopSandbox.tool,
+      async (args) => {
+        const checkpoint = { attempted: false };
+        if (args.only_if_idle) return stopOnce(await visible(args.id), true, checkpoint);
+        context.configureStopRequest?.();
+        const deadline = AbortSignal.timeout(SANDBOX_ADMISSION_TIMEOUT_MS);
+        const signal = context.stopSignal ? AbortSignal.any([deadline, context.stopSignal]) : deadline;
+        try {
+          return await waitForSandboxAdmission(signal, async () => {
+            const target = await data.sandboxes.getForStop?.(args.id);
+            const found = target ? target.sandbox : await visible(args.id);
+            signal.throwIfAborted();
+            try {
+              if (found.stopRequestedAt || ["stopping", "stopped", "deleted"].includes(found.status))
+                return { busy: false, result: await stopOnce(found, false, checkpoint) };
+              const startingStop = await data.sandboxes.requestStartingModalStop?.(found, signal);
+              if (startingStop) return { busy: false, result: startingStop };
+              if (target?.busy) return { busy: true };
+              return { busy: false, result: await stopOnce(found, false, checkpoint, signal) };
+            } catch (error) {
+              const cause = error instanceof DataError ? error.cause : error;
+              if (
+                !checkpoint.attempted &&
+                (cause instanceof RuntimeReconciliationConflict ||
+                  cause instanceof RuntimeCheckpointActivityConflict ||
+                  cause instanceof RuntimeCheckpointParentConflict ||
+                  cause instanceof SandboxStopTargetChanged)
+              )
+                return { busy: true };
+              throw error;
+            }
+          });
+        } catch (error) {
+          if (error === signal.reason)
+            throw new ToolError("dependency_unavailable", "Sandbox stop admission ended before compute stop.");
+          throw error;
+        }
+      },
+      true,
+    );
+  })();
 
   if (surface === "mcp") {
     const { sendPrompt, sandboxStatus, stopSandbox } = sandboxOperations;

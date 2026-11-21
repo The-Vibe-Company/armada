@@ -48,7 +48,11 @@ import { bindNativePromptRequest } from "./native-webhook-prompts.ts";
 import { recordOperatorDiagnostic } from "./request-observability.ts";
 import { createResourceStore, type ResourceStore } from "./resource-store.ts";
 import { unsettledRuntimeCommands } from "./runtime-idle-evidence.ts";
-import { RuntimeCheckpointActivityConflict, RuntimeReconciliationConflict } from "./runtime-reconciliation-conflict.ts";
+import {
+  RuntimeCheckpointActivityConflict,
+  RuntimeReconciliationConflict,
+  SandboxStopTargetChanged,
+} from "./runtime-reconciliation-conflict.ts";
 import {
   carryNativePreservationAcrossStop,
   completeSandboxDeletion,
@@ -96,6 +100,7 @@ export interface ServerSandboxPatch extends SandboxPatch {
   nativeSendReceipt?: { fromState: SandboxStatus; placement: string; requestId?: string };
   nativeSteerReceipt?: { fromState: SandboxStatus; placement: string; verifiedReplacement?: boolean };
   ownerStop?: true;
+  ownerStopSignal?: AbortSignal;
   onlyIfIdle?: boolean;
   retainedRuntimeStop?: string;
   modalRuntimeExtensionTarget?: string;
@@ -137,7 +142,7 @@ export interface ServerSandboxStore extends SandboxStore {
   assertExtensionAllowed?(id: string): Promise<void>;
   assertDeletionAllowed?(id: string): Promise<void>;
   getForStop?(id: string): Promise<{ sandbox: SandboxView; busy: boolean } | null>;
-  requestStartingModalStop?(sandbox: SandboxRecord): ReturnType<typeof requestStartingModalStop>;
+  requestStartingModalStop?(sandbox: SandboxRecord, signal?: AbortSignal): ReturnType<typeof requestStartingModalStop>;
   /** Refuse taint and stop intent before exec; native Boat and Modal exec also claim the activity lease. */
   assertExecAllowed?(id: string): Promise<void>;
   recordUsage?(
@@ -569,7 +574,7 @@ export function createSqlData(
         if (!row) throw new GoldenError("not_found", "Sandbox not found.");
         if (!row.allowed) throw new GoldenError("forbidden", "You are not allowed to extend this sandbox.");
       },
-      requestStartingModalStop: (sandbox) => requestStartingModalStop(sql, scope, sandbox),
+      requestStartingModalStop: (sandbox, signal) => requestStartingModalStop(sql, scope, sandbox, signal),
       async assertDeletionAllowed(id) {
         if (!UUID.test(id)) throw new GoldenError("not_found", "No such sandbox.");
         const row = (
@@ -1264,6 +1269,7 @@ export function createSqlData(
               [...scope, id],
             );
             if (!locked.rows.length) return { rows: [] };
+            patch.ownerStopSignal?.throwIfAborted();
             const updated = await applyUpdate(tx);
             if (
               !updated.rows[0]?.id &&
@@ -1441,7 +1447,9 @@ export function createSqlData(
               ? new RuntimeReconciliationConflict()
               : blockedStop && evidence.activityLeaseHeld
                 ? new RuntimeCheckpointActivityConflict()
-                : undefined;
+                : blockedStop && evidence.generation !== evidence.requestGeneration
+                  ? new SandboxStopTargetChanged()
+                  : undefined;
           const error = new DataError(
             "The sandbox is busy or its lifecycle changed; retry after refreshing status.",
             "sandbox_not_ready",

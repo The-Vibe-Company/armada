@@ -12,6 +12,7 @@ import {
   RuntimeCheckpointActivityConflict,
   RuntimeCheckpointParentConflict,
   RuntimeReconciliationConflict,
+  SandboxStopTargetChanged,
 } from "./runtime-reconciliation-conflict.ts";
 import { recordStoppedCheckpointNote } from "./sandbox-lifecycle.ts";
 import { type StopRefusalEvidence, stopRefusalEvidence } from "./stop-refusal-evidence.ts";
@@ -171,7 +172,12 @@ export function createRuntimeCheckpoint(
       acknowledgedSequence: Number(p.watermark),
     },
   });
-  return async (caller: Caller, input: RuntimeCheckpointInput, beforeIntent?: (tx: Sql) => Promise<void | boolean>) => {
+  return async (
+    caller: Caller,
+    input: RuntimeCheckpointInput,
+    beforeIntent?: (tx: Sql) => Promise<void | boolean>,
+    admissionSignal?: AbortSignal,
+  ) => {
     const requestId = input.request_id.toLowerCase();
     if (input.runtimeVersion !== 1 || !uuid.test(input.id) || !uuid.test(requestId))
       throw new VaultError("invalid", "Runtime checkpoint v1 requires sandbox and request UUIDs.");
@@ -281,6 +287,8 @@ export function createRuntimeCheckpoint(
         sandbox.id,
         "checkpoint_state_ineligible",
         "Stopped runtime has no acknowledged checkpoint; no compute was resumed.",
+        undefined,
+        admissionSignal && !old ? new SandboxStopTargetChanged() : undefined,
       );
     const intent = await createRuntimeEnrolments(sql, key).withOwner(sandbox.id, caller.userId, async (tx, scope) => {
       const lease = (
@@ -327,6 +335,7 @@ export function createRuntimeCheckpoint(
         )
       ).rows[0];
       if (!current) {
+        admissionSignal?.throwIfAborted();
         if (parent) {
           const locked = await tx.query(
             "select id from public.armada_access_parents where id=$1 for update skip locked",
@@ -342,6 +351,7 @@ export function createRuntimeCheckpoint(
             );
           await new DelegatedAuthority(tx, async () => {}).revoke(parent.id);
         }
+        admissionSignal?.throwIfAborted();
         await tx.query(
           "insert into public.runtime_checkpoints(sandbox_id,epoch,request_id,merge_stop) values($1,$2,$3,$4)",
           [sandbox.id, scope.epoch, requestId, mergeStop],
@@ -413,7 +423,7 @@ export function createRuntimeCheckpoint(
 }
 
 export function createRuntimeStopCheckpoint(sql: Sql, checkpoint: RuntimeCheckpoint) {
-  return async (caller: Caller, sandbox: SandboxView, onlyIfIdle: boolean) => {
+  return async (caller: Caller, sandbox: SandboxView, onlyIfIdle: boolean, signal?: AbortSignal) => {
     if (sandbox.ownerId !== caller.userId)
       throw new VaultError("forbidden", "Only the runtime owner may checkpoint this sandbox.");
     const current = (
@@ -425,7 +435,14 @@ export function createRuntimeStopCheckpoint(sql: Sql, checkpoint: RuntimeCheckpo
         [sandbox.id, caller.userId, sandbox.orgId, sandbox.lifecycleGeneration],
       )
     ).rows[0];
-    if (!current) throw checkpointConflict(sandbox.id, "stop_target_changed", "Sandbox changed before runtime stop.");
+    if (!current)
+      throw checkpointConflict(
+        sandbox.id,
+        "stop_target_changed",
+        "Sandbox changed before runtime stop.",
+        undefined,
+        new SandboxStopTargetChanged(),
+      );
     if (current.application_secret_tainted) return undefined;
     return checkpoint(
       caller,
@@ -445,8 +462,11 @@ export function createRuntimeStopCheckpoint(sql: Sql, checkpoint: RuntimeCheckpo
             sandbox.id,
             "stop_checkpoint_ineligible",
             "Runtime stop admission changed or work is pending.",
+            undefined,
+            onlyIfIdle || current.request_id ? undefined : new SandboxStopTargetChanged(),
           );
       },
+      signal,
     );
   };
 }

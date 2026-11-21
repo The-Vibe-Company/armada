@@ -78,7 +78,7 @@ export async function waitForSandboxAdmission<T>(
   signal: AbortSignal,
   attempt: () => Promise<{ busy: true } | { busy: false; result: T }>,
   waitFirst = false,
-): Promise<T> {
+) {
   const wake = runtimeWakes.watch(SANDBOX_ADMISSION_WAKE);
   try {
     if (waitFirst) await wake.wait(signal);
