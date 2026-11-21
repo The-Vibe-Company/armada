@@ -1,6 +1,7 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { type FailureDiagnostic, failureDiagnostic } from "@armada/core/server";
 import { redactForLog } from "./log.ts";
+import type { StopRefusalEvidence } from "./stop-refusal-evidence.ts";
 
 export const REQUEST_ID_HEADER = "x-request-id";
 type Log = (line: string) => void;
@@ -73,6 +74,7 @@ export function recordOperatorDiagnostic(
     code?: string | undefined;
     refusalCode?: string | undefined;
     causeCode?: string | undefined;
+    stopEvidence?: StopRefusalEvidence | null;
     log?: Log;
   } = {},
 ): void {
@@ -93,6 +95,7 @@ export function recordOperatorDiagnostic(
         code: options.code,
         refusalCode: options.refusalCode,
         causeCode: options.causeCode,
+        stopEvidence: options.stopEvidence,
         ...diagnostic,
       }),
     );

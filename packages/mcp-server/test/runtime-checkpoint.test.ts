@@ -399,6 +399,104 @@ test("an unreadable runtime checkpoint acknowledgement never allows compute clea
   }
 });
 
+test.each([
+  ["ready", "sandbox.checkpoint.refused", "activity_lease_present", "conflict"],
+  ["starting", "sandbox.stop.admission", "stop_fence_rejected", "sandbox_not_ready"],
+] as const)("owner stop identifies activity ownership while %s", async (state, phase, refusalCode, code) => {
+  const f = await checkpointFixture("modal", true);
+  try {
+    const activityLeaseId = crypto.randomUUID();
+    await f.db.query("update sandboxes set status=$2,activity_lease_id=$3,activity_until='infinity' where id=$1", [
+      f.row.id,
+      state,
+      activityLeaseId,
+    ]);
+    if (state === "starting")
+      await f.db.query(
+        `insert into runtime_resumes
+          (sandbox_id,request_id,source_epoch,target_epoch,watermark,request_hash,conversation_id,model,reasoning_effort)
+          values($1,$2,$3,$3::bigint+1,0,repeat('0',64),'conversation','model','medium')`,
+        [f.row.id, activityLeaseId, f.active.epoch],
+      );
+    const stop = stopPort(f);
+    const records: unknown[] = [];
+    const response = await observeRequest(
+      async () => {
+        await expect(callSharedTool(stop.context, "stop", { id: f.row.id })).rejects.toMatchObject({ code });
+        return new Response(null, { status: 409 });
+      },
+      (line) => records.push(JSON.parse(line)),
+    );
+    expect(records).toContainEqual(
+      expect.objectContaining({
+        event: "operator_failure",
+        requestId: response.headers.get("x-request-id"),
+        sandboxId: f.row.id,
+        phase,
+        refusalCode,
+        stopEvidence: expect.objectContaining({
+          state,
+          activityLeaseId,
+          activityLeaseHeld: true,
+          resumeDispatched: state === "starting",
+        }),
+      }),
+    );
+    expect(stop.calls()).toBe(0);
+  } finally {
+    await f.close();
+  }
+});
+
+test("retained stop identifies a journal append after checkpoint publication", async () => {
+  const f = await checkpointFixture("modal", true);
+  try {
+    const stop = stopPort(f);
+    const checkpoint = stop.context.runtimeStopCheckpoint;
+    const records: unknown[] = [];
+    await observeRequest(
+      async () => {
+        await expect(
+          callSharedTool(
+            {
+              ...stop.context,
+              async runtimeStopCheckpoint(...args) {
+                const receipt = (await checkpoint(...args))!;
+                await createRuntimeEvents(f.authority, ENCRYPTION_KEY).append(f.active.runtimeToken, f.active.epoch, {
+                  sandboxId: f.row.id,
+                  generation: f.active.epoch,
+                  events: [
+                    {
+                      sequence: receipt.checkpoint.watermark + 1,
+                      event: { id: "late", at: 1, kind: "other", type: "late-notification", data: {} },
+                    },
+                  ],
+                });
+                return receipt;
+              },
+            },
+            "stop",
+            { id: f.row.id },
+          ),
+        ).rejects.toMatchObject({ code: "sandbox_not_ready" });
+        return new Response(null, { status: 409 });
+      },
+      (line) => records.push(JSON.parse(line)),
+    );
+    expect(records).toContainEqual(
+      expect.objectContaining({
+        event: "operator_failure",
+        sandboxId: f.row.id,
+        phase: "sandbox.stop.admission",
+        stopEvidence: expect.objectContaining({ retainedCheckpointCurrent: false, deadlineElapsed: false }),
+      }),
+    );
+    expect(stop.calls()).toBe(0);
+  } finally {
+    await f.close();
+  }
+});
+
 test("idle-only stop refuses a queued turn before creating a checkpoint", async () => {
   const f = await checkpointFixture("modal", true);
   try {
@@ -442,7 +540,23 @@ test("a reconciling Modal runtime refuses checkpoint before reserving its intent
   try {
     await f.db.query("update sandboxes set reconcile_lease_until='infinity' where id=$1", [f.row.id]);
     const checkpoint = createRuntimeCheckpoint(f.sql, ENCRYPTION_KEY, f.bridge);
-    await expect(checkpoint(f.caller, args(f.row.id))).rejects.toBeInstanceOf(RuntimeReconciliationConflict);
+    const records: unknown[] = [];
+    const response = await observeRequest(
+      async () => {
+        await expect(checkpoint(f.caller, args(f.row.id))).rejects.toBeInstanceOf(RuntimeReconciliationConflict);
+        return new Response(null, { status: 409 });
+      },
+      (line) => records.push(JSON.parse(line)),
+    );
+    expect(records).toContainEqual(
+      expect.objectContaining({
+        requestId: response.headers.get("x-request-id"),
+        sandboxId: f.row.id,
+        phase: "sandbox.checkpoint.refused",
+        refusalCode: "reconcile_lease_held",
+        stopEvidence: expect.objectContaining({ reconcileLeaseHeld: true, activityLeaseId: null }),
+      }),
+    );
     expect(
       (await f.db.query("select request_id from runtime_checkpoints where sandbox_id=$1", [f.row.id])).rows,
     ).toEqual([]);
