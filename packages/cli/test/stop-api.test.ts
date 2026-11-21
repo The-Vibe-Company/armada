@@ -6,7 +6,7 @@ const id = "11111111-1111-4111-8111-111111111111";
 const org = "22222222-2222-4222-8222-222222222222";
 
 async function invoke(args: string[], respond: (path: string) => object, now = () => new Date(0)) {
-  const calls: { path: string; method?: string; body: unknown }[] = [];
+  const calls: { path: string; method: string | undefined; body: unknown }[] = [];
   let stdout = "";
   let stderr = "";
   const auth = {
