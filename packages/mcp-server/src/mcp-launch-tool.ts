@@ -12,7 +12,7 @@ import * as z from "zod";
 import { UUID } from "./control-input.ts";
 import { INTERNAL_FAILURE_MESSAGE } from "./control-response.ts";
 import { prepareGoldenLaunchAccount } from "./launch-account-admission.ts";
-import { goldenLaunchResponse } from "./launch-response-schemas.ts";
+import { goldenLaunchResponse, publicLaunchReceipt } from "./launch-response-schemas.ts";
 import { observeGoldenLaunch } from "./request-timing.ts";
 import { ToolError } from "./tool-error.ts";
 import type { ToolContext } from "./tools.ts";
@@ -137,7 +137,7 @@ export function runMcpLaunch(context: ToolContext, input: unknown) {
         "outcome_unknown",
         "The saved launch receipt cannot be returned. Inspect the original sandbox through list. Do not use a new key.",
       );
-    return envelope.data;
+    return publicLaunchReceipt(envelope.data);
   });
 }
 

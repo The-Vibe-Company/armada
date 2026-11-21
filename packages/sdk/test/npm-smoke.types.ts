@@ -65,3 +65,7 @@ export type LaunchFields = Assert<
 export type LaunchSandboxIdentity = Assert<Equal<LaunchResult["sandbox"]["providerSandboxId"], string>>;
 
 export type GoldenProviderIsRequired = Assert<Equal<GoldenLaunchInput["provider"], "boat" | "modal">>;
+
+type SandboxListItem = Awaited<ReturnType<Armada["list"]>>["sandboxes"][number];
+export type ListSandboxIdentity = Assert<Equal<SandboxListItem["providerSandboxId"], string | null>>;
+export type ListBoatAliasRemoved = Assert<Equal<Extract<"boatId", keyof SandboxListItem>, never>>;

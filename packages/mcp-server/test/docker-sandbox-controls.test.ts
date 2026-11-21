@@ -620,7 +620,7 @@ test("normal API and MCP accept Docker list/status/logs rows and acknowledge cle
   const listed = (await callSharedTool(context, "list", {})) as { sandboxes: SandboxListMetadata[] };
   expect(listed.sandboxes).toHaveLength(1);
   expect(isSandboxPlacementProvider(listed.sandboxes[0]?.provider)).toBe(true);
-  expect(listed.sandboxes[0]).toMatchObject({ id: f.sandbox.id, provider: "docker", boatId: null });
+  expect(listed.sandboxes[0]).toMatchObject({ id: f.sandbox.id, provider: "docker" });
   const parsed = parseSandboxListMetadata(listed.sandboxes);
   expect(parsed.skipped).toEqual([]);
   expect(parsed.rows[0]?.provider).toBe("docker");

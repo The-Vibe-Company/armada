@@ -18,7 +18,9 @@ Sandbox commands emit JSON when stdout is piped or redirected. On failure,
 parse the final stderr line for `error.code`, `error.message`, and `error.hint`.
 An explicit sandbox ID overrides `ARMADA_SANDBOX` and the local
 `.armada/sandbox` file written by a successful `armada new` in that directory. Prefer explicit IDs in
-coordinator scripts that manage several sandboxes from one directory.
+coordinator scripts that manage several sandboxes from one directory. In JSON,
+read `providerSandboxId` for provider display metadata and `providerSnapshotId`
+for a golden's provider snapshot. Use the Armada `id` for sandbox commands.
 
 ## 1. Establish identity and scope
 

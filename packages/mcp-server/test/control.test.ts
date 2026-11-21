@@ -1140,7 +1140,6 @@ describe("control API", () => {
         const text = await response.text();
         expect(JSON.parse(text).sandbox).toMatchObject({
           provider: "boat",
-          boatId: "bx_1",
           providerSandboxId: "bx_1",
         });
         expect(boat.forks).toHaveLength(1);
@@ -1271,13 +1270,31 @@ describe("control API", () => {
       expect(boat.forks).toHaveLength(0);
       const first = await call("sandbox/launch", request);
       expect(first?.status).toBe(200);
-      const receipt = await first!.json();
-      publishedResponse("sandbox/launch").parse(receipt);
-      const { sandbox: launched } = launchEnvelope.parse(receipt);
+      const body = await first!.json();
+      publishedResponse("sandbox/launch").parse(body);
+      const receipt = launchEnvelope.parse(body);
+      const { sandbox: launched } = receipt;
       expect(launched.externalRef).toBe("tender:1");
+      expect(receipt.sandbox).not.toHaveProperty("boatId");
+      if (!receipt.golden) throw Error("Expected a golden launch receipt.");
+      expect(receipt.golden).not.toHaveProperty("boatSnapshotId");
+      expect(receipt.golden).not.toHaveProperty("boatSandboxId");
+      const oldReceipt = {
+        ...receipt,
+        sandbox: { ...receipt.sandbox, boatId: receipt.sandbox.providerSandboxId },
+        golden: {
+          ...receipt.golden,
+          boatSnapshotId: receipt.golden.providerSnapshotId,
+          boatSandboxId: receipt.golden.providerSandboxId,
+        },
+      };
+      await db.query("update ordinary_launch_receipts set response=$2::jsonb where id=$1", [
+        launched.id,
+        JSON.stringify(oldReceipt),
+      ]);
       const replay = await call("sandbox/launch", request);
       expect(replay?.status).toBe(200);
-      expect(((await replay!.json()) as { sandbox: { id: string } }).sandbox.id).toBe(launched.id);
+      expect(await replay!.json()).toEqual(body);
       expect(boat.forks).toHaveLength(1);
       const changed = await call("sandbox/launch", { ...request, externalRef: "tender:2" });
       expect(changed?.status).toBe(409);

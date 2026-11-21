@@ -46,13 +46,8 @@ private func decode<T: Decodable>(_ type: T.Type, _ json: Any, setting path: Str
 }
 
 @Test func sandboxListUsesGenericProviderIdentifiers() throws {
-    var list = response("sandboxList") as! [String: Any]
+    let list = response("sandboxList") as! [String: Any]
     let originalRows = list["sandboxes"] as! [[String: Any]]
-    list["sandboxes"] = originalRows.map { row in
-        var row = row
-        row.removeValue(forKey: "boatId")
-        return row
-    }
     let decoded = try decode(SandboxMetadataPage.self, list)
     #expect(decoded.sandboxes.map(\.providerSandboxId) == originalRows.map { $0["providerSandboxId"] as? String })
 }

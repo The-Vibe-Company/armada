@@ -22,6 +22,10 @@ permissions. Keep this bearer out of browsers, URLs and logs. Send
 
 ## Launch a sandbox
 
+Sandbox responses use `providerSandboxId` for the provider identifier. Golden
+metadata uses `providerSnapshotId` and `providerSandboxId`. The Boat-specific
+response fields `boatId`, `boatSnapshotId` and `boatSandboxId` have been removed.
+
 `POST /api/v1/sandbox/launch` serves Boat, Modal and Docker, but Docker takes a
 different body (see [Docker launches](#docker-launches)). For Boat and Modal,
 the body requires `provider`, a snapshot name in `golden`, and an agent

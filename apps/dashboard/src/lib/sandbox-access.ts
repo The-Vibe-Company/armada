@@ -3,14 +3,14 @@ import {
   MACHINE_SIZES,
   type MachineSize,
   SANDBOX_PLACEMENT_PROVIDERS,
-  type SandboxListMetadata as WireSandboxListMetadata,
+  type SandboxListMetadata,
 } from "@armada/core";
 import { MACHINE_SIZE_LABELS } from "./machine-size.ts";
 import { parseTaskOutcome } from "./outcome.ts";
 import { parsePullRequests } from "./pull-requests.ts";
 import { SANDBOX_STATUSES } from "./sandbox-filters.ts";
 
-export type SandboxListMetadata = Omit<WireSandboxListMetadata, "boatId">;
+export type { SandboxListMetadata };
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 

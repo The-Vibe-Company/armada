@@ -113,15 +113,14 @@ describe("provider routing", () => {
     const body = (await listed?.json()) as { goldens: Record<string, unknown>[] };
     const shared = body.goldens.filter((golden) => golden.name === "shared");
     expect(
-      shared.map(({ provider, boatSnapshotId, providerSnapshotId, modal }) => ({
+      shared.map(({ provider, providerSnapshotId, modal }) => ({
         provider,
-        boatSnapshotId: boatSnapshotId === null ? null : "set",
         providerSnapshotId: providerSnapshotId === null ? null : "set",
         modal,
       })),
     ).toEqual([
-      { provider: "boat", boatSnapshotId: "set", providerSnapshotId: "set", modal: null },
-      { provider: "modal", boatSnapshotId: null, providerSnapshotId: "set", modal: BINDING },
+      { provider: "boat", providerSnapshotId: "set", modal: null },
+      { provider: "modal", providerSnapshotId: "set", modal: BINDING },
     ]);
     expect(JSON.stringify(body)).not.toContain(PAIR.token_secret);
 
@@ -136,7 +135,6 @@ describe("provider routing", () => {
     expect(launchEnvelope.parse(onBoat.data).sandbox).toMatchObject({
       provider: "boat",
       providerSandboxId: "bx_1",
-      boatId: "bx_1",
     });
     expect(server.boat.forks).toHaveLength(1);
   });
@@ -208,7 +206,6 @@ describe("provider routing", () => {
     expect(launchEnvelope.parse(launched.data).sandbox).toMatchObject({
       provider: "modal",
       providerSandboxId: "bx_1",
-      boatId: null,
     });
     expect(modal.forks[0]).toMatchObject({ from: "im-modal-1", noEnv: true });
     expect(JSON.stringify(modal.forks[0]?.env)).not.toContain(PAIR.token_secret);

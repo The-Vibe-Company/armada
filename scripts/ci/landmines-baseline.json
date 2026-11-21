@@ -518,7 +518,7 @@
     "packages/core/src/runtime-bootstrap.ts": 1,
     "packages/core/src/runtime-operator-diagnostic.ts": 2,
     "packages/core/src/runtime-startup-failure.ts": 3,
-    "packages/core/src/sandbox-access.ts": 10,
+    "packages/core/src/sandbox-access.ts": 9,
     "packages/core/src/sandbox-activity.ts": 4,
     "packages/core/src/sandbox-control.ts": 2,
     "packages/core/src/sandbox-cost.ts": 14,

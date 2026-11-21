@@ -20,7 +20,7 @@ The client defaults to the Armada dashboard origin. It sends its service token o
 
 `launch` accepts `DockerLaunchInput` with `provider: "docker"`, `harness`, and either `hostId` (with optional `repos`) or `snapshotId` (which selects its host and workspace). Supply an `idempotencyKey` of 16–128 characters and keep it for retries. An optional `externalRef` lets you find the sandbox later. With a service token, omit `org` or set it to the token's organization UUID. Discover Docker availability with `launch/options`.
 
-`launch` calls return the shared `LaunchResult` envelope for Boat, Modal and Docker. Read the Armada ID from `sandbox.id` and the provider ID from `sandbox.providerSandboxId`. Check `golden` before reading `golden.name`, since Docker returns `golden: null`. The required `promptId` and `conversationId` fields are `null` when their IDs are unavailable, including an idle launch. Provider-specific sandbox metadata is available as additional fields with type `unknown`.
+`launch` calls return the shared `LaunchResult` envelope for Boat, Modal and Docker. Read the Armada ID from `sandbox.id` and the provider ID from `sandbox.providerSandboxId`. Golden metadata uses `providerSnapshotId` and `providerSandboxId`. Sandbox list items use `providerSandboxId` for the nullable provider identifier. Check `golden` before reading `golden.name`, since Docker returns `golden: null`. The required `promptId` and `conversationId` fields are `null` when their IDs are unavailable, including an idle launch. Provider-specific sandbox metadata is available as additional fields with type `unknown`.
 
 For a pinned Modal template, pass `PinnedModalLaunchInput` to `launch` with
 `provider: "modal"`, `runtimeVersion: 1`, `runtimeTransport: "dialout"`, the template

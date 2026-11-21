@@ -59,14 +59,6 @@ const GOLDEN_OUTPUT = z.object({
     .object({ workspace: z.string(), environment: z.string(), appId: z.string() })
     .nullable()
     .describe("The Modal workspace, environment and App ID this snapshot is pinned to."),
-  boatSnapshotId: z
-    .string()
-    .nullable()
-    .describe("The same as providerSnapshotId on a Boat snapshot or sandbox; null on any other provider."),
-  boatSandboxId: z
-    .string()
-    .nullable()
-    .describe("The same as providerSandboxId on a Boat snapshot or sandbox; null on any other provider."),
   repos: z.number().int(),
   config: z.object({
     repos: z.array(z.object({ url: z.string(), branch: z.string(), dir: z.string() })),

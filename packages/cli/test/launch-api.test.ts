@@ -8,7 +8,6 @@ const response = {
     id: "11111111-1111-4111-8111-111111111111",
     provider: "boat",
     providerSandboxId: "bx_server",
-    boatId: "bx_server",
     goldenId: "golden",
     orgId: "org",
     ownerId: "owner",
@@ -27,8 +26,8 @@ const response = {
     orgId: "org",
     visibility: "private",
     ownerId: "owner",
-    boatSnapshotId: "snapshot",
-    boatSandboxId: null,
+    providerSnapshotId: "snapshot",
+    providerSandboxId: null,
     config: { repos: [{ url: "https://github.com/acme/web.git", branch: "main", dir: "web" }], init: [] },
     createdAt: "2026-01-01T00:00:00.000Z",
   },
@@ -125,7 +124,7 @@ describe("launch through the Armada API", () => {
   test("keeps delegated access in the Modal JSON envelope", async () => {
     const receipt = {
       ...response,
-      sandbox: { ...response.sandbox, provider: "modal", providerSandboxId: "sb-server", boatId: null },
+      sandbox: { ...response.sandbox, provider: "modal", providerSandboxId: "sb-server" },
       runtime: { kind: "armada", epoch: "1" },
       armadaAccess: { enabled: true, maxActiveChildren: 2 },
     };

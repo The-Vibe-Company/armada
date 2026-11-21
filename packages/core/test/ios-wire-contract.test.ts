@@ -80,7 +80,6 @@ function sandbox(index: number): SandboxListMetadata {
     ownerId: "user-0001",
     provider,
     providerSandboxId: provider === "boat" ? id("bx", index) : null,
-    boatId: provider === "boat" ? id("bx", index) : null,
     harness: pick(values.harness, index),
     model: "model-a",
     reasoningEffort: "medium",
