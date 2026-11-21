@@ -22,6 +22,7 @@ export function withNativeLogJournal(
   key: string,
   provider: Provider,
   scope: { id: string; orgId: string; userId: string },
+  logError: (message: string) => void = console.error,
 ) {
   const journalProvider: Provider = {
     ...provider,
@@ -51,7 +52,7 @@ export function withNativeLogJournal(
       if (!target) throw new VaultError("not_found", "No authorized native log target.");
 
       const journalParams = [...params, slot, digest];
-      const persisted = async (error: NativeOutputPending) => {
+      const persisted = async () => {
         const {
           rows: [saved],
         } = await sql.query<{ page: string }>(
@@ -61,7 +62,7 @@ export function withNativeLogJournal(
            where ${authorizedSandbox} and p.slot=$5 and p.request_hash=$6`,
           journalParams,
         );
-        if (!saved) throw error;
+        if (!saved) return undefined;
         const page: EventPage = JSON.parse(
           await decryptSecret(Uint8Array.from(Buffer.from(saved.page, "base64")), key),
         );
@@ -69,21 +70,28 @@ export function withNativeLogJournal(
         return page;
       };
       request.signal?.throwIfAborted();
-      if (target.pending) return persisted(new NativeOutputPending(provider.id));
+      if (target.pending) {
+        const saved = await persisted();
+        if (saved) return saved;
+      }
 
       let page: EventPage;
       try {
         page = await provider.events(request);
       } catch (error) {
-        if (error instanceof NativeOutputPending) return persisted(error);
+        if (error instanceof NativeOutputPending && !target.pending) {
+          const saved = await persisted();
+          if (saved) return saved;
+        }
         throw error;
       }
       if (page.events.length > 0) {
         const body = JSON.stringify(page);
         if (Buffer.byteLength(body) <= 1_310_720) {
-          const sealed = await encryptSecret(body, key);
-          await sql.query(
-            `insert into armada_logs.native_log_pages (sandbox_id,provider_sandbox_id,slot,request_hash,observed_at,page_enc)
+          try {
+            const sealed = await encryptSecret(body, key);
+            await sql.query(
+              `insert into armada_logs.native_log_pages (sandbox_id,provider_sandbox_id,slot,request_hash,observed_at,page_enc)
              select s.id,s.provider_sandbox_id,$5,$6,$8::timestamptz,decode($9,'base64')
              from public.sandboxes s where ${authorizedSandbox} and s.lifecycle_generation=$7::bigint
                and (${pendingCommand}) is not true
@@ -91,8 +99,11 @@ export function withNativeLogJournal(
              set provider_sandbox_id=excluded.provider_sandbox_id,request_hash=excluded.request_hash,
                  observed_at=excluded.observed_at,page_enc=excluded.page_enc
              where native_log_pages.observed_at<=excluded.observed_at`,
-            [...journalParams, target.generation, target.observed, Buffer.from(sealed).toString("base64")],
-          );
+              [...journalParams, target.generation, target.observed, Buffer.from(sealed).toString("base64")],
+            );
+          } catch {
+            logError("Could not persist a redacted native log page.");
+          }
         }
       }
       return page;

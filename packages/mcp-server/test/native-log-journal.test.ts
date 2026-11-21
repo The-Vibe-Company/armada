@@ -13,9 +13,11 @@ test.each(["forward", "backward"] as const)(
     const key = Buffer.alloc(32, 1).toString("base64");
     const pages = new Map<unknown, unknown>();
     let pending = false;
+    let failWrite = false;
     const sql: Sql = {
       async query<T>(statement: string, params: unknown[] = []) {
         if (statement.includes("insert into")) {
+          if (failWrite) throw new Error("fixture: journal unavailable");
           pages.set(params[5], params[8]);
           return { rows: [] };
         }
@@ -39,10 +41,16 @@ test.each(["forward", "backward"] as const)(
       },
     };
     const options = {
-      logs: async () => ({ provider: withNativeLogJournal(sql, key, provider, scope), providerSandboxId: "boat-id" }),
+      logs: async () => ({
+        provider: withNativeLogJournal(sql, key, provider, scope, () => {}),
+        providerSandboxId: "boat-id",
+      }),
     };
     const input = { direction, cursor: "from" };
     const live = readLogsOperation.output.parse(await readLogs(options, caller, scope.id, input));
+
+    failWrite = true;
+    expect(readLogsOperation.output.parse(await readLogs(options, caller, scope.id, input))).toEqual(live);
 
     pending = true;
     const saved = readLogsOperation.output.parse(await readLogs(options, caller, scope.id, { ...input, follow: true }));

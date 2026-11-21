@@ -468,11 +468,13 @@ export async function createServerServices(env: Record<string, string | undefine
     boat: async (sandbox: Parameters<typeof logProviders.boat>[0], caller: Parameters<typeof logProviders.boat>[1]) => {
       const provider = await logProviders.boat(sandbox, caller);
       return sandbox.id && !sandbox.boatRuntime && config.encryptionKey
-        ? withNativeLogJournal(sql, config.encryptionKey, provider, {
-            id: sandbox.id,
-            orgId: sandbox.orgId,
-            userId: caller.userId,
-          })
+        ? withNativeLogJournal(
+            sql,
+            config.encryptionKey,
+            provider,
+            { id: sandbox.id, orgId: sandbox.orgId, userId: caller.userId },
+            options.logError,
+          )
         : provider;
     },
   };
