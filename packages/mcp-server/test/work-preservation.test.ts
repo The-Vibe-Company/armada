@@ -2899,7 +2899,8 @@ test("native stop retries a failed acknowledgement snapshot before collecting wo
 test.each(["unavailable cleanup", "lease expiry during cleanup", "acknowledged delete"] as const)(
   "scoped Boat drain recovers from %s",
   async (scenario) => {
-    const { db, people, sandboxId, archiveId } = await seedNativeDrainReceipt(undefined, "boat");
+    const outcome = scenario === "lease expiry during cleanup" ? "clean" : "archived";
+    const { db, people, sandboxId, archiveId } = await seedNativeDrainReceipt(undefined, "boat", outcome);
     await db.query("update sandboxes set visibility='private' where id=$1", [sandboxId]);
     await db.query(
       "insert into armada_access_parents(id,kind,org_id,owner_id,sandbox_id,state) values($1,'sandbox',$2,$3,$1,'ready')",
@@ -2957,6 +2958,6 @@ test.each(["unavailable cleanup", "lease expiry during cleanup", "acknowledged d
     expect(provider.observeSandboxDeletion).toHaveBeenCalledTimes(scenario === "acknowledged delete" ? 1 : 0);
     expect(
       (await db.query("select archive_id from native_drain_recovery where sandbox_id=$1", [sandboxId])).rows,
-    ).toEqual([{ archive_id: archiveId }]);
+    ).toEqual(outcome === "archived" ? [{ archive_id: archiveId }] : []);
   },
 );

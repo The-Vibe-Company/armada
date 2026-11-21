@@ -1052,7 +1052,7 @@ const NATIVE_DRAIN_DETACHED_PROOF = `(r.archive_id is null or exists (
   for share of a
 ))`;
 
-export async function fencePreservedBoatDrainReplay(tx: Sql, id: string): Promise<boolean> {
+export async function fencePreservedBoatDrainReplay(tx: Sql, id: string) {
   const { rows } = await tx.query<{ eligible: boolean }>(
     `select exists (
        select 1 from public.sandboxes s
