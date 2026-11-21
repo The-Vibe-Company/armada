@@ -7,6 +7,7 @@ import {
   createSqlVaultStore,
   createTemplateService,
   GoldenBuildJobs,
+  type GoldenRecord,
   GoldenSnapshotRetirements,
   githubAppFromEnv,
   githubInstallationAppFromEnv,
@@ -290,13 +291,13 @@ export async function createServerServices(env: Record<string, string | undefine
       policy: runtimeLaunch,
       credentials: launchCredentials(store, config.encryptionKey, undefined, modelAuth, { store, app: githubApp }),
       connections: runtimeMcp.connections,
-      provider: async (actor, golden) =>
+      provider: async (actor, golden: GoldenRecord & { sourceGoldenVisibility?: GoldenRecord["visibility"] }) =>
         runtimeHostFor(
           (
             await resolveBoatKey(store, config.encryptionKey, {
               userId: actor.userId,
               orgId: actor.orgId,
-              visibility: golden.visibility,
+              visibility: golden.sourceGoldenVisibility ?? golden.visibility,
             })
           ).key,
         ),
@@ -579,7 +580,8 @@ export async function createServerServices(env: Record<string, string | undefine
     credentials,
     runtimeSend,
     runtimeCheckpoint,
-    runtimePlacements: { modal: launch.modalRuntimeDefault },
+    runtimePlacements: { boat: launch.boatRuntimeDefault, modal: launch.modalRuntimeDefault },
+    boatEndpointRuntime: launch.boatEndpointRuntime,
     encryptionKey: config.encryptionKey,
     connections: mcp.connections,
     publicUrl: config.publicUrl,
