@@ -453,7 +453,7 @@ test("Modal subscription replicas wait for the worker to publish its checkpoint 
     ],
   );
   let complete = false;
-  let stops = 0;
+  const retryRetention: (boolean | undefined)[] = [];
   let firstMigration!: ReturnType<typeof createSubscriptionMigration>,
     secondMigration!: ReturnType<typeof createSubscriptionMigration>;
   const first = createModelAuthOwnership(db, ENCRYPTION_KEY, undefined, undefined, {
@@ -474,8 +474,15 @@ test("Modal subscription replicas wait for the worker to publish its checkpoint 
       providerState: complete ? "stopped" : "active",
       labels: {},
     }),
-    stop: async () => {
-      stops++;
+    stop: async ({ requireRetention }: { requireRetention?: boolean }) => {
+      retryRetention.push(requireRetention);
+      if (retryRetention.length === 1)
+        throw new ProviderError({
+          provider: "modal",
+          code: "unavailable",
+          message: "Synthetic checkpoint failure",
+          retryable: true,
+        });
       expect(
         await first.publishFromModal(
           scope,
@@ -501,12 +508,16 @@ test("Modal subscription replicas wait for the worker to publish its checkpoint 
   );
   await expect(first.broker!.enroll(actor, account.id, 1)).rejects.toMatchObject({ code: "unavailable" });
   await expect(second.broker!.enroll(actor, account.id, 1)).rejects.toMatchObject({ code: "unavailable" });
-  expect(stops).toBe(0);
+  expect(retryRetention).toEqual([]);
   const worker = createSandboxLifecycle(db, async () => provider);
   expect(await worker.reconcileOne()).toBe(true);
   await worker.drain();
+  await expect(second.broker!.enroll(actor, account.id, 1)).rejects.toMatchObject({ code: "unavailable" });
+  await db.query("update sandboxes set reconcile_after=now(), expires_at=now() where id=$1", [id]);
+  expect(await worker.reconcileOne()).toBe(true);
+  await worker.drain();
   await Promise.all([first.broker!.enroll(actor, account.id, 1), second.broker!.enroll(actor, account.id, 1)]);
-  expect(stops).toBe(1);
+  expect(retryRetention).toEqual([true, true]);
   expect(await first.broker!.access(actor, account.id, 1)).toMatchObject({
     accessToken: "migration-access-1",
     revision: 1,
@@ -531,12 +542,34 @@ test.each(["boat", "modal"] as const)(
     const boat = fakeBoat();
     const physical = await boat.provider.fork({ from: "runtime", noEnv: true, env: {}, labels: {}, ttlSeconds: 3600 });
     const id = crypto.randomUUID();
-    const golden = (await createSqlGoldenStore(db).findByName(people.org, "shared"))[0]!;
+    const goldens = createSqlGoldenStore(db);
+    const golden =
+      kind === "boat"
+        ? (await goldens.findByName(people.org, "shared"))[0]!
+        : await goldens.insert({
+            orgId: people.org,
+            ownerId: people.owner,
+            name: "runtime-modal",
+            visibility: "org",
+            provider: "modal",
+            modal: { workspace: "ws", environment: "main", appId: "app" },
+            config: { repos: [{ url: "https://github.com/example/web.git", branch: "main", dir: "web" }], init: [] },
+          });
     await db.query(
       `insert into sandboxes(id,org_id,owner_id,golden_id,harness,status,provider,provider_sandbox_id,boat_id,visibility,credential_id,credential_version,boat_runtime,runtime_transport)
-     values($1,$2,$3,$6,'codex','running',$7,$4,case when $7='boat' then $4 else null end,'org',$5,1,$7='boat',
-       case when $7='modal' then 'dialout' else null end)`,
-      [id, people.org, people.owner, physical.id, account.id, golden.id, kind],
+     values($1,$2,$3,$6,'codex','running',$7,$4,$8,'org',$5,1,$9,$10)`,
+      [
+        id,
+        people.org,
+        people.owner,
+        physical.id,
+        account.id,
+        golden.id,
+        kind,
+        kind === "boat" ? physical.id : null,
+        kind === "boat",
+        kind === "modal" ? "dialout" : null,
+      ],
     );
     const resolved: string[] = [];
     const inspected: string[] = [];

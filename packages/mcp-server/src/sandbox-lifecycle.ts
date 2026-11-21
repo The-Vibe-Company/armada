@@ -939,7 +939,7 @@ export async function requestNativeSubscriptionStop(
     generation: admitted.generation,
     fromState: admitted.status,
     toState: "stopping",
-    code: "owner_stop_admitted",
+    code: provider === "modal" ? "runtime_retained_stop" : "owner_stop_admitted",
   });
   await tx.query(
     `update public.sandboxes set activity_lease_id=null, activity_until=null
@@ -1870,6 +1870,7 @@ export function createSandboxLifecycle(
       const retainedResume = row.retained_resume;
       const rollbackRetainedResume = retainedResume && row.runtime_transport === "dialout";
       const native = !row.boat_runtime && row.runtime_transport !== "dialout";
+      const retainedNativeStop = native && providerId === "modal" && row.checkpointed_stop;
       // Lease expiry is not evidence a native exec completed. Retain its identity
       // until an owner outcome or explicit/TTL cleanup, rather than inventing idle.
       const retainUnknownActivity =
@@ -2271,6 +2272,7 @@ export function createSandboxLifecycle(
           }
           const requireRetention =
             strictNativeStop ||
+            retainedNativeStop ||
             (!expired &&
               (row.checkpointed_stop ||
                 retainedResume ||
@@ -2323,6 +2325,7 @@ export function createSandboxLifecycle(
         }
         if (
           !strictNativeStop &&
+          !retainedNativeStop &&
           resolved &&
           !rollbackRetainedResume &&
           (!row.checkpointed_stop || expired) &&
