@@ -100,8 +100,11 @@ export function createToolRegistration(
           name === "stop" &&
           !(args as Record<string, unknown>).only_if_idle &&
           typeof (args as Record<string, unknown>).id === "string"
-        )
+        ) {
+          if (context.stopSignal?.aborted)
+            throw new ToolError("dependency_unavailable", "Sandbox stop admission ended before compute stop.");
           await context.accountTurns?.cancelQueued(caller, (args as Record<string, unknown>).id as string);
+        }
         if (name === "report") {
           const input = args as Record<string, unknown>;
           const queued = await context.accountTurns?.status(caller, input.id as string, input.prompt_id as string);

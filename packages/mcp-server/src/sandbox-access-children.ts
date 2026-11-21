@@ -17,9 +17,7 @@ import { RuntimeFollowupConflict } from "./runtime-followup.ts";
 import { RuntimeCheckpointActivityConflict, RuntimeReconciliationConflict } from "./runtime-reconciliation-conflict.ts";
 import { ChildLaunchNotAllocated } from "./sandbox-access-child-launch.ts";
 import { trackedOperations } from "./tracked-operations.ts";
-import { runtimeWakes, SANDBOX_ADMISSION_WAKE } from "./wake-bus.ts";
-
-const CHILD_ADMISSION_TIMEOUT_MS = 120_000;
+import { SANDBOX_ADMISSION_TIMEOUT_MS, waitForSandboxAdmission } from "./wake-bus.ts";
 
 function recordUncertainMessageReceipt(
   receipt: { id: string; sandboxId: string },
@@ -251,7 +249,7 @@ export function createSandboxChildren(sql: Sql, authority: ChildAuthority, execu
           digest,
           input.action === "launch" ? principal.orchestratorId : input.sandboxId,
           parent.parent_epoch,
-          CHILD_ADMISSION_TIMEOUT_MS,
+          SANDBOX_ADMISSION_TIMEOUT_MS,
         ],
       );
       // Children have independent receipts; never invalidate a pending owner prompt's revision.
@@ -270,14 +268,13 @@ export function createSandboxChildren(sql: Sql, authority: ChildAuthority, execu
         recordUncertainMessageReceipt(receipt, "prior_uncertain_receipt");
       return { id: receipt.id, state: receipt.state, sandboxId: receipt.sandboxId };
     }
-    const deadline = AbortSignal.timeout(CHILD_ADMISSION_TIMEOUT_MS);
+    const deadline = AbortSignal.timeout(SANDBOX_ADMISSION_TIMEOUT_MS);
     const admissionSignal = AbortSignal.any([shutdown.signal, deadline, ...(signal ? [signal] : [])]);
     async function admitDispatch(resumingAdmission: boolean) {
-      const wake = runtimeWakes.watch(SANDBOX_ADMISSION_WAKE);
-      try {
-        if (resumingAdmission) await wake.wait(admissionSignal);
-        while (!admissionSignal.aborted) {
-          const admission = await authority.admit(token, request, async (tx) => {
+      return waitForSandboxAdmission(
+        admissionSignal,
+        () =>
+          authority.admit(token, request, async (tx) => {
             if (input.action !== "launch") {
               const {
                 rows: [lease],
@@ -303,15 +300,10 @@ export function createSandboxChildren(sql: Sql, authority: ChildAuthority, execu
                returning c.id,c.orchestrator_id,c.owner_id,c.org_id,c.parent_generation,c.parent_epoch,c.target_id,c.action`,
               [receipt.id, resumingAdmission],
             );
-            return { busy: false as const, dispatch };
-          });
-          if (!admission.busy) return admission.dispatch;
-          await wake.wait(admissionSignal);
-        }
-        admissionSignal.throwIfAborted();
-      } finally {
-        wake.close();
-      }
+            return { busy: false as const, result: dispatch };
+          }),
+        resumingAdmission,
+      );
     }
     // Claim fresh dispatch once. Recovery may continue only at the checkpoint boundary.
     let row: ChildDispatch | undefined = recovery;
