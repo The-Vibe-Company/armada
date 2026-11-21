@@ -8,9 +8,9 @@ import {
   VaultError,
 } from "@armada/core/server";
 import {
-  claimBoatSubscriptionStop,
-  finishBoatSubscriptionStop,
   hasStrictNativeDrainStop,
+  requestBoatSubscriptionStop,
+  STRICT_NATIVE_DRAIN_STOP,
 } from "./sandbox-lifecycle.ts";
 import { captureFinalOutputs } from "./sandbox-outputs.ts";
 import { configureBoatSubscription } from "./subscription-boat.ts";
@@ -157,19 +157,19 @@ export function createSubscriptionMigration(
       await new Promise((resolve) => setTimeout(resolve, Math.min(100, Math.max(0, deadline - Date.now()))));
     }
   }
-  async function stopBoat(source: Source, target: Target) {
+  async function handOffBoatStop(source: Source) {
     if (!sql.transaction) throw new VaultError("unavailable", "Subscription native upgrade requires transactions.");
-    const token = crypto.randomUUID();
-    const generation = await sql.transaction(async (tx) => {
-      await recheckLocked(source, tx);
-      return claimBoatSubscriptionStop(tx, source.id, source.lifecycle_generation, token);
-    });
-    const request = { sandboxId: target.providerSandboxId, generation };
-    await target.provider.stop(request);
-    const stopped = await target.provider.get(request.sandboxId, { signal: AbortSignal.timeout(10_000) });
-    if (stopped.id !== request.sandboxId || stopped.state !== "stopped")
-      throw new VaultError("unavailable", "Subscription native stop is not confirmed.");
-    await finishBoatSubscriptionStop(sql, source.id, generation, token);
+    let verified = false;
+    try {
+      await sql.transaction(async (tx) => {
+        await recheckLocked(source, tx);
+        verified = true;
+        await requestBoatSubscriptionStop(tx, source.id, source.lifecycle_generation);
+      });
+    } catch (error) {
+      if (!verified) throw error;
+    }
+    throw new SubscriptionTemporaryError();
   }
   async function upgrade(source: Source, target: Target, version: number) {
     if (target.provider.id !== source.provider || target.providerSandboxId !== source.provider_sandbox_id)
@@ -188,7 +188,7 @@ export function createSubscriptionMigration(
         () => {},
       );
       if (target.provider.id === "boat") {
-        await stopBoat(source, target);
+        await handOffBoatStop(source);
         return;
       }
       await recheck(source);
@@ -205,7 +205,12 @@ export function createSubscriptionMigration(
         )
           throw error;
       }
-      await waitStopped(target);
+      if (target.provider.id === "modal") await waitStopped(target);
+      else {
+        const stopped = await target.provider.get(target.providerSandboxId, { signal: AbortSignal.timeout(10_000) });
+        if (stopped.id !== target.providerSandboxId || stopped.state !== "stopped")
+          throw new VaultError("unavailable", "Subscription native stop is not confirmed.");
+      }
       return;
     }
     if (target.provider.id === "boat") await upgradeBoat(source, target, version);
@@ -247,6 +252,26 @@ export function createSubscriptionMigration(
           await once(source, () => resolveStoredSandbox(sql, source.id), version);
         } catch (error) {
           if (error instanceof SubscriptionTemporaryError) throw error;
+          // WARNING: A competing admission can advance the generation before this replica rechecks its source.
+          if (source.provider === "boat" && source.credential_version !== version) {
+            const pending = await sql.query(
+              `select s.id from public.sandboxes s where s.id=$1 and s.stop_requested_at is not null
+               and s.provider='boat' and s.provider_sandbox_id=$2 and s.credential_id=$3
+               and s.credential_version is not distinct from $4::integer
+               and s.org_id=$5 and s.owner_id=$6 and s.deleted_at is null and not s.native_drain_pending
+               and not s.boat_runtime and s.runtime_transport is distinct from 'dialout'
+               and not ${STRICT_NATIVE_DRAIN_STOP}`,
+              [
+                source.id,
+                source.provider_sandbox_id,
+                source.credential_id,
+                source.credential_version,
+                source.org_id,
+                source.owner_id,
+              ],
+            );
+            if (pending.rows.length) throw new SubscriptionTemporaryError();
+          }
         }
       }
     },
