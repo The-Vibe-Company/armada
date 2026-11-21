@@ -46,10 +46,12 @@ test("completion covers every root help command and options in every shell", asy
   for (const shell of ["bash", "zsh", "fish"]) {
     const result = await invoke(["completion", shell]);
     for (const match of help.out.matchAll(/armada ([a-z][a-z-]*)/g)) expect(result.out).toContain(match[1]!);
-    for (const command of ["info", "interrupt", "prompt", "exec"]) expect(result.out).toContain(command);
+    for (const command of ["info", "stop", "prompt", "exec"]) expect(result.out).toContain(command);
     expect(result.out).toContain(shell === "fish" ? "-l 'request-id'" : "--request-id");
     expect(result.out).toContain(shell === "fish" ? "-l 'page-info'" : "--page-info");
     expect(result.out).toContain(shell === "fish" ? "-l 'tail'" : "--tail");
+    expect(result.out).toContain(shell === "fish" ? "-l 'after'" : "--after");
+    expect(result.out).toContain(shell === "fish" ? "-l 'turn'" : "--turn");
   }
 });
 
