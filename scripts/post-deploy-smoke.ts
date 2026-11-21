@@ -1456,11 +1456,11 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
           }),
         );
       if (goldenRuntime && !dirty) {
-        await step("golden_helper_integrity", () => checkedExec(helperProbe));
-        await step("golden_skillpack_integrity", () => checkedExec(skillpackProbe));
+        await measuredStep("golden_helper_integrity", () => checkedExec(helperProbe));
+        await measuredStep("golden_skillpack_integrity", () => checkedExec(skillpackProbe));
       }
       if (githubRefresh && !dirty)
-        await step("github_launch_access", () => checkedExec(`${git} ls-remote origin HEAD >/dev/null 2>&1`));
+        await measuredStep("github_launch_access", () => checkedExec(`${git} ls-remote origin HEAD >/dev/null 2>&1`));
       if (defaultSkills) {
         const expected = defaultPins.get(index)!;
         const receiptStep = dirty ? "default_skills_opt_out_receipts" : "default_skills_receipts";
@@ -1759,7 +1759,7 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
         ["git_status", "git status -sb"],
         ["git_remote", "git ls-remote origin HEAD"],
       ] as const) {
-        await step(name, async () => {
+        await measuredStep(name, async () => {
           const result = await sandbox<{ exitCode: number | null; timedOut: boolean }>("exec", {
             id: sandboxId,
             command,
