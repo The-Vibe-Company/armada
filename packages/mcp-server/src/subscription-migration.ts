@@ -1,7 +1,6 @@
 import {
   type GoldenActor,
   type Provider,
-  ProviderError,
   type Sql,
   sshNativeAuthAdmission,
   sshPrivateAuthState,
@@ -9,7 +8,7 @@ import {
 } from "@armada/core/server";
 import {
   hasStrictNativeDrainStop,
-  requestBoatSubscriptionStop,
+  requestNativeSubscriptionStop,
   STRICT_NATIVE_DRAIN_STOP,
 } from "./sandbox-lifecycle.ts";
 import { captureFinalOutputs } from "./sandbox-outputs.ts";
@@ -24,7 +23,7 @@ type Source = {
   credential_id: string;
   credential_version: number | null;
   lifecycle_generation: number;
-  provider: string;
+  provider: "boat" | "modal";
   provider_sandbox_id: string | null;
 };
 export interface SubscriptionMigrationTransports {
@@ -67,7 +66,8 @@ export function createSubscriptionMigration(
       `select s.id from public.sandboxes s join public.credentials c on c.id=s.credential_id
        where s.id=$1 and s.org_id=$2 and s.owner_id=$3 and s.credential_id=$4
        and s.credential_version is not distinct from $5::integer and s.lifecycle_generation=$6
-       and not s.boat_runtime and s.provider::text=$7 and s.provider_sandbox_id=$8 and s.deleted_at is null and not s.native_drain_pending
+       and not s.boat_runtime and s.runtime_transport is distinct from 'dialout'
+       and s.provider::text=$7 and s.provider_sandbox_id=$8 and s.deleted_at is null and not s.native_drain_pending
        and ((c.scope='user' and c.owner_id=s.owner_id) or (c.scope='org' and c.owner_id=s.org_id))
        and exists(select 1 from public.members m where m.org_id=s.org_id and m.user_id=s.owner_id) for update of s`,
       [
@@ -134,37 +134,11 @@ export function createSubscriptionMigration(
     await recheck(source);
     if (transferError) throw transferError;
   }
-  async function waitStopped(target: Target) {
-    const deadline = Date.now() + 30_000;
-    for (;;) {
-      const remaining = deadline - Date.now();
-      if (remaining <= 0) throw new VaultError("unavailable", "Subscription native stop is not confirmed.");
-      let timer: ReturnType<typeof setTimeout> | undefined;
-      const stopped = await Promise.race([
-        target.provider.get(target.providerSandboxId, { signal: AbortSignal.timeout(remaining) }),
-        new Promise<never>((_, reject) => {
-          timer = setTimeout(
-            () => reject(new VaultError("unavailable", "Subscription native stop is not confirmed.")),
-            remaining,
-          );
-        }),
-      ]).finally(() => {
-        if (timer) clearTimeout(timer);
-      });
-      if (stopped.id !== target.providerSandboxId)
-        throw new VaultError("conflict", "Subscription provider identity changed.");
-      if (stopped.state === "stopped") return;
-      await new Promise((resolve) => setTimeout(resolve, Math.min(100, Math.max(0, deadline - Date.now()))));
-    }
-  }
-  function isBoatSource(source: Source) {
-    return source.provider === "boat";
-  }
-  async function boatStopPending(tx: Sql, source: Source) {
+  async function subscriptionStopPending(tx: Sql, source: Source) {
     const pending = await tx.query(
       `select s.id from public.sandboxes s where s.id=$1 and s.status='stopping' and s.stop_requested_at is not null
        and s.reconcile_after < 'infinity'::timestamptz
-       and s.provider='boat' and s.provider_sandbox_id=$2 and s.credential_id=$3
+       and s.provider=$7 and s.provider_sandbox_id=$2 and s.credential_id=$3
        and s.credential_version is not distinct from $4::integer
        and s.org_id=$5 and s.owner_id=$6 and s.deleted_at is null and not s.native_drain_pending
        and not s.boat_runtime and s.runtime_transport is distinct from 'dialout'
@@ -178,11 +152,12 @@ export function createSubscriptionMigration(
         source.credential_version,
         source.org_id,
         source.owner_id,
+        source.provider,
       ],
     );
     return pending.rows.length > 0;
   }
-  async function handOffBoatStop(source: Source) {
+  async function handOffSubscriptionStop(source: Source) {
     if (!sql.transaction) throw new VaultError("unavailable", "Subscription native upgrade requires transactions.");
     let verified = false;
     let retry: boolean;
@@ -191,8 +166,9 @@ export function createSubscriptionMigration(
         await recheckLocked(source, tx);
         verified = true;
         return (
-          (await requestBoatSubscriptionStop(tx, source.id, source.lifecycle_generation)) ||
-          (await boatStopPending(tx, source))
+          (await requestNativeSubscriptionStop(tx, source.id, source.lifecycle_generation, source.provider)) ||
+          source.provider === "modal" ||
+          (await subscriptionStopPending(tx, source))
         );
       });
     } catch (error) {
@@ -210,42 +186,18 @@ export function createSubscriptionMigration(
       throw new VaultError("conflict", "Subscription provider identity changed.");
     if (physical.state === "stopped") return;
     await recheck(source);
-    const modal = target.provider.id === "modal";
-    const boat = isBoatSource(source);
-    if (source.credential_version !== version || modal) {
-      // Stop old/unversioned writers without repointing their pins. Modal
-      // publishes its own private checkpoint. Take the final output sample
-      // while compute is accessible.
+    if (source.provider === "modal") {
+      await handOffSubscriptionStop(source);
+      return;
+    }
+    if (source.credential_version !== version) {
       await captureFinalOutputs(sql, target.provider, source.id, { signal: AbortSignal.timeout(10_000) }).catch(
         () => {},
       );
-      if (boat) {
-        await handOffBoatStop(source);
-        return;
-      }
-      await recheck(source);
-      try {
-        await target.provider.stop({ sandboxId: target.providerSandboxId });
-      } catch (error) {
-        if (
-          !(
-            modal &&
-            error instanceof ProviderError &&
-            error.provider === "modal" &&
-            error.providerCode === "lifecycle_lease_busy"
-          )
-        )
-          throw error;
-      }
-      if (modal) await waitStopped(target);
-      else {
-        const stopped = await target.provider.get(target.providerSandboxId, { signal: AbortSignal.timeout(10_000) });
-        if (stopped.id !== target.providerSandboxId || stopped.state !== "stopped")
-          throw new VaultError("unavailable", "Subscription native stop is not confirmed.");
-      }
+      await handOffSubscriptionStop(source);
       return;
     }
-    if (boat) await upgradeBoat(source, target, version);
+    await upgradeBoat(source, target, version);
   }
   async function once(source: Source, resolve: () => Target | Promise<Target>, version: number) {
     await recheck(source);
@@ -275,7 +227,8 @@ export function createSubscriptionMigration(
       const sources = await sql.query<Source>(
         `select s.id,s.org_id,s.owner_id,s.credential_id,s.credential_version,s.lifecycle_generation,s.provider::text,s.provider_sandbox_id
          from public.sandboxes s join public.credentials c on c.id=s.credential_id where c.id=$1
-         and s.harness='codex' and not s.boat_runtime and s.deleted_at is null and s.status not in ('failed','stopped','deleted')
+         and s.harness='codex' and s.provider in ('boat','modal') and not s.boat_runtime
+         and s.runtime_transport is distinct from 'dialout' and s.deleted_at is null and s.status not in ('failed','stopped','deleted')
          and ((c.scope='user' and s.owner_id=c.owner_id) or (c.scope='org' and s.org_id=c.owner_id)) order by s.id`,
         [id],
       );
@@ -285,7 +238,10 @@ export function createSubscriptionMigration(
         } catch (error) {
           if (error instanceof SubscriptionTemporaryError) throw error;
           // WARNING: A competing admission can advance the generation before this replica rechecks its source.
-          if (isBoatSource(source) && source.credential_version !== version && (await boatStopPending(sql, source)))
+          if (
+            (source.provider === "modal" || source.credential_version !== version) &&
+            (await subscriptionStopPending(sql, source))
+          )
             throw new SubscriptionTemporaryError();
         }
       }
@@ -295,7 +251,7 @@ export function createSubscriptionMigration(
       const sources = await sql.query<Source>(
         `select s.id,s.org_id,s.owner_id,s.credential_id,s.credential_version,s.lifecycle_generation,s.provider::text,s.provider_sandbox_id
          from public.sandboxes s join public.credentials c on c.id=s.credential_id and c.version=s.credential_version
-         where s.harness='codex' and not s.boat_runtime and s.provider='boat' and s.provider_sandbox_id=$1 and s.org_id=$2 and s.deleted_at is null
+         where s.harness='codex' and not s.boat_runtime and s.runtime_transport is distinct from 'dialout' and s.provider='boat' and s.provider_sandbox_id=$1 and s.org_id=$2 and s.deleted_at is null
          and c.kind='codex_auth' and c.status='active' and (c.expires_at is null or c.expires_at>now())
          and ((c.scope='user' and c.owner_id=s.owner_id) or (c.scope='org' and c.owner_id=s.org_id))
          and exists(select 1 from public.members m where m.org_id=s.org_id and m.user_id=$3)

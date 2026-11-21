@@ -911,7 +911,12 @@ export async function hasStrictNativeDrainStop(tx: Sql, sandboxId: string) {
   return result.rows.length > 0;
 }
 
-export async function requestBoatSubscriptionStop(tx: Sql, id: string, generation: number) {
+export async function requestNativeSubscriptionStop(
+  tx: Sql,
+  id: string,
+  generation: number,
+  provider: "boat" | "modal",
+) {
   const token = crypto.randomUUID();
   const {
     rows: [admitted],
@@ -920,13 +925,13 @@ export async function requestBoatSubscriptionStop(tx: Sql, id: string, generatio
        activity_lease_id=$3, activity_until=clock_timestamp()+interval '2 minutes',
        stop_generation=stop_generation+1, stop_requested_at=clock_timestamp(), reconcile_after=clock_timestamp()
      where s.id=$1 and s.lifecycle_generation=$2 and s.status in ('ready','running','starting')
-       and s.provider='boat' and ${NATIVE_WORK_ROUTE} and s.stop_requested_at is null and s.stopped_at is null
+       and s.provider=$4 and ${NATIVE_WORK_ROUTE} and s.stop_requested_at is null and s.stopped_at is null
        and s.deleted_at is null and not s.native_drain_pending and s.expires_at>clock_timestamp()
        and s.activity_lease_id is null and (s.activity_until is null or s.activity_until<=clock_timestamp())
        and (s.reconcile_lease_until is null or s.reconcile_lease_until<=clock_timestamp())
        and not exists(select 1 from public.orchestrators o where o.sandbox_id=s.id)
      returning s.status, s.lifecycle_generation::text as generation`,
-    [id, generation, token],
+    [id, generation, token, provider],
   );
   if (!admitted) return false;
   await publishOwnerStop(tx, {
