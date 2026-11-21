@@ -191,6 +191,8 @@ test("Modal backfill preserves accepted, refused and unresolved ordinary keys wi
     );
   }
 
+  await db.query("delete from jobs where sandbox_id=$1", [boat.id]);
+
   for (let replay = 0; replay < 2; replay++) {
     const { rows } = await db.query("select backfill_modal_launch_receipts()::int as verified");
     expect(rows).toEqual([{ verified: requests.length }]);
