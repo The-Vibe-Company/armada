@@ -136,15 +136,38 @@ export const COMPLETE_PRESERVATION = `stop_requested_at is not null
 
 export const NOTE_FENCE = `${STOP_EPOCH} and not (${COMPLETE_PRESERVATION})`;
 
-function recordNativePreservation(archiveId: "$9::uuid" | "null") {
+export async function readNativeCaptureAcknowledgements(
+  sql: Sql,
+  id: string,
+  fence: StopFence,
+  stopToken: string | null,
+  captureId: string,
+) {
+  const { rows } = await sql.query<{ evidence: string }>(
+    `select jsonb_build_object('captureId',$8::text,'prompts',(
+       select jsonb_object_agg(p.acknowledged_request_id,p.prompt_id)
+       from public.native_webhook_prompts p
+       where p.sandbox_id=sandboxes.id and p.provider=sandboxes.provider
+         and p.provider_sandbox_id=sandboxes.provider_sandbox_id
+         and p.owner_id=sandboxes.owner_id and p.org_id=sandboxes.org_id
+         and p.acknowledged_request_id is not null and p.completed_at is not null
+     ))::text as evidence
+     from public.sandboxes where ${NOTE_FENCE} and not application_secret_tainted`,
+    [id, ...fence, stopToken, captureId],
+  );
+  return rows[0]?.evidence;
+}
+
+function recordNativePreservation(archiveId: "$9::uuid" | "null", evidence: "$11" | "$8") {
   return `
     insert into public.sandbox_native_preservation_receipts
-      (sandbox_id,generation,stop_generation,capture_generation,capture_stop_generation,archive_id)
-    select id,$4::bigint,$7::bigint,$4::bigint,$7::bigint,${archiveId} from accepted
+      (sandbox_id,generation,stop_generation,capture_generation,capture_stop_generation,archive_id,capture_acknowledgements)
+    select id,$4::bigint,$7::bigint,$4::bigint,$7::bigint,${archiveId},${evidence}::jsonb from accepted
     where native and $2::text is not null
     on conflict(sandbox_id) do update set generation=excluded.generation,
       stop_generation=excluded.stop_generation,capture_generation=excluded.capture_generation,
-      capture_stop_generation=excluded.capture_stop_generation,archive_id=excluded.archive_id`;
+      capture_stop_generation=excluded.capture_stop_generation,archive_id=excluded.archive_id,
+      capture_acknowledgements=excluded.capture_acknowledgements`;
 }
 
 export function lockedNativePreservationWriter(sql: Sql, id: string) {
@@ -183,26 +206,33 @@ export function recordWorkRecovery(
   note: string,
   recoveryId: string,
   encrypted: Uint8Array,
+  acknowledgements: string | null,
 ) {
   return sql.query<{ id: string }>(
     `with accepted as (
     update public.sandboxes set preservation_note=$8,preservation_stop_generation=$7::bigint
     where ${NOTE_FENCE} and not application_secret_tainted returning id, (${NATIVE_WORK_ROUTE}) as native
-  ), native_receipt as (${recordNativePreservation("$9::uuid")})
+  ), native_receipt as (${recordNativePreservation("$9::uuid", "$11")})
   insert into public.sandbox_work_recovery(id,sandbox_id,archive_enc)
     select $9::uuid,id,$10::bytea from accepted returning id`,
-    [id, ...fence, stopToken, note, recoveryId, encrypted],
+    [id, ...fence, stopToken, note, recoveryId, encrypted, acknowledgements],
   );
 }
 
-export function recordCleanWork(sql: Sql, id: string, fence: StopFence, stopToken: string | null) {
+export function recordCleanWork(
+  sql: Sql,
+  id: string,
+  fence: StopFence,
+  stopToken: string | null,
+  acknowledgements: string | null,
+) {
   return sql.query<{ id: string }>(
     `with accepted as (
     update public.sandboxes set preservation_note=null,preservation_stop_generation=$7::bigint
     where ${NOTE_FENCE} and not application_secret_tainted returning id, (${NATIVE_WORK_ROUTE}) as native
-  ), native_receipt as (${recordNativePreservation("null")})
+  ), native_receipt as (${recordNativePreservation("null", "$8")})
   select id from accepted`,
-    [id, ...fence, stopToken],
+    [id, ...fence, stopToken, acknowledgements],
   );
 }
 

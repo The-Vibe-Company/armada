@@ -1058,3 +1058,85 @@ test("native handoff refuses a failed receipt even when an unrelated prompt was 
   expect(await copy()).toBe("ineligible");
   expect((await db.query("select 1 from native_drain_recovery where sandbox_id=$1", [sandboxId])).rows).toEqual([]);
 });
+
+test.each(["before capture", "during capture"] as const)(
+  "failed native dispatch settled %s requires matching capture evidence",
+  async (settlement) => {
+    await withPreservationRow(async ({ db, id, physical, sql, boat, provider, generation }) => {
+      const token = crypto.randomUUID();
+      const requestId = crypto.randomUUID();
+      await db.query(
+        `insert into account_turn_queue(sandbox_id,request_id,account_id,owner_id,org_id,
+           actor_epoch,credential_version,input_hash,input_enc,conversation_id,state,dispatch_generation)
+         select s.id,$2,c.id,s.owner_id,s.org_id,1,c.version,'input',$3,'conversation',
+           'dispatching',s.lifecycle_generation
+         from sandboxes s join credentials c on c.owner_id=s.org_id and c.kind='openai' where s.id=$1 limit 1`,
+        [id, requestId, new Uint8Array([1])],
+      );
+      await db.query(
+        `insert into native_webhook_prompts
+           (sandbox_id,prompt_id,provider,provider_sandbox_id,owner_id,org_id,acknowledged_request_id)
+         select id,'bound-turn',provider,provider_sandbox_id,owner_id,org_id,$2 from sandboxes where id=$1`,
+        [id, requestId],
+      );
+      const settlePrompt = () =>
+        db.query("update native_webhook_prompts set completed_at=now() where sandbox_id=$1", [id]);
+      await db.query(
+        `update sandboxes set status='stopping',stop_requested_at=now(),stop_generation=1,
+           activity_lease_id=$2,activity_until=now()+interval '2 minutes' where id=$1`,
+        [id, token],
+      );
+      boat.setExecOutput({ stdout: '{"status":"clean"}' });
+      let captures = 0;
+      const host = {
+        ...provider,
+        async quiesce() {
+          if (settlement === "before capture") await settlePrompt();
+        },
+        async exec(request: Parameters<typeof provider.exec>[0]) {
+          captures++;
+          if (settlement === "during capture") await settlePrompt();
+          return provider.exec(request);
+        },
+      };
+      const authority = { kind: "activity", token, generation } as const;
+      await preserveBeforeStop(sql, host, id, physical, "user_stop", authority);
+      await preserveBeforeStop(sql, host, id, physical, "user_stop", authority);
+      expect(captures).toBe(1);
+
+      await db.query(
+        "update account_turn_queue set state='failed',failure_reason='Dispatch cancelled by confirmed stop.' where sandbox_id=$1",
+        [id],
+      );
+      const { people } = sharedDatabase();
+      const owner = createSqlData(sql)({
+        via: "service",
+        userId: people.owner,
+        orgs: [{ orgId: people.org, role: "admin" }],
+      }).sandboxes;
+      await owner.update(id, {
+        ownerStop: true,
+        status: "stopped",
+        stoppedAt: new Date(0).toISOString(),
+        stopRequested: false,
+        finishActivity: true,
+        expectedGeneration: generation,
+        activityToken: token,
+      });
+      const copy = async () =>
+        (
+          await db.query<{ outcome: string }>("select copy_native_drain_recovery($1,$2) as outcome", [
+            id,
+            Number(generation) + 1,
+          ])
+        ).rows[0]?.outcome;
+      expect(await copy()).toBe(settlement === "before capture" ? "clean" : "ineligible");
+      if (settlement === "before capture") {
+        const publishWithoutAcknowledgements = () =>
+          db.query("update sandbox_native_preservation_receipts set archive_id=null where sandbox_id=$1", [id]);
+        await publishWithoutAcknowledgements();
+        expect(await copy()).toBe("ineligible");
+      }
+    });
+  },
+);

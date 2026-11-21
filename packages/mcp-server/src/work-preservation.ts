@@ -15,6 +15,7 @@ import {
   COMPLETE_PRESERVATION,
   lockedNativePreservationWriter,
   NOTE_FENCE,
+  readNativeCaptureAcknowledgements,
   recordCleanWork,
   recordWorkRecovery,
   STOP_EPOCH,
@@ -360,17 +361,33 @@ async function captureAndStore(
       }
     };
     if (!(await ownsCapture())) return "pending";
+    const context = { source, captureId: crypto.randomUUID() };
+    let acknowledgements: string | null = null;
     if (!stop.modal_runtime) {
       // Native runtimes acknowledge interrupt only after active turns settle.
       stage = progress.stage = "quiesce";
       observed("quiesce_started");
       await (provider.quiesce ?? provider.interrupt).call(provider, { sandboxId: providerId });
-      if (expired() || !(await ownsCapture())) return "pending";
+      if (expired()) return "pending";
+      if (progress.fence[0] !== null) {
+        try {
+          const evidence = await readNativeCaptureAcknowledgements(
+            sql,
+            id,
+            progress.fence,
+            progress.stopToken,
+            context.captureId,
+          );
+          if (expired() || evidence === undefined) return "pending";
+          acknowledgements = evidence;
+        } catch {
+          return "pending";
+        }
+      }
       observed("quiesce_finished");
     }
     stage = progress.stage = stop.modal_runtime ? "quiesce" : "capture";
     observed("capture_started");
-    const context = { source, captureId: crypto.randomUUID() };
     const onWorkAtRisk = () => {
       progress.workAtRisk = true;
     };
@@ -415,6 +432,7 @@ async function captureAndStore(
         note,
         recoveryId,
         encrypted,
+        acknowledgements,
       );
       if (!saved.rows.length) return "pending";
       observed("capture_committed");
@@ -424,7 +442,13 @@ async function captureAndStore(
       stage = progress.stage = "storage";
       reason = "failed";
       // Clean success is also durable: NULL note alone is not a receipt.
-      const saved = await recordCleanWork(progress.receiptWriter, id, progress.fence, progress.stopToken);
+      const saved = await recordCleanWork(
+        progress.receiptWriter,
+        id,
+        progress.fence,
+        progress.stopToken,
+        acknowledgements,
+      );
       if (!saved.rows.length) return "pending";
       observed("capture_committed");
       return;
