@@ -157,17 +157,15 @@ export async function admitModalLaunch(sql: Sql, encryptionKey: string, input: M
         },
         sandbox,
       );
-      if (input.initialPrompt !== undefined) {
-        await store.enqueue(
-          MODAL_INITIAL_TURN,
-          sandboxId,
-          generation,
-          jobId,
-          { prompt: input.initialPrompt },
-          { orgId, maxAttempts: 3 },
-          tx,
-        );
-      }
+      await store.enqueue(
+        MODAL_INITIAL_TURN,
+        sandboxId,
+        generation,
+        jobId,
+        { prompt: input.initialPrompt },
+        { orgId, maxAttempts: 3 },
+        tx,
+      );
       return { sandbox: { id: sandboxId, status: "starting" as const } };
     });
   } catch (error) {
@@ -187,7 +185,7 @@ export function createModalInitialTurnJob(
     async run(job, context) {
       const sandboxId = job.sandbox_id;
       const generation = job.generation;
-      const payload = z.object({ prompt: z.string() }).safeParse(job.payload);
+      const payload = z.object({ prompt: z.string().optional() }).safeParse(job.payload);
       if (!sandboxId || !generation || !payload.success)
         return { status: "fail", reason: "invalid_modal_initial_turn" };
 
@@ -249,10 +247,13 @@ export function createModalInitialTurnJob(
         throw error;
       }
 
+      const { prompt } = payload.data;
+      if (prompt === undefined) return { status: "done" };
+
       try {
         const accepted = await queue.acceptInitialLaunch(
           { userId: target.owner_id, orgs: [{ orgId: target.org_id, role: target.role }], via: "service" },
-          { id: sandboxId, request_id: job.id, prompt: payload.data.prompt },
+          { id: sandboxId, request_id: job.id, prompt },
           generation,
           async (tx) => {
             const { rows } = await (tx ?? sql).query(
