@@ -1718,7 +1718,7 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
           });
       }
       if (preservation)
-        await step("preservation_clean_checkout", () =>
+        await measuredStep("preservation_clean_checkout", () =>
           checkedExec(
             `test -z "$(${git} status --porcelain)" && test -z "$(${git} rev-list HEAD --branches --tags --not --remotes)"`,
           ),
@@ -1821,7 +1821,7 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
         );
       }
       if (preservation && dirty)
-        await step("preservation_commit", async () => {
+        await measuredStep("preservation_commit", async () => {
           const result = await sandbox<{ exitCode: number; timedOut: boolean; stdout: string }>("exec", {
             id: sandboxId,
             cwd: item.repo,
@@ -1840,7 +1840,7 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
         stopRequested = false;
         let verifiedArchive: string | undefined;
         const note = preservationNote;
-        await step(dirty ? "preservation_archive" : "preservation_clean_stop", async () => {
+        await measuredStep(dirty ? "preservation_archive" : "preservation_clean_stop", async () => {
           const result = await sandbox<{ archive: string | null }>("recovery", { id: sandboxId });
           if (!dirty) {
             if (note || result.archive !== null) fail("preservation_failed");
@@ -1856,7 +1856,7 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
           }
         });
         if (dirty) {
-          await step("preservation_recovery_handle", async () => {
+          await measuredStep("preservation_recovery_handle", async () => {
             const parts = note?.slice("unpushed work preserved at work_recovery:".length).split("/");
             if (
               parts?.length !== 2 ||
@@ -1873,14 +1873,14 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
           });
         }
         if (dirty)
-          await step("preservation_unknown_handle_refused", async () => {
+          await measuredStep("preservation_unknown_handle_refused", async () => {
             const absent = await sandbox<{ archive: string | null }>("recovery", {
               id: sandboxId,
               recovery_id: crypto.randomUUID(),
             });
             if (absent.archive !== null) fail("preservation_failed");
           });
-        await step("preservation_recovery_read_only", async () => {
+        await measuredStep("preservation_recovery_read_only", async () => {
           if (dirty) {
             const repeated = await sandbox<{ archive: string | null }>("recovery", { id: sandboxId });
             if (repeated.archive !== verifiedArchive) fail("preservation_failed");
