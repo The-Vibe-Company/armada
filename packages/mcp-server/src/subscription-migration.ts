@@ -125,10 +125,11 @@ export function createSubscriptionMigration(
         if (!(await settleNativeWorkspaceCommand(tx, source.id, source.lifecycle_generation)))
           throw new VaultError("conflict", "Native workspace command evidence changed.");
       });
-    const mode = await readMode().catch(async () => {
-      await settleCommand();
-      throw new SubscriptionTemporaryError();
-    });
+    const settleAndRetry = async (error: SubscriptionTemporaryError) => {
+      await settleCommand().catch(() => {});
+      throw error;
+    };
+    const mode = await readMode().catch(() => settleAndRetry(new SubscriptionTemporaryError()));
     if (mode === "null") {
       await settleCommand();
       return;
@@ -153,10 +154,7 @@ export function createSubscriptionMigration(
     }
     // A received temporary vendor failure did not spend this observed token.
     // Keep it private and paused so the next automatic attempt can hand it off.
-    if (transferError instanceof SubscriptionTemporaryError) {
-      await settleCommand();
-      throw transferError;
-    }
+    if (transferError instanceof SubscriptionTemporaryError) await settleAndRetry(transferError);
     // Even an uncertain upstream renewal must not leave an independent native
     // refresh writer behind. Keep its observed leaves sealed, then remove raw auth.
     const account = await sql.query(
