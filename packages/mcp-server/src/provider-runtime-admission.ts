@@ -1,4 +1,7 @@
-import { isSandboxPlacementProvider } from "@armada/core";
+import { isSandboxPlacementProvider, type SandboxProviderId } from "@armada/core";
+
+/** Native providers that honor exec cancellation before dispatch and on retry. */
+export const nativeExecCancellation: Readonly<Partial<Record<SandboxProviderId, true>>> = { boat: true };
 
 /** Shared runtime capabilities; callers retain placement, transport and authorization guards. */
 export function runtimeBridgeTarget(target: {

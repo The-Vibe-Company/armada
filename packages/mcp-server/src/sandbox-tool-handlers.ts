@@ -16,7 +16,7 @@ import { CREDENTIAL_BINDING_GUIDANCE } from "./credential-binding.ts";
 import type { SandboxView, ServerSandboxPatch } from "./data.ts";
 import { mcpLaunchContract, runMcpLaunch } from "./mcp-launch-tool.ts";
 import { DEFAULT_WAIT_SECONDS, registerListTool, registerLogsTool, registerStatusTools } from "./mcp-read-tools.ts";
-import { runtimeBridgeTarget } from "./provider-runtime-admission.ts";
+import { nativeExecCancellation, runtimeBridgeTarget } from "./provider-runtime-admission.ts";
 import { recordOperatorFailure } from "./request-observability.ts";
 import { RuntimeCheckpointRejected } from "./runtime-checkpoint.ts";
 import { appendConversation, sandboxActivity } from "./sandbox-activity.ts";
@@ -389,7 +389,7 @@ export function configureTools(
     const { sandbox: found, provider, enrolled } = await liveControl(args);
 
     await data.sandboxes.assertExecAllowed?.(found.id);
-    const nativeBoat = !enrolled && found.provider === "boat";
+    const fencedExec = !enrolled && nativeExecCancellation[found.provider];
     const managedNative =
       !enrolled &&
       (await context.launchCredentials.assertExec?.(
@@ -445,18 +445,18 @@ export function configureTools(
         );
       }
     };
-    if (!nativeBoat && !managedNative) {
+    if (!fencedExec && !managedNative) {
       return execute();
     }
 
-    const admission: ServerSandboxPatch = nativeBoat ? { nativeBoatExecAdmission: true } : {};
+    const admission: ServerSandboxPatch = fencedExec ? { nativeBoatExecAdmission: true } : {};
     return sandboxActivity(
       data.sandboxes,
       found,
       admission,
       async (signal) => {
         signal.throwIfAborted();
-        const result = await execute(nativeBoat ? signal : undefined);
+        const result = await execute(fencedExec ? signal : undefined);
         signal.throwIfAborted();
         return { result, patch: {} };
       },
