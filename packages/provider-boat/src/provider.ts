@@ -348,10 +348,10 @@ export function createBoatProvider(options: BoatProviderOptions): BoatProvider &
     const stoppedAt = sandbox.stoppedAt?.getTime();
     const verifiedAt = (sandbox.snapshotVerifiedAt ?? sandbox.snapshotCompletedAt)?.getTime();
     if (
-      !Number.isFinite(stoppedAt) ||
-      !Number.isFinite(verifiedAt) ||
       stoppedAt === undefined ||
-      verifiedAt === undefined
+      verifiedAt === undefined ||
+      !Number.isFinite(stoppedAt) ||
+      !Number.isFinite(verifiedAt)
     )
       return "unconfirmed";
     if (verifiedAt >= stoppedAt) return "usable";
@@ -367,8 +367,6 @@ export function createBoatProvider(options: BoatProviderOptions): BoatProvider &
     )
       return "unconfirmed";
 
-    // Boat verifies the disk before completing the stop. The by-ID response
-    // retains requestedAt after completion, unlike the stop on the sandbox.
     const observed = await call(() => api.getStop({ sandboxId: sandbox.id, stopId: stop.id }, { signal })).catch(
       (error: unknown) => {
         if (error instanceof ProviderError && error.status === 404 && error.code === "not_found") return null;
