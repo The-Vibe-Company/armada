@@ -76,6 +76,7 @@ export interface SandboxView extends SandboxRecord {
 export interface ServerSandboxPatch extends SandboxPatch {
   deleteCompleted?: true;
   expireAfterExtension?: true;
+  nativeBoatExecAdmission?: true;
   nativeRetentionRefusal?: string;
   nativeResumeAdmission?: string;
   nativeSendAdmission?: ServerSandboxPatch["nativeChildSend"];
@@ -123,7 +124,7 @@ export interface ServerSandboxStore extends SandboxStore {
   launchTiming?(id: string): Promise<LaunchTiming | null>;
   assertExtensionAllowed?(id: string): Promise<void>;
   assertDeletionAllowed?(id: string): Promise<void>;
-  /** Admission-only read: ordinary exec stays concurrent, but cannot start during stop. */
+  /** Refuse taint and stop intent before any exec; native Boat exec also claims the activity lease. */
   assertExecAllowed?(id: string): Promise<void>;
   recordUsage?(
     id: string,
@@ -1054,6 +1055,11 @@ export function createSqlData(
         if (patch.deleteRequested)
           fence += ` and s.status in ('stopped','failed')
             and not ${SANDBOX_DELETION_MANAGED}`;
+        if (patch.nativeBoatExecAdmission)
+          fence += ` and s.provider='boat' and not s.boat_runtime
+            and s.runtime_transport is distinct from 'dialout'
+            and s.status in ('starting','ready','running') and s.deleted_at is null
+            and s.expires_at>clock_timestamp() and s.stop_requested_at is null`;
         // A read-only reconciler may overlap list readiness. Admission can supersede
         // that observation, but never a claimed stop or an expired/starting sandbox.
         // The generation CAS also fences its stop-claim and late publication.

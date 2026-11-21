@@ -16,7 +16,7 @@ import { CREDENTIAL_BINDING_GUIDANCE } from "./credential-binding.ts";
 import type { SandboxView, ServerSandboxPatch } from "./data.ts";
 import { mcpLaunchContract, runMcpLaunch } from "./mcp-launch-tool.ts";
 import { DEFAULT_WAIT_SECONDS, registerListTool, registerLogsTool, registerStatusTools } from "./mcp-read-tools.ts";
-import { runtimeBridgeTarget } from "./provider-runtime-admission.ts";
+import { nativeExecCancellation, runtimeBridgeTarget } from "./provider-runtime-admission.ts";
 import { recordOperatorFailure } from "./request-observability.ts";
 import { RuntimeCheckpointRejected } from "./runtime-checkpoint.ts";
 import { appendConversation, sandboxActivity } from "./sandbox-activity.ts";
@@ -389,6 +389,7 @@ export function configureTools(
     const { sandbox: found, provider, enrolled } = await liveControl(args);
 
     await data.sandboxes.assertExecAllowed?.(found.id);
+    const fencedExec = !enrolled && nativeExecCancellation[found.provider];
     const managedNative =
       !enrolled &&
       (await context.launchCredentials.assertExec?.(
@@ -396,7 +397,7 @@ export function configureTools(
         found.id,
       ));
     let acknowledged = false;
-    const execute = async () => {
+    const execute = async (signal?: AbortSignal) => {
       const membership = caller.orgs.find((member) => member.orgId === found.orgId);
       if (!membership) throw new ToolError("forbidden", "No current organization membership.");
       if (!enrolled) await prepareConnections(provider, found, membership.role);
@@ -404,10 +405,12 @@ export function configureTools(
       const readNativeSecrets = (phase: "before" | "after") =>
         context.launchCredentials.nativeSecrets?.(nativeActor, found.id, provider, found.providerSandboxId, phase);
       const nativeBefore = (!enrolled && (await readNativeSecrets("before"))) || [];
+      signal?.throwIfAborted();
       const result = await provider
         .exec({
           sandboxId: found.providerSandboxId,
           ...(args.request_id ? { requestId: args.request_id } : {}),
+          ...(signal ? { signal } : {}),
           command: args.command,
           cwd: args.cwd ?? "/home/user",
           timeoutSeconds: args.timeout_seconds ?? 120,
@@ -442,17 +445,18 @@ export function configureTools(
         );
       }
     };
-    if (!managedNative) {
+    if (!fencedExec && !managedNative) {
       return execute();
     }
 
+    const admission: ServerSandboxPatch = fencedExec ? { nativeBoatExecAdmission: true } : {};
     return sandboxActivity(
       data.sandboxes,
       found,
-      {},
+      admission,
       async (signal) => {
         signal.throwIfAborted();
-        const result = await execute();
+        const result = await execute(fencedExec ? signal : undefined);
         signal.throwIfAborted();
         return { result, patch: {} };
       },
