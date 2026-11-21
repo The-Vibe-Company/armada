@@ -51,7 +51,8 @@ test.each([
       const body = JSON.parse(String(init.body));
       const path = new URL(url).pathname;
       const request = path.endsWith("/status") && stopped.has(body.id) ? "stop-confirmation" : path.split("/").at(-1)!;
-      const budget = timeout.mock.lastCall?.[0];
+      const signalIndex = timeout.mock.results.findIndex((result) => result.value === init.signal);
+      const budget = timeout.mock.calls[signalIndex]?.[0];
       if (budget !== undefined) {
         const values = timeouts.get(request) ?? [];
         values.push(budget);
