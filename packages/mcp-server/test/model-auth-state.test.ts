@@ -169,6 +169,11 @@ test("real native state publication seals rotation without replacing binding, fe
   await expect(publicProvider.events({ sandboxId: "native" })).rejects.toMatchObject({ code: "unavailable" });
   const logOptions = { logs: async () => ({ provider: publicProvider, providerSandboxId: "native" }) };
   const logCaller = { userId: OWNER, orgs: [{ orgId: ORG, role: "admin" }], via: "service" } as const;
+  await expect(
+    readLogs(logOptions, logCaller, SANDBOX, { direction: "backward", cursor: "previous" }),
+  ).rejects.toMatchObject({
+    code: "unavailable",
+  });
   const logPage = await readLogs(logOptions, logCaller, SANDBOX, { follow: true, cursor: "previous" });
   expect(readLogsOperation.output.parse(logPage)).toMatchObject({
     events: [],

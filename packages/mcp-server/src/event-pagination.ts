@@ -22,7 +22,12 @@ export function validateLogPagination({ direction, all }: { direction?: unknown;
 }
 
 /** Bounded traversal only; callers retain authorization, request projection and response policy. */
-export async function readEventPages(read: ReadPage, cursor: string | undefined, all: boolean) {
+export async function readEventPages(
+  read: ReadPage,
+  cursor: string | undefined,
+  all: boolean,
+  { pauseOnNativeLease = false }: { pauseOnNativeLease?: boolean } = {},
+) {
   const events: Page["events"] = [];
   let hasMore = false;
   let paused = false;
@@ -34,7 +39,7 @@ export async function readEventPages(read: ReadPage, cursor: string | undefined,
     try {
       page = await read(cursor);
     } catch (error) {
-      if (!(error instanceof NativeBoatOutputPending)) throw error;
+      if (!pauseOnNativeLease || !(error instanceof NativeBoatOutputPending)) throw error;
       paused = true;
       hasMore = false;
       break;

@@ -80,6 +80,7 @@ export async function readLogs(
       ),
     page.cursor ?? undefined,
     page.all === true,
+    { pauseOnNativeLease: !backward },
   );
   // Ordinary history reads need only the authorized event stream. Live compute is
   // consulted solely to decide whether a follow request should keep waiting.
