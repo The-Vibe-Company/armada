@@ -1,6 +1,7 @@
 import { providerRateLimitDetails } from "@armada/core";
 import { sandboxExtensionLifetime, sandboxRestOperations } from "@armada/core/contract";
 import { GoldenError, isNonMutatingProviderRefusal, ProviderError, VaultError } from "@armada/core/server";
+import type { BoatProvider } from "@armada/provider-boat";
 import { z } from "zod";
 import { validateProviderResourceObservation } from "../../core/src/resource-validation.ts";
 import type { Caller } from "./caller.ts";
@@ -157,6 +158,18 @@ async function dispatchSandboxRestControl(
   }
 }
 
+async function observeBoatDrainDeletion(
+  boat: Partial<BoatProvider>,
+  sandboxId: string,
+  generation: number | undefined,
+  operationId: string,
+  signal: AbortSignal,
+) {
+  if (!boat.observeSandboxDeletion || generation === undefined)
+    throw new ToolError("unavailable", "Native Boat deletion observation is unavailable.");
+  return boat.observeSandboxDeletion({ sandboxId, generation, operationId, signal });
+}
+
 export async function deleteSandboxWithActivity(
   sandboxes: ServerSandboxStore,
   providers: Pick<NonNullable<ControlOptions["providers"]>, "resolve">,
@@ -194,8 +207,24 @@ export async function deleteSandboxWithActivity(
             sandboxId: found.providerSandboxId,
             ...(found.lifecycleGeneration !== undefined ? { generation: found.lifecycleGeneration + 1 } : {}),
           };
-          const receipt = await provider.delete(target);
-          if (nativeDrain && receipt.operationId?.trim()) {
+          let operationId: string | null = null;
+          if (nativeDrain && found.provider === "boat") {
+            if (!sandboxes.nativeDrainBoatOperation || target.generation === undefined)
+              throw new ToolError("unavailable", "Native Boat deletion evidence is unavailable.");
+            operationId = await sandboxes.nativeDrainBoatOperation(
+              id,
+              target.sandboxId,
+              target.generation,
+              activityToken,
+            );
+            signal.throwIfAborted();
+          }
+          const boat = provider as Partial<BoatProvider>;
+          const receipt =
+            operationId !== null
+              ? await observeBoatDrainDeletion(boat, target.sandboxId, target.generation, operationId, signal)
+              : await provider.delete(target);
+          if (nativeDrain && operationId === null && receipt.operationId?.trim()) {
             signal.throwIfAborted();
             await sandboxes.update(id, {
               nativeDrainDeleteOperation: {

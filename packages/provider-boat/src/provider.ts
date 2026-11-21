@@ -55,6 +55,9 @@ import {
   BoatApi,
   Configuration,
   type CreateSandboxRequest,
+  DeletionOperationKindEnum,
+  DeletionOperationResponseTypeEnum,
+  DeletionOperationStatusEnum,
   type PromptRequestProviderEnum,
   type Sandbox,
   SandboxLastSnapshotStatusEnum,
@@ -234,6 +237,12 @@ interface BoatRuntimeHost {
 
 /** The boat.dev placement, over `@boatdev/sdk`. Every failure is a `ProviderError`. */
 export interface BoatProvider extends Provider {
+  observeSandboxDeletion(request: {
+    sandboxId: string;
+    generation: number;
+    operationId: string;
+    signal: AbortSignal;
+  }): Promise<DeleteReceipt>;
   /** Report-only observations from Boat's label-filtered sandbox API. The timestamps
    * and IDs describe logical sandboxes. Resume can replace the underlying machine. */
   listSandboxInventory(request?: {
@@ -1191,6 +1200,22 @@ export function createBoatProvider(options: BoatProviderOptions): BoatProvider &
       lifecycleTrace(request.sandboxId, "stop", "api_dispatch", "ordinary");
       await call(() => api.stop({ sandboxId: request.sandboxId }, { signal: AbortSignal.timeout(10_000) }));
       lifecycleTrace(request.sandboxId, "stop", "api_accepted", "ordinary");
+    },
+
+    async observeSandboxDeletion({ sandboxId, operationId, signal }) {
+      const response = await call(() =>
+        api.getDeletionOperation({ operationId }, { signal: AbortSignal.any([signal, AbortSignal.timeout(10_000)]) }),
+      );
+      const operation = response.operation;
+      if (
+        response.ok !== true ||
+        response.type !== DeletionOperationResponseTypeEnum.DeletionOperation ||
+        operation?.id !== operationId ||
+        operation.kind !== DeletionOperationKindEnum.Sandbox ||
+        operation.targetId !== sandboxId
+      )
+        throw unexpectedAnswer("sandbox deletion operation");
+      return { status: operation.status === DeletionOperationStatusEnum.Completed ? "completed" : "pending" };
     },
 
     async delete(request: { sandboxId: string }): Promise<DeleteReceipt> {

@@ -135,6 +135,12 @@ export interface ServerSandboxStore extends SandboxStore {
   launchTiming?(id: string): Promise<LaunchTiming | null>;
   assertExtensionAllowed?(id: string): Promise<void>;
   assertDeletionAllowed?(id: string): Promise<void>;
+  nativeDrainBoatOperation?(
+    id: string,
+    placement: string,
+    generation: number,
+    activityToken: string,
+  ): Promise<string | null>;
   requestStartingModalStop?(sandbox: SandboxRecord): ReturnType<typeof requestStartingModalStop>;
   /** Refuse taint and stop intent before exec; native Boat and Modal exec also claim the activity lease. */
   assertExecAllowed?(id: string): Promise<void>;
@@ -570,6 +576,22 @@ export function createSqlData(
           );
         if (!["stopped", "failed", "deleted"].includes(row.status))
           throw new GoldenError("conflict", "Stop the sandbox before deleting it.");
+      },
+      async nativeDrainBoatOperation(id, placement, generation, activityToken) {
+        const {
+          rows: [owned],
+        } = await sql.query<{ operation_id: string | null }>(
+          `select o.operation_id from public.sandboxes s
+           left join public.native_drain_delete_operations o on o.sandbox_id=s.id
+           where s.id=$3::uuid and ${SANDBOX_VISIBLE} and s.provider='boat'
+             and s.provider_sandbox_id=$4 and s.lifecycle_generation=$5 and s.activity_lease_id=$6
+             and s.activity_until>clock_timestamp() and s.native_drain_pending
+             and not s.boat_runtime and s.runtime_transport is distinct from 'dialout'
+             and s.deleted_at is null and (o.sandbox_id is null or (o.provider=s.provider and o.placement=$4))`,
+          [...scope, id, placement, generation, activityToken],
+        );
+        if (!owned) throw new DataError("Native drain no longer owns this placement.", "sandbox_not_ready");
+        return owned.operation_id;
       },
       async recordUsage(id, usage, options) {
         const mergeNative = async (target: Sql, unpriced: boolean) =>
@@ -1231,7 +1253,10 @@ export function createSqlData(
               `select s.native_drain_pending from public.sandboxes s where s.id=$3::uuid and ${SANDBOX_VISIBLE}
                  and s.provider=$4::public.sandbox_provider and s.provider_sandbox_id=$5
                  and s.provider in ('boat','modal') and not s.boat_runtime and s.runtime_transport is distinct from 'dialout'
-                 and (not s.native_drain_pending or s.provider='modal')
+                 and (not s.native_drain_pending or s.provider='modal' or exists(
+                   select 1 from public.native_drain_delete_operations o
+                   where o.sandbox_id=s.id and o.provider=s.provider and o.placement=s.provider_sandbox_id
+                 ))
                  and s.stopped_at is not null and s.stop_requested_at is null
                  and s.deleted_at is null and not s.application_secret_tainted
                  and exists(select 1 from public.members m where m.org_id=s.org_id and m.user_id=$2::uuid
