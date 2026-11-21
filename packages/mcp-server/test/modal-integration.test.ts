@@ -554,6 +554,15 @@ test("native Modal restore preserves the stopped generation during a current str
     expect(await store.get(placement)).toMatchObject({ phase: "stopped", generation: 1 });
 
     await db.query("update sandboxes set native_drain_pending=false where id=$1", [sandboxId]);
+    await db.exec("alter table native_drain_stop_requests rename to unavailable_drain_stop_requests");
+    try {
+      await expect(restore()).rejects.toMatchObject({ code: "unknown" });
+      expect(capacityAdmissions).toEqual([]);
+      expect(await store.get(placement)).toMatchObject({ phase: "stopped", generation: 1 });
+    } finally {
+      await db.exec("alter table unavailable_drain_stop_requests rename to native_drain_stop_requests");
+    }
+
     await expect(restore()).rejects.toThrow(afterReservation.message);
     expect(capacityAdmissions).toEqual([placement]);
     expect(await store.get(placement)).toMatchObject({ phase: "reserved", generation: 2 });
