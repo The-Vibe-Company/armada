@@ -8,6 +8,7 @@ import { recordOperatorDiagnostic } from "./request-observability.ts";
 import type { createRuntimeCommands } from "./runtime-commands.ts";
 import { createRuntimeEnrolments } from "./runtime-enrolment.ts";
 import { unsettledRuntimeCommands } from "./runtime-idle-evidence.ts";
+import { RuntimeReconciliationConflict } from "./runtime-reconciliation-conflict.ts";
 import { recordStoppedCheckpointNote } from "./sandbox-lifecycle.ts";
 import { type StopRefusalEvidence, stopRefusalEvidence } from "./stop-refusal-evidence.ts";
 
@@ -18,7 +19,7 @@ function checkpointConflict(
   evidence?: StopRefusalEvidence,
   cause?: unknown,
 ) {
-  const error = new VaultError("conflict", message);
+  const error = cause instanceof RuntimeReconciliationConflict ? cause : new VaultError("conflict", message);
   recordOperatorDiagnostic("sandbox.checkpoint.refused", failureDiagnostic(cause ?? error), {
     sandboxId,
     refusalCode,
@@ -279,18 +280,25 @@ export function createRuntimeCheckpoint(
       );
     const intent = await createRuntimeEnrolments(sql, key).withOwner(sandbox.id, caller.userId, async (tx, scope) => {
       const lease = (
-        await tx.query<StopRefusalEvidence>(
-          `select ${stopRefusalEvidence} from public.sandboxes s where s.id=$1
-            and (s.activity_lease_id is not null or s.reconcile_lease_until>now())`,
+        await tx.query<StopRefusalEvidence & { reconciling: boolean }>(
+          `select ${stopRefusalEvidence}, s.reconcile_lease_until>now() as reconciling
+           from public.sandboxes s where s.id=$1
+             and (s.activity_lease_id is not null or s.reconcile_lease_until>now())`,
           [sandbox.id],
         )
       ).rows[0];
       if (lease) {
+        const { reconciling, ...evidence } = lease;
+        const refusal =
+          reconciling && !old && !(await read(tx, sandbox.id, requestId))
+            ? new RuntimeReconciliationConflict()
+            : undefined;
         throw checkpointConflict(
           sandbox.id,
-          lease.activityLeaseId ? "activity_lease_present" : "reconcile_lease_held",
+          evidence.activityLeaseId ? "activity_lease_present" : "reconcile_lease_held",
           "Runtime admission is busy; wait or reconcile its original request before checkpointing.",
-          lease,
+          evidence,
+          refusal,
         );
       }
       const mergeStop = (await beforeIntent?.(tx)) === true;

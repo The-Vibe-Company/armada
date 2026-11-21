@@ -247,6 +247,13 @@ test("runtime Modal extension uses live headroom and an enrolled command grant w
       ...(expiresAt === undefined ? {} : { commandGrantExpiresAt: expiresAt }),
     });
   const active = await authority.enrol((await issue(hard.getTime())).enrolmentToken);
+  await db.query("update sandboxes set reconcile_lease_until='infinity' where id=$1", [id]);
+  await expect(extendSandbox(store, sandbox, provider, 1_200)).rejects.toMatchObject({
+    code: "sandbox_not_ready",
+    cause: { reason: "runtime_reconciliation_active" },
+  });
+  expect((await store.get(id))!.expiresAt).toBe(initial.toISOString());
+  await db.query("update sandboxes set reconcile_lease_until=null where id=$1", [id]);
   const extended = new Date(now.getTime() + 1_200_000).toISOString();
   expect(await extendSandbox(store, sandbox, provider, 1_200)).toEqual({ id, expiresAt: extended, ttlSeconds: 1_200 });
   await expect(extendSandbox(store, sandbox, provider, 1_600)).rejects.toMatchObject({ code: "extension_maximum" });
