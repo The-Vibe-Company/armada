@@ -543,19 +543,28 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
   const cleanupDeadline = deadline + 5 * 60_000;
   const protectedCanaries = new Set<string>();
   const launches = createLaunchTracker();
-  function send<T>(cleaning: boolean, path: string, body?: unknown, key?: string, timeoutMs = 120_000): Promise<T> {
-    return launches.track(path, (record) => transport<T>(cleaning, path, body, key, timeoutMs, record));
+  function send<T>(
+    cleaning: boolean,
+    path: string,
+    body?: unknown,
+    key?: string,
+    timeoutMs = 120_000,
+    usageDeadline?: number,
+  ): Promise<T> {
+    return launches.track(path, (record) =>
+      transport<T>(cleaning, path, body, key, timeoutMs, record, false, usageDeadline),
+    );
   }
   /** Each concurrent unit owns its cleanup flag; one unit's cleanup never moves another unit's deadline. */
   function createLane() {
     let cleaning = false;
     let stepUntil: number | undefined;
     return {
-      request: <T>(path: string, body?: unknown, key?: string, timeoutMs?: number) => {
-        if (stepUntil === undefined) return send<T>(cleaning, path, body, key, timeoutMs);
+      request: <T>(path: string, body?: unknown, key?: string, timeoutMs?: number, usageDeadline?: number) => {
+        if (stepUntil === undefined) return send<T>(cleaning, path, body, key, timeoutMs, usageDeadline);
         const remaining = stepUntil - io.now();
         if (remaining <= 0) fail("poll_limit_exceeded");
-        return send<T>(cleaning, path, body, key, Math.min(timeoutMs ?? remaining, remaining));
+        return send<T>(cleaning, path, body, key, Math.min(timeoutMs ?? remaining, remaining), usageDeadline);
       },
       withStepDeadline: async <T>(name: string, action: () => Promise<T>) => {
         const budget = (deadlines as Record<string, number>)[name];
@@ -587,10 +596,13 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
     timeoutMs: number,
     record: (receipt: unknown) => void,
     requireSandboxUuid = false,
+    usageDeadline?: number,
   ): Promise<T> {
-    const remaining = (cleaning ? cleanupDeadline : deadline) - io.now();
-    if (remaining <= 0) fail("poll_limit_exceeded");
+    const outerDeadline = cleaning ? cleanupDeadline : deadline;
+    const remaining = Math.min(outerDeadline, usageDeadline ?? outerDeadline) - io.now();
     const requestTimeoutMs = Math.min(timeoutMs, remaining);
+    if (requestTimeoutMs <= 0 || (usageDeadline !== undefined && requestTimeoutMs < USAGE_STATUS_MIN_REQUEST_MS))
+      fail("poll_limit_exceeded");
     const sandboxLaunch = path === "sandbox/launch";
     const signal = AbortSignal.timeout(requestTimeoutMs);
     const timedOut = (error: unknown) =>
@@ -719,7 +731,7 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
     }
   }
   async function poll<T>(
-    read: (timeoutMs?: number) => Promise<T>,
+    read: (timeoutMs?: number, requestDeadline?: number) => Promise<T>,
     done: (value: T) => boolean,
     options: { limit?: number; step?: string; until?: number; minRequestMs?: number } = {},
   ): Promise<T> {
@@ -731,7 +743,7 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
     for (let i = 0; i < limit; i++) {
       const remaining = requestDeadline === undefined ? undefined : requestDeadline - io.now();
       if (remaining !== undefined && remaining < minRequestMs) break;
-      const value = await read(until === undefined ? undefined : remaining).catch((error: unknown) => {
+      const value = await read(until === undefined ? undefined : remaining, requestDeadline).catch((error: unknown) => {
         if (
           error instanceof SmokeFailure &&
           error.code === "request_failed" &&
@@ -1600,10 +1612,10 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
           let lastResponse: Record<string, string | boolean | number> | null = null;
           try {
             await poll(
-              async (timeoutMs) => {
+              async (timeoutMs, usageDeadline) => {
                 attempts++;
                 const startedAt = io.now();
-                const result = await sandbox<{
+                const result = await request<{
                   usage?: {
                     turns?: {
                       promptId: string;
@@ -1612,7 +1624,7 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
                     }[];
                     tokenTotals?: { inputTokens: number | null; outputTokens: number | null; incomplete?: boolean };
                   };
-                } | null>("status", { id: sandboxId }, timeoutMs);
+                } | null>("sandbox/status", { org: item.org, id: sandboxId }, undefined, timeoutMs, usageDeadline);
                 const usage = result?.usage;
                 const row = Array.isArray(usage?.turns)
                   ? usage.turns.find((row) => row?.promptId === turn.promptId)

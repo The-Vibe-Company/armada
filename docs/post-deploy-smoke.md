@@ -1891,8 +1891,9 @@ its nearest-rank p99, rounded up to milliseconds. At 20 samples the p99 is the
 largest observation. The extra p99 and the two-second floor give network calls
 and other smoke steps room for latency variation outside that small sample.
 Steps with fewer than 20 receipts use their existing defaults.
-Measured usage polls have a five-second floor to leave room for two
-two-second `sandbox/status` reads and the one-second polling interval.
+Measured usage polls have a five-second floor. If the first
+`sandbox/status` read finishes within two seconds, the floor allows a
+one-second interval and at least two seconds for the next read.
 Usage polling sends another read only when its remaining budget can
 cover at least two seconds. Each read still fits within the enclosing deadline.
 
