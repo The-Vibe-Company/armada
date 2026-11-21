@@ -61,7 +61,6 @@ export const PROVIDER_LIMITS: Readonly<Record<SandboxPlacementProviderId, Provid
  * and must never dispose of it. A fresh fork belongs to that restore attempt.
  */
 export interface HostCapabilities {
-  /** The golden target must pin the provider application that owns its snapshots. */
   readonly requiresPinnedGoldenBinding: boolean;
   /** Re-resolve pinned management authority inside the golden build admission transaction. */
   readonly revalidateGoldenManagementAtAdmission: boolean;
