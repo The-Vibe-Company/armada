@@ -4,6 +4,7 @@ import {
   createSqlVaultStore,
   createUsagePricingContext,
   encryptSecret,
+  ProviderError,
   type ProviderTarget,
 } from "@armada/core/server";
 import {
@@ -13,7 +14,7 @@ import {
   type Scope,
   scopeKey,
 } from "@armada/provider-modal";
-import { AppService } from "modal";
+import { App, AppService } from "modal";
 import { createSqlData } from "../src/data.ts";
 import { createModalIntegration, MODAL_INGEST_PATH } from "../src/modal-integration.ts";
 import { createModalReaper } from "../src/modal-reaper.ts";
@@ -471,4 +472,101 @@ test("the Modal reaper only terminates unreferenced VMs and retries a failed ter
     overdue: 3,
     complete: true,
   });
+});
+
+test("native Modal restore preserves the stopped generation during a current strict drain stop", async () => {
+  const { db, people } = await sharedDatabase();
+  const binding = { workspace: "app:ap-drain", appId: "ap-drain", environment: "main" };
+  const scope: Scope = { orgId: people.org, userId: people.owner, visibility: "private", binding };
+  const placement = "native-modal-placement";
+  const sandboxId = crypto.randomUUID();
+  await db.query(
+    `insert into modal_server_apps(org_id,authority,authority_scope,authority_owner_id,app_name,app_id,environment)
+     values($1,$2,'org',$1,'drain-app',$3,'main')`,
+    [people.org, `org:${people.org}`, binding.appId],
+  );
+  await db.query("insert into credentials(scope,owner_id,kind,value_enc) values('org',$1,'modal',$2)", [
+    people.org,
+    await encryptSecret(
+      JSON.stringify({ token_id: ["ak", "fixturekey"].join("-"), token_secret: ["as", "fixturekey"].join("-") }),
+      ENCRYPTION_KEY,
+    ),
+  ]);
+  await db.query(
+    `insert into goldens(org_id,owner_id,name,visibility,provider,provider_sandbox_id,provider_snapshot_id,modal_workspace,modal_environment,modal_app_id,config)
+     values($1,$2,'drain-modal','private','modal','master','image',$3,$4,$5,'{"repos":[],"init":[]}')`,
+    [people.org, people.owner, binding.workspace, binding.environment, binding.appId],
+  );
+  await db.query(
+    `insert into sandboxes(id,golden_id,org_id,owner_id,provider,provider_sandbox_id,harness,status,stop_generation,stopped_at)
+     select $1,id,$2,$3,'modal',$4,'claude','stopped',2,clock_timestamp() from goldens where name='drain-modal'`,
+    [sandboxId, people.org, people.owner, placement],
+  );
+  await db.query("insert into native_drain_stop_requests(sandbox_id,stop_generation) values($1,2)", [sandboxId]);
+  const store = createSqlModalStore(db, scope);
+  await store.reserve("native-modal-request", {
+    info: { id: placement, name: "retained", state: "stopped", providerState: "stopped", labels: {} },
+    phase: "stopped",
+    generation: 1,
+    golden: false,
+    ttlSeconds: 60,
+    physicalName: "retained-physical",
+    recoveryImageId: "retained-image",
+    managementAuthority: { credentialScope: "org", credentialOwnerId: people.org },
+  });
+  const afterReservation = new ProviderError({
+    provider: "modal",
+    code: "unavailable",
+    message: "Test stops before live Modal allocation",
+    retryable: false,
+  });
+  // oxlint-disable-next-line landmines-testing/no-test-doubles -- Stub only the Modal gRPC App lookup to stop before live allocation while exercising the real SQL journal.
+  const apps = spyOn(AppService.prototype, "fromName").mockImplementationOnce(async () => new App(binding.appId));
+  // oxlint-disable-next-line landmines-testing/no-test-doubles -- Any later App lookup is the boundary between restore reservation and live Modal work.
+  apps.mockImplementation(async () => {
+    throw afterReservation;
+  });
+  const capacityAdmissions: string[] = [];
+  try {
+    const integration = await createModalIntegration({
+      sql: db,
+      vault: createSqlVaultStore(db),
+      encryptionKey: ENCRYPTION_KEY,
+      publicUrl: "https://armada.test",
+      beforeResume: async (_provider, id) => {
+        capacityAdmissions.push(id);
+      },
+    });
+    const { provider } = await integration.modalProviderFor({ tokenId: "fixture", tokenSecret: "fixture" }, binding, {
+      target: { provider: "modal", orgId: people.org, visibility: "private", modal: binding },
+      caller: { userId: people.owner },
+      credentialScope: "org",
+    });
+    const restore = () => provider.exec!({ sandboxId: placement, command: "true" });
+    await expect(restore()).rejects.toMatchObject({ code: "conflict" });
+    expect(capacityAdmissions).toEqual([]);
+    expect(await store.get(placement)).toMatchObject({ phase: "stopped", generation: 1 });
+
+    await db.query("update native_drain_stop_requests set stop_generation=1 where sandbox_id=$1", [sandboxId]);
+    await db.query("update sandboxes set native_drain_pending=true where id=$1", [sandboxId]);
+    await expect(restore()).rejects.toMatchObject({ code: "conflict" });
+    expect(capacityAdmissions).toEqual([]);
+    expect(await store.get(placement)).toMatchObject({ phase: "stopped", generation: 1 });
+
+    await db.query("update sandboxes set native_drain_pending=false where id=$1", [sandboxId]);
+    await db.exec("alter table native_drain_stop_requests rename to unavailable_drain_stop_requests");
+    try {
+      await expect(restore()).rejects.toMatchObject({ code: "unknown" });
+      expect(capacityAdmissions).toEqual([]);
+      expect(await store.get(placement)).toMatchObject({ phase: "stopped", generation: 1 });
+    } finally {
+      await db.exec("alter table unavailable_drain_stop_requests rename to native_drain_stop_requests");
+    }
+
+    await expect(restore()).rejects.toThrow(afterReservation.message);
+    expect(capacityAdmissions).toEqual([placement]);
+    expect(await store.get(placement)).toMatchObject({ phase: "reserved", generation: 2 });
+  } finally {
+    apps.mockRestore();
+  }
 });
