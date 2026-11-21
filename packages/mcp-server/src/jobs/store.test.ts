@@ -269,6 +269,92 @@ test.each(["boat", "modal"] as const)("a %s reservation excludes the competing l
   expect((await db.query("select id from sandboxes")).rows).toEqual([{ id: sandbox.id }]);
 });
 
+test.each(["active", "revoked"] as const)(
+  "pinned Modal admission handles a %s secret before dispatch",
+  async (status) => {
+    const { sql, db, people, input, openaiCredentialId } = await modalAdmissionFixture();
+    const sandboxId = crypto.randomUUID();
+    const {
+      rows: [actor],
+    } = await db.query<{ epoch: number }>("select epoch::int from mcp_actor_epochs where org_id=$1 and user_id=$2", [
+      people.org,
+      people.owner,
+    ]);
+    const {
+      rows: [secret],
+    } = await db.query<{ id: string }>(
+      `insert into application_secrets(org_id,owner_id,scope,name,value_enc)
+     values($1,$2,'personal','APP_TOKEN',$3) returning id`,
+      [people.org, people.owner, await encryptSecret("fixture", launchEncryptionKey)],
+    );
+    const {
+      rows: [receipt],
+    } = await db.query<{ id: string }>(
+      `with template as (
+       insert into launch_templates(org_id,owner_id,scope,name)
+       values($1,$2,'personal','pinned-modal') returning id
+     ), revision as (
+       insert into launch_template_revisions(template_id,revision,definition,digest,created_by)
+       select id,1,'{}',repeat('a',64),$2 from template returning id,template_id
+     )
+     insert into template_launch_requests(org_id,actor_id,client_key,digest,template_id,revision_id,
+                                          manifest,golden_operation_fence_id,sandbox_id)
+     select $1,$2,'pinned',repeat('a',64),template_id,id,$3,$4,$5 from revision returning id`,
+      [
+        people.org,
+        people.owner,
+        {
+          version: 1,
+          actorId: people.owner,
+          actorEpoch: actor?.epoch ?? 0,
+          golden: { id: input.sandbox.goldenId, provider: "modal" },
+          account: { id: openaiCredentialId, version: 1 },
+          definition: {
+            provider: "modal",
+            harness: input.sandbox.harness,
+            model: input.sandbox.model,
+            reasoningEffort: input.sandbox.reasoningEffort,
+            variables: [],
+            secrets: [{ key: "APP_TOKEN", secretId: secret!.id, version: 1 }],
+          },
+          variables: {},
+        },
+        crypto.randomUUID(),
+        sandboxId,
+      ],
+    );
+    const { request: _ordinary, ...launch } = input;
+    const pinned = {
+      ...launch,
+      templateReceiptId: receipt!.id,
+      sandbox: { ...input.sandbox, credentialId: openaiCredentialId, credentialVersion: 1 },
+    };
+    const admit = () => admitModalLaunch(sql, launchEncryptionKey, pinned);
+    if (status === "revoked") {
+      await db.query("update application_secrets set status='revoked',value_enc=null where id=$1", [secret!.id]);
+      await expect(admit()).rejects.toMatchObject({ code: "conflict", reason: "secret_unavailable" });
+      expect((await db.query("select id from sandboxes where id=$1", [sandboxId])).rows).toEqual([]);
+      expect((await db.query("select id from jobs where sandbox_id=$1", [sandboxId])).rows).toEqual([]);
+      return;
+    }
+    const accepted = { sandbox: { id: sandboxId, status: "starting" } };
+    expect(await admit()).toEqual(accepted);
+    expect(await admit()).toEqual(accepted);
+    expect(
+      (
+        await db.query(
+          `select s.application_secret_tainted,s.provider_sandbox_id,r.id as receipt_id
+     from sandboxes s join template_launch_requests r on r.sandbox_id=s.id`,
+        )
+      ).rows,
+    ).toEqual([{ application_secret_tainted: true, provider_sandbox_id: null, receipt_id: receipt!.id }]);
+    expect((await db.query("select kind from jobs where sandbox_id=$1 order by kind", [sandboxId])).rows).toEqual([
+      { kind: "launch" },
+      { kind: MODAL_INITIAL_TURN },
+    ]);
+  },
+);
+
 test("Modal admission commits an unbound sandbox, scoped job and encrypted turn intent before a claim", async () => {
   const { sql, db, input, store } = await modalAdmissionFixture();
   const { sandbox } = await admitModalLaunch(sql, launchEncryptionKey, input);

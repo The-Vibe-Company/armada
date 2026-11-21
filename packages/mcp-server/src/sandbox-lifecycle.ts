@@ -85,6 +85,15 @@ export async function insertStartingModalSandbox(
   ]);
 }
 
+export async function taintStartingModalSandbox(tx: Sql, sandboxId: string, generation: number) {
+  const { rows } = await tx.query(
+    `update public.sandboxes set application_secret_tainted=true
+     where id=$1 and lifecycle_generation=$2 and status='starting' returning id`,
+    [sandboxId, generation],
+  );
+  if (!rows.length) throw new Error("Modal launch exposure restrictions could not be applied.");
+}
+
 export async function bindModalLaunchMachine(tx: Sql, machine: MachineIdentity) {
   const { rows } = await tx.query(
     `update public.sandboxes set provider_sandbox_id=$3
