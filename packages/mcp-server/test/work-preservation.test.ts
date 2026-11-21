@@ -1382,7 +1382,12 @@ test.each(["not_found", "pending", "settlement failure"] as const)(
       delete: mock(async () => {
         providerCalled = true;
         if (outcome === "not_found")
-          throw new ProviderError({ provider: providerId, code: "not_found", message: "Delete target unavailable" });
+          throw new ProviderError({
+            provider: providerId,
+            code: "not_found",
+            message: "Delete target unavailable",
+            retryable: false,
+          });
         return { status: outcome === "pending" ? "pending" : "deleted" };
       }),
     };

@@ -202,7 +202,6 @@ export async function deleteSandboxWithActivity(
       const patch: ServerSandboxPatch = { deleteCompleted: true };
       return { result: { id: found.id, status: "deleted" as const }, patch };
     },
-    // Keep the existing lease on uncertain drain outcomes until they can be reconciled.
     nativeDrain ? undefined : { failurePatch },
   );
 }
