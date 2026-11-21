@@ -1851,6 +1851,28 @@ test("lifecycle records readiness and confirms extend/list, closed idle steer re
 });
 
 test.each([
+  ["stop", 1],
+  ["stop_resumed", 2],
+] as const)("lifecycle %s rejects a late stop status without redispatching", async (step, targetStop) => {
+  let stops = 0;
+  let delayStatus = false;
+  const fake = lifecycleFixture("none", (call) => {
+    if (call.path === "sandbox/stop") delayStatus = ++stops === targetStop;
+    if (call.path === "sandbox/status" && delayStatus) {
+      delayStatus = false;
+      fake.advance(deadlines[step] + 1);
+    }
+    return undefined;
+  });
+  expect(await fake.run()).toBe(false);
+  expect(fake.receipts()).toContainEqual({ case: 0, step, pass: false, code: "poll_limit_exceeded" });
+  expect(stops).toBe(targetStop);
+  expect(fake.receipts()).toContainEqual(
+    expect.objectContaining({ step: "lifecycle_cleanup_summary", pass: true, leftoverSandboxIds: [] }),
+  );
+});
+
+test.each([
   ["list_ready", "sandbox/list"],
   ["steer_refused", "sandbox/steer"],
   ["extend", "sandbox/extend"],

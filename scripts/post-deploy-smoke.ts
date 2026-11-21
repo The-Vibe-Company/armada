@@ -1832,7 +1832,7 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
             fail("invalid_receipt");
           commit = result.stdout.trim();
         });
-      if (!github) await step("stop", stopSandbox);
+      if (!github) await measuredStep("stop", stopSandbox);
       if (preservation) {
         // Recovery is a read-only operation, but do not reuse the earlier stop
         // receipt if verification fails or a regression wakes the worker.
@@ -1903,7 +1903,7 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
         preservationNote = undefined;
         await nativeTurn(true, "resume");
         await measuredStep("list_resumed", () => consistent("ready"));
-        await step("stop_resumed", stopSandbox);
+        await measuredStep("stop_resumed", stopSandbox);
         await measuredStep("list_stopped_final", () => consistent("stopped"));
       }
     }
