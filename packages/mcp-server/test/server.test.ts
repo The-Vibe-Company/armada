@@ -1793,7 +1793,7 @@ describe("tools", () => {
     },
   );
 
-  test("ordinary exec commands stay concurrent without changing lifecycle generation", async () => {
+  test("ordinary native exec fences competing commands and invalidates earlier preservation proof", async () => {
     const { token, client, people, boat, db } = await start();
     const mcp = await client(await token(people.member));
     const launched = await call(mcp, "launch", { provider: "boat", golden: "shared", harness: "claude" });
@@ -1828,8 +1828,8 @@ describe("tools", () => {
       release?.();
     }
     const completed = await first;
-    expect(second.isError).not.toBe(true);
-    expect(second.data.exitCode).toBe(0);
+    expect(second.isError).toBe(true);
+    expect(boat.execs.some((request) => request.command === "parallel command")).toBe(false);
     expect(completed.isError).not.toBe(true);
     const after = (
       await db.query<{ lifecycle_generation: string | number | bigint; activity_lease_id: string | null }>(
@@ -1837,7 +1837,7 @@ describe("tools", () => {
         [id],
       )
     ).rows[0];
-    expect(after?.lifecycle_generation).toEqual(before);
+    expect(Number(after?.lifecycle_generation)).toBe(Number(before) + 2);
     expect(after?.activity_lease_id).toBeNull();
   });
 
