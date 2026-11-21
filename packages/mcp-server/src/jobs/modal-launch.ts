@@ -935,7 +935,8 @@ async function dispatchModalLaunch(
     job.attempts > 1 ? await machine.observe({ ...incarnation, ...(machineId ? { machineId } : {}) }) : undefined;
   if (observed) {
     if (!(await target())) return { kind: "reconcile", observation: observed } as const;
-    if (machineId && observed.kind !== "present") return { kind: "observation_pending" } as const;
+    if (observed.kind === "unknown" || (machineId && observed.kind === "absent"))
+      return { kind: "observation_pending" } as const;
   }
 
   let allocated: MachineIdentity;
