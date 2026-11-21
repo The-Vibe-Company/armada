@@ -408,6 +408,7 @@ export function configureTools(
         .exec({
           sandboxId: found.providerSandboxId,
           ...(args.request_id ? { requestId: args.request_id } : {}),
+          ...(signal ? { signal } : {}),
           command: args.command,
           cwd: args.cwd ?? "/home/user",
           timeoutSeconds: args.timeout_seconds ?? 120,
@@ -446,10 +447,11 @@ export function configureTools(
       return execute();
     }
 
+    const admission: ServerSandboxPatch = { nativeExecAdmission: true };
     return sandboxActivity(
       data.sandboxes,
       found,
-      {},
+      admission,
       async (signal) => {
         signal.throwIfAborted();
         const result = await execute(signal);

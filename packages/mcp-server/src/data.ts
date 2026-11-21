@@ -76,6 +76,7 @@ export interface SandboxView extends SandboxRecord {
 export interface ServerSandboxPatch extends SandboxPatch {
   deleteCompleted?: true;
   expireAfterExtension?: true;
+  nativeExecAdmission?: true;
   nativeRetentionRefusal?: string;
   nativeResumeAdmission?: string;
   nativeSendAdmission?: ServerSandboxPatch["nativeChildSend"];
@@ -1054,6 +1055,11 @@ export function createSqlData(
         if (patch.deleteRequested)
           fence += ` and s.status in ('stopped','failed')
             and not ${SANDBOX_DELETION_MANAGED}`;
+        if (patch.nativeExecAdmission)
+          fence += ` and s.provider in ('boat','modal') and not s.boat_runtime
+            and s.runtime_transport is distinct from 'dialout'
+            and s.status in ('starting','ready','running') and s.deleted_at is null
+            and s.expires_at>clock_timestamp() and s.stop_requested_at is null`;
         // A read-only reconciler may overlap list readiness. Admission can supersede
         // that observation, but never a claimed stop or an expired/starting sandbox.
         // The generation CAS also fences its stop-claim and late publication.
