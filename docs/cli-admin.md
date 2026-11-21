@@ -122,7 +122,7 @@ organization-scoped entries. Lists return metadata, including IDs and versions.
 | `vars read` | `armada api variables/read -` | `org`, `id` |
 | `secrets list` | `armada api secrets/list -` | `org` |
 | `secrets set` | `armada api secrets/set -` | `org`, `scope`, `name`, `value`, optional `expiresAt` |
-| `secrets rotate` | `armada api secrets/rotate -` | `org`, `id`, `expectedVersion`, `value`, optional `expiresAt` |
+| `secrets rotate` | `armada api secrets/rotate -` | `org`, `id`, `expectedVersion`, `value`, optional `name` and `expiresAt` |
 | `secrets revoke` | `armada api secrets/revoke -` | `org`, `id`, `expectedVersion` |
 | `secrets delete` | `armada api secrets/delete -` | `org`, `id`, `expectedVersion` |
 
