@@ -40,12 +40,17 @@ const NO_ADJACENT_DISPATCH_EVIDENCE = `(s.activity_lease_id is distinct from q.r
     select 1 from public.docker_resume_claims c where c.sandbox_id = s.id and c.request_id = q.request_id
   )))`;
 
-const OBSOLETE_RUNTIME_FOLLOWUP = `(s.provider in ('boat','modal')
-  and s.activity_lease_id is distinct from q.request_id
+const OBSOLETE_RUNTIME_PROMPT = `(s.activity_lease_id is distinct from q.request_id
+  and (s.provider <> 'docker' or (
+    not exists(select 1 from public.docker_resume_claims dc
+      where dc.sandbox_id = s.id and dc.request_id = q.request_id)
+    and not exists(select 1 from public.docker_host_jobs dj
+      where dj.bound_sandbox_id = s.id and dj.request_id = q.request_id)
+  ))
   and exists(
     select 1 from public.runtime_commands c
     join public.runtime_enrolments e on e.sandbox_id = c.sandbox_id
-    where c.sandbox_id = s.id and c.request_id = 'follow_' || q.request_id::text
+    where c.sandbox_id = s.id and c.request_id = (case when s.provider = 'docker' then 'docker_prompt_' else 'follow_' end) || q.request_id::text
       and c.result_enc is not null and c.epoch < e.epoch
       and e.runtime_hash is not null and e.lifecycle_generation = s.lifecycle_generation
   )
@@ -175,7 +180,7 @@ export function createJobsStore(sql: Sql, encryptionKey?: string) {
                     or q.dispatch_generation < s.lifecycle_generation - 1
                     or (${ADJACENT_RUNTIME_DISPATCH} and s.status in ('ready','running')
                       and (q.dispatch_until is null or q.dispatch_until <= statement_timestamp())
-                      and (${NO_ADJACENT_DISPATCH_EVIDENCE} or ${OBSOLETE_RUNTIME_FOLLOWUP}))))
+                      and (${NO_ADJACENT_DISPATCH_EVIDENCE} or ${OBSOLETE_RUNTIME_PROMPT}))))
                     as unrecoverable_dispatch,
                   case when ${ADJACENT_RUNTIME_DISPATCH}
                     and (s.status in ('ready','running')

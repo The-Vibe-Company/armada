@@ -1604,24 +1604,30 @@ test.each([
   "expired adjacent dispatch with an obsolete runtime command",
   "adjacent dispatch without a deadline or evidence",
   "adjacent dispatch without a deadline and with an obsolete runtime command",
+  "expired adjacent dispatch with an obsolete Docker prompt",
+  "adjacent dispatch without a deadline and with an obsolete Docker prompt",
 ] as const)("a failed receipt write rolls back retirement after %s", async (scenario) => {
   const f = await fixture();
   const { db, people, store } = f;
   const uncertain = scenario !== "confirmed stop";
-  const sandboxId = await sandbox(f, uncertain);
-  const requestId = crypto.randomUUID();
-  await seedTurn(f, sandboxId, requestId);
-  const id = await store.enqueue(
-    "turn_dispatch",
-    sandboxId,
-    2,
-    requestId,
-    { requestId },
-    {
-      orgId: people.org,
-      maxAttempts: 2,
-    },
-  );
+  const docker = scenario.endsWith("with an obsolete Docker prompt");
+  const turn = docker ? await interruptedDockerTurn("running", f) : null;
+  const sandboxId = turn?.sandboxId ?? (await sandbox(f, uncertain));
+  const requestId = turn?.requestId ?? crypto.randomUUID();
+  if (!turn) await seedTurn(f, sandboxId, requestId);
+  const id =
+    turn?.id ??
+    (await store.enqueue(
+      "turn_dispatch",
+      sandboxId,
+      2,
+      requestId,
+      { requestId },
+      {
+        orgId: people.org,
+        maxAttempts: 2,
+      },
+    ));
   if (uncertain) {
     const missingDeadline = scenario.startsWith("adjacent dispatch without a deadline");
     const adjacent = missingDeadline || scenario.startsWith("expired adjacent");
@@ -1638,7 +1644,7 @@ test.each([
         missingDeadline ? null : adjacent ? "-infinity" : "infinity",
       ],
     );
-    if (scenario.endsWith("with an obsolete runtime command")) {
+    if (docker || scenario.endsWith("with an obsolete runtime command")) {
       await db.query(
         `insert into runtime_enrolments (sandbox_id,lifecycle_generation,epoch,runtime_hash)
          values ($1,3,2,repeat('a',64))`,
@@ -1647,13 +1653,14 @@ test.each([
       await db.query(
         `insert into runtime_commands (sandbox_id,request_id,epoch,request_enc,result_enc)
          values ($1,$2,1,''::bytea,''::bytea)`,
-        [sandboxId, `follow_${requestId}`],
+        [sandboxId, `${docker ? "docker_prompt" : "follow"}_${requestId}`],
       );
     }
-    await db.query("insert into account_agent_reservations (sandbox_id, account_id) values ($1, $2)", [
-      sandboxId,
-      f.openaiCredentialId,
-    ]);
+    if (!turn)
+      await db.query("insert into account_agent_reservations (sandbox_id, account_id) values ($1, $2)", [
+        sandboxId,
+        f.openaiCredentialId,
+      ]);
   } else {
     await db.query("update sandboxes set lifecycle_generation=3, status='stopped', stopped_at=now() where id=$1", [
       sandboxId,
