@@ -163,15 +163,17 @@ export async function deleteSandboxWithActivity(
   mode?: "native-drain",
 ) {
   const nativeDrain = mode === "native-drain";
-  const admission: ServerSandboxPatch = {
-    deleteRequested: true,
-    ...(nativeDrain ? { nativeDrain: true } : {}),
-  };
   if (!sandboxes.assertDeletionAllowed) throw new ToolError("unavailable", "Sandbox deletion is not configured.");
   await sandboxes.assertDeletionAllowed(id);
   const found = await sandboxes.get(id);
   if (!found) throw new ToolError("not_found", `No sandbox with id '${id}' that you can see.`);
   if (found.status === "deleted") return { id: found.id, status: "deleted" as const };
+  if (nativeDrain && !found.providerSandboxId)
+    throw new ToolError("conflict", "Native drain requires an exact provider placement.");
+  const admission: ServerSandboxPatch = {
+    deleteRequested: true,
+    ...(nativeDrain ? { nativeDrainAdmission: { provider: found.provider, placement: found.providerSandboxId } } : {}),
+  };
   const provider = found.providerSandboxId ? await providers.resolve(found, { userId: found.ownerId }) : null;
   const failurePatch = (error: unknown) => {
     if (found.provider === "modal" || isNonMutatingProviderRefusal(error)) return {};

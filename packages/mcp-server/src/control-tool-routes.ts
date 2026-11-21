@@ -58,6 +58,7 @@ export async function sandboxToolContext({ route, caller, body, options }: Contr
     ...(options.connections ? { connections: options.connections } : {}),
     data: listRef !== undefined ? options.scopedSandboxData!(scopedCaller, listRef) : options.data(scopedCaller),
     measure: (phase, work) => measureRequestPhase(options.timing, phase, work),
+    ...(options.modalJobReader ? { modalJobReader: (target) => options.modalJobReader!(target, scopedCaller) } : {}),
     storedProviders: options.storedProviderFor
       ? {
           modal: (target) =>

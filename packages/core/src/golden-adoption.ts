@@ -2,6 +2,7 @@ import { assertGoldenMutation, type GoldenActor, type GoldenRecord } from "./gol
 import { GoldenError } from "./golden-config.ts";
 import type { Sql } from "./golden-store.ts";
 import type { Provider } from "./provider.ts";
+import { HOST_CAPABILITIES } from "./sandbox-provider.ts";
 
 export type GoldenAdoption = (
   provider: Provider,
@@ -15,7 +16,12 @@ export function createGoldenAdoption(sql: Sql): GoldenAdoption {
   return async (provider, actor, golden, confirmation) => {
     assertGoldenMutation(actor, golden);
     const unavailable = () => new GoldenError("conflict", "Canonical adoption unavailable. No golden was changed.");
-    if (provider.id !== "boat" || golden.provider !== "boat" || !golden.providerSnapshotId || !golden.providerSandboxId)
+    if (
+      !HOST_CAPABILITIES[golden.provider]?.canonicalGoldenAdoption ||
+      provider.id !== golden.provider ||
+      !golden.providerSnapshotId ||
+      !golden.providerSandboxId
+    )
       throw unavailable();
     try {
       const identity = await provider.backendIdentity?.();
