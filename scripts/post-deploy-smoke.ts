@@ -83,6 +83,7 @@ class SmokeFailure extends Error {
     readonly waitResponse?: Record<string, string | boolean | number>,
     readonly launchResponse?: { httpStatus?: number; timeoutMs: number; requestId?: string; requestKey?: string },
     readonly transportTimeoutMs?: number,
+    readonly statusResponse?: { httpStatus: number; requestId?: string },
   ) {
     super(code);
   }
@@ -608,18 +609,25 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
         signal,
       });
       receivedResponse = response;
-      const requestId = sandboxLaunch ? response.headers.get("x-request-id") : null;
+      const sandboxStatus = path === "sandbox/status";
+      const requestId = sandboxLaunch || sandboxStatus ? response.headers.get("x-request-id") : null;
+      const correlation =
+        requestId && /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/.test(requestId) ? { requestId } : {};
       const launchResponse = sandboxLaunch
-        ? {
-            httpStatus: response.status,
-            timeoutMs: requestTimeoutMs,
-            ...(requestId && /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/.test(requestId) ? { requestId } : {}),
-          }
+        ? { httpStatus: response.status, timeoutMs: requestTimeoutMs, ...correlation }
         : undefined;
+      const statusResponse = sandboxStatus ? { httpStatus: response.status, ...correlation } : undefined;
       if (!response.ok) {
         const payload = (await response.json().catch((error: unknown) => {
           if (timedOut(error))
-            throw new SmokeFailure("api_failed", response.status, undefined, launchResponse, requestTimeoutMs);
+            throw new SmokeFailure(
+              "api_failed",
+              response.status,
+              undefined,
+              launchResponse,
+              requestTimeoutMs,
+              statusResponse,
+            );
           return null;
         })) as { error?: { code?: unknown } } | null;
         if ([...protectedCanaries].some((value) => JSON.stringify(payload).includes(value)))
@@ -643,7 +651,14 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
         result = (await response.json()) as ResponseBody;
       } catch (error) {
         if (timedOut(error))
-          throw new SmokeFailure("request_failed", response.status, undefined, launchResponse, requestTimeoutMs);
+          throw new SmokeFailure(
+            "request_failed",
+            response.status,
+            undefined,
+            launchResponse,
+            requestTimeoutMs,
+            statusResponse,
+          );
         if (path === "sandbox/wait")
           throw new SmokeFailure("invalid_response", response.status, {
             body: "unparseable",
@@ -721,7 +736,14 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
           until !== undefined &&
           io.now() >= until
         )
-          throw new SmokeFailure("poll_limit_exceeded", undefined, undefined, undefined, error.transportTimeoutMs);
+          throw new SmokeFailure(
+            "poll_limit_exceeded",
+            undefined,
+            undefined,
+            undefined,
+            error.transportTimeoutMs,
+            error.statusResponse,
+          );
         throw error;
       });
       const after = until === undefined ? Number.POSITIVE_INFINITY : until - io.now();
@@ -1570,36 +1592,58 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
           }
         });
         const usageStep = phase ? `${phase}_usage` : second ? "usage_second" : "usage";
-        await step(usageStep, () =>
-          poll(
-            (timeoutMs) =>
-              sandbox<{
-                usage?: {
-                  turns?: {
-                    promptId: string;
-                    inputTokens: number | null;
-                    outputTokens: number | null;
-                    cachedTokens?: number | null;
-                  }[];
-                  tokenTotals?: { inputTokens: number | null; outputTokens: number | null; incomplete?: boolean };
+        await step(usageStep, async () => {
+          let attempts = 0;
+          let lastResponse: Record<string, string | boolean | number> | null = null;
+          try {
+            await poll(
+              async (timeoutMs) => {
+                attempts++;
+                const startedAt = io.now();
+                const result = await sandbox<{
+                  usage?: {
+                    turns?: {
+                      promptId: string;
+                      inputTokens: number | null;
+                      outputTokens: number | null;
+                    }[];
+                    tokenTotals?: { inputTokens: number | null; outputTokens: number | null; incomplete?: boolean };
+                  };
+                } | null>("status", { id: sandboxId }, timeoutMs);
+                const usage = result?.usage;
+                const row = Array.isArray(usage?.turns)
+                  ? usage.turns.find((row) => row?.promptId === turn.promptId)
+                  : undefined;
+                const totals = usage?.tokenTotals;
+                // Journal only field shapes and booleans. Status bodies may contain secrets.
+                lastResponse = {
+                  elapsedMs: io.now() - startedAt,
+                  turns: jsonShape(usage?.turns),
+                  promptMatched: row !== undefined,
+                  inputTokens: jsonShape(row?.inputTokens),
+                  outputTokens: jsonShape(row?.outputTokens),
+                  totalInputTokens: jsonShape(totals?.inputTokens),
+                  totalOutputTokens: jsonShape(totals?.outputTokens),
+                  incomplete:
+                    typeof totals?.incomplete === "boolean" ? totals.incomplete : jsonShape(totals?.incomplete),
                 };
-              }>("status", { id: sandboxId }, timeoutMs),
-            (result) => {
-              const row = result.usage?.turns?.find((row) => row.promptId === turn.promptId);
-              // A resumed prompt must be measured, not an explicit unknown receipt.
-              return (
-                result.usage?.tokenTotals?.incomplete !== true &&
-                typeof row?.inputTokens === "number" &&
-                typeof row.outputTokens === "number" &&
-                typeof result.usage?.tokenTotals?.inputTokens === "number" &&
-                typeof result.usage?.tokenTotals?.outputTokens === "number"
-              );
-            },
-            { step: usageStep },
-          ).catch((error: unknown) => {
+                return (
+                  totals?.incomplete !== true &&
+                  typeof row?.inputTokens === "number" &&
+                  typeof row.outputTokens === "number" &&
+                  typeof totals?.inputTokens === "number" &&
+                  typeof totals.outputTokens === "number"
+                );
+              },
+              (accepted) => accepted,
+              { step: usageStep },
+            );
+          } catch (error) {
             if (
               error instanceof SmokeFailure &&
-              (error.code === "request_failed" || error.transportTimeoutMs !== undefined)
+              (error.code === "poll_limit_exceeded" ||
+                error.code === "request_failed" ||
+                error.transportTimeoutMs !== undefined)
             ) {
               io.out(
                 JSON.stringify({
@@ -1609,12 +1653,17 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
                   route: "sandbox/status",
                   timeoutMs: error.transportTimeoutMs ?? null,
                   code: error.code,
+                  attempts,
+                  lastResponse,
+                  ...error.statusResponse,
+                  ...(sandboxId && SANDBOX_ID.test(sandboxId) ? { sandboxId } : {}),
+                  ...(SANDBOX_ID.test(turn.promptId) ? { promptId: turn.promptId } : {}),
                 }),
               );
             }
             throw error;
-          }),
-        );
+          }
+        });
         if (github)
           await step(second ? "native_git_second" : "native_git_first", async () => {
             const result = await sandbox<{ exitCode: number | null; timedOut: boolean; stdout?: unknown }>("exec", {
