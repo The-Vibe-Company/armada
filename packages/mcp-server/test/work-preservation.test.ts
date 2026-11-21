@@ -868,13 +868,16 @@ test("native Modal preservation refuses clean proof from a replacement physical 
     };
     const authority = { kind: "activity", token: activity, generation } as const;
     const receipts = () =>
-      db.query("select sandbox_id from sandbox_native_preservation_receipts where sandbox_id=$1", [id]);
+      db.query(
+        "select capture_acknowledgements->>'modalPhysicalGeneration' as generation from sandbox_native_preservation_receipts where sandbox_id=$1",
+        [id],
+      );
 
     await preserveBeforeStop(sql, host, id, physical, "user_stop", authority);
     expect((await receipts()).rows).toHaveLength(0);
 
     await preserveBeforeStop(sql, host, id, physical, "user_stop", authority);
-    expect((await receipts()).rows).toHaveLength(1);
+    expect((await receipts()).rows).toEqual([{ generation: "8" }]);
   }, "modal-native");
 });
 
@@ -902,10 +905,16 @@ async function seedNativeDrainReceipt(ciphertext = new Uint8Array([21, 34, 55]),
   ]);
   await db.query(
     `insert into sandbox_native_preservation_receipts
-       (sandbox_id,generation,stop_generation,capture_generation,capture_stop_generation,archive_id)
-     values($1,4,2,4,2,$2)`,
-    [sandboxId, archiveId],
+       (sandbox_id,generation,stop_generation,capture_generation,capture_stop_generation,archive_id,capture_acknowledgements)
+     values($1,4,2,4,2,$2,$3::jsonb)`,
+    [sandboxId, archiveId, provider === "modal" ? JSON.stringify({ modalPhysicalGeneration: "1" }) : null],
   );
+  if (provider === "modal")
+    await db.query(
+      `insert into modal_machines(scope,org_id,owner_id,visibility,id,request_key,record)
+       values('drain-fixture',$1,$2,'private',$3,$3,'{"phase":"stopped","generation":1}'::jsonb)`,
+      [people.org, people.owner, "bx_" + sandboxId],
+    );
   async function copy(generation = 4) {
     const result = await db.query<{ outcome: string }>("select copy_native_drain_recovery($1,$2) as outcome", [
       sandboxId,
@@ -915,6 +924,43 @@ async function seedNativeDrainReceipt(ciphertext = new Uint8Array([21, 34, 55]),
   }
   return { db, people, sandboxId, archiveId, ciphertext, copy };
 }
+
+test.each(["live restore lease", "expired restore lease", "replacement", "historical receipt"] as const)(
+  "native Modal drain leaves work and the row intact with %s",
+  async (scenario) => {
+    const { db, people, sandboxId } = await seedNativeDrainReceipt(undefined, "modal");
+    const leaseUntil = { "live restore lease": "2099-01-01", "expired restore lease": "2000-01-01" } as const;
+    const deadline =
+      scenario === "live restore lease" || scenario === "expired restore lease" ? leaseUntil[scenario] : null;
+    await db.query(
+      `update modal_machines set record=jsonb_set(record,'{generation}',$2::jsonb),
+         lease_id=case when $3::timestamptz is not null then $4::uuid end, lease_until=$3
+       where id=$1`,
+      ["bx_" + sandboxId, scenario === "replacement" ? "2" : "1", deadline, crypto.randomUUID()],
+    );
+    if (scenario === "historical receipt")
+      await db.query(
+        "update sandbox_native_preservation_receipts set capture_acknowledgements=null where sandbox_id=$1",
+        [sandboxId],
+      );
+
+    const caller: Caller = { via: "service", userId: people.owner, orgs: [{ orgId: people.org, role: "member" }] };
+    const { sandboxes } = createSqlData(bunLikeSql(db))(caller);
+    const remove = mock(async () => ({ status: "deleted" as const }));
+    const providers = { resolve: async () => ({ ...fakeBoat().provider, id: "modal" as const, delete: remove }) };
+
+    await expect(deleteSandboxWithActivity(sandboxes, providers, sandboxId, "native-drain")).rejects.toMatchObject({
+      code: "sandbox_not_ready",
+    });
+    expect(remove).not.toHaveBeenCalled();
+    expect((await db.query("select status,native_drain_pending from sandboxes where id=$1", [sandboxId])).rows).toEqual(
+      [{ status: "stopped", native_drain_pending: false }],
+    );
+    expect(
+      (await db.query("select archive_id from native_drain_recovery where sandbox_id=$1", [sandboxId])).rows,
+    ).toEqual([]);
+  },
+);
 
 async function nativeToolFixture(provider: Provider, placement: string, onQuery?: (statement: string) => void) {
   const { db, people, sharedGoldenId, modalGoldenId, openaiCredentialId } = sharedDatabase();

@@ -389,6 +389,7 @@ async function captureAndStore(
             progress.fence,
             progress.stopToken,
             context.captureId,
+            provider.id === "modal" ? (physicalGeneration ?? null) : null,
           );
           if (expired() || evidence === undefined) return "pending";
           acknowledgements = evidence;

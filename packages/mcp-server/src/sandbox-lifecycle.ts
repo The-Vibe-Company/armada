@@ -157,11 +157,13 @@ export async function readNativeCaptureAcknowledgements(
   fence: StopFence,
   stopToken: string | null,
   captureId: string,
+  modalPhysicalGeneration: string | null,
 ) {
   const { rows } = await sql.query<{ evidence: string }>(
     `select (
        select jsonb_build_object(
          'captureId',$8::text,
+         'modalPhysicalGeneration',$9::text,
          'prompts',jsonb_object_agg(p.acknowledged_request_id,p.prompt_id)
            filter (where p.acknowledged_request_id is not null),
          'completedPrompts',jsonb_agg(p.prompt_id)
@@ -173,7 +175,7 @@ export async function readNativeCaptureAcknowledgements(
          and p.completed_at is not null
      )::text as evidence
      from public.sandboxes where ${NOTE_FENCE} and not application_secret_tainted`,
-    [id, ...fence, stopToken, captureId],
+    [id, ...fence, stopToken, captureId, modalPhysicalGeneration],
   );
   return rows[0]?.evidence;
 }
@@ -972,6 +974,35 @@ export async function requestNativeDrainStop(
     );
     return true;
   });
+}
+
+export async function hasPreservedModalDrainIncarnation(tx: Sql, id: string, pending: boolean) {
+  // WARNING: The journal lock must not wait while holding the sandbox lock because Modal ingest takes them in reverse order.
+  const { rows } = await tx.query<{ eligible: boolean }>(
+    `with journal as materialized (
+       select m.owner_id,m.record,m.lease_id,m.lease_until
+       from public.modal_machines m join public.sandboxes s
+         on m.org_id=s.org_id and m.id=s.provider_sandbox_id
+       where s.id=$1
+       for update of m nowait
+     )
+     select (
+       j.owner_id=s.owner_id
+       and j.record->>'commonRuntime' is distinct from 'true'
+       and case when $2 then j.record->>'phase' in ('stopped','deleting','deleted')
+         else j.record->>'phase'='stopped' and j.lease_id is null and j.lease_until is null end
+       and exists (
+         select 1 from public.sandbox_native_preservation_receipts r
+         where r.sandbox_id=s.id and ($2 or r.generation=s.lifecycle_generation)
+           and r.stop_generation=s.stop_generation and r.stop_generation=s.preservation_stop_generation
+           and r.capture_generation=r.generation and r.capture_stop_generation=r.stop_generation
+           and r.capture_acknowledgements->>'modalPhysicalGeneration'=j.record->>'generation'
+       )
+     ) as eligible
+     from journal j cross join public.sandboxes s where s.id=$1`,
+    [id, pending],
+  );
+  return rows.length === 1 && rows[0]?.eligible === true;
 }
 
 export async function markNativeDrainDispatchUnclaimed(tx: Sql, id: string) {
