@@ -2157,7 +2157,7 @@ test.each(["before allocation", "after allocation"] as const)(
   },
 );
 
-function interruptModalBinding(sql: Sql): Sql {
+function interruptModalBinding(sql: Sql) {
   return {
     ...sql,
     transaction: (work) =>
@@ -2171,7 +2171,7 @@ function interruptModalBinding(sql: Sql): Sql {
           },
         }),
       ),
-  };
+  } satisfies Sql;
 }
 
 test.each(["create response", "bootstrap dispatch", "bootstrap response"] as const)(
