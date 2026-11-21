@@ -983,7 +983,6 @@ export function createSqlData(
         const stopAdmissionReason = stopStatus === "stopping" && !patch.finishActivity ? reason : undefined;
         if (reason !== undefined && stopAdmissionReason === undefined) set("status_reason", reason, "::text");
         if (sets.length === 0) return;
-        // Pending drain rows accept only renewal of the live delete lease here.
         let fence = patch.renewActivity
           ? " and (not s.native_drain_pending or s.activity_until > clock_timestamp())"
           : " and not s.native_drain_pending";

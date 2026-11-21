@@ -47,6 +47,7 @@ function logSkipped(skipped: readonly SkippedSandboxRow[]) {
 export type SandboxDetail = Omit<
   Sandbox,
   | "harness"
+  | "native_drain_pending"
   | "docker_retention_deadline"
   | "external_ref"
   | "outputs_attempt_count"
