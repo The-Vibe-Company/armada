@@ -658,7 +658,6 @@ describe("launch", () => {
     const g = {
       ...golden("org"),
       provider: "modal" as const,
-      boatSnapshotId: null,
       modal: { workspace: "ws", environment: "main", appId: "ap" },
     };
     const world = setup({ golden: g });

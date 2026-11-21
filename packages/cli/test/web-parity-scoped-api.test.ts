@@ -289,7 +289,7 @@ test("CLI list matches scoped web filters, exact totals and stable pages with sa
     const modal =
       page.sandboxes.find((s: { id: string }) => s.id === sid(38)) ??
       second.sandboxes.find((s: { id: string }) => s.id === sid(38));
-    expect(modal).toMatchObject({ provider: "modal", providerSandboxId: "physical-38", boatId: null });
+    expect(modal).toMatchObject({ provider: "modal", providerSandboxId: "physical-38" });
     await f.setActor(other);
     const otherOwner = JSON.parse((await f.cli(["ls", "--json", "--owner", "me", "--agent", "claude"])).out);
     expect(otherOwner.sandboxes.map((s: { id: string }) => s.id)).toEqual([sid(31), sid(34)]);

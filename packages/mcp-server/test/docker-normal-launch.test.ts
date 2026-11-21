@@ -1308,7 +1308,6 @@ test.each(competingPromptRefusals)("Docker controls settle after %s", async (_ca
   expect(listed.sandboxes[0]).toMatchObject({
     id: f.body.requestId,
     provider: "docker",
-    boatId: null,
     status: "ready",
   });
   const status = (await post("sandbox/status", { ...scope, id: f.body.requestId })) as DockerSandboxStatus;

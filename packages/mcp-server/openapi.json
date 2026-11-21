@@ -2903,20 +2903,6 @@
                             ],
                             "description": "The Modal workspace, environment and App ID this snapshot is pinned to."
                           },
-                          "boatSnapshotId": {
-                            "description": "The same as providerSnapshotId on a Boat snapshot or sandbox; null on any other provider.",
-                            "type": [
-                              "string",
-                              "null"
-                            ]
-                          },
-                          "boatSandboxId": {
-                            "description": "The same as providerSandboxId on a Boat snapshot or sandbox; null on any other provider.",
-                            "type": [
-                              "string",
-                              "null"
-                            ]
-                          },
                           "repos": {
                             "type": "integer",
                             "minimum": -9007199254740991,
@@ -2981,8 +2967,6 @@
                           "baselineOutdated",
                           "providerSandboxId",
                           "modal",
-                          "boatSnapshotId",
-                          "boatSandboxId",
                           "repos",
                           "config",
                           "buildWarnings"
@@ -5311,12 +5295,6 @@
                               "null"
                             ]
                           },
-                          "boatId": {
-                            "type": [
-                              "string",
-                              "null"
-                            ]
-                          },
                           "id": {
                             "type": "string"
                           },
@@ -5529,7 +5507,6 @@
                           "timeLeftSeconds",
                           "expiringSoon",
                           "providerSandboxId",
-                          "boatId",
                           "id",
                           "orgId",
                           "ownerId",

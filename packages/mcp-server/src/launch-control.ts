@@ -32,7 +32,7 @@ import { providerForGolden } from "./golden-control.ts";
 import { prepareGoldenLaunchAccount } from "./launch-account-admission.ts";
 import { launchCredentials } from "./launch-credentials.ts";
 import { readLaunchOptions } from "./launch-options.ts";
-import { canonicalLaunchResponse, goldenLaunchResponse } from "./launch-response-schemas.ts";
+import { canonicalLaunchResponse, goldenLaunchResponse, publicLaunchReceipt } from "./launch-response-schemas.ts";
 import { type GoldenLaunchTiming, observeGoldenLaunch } from "./request-timing.ts";
 import { defineRoutes } from "./routes.ts";
 import { ToolApiError } from "./tool-api.ts";
@@ -235,7 +235,7 @@ async function launchGolden(
   };
   const { idempotencyKey: _key, ...request } = body;
   // Same key and same request replays the recorded answer; a different request under the key is refused.
-  return options.ordinaryLaunchReceipts!.run(
+  const receipt = await options.ordinaryLaunchReceipts!.run(
     actor,
     idempotencyKey,
     {
@@ -247,6 +247,7 @@ async function launchGolden(
     dispatch,
     authority,
   );
+  return publicLaunchReceipt(receipt);
 }
 
 export async function launchActor(
@@ -483,7 +484,7 @@ export const launchRoutes = defineRoutes("launch", {
         },
         "template_rest",
       );
-      if (receipt.state === "succeeded") return launchOperation.output.parse(receipt.envelope);
+      if (receipt.state === "succeeded") return publicLaunchReceipt(launchOperation.output.parse(receipt.envelope));
       throw pinnedModalFailure(receipt);
     }
     scopedOrg(caller, launch.org);

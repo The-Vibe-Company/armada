@@ -6,16 +6,14 @@ All current organization members may list it, including existing private/org row
 private or removed source goldens, and rows whose legacy access owner differs.
 Legacy managed parents are excluded until database retirement. There is no global/public list.
 
-Fields: providerSandboxId, boatId, id, orgId, ownerId, provider, harness, model, reasoningEffort, status,
+Fields: providerSandboxId, id, orgId, ownerId, provider, harness, model, reasoningEffort, status,
 createdAt, stoppedAt, expiresAt, effectiveTtlSeconds, machineSize (effective size
 only, no repository evidence), displayLabel (`Sandbox ` plus logical UUID),
 canOpen, canManage. Dates are ISO strings; nullable fields are explicit nulls.
 Interior-only fields (taskOutcome, pullRequests: the confirmed GitHub pull requests,
 #2612) are null unless the caller is the owner or a current admin.
-Canonical providerSandboxId is nullable display metadata (including Boat bx_ IDs),
-not a credential. boatId is a deprecated display compatibility alias equal to
-providerSandboxId for Boat, always null for Modal; unavailable/empty ids become
-null. These IDs do not grant interior or provider authority. Never derive a
+Canonical providerSandboxId is nullable display metadata (including Boat bx_ IDs).
+Unavailable or empty ids become null. These IDs do not grant interior or provider authority. Never derive a
 routing URL or expose Modal App/workspace/environment bindings from them.
 
 No golden name/id/config, provider binding, conversation, repository,
@@ -34,8 +32,9 @@ another user's key. Provider operations can therefore be refused despite
 canOpen=true. Do not substitute/decrypt an owner's key to bypass that refusal.
 
 Dashboard read port: `public.sandbox_list_metadata()` (authenticated, no arguments),
-returns the exact camelCase DTO rows in the caller's current organizations; raw
-sandbox SELECT remains interior-only. Consumers may filter/paginate these safe
+returns camelCase metadata rows in the caller's current organizations. Its database
+signature still includes the legacy `boatId` column during the database overlap.
+The dashboard reads `providerSandboxId`. Raw sandbox SELECT remains interior-only. Consumers may filter/paginate these safe
 rows. MCP/API list count and pagination use identical current-org predicates.
 Backend #680 owns this RPC/type/server boundary; CLI #682 owns CLI source/tests; UI #683 owns dashboard adapters,
 rendered pages and chooser removal. Sibling owns connections.ts and migration212.

@@ -117,7 +117,6 @@ export const sandboxListMetadata = z.object({
   usage: sandboxUsage,
   preservationNote: z.string().nullable().optional(),
   providerSandboxId: z.string().nullable(),
-  boatId: z.string().nullable(),
   id: z.string(),
   orgId: z.string(),
   ownerId: z.string(),
