@@ -150,7 +150,7 @@ export async function createModalIntegration(options: {
   async function resolveManagementCredentials(
     authority: Pick<ModalManagementAuthority, "credentialScope" | "credentialOwnerId">,
     vault: CredentialReader = options.vault,
-  ) {
+  ): Promise<ResolvedModalManagementCredentials & { id: string | undefined; version: number | undefined }> {
     const row = (await vault.credentials(authority.credentialScope, authority.credentialOwnerId)).find(
       (candidate) => candidate.kind === "modal" && candidate.status === "active",
     );
@@ -167,7 +167,7 @@ export async function createModalIntegration(options: {
         credentialOwnerId: authority.credentialOwnerId,
         id: row.id,
         version: row.version,
-      } satisfies ResolvedModalManagementCredentials & { id: string | undefined; version: number | undefined };
+      };
     } catch {
       throw new VaultError("unavailable", "The bound Modal credential is invalid. Replace that credential slot.");
     }
