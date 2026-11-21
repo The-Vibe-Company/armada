@@ -163,7 +163,7 @@ test("Modal backfill preserves accepted, refused and unresolved ordinary keys wi
         request.id,
         input.orgId,
         input.ownerId,
-        request.key.toWellFormed(),
+        request === success ? `${key}accepted\ufffd` : request.key,
         request.digest,
         request === unattributed ? null : { target: { provider: request === boat ? "boat" : "modal" } },
         request === success ? { sandbox: { id: accepted, status: "ready" }, promptId: "prior-prompt" } : null,
