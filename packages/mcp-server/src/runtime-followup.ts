@@ -70,7 +70,7 @@ export function createRuntimeFollowup(
     )
       throw new VaultError("invalid", "Runtime follow-up uses the launch model and effort.");
     const assertDirectLaunchReady = async () => {
-      if (claim || found.provider !== "modal") return;
+      if (claim) return;
       const {
         rows: [setup],
       } = await sql.query<{ state: string | null; prompt_pending: boolean }>(
