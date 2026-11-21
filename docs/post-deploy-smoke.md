@@ -1884,14 +1884,19 @@ sorts last. Generate the configuration with this command.
 bun scripts/smoke-deadlines.ts /path/to/green-journals > scripts/smoke-deadlines.json
 ```
 
-The generator uses successful, positive `elapsedMs` receipts. Each step needs
-at least 20 receipts from the 20-run window, and a run can contribute multiple
-receipts. The deadline for each step is the greater of two seconds and twice
-its nearest-rank p99, rounded up to milliseconds. At 20 samples the p99 is the
-largest observation. The extra p99 and the two-second floor give network calls
-and other smoke steps room for latency variation outside that small sample.
-Steps with fewer than 20 receipts use their existing defaults.
-Measured usage polls have a five-second floor. If the first
+The generator uses successful receipts with a positive `elapsedMs` and
+explicit `provider`, `lane`, and `step` fields. A run can contribute multiple
+receipts. Each provider, lane, and step needs 20 of its own receipts from the
+20-run window. Missing entries use the lane's generic request or observation
+limit. After a launch timing contract changes, collect samples under the new
+contract before reusing measured launch or readiness budgets.
+
+The deadline is `max(2 × p99, floor)` using nearest-rank p99 and rounding up to
+milliseconds. At 20 samples the p99 is the largest observation. The regular
+floor is two seconds, and usage polling has a five-second floor. Docker
+real-model readiness has a 60-second floor because the launch can return
+`starting` and the release smoke was still waiting at 40.225 seconds.
+If the first
 `sandbox/status` read finishes within two seconds, the floor allows a
 one-second interval and at least two seconds for the next read.
 Usage polling sends another read only when its remaining budget can

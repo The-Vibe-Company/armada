@@ -21,7 +21,8 @@ import {
   SecretProbeError,
 } from "./provider-parity-secret.ts";
 import { isSkillsProbeBinding, prepareSkillsProbe, type SkillsProbeBinding } from "./provider-parity-skills.ts";
-import deadlines from "./smoke-deadlines.json";
+import deadlineTable from "./smoke-deadlines.json";
+import { deadlinesFor } from "./smoke-deadlines.ts";
 import { observeSmokeLaunch } from "./smoke-launch.ts";
 import { STAGING_ORIGIN } from "./smoke-sandbox-cleanup.ts";
 import { BOAT_STAGING_NOTICE, smokeReceiptProvider, stagingSmokeCases } from "./staging-smoke-policy.ts";
@@ -43,7 +44,7 @@ type Diagnostic = {
 // This is a bound, not an assertion about any provider's expected latency.
 const OBSERVATION_MS = 600_000;
 const UUID = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i;
-const launchTimeouts = deadlines as Record<string, number>;
+
 type Cell = { status: "pass" | "fail" | "unsupported" | "not-run"; reason: string | null; diagnostic?: Diagnostic };
 
 class ParityError extends Error {
@@ -698,7 +699,8 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
       const started = io.now();
       const requestKey = `post-deploy-smoke:${crypto.randomUUID()}`;
       const step = dockerSnapshot ? "parity_docker_snapshot_launch" : `parity_${provider}_launch`;
-      const timeoutMs = launchTimeouts[step] ?? 600_000;
+      const lane = dockerSnapshot ? "parity-snapshot" : feature === "github" ? "parity-github" : "parity";
+      const timeoutMs = deadlinesFor(deadlineTable, provider, lane)[step] ?? 600_000;
       const budget = Math.min(deadline, requestDeadline ?? deadline);
       const remaining = budget - started;
       if (remaining <= 0) throw new Error("poll_limit_exceeded");
@@ -792,7 +794,7 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
       if (typeof result.sandbox?.id !== "string" || !result.sandbox.id || result.sandbox.provider !== provider)
         throw new Error("invalid_launch_receipt");
       if (!id) await claim(result.sandbox.id);
-      if (!dockerSnapshot) io.out(JSON.stringify({ step, provider, pass: true, elapsedMs: io.now() - started }));
+      if (!dockerSnapshot) io.out(JSON.stringify({ step, provider, lane, pass: true, elapsedMs: io.now() - started }));
       return result;
     }
     const readableUntil = Math.min(deadline, io.now() + 110_000);
@@ -2039,13 +2041,14 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
                         };
                       };
                     };
+                    const lane = `parity-${feature}`;
                     const timingStep = `parity_${c.provider}_${feature}_launch`;
                     const started = io.now();
                     const featureDeadline = feature === "templates" ? deadline : readableUntil;
                     const until = Math.min(
                       featureDeadline,
                       requestDeadline ?? Number.POSITIVE_INFINITY,
-                      started + (launchTimeouts[timingStep] ?? OBSERVATION_MS),
+                      started + (deadlinesFor(deadlineTable, c.provider, lane)[timingStep] ?? OBSERVATION_MS),
                     );
                     let lastDiagnostic: Diagnostic | undefined;
                     let polls = 0;
@@ -2165,6 +2168,7 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
                     io.out(
                       JSON.stringify({
                         step: timingStep,
+                        lane,
                         provider: c.provider,
                         pass: true,
                         elapsedMs: io.now() - started,
@@ -2203,6 +2207,7 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
             io.out(
               JSON.stringify({
                 step: "parity_docker_snapshot_launch",
+                lane: "parity-snapshot",
                 provider: c.provider,
                 pass: true,
                 elapsedMs: io.now() - operationStarted,

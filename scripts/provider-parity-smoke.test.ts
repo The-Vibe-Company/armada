@@ -1490,6 +1490,7 @@ for (const mode of [
           JSON.stringify({
             step: "parity_docker_launch",
             provider: "docker",
+            lane: "parity",
             pass: true,
             elapsedMs: 1_500,
           }),
@@ -1535,6 +1536,7 @@ for (const mode of [
         expect(lines.map((line) => (line.startsWith("{") ? JSON.parse(line) : null))).toContainEqual({
           step: "parity_modal_launch",
           provider: "modal",
+          lane: "parity",
           pass: true,
           elapsedMs: 1_500,
         });
@@ -1827,6 +1829,7 @@ for (const mode of [
               expect(lines).toContain(
                 JSON.stringify({
                   step: "parity_docker_snapshot_launch",
+                  lane: "parity-snapshot",
                   provider: "docker",
                   pass: true,
                   elapsedMs: 2_500,
@@ -2052,6 +2055,7 @@ for (const mode of [
           if (mode === "template_timeout_recovery")
             expect(lines.filter((line) => line.startsWith("{")).map((line) => JSON.parse(line))).toContainEqual({
               step: `parity_${provider}_templates_launch`,
+              lane: "parity-templates",
               provider,
               pass: true,
               elapsedMs: 1000,
