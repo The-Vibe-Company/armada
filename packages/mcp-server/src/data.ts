@@ -123,7 +123,7 @@ export interface ServerSandboxStore extends SandboxStore {
   launchTiming?(id: string): Promise<LaunchTiming | null>;
   assertExtensionAllowed?(id: string): Promise<void>;
   assertDeletionAllowed?(id: string): Promise<void>;
-  /** Admission-only read: ordinary exec stays concurrent, but cannot start during stop. */
+  /** Refuse taint and stop intent before any exec; native exec also claims the activity lease. */
   assertExecAllowed?(id: string): Promise<void>;
   recordUsage?(
     id: string,
