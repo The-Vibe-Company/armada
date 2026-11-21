@@ -1414,7 +1414,7 @@ test.each(["not_found", "pending", "settlement failure"] as const)(
   },
 );
 
-test.each(["activity", "queue", "provider observation", "ordinary delete"] as const)(
+test.each(["activity", "queue", "provider observation", "owner row update", "ordinary delete"] as const)(
   "uncertain native drain refuses %s after its lease expires",
   async (attempt) => {
     const { db, people, sandboxId } = await seedNativeDrainReceipt();
@@ -1452,6 +1452,16 @@ test.each(["activity", "queue", "provider observation", "ordinary delete"] as co
           providerObservation: { fromState: "stopped", providerRunPlacement: `bx_${sandboxId}` },
         }),
       ).rejects.toMatchObject({ code: "sandbox_not_ready" });
+    } else if (attempt === "owner row update") {
+      await db.transaction(async (tx) => {
+        await tx.query("select set_config('request.jwt.claim.sub', $1, true)", [people.owner]);
+        await tx.exec("set local role authenticated");
+        const updated = await tx.query(
+          "update sandboxes set status='ready',stopped_at=null where id=$1 returning id",
+          [sandboxId],
+        );
+        expect(updated.rows).toEqual([]);
+      });
     } else if (attempt === "queue") {
       const queue = createAccountTurnQueue(sql, ENCRYPTION_KEY);
       await expect(queue.accept(caller, { id: sandboxId, prompt: "new work" })).rejects.toThrow(
