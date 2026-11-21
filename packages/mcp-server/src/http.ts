@@ -17,8 +17,8 @@ import {
   type Sql,
   VERSION,
 } from "@armada/core/server";
-import { AuthUnavailable, authenticateCaller, type CallerResult, type SupabaseProject } from "./caller.ts";
-import type { DataSource } from "./data.ts";
+import { AuthUnavailable, authenticateCaller, type Caller, type CallerResult, type SupabaseProject } from "./caller.ts";
+import type { DataSource, SandboxView } from "./data.ts";
 import { exposedSecrets, type GitHubLaunchOptions, launchCredentials } from "./launch-credentials.ts";
 import type { LaunchDiscoveryOptions } from "./launch-options.ts";
 import { observeNativeFirstToken } from "./launch-stage-record.ts";
@@ -58,6 +58,7 @@ export interface HandlerOptions {
     caller: { userId: string },
     captureRuntimeWork?: ModalConnectionPorts["captureRuntimeWork"],
   ) => Promise<Provider>;
+  logProvider?(target: SandboxView, caller: Caller): Promise<Provider>;
   storedProviderFor?: (target: ProviderTarget, caller: { userId: string }) => Promise<Provider>;
   /** Runtime readiness of the serving database pool; no credentials in the result. */
   ready?: () => Promise<boolean>;
@@ -205,6 +206,7 @@ export function createHandler(options: HandlerOptions): (request: Request) => Pr
         launchCredentials: launchCredentials(options.vault, options.encryptionKey, options.github, options.modelAuth),
         exposedSecrets: (orgId) =>
           exposedSecrets(options.vault, options.encryptionKey, { userId: caller.userId, orgId }),
+        ...(options.logProvider ? { logProvider: (target) => options.logProvider!(target, caller) } : {}),
         storedProviders: options.storedProviderFor
           ? { modal: (target) => options.storedProviderFor!(target, caller) }
           : {},
