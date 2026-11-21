@@ -1494,11 +1494,12 @@ test("a late Modal delete receipt cannot settle the retry owner's generation", a
   const retryDispatched = Promise.withResolvers<void>();
   const firstReceipt = Promise.withResolvers<void>();
   const retryReceipt = Promise.withResolvers<void>();
+  let dispatches = 0;
   const provider: Provider = {
     ...fakeBoat().provider,
     id: "modal",
-    delete: async ({ generation }) => {
-      if (generation === 5) {
+    delete: async () => {
+      if (++dispatches === 1) {
         firstDispatched.resolve();
         await firstReceipt.promise;
       } else {
