@@ -62,6 +62,11 @@ export const PROVIDER_LIMITS: Readonly<Record<SandboxPlacementProviderId, Provid
  */
 export interface HostCapabilities {
   readonly requiresPinnedGoldenBinding: boolean;
+  readonly canonicalGoldenAdoption: boolean;
+  readonly templateReceiptTransport?: "dialout";
+  readonly startRateLimitStatus?: number;
+  readonly snapshotSourceBusyCode?: string;
+  readonly builderImageFailureCode?: string;
   /** Install the baseline on the live builder or verify the preinstalled baseline as the image user. */
   readonly goldenBuilderBaseline: "install-at-build" | "preinstalled-as-user";
   /** Re-resolve pinned management authority inside the golden build admission transaction. */
@@ -98,6 +103,8 @@ export interface HostCapabilities {
 export const HOST_CAPABILITIES: Readonly<Record<SandboxProviderId, HostCapabilities>> = {
   boat: {
     requiresPinnedGoldenBinding: false,
+    canonicalGoldenAdoption: true,
+    startRateLimitStatus: 429,
     goldenBuilderBaseline: "install-at-build",
     revalidateGoldenManagementAtAdmission: false,
     goldenRestore: "fresh-fork",
@@ -112,6 +119,10 @@ export const HOST_CAPABILITIES: Readonly<Record<SandboxProviderId, HostCapabilit
   },
   modal: {
     requiresPinnedGoldenBinding: true,
+    canonicalGoldenAdoption: false,
+    templateReceiptTransport: "dialout",
+    snapshotSourceBusyCode: "snapshot_source_busy",
+    builderImageFailureCode: "modal_builder_image_failed",
     goldenBuilderBaseline: "preinstalled-as-user",
     revalidateGoldenManagementAtAdmission: true,
     goldenRestore: "shared-source",

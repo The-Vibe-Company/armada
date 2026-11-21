@@ -1,6 +1,12 @@
 import { createHash } from "node:crypto";
 import { accountModelCountsSql, accountWaitingCountSql, accountWorkingCountSql } from "./account-work-sql.ts";
-import { type AgentDefault, connectionModels, HARNESS_KINDS, parseCredentialValue } from "./credentials.ts";
+import {
+  type AgentDefault,
+  CREDENTIAL_KINDS,
+  connectionModels,
+  HARNESS_KINDS,
+  parseCredentialValue,
+} from "./credentials.ts";
 import { decryptSecret, encryptSecret } from "./crypto.ts";
 import type { CredentialKind, CredentialScope, MemberRole } from "./database.types.ts";
 import type { GitHubConnectionStore, GitHubUser, StoredGitHubConnection } from "./github.ts";
@@ -11,6 +17,10 @@ import type { CredentialInfo, MemberInfo, OrgSummary, VaultStore } from "./vault
 import { VaultError } from "./vault-error.ts";
 
 // These SQL fragments contain only catalog-owned enum labels, never caller input.
+const SINGLETON_KIND_SQL = Object.entries(CREDENTIAL_KINDS)
+  .filter(([, info]) => info.singleton)
+  .map(([kind]) => `'${kind}'`)
+  .join(",");
 const MODEL_KIND_SQL = MODEL_CREDENTIAL_KINDS.map((kind) => `'${kind}'`).join(",");
 async function preserveMorphModels(previous: Uint8Array, replacement: Uint8Array, encryptionKey: string | undefined) {
   const apiKey = await decryptSecret(new Uint8Array(replacement), encryptionKey);
@@ -287,7 +297,7 @@ export function createSqlVaultStore(sql: Sql): VaultStore {
     },
 
     async upsertCredential(scope, ownerId, kind, valueEnc, actorId, encryptionKey) {
-      if (kind !== "boat" && kind !== "modal" && kind !== "skillpack") {
+      if (!CREDENTIAL_KINDS[kind].singleton) {
         if (!sql.transaction) throw new VaultError("unavailable", "Credential writes require a transaction.");
         await sql.transaction(async (tx) => {
           await tx.query("select pg_advisory_xact_lock(hashtextextended($1, 0))", [ownerId]);
@@ -349,7 +359,7 @@ export function createSqlVaultStore(sql: Sql): VaultStore {
         return;
       }
       await sql.query(
-        `insert into public.credentials(scope,owner_id,kind,value_enc) values($1::public.credential_scope,$2,$3::public.credential_kind,$4::bytea) on conflict(scope,owner_id,kind) where kind in ('boat','modal','skillpack') do update set value_enc=excluded.value_enc`,
+        `insert into public.credentials(scope,owner_id,kind,value_enc) values($1::public.credential_scope,$2,$3::public.credential_kind,$4::bytea) on conflict(scope,owner_id,kind) where kind in (${SINGLETON_KIND_SQL}) do update set value_enc=excluded.value_enc`,
         [scope, ownerId, kind, valueEnc],
       );
     },
@@ -364,7 +374,7 @@ export function createSqlVaultStore(sql: Sql): VaultStore {
         if (rows.length > 1) throw new VaultError("conflict", "Multiple accounts: specify an account id.");
         if (!rows[0]) return false;
         await tx.query(
-          kind === "boat" || kind === "modal" || kind === "skillpack"
+          CREDENTIAL_KINDS[kind].singleton
             ? "delete from public.credentials where id=$1"
             : "update public.credentials set status='deleted' where id=$1",
           [rows[0].id],
