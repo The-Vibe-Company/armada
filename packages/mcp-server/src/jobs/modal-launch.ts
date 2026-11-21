@@ -442,7 +442,6 @@ export async function runModalLaunch(
       if (await context.canDispatch()) throw error;
       const target = await withJobLease(sql, job, startingTarget);
       if (!target) return done;
-      // A known allocation can be handed to the exact-ID cleanup job even if the App is temporarily unavailable.
       if (target.has_intent && !target.provider_sandbox_id && !target.journaled_id) throw error;
       skipProvider = true;
     }
