@@ -18,11 +18,15 @@ import { observeRequest } from "../src/request-observability.ts";
 import { createRuntimeEnrolments } from "../src/runtime-enrolment.ts";
 import { RuntimeFollowupConflict } from "../src/runtime-followup.ts";
 import { createRuntimeProvider } from "../src/runtime-provider.ts";
-import { RuntimeReconciliationConflict } from "../src/runtime-reconciliation-conflict.ts";
+import {
+  RuntimeCheckpointActivityConflict,
+  RuntimeReconciliationConflict,
+} from "../src/runtime-reconciliation-conflict.ts";
 import { launchSandboxChild } from "../src/sandbox-access-child-launch.ts";
 import { createSandboxChildren, type SandboxChildExecutor } from "../src/sandbox-access-children.ts";
 import { createSandboxAccessServices } from "../src/sandbox-access-services.ts";
 import { readStatus } from "../src/turns.ts";
+import { runtimeWakes, SANDBOX_ADMISSION_WAKE } from "../src/wake-bus.ts";
 import { rowOnlyDatabase } from "./row-only-database.ts";
 import { ENCRYPTION_KEY, fakeBoat } from "./support.ts";
 
@@ -559,13 +563,27 @@ test("an uncertain scoped message records a correlated operator diagnostic", asy
   }
 });
 
-test("a reconciliation refusal settles each fresh child mutation without replaying it", async () => {
-  const { close, db, sql, id, p, parent, golden, authority, token, selection } = await fixture();
+test.each([
+  "message",
+  "stop",
+  "extend",
+  "shutdown while waiting",
+  "abort after commit",
+  "abandoned before dispatch",
+] as const)("scoped child admission handles %s", async (scenario) => {
+  const action = scenario === "stop" || scenario === "extend" ? scenario : "message";
+  const requestAbort = new AbortController();
+  const { close, db, sql, id, p, parent, golden, authority, token, selection } = await fixture(
+    "running",
+    "codex_auth",
+    "modal",
+  );
   try {
     const child = await createSqlSandboxStore(sql).insert({
       id: crypto.randomUUID(),
       provider: parent.provider,
       providerSandboxId: "reconciling-child",
+      runtimeTransport: "dialout",
       goldenId: golden.id,
       orgId: p.org,
       ownerId: p.owner,
@@ -575,39 +593,109 @@ test("a reconciliation refusal settles each fresh child mutation without replayi
       status: "ready",
     });
     await db.query("insert into orchestrator_children values($1,$2,$3,$4)", [child.id, id, p.org, p.owner]);
-    const refuse = mock(async () => {
-      throw new RuntimeReconciliationConflict();
-    });
-    const extend = mock(async () => {
+    const lease = action === "stop" ? crypto.randomUUID() : null;
+    await db.query(
+      `update sandboxes set activity_lease_id=$2, activity_until=case when $2::uuid is not null then 'infinity'::timestamptz end,
+        reconcile_lease_until=case when $2::uuid is null then 'infinity'::timestamptz end where id=$1`,
+      [child.id, lease],
+    );
+    const waiting = Promise.withResolvers<void>();
+    const raced = Promise.withResolvers<void>();
+    let dispatchAdmissions = 0;
+    let executionAttempts = 0;
+    const execute = mock(async () => {
+      if (++executionAttempts !== 1) return;
+      raced.resolve();
+      if (action === "stop") throw new RuntimeCheckpointActivityConflict();
       throw new DataError("Sandbox is busy.", "sandbox_not_ready", { cause: new RuntimeReconciliationConflict() });
     });
     const recoverStop = spyOn({ recoverStop: async () => {} }, "recoverStop");
-    const children = createSandboxChildren(sql, authority, {
-      message: refuse,
-      stop: refuse,
-      recoverStop,
-      extend,
-      async launch() {
-        throw Error("unexpected launch");
+    const children = createSandboxChildren(
+      sql,
+      {
+        async admit(secret, request, reserve) {
+          const result = await authority.admit(secret, request, reserve);
+          if (++dispatchAdmissions === 2) waiting.resolve();
+          if (dispatchAdmissions === 3 && scenario === "abort after commit") requestAbort.abort();
+          return result;
+        },
       },
-      async read() {
-        throw Error("unexpected read");
+      {
+        message: execute,
+        stop: execute,
+        recoverStop,
+        extend: execute,
+        async launch() {
+          throw Error("unexpected launch");
+        },
+        async read() {
+          throw Error("unexpected read");
+        },
+        async reconcile() {
+          throw Error("unexpected reconciliation");
+        },
       },
-      async reconcile() {
-        throw Error("unexpected reconciliation");
-      },
-    });
-    for (const request of [
-      () => children.message(token, "message-busy", child.id, "synthetic child prompt"),
-      () => children.stop(token, "stop-busy", child.id),
-      () => children.extend(token, "extend-busy", child.id, 60),
-    ]) {
-      const result = await request();
-      expect(result).toMatchObject({ state: "failed", sandboxId: child.id });
-      expect(await request()).toEqual(result);
+    );
+    const request = () => {
+      if (action === "message")
+        return children.message(token, "busy", child.id, "synthetic child prompt", requestAbort.signal);
+      if (action === "extend") return children.extend(token, "busy", child.id, 60);
+      return children.stop(token, "busy", child.id);
+    };
+    const pending = request();
+    await waiting.promise;
+    expect(execute).not.toHaveBeenCalled();
+    expect(
+      (await db.query("select state,dispatched_at from orchestrator_child_operations where target_id=$1", [child.id]))
+        .rows,
+    ).toEqual([{ state: "pending", dispatched_at: null }]);
+
+    if (scenario === "abandoned before dispatch") {
+      expect(await children.reconcileOne()).toBe(false);
+      await db.query("update orchestrator_child_operations set reconcile_after='-infinity' where target_id=$1", [
+        child.id,
+      ]);
+      expect(await children.reconcileOne()).toBe(true);
+      const recorded = await request();
+      expect(recorded).toMatchObject({ state: "failed", sandboxId: child.id });
+      await db.query("update sandboxes set reconcile_lease_until=null where id=$1", [child.id]);
+      runtimeWakes.notify(SANDBOX_ADMISSION_WAKE);
+      expect(await pending).toEqual(recorded);
+      expect(execute).not.toHaveBeenCalled();
+      return;
     }
-    expect(refuse).toHaveBeenCalledTimes(2);
-    expect(extend).toHaveBeenCalledTimes(1);
+    if (scenario === "shutdown while waiting") {
+      children.stopAdmission();
+      expect(await pending).toMatchObject({ state: "failed", sandboxId: child.id });
+      expect(execute).not.toHaveBeenCalled();
+      return;
+    }
+    if (lease) {
+      await createSqlData(sql)({
+        userId: p.owner,
+        orgs: [{ orgId: p.org, role: "member" }],
+        via: "service",
+      }).sandboxes.update(child.id, {
+        finishActivity: true,
+        activityToken: lease,
+        expectedGeneration: child.lifecycleGeneration!,
+      });
+    } else {
+      await db.query("update sandboxes set reconcile_lease_until=null where id=$1", [child.id]);
+    }
+    runtimeWakes.notify(SANDBOX_ADMISSION_WAKE);
+    if (scenario === "abort after commit") {
+      expect(await pending).toMatchObject({ state: "failed", sandboxId: child.id });
+      expect(execute).not.toHaveBeenCalled();
+      return;
+    }
+    await raced.promise;
+    await db.query("select 1");
+    runtimeWakes.notify(SANDBOX_ADMISSION_WAKE);
+    const result = await pending;
+    expect(result).toMatchObject({ state: "succeeded", sandboxId: child.id });
+    expect(await request()).toEqual(result);
+    expect(execute).toHaveBeenCalledTimes(2);
     expect(recoverStop).not.toHaveBeenCalled();
   } finally {
     await close();

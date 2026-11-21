@@ -51,6 +51,7 @@ export function createSandboxAccessServices(input: {
   runtimeCheckpoint?: RuntimeCheckpoint;
   encryptionKey: string;
   scopedMcpUrl: string;
+  configureMutationRequest?: (request: Request) => void;
   /** Docker final output capture before agent-finished stops (tests inject the runtime reader). */
   outputs?: Parameters<typeof captureDockerStopOutputs>[3];
 }) {
@@ -404,6 +405,7 @@ export function createSandboxAccessServices(input: {
       authority,
       finish,
       createRuntimeSelfFinish(sql, input.encryptionKey, input.outputs),
+      input.configureMutationRequest,
     ),
     childWorker: children,
     authority,

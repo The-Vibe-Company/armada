@@ -8,7 +8,7 @@ import { recordOperatorDiagnostic } from "./request-observability.ts";
 import type { createRuntimeCommands } from "./runtime-commands.ts";
 import { createRuntimeEnrolments } from "./runtime-enrolment.ts";
 import { unsettledRuntimeCommands } from "./runtime-idle-evidence.ts";
-import { RuntimeReconciliationConflict } from "./runtime-reconciliation-conflict.ts";
+import { RuntimeCheckpointActivityConflict, RuntimeReconciliationConflict } from "./runtime-reconciliation-conflict.ts";
 import { recordStoppedCheckpointNote } from "./sandbox-lifecycle.ts";
 import { type StopRefusalEvidence, stopRefusalEvidence } from "./stop-refusal-evidence.ts";
 
@@ -19,7 +19,7 @@ function checkpointConflict(
   evidence?: StopRefusalEvidence,
   cause?: unknown,
 ) {
-  const error = cause instanceof RuntimeReconciliationConflict ? cause : new VaultError("conflict", message);
+  const error = cause instanceof VaultError ? cause : new VaultError("conflict", message);
   recordOperatorDiagnostic("sandbox.checkpoint.refused", failureDiagnostic(cause ?? error), {
     sandboxId,
     refusalCode,
@@ -290,8 +290,10 @@ export function createRuntimeCheckpoint(
       if (lease) {
         const { reconciling, ...evidence } = lease;
         const refusal =
-          reconciling && !old && !(await read(tx, sandbox.id, requestId))
-            ? new RuntimeReconciliationConflict()
+          !old && !(await read(tx, sandbox.id, requestId))
+            ? reconciling
+              ? new RuntimeReconciliationConflict()
+              : new RuntimeCheckpointActivityConflict()
             : undefined;
         throw checkpointConflict(
           sandbox.id,
