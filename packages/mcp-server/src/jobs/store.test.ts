@@ -922,39 +922,47 @@ test("an interrupted Modal failure handoff rolls back the failure and delete job
   expect(cleanupEffects()).toEqual({ terminations: 0, cleanupPreparations: 0 });
 });
 
-test("an expired Modal launch settles without an App credential when no allocation was attempted", async () => {
-  const { f, id, jobId, makeRunner, effects } = await modalLaunchFixture(await modalAdmissionFixture());
-  let openCalls = 0;
-  const unavailableClient = () => {
-    openCalls++;
-    throw new Error("Modal credential removed");
-  };
-  const reconcile = async () => {
-    const runner = makeRunner((step) => {
-      if (step === "open Modal") unavailableClient();
-    });
-    expect(await runner.reconcileOne(signal)).toBe(true);
-    await runner.drain();
-  };
-  await reconcile();
-  expect((await f.db.query("select state from jobs where id=$1", [jobId])).rows).toEqual([{ state: "leased" }]);
-  await f.db.query("update jobs set deadline_at='-infinity',lease_until='-infinity' where id=$1", [jobId]);
-  await reconcile();
-  expect(openCalls).toBe(1);
-  expect(effects().allocations).toBe(0);
-  expect((await f.db.query("select status from sandboxes where id=$1", [id])).rows).toEqual([{ status: "failed" }]);
-  expect(
-    (
-      await f.db.query(
-        "select kind,state from jobs where sandbox_id=$1 and kind in ('launch','delete') order by kind",
-        [id],
-      )
-    ).rows,
-  ).toEqual([
-    { kind: "delete", state: "queued" },
-    { kind: "launch", state: "failed" },
-  ]);
-});
+test.each(["before allocation", "after allocation"] as const)(
+  "an expired Modal launch settles with no App credential %s",
+  async (lostCredentialAt) => {
+    const { f, id, jobId, makeRunner, effects } = await modalLaunchFixture(await modalAdmissionFixture());
+    const allocated = lostCredentialAt === "after allocation";
+    let openCalls = 0;
+    const reconcile = async (firstClaim: boolean) => {
+      const runner = makeRunner((step) => {
+        if (step === "open Modal") {
+          openCalls++;
+          if (!firstClaim || !allocated) throw new Error("Modal credential removed");
+        }
+        if (step === "bootstrap dispatch") throw new Error("Worker interrupted before bootstrap");
+      });
+      expect(await runner.reconcileOne(signal)).toBe(true);
+      await runner.drain();
+    };
+    await reconcile(true);
+    expect((await f.db.query("select state from jobs where id=$1", [jobId])).rows).toEqual([{ state: "leased" }]);
+    await f.db.query("update jobs set deadline_at='-infinity',lease_until='-infinity' where id=$1", [jobId]);
+    if (allocated)
+      await f.db.query("update runtime_enrolments set enrolment_expires_at='-infinity' where sandbox_id=$1", [id]);
+    await reconcile(false);
+    expect(openCalls).toBe(allocated ? 2 : 1);
+    expect(effects().allocations).toBe(allocated ? 1 : 0);
+    expect((await f.db.query("select status from sandboxes where id=$1", [id])).rows).toEqual([{ status: "failed" }]);
+    expect(
+      (
+        await f.db.query(
+          "select kind,state from jobs where sandbox_id=$1 and kind in ('launch','delete') order by kind",
+          [id],
+        )
+      ).rows,
+    ).toEqual([
+      { kind: "delete", state: "queued" },
+      { kind: "launch", state: "failed" },
+    ]);
+    const cleanup = await f.store.claim("delete", crypto.randomUUID(), 30, 1);
+    expect(cleanup?.payload).toEqual({ launchJobId: jobId, machineId: allocated ? "physical" : null });
+  },
+);
 
 test.each(["create response", "bootstrap dispatch", "bootstrap response"] as const)(
   "a replacement Modal launch runner completes after losing the %s",

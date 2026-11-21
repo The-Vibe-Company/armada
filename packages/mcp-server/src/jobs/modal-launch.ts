@@ -400,8 +400,21 @@ export async function runModalLaunch(
     return row;
   };
   const hasJournal = typeof job.outcome === "object" && job.outcome !== null && "modal_machine" in job.outcome;
-  const skipProvider = !hasJournal && !(await context.canDispatch());
-  const plan = skipProvider ? undefined : await preparePlan();
+  let skipProvider = !hasJournal && !(await context.canDispatch());
+  let plan: ModalLaunchPlan | undefined;
+  if (!skipProvider) {
+    try {
+      plan = await preparePlan();
+    } catch (error) {
+      context.signal.throwIfAborted();
+      if (await context.canDispatch()) throw error;
+      const target = await withJobLease(sql, job, startingTarget);
+      if (!target) return done;
+      // A known allocation can be handed to the exact-ID cleanup job even if the App is temporarily unavailable.
+      if (target.has_intent && !target.provider_sandbox_id && !target.journaled_id) throw error;
+      skipProvider = true;
+    }
+  }
   context.signal.throwIfAborted();
   if (!plan && !skipProvider) return done;
 
