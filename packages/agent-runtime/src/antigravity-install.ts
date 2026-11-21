@@ -3,7 +3,7 @@ import { constants } from "node:fs";
 import { lstat, mkdir, open, rename, rm } from "node:fs/promises";
 import { isAbsolute, join, resolve } from "node:path";
 import { ANTIGRAVITY_ARTIFACT } from "./antigravity-artifact.ts";
-import { installRuntimeArtifactFromUrl, type RuntimeArtifact } from "./artifact-cache.ts";
+import { type ArtifactFetcher, installRuntimeArtifactFromUrl, type RuntimeArtifact } from "./artifact-cache.ts";
 
 type AntigravityPin = { url: string; archive: RuntimeArtifact; executable: RuntimeArtifact };
 
@@ -45,7 +45,7 @@ export async function prepareAntigravity(
     candidate?: string;
     pin?: AntigravityPin;
   },
-  fetcher: Parameters<typeof installRuntimeArtifactFromUrl>[1] = fetch,
+  fetcher: ArtifactFetcher = fetch,
 ) {
   const { cacheDir, candidate, pin = currentPin() } = input;
   if (candidate) {

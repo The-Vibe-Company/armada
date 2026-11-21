@@ -9,7 +9,7 @@ export interface RuntimeArtifact {
   bytes: number;
 }
 type ArtifactCache = { cacheDir: string; artifact: RuntimeArtifact; sharedDir?: string };
-type ArtifactFetcher = (url: URL, options: RequestInit) => Promise<Response>;
+export type ArtifactFetcher = (url: URL, options: RequestInit) => Promise<Response>;
 
 const MAX_BYTES = 512 * 1024 * 1024;
 
@@ -55,7 +55,7 @@ async function copyShared(sharedDir: string, artifact: RuntimeArtifact, temporar
 export async function installRuntimeArtifact(
   input: ArtifactCache & { serverUrl: string },
   fetcher: ArtifactFetcher = fetch,
-): Promise<string> {
+) {
   const server = new URL(input.serverUrl);
   if (
     server.protocol !== "https:" ||
@@ -73,12 +73,7 @@ export async function installRuntimeArtifact(
   );
 }
 
-/** Use a trusted artifact URL from a compiled pin or the Armada digest route. */
-export async function installRuntimeArtifactFromUrl(
-  url: URL,
-  input: ArtifactCache,
-  fetcher: ArtifactFetcher = fetch,
-): Promise<string> {
+export async function installRuntimeArtifactFromUrl(url: URL, input: ArtifactCache, fetcher: ArtifactFetcher = fetch) {
   const { artifact, cacheDir } = input;
   if (
     url.protocol !== "https:" ||
