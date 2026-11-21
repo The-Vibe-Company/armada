@@ -1193,6 +1193,7 @@ export function createSqlData(
               `select s.native_drain_pending from public.sandboxes s where s.id=$3::uuid and ${SANDBOX_VISIBLE}
                  and s.provider=$4::public.sandbox_provider and s.provider_sandbox_id=$5
                  and s.provider in ('boat','modal') and not s.boat_runtime and s.runtime_transport is distinct from 'dialout'
+                 and (not s.native_drain_pending or s.provider='modal')
                  and s.stopped_at is not null and s.stop_requested_at is null
                  and s.deleted_at is null and not s.application_secret_tainted
                  and exists(select 1 from public.members m where m.org_id=s.org_id and m.user_id=$2::uuid
@@ -1200,11 +1201,7 @@ export function createSqlData(
               [...scope, id, provider, placement],
             );
             if (!locked) throw new DataError("Sandbox is not eligible for native drain deletion.", "sandbox_not_ready");
-            if (locked.native_drain_pending) {
-              // The committed intent already owns the recovery handoff. Only Modal
-              // can replay an uncertain delete through its durable provider journal.
-              if (provider !== "modal") throw new DataError("Native sandbox deletion is pending.", "sandbox_not_ready");
-            } else {
+            if (!locked.native_drain_pending) {
               const {
                 rows: [recovery],
               } = await tx.query<{ outcome: string }>(
