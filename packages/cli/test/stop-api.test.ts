@@ -92,7 +92,7 @@ test("stop --turn interrupts the current sandbox without stopping the machine", 
       throw new Error(text);
     },
     fetch: async (input: string | URL | Request, init?: RequestInit) => {
-      requests.push(new Request(input, init));
+      requests.push(input instanceof Request ? new Request(input, init) : new Request(String(input), init));
       return Response.json(result);
     },
   };
