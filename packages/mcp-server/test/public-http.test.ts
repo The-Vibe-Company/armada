@@ -1,4 +1,4 @@
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, expect, spyOn, test } from "bun:test";
 import { VERSION } from "@armada/core";
 import { createHandler, type HandlerOptions } from "../src/http.ts";
 
@@ -110,6 +110,33 @@ test("mounted routes precede MCP and null falls through to its OAuth challenge",
   expect(mcp.headers.get("www-authenticate")).toContain(
     `resource_metadata="${PUBLIC_URL}/.well-known/oauth-protected-resource"`,
   );
+});
+
+test.each([
+  [200, "info"],
+  [404, "warn"],
+  [503, "error"],
+] as const)("logs HTTP %i at %s", async (status, level) => {
+  const sinks = {
+    info: spyOn(console, "info").mockImplementation(() => {}),
+    warn: spyOn(console, "warn").mockImplementation(() => {}),
+    error: spyOn(console, "error").mockImplementation(() => {}),
+  };
+  try {
+    const handle = handler({ routes: [async () => new Response(null, { status })] });
+    const response = await handle(new Request(`${PUBLIC_URL}/test`));
+    expect(sinks[level]).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(sinks[level].mock.calls[0]![0])).toMatchObject({
+      event: "http_request",
+      requestId: response.headers.get("x-request-id"),
+      status,
+    });
+    for (const [name, sink] of Object.entries(sinks)) {
+      if (name !== level) expect(sink).not.toHaveBeenCalled();
+    }
+  } finally {
+    for (const sink of Object.values(sinks)) sink.mockRestore();
+  }
 });
 
 test("overlapping requests correlate provider outcomes, response headers and safe request logs", async () => {

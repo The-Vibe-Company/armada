@@ -22,10 +22,16 @@ export function continueRequest<T>(id: string | undefined, work: () => Promise<T
   return id && serverId.test(id) ? current.run({ id, log }, work) : current.exit(work);
 }
 
+function requestLogForStatus(status: number): Log {
+  if (status >= 500) return console.error;
+  if (status >= 400) return console.warn;
+  return console.info;
+}
+
 /** Generate our own ID. Caller-supplied headers and runtime idempotency keys are independent. */
-export function observeRequest<T extends Response | undefined>(work: () => T | Promise<T>, log: Log = stderr) {
+export function observeRequest<T extends Response | undefined>(work: () => T | Promise<T>, log?: Log) {
   const id = crypto.randomUUID();
-  return current.run({ id, log }, async () => {
+  return current.run({ id, log: log ?? stderr }, async () => {
     const started = performance.now();
     let response: T | Response;
     let errorClass: string | undefined;
@@ -37,11 +43,14 @@ export function observeRequest<T extends Response | undefined>(work: () => T | P
       errorClass = diagnostic.errorClass;
       response = Response.json({ error: "internal" }, { status: 500 });
     }
-    log(
+    const status = response?.status ?? 101;
+    // Server failures are errors, client failures are warnings, and other responses are informational.
+    const requestLog = log ?? requestLogForStatus(status);
+    requestLog(
       JSON.stringify({
         event: "http_request",
         requestId: id,
-        status: response?.status ?? 101,
+        status,
         durationMs: Math.round(performance.now() - started),
         ...(errorClass ? { errorClass } : {}),
       }),
