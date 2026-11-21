@@ -1226,9 +1226,21 @@ test.each([
     code: "api_failed",
     credentialList: { phase: "body", httpStatus: 500, requestId: sandboxFixtureId },
   },
+  {
+    mode: "timeout reading the body",
+    code: "request_failed",
+    credentialList: { phase: "body", httpStatus: 200, timeoutMs: deadlines.template_model_account },
+  },
 ])("template model account identifies $mode without logging response content", async (scenario) => {
   const fake = fixture(() => {
-    if (scenario.mode === "timeout before headers") throw new DOMException("secret transport detail", "TimeoutError");
+    const timeout = new DOMException("secret transport detail", "TimeoutError");
+    if (scenario.mode === "timeout before headers") throw timeout;
+    if (scenario.mode === "timeout reading the body") {
+      const stream = new ReadableStream({
+        start: (controller) => controller.error(timeout),
+      });
+      return new Response(stream, { headers: { "x-request-id": "secret unexpected header" } });
+    }
     return Response.json(
       { error: { message: "secret server detail" } },
       { status: 500, headers: { "x-request-id": sandboxFixtureId } },
