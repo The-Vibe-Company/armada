@@ -1782,6 +1782,27 @@ test("enrolled Modal launch jobs report and settle turns from the runtime journa
   expect(await follow(active.cursor!)).toMatchObject({ events: [{ status: "finished" }], settled: true });
 });
 
+test("Modal read ownership survives a generation advance before the launch receipt settles", async () => {
+  const { f, id, jobId, makeRunner } = await modalLaunchFixture(await modalAdmissionFixture());
+  const runner = makeRunner(async (step) => {
+    if (step !== "bootstrap response") return;
+    await f.db.query("update sandboxes set lifecycle_generation=lifecycle_generation+1 where id=$1", [id]);
+  });
+  expect(await runner.reconcileOne(signal)).toBe(true);
+  await runner.drain();
+  expect((await f.db.query("select state from jobs where id=$1", [jobId])).rows).not.toEqual([{ state: "done" }]);
+
+  const caller = {
+    via: "service" as const,
+    userId: f.people.owner,
+    orgs: [{ orgId: f.people.org, role: "member" as const }],
+  };
+  const sandbox = (await createSqlData(f.sql)(caller).sandboxes.get(id))!;
+  expect(sandbox.status).toBe("ready");
+  const reader = await createModalJobReader(f.sql, launchEncryptionKey)(sandbox, caller);
+  expect(await reader?.followSettled()).toBe(true);
+});
+
 async function failedModalLaunchFixture() {
   const fixture = await modalLaunchFixture();
   const { f, jobId, makeRunner } = fixture;
