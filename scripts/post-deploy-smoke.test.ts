@@ -2749,7 +2749,9 @@ test.each(["fetch", "body"])(
         throw new DOMException("private transport detail", "TimeoutError");
       };
       if (phase === "fetch") return timeout();
-      return Object.assign(json({ usage: null }), { json: timeout });
+      const response = json({ usage: null });
+      response.headers.set("x-request-id", lifecycleId(99));
+      return Object.assign(response, { json: timeout });
     });
     expect(await fake.run([{ ...selected, provider: "modal" }])).toBe(false);
     expect(fake.receipts()).toContainEqual({
@@ -2767,6 +2769,7 @@ test.each(["fetch", "body"])(
       timeoutMs: deadlines.resume_usage,
       attempts: 1,
       sandboxId: lifecycleId(1),
+      ...(phase === "body" ? { httpStatus: 200, requestId: lifecycleId(99) } : {}),
       lastResponse: null,
       code: "poll_limit_exceeded",
     });

@@ -83,6 +83,7 @@ class SmokeFailure extends Error {
     readonly waitResponse?: Record<string, string | boolean | number>,
     readonly launchResponse?: { httpStatus?: number; timeoutMs: number; requestId?: string; requestKey?: string },
     readonly transportTimeoutMs?: number,
+    readonly statusResponse?: { httpStatus: number; requestId?: string },
   ) {
     super(code);
   }
@@ -592,18 +593,25 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
         redirect: "error",
         signal,
       });
-      const requestId = sandboxLaunch ? response.headers.get("x-request-id") : null;
+      const sandboxStatus = path === "sandbox/status";
+      const requestId = sandboxLaunch || sandboxStatus ? response.headers.get("x-request-id") : null;
+      const correlation =
+        requestId && /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/.test(requestId) ? { requestId } : {};
       const launchResponse = sandboxLaunch
-        ? {
-            httpStatus: response.status,
-            timeoutMs: requestTimeoutMs,
-            ...(requestId && /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/.test(requestId) ? { requestId } : {}),
-          }
+        ? { httpStatus: response.status, timeoutMs: requestTimeoutMs, ...correlation }
         : undefined;
+      const statusResponse = sandboxStatus ? { httpStatus: response.status, ...correlation } : undefined;
       if (!response.ok) {
         const payload = (await response.json().catch((error: unknown) => {
           if (timedOut(error))
-            throw new SmokeFailure("api_failed", response.status, undefined, launchResponse, requestTimeoutMs);
+            throw new SmokeFailure(
+              "api_failed",
+              response.status,
+              undefined,
+              launchResponse,
+              requestTimeoutMs,
+              statusResponse,
+            );
           return null;
         })) as { error?: { code?: unknown } } | null;
         if ([...protectedCanaries].some((value) => JSON.stringify(payload).includes(value)))
@@ -627,7 +635,14 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
         result = (await response.json()) as ResponseBody;
       } catch (error) {
         if (timedOut(error))
-          throw new SmokeFailure("request_failed", response.status, undefined, launchResponse, requestTimeoutMs);
+          throw new SmokeFailure(
+            "request_failed",
+            response.status,
+            undefined,
+            launchResponse,
+            requestTimeoutMs,
+            statusResponse,
+          );
         if (path === "sandbox/wait")
           throw new SmokeFailure("invalid_response", response.status, {
             body: "unparseable",
@@ -687,7 +702,14 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
           until !== undefined &&
           io.now() >= until
         )
-          throw new SmokeFailure("poll_limit_exceeded", undefined, undefined, undefined, error.transportTimeoutMs);
+          throw new SmokeFailure(
+            "poll_limit_exceeded",
+            undefined,
+            undefined,
+            undefined,
+            error.transportTimeoutMs,
+            error.statusResponse,
+          );
         throw error;
       });
       const after = until === undefined ? Number.POSITIVE_INFINITY : until - io.now();
@@ -1593,6 +1615,7 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
                   code: error.code,
                   attempts,
                   lastResponse,
+                  ...error.statusResponse,
                   ...(sandboxId && SANDBOX_ID.test(sandboxId) ? { sandboxId } : {}),
                   ...(SANDBOX_ID.test(turn.promptId) ? { promptId: turn.promptId } : {}),
                 }),
