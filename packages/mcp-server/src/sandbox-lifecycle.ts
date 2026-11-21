@@ -1377,6 +1377,13 @@ export function createSandboxLifecycle(
                 and r.receipt is null and r.activated_at is not null
             )) as modal_resume) recovery
           where candidate.provider = $2 and candidate.status not in ('stopped','deleted')
+          -- The launch job owns recovery across retries and worker replacement.
+          and not (candidate.provider='modal' and exists(
+            select 1 from public.jobs launch
+            where launch.kind='launch' and launch.state in ('queued','leased')
+              and launch.sandbox_id=candidate.id and launch.generation=candidate.lifecycle_generation
+              and launch.org_id=candidate.org_id and launch.request_owner_id=candidate.owner_id
+          ))
           and not exists(select 1 from public.orchestrators parent where parent.sandbox_id=candidate.id)
           and not (candidate.status='failed' and candidate.stopped_at is not null)
           -- Only this worker understands the retained-resume handoff. Old

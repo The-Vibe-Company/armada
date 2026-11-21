@@ -7,6 +7,7 @@ import { createAccountTurnQueue } from "../account-turn-queue.ts";
 import { createOrdinaryLaunchReceipts } from "../ordinary-launch-receipts.ts";
 import { retentionMaintenanceJob, seedRetentionMaintenance } from "../retention-maintenance.ts";
 import { createRuntimeEnrolments, scopedRuntimeSql } from "../runtime-enrolment.ts";
+import { createSandboxLifecycle } from "../sandbox-lifecycle.ts";
 import type { LaneFactory } from "../server-worker-modules.ts";
 import { sqlOver } from "../sql.ts";
 import { runtimeWakes } from "../wake-bus.ts";
@@ -1010,6 +1011,11 @@ test.each(["create response", "bootstrap dispatch", "bootstrap response"] as con
   "a replacement Modal launch runner completes after losing the %s",
   async (failure) => {
     const { f, id, jobId, makeRunner, effects } = await modalLaunchFixture(await modalAdmissionFixture());
+    const lifecycle = createSandboxLifecycle(f.sql, async () => {
+      throw new Error("Generic provider resolution cannot handle a job-owned Modal allocation.");
+    });
+    await f.db.query("update sandboxes set reconcile_after='-infinity' where id=$1", [id]);
+    if (failure === "create response") expect(await lifecycle.reconcileOne()).toBe(false);
     const first = makeRunner((step) => {
       if (step === failure) throw new Error("Lost worker");
     });
@@ -1026,6 +1032,7 @@ test.each(["create response", "bootstrap dispatch", "bootstrap response"] as con
       await f.db.query("update runtime_enrolments set enrolment_expires_at='-infinity' where sandbox_id=$1", [id]);
     }
 
+    expect(await lifecycle.reconcileOne()).toBe(false);
     const successor = makeRunner();
     expect(await successor.reconcileOne(signal)).toBe(true);
     await successor.drain();
