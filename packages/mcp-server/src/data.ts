@@ -58,6 +58,7 @@ import {
   publishNativeResumeAdmission,
   publishNativeTurn,
   publishOwnerStop,
+  recordNativeDrainDeleteOperation,
   recordNativeRetentionRefusal,
   recordObservedProviderState,
   requestStartingModalStop,
@@ -82,6 +83,7 @@ export interface SandboxView extends SandboxRecord {
 export interface ServerSandboxPatch extends SandboxPatch {
   deleteCompleted?: true;
   nativeDrain?: true;
+  nativeDrainDeleteOperation?: { provider: SandboxRecord["provider"]; placement: string; id: string };
   nativeDrainAdmission?: { provider: SandboxRecord["provider"]; placement: string };
   expireAfterExtension?: true;
   nativeExecAdmission?: { provider: SandboxRecord["provider"]; placement: string };
@@ -824,6 +826,21 @@ export function createSqlData(
           if (!applied) throw new DataError("Extension activity changed before settlement.", "sandbox_not_ready");
           return;
         }
+        if (patch.nativeDrainDeleteOperation) {
+          const { expectedGeneration, activityToken, nativeDrainDeleteOperation: operation } = patch;
+          if (expectedGeneration === undefined || !activityToken)
+            throw new DataError("Native drain operation evidence requires its activity generation and token.");
+          const recorded = await recordNativeDrainDeleteOperation(
+            sql,
+            scope,
+            id,
+            expectedGeneration,
+            activityToken,
+            operation,
+          );
+          if (!recorded) throw new DataError("Native drain operation evidence is stale.", "sandbox_not_ready");
+          return;
+        }
         if (patch.deleteCompleted) {
           const { expectedGeneration, activityToken } = patch;
           if (!sql.transaction || expectedGeneration === undefined || !activityToken || !patch.finishActivity)
@@ -967,7 +984,10 @@ export function createSqlData(
               "stop_generation = case when s.stop_requested_at is null then s.stop_generation + 1 else s.stop_generation end",
             );
         }
-        if (patch.renewActivity) sets.push("activity_until = now() + interval '2 minutes'");
+        if (patch.renewActivity)
+          sets.push(
+            "activity_until = (case when s.native_drain_pending then clock_timestamp() else now() end) + interval '2 minutes'",
+          );
         if (
           (patch.finishActivity || patch.turnActivity === "finish") &&
           patch.expectedGeneration !== undefined &&
@@ -1000,7 +1020,7 @@ export function createSqlData(
         let fence = "";
         if (!patch.nativeDrainAdmission) {
           fence = patch.renewActivity
-            ? " and (not s.native_drain_pending or s.activity_until > clock_timestamp())"
+            ? " and s.id=renewal_target.id and (not renewal_target.native_drain_pending or renewal_target.activity_until > clock_timestamp())"
             : " and not s.native_drain_pending";
         }
         if (patch.nativeDiagnostic) {
@@ -1150,7 +1170,7 @@ export function createSqlData(
         const observeRefusal = !!patch.deleteRequested && admission && !wrapped;
         const publishTransition = stopStatus !== undefined || childSend !== undefined || nativeResume !== undefined;
         const returning = publishTransition ? "id, status, generation" : "id";
-        const update = `update public.sandboxes s set ${sets.join(", ")} from public.goldens g
+        const update = `update public.sandboxes s set ${sets.join(", ")} from public.goldens g${patch.renewActivity ? ", renewal_target" : ""}
            where s.id = $3 and g.id = s.golden_id and ${SANDBOX_VISIBLE}
              and (${ownsActivity && patch.expectedGeneration !== undefined ? "true" : `${observationFence} and (s.activity_until is null or s.activity_until < now())`}) ${fence} returning ${publishTransition ? "s.id, s.status, s.lifecycle_generation::text as generation" : "s.id"}`;
         const effects = `${cancelTurns ? ", refused as (update public.account_turn_queue q set state='failed',failure_reason='Dispatch refused by owner stop.' from updated u where q.sandbox_id=u.id and q.state in ('queued','dispatching'))" : ""}${releaseReservation ? ", released as (delete from public.account_agent_reservations r using updated u where r.sandbox_id=u.id)" : ""}`;
@@ -1162,8 +1182,13 @@ export function createSqlData(
             observed?: Record<string, unknown> | null;
             stop_evidence?: StopRefusalEvidence | null;
           }>(
-            observeRefusal
-              ? `with observed as (select s.status::text as status,
+            patch.renewActivity
+              ? `with renewal_target as materialized (
+                   select s.id, s.native_drain_pending, s.activity_until from public.sandboxes s
+                   where s.id=$3::uuid and ${SANDBOX_VISIBLE} for update of s
+                 ) ${update}`
+              : observeRefusal
+                ? `with observed as (select s.status::text as status,
                   s.activity_lease_id as "activityLeaseId",
                   coalesce(s.activity_until>=now(),false) as "activityLeaseHeld",
                   coalesce(s.reconcile_lease_until>=now(),false) as "reconcileLeaseHeld",
@@ -1173,8 +1198,8 @@ export function createSqlData(
                 from public.sandboxes s where s.id=$3::uuid and ${SANDBOX_VISIBLE}),
               updated as (${update})
               select (select id from updated) as id, (select row_to_json(o) from observed o) as observed`
-              : stopStatus !== undefined
-                ? `with updated as (${update})${effects}
+                : stopStatus !== undefined
+                  ? `with updated as (${update})${effects}
                    select u.id,u.status,u.generation,
                      case when u.id is null then (select row_to_json(e) from
                        (select ${stopRefusalEvidence}, $${generationParam}::bigint::text as "requestGeneration",
@@ -1182,9 +1207,9 @@ export function createSqlData(
                          from public.sandboxes s
                          where s.id=$3::uuid and ${SANDBOX_VISIBLE}) e) end as stop_evidence
                    from (values (1)) seed left join updated u on true`
-                : wrapped
-                  ? `with updated as (${update})${effects} select ${returning} from updated`
-                  : update,
+                  : wrapped
+                    ? `with updated as (${update})${effects} select ${returning} from updated`
+                    : update,
             params,
           );
         const recordNativePromptAttempt = async (tx: Sql, generation: string) => {

@@ -2759,6 +2759,35 @@ export type Database = {
           },
         ];
       };
+      native_drain_delete_operations: {
+        Row: {
+          sandbox_id: string;
+          provider: Database["public"]["Enums"]["sandbox_provider"];
+          placement: string;
+          operation_id: string;
+        };
+        Insert: {
+          sandbox_id: string;
+          provider: Database["public"]["Enums"]["sandbox_provider"];
+          placement: string;
+          operation_id: string;
+        };
+        Update: {
+          sandbox_id?: string;
+          provider?: Database["public"]["Enums"]["sandbox_provider"];
+          placement?: string;
+          operation_id?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "native_drain_delete_operations_sandbox_id_fkey";
+            columns: ["sandbox_id"];
+            isOneToOne: true;
+            referencedRelation: "sandboxes";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
       native_drain_recovery: {
         Row: {
           archive_id: string;
