@@ -23,7 +23,7 @@ function at<T>(values: T[], index = 0): T {
   return value;
 }
 type WireTool = { id: string; name: string; input: Obj; result: { output: unknown; isError: boolean } };
-function fixture(enabled = true, toolEvidenceTimeoutMs?: number, stepTimeouts: ScopedProbeIo["stepTimeouts"] = {}) {
+function fixture(enabled = true, stepTimeouts: ScopedProbeIo["stepTimeouts"] = {}) {
   const output: Obj[] = [];
   const stopped: string[] = [];
   const journaled: string[] = [];
@@ -83,7 +83,7 @@ function fixture(enabled = true, toolEvidenceTimeoutMs?: number, stepTimeouts: S
       clock += ms;
     },
     deadline: Number.POSITIVE_INFINITY,
-    stepTimeouts: { ...stepTimeouts, scoped_tool_evidence: toolEvidenceTimeoutMs },
+    stepTimeouts,
     async request<T>(path: string, input: object, timeoutMs?: number): Promise<T> {
       const body = input as Obj;
       requests.push({ path, body, timeoutMs });
@@ -353,7 +353,7 @@ describe("ordinary scoped Armada smoke", () => {
   });
 
   test("rejects complete initial tool evidence that arrives after the measured budget", async () => {
-    const f = fixture(true, 1_500);
+    const f = fixture(true, { scoped_tool_evidence: 1_500 });
     f.state.firstLogReadMs = 1_501;
     await expect(run(f)).rejects.toThrow("scoped_incomplete_logs");
     expect(await f.probe.cleanup(parent, true)).toBe(true);
@@ -366,7 +366,7 @@ describe("ordinary scoped Armada smoke", () => {
   ])(
     "reports the missing receipt when a log read exhausts the $mode window",
     async ({ budget, firstReadMs, lastReadBudget }) => {
-      const f = fixture(true, budget);
+      const f = fixture(true, budget === undefined ? {} : { scoped_tool_evidence: budget });
       f.state.firstLogReadMs = firstReadMs;
       f.state.lateLogs = true;
       f.state.logsExhaustBudget = true;
@@ -810,7 +810,7 @@ describe("ordinary scoped Armada smoke", () => {
   });
 
   test("rejects a complete inventory received after the shared snapshot deadline", async () => {
-    const f = fixture(true, undefined, { scoped_snapshot: 100 });
+    const f = fixture(true, { scoped_snapshot: 100 });
     f.state.listPages = 2;
     f.state.listReadMs = 60;
     await expect(f.probe.prepare()).rejects.toThrow("scoped_incomplete_snapshot");
@@ -819,7 +819,7 @@ describe("ordinary scoped Armada smoke", () => {
   });
 
   test("charges prompt admission against the native turn deadline and rejects late completion", async () => {
-    const f = fixture(true, undefined, { scoped_native_turn: 100 });
+    const f = fixture(true, { scoped_native_turn: 100 });
     f.state.sendMs = 60;
     f.state.waitReadMs = 41;
     await expect(run(f)).rejects.toThrow("poll exhausted");
