@@ -1012,6 +1012,47 @@ test.each(["lost command response", "failed redaction", "failed settlement"])(
   },
 );
 
+test.each(["foreground", "detached", "timed out", "unknown exit", "expired settlement"] as const)(
+  "native handoff accounts for a %s exec after the activity window",
+  async (outcome) => {
+    const fake = fakeBoat();
+    const provider: Provider = {
+      ...fake.provider,
+      async exec(request) {
+        if (outcome === "detached") return { detached: true, processId: 42 };
+        if (outcome === "expired settlement") {
+          await db.query("update sandboxes set activity_until=now()-interval '1 second' where id=$1", [sandboxId]);
+        }
+        const result = await fake.provider.exec(request);
+        return result.detached
+          ? result
+          : { ...result, timedOut: outcome === "timed out", exitCode: outcome === "unknown exit" ? null : 0 };
+      },
+    };
+    const { db, sandboxId, invoke } = await nativeExecFixture(provider, crypto.randomUUID());
+    const reply = await invoke("exec", { id: sandboxId, command: "edit workspace" });
+    if (outcome === "foreground") expect(reply.structuredContent).toMatchObject({ exitCode: 0 });
+
+    await db.query(
+      `update sandboxes set status='stopped',stopped_at=now(),activity_lease_id=null,activity_until=null,
+         lifecycle_generation=lifecycle_generation+1,stop_generation=1,preservation_stop_generation=1
+       where id=$1`,
+      [sandboxId],
+    );
+    await db.query(
+      `insert into sandbox_native_preservation_receipts
+         (sandbox_id,generation,stop_generation,capture_generation,capture_stop_generation)
+       select id,lifecycle_generation,1,lifecycle_generation,1 from sandboxes where id=$1`,
+      [sandboxId],
+    );
+    const observed = await db.query(
+      "select copy_native_drain_recovery(id,lifecycle_generation) as outcome from sandboxes where id=$1",
+      [sandboxId],
+    );
+    expect(observed.rows).toEqual([{ outcome: outcome === "foreground" ? "clean" : "ineligible" }]);
+  },
+);
+
 test("ordinary native exec skips post-command provider sampling after the activity deadline", async () => {
   const fake = fakeBoat();
   const provider = {
