@@ -28,13 +28,28 @@ export function isSandboxProvider(value: unknown): value is SandboxProviderId {
   return typeof value === "string" && (SANDBOX_PROVIDERS as readonly string[]).includes(value);
 }
 
-/** Native launch transport and fixed private credential target. Unknown adapters opt into neither. */
+/** Native launch transport and private auth capabilities. Unknown adapters opt into none. */
 export function launchInfrastructure(id: string) {
-  const transports: Record<string, { nativeCli: boolean; nativeRuntime: boolean; authPath?: string }> = {
-    boat: { nativeCli: true, nativeRuntime: false, authPath: "/home/user/.codex/auth.json" },
-    modal: { nativeCli: false, nativeRuntime: true, authPath: "/home/user/.armada-runtime/codex/auth.json" },
+  const transports: Record<
+    string,
+    { nativeCli: boolean; nativeRuntime: boolean; authPath?: string; managedNativeAuthWriter: boolean }
+  > = {
+    boat: {
+      nativeCli: true,
+      nativeRuntime: false,
+      authPath: "/home/user/.codex/auth.json",
+      managedNativeAuthWriter: true,
+    },
+    modal: {
+      nativeCli: false,
+      nativeRuntime: true,
+      authPath: "/home/user/.armada-runtime/codex/auth.json",
+      managedNativeAuthWriter: false,
+    },
   };
-  return Object.hasOwn(transports, id) ? transports[id]! : { nativeCli: false, nativeRuntime: false };
+  return Object.hasOwn(transports, id)
+    ? transports[id]!
+    : { nativeCli: false, nativeRuntime: false, managedNativeAuthWriter: false };
 }
 
 /** What a provider's infrastructure allows, independent of any agent capability. */
