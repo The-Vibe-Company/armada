@@ -800,6 +800,54 @@ export async function carryNativePreservationAcrossStop(tx: Sql, sandboxId: stri
   );
 }
 
+export async function requestStartingModalStop(
+  sql: Sql,
+  scope: readonly [string[], string],
+  sandboxId: string,
+  generation: number,
+) {
+  if (!sql.transaction) throw new Error("Modal launch cancellation requires a transaction.");
+  return sql.transaction(async (tx) => {
+    const params = [...scope, sandboxId, generation];
+    const {
+      rows: [launch],
+    } = await tx.query<{ allowed: boolean }>(
+      `select (s.owner_id=m.user_id or m.role='admin') as allowed
+       from public.sandboxes s join public.members m on m.org_id=s.org_id and m.user_id=$2
+       join public.jobs j on j.sandbox_id=s.id and j.generation=$4 and j.kind='launch'
+         and j.org_id=s.org_id and j.request_owner_id=s.owner_id
+       where s.id=$3 and s.org_id=any($1::uuid[]) and s.provider='modal'
+         and s.runtime_transport='dialout' for share of m`,
+      params,
+    );
+    if (!launch) return null;
+    if (!launch.allowed) throw new VaultError("forbidden", "Only the owner or an org admin may stop this sandbox.");
+    const {
+      rows: [target],
+    } = await tx.query<{ status: SandboxStatus; status_reason: string | null }>(
+      `select status, status_reason from public.sandboxes
+       where id=$1 and lifecycle_generation=$2 and deleted_at is null for update`,
+      [sandboxId, generation],
+    );
+    if (target?.status === "failed" && target.status_reason === MODAL_LAUNCH_FAILURE)
+      return { id: sandboxId, status: target.status };
+    if (target?.status !== "starting") throw new VaultError("conflict", "Modal launch changed before stop admission.");
+    await tx.query(
+      `update public.sandboxes set stop_requested_at=coalesce(stop_requested_at, clock_timestamp()) where id=$1`,
+      [sandboxId],
+    );
+    return { id: sandboxId, status: target.status };
+  });
+}
+
+export async function clearStartingModalStop(tx: Sql, sandboxId: string, generation: number) {
+  await tx.query(
+    `update public.sandboxes set stop_requested_at=null where id=$1 and lifecycle_generation=$2
+       and status='failed' and status_reason=$3 and stop_requested_at is not null`,
+    [sandboxId, generation, MODAL_LAUNCH_FAILURE],
+  );
+}
+
 export async function publishOwnerStop(
   tx: Sql,
   stop: {

@@ -1478,6 +1478,56 @@ test.each(["allocated", "deleting", "deleted"] as const)(
   },
 );
 
+test("owner stop after a lost Modal create reply leaves the exact allocation for replacement cleanup", async () => {
+  const { f, id, jobId, makeRunner, effects, cleanupEffects } = await modalLaunchFixture(await modalAdmissionFixture());
+  const interrupted = makeRunner((step) => {
+    if (step === "create response") throw new Error("Lost create response");
+  });
+  expect(await interrupted.reconcileOne(signal)).toBe(true);
+  await interrupted.drain();
+
+  const caller = {
+    via: "service" as const,
+    userId: f.people.owner,
+    orgs: [{ orgId: f.people.org, role: "member" as const }],
+  };
+  const data = createSqlData(f.sql)(caller);
+  const context = {
+    caller,
+    data,
+    launchCredentials: launchCredentials(createSqlVaultStore(f.sql), launchEncryptionKey),
+    exposedSecrets: async () => [],
+    async provider() {
+      throw new Error("Owner stop must not resolve the synchronous provider");
+    },
+    now: () => new Date("2026-11-21T00:00:00Z"),
+    async sleep() {
+      throw new Error("Owner stop must return without waiting for cleanup");
+    },
+  } satisfies Parameters<typeof callSharedTool>[0];
+  expect(await callSharedTool(context, "stop", { id })).toEqual({ id, status: "starting" });
+  expect(cleanupEffects().terminations).toBe(0);
+  const stopped = await data.sandboxes.get(id);
+  expect(stopped?.status).toBe("starting");
+  expect(stopped?.stopRequestedAt).toBeTruthy();
+
+  await f.db.query("update jobs set lease_until='-infinity' where id=$1", [jobId]);
+  const successor = makeRunner();
+  expect(await successor.reconcileOne(signal)).toBe(true);
+  await successor.drain();
+  expect(await callSharedTool(context, "stop", { id })).toEqual({ id, status: "failed" });
+  expect((await data.sandboxes.get(id))?.lifecycleGeneration).toBe(stopped?.lifecycleGeneration);
+  await expect(data.sandboxes.assertDeletionAllowed!(id)).rejects.toMatchObject({ code: "conflict" });
+  expect(await successor.reconcileOne(signal)).toBe(true);
+  await successor.drain();
+
+  expect(effects()).toMatchObject({ allocations: 1, bootstrapped: [] });
+  expect(cleanupEffects().terminations).toBe(1);
+  expect((await f.db.query("select state from jobs where sandbox_id=$1 and kind='delete'", [id])).rows).toEqual([
+    { state: "done" },
+  ]);
+});
+
 test("status and wait return a failed Modal launch receipt before provider identity exists", async () => {
   const { f, id, jobId, makeRunner } = await modalLaunchFixture(await modalAdmissionFixture());
   await f.db.query("update jobs set deadline_at='-infinity' where id=$1", [jobId]);

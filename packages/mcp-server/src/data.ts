@@ -59,11 +59,13 @@ import {
   publishOwnerStop,
   recordNativeRetentionRefusal,
   recordObservedProviderState,
+  requestStartingModalStop,
   settleRuntimeTurn,
 } from "./sandbox-lifecycle.ts";
 import { SANDBOX_MEMBER, SANDBOX_VISIBLE } from "./sandbox-visibility.ts";
 import { type StopRefusalEvidence, stopRefusalEvidence } from "./stop-refusal-evidence.ts";
 import { admittedTurnContexts, stampTurnPricing, withServerCost } from "./turn-pricing.ts";
+import { MODAL_LAUNCH_FAILURE } from "./turns.ts";
 import { preserveBeforeStop, readWorkRecovery, type StopAuthority } from "./work-preservation.ts";
 
 /** A sandbox with what the caller needs to know about its golden. */
@@ -130,6 +132,7 @@ export interface ServerSandboxStore extends SandboxStore {
   launchTiming?(id: string): Promise<LaunchTiming | null>;
   assertExtensionAllowed?(id: string): Promise<void>;
   assertDeletionAllowed?(id: string): Promise<void>;
+  requestStartingModalStop?(id: string, generation: number): ReturnType<typeof requestStartingModalStop>;
   /** Refuse taint and stop intent before exec; native Boat and Modal exec also claim the activity lease. */
   assertExecAllowed?(id: string): Promise<void>;
   recordUsage?(
@@ -539,19 +542,23 @@ export function createSqlData(
         if (!row) throw new GoldenError("not_found", "Sandbox not found.");
         if (!row.allowed) throw new GoldenError("forbidden", "You are not allowed to extend this sandbox.");
       },
+      requestStartingModalStop: (id, generation) => requestStartingModalStop(sql, scope, id, generation),
       async assertDeletionAllowed(id) {
         if (!UUID.test(id)) throw new GoldenError("not_found", "No such sandbox.");
         const row = (
-          await sql.query<{ status: string; managed: boolean }>(
+          await sql.query<{ status: string; managed: boolean; modal_cleanup_owns_exit: boolean }>(
             `select s.status::text as status,
+             coalesce(s.status='failed' and s.provider='modal' and s.status_reason=$4 and s.stopped_at is null, false)
+               as modal_cleanup_owns_exit,
              ${SANDBOX_DELETION_MANAGED} as managed
            from public.sandboxes s where s.id=$3::uuid and s.org_id=any($1::uuid[])
            and exists(select 1 from public.members m where m.org_id=s.org_id and m.user_id=$2::uuid
              and (s.owner_id=$2::uuid or m.role='admin'))`,
-            [...scope, id],
+            [...scope, id, MODAL_LAUNCH_FAILURE],
           )
         ).rows[0];
         if (!row) throw new GoldenError("not_found", "No such sandbox or deletion access denied.");
+        if (row.modal_cleanup_owns_exit) throw new GoldenError("conflict", "Sandbox exit is unconfirmed.");
         if (row.managed)
           throw new GoldenError(
             "conflict",
@@ -1066,9 +1073,13 @@ export function createSqlData(
           fence += ` and s.status in ('ready','running') and s.stop_requested_at is null
             and s.expires_at>clock_timestamp() and not s.application_secret_tainted and ${retainedProof}`;
         }
-        if (patch.deleteRequested)
+        if (patch.deleteRequested) {
+          params.push(MODAL_LAUNCH_FAILURE);
           fence += ` and s.status in ('stopped','failed')
+            and not (s.status='failed' and s.provider='modal' and s.status_reason is not distinct from $${params.length}::text
+              and s.stopped_at is null)
             and not ${SANDBOX_DELETION_MANAGED}`;
+        }
         if (patch.nativeExecAdmission) {
           params.push(patch.nativeExecAdmission.provider, patch.nativeExecAdmission.placement);
           fence += ` and s.provider=$${params.length - 1}::public.sandbox_provider

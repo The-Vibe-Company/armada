@@ -40,6 +40,7 @@ import { readRuntimeTemplateEnvironment } from "../runtime-readable-variables.ts
 import { runtimeWorkspace } from "../runtime-workspace.ts";
 import {
   bindModalLaunchMachine,
+  clearStartingModalStop,
   insertStartingModalSandbox,
   type ModalLaunchSandbox,
   taintStartingModalSandbox,
@@ -720,14 +721,16 @@ export async function runModalLaunch(
       provider_sandbox_id: string | null;
       journaled_id: string | null;
       has_intent: boolean;
+      stop_requested: boolean;
     }>(
       `select s.org_id, s.provider_sandbox_id,
               j.outcome #>> '{modal_machine,entry,machineId}' as journaled_id,
-              j.outcome #> '{modal_machine,entry}' is not null as has_intent
+              j.outcome #> '{modal_machine,entry}' is not null as has_intent,
+              s.stop_requested_at is not null as stop_requested
        from public.sandboxes s join public.jobs j on j.id=$2 and j.sandbox_id=s.id
          and j.org_id=s.org_id and j.request_owner_id=s.owner_id and j.generation=s.lifecycle_generation
        where s.id=$1 and s.provider='modal' and s.runtime_transport='dialout'
-         and s.status='starting' and s.deleted_at is null and s.stop_requested_at is null`,
+         and s.status='starting' and s.deleted_at is null`,
       [sandboxId, job.id],
     );
     return row;
@@ -735,6 +738,11 @@ export async function runModalLaunch(
   const hasJournal = typeof job.outcome === "object" && job.outcome !== null && "modal_machine" in job.outcome;
   let skipProvider = !hasJournal && !(await context.canDispatch());
   let plan: ModalLaunchPlan | undefined;
+  const beforePlan = await withJobLease(sql, job, startingTarget);
+  context.signal.throwIfAborted();
+  if (beforePlan?.stop_requested) {
+    skipProvider ||= !beforePlan.has_intent || Boolean(beforePlan.provider_sandbox_id ?? beforePlan.journaled_id);
+  }
   if (!skipProvider) {
     try {
       plan = await preparePlan();
@@ -787,7 +795,10 @@ export async function runModalLaunch(
   const afterDispatch = await withJobLease(sql, job, readEnrolment);
   context.signal.throwIfAborted();
   if (!afterDispatch || afterDispatch.enrolled) return done;
-  if (dispatch?.kind === "bootstrapped") {
+  const target = await withJobLease(sql, job, startingTarget);
+  context.signal.throwIfAborted();
+  if (!target) return done;
+  if (dispatch?.kind === "bootstrapped" && !target.stop_requested) {
     return {
       status: "retry",
       after: afterDispatch.check_after
@@ -796,11 +807,10 @@ export async function runModalLaunch(
     } satisfies JobResult;
   }
 
-  const target = await withJobLease(sql, job, startingTarget);
-  context.signal.throwIfAborted();
-  if (!target) return { status: "done" } satisfies JobResult;
-
-  const observed = dispatch?.observation.kind === "present" ? dispatch.observation.machine.machineId : null;
+  const observed =
+    dispatch?.kind === "reconcile" && dispatch.observation.kind === "present"
+      ? dispatch.observation.machine.machineId
+      : null;
   const known = target.provider_sandbox_id ?? target.journaled_id;
   if (
     (target.provider_sandbox_id && target.journaled_id && target.provider_sandbox_id !== target.journaled_id) ||
@@ -830,6 +840,7 @@ export async function runModalLaunch(
         effects: [],
       });
       if (transition.kind !== "applied") throw new Error("Modal launch failure lost its generation.");
+      await clearStartingModalStop(tx, sandboxId, generation);
       await createJobsStore(sql, encryptionKey).enqueue(
         "delete",
         sandboxId,

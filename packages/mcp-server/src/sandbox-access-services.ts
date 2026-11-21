@@ -31,6 +31,7 @@ import {
 import { createSandboxScopedGateway } from "./sandbox-access-scoped-gateway.ts";
 import { extendSandbox } from "./sandbox-extend.ts";
 import { createRuntimeSelfFinish, requestSandboxFinish } from "./sandbox-finish.ts";
+import { isFailedModalLaunch } from "./turns.ts";
 import { preserveBeforeStop, stopAndObserve } from "./work-preservation.ts";
 
 class DelegatedAccessError extends Error {
@@ -105,12 +106,21 @@ export function createSandboxAccessServices(input: {
     if (admitRecovery && (!retained || !["ready", "running"].includes(saved.status) || saved.stopRequestedAt))
       throw new DelegatedAccessError("conflict");
     if (saved.status === "stopped" || (saved.status === "failed" && saved.stoppedAt)) return;
-    const provider = await resolveProvider();
     const caller = {
       via: "service" as const,
       userId: operation.ownerId,
       orgs: [{ orgId: operation.orgId, role: "member" as const }],
     };
+    const scoped = createSqlData(sql)(caller).sandboxes;
+    if (
+      !admitRecovery &&
+      saved.provider === "modal" &&
+      saved.lifecycleGeneration !== undefined &&
+      (saved.status === "starting" || isFailedModalLaunch(saved))
+    ) {
+      if (await scoped.requestStartingModalStop?.(saved.id, saved.lifecycleGeneration)) return;
+    }
+    const provider = await resolveProvider();
     let checkpoint: Awaited<ReturnType<RuntimeCheckpoint>> | undefined;
     if (retained) {
       if (!input.runtimeCheckpoint) throw new DelegatedAccessError("unavailable");
@@ -130,7 +140,6 @@ export function createSandboxAccessServices(input: {
       if (admitRecovery && (checkpoint.requestId !== operation.id || checkpoint.runtime.epoch !== prior?.epoch))
         throw new DelegatedAccessError("conflict");
     }
-    const scoped = createSqlData(sql)(caller).sandboxes;
     const stoppingStatus = saved.status === "failed" ? "failed" : "stopping";
     const statusReason = stoppingStatus === "failed" ? (saved.statusReason ?? null) : retained ? "idle_paused" : null;
     const epoch = checkpoint?.runtime.epoch;

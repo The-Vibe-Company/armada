@@ -511,6 +511,14 @@ export function configureTools(
           "Wait for the current turn to finish before changing accounts.",
         );
 
+      if (
+        found.provider === "modal" &&
+        found.lifecycleGeneration !== undefined &&
+        (found.status === "starting" || isFailedModalLaunch(found))
+      ) {
+        const stop = await data.sandboxes.requestStartingModalStop?.(found.id, found.lifecycleGeneration);
+        if (stop) return stop;
+      }
       if (found.stopRequestedAt || ["stopping", "stopped"].includes(found.status))
         return { id: found.id, status: found.status };
       const { provider } = await live(args.id, true, found);
