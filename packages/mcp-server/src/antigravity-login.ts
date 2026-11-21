@@ -23,6 +23,7 @@ type Pending = {
   expiresAt: number;
   state?: string;
   completing: boolean;
+  cancelled: boolean;
   abort: AbortController;
   process: Promise<AntigravityLoginProcess>;
   closing?: Promise<void>;
@@ -106,24 +107,30 @@ export function createAntigravityLogin(
     login.deadline.removeEventListener("abort", login.onDeadline);
     login.closing = login.process
       .then(
-        (child) =>
-          child.close().catch(() => {
-            throw new AntigravityLoginError("login_failed");
-          }),
+        (child) => child.close(),
         () => undefined,
       )
-      .finally(() => pending.delete(key));
+      .then(() => {
+        pending.delete(key);
+      })
+      .catch(() => {
+        delete login.closing;
+        throw new AntigravityLoginError("login_failed");
+      });
     login.abort.abort();
     return login.closing;
   }
 
   function retire(key: string, login: Pending) {
-    // The process adapter owns cleanup. Request paths that are still active await the same close.
     void close(key, login).catch(() => {});
   }
 
+  function expired(login: Pending) {
+    return login.deadline.aborted || clock.now() >= login.expiresAt;
+  }
+
   function assertLive(login: Pending) {
-    if (login.abort.signal.aborted || clock.now() >= login.expiresAt) {
+    if (login.abort.signal.aborted || expired(login)) {
       throw new AntigravityLoginError("login_missing");
     }
   }
@@ -141,6 +148,7 @@ export function createAntigravityLogin(
         target: { ...target },
         expiresAt: clock.now() + lifetimeMs,
         completing: false,
+        cancelled: false,
         abort,
         process: Promise.resolve().then(() => startProcess(abort.signal)),
         deadline,
@@ -177,32 +185,36 @@ export function createAntigravityLogin(
       assertLive(login);
       const code = validatedCode(input, login.state);
       login.completing = true;
+      let credential: ReturnType<typeof parseAntigravityCredential>;
       try {
         const child = await login.process;
         assertLive(login);
         await child.submitCode(code);
         if ((await child.exited) !== 0) throw new AntigravityLoginError("login_failed");
         assertLive(login);
-        const credential = parseAntigravityCredential({ method: "google", token: await child.readToken() });
+        credential = parseAntigravityCredential({ method: "google", token: await child.readToken() });
         assertLive(login);
-        return { target: login.target, credential };
       } catch {
         throw new AntigravityLoginError("login_failed");
       } finally {
         await close(key, login);
       }
+      if (stopped || login.cancelled || expired(login)) throw new AntigravityLoginError("login_failed");
+      return { target: login.target, credential };
     },
 
     async cancel(caller: LoginCaller, id: string) {
       const key = callerKey(caller);
       const login = pending.get(key);
       if (!login || login.id !== id) throw new AntigravityLoginError("login_missing");
+      login.cancelled = true;
       await close(key, login);
     },
 
     async shutdown() {
       stopped = true;
-      await Promise.all([...pending].map(([key, login]) => close(key, login)));
+      const results = await Promise.allSettled([...pending].map(([key, login]) => close(key, login)));
+      if (results.some((result) => result.status === "rejected")) throw new AntigravityLoginError("login_failed");
     },
   };
 }

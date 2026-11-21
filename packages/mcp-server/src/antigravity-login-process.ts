@@ -10,7 +10,7 @@ const tokenBytes = 32 * 1024;
 const stdoutBytes = 32 * 1024;
 const caBundles = ["/etc/ssl/certs/ca-certificates.crt", "/etc/pki/tls/certs/ca-bundle.crt", "/etc/ssl/cert.pem"];
 
-async function readToken(profile: string): Promise<unknown> {
+async function readToken(profile: string) {
   const directory = await open(
     join(profile, appDataDir),
     constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW,
@@ -40,13 +40,11 @@ async function readToken(profile: string): Promise<unknown> {
   }
 }
 
-export async function startAntigravityLoginProcess(
-  cacheDir: string,
-  signal: AbortSignal,
-): Promise<AntigravityLoginProcess> {
-  const executable = await prepareAntigravity({ cacheDir }, (url, init) => fetch(url, { ...init, signal }));
+export async function startAntigravityLoginProcess(cacheDir: string, signal: AbortSignal) {
+  const executable = await prepareAntigravity({ cacheDir }, (url, init) =>
+    fetch(url, { ...init, signal: init.signal ? AbortSignal.any([init.signal, signal]) : signal }),
+  );
   signal.throwIfAborted();
-  // A fixed parent prevents ambient TMPDIR and server configuration from entering the child.
   const profile = await mkdtemp("/tmp/armada-antigravity-login-");
   try {
     signal.throwIfAborted();
@@ -104,13 +102,10 @@ export async function startAntigravityLoginProcess(
         }),
       readToken: () => readToken(profile),
       async close() {
-        try {
-          await owner.release(child);
-        } finally {
-          await rm(profile, { recursive: true, force: true });
-        }
+        await owner.release(child);
+        await rm(profile, { recursive: true, force: true });
       },
-    };
+    } satisfies AntigravityLoginProcess;
   } catch (error) {
     await rm(profile, { recursive: true, force: true });
     throw error;

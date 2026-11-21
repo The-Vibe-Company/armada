@@ -29,7 +29,7 @@ function fixture(link = authorization.href, token: unknown = { access_token: "ac
     },
   };
   const login = createAntigravityLogin(async () => child, { now: () => 0, deadline: () => deadline.signal });
-  return { login, deadline, submitted, exit, closes: () => closes };
+  return { login, child, deadline, submitted, exit, closes: () => closes };
 }
 
 test.each([
@@ -117,3 +117,41 @@ test("shutdown closes the pending process and stops new sign-ins", async () => {
   await expect(login.complete(caller, loginId, "example")).rejects.toThrow("Start sign-in again");
   await expect(login.start(caller, target)).rejects.toThrow("Start sign-in again");
 });
+
+test("failed cleanup retains the caller slot until cleanup can be retried", async () => {
+  const { login, child, closes } = fixture();
+  const { loginId } = await login.start(caller, target);
+  const close = child.close;
+  child.close = async () => {
+    throw Error("private process diagnostic");
+  };
+  await expect(login.cancel(caller, loginId)).rejects.toThrow(/^Antigravity sign-in failed\. Start sign-in again\.$/);
+  await expect(login.start(caller, target)).rejects.toThrow("already pending");
+  child.close = close;
+  await login.shutdown();
+  expect(closes()).toBe(1);
+});
+
+test.each(["cancel", "shutdown", "deadline"] as const)(
+  "%s during cleanup suppresses the successful exchange",
+  async (reason) => {
+    const { login, child, exit, deadline } = fixture();
+    const { promise: closing, resolve: startedClosing } = Promise.withResolvers<void>();
+    const { promise: cleanup, resolve: finishCleanup } = Promise.withResolvers<void>();
+    child.close = () => {
+      startedClosing();
+      return cleanup;
+    };
+    const { loginId } = await login.start(caller, target);
+    const complete = login.complete(caller, loginId, "example");
+    exit(0);
+    await closing;
+    let stop: Promise<void> | undefined;
+    if (reason === "cancel") stop = login.cancel(caller, loginId);
+    else if (reason === "shutdown") stop = login.shutdown();
+    else deadline.abort();
+    finishCleanup();
+    await stop;
+    await expect(complete).rejects.toThrow("Antigravity sign-in failed.");
+  },
+);
