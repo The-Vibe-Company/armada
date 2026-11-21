@@ -17,8 +17,8 @@ export interface ScopedProbeIo {
   now(): number;
   sleep(ms: number): Promise<void>;
   deadline: number;
-  toolEvidenceTimeoutMs: number | undefined;
-  poll<T>(read: () => Promise<T>, done: (value: T) => boolean): Promise<T>;
+  stepTimeouts: Partial<Record<"scoped_snapshot" | "scoped_native_turn" | "scoped_tool_evidence", number>>;
+  poll<T>(read: (remainingMs?: number) => Promise<T>, done: (value: T) => boolean, until?: number): Promise<T>;
   step<T>(name: string, action: () => Promise<T>): Promise<T>;
   withCleanup<T>(action: () => Promise<T>): Promise<T>;
   stopSandbox(id: string): Promise<void>;
@@ -173,16 +173,23 @@ export function createScopedProbe(item: ScopedProbeCase, enabled: boolean, io: S
   const claims = new Set<string>();
   const operations = new Set<string>();
   const events = new Map<string, Row>();
-  const api = <T>(path: string, body: object) => io.request<T>(path, { org: item.org, ...body });
-  async function snapshot(): Promise<Set<string>> {
+  const api = <T>(path: string, body: object, timeoutMs?: number) =>
+    io.request<T>(path, { org: item.org, ...body }, timeoutMs);
+  function stepDeadline(name: keyof ScopedProbeIo["stepTimeouts"]) {
+    const timeoutMs = io.stepTimeouts[name];
+    return timeoutMs === undefined ? undefined : Math.min(io.deadline, io.now() + timeoutMs);
+  }
+  async function snapshot(until?: number): Promise<Set<string>> {
     const ids = new Set<string>();
     for (let page = 1; page <= 20; page++) {
-      const result = await api<{ sandboxes: Row[]; hasMore: boolean; nextPage: number | null }>("sandbox/list", {
-        owner: "me",
-        golden: item.goldenId,
-        limit: 200,
-        page,
-      });
+      const remaining = until === undefined ? undefined : until - io.now();
+      if (remaining !== undefined && remaining <= 0) fail("scoped_incomplete_snapshot");
+      const result = await api<{ sandboxes: Row[]; hasMore: boolean; nextPage: number | null }>(
+        "sandbox/list",
+        { owner: "me", golden: item.goldenId, limit: 200, page },
+        remaining,
+      );
+      if (until !== undefined && io.now() > until) fail("scoped_incomplete_snapshot");
       if (!Array.isArray(result?.sandboxes) || typeof result.hasMore !== "boolean") fail("scoped_invalid_list");
       for (const entry of result.sandboxes) {
         if (!uuid(entry.id)) fail("scoped_invalid_list");
@@ -341,7 +348,7 @@ export function createScopedProbe(item: ScopedProbeCase, enabled: boolean, io: S
     async prepare(): Promise<void> {
       if (before) fail("scoped_already_prepared");
       if (item.harness !== "codex") fail("scoped_codex_only");
-      before = await io.step("scoped_snapshot", snapshot);
+      before = await io.step("scoped_snapshot", () => snapshot(stepDeadline("scoped_snapshot")));
     },
     async run(id: string, credentialVersion: number): Promise<void> {
       if (!before || parentId || !uuid(id) || !Number.isSafeInteger(credentialVersion) || credentialVersion < 1)
@@ -365,18 +372,20 @@ export function createScopedProbe(item: ScopedProbeCase, enabled: boolean, io: S
         noAccess,
       })}`;
       await io.step("scoped_native_turn", async () => {
+        const until = stepDeadline("scoped_native_turn");
         sendUnknown = true;
         evidenceUnknown = true;
         const sent = await io.poll(
-          async () => {
+          async (remainingMs) => {
             try {
-              return await api<{ promptId: string }>("sandbox/send", { id, prompt: goal });
+              return await api<{ promptId: string }>("sandbox/send", { id, prompt: goal }, remainingMs);
             } catch (error) {
               if (!io.isNotReady(error)) throw error;
               return null;
             }
           },
           (result) => result !== null,
+          until,
         );
         if (!sent || typeof sent.promptId !== "string" || !sent.promptId) fail("scoped_send_unknown");
         promptId = sent.promptId;
@@ -384,12 +393,12 @@ export function createScopedProbe(item: ScopedProbeCase, enabled: boolean, io: S
         let lastWait: Row | undefined;
         try {
           await io.poll(
-            async () => {
-              const result = await api<Row>("sandbox/wait", {
-                id,
-                prompt_id: promptId,
-                timeout_seconds: 0,
-              });
+            async (remainingMs) => {
+              const result = await api<Row>(
+                "sandbox/wait",
+                { id, prompt_id: promptId, timeout_seconds: 0 },
+                remainingMs,
+              );
               lastWait = result;
               return result;
             },
@@ -403,6 +412,7 @@ export function createScopedProbe(item: ScopedProbeCase, enabled: boolean, io: S
               if (!["running", "finished"].includes(String(prompt.state))) fail("scoped_invalid_wait");
               return prompt.state === "finished";
             },
+            until,
           );
         } catch (error) {
           const safeText = (value: unknown) => (typeof value === "string" ? redactForLog(value) : null);
@@ -427,10 +437,7 @@ export function createScopedProbe(item: ScopedProbeCase, enabled: boolean, io: S
         }
       });
       await io.step("scoped_tool_evidence", async () => {
-        const evidenceDeadline =
-          io.toolEvidenceTimeoutMs === undefined
-            ? undefined
-            : Math.min(io.deadline, io.now() + io.toolEvidenceTimeoutMs);
+        const evidenceDeadline = stepDeadline("scoped_tool_evidence");
         await logs(id, "initial_evidence", evidenceDeadline);
         if (evidenceDeadline !== undefined && io.now() > evidenceDeadline) fail("scoped_incomplete_logs");
         evidenceUnknown = false;
