@@ -1,4 +1,5 @@
 import { join } from "node:path";
+import { isSandboxPlacementProvider } from "@armada/core/sandbox-provider";
 
 const GREEN_JOURNAL_LIMIT = 20;
 const MIN_STEP_SAMPLES = 20;
@@ -24,7 +25,7 @@ export function smokeDeadlines(greenJournalsNewestFirst: readonly string[]) {
       const row = JSON.parse(line);
       if (
         row?.pass !== true ||
-        (row.provider !== "modal" && row.provider !== "docker" && row.provider !== "boat") ||
+        !isSandboxPlacementProvider(row.provider) ||
         typeof row.lane !== "string" ||
         !/^[a-z0-9-]+$/.test(row.lane) ||
         typeof row.step !== "string" ||
