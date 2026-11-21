@@ -999,9 +999,12 @@ test("queued public receipts remain usable across server reads, evidence, outcom
   expect(
     await callSharedTool(context, "wait", { id: input.id, prompt_id: input.request_id, timeout_seconds: 0 }),
   ).toMatchObject({ settled: false, timedOut: true });
-  queue.setDispatch(async () => ({ promptId: "actual_docker_prompt", conversationId: "history", status: "finished" }));
-  await queue.reconcileOne(new AbortController().signal);
-  await queue.drain();
+  const dispatch = sharedDispatcher(async (_caller, request) => ({
+    promptId: request.request_id === input.request_id ? "actual_docker_prompt" : "second_native",
+    conversationId: "history",
+    status: "finished",
+  }));
+  await dispatch();
   expect(await callSharedTool(context, "status", { id: input.id, prompt_id: input.request_id })).toMatchObject({
     settled: true,
     prompt: { promptId: input.request_id },
@@ -1012,9 +1015,7 @@ test("queued public receipts remain usable across server reads, evidence, outcom
   expect(routedPrompts).toEqual([undefined, undefined, "actual_docker_prompt", "actual_docker_prompt"]);
   // A second queued turn proves history is not projected using only the latest alias.
   await callSharedTool(context, "send", { ...input, request_id: requests[1], prompt: "second queued instruction" });
-  queue.setDispatch(async () => ({ promptId: "second_native", conversationId: "history", status: "finished" }));
-  await queue.reconcileOne(new AbortController().signal);
-  await queue.drain();
+  await dispatch();
   const expectedIds = [requests[0]!, requests[1]!, "unmapped_native"];
   const logs = (await callSharedTool(context, "logs", { id: input.id })) as {
     events: { promptId: string; tools?: unknown[] }[];
@@ -1166,9 +1167,10 @@ test("uppercase request UUIDs preserve one queue identity and status alias", asy
     requestId: uppercase.toLowerCase(),
     failed: false,
   });
-  queue.setDispatch(async () => ({ promptId: "case_actual_prompt", conversationId: "history", status: "running" }));
-  await queue.reconcileOne(new AbortController().signal);
-  await queue.drain();
+  await sharedDispatcher(async (_caller, request) => {
+    expect(request.request_id).toBe(uppercase.toLowerCase());
+    return { promptId: "case_actual_prompt", conversationId: "history", status: "running" };
+  })();
   expect(await queue.status(caller, input.id, uppercase)).toEqual({ nativePromptId: "case_actual_prompt" });
 });
 
