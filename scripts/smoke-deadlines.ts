@@ -1,5 +1,5 @@
 import { join } from "node:path";
-import { isSandboxPlacementProvider } from "@armada/core/sandbox-provider";
+import { isSandboxPlacementProvider } from "../packages/core/src/sandbox-provider.ts";
 
 const GREEN_JOURNAL_LIMIT = 20;
 const MIN_STEP_SAMPLES = 20;
