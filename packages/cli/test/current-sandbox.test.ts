@@ -165,11 +165,13 @@ test("info --wait reads activity for the current sandbox and selected prompt", a
   expect(JSON.parse(result.out)).toEqual(receipt);
 });
 
-test.each([
-  ["--wait", "--live"],
-  ["--wait", "--setup"],
-  ["--timeout", "0"],
-])("info rejects incompatible options %j before I/O", async (...options) => {
+test.each(
+  [
+    ["--wait", "--live"],
+    ["--wait", "--setup"],
+    ["--timeout", "0"],
+  ].map((options) => ({ options })),
+)("info rejects incompatible options $options before I/O", async ({ options }) => {
   const cli = fixture(async () => {
     throw new Error("unexpected fetch");
   }, first);
