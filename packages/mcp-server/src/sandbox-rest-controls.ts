@@ -1,6 +1,12 @@
 import { providerRateLimitDetails } from "@armada/core";
 import { sandboxExtensionLifetime, sandboxRestOperations } from "@armada/core/contract";
-import { GoldenError, isNonMutatingProviderRefusal, ProviderError, VaultError } from "@armada/core/server";
+import {
+  GoldenError,
+  isNonMutatingProviderRefusal,
+  type Provider,
+  ProviderError,
+  VaultError,
+} from "@armada/core/server";
 import type { BoatProvider } from "@armada/provider-boat";
 import { z } from "zod";
 import { validateProviderResourceObservation } from "../../core/src/resource-validation.ts";
@@ -172,7 +178,9 @@ async function observeBoatDrainDeletion(
 
 export async function deleteSandboxWithActivity(
   sandboxes: ServerSandboxStore,
-  providers: Pick<NonNullable<ControlOptions["providers"]>, "resolve">,
+  providers: Pick<NonNullable<ControlOptions["providers"]>, "resolve"> & {
+    beforeNativeDrainDelete?(provider: Provider, sandboxId: string, placement: string): Promise<void>;
+  },
   id: string,
   mode?: "native-drain",
 ) {
@@ -209,14 +217,21 @@ export async function deleteSandboxWithActivity(
           };
           let operationId: string | null = null;
           if (nativeDrain) {
-            if (!sandboxes.claimNativeDrainDispatch || target.generation === undefined)
+            const generation = target.generation;
+            const dispatch = sandboxes.nativeDrainDispatch?.bind(sandboxes);
+            if (!dispatch || generation === undefined)
               throw new ToolError("unavailable", "Native drain deletion evidence is unavailable.");
-            operationId = await sandboxes.claimNativeDrainDispatch(
-              id,
-              target.sandboxId,
-              target.generation,
-              activityToken,
-            );
+            const prepare = providers.beforeNativeDrainDelete;
+            if (prepare) {
+              operationId = await dispatch(id, target.sandboxId, generation, activityToken, "inspect");
+              signal.throwIfAborted();
+              if (operationId === null) {
+                await prepare(provider, id, target.sandboxId);
+                signal.throwIfAborted();
+              }
+            }
+            if (operationId === null)
+              operationId = await dispatch(id, target.sandboxId, generation, activityToken, "claim");
             signal.throwIfAborted();
           }
           const boat = provider as Partial<BoatProvider>;

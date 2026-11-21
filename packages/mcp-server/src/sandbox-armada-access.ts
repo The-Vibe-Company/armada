@@ -256,8 +256,8 @@ export function createSandboxArmadaAccess(input: {
       configureAuthority: () => install(provider, sandbox.providerSandboxId),
     });
   }
-  async function scrub(provider: Provider, id: string, cleanup?: "stop" | "delete") {
-    const parent = await scope(provider, id);
+  async function scrub(provider: Provider, id: string, cleanup?: "stop" | "delete", sandboxId?: string) {
+    const parent = await scope(provider, id, sandboxId);
     if (!parent) return;
     await scrubParent(provider, id, parent, cleanup);
   }
@@ -320,6 +320,8 @@ export function createSandboxArmadaAccess(input: {
   return {
     beforePrompt: install,
     beforeSnapshot: scrub,
+    beforeNativeDrainDelete: (provider: Provider, sandboxId: string, placement: string) =>
+      scrub(provider, placement, "delete", sandboxId),
     restoreEnrolled,
     prepare,
     wrap(provider: Provider, modalDrainSandboxId?: string): Provider {

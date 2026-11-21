@@ -2238,3 +2238,68 @@ test("native stop retries a failed acknowledgement snapshot before collecting wo
     expect(boat.execs).toHaveLength(1);
   });
 });
+
+test.each(["unavailable cleanup", "lease expiry during cleanup", "acknowledged delete"] as const)(
+  "scoped Boat drain recovers from %s",
+  async (scenario) => {
+    const { db, people, sandboxId, archiveId } = await seedNativeDrainReceipt(undefined, "boat");
+    await db.query("update sandboxes set visibility='private' where id=$1", [sandboxId]);
+    await db.query(
+      "insert into armada_access_parents(id,kind,org_id,owner_id,sandbox_id,state) values($1,'sandbox',$2,$3,$1,'ready')",
+      [sandboxId, people.org, people.owner],
+    );
+    const sql = bunLikeSql(db);
+    const caller: Caller = { via: "service", userId: people.owner, orgs: [{ orgId: people.org, role: "member" }] };
+    const { sandboxes } = createSqlData(sql)(caller);
+    const access = createSandboxArmadaAccess({ sql, encryptionKey: ENCRYPTION_KEY, publicUrl: PUBLIC_URL });
+    const fake = fakeBoat().provider;
+    const info = await fake.fork({ from: "test", name: "parent", ttlSeconds: 3600, env: {}, noEnv: true });
+    let firstPass = true;
+    const expireLease = () =>
+      db.query("update sandboxes set activity_until=now()-interval '1 second' where id=$1", [sandboxId]);
+    const provider = {
+      ...fake,
+      get: mock(async () => {
+        if (firstPass && scenario === "unavailable cleanup") throw new Error("Physical observation unavailable");
+        if (firstPass && scenario === "lease expiry during cleanup") await expireLease();
+        if (!firstPass && scenario === "acknowledged delete") throw new Error("Physical placement is already deleted");
+        return { ...info, state: "stopped" as const };
+      }),
+      delete: mock(async () =>
+        scenario === "acknowledged delete"
+          ? { status: "pending", operationId: "deletion-operation" }
+          : { status: "deleted" },
+      ),
+      observeSandboxDeletion: mock(async () => ({ status: "completed" })),
+    };
+    const drain = () =>
+      deleteSandboxWithActivity(
+        sandboxes,
+        { resolve: async () => provider, beforeNativeDrainDelete: access.beforeNativeDrainDelete },
+        sandboxId,
+        "native-drain",
+      );
+    if (scenario === "unavailable cleanup") await expect(drain()).rejects.toThrow("Physical observation unavailable");
+    if (scenario === "lease expiry during cleanup")
+      await expect(drain()).rejects.toMatchObject({ code: "sandbox_not_ready" });
+    if (scenario === "acknowledged delete") await expect(drain()).rejects.toThrow("Provider deletion is pending");
+    expect(provider.delete).toHaveBeenCalledTimes(scenario === "acknowledged delete" ? 1 : 0);
+    expect((await db.query("select status from sandboxes where id=$1", [sandboxId])).rows).toEqual([
+      { status: "stopped" },
+    ]);
+
+    firstPass = false;
+    await expireLease();
+    await expect(drain()).resolves.toEqual({ id: sandboxId, status: "deleted" });
+    expect(provider.get).toHaveBeenCalledTimes(scenario === "acknowledged delete" ? 1 : 2);
+    expect(provider.delete).toHaveBeenCalledTimes(1);
+    expect(provider.delete).toHaveBeenCalledWith({
+      sandboxId: `bx_${sandboxId}`,
+      generation: scenario === "acknowledged delete" ? 5 : 6,
+    });
+    expect(provider.observeSandboxDeletion).toHaveBeenCalledTimes(scenario === "acknowledged delete" ? 1 : 0);
+    expect(
+      (await db.query("select archive_id from native_drain_recovery where sandbox_id=$1", [sandboxId])).rows,
+    ).toEqual([{ archive_id: archiveId }]);
+  },
+);

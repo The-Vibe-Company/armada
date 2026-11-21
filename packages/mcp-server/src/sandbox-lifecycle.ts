@@ -904,13 +904,14 @@ export async function markNativeDrainDispatchUnclaimed(tx: Sql, id: string) {
   );
 }
 
-export async function claimNativeDrainDispatch(
+export async function nativeDrainDispatch(
   sql: Sql,
   scope: [string[], string],
   id: string,
   placement: string,
   generation: number,
   activityToken: string,
+  action: "inspect" | "claim",
 ) {
   const {
     rows: [owned],
@@ -927,15 +928,18 @@ export async function claimNativeDrainDispatch(
        select * from locked where activity_until>clock_timestamp()
      ), claimed as (
        delete from public.native_drain_unclaimed_dispatches d using owned
-       where d.sandbox_id=owned.id returning d.sandbox_id
+       where d.sandbox_id=owned.id and $7 returning d.sandbox_id
      )
      select o.operation_id from public.sandboxes s
      join owned on owned.id=s.id
      left join claimed on claimed.sandbox_id=s.id
      left join public.native_drain_delete_operations o on o.sandbox_id=s.id
-     where (claimed.sandbox_id is not null or s.provider='modal' or o.sandbox_id is not null)
+     where (claimed.sandbox_id is not null or s.provider='modal' or o.sandbox_id is not null
+       or (not $7 and exists (
+         select 1 from public.native_drain_unclaimed_dispatches d where d.sandbox_id=s.id
+       )))
        and (o.sandbox_id is null or (o.provider=s.provider and o.placement=$4))`,
-    [...scope, id, placement, generation, activityToken],
+    [...scope, id, placement, generation, activityToken, action === "claim"],
   );
   return owned;
 }
