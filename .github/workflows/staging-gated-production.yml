@@ -221,6 +221,12 @@ jobs:
         env:
           CANDIDATE_DEPLOYMENT_ID: ${{ steps.deployment.outputs.railway_deployment_id }}
         run: bash .release-tools/scripts/release/staging-reaper-evidence.sh "${CANDIDATE_DEPLOYMENT_ID:?Missing candidate deployment ID}"
+      - name: Record staging smoke log window start
+        id: smoke_window
+        if: (steps.evidence.outputs.reused != 'true' && steps.deployment.outputs.superseded != 'true' && steps.reaper.outcome == 'success')
+        continue-on-error: true
+        run: |
+          printf 'started_at=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
       - name: Smoke pinned staging
         id: smoke
         shell: bash
@@ -249,6 +255,43 @@ jobs:
             bun scripts/post-deploy-smoke.ts --work-preservation --templates-skills --lifecycle --vault --default-skills --scoped-access --github-refresh --golden-runtime --expiry --real-model | tee "$RUNNER_TEMP/armada-smoke.jsonl" || status=$?
           wait "$dashboard_pid" || status=1
           exit "$status"
+      - name: Correlate scoped smoke failures with candidate server diagnostics
+        if: ${{ !cancelled() && steps.smoke.outcome == 'failure' }}
+        continue-on-error: true
+        env:
+          CANDIDATE_DEPLOYMENT_ID: ${{ steps.deployment.outputs.railway_deployment_id }}
+          SMOKE_STARTED_AT: ${{ steps.smoke_window.outputs.started_at }}
+        run: |
+          set -euo pipefail
+          if [[ "$ARMADA_URL" != 'https://armada-mcp-staging.up.railway.app' ||
+              ! "$CANDIDATE_DEPLOYMENT_ID" =~ ^[a-f0-9-]{36}$ ]]; then
+            echo '{"step":"scoped_server_evidence","code":"invalid_candidate_scope"}'
+            exit 1
+          fi
+          smoke="$RUNNER_TEMP/armada-smoke.jsonl"
+          collector=.release-tools/scripts/release/staging-scoped-evidence.ts
+          if ! filter=$(env -i PATH="$PATH" bun "$collector" "$smoke" --filter 2>/dev/null); then
+            echo '{"step":"scoped_server_evidence","code":"smoke_evidence_unavailable"}'
+            exit 1
+          fi
+          if [[ -z "$filter" ]]; then
+            echo '{"step":"scoped_server_evidence","code":"no_scoped_correlation_ids"}'
+            exit 0
+          fi
+          if [[ -z "$SMOKE_STARTED_AT" ]]; then
+            echo '{"step":"scoped_server_evidence","code":"smoke_window_unavailable"}'
+            exit 1
+          fi
+          if ! logs=$(timeout 15s railway logs "$CANDIDATE_DEPLOYMENT_ID" --deployment --json --since "$SMOKE_STARTED_AT" \
+              --lines 100 --project "$RAILWAY_PROJECT_ID" --environment "$RAILWAY_ENVIRONMENT_ID" \
+              --service "$RAILWAY_SERVICE_ID" --filter "$filter" 2>/dev/null); then
+            echo '{"step":"scoped_server_evidence","code":"candidate_log_query_failed"}'
+            exit 1
+          fi
+          if ! env -i PATH="$PATH" bun "$collector" "$smoke" <<< "$logs" 2>/dev/null; then
+            echo '{"step":"scoped_server_evidence","code":"candidate_log_decode_failed"}'
+            exit 1
+          fi
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: (steps.evidence.outputs.reused != 'true' && always() && hashFiles('.smoke/sandboxes.json') != '')
         with:
