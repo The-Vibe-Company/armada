@@ -1,9 +1,10 @@
 import { type LaunchTemplate, type OrgSummary, parseMachineSize, templateRefusalHelp, VaultError } from "@armada/core";
 import { flag, parseArgs, single } from "./args.ts";
-import { createArmadaApiClient, resolveArmadaOrigin } from "./armada-api.ts";
+import { createArmadaApiClient } from "./armada-api.ts";
 import type { AuthIo } from "./auth-commands.ts";
 import { control } from "./control.ts";
 import { parseTtl } from "./operations.ts";
+import { resolveArmadaOrigin } from "./sdk-session.ts";
 
 const ACTIONS = ["list", "get", "launch"];
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;

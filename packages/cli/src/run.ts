@@ -27,7 +27,7 @@ import {
   values,
   withJsonFlag,
 } from "./args.ts";
-import { ArmadaApiError, createArmadaApiClient, resolveArmadaOrigin } from "./armada-api.ts";
+import { createArmadaApiClient } from "./armada-api.ts";
 import { type AuthIo, loginCommand, productionAuthIo } from "./auth-commands.ts";
 import { commandWords, HELP } from "./command-catalog.ts";
 import { findCommand, focusedHelp } from "./commands/index.ts";
@@ -36,6 +36,7 @@ import { dockerSnapshotCommand } from "./docker-snapshots.ts";
 import { failureHint } from "./failure-hint.ts";
 import { type LocalHostIo, localHostCommand, productionLocalHostIo } from "./local-host.ts";
 import { profileStores, selectProfile } from "./profiles.ts";
+import { ArmadaApiError, resolveArmadaOrigin } from "./sdk-session.ts";
 import { skillCommand } from "./skill-install.ts";
 import { snapshotText } from "./snapshot-text.ts";
 import { waitForSnapshot } from "./snapshot-wait.ts";

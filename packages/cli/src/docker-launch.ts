@@ -12,11 +12,12 @@ import {
 } from "@armada/core";
 import { requireLaunchAgent } from "./agent-validation.ts";
 import { type Args, flag, single, values } from "./args.ts";
-import { ArmadaApiError, createArmadaApiClient } from "./armada-api.ts";
+import { createArmadaApiClient } from "./armada-api.ts";
 import type { AuthIo } from "./auth-commands.ts";
 import { type CurrentSandboxFile, rememberSandbox } from "./current-sandbox.ts";
 import { resolveHost, resolveHostOrganization } from "./host-commands.ts";
 import { parseTtl } from "./operations.ts";
+import { ArmadaApiError } from "./sdk-session.ts";
 
 const uuid = /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i;
 export async function launchDocker(

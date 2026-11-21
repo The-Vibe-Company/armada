@@ -1,9 +1,10 @@
 import { createControlClient } from "../apps/dashboard/src/lib/control.ts";
 import { createGateway, GatewayError, sandboxGateway } from "../apps/dashboard/src/lib/gateway.ts";
 import { AuthError } from "../packages/auth/src/index.ts";
-import { ArmadaApiError, createArmadaApiClient } from "../packages/cli/src/armada-api.ts";
+import { createArmadaApiClient } from "../packages/cli/src/armada-api.ts";
 import prompt from "../packages/cli/src/commands/prompt.ts";
 import { operation } from "../packages/cli/src/operations.ts";
+import { ArmadaApiError } from "../packages/cli/src/sdk-session.ts";
 
 export type ProofClient = "dashboard" | "cli";
 export class ClientProofError extends Error {

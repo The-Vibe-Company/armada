@@ -9,10 +9,11 @@ import {
 } from "@armada/core";
 import { accountOperations, controlRouteKey } from "@armada/core/contract";
 import { parseArgs, single } from "./args.ts";
-import { createArmadaApiClient, resolveArmadaOrigin } from "./armada-api.ts";
+import { createArmadaApiClient } from "./armada-api.ts";
 import type { AuthIo } from "./auth-commands.ts";
 import { control } from "./control.ts";
 import { listHosts, resolveHostOrganization } from "./host-commands.ts";
+import { resolveArmadaOrigin } from "./sdk-session.ts";
 export async function prepareLaunch(argv: readonly string[], auth: AuthIo): Promise<readonly string[]> {
   if (!auth.interactive || !auth.chooseLaunch || argv.includes("--json") || argv.includes("--")) return argv;
   const args = parseArgs(
