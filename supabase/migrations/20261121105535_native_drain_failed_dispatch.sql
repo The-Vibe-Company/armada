@@ -43,6 +43,8 @@ begin
         q.state = 'failed'
         -- A confirmed stop clears the capacity generation. The retained
         -- deadline still distinguishes a claimed receipt from a queued refusal.
+        -- A sandbox-level prompt alias is evidence of activity, but the
+        -- publication trigger does not bind it to the exact queue request.
         and (q.dispatch_generation is not null or q.dispatch_until is not null
           or q.native_prompt_id is not null
           or q.failure_reason in (
@@ -50,13 +52,6 @@ begin
             'Queued receipt already has dispatch evidence; inspect sandbox history before resending.',
             'Dispatch cancelled by confirmed stop.'
           ))
-        and not exists (
-          select 1 from public.native_webhook_prompts p
-          where p.sandbox_id = p_sandbox_id and p.prompt_id = q.native_prompt_id
-            and p.completed_at is not null
-            and p.provider = v_sandbox.provider and p.provider_sandbox_id = v_sandbox.provider_sandbox_id
-            and p.owner_id = v_sandbox.owner_id and p.org_id = v_sandbox.org_id
-        )
       )
     )
   ) then
