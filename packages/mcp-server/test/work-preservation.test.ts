@@ -1049,7 +1049,6 @@ test.each([
   } else {
     expect(reply.isError).toBe(true);
   }
-  // Isolate the attempt from pending prompt evidence and use a later clean receipt.
   await db.query("update native_webhook_prompts set completed_at=now() where sandbox_id=$1", [sandboxId]);
   const handoff = await handoffWithLaterCleanCapture(sandboxId);
   const eligible = outcome === "verified replacement" || outcome === "failed admission";

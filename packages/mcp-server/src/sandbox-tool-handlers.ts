@@ -312,13 +312,14 @@ export function configureTools(
       const member = caller.orgs.find((entry) => entry.orgId === found.orgId);
       if (!member) throw new ToolError("forbidden", "No current organization membership.");
       let acknowledged = false;
+      const admission: ServerSandboxPatch = {
+        clearTaskOutcome: true,
+        nativePromptAdmission: { fromState: found.status, placement: found.providerSandboxId },
+      };
       return sandboxActivity(
         data.sandboxes,
         found,
-        {
-          clearTaskOutcome: true,
-          nativePromptAdmission: { fromState: found.status, placement: found.providerSandboxId },
-        } satisfies ServerSandboxPatch,
+        admission,
         async (signal) => {
           await prepareConnections(provider, found, member.role);
           signal.throwIfAborted();

@@ -83,7 +83,7 @@ export interface ServerSandboxPatch extends SandboxPatch {
   nativePromptAdmission?: ServerSandboxPatch["nativeChildSend"];
   nativeChildSend?: { fromState: SandboxStatus; placement: string };
   nativeSendReceipt?: { fromState: SandboxStatus; placement: string; requestId?: string };
-  nativeSteerReceipt?: { fromState: SandboxStatus; placement: string; verifiedReplacement: boolean };
+  nativeSteerReceipt?: { fromState: SandboxStatus; placement: string; verifiedReplacement?: boolean };
   ownerStop?: true;
   onlyIfIdle?: boolean;
   retainedRuntimeStop?: string;
