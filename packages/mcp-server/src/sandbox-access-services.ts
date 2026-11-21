@@ -14,6 +14,7 @@ import {
 } from "@armada/core/server";
 import { createSqlData, type ServerSandboxPatch } from "./data.ts";
 import { captureDockerStopOutputs } from "./docker-outputs.ts";
+import { readEventPages } from "./event-pagination.ts";
 import { isPrivateModelEvent } from "./model-usage.ts";
 import type { NamedLaunchCredentials } from "./named-credentials.ts";
 import { recordOperatorFailure } from "./request-observability.ts";
@@ -257,11 +258,15 @@ export function createSandboxAccessServices(input: {
     async read(id, ownerId, orgId) {
       const { saved, resolveProvider } = await child(id, ownerId, orgId);
       const provider = await resolveProvider();
-      const events = await provider.events({ sandboxId: saved.providerSandboxId, direction: "backward", limit: 100 });
+      const events = await readEventPages(
+        () => provider.events({ sandboxId: saved.providerSandboxId, direction: "backward", limit: 100 }),
+        undefined,
+        false,
+      );
       return {
         ...saved,
         events: events.events.filter((event) => !isPrivateModelEvent(event)),
-        cursor: events.cursor ?? null,
+        cursor: events.cursor,
         hasMore: events.hasMore,
       };
     },

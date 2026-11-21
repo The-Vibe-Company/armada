@@ -66,7 +66,7 @@ export async function readLogs(
   const target = await measureRequestPhase(options.timing, "logs_target", () => options.logs!(caller, id));
   const page = parseLogInput(nativePageInput, { ...body, all: body.all === true, follow: body.follow === true });
   const backward = page.direction === "backward";
-  const { events, cursor, hasMore, source, runtimeFailure, olderCursor } = await readEventPages(
+  const { events, cursor, hasMore, source, runtimeFailure, olderCursor, paused } = await readEventPages(
     (cursor) =>
       measureRequestPhase(options.timing, "events", () =>
         target.provider.events({
@@ -84,13 +84,13 @@ export async function readLogs(
   // Ordinary history reads need only the authorized event stream. Live compute is
   // consulted solely to decide whether a follow request should keep waiting.
   const info =
-    page.follow && !runtimeFailure
+    page.follow && !paused && !runtimeFailure
       ? await measureRequestPhase(options.timing, "state", () => target.provider.get(target.providerSandboxId))
       : null;
   const latest = latestPromptEvent(events)?.promptId ?? null;
   // A live sandbox with no turn is idle, so following has nothing to wait for.
   const prompt =
-    page.follow && !runtimeFailure && latest && info?.state !== "stopped" && info?.state !== "failed"
+    page.follow && !paused && !runtimeFailure && latest && info?.state !== "stopped" && info?.state !== "failed"
       ? await measureRequestPhase(options.timing, "prompt", () =>
           target.provider.getPrompt({ sandboxId: target.providerSandboxId, promptId: latest }),
         )
@@ -106,10 +106,11 @@ export async function readLogs(
     hasMore,
     settled:
       !page.follow ||
-      runtimeFailure !== undefined ||
-      info?.state === "stopped" ||
-      info?.state === "failed" ||
-      (latest === null ? info?.state !== "running" && info?.state !== "starting" : prompt?.done === true),
+      (!paused &&
+        (runtimeFailure !== undefined ||
+          info?.state === "stopped" ||
+          info?.state === "failed" ||
+          (latest === null ? info?.state !== "running" && info?.state !== "starting" : prompt?.done === true))),
   };
 }
 

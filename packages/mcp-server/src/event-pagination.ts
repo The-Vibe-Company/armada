@@ -1,9 +1,20 @@
-import { type Provider, VaultError } from "@armada/core";
+import { type Provider, ProviderError, VaultError } from "@armada/core";
 
 import { MAX_LOG_PAGES } from "@armada/core/contract";
 
 type Page = Awaited<ReturnType<Provider["events"]>>;
 type ReadPage = (cursor: string | undefined) => Promise<Page>;
+
+export class NativeBoatOutputPending extends ProviderError {
+  constructor() {
+    super({
+      provider: "boat",
+      code: "unavailable",
+      retryable: true,
+      message: "Native output synchronization is pending. Retry after the current operation finishes.",
+    });
+  }
+}
 
 export function validateLogPagination({ direction, all }: { direction?: unknown; all?: unknown }): void {
   if (direction === "backward" && all === true)
@@ -14,11 +25,20 @@ export function validateLogPagination({ direction, all }: { direction?: unknown;
 export async function readEventPages(read: ReadPage, cursor: string | undefined, all: boolean) {
   const events: Page["events"] = [];
   let hasMore = false;
+  let paused = false;
   let source: Page["source"];
   let runtimeFailure: Page["runtimeFailure"];
   let olderCursor: string | undefined;
   for (let pageNumber = 0; pageNumber < (all ? MAX_LOG_PAGES : 1); pageNumber += 1) {
-    const page = await read(cursor);
+    let page: Page;
+    try {
+      page = await read(cursor);
+    } catch (error) {
+      if (!(error instanceof NativeBoatOutputPending)) throw error;
+      paused = true;
+      hasMore = false;
+      break;
+    }
     if (page.source) source = page.source;
     runtimeFailure = page.runtimeFailure ?? runtimeFailure;
     olderCursor = page.olderCursor;
@@ -31,5 +51,5 @@ export async function readEventPages(read: ReadPage, cursor: string | undefined,
     }
     cursor = next;
   }
-  return { events, cursor: cursor ?? null, hasMore, source, runtimeFailure, olderCursor };
+  return { events, cursor: cursor ?? null, hasMore, source, runtimeFailure, olderCursor, paused };
 }
