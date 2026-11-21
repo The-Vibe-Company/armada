@@ -9,10 +9,15 @@ import {
   VaultError,
 } from "@armada/core/server";
 import { PGlite } from "@electric-sql/pglite";
-import { admitClaimedAccountTurn, dispatchAccountTurn } from "./account-turn-dispatch.ts";
+import {
+  admitClaimedAccountTurn,
+  createTurnDispatchJob,
+  type DispatchTurn,
+  dispatchAccountTurn,
+} from "./account-turn-dispatch.ts";
 import { createAccountTurnQueue } from "./account-turn-queue.ts";
 import type { Caller } from "./caller.ts";
-import type { Job } from "./jobs/runner.ts";
+import { createJobsRunner, type Job } from "./jobs/runner.ts";
 import { createJobsStore } from "./jobs/store.ts";
 import { currentRequestId, observeRequest } from "./request-observability.ts";
 
@@ -48,8 +53,8 @@ beforeAll(async () => {
       activity_lease_id uuid,activity_until timestamptz,task_prompt_id text,lifecycle_generation bigint default 1,reconcile_lease_until timestamptz,
       application_secret_tainted boolean not null default false,
       docker_host_id uuid,docker_installation_id uuid,docker_generation uuid);
-    create table runtime_commands(sandbox_id uuid,sequence bigint,request_id text);
-    create table runtime_enrolments(sandbox_id uuid,epoch bigint,runtime_hash text,lifecycle_generation bigint,enrolment_hash text);
+    create table runtime_commands(sandbox_id uuid,sequence bigint,request_id text,epoch bigint,result_enc bytea);
+    create table runtime_enrolments(sandbox_id uuid,epoch bigint,runtime_hash text,lifecycle_generation bigint,enrolment_hash text,docker_issuer_fence text);
     create table runtime_checkpoints(sandbox_id uuid,epoch bigint,merge_stop boolean);
     create table docker_host_jobs(bound_sandbox_id uuid,position bigint,request_id uuid,
       bound_actor_id uuid,host_id uuid,bound_operation text,bound_actor_epoch bigint,cancelled_at timestamptz,
@@ -153,6 +158,21 @@ async function claimTurn(requestId: string) {
     canDispatch: async (tx?: Sql) => (await store.inspect(job, worker, tx)) === "dispatch",
     handoffGeneration: (handoff: Parameters<typeof store.handoffGeneration>[2]) =>
       store.handoffGeneration(job, worker, handoff),
+  };
+}
+
+function sharedDispatcher(send: DispatchTurn) {
+  const key = btoa("x".repeat(32));
+  const runner = createJobsRunner(
+    createJobsStore(sql, key),
+    { turn_dispatch: createTurnDispatchJob(sql, key, send, () => Date.UTC(2070, 0, 1)) },
+    console.error,
+    () => () => {},
+  );
+  const signal = new AbortController().signal;
+  return async () => {
+    expect(await runner.reconcileOne(signal)).toBe(true);
+    await runner.drain();
   };
 }
 
@@ -571,13 +591,12 @@ test.each(["modal", "boat", "docker"])("a pre-activation %s wake refusal fails t
     [input.id, provider],
   );
   expect(await queue.accept(caller, input)).toMatchObject({ status: "queued" });
-  queue.setDispatch(async () => {
+  const dispatchNext = sharedDispatcher(async () => {
     throw new VaultError("conflict", "No current synchronized checkpoint");
   });
   const log = spyOn(console, "error");
   try {
-    expect(await queue.reconcileOne(new AbortController().signal)).toBe(true);
-    await queue.drain();
+    await dispatchNext();
     expect(await queue.status(caller, input.id, input.request_id)).toMatchObject({
       failed: true,
       message: "Queued prompt rejected before dispatch; inspect sandbox and account settings before resending.",
@@ -611,7 +630,7 @@ test("a rejected first Modal turn logs bounded evidence and releases its reserva
     },
     () => {},
   );
-  queue.setDispatch((actor, request) =>
+  const dispatchNext = sharedDispatcher((actor, request) =>
     callSharedTool(
       {
         caller: actor,
@@ -637,8 +656,7 @@ test("a rejected first Modal turn logs bounded evidence and releases its reserva
   );
   const log = spyOn(console, "error");
   try {
-    expect(await queue.reconcileOne(new AbortController().signal)).toBe(true);
-    await queue.drain();
+    await dispatchNext();
     expect(await queue.status(caller, input.id, input.request_id)).toMatchObject({ failed: true });
     expect((await database().query("select sandbox_id from account_agent_reservations")).rows).toEqual([]);
     const lines = log.mock.calls.map(([line]) => String(line));
@@ -1019,7 +1037,7 @@ test("a proven pre-dispatch rejection requeues without leaking the account reser
   expect(correlationId).toBeString();
   let calls = 0;
   const correlations: (string | undefined)[] = [];
-  queue.setDispatch(async (_caller, dispatched) => {
+  const dispatchNext = sharedDispatcher(async (_caller, dispatched) => {
     correlations.push(currentRequestId());
     expect(dispatched).toEqual(input);
     calls++;
@@ -1030,15 +1048,14 @@ test("a proven pre-dispatch rejection requeues without leaking the account reser
     }
     return { promptId: "accepted_after_retry", conversationId: "history", status: "running" };
   });
-  expect(await queue.reconcileOne(new AbortController().signal)).toBe(true);
-  await queue.drain();
+  await dispatchNext();
   expect((await database().query("select * from account_agent_reservations")).rows).toEqual([]);
   expect((await queue.status(caller, input.id, input.request_id))?.message).toContain("waiting for sandbox dispatch");
   const replay = await admit();
   expect(replay?.status).toBe(202);
   expect(replay?.headers.get("x-request-id")).not.toBe(correlationId);
-  expect(await queue.reconcileOne(new AbortController().signal)).toBe(true);
-  await queue.drain();
+  await sql.query("update jobs set run_after='-infinity' where sandbox_id=$1", [input.id]);
+  await dispatchNext();
   expect(correlations).toEqual([correlationId, correlationId]);
   expect(calls).toBe(2);
   expect(await queue.status(caller, input.id, input.request_id)).toEqual({ nativePromptId: "accepted_after_retry" });
@@ -1388,16 +1405,22 @@ test("a full model queues its override without blocking another model and report
 
   await queue.accept(caller, { id: ids[2]!, request_id: requests[1]!, prompt: "other model", model: "deepseek" });
   const dispatched: string[] = [];
-  queue.setDispatch(async (_caller, input) => {
+  const dispatchNext = sharedDispatcher(async (_caller, input) => {
     dispatched.push(input.model!);
     return { promptId: input.request_id, status: "running" };
   });
-  expect(await queue.reconcileOne(new AbortController().signal)).toBe(true);
-  await queue.drain();
+  // Give the blocked request the first claim and check that model pressure is free to retry.
+  await sql.query("update jobs set run_after='-infinity' where sandbox_id=$1", [ids[1]]);
+  await dispatchNext();
+  expect(dispatched).toEqual([]);
+  expect((await sql.query("select state,attempts from jobs where sandbox_id=$1", [ids[1]])).rows).toEqual([
+    { state: "queued", attempts: 0 },
+  ]);
+  await dispatchNext();
   expect(dispatched).toEqual(["deepseek"]);
   await database().query("insert into runtime_idle_turns values($1,'active_model',true)", [ids[0]]);
-  expect(await queue.reconcileOne(new AbortController().signal)).toBe(true);
-  await queue.drain();
+  await sql.query("update jobs set run_after='-infinity' where sandbox_id=$1", [ids[1]]);
+  await dispatchNext();
   expect(dispatched).toEqual(["deepseek", "kimi"]);
 });
 
