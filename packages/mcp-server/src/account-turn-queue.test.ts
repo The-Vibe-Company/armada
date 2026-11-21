@@ -1274,60 +1274,82 @@ test("a restarted Docker runner waits for the claim lease before recovering a di
 });
 
 test("explicit owner stop cancels waiting prompts before Docker no-op routing, but idle cleanup stays intact", async () => {
-  const { callSharedTool } = await import("./tool-api.ts");
   const input = { id: ids[1]!, request_id: requests[0]!, prompt: "do not wake after explicit stop" };
   await queue.accept(caller, input);
   const context = {
     caller,
     accountTurns: queue,
     dockerControls: { invoke: async () => ({ handled: true, result: { id: input.id, status: "stopped" } }) },
-  } as unknown as import("./tools.ts").ToolContext;
+  } as unknown as ToolContext;
   await callSharedTool(context, "stop", { id: input.id, only_if_idle: true });
   expect((await queue.status(caller, input.id, input.request_id))?.failed).toBe(false);
-  // Stop also refuses a picked dispatch before it can resume compute.
-  await database().query(
-    "insert into account_turn_queue(sandbox_id,request_id,account_id,owner_id,org_id,actor_epoch,credential_version,input_hash,input_enc,conversation_id,state) select sandbox_id,$2,account_id,owner_id,org_id,actor_epoch,credential_version,input_hash,input_enc,conversation_id,'dispatching' from account_turn_queue where sandbox_id=$1",
-    [input.id, requests[1]],
-  );
-  await database().query("insert into account_agent_reservations values($1,$2)", [input.id, account]);
+  const claim = await claimTurn(input.request_id);
+  expect((await admitClaimedAccountTurn(sql, claim))?.entry.request_id).toBe(input.request_id);
+  const waiting = { ...input, request_id: requests[1]! };
+  expect(await queue.accept(caller, waiting)).toMatchObject({ status: "queued" });
+
   await callSharedTool(context, "stop", { id: input.id });
-  expect(await queue.status(caller, input.id, input.request_id)).toMatchObject({
-    failed: true,
-    message: "Queued prompt was cancelled.",
+  await sql.query("update jobs set lease_until='-infinity' where id=$1", [claim.job.id]);
+  const sent: string[] = [];
+  const dispatch = sharedDispatcher(async (_caller, prompt) => {
+    sent.push(prompt.request_id!);
   });
-  expect((await database().query("select * from account_turn_queue where state='dispatching'")).rows).toHaveLength(0);
-  expect((await database().query("select * from account_agent_reservations")).rows).toHaveLength(1);
-  let dispatched = false;
-  queue.setDispatch(async () => {
-    dispatched = true;
-  });
-  expect(await queue.reconcileOne(new AbortController().signal)).toBe(false);
-  expect(dispatched).toBe(false);
+  await dispatch();
+  await dispatch();
+  expect(sent).toEqual([]);
+  for (const request of [input, waiting]) {
+    expect(await queue.status(caller, request.id, request.request_id)).toMatchObject({
+      failed: true,
+      message: "Queued prompt was cancelled.",
+    });
+  }
+  expect((await sql.query("select state from jobs")).rows).toEqual([{ state: "done" }, { state: "done" }]);
+  expect((await sql.query("select sandbox_id from account_agent_reservations")).rows).toEqual([
+    { sandbox_id: input.id },
+  ]);
 });
 
 test("unlimited accounts dispatch three turns without waiting for another dispatch receipt", async () => {
   await database().exec("update credentials set max_agents=null");
-  const releases: (() => void)[] = [];
   const started: string[] = [];
-  let entered: () => void = () => {};
-  queue.setDispatch(async (_caller, input) => {
+  const release = Promise.withResolvers<void>();
+  let entered = Promise.withResolvers<void>();
+  const runner = sharedRunner(async (_caller, input) => {
     started.push(input.id);
-    entered();
-    await new Promise<void>((resolve) => releases.push(resolve));
+    entered.resolve();
+    await release.promise;
     return { promptId: input.request_id, conversationId: "history", status: "running" };
   });
-  for (const id of ids) {
-    expect((await queue.accept(caller, { id, prompt: "next" }))?.status).toBe("queued");
-    const dispatched = new Promise<void>((resolve) => {
-      entered = resolve;
+  const signal = new AbortController().signal;
+  const waiting = { id: ids[0]!, request_id: requests[1]!, prompt: "behind the busy sandbox" };
+  try {
+    for (const id of ids) {
+      expect(await queue.accept(caller, { id, prompt: "next" })).toMatchObject({ status: "queued" });
+      entered = Promise.withResolvers<void>();
+      expect(await runner.reconcileOne(signal)).toBe(true);
+      await entered.promise;
+    }
+    expect(started).toEqual(ids);
+    expect(await queue.accept(caller, waiting)).toMatchObject({ status: "queued" });
+    const competingSends: string[] = [];
+    await sharedDispatcher(async (_caller, input) => {
+      competingSends.push(input.id);
+    })();
+    expect(competingSends).toEqual([]);
+    expect(await queue.status(caller, waiting.id, waiting.request_id)).toMatchObject({
+      failed: false,
+      message: "Prompt accepted; waiting for the current sandbox turn or dispatch to finish.",
     });
-    expect(await queue.reconcileOne(new AbortController().signal)).toBe(true);
-    await dispatched;
-    if (id === ids[0]) await queue.accept(caller, { id, prompt: "behind the busy sandbox" });
+  } finally {
+    release.resolve();
+    await runner.drain();
   }
-  expect(started).toEqual(ids);
-  for (const release of releases) release();
-  await queue.drain();
+
+  await sql.query("update jobs set run_after='-infinity' where state='queued'");
+  expect(await runner.reconcileOne(signal)).toBe(true);
+  await runner.drain();
+  expect(started).toEqual([...ids, waiting.id]);
+  expect(await queue.status(caller, waiting.id, waiting.request_id)).toEqual({ nativePromptId: waiting.request_id });
 });
 
 test("a stop after acceptance fails waiting work instead of resurrecting it", async () => {
@@ -1335,10 +1357,11 @@ test("a stop after acceptance fails waiting work instead of resurrecting it", as
   await database().query("update sandboxes set status='stopped',stopped_at=now(),lifecycle_generation=2 where id=$1", [
     ids[0],
   ]);
-  queue.setDispatch(async () => {
-    throw new Error("must not dispatch");
-  });
-  expect(await queue.reconcileOne(new AbortController().signal)).toBe(false);
+  const sent: string[] = [];
+  await sharedDispatcher(async (_caller, input) => {
+    sent.push(input.id);
+  })();
+  expect(sent).toEqual([]);
   expect(await queue.status(caller, ids[0]!)).toMatchObject({
     failed: true,
     message: "Queued prompt cannot start: sandbox stopped, deleted, expired, or stopping.",
