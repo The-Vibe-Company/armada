@@ -142,6 +142,13 @@ const jobsLane: LaneFactory = ({
       } catch {
         (options.logError ?? console.error)("armada: output capture scheduling unavailable.");
       }
+      if (config.encryptionKey && !signal.aborted) {
+        try {
+          await accountTurns.backfillDispatchJobs(signal);
+        } catch {
+          (options.logError ?? console.error)("armada: queued turn job backfill unavailable.");
+        }
+      }
       return runner.reconcileOne(signal);
     },
     async drain() {

@@ -74,7 +74,7 @@ const dockerResumeJob = (outcome: string) => `(s.provider = 'docker' and exists(
     and c.generation = s.docker_generation and c.accepted
     and c.lifecycle_generation = q.dispatch_generation and c.lifecycle_generation + 1 = s.lifecycle_generation
     and h_job.bound_operation = 'resume' and h_job.bound_actor_epoch = a.epoch
-    and h_job.cancelled_at is null and h_job.refused_resume_generation is null
+    and h_job.cancelled_at is null
     and (${outcome})
     and h.hash is not null and h.registration_hash is null and h.revoked_at is null
     and not exists(select 1 from public.runtime_commands p
@@ -82,10 +82,13 @@ const dockerResumeJob = (outcome: string) => `(s.provider = 'docker' and exists(
 ))`;
 
 export const CURRENT_DOCKER_RESUME_JOB = dockerResumeJob(
-  "h_job.outcome = 'completed' or (h_job.outcome is null and s.status = 'starting')",
+  "h_job.refused_resume_generation is null and (h_job.outcome = 'completed' or (h_job.outcome is null and s.status = 'starting'))",
 );
 export const PENDING_READY_DOCKER_RESUME_ACK = `(s.status in ('ready','running')
-  and s.activity_lease_id is null and ${dockerResumeJob("h_job.outcome is null")})`;
+  and s.activity_lease_id is null and ${dockerResumeJob("h_job.outcome is null and h_job.refused_resume_generation is null")})`;
+export const FAILED_DOCKER_WAKE = dockerResumeJob(
+  "h_job.outcome = 'failed' or h_job.refused_resume_generation = s.lifecycle_generation",
+);
 
 export const DOCKER_RESUME_WITHOUT_DISPATCH_DEADLINE = `(q.state='dispatching'
   and q.dispatch_until is null and s.status in ('ready','running')
@@ -275,6 +278,8 @@ export async function admitAccountTurn(sql: Sql, candidate: AdmissionEntry, clai
         const { rows } = await tx.query(
           `select q.request_id from public.account_turn_queue q join public.sandboxes s on s.id=q.sandbox_id
            where q.sandbox_id=$1 and q.request_id=$2
+             and (${FAILED_DOCKER_WAKE}) is not true
+             and (${PENDING_READY_DOCKER_RESUME_ACK}) is not true
              and (${DISPATCH_ABANDONED} or ${TURN_RECOVERY_ELIGIBLE} or ${COMPLETED_RUNTIME_WAKE} or ${ENROLLED_PENDING_RUNTIME_WAKE}
                or ${CONFIRMED_WAKE_WITHOUT_TICKET} or ${DOCKER_RESUME_WITHOUT_DISPATCH_DEADLINE})`,
           [candidate.sandbox_id, candidate.request_id],
@@ -387,6 +392,7 @@ async function settleAccountTurn<T>(
     return await sql.transaction(async (tx) => {
       await tx.query("select id from public.credentials where id=$1 for update", [entry.account_id]);
       if (claim) {
+        await tx.query("lock table public.account_turn_queue in row exclusive mode nowait");
         await tx.query("select id from public.sandboxes where id=$1 for update", [entry.sandbox_id]);
         if (!(await claim.canDispatch(tx))) return;
       }

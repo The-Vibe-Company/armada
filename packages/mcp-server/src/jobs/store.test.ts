@@ -2117,7 +2117,7 @@ test.each([
   ["failed", "starting", "failed", false],
   ["refused", "starting", null, false],
   ["revoked host", "starting", null, false],
-  ["unrelated request", "starting", null, false],
+  ["unrelated request", "starting", "failed", false],
   ["old actor epoch", "starting", null, false],
   ["old source generation", "starting", null, false],
   ["physical claim pending", "starting", null, false],
@@ -2282,7 +2282,12 @@ test.each([
     const owner = crypto.randomUUID();
     const job = (await store.claim("turn_dispatch", owner, 30, 1))!;
     expect(job).toMatchObject({ id, generation: recover ? "3" : "2", payload: { requestId } });
-    expect(await store.inspect(job, owner)).toBe(recover ? "dispatch" : "stale");
+    const failedWake = scenario === "failed" || scenario === "refused";
+    expect(await store.inspect(job, owner)).toBe(recover ? "dispatch" : failedWake ? "lost" : "stale");
+    if (failedWake)
+      expect((await db.query("select state, outcome->>'reason' as reason from jobs where id=$1", [id])).rows).toEqual([
+        { state: "failed", reason: "docker_wake_failed" },
+      ]);
     const lateAck = scenario === "pending after readiness" || scenario === "pending without a deadline";
     const rollback = scenario === "pending without a deadline";
     let retireOwner = owner;
@@ -2335,7 +2340,7 @@ test.each([
           [sandboxId, requestId],
         )
       ).rows,
-    ).toEqual([{ state: "dispatching", reserved: true }]);
+    ).toEqual([{ state: failedWake ? "failed" : "dispatching", reserved: true }]);
   },
 );
 

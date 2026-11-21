@@ -112,7 +112,7 @@ afterAll(async () => {
 });
 beforeEach(async () => {
   await database().exec(
-    "update credentials set max_agents=1,model_limits='{}'::jsonb; delete from runtime_commands; delete from runtime_checkpoints; delete from runtime_enrolments; delete from docker_host_jobs; delete from docker_resume_claims; delete from runtime_resumes; delete from jobs; delete from account_turn_queue; delete from account_agent_reservations; delete from runtime_idle_turns; update sandboxes set status='ready',status_reason=null,task_prompt_id=null,stopped_at=null,stop_requested_at=null,lifecycle_generation=1,activity_lease_id=null,provider=null,boat_runtime=false,runtime_transport=null; update mcp_actor_epochs set epoch=1;",
+    "update credentials set max_agents=1,model_limits='{}'::jsonb; delete from runtime_commands; delete from runtime_checkpoints; delete from runtime_enrolments; delete from docker_host_jobs; delete from docker_resume_claims; delete from docker_hosts; delete from runtime_resumes; delete from jobs; delete from account_turn_queue; delete from account_agent_reservations; delete from runtime_idle_turns; update sandboxes set status='ready',status_reason=null,task_prompt_id=null,stopped_at=null,stop_requested_at=null,lifecycle_generation=1,activity_lease_id=null,provider=null,boat_runtime=false,runtime_transport=null; update mcp_actor_epochs set epoch=1;",
   );
 });
 
@@ -492,7 +492,7 @@ test("dispatch job insertion failure rolls back the queued prompt", async () => 
   expect(await queue.accept(caller, input)).toMatchObject({ status: "queued" });
 });
 
-test("the worker seeds missing nonterminal dispatch jobs using their original generation", async () => {
+test("backfill seeds missing nonterminal dispatch jobs using their original generation", async () => {
   const callerRequest = requests[0]!;
   const legacy = ids[0]!;
   const existing = ids[1]!;
@@ -512,9 +512,6 @@ test("the worker seeds missing nonterminal dispatch jobs using their original ge
     [legacy, dispatchingRequest],
   );
   await database().query("update public.sandboxes set lifecycle_generation=2 where id=$1", [legacy]);
-  await database().exec("update public.credentials set max_agents=0");
-  const dispatch = spyOn({ send: async () => ({}) }, "send");
-  queue.setDispatch(dispatch);
 
   const readJobs = () =>
     database().query<{ id: string; sandbox_id: string; generation: string; payload_enc: Uint8Array<ArrayBuffer> }>(
@@ -522,9 +519,9 @@ test("the worker seeds missing nonterminal dispatch jobs using their original ge
     );
   const [existingJob] = (await readJobs()).rows;
   const signal = new AbortController().signal;
-  expect(await queue.reconcileOne(signal)).toBe(false);
+  await queue.backfillDispatchJobs(signal);
   const { rows } = await readJobs();
-  expect(await queue.reconcileOne(signal)).toBe(false);
+  await queue.backfillDispatchJobs(signal);
   expect((await readJobs()).rows).toEqual(rows);
   expect(rows.find((job) => job.sandbox_id === existing)).toEqual(existingJob);
   expect(rows).toHaveLength(3);
@@ -542,23 +539,6 @@ test("the worker seeds missing nonterminal dispatch jobs using their original ge
       { generation: "1", payload: { requestId: dispatchingRequest } },
     ]),
   );
-  expect(dispatch).not.toHaveBeenCalled();
-});
-
-test("a failed backfill write does not stop the existing dispatcher", async () => {
-  const input = { id: ids[0]!, request_id: requests[0]!, prompt: "next instruction" };
-  await queue.accept(caller, input);
-  await database().query("delete from public.jobs where sandbox_id=$1", [input.id]);
-  await database().exec("alter table public.jobs add constraint reject_dispatch check (kind <> 'turn_dispatch')");
-  const receipt = { promptId: "accepted", conversationId: "history", status: "running" };
-  queue.setDispatch(async () => receipt);
-  try {
-    expect(await queue.reconcileOne(new AbortController().signal)).toBe(true);
-    await queue.drain();
-    expect(await queue.accept(caller, input)).toEqual(receipt);
-  } finally {
-    await database().exec("alter table public.jobs drop constraint reject_dispatch");
-  }
 });
 
 test("backfill advances past a page of terminal history to reach a waiting request", async () => {
@@ -575,16 +555,14 @@ test("backfill advances past a page of terminal history to reach a waiting reque
   const waiting = { id: ids[1]!, request_id: requests[1]!, prompt: "next instruction" };
   await queue.accept(caller, waiting);
   await database().query("delete from public.jobs where sandbox_id=$1", [waiting.id]);
-  await database().exec("update public.credentials set max_agents=0");
   const worker = createAccountTurnQueue(sql, btoa("x".repeat(32)));
-  worker.setDispatch(async () => ({}));
   const signal = new AbortController().signal;
   const jobsForWaiting = async () =>
     (await database().query("select id from public.jobs where sandbox_id=$1", [waiting.id])).rows;
 
-  expect(await worker.reconcileOne(signal)).toBe(false);
+  await worker.backfillDispatchJobs(signal);
   expect(await jobsForWaiting()).toHaveLength(0);
-  expect(await worker.reconcileOne(signal)).toBe(false);
+  await worker.backfillDispatchJobs(signal);
   expect(await jobsForWaiting()).toHaveLength(1);
 });
 
@@ -600,20 +578,19 @@ test("a backfill sweep wraps to retry a failed insert while newer rows are arriv
       [waiting.id, waiting.request_id],
     );
   await addHistory();
-  await database().exec("update public.credentials set max_agents=0; delete from public.jobs");
+  await database().exec("delete from public.jobs");
   const worker = createAccountTurnQueue(sql, btoa("x".repeat(32)));
-  worker.setDispatch(async () => ({}));
   const signal = new AbortController().signal;
   await database().exec("alter table public.jobs add constraint reject_dispatch check (kind <> 'turn_dispatch')");
   try {
-    expect(await worker.reconcileOne(signal)).toBe(false);
+    await expect(worker.backfillDispatchJobs(signal)).rejects.toThrow("reject_dispatch");
   } finally {
     await database().exec("alter table public.jobs drop constraint reject_dispatch");
   }
 
   for (let pass = 0; pass < 2; pass++) {
     await addHistory();
-    expect(await worker.reconcileOne(signal)).toBe(false);
+    await worker.backfillDispatchJobs(signal);
   }
   expect((await database().query("select id from public.jobs where sandbox_id=$1", [waiting.id])).rows).toHaveLength(1);
 });
@@ -1174,43 +1151,141 @@ test("uppercase request UUIDs preserve one queue identity and status alias", asy
   expect(await queue.status(caller, input.id, uppercase)).toEqual({ nativePromptId: "case_actual_prompt" });
 });
 
-test.each(["docker", "boat", "modal"] as const)(
-  "pending %s runtime wake reconciles only its original durable request",
-  async (provider) => {
-    const input = { id: ids[1]!, request_id: requests[0]!, prompt: "resume the same conversation" };
-    await database().query(
-      "update sandboxes set provider=$2,boat_runtime=$3,runtime_transport=$4,status='stopped',status_reason='idle_paused',stopped_at=now() where id=$1",
-      [input.id, provider, provider === "boat", provider === "modal" ? "dialout" : null],
-    );
-    await database().query("update sandboxes set status_reason=$2 where id=$1", [
+test.each([
+  ["docker", "ready"],
+  ["docker", "failed acknowledgement"],
+  ["docker", "refused acknowledgement"],
+  ["boat", "ready"],
+  ["boat", "unconfirmed restore"],
+  ["modal", "ready"],
+  ["modal", "unconfirmed restore"],
+] as const)("shared %s wake reconciles the original request after %s", async (provider, outcome) => {
+  const input = { id: ids[1]!, request_id: requests[0]!, prompt: "resume the same conversation" };
+  const docker = provider === "docker";
+  const host = ids[0]!;
+  const installation = ids[2]!;
+  const machine = requests[1]!;
+  await sql.query(
+    `update sandboxes set provider=$2,boat_runtime=$3,runtime_transport=$4,status='stopped',
+       status_reason=$5,stopped_at=now(),docker_host_id=$6,docker_installation_id=$7,docker_generation=$8 where id=$1`,
+    [
       input.id,
-      provider === "docker" ? "idle_paused" : null,
+      provider,
+      provider === "boat",
+      provider === "modal" ? "dialout" : null,
+      docker ? "idle_paused" : null,
+      docker ? host : null,
+      docker ? installation : null,
+      docker ? machine : null,
+    ],
+  );
+  if (docker)
+    await sql.query("insert into docker_hosts(id,org_id,installation_id,owner_id,hash) values($1,$2,$3,$4,'host')", [
+      host,
+      org,
+      installation,
+      owner,
     ]);
-    await queue.accept(caller, input);
-    const requestsSeen: unknown[] = [];
-    queue.setDispatch(async (_caller, request) => {
-      requestsSeen.push(request);
-      if (requestsSeen.length === 1) {
-        await database().query(
-          "update sandboxes set status='starting',stopped_at=null,lifecycle_generation=lifecycle_generation+1,activity_lease_id=$2 where id=$1",
-          [input.id, input.request_id],
-        );
-        if (provider === "docker")
-          await database().query("insert into docker_host_jobs values($1,1,$2)", [input.id, input.request_id]);
-        else await database().query("insert into runtime_resumes values($1,$2)", [input.id, input.request_id]);
-        throw Error("wake still pending");
-      }
-      return { promptId: "resumed_prompt", conversationId: "history", status: "running" };
-    });
-    expect(await queue.reconcileOne(new AbortController().signal)).toBe(true);
-    await queue.drain();
-    expect((await database().query("select * from account_agent_reservations")).rows).toHaveLength(1);
-    expect(await queue.reconcileOne(new AbortController().signal)).toBe(true);
-    await queue.drain();
+  await queue.accept(caller, input);
+
+  const requestsSeen: unknown[] = [];
+  const dispatch = sharedDispatcher(async (_caller, request, claim) => {
+    requestsSeen.push(request);
+    if (requestsSeen.length === 1) {
+      if (!claim) throw new Error("Expected shared wake ownership.");
+      const generation = await claim.handoffGeneration({
+        async lockPrerequisites() {},
+        async advance(tx) {
+          await tx.query(
+            `update sandboxes set status='starting',stopped_at=null,lifecycle_generation=lifecycle_generation+1,
+               activity_lease_id=$2,activity_until='infinity' where id=$1`,
+            [input.id, input.request_id],
+          );
+          if (docker) {
+            await tx.query(
+              `insert into docker_resume_claims(sandbox_id,request_id,actor_id,host_id,installation_id,generation,lifecycle_generation,accepted)
+               values($1,$2,$3,$4,$5,$6,1,true)`,
+              [input.id, input.request_id, owner, host, installation, machine],
+            );
+            await tx.query(
+              `insert into docker_host_jobs(bound_sandbox_id,position,request_id,bound_actor_id,host_id,bound_operation,bound_actor_epoch)
+               values($1,1,$2,$3,$4,'resume',1)`,
+              [input.id, input.request_id, owner, host],
+            );
+          } else {
+            await tx.query(
+              `insert into runtime_resumes(sandbox_id,request_id,source_epoch,target_epoch,phase,activated_at)
+               values($1,$2,1,2,'dispatched',now())`,
+              [input.id, input.request_id],
+            );
+          }
+        },
+      });
+      expect(generation).toBe("2");
+      throw Error("wake still pending");
+    }
+    return { promptId: "resumed_prompt", conversationId: "history", status: "running" };
+  });
+  await dispatch();
+  expect(requestsSeen).toEqual([input]);
+  expect((await sql.query("select sandbox_id from account_agent_reservations")).rows).toEqual([
+    { sandbox_id: input.id },
+  ]);
+  const jobs = () =>
+    sql.query<{ id: string; generation: string; state: string; attempts: number; reason: string | null }>(
+      "select id,generation::text,state,attempts,outcome->>'reason' as reason from jobs",
+    );
+  const [pending] = (await jobs()).rows;
+  if (!pending) throw new Error("Expected a durable wake retry.");
+  expect(pending).toMatchObject({ generation: "2", state: "queued", reason: null });
+  expect(await queue.status(caller, input.id, input.request_id)).toMatchObject({ failed: false });
+
+  if (outcome === "ready") {
+    if (docker) {
+      await sql.query("update sandboxes set status='ready',activity_lease_id=null where id=$1", [input.id]);
+      await sql.query("update jobs set run_after='-infinity'");
+      await dispatch();
+      expect(requestsSeen).toEqual([input]);
+      expect((await jobs()).rows).toEqual([pending]);
+      await sql.query("update docker_host_jobs set outcome='completed' where request_id=$1", [input.request_id]);
+    } else {
+      await sql.query(
+        "insert into runtime_enrolments(sandbox_id,epoch,lifecycle_generation,runtime_hash) values($1,2,2,'active')",
+        [input.id],
+      );
+    }
+  } else if (docker) {
+    await sql.query(
+      `update docker_host_jobs
+       set outcome=case when $2 then 'failed' end,refused_resume_generation=case when not $2 then 2 end
+       where request_id=$1`,
+      [input.request_id, outcome === "failed acknowledgement"],
+    );
+  } else {
+    await sql.query("update runtime_resumes set phase='failed' where request_id=$1", [input.request_id]);
+    await sql.query("update sandboxes set status='failed',lifecycle_generation=3,activity_lease_id=null where id=$1", [
+      input.id,
+    ]);
+  }
+  await sql.query("update jobs set run_after='-infinity'");
+  await dispatch();
+
+  if (outcome === "ready") {
     expect(requestsSeen).toEqual([input, input]);
     expect(await queue.status(caller, input.id, input.request_id)).toEqual({ nativePromptId: "resumed_prompt" });
-  },
-);
+    expect((await jobs()).rows).toEqual([{ ...pending, state: "done", attempts: 2 }]);
+    expect((await sql.query("select sandbox_id from account_agent_reservations")).rows).toEqual([]);
+  } else {
+    expect(requestsSeen).toEqual([input]);
+    expect(await queue.status(caller, input.id, input.request_id)).toMatchObject({ failed: true });
+    expect((await jobs()).rows).toEqual([
+      { ...pending, state: "failed", attempts: 2, reason: docker ? "docker_wake_failed" : "cancelled_receipt" },
+    ]);
+    expect((await sql.query("select sandbox_id from account_agent_reservations")).rows).toEqual([
+      { sandbox_id: input.id },
+    ]);
+  }
+});
 
 test("native invalid model settings are rejected before a durable prompt is queued", async () => {
   await expect(
@@ -1409,9 +1484,16 @@ test("forward repair fails historical stopped rows and preserves live queued wor
   );
   expect(await queue.status(caller, ids[0]!)).toMatchObject({ failed: true });
   expect(await queue.status(caller, ids[1]!)).toMatchObject({ failed: false });
-  queue.setDispatch(async (_caller, input) => ({ promptId: input.request_id, status: "running" }));
-  expect(await queue.reconcileOne(new AbortController().signal)).toBe(true);
-  await queue.drain();
+  const sent: string[] = [];
+  const dispatch = sharedDispatcher(async (_caller, input) => {
+    sent.push(input.id);
+    return { promptId: "preserved_history", status: "running" };
+  });
+  await dispatch();
+  await dispatch();
+  expect(sent).toEqual([ids[1]!]);
+  expect(await queue.status(caller, ids[0]!)).toMatchObject({ failed: true });
+  expect(await queue.status(caller, ids[1]!)).toMatchObject({ nativePromptId: "preserved_history" });
 });
 
 test("stranded receipts settle without replay while safe unlimited and paused work dispatches", async () => {
@@ -1447,13 +1529,15 @@ test("stranded receipts settle without replay while safe unlimited and paused wo
   );
   expect(await queue.status(caller, ids[0]!, requests[0])).toMatchObject({ failed: true });
   const sent: string[] = [];
-  queue.setDispatch(async (_caller, input) => {
+  const dispatch = sharedDispatcher(async (_caller, input) => {
     sent.push(input.id);
     if (input.id === ids[2]) throw new VaultError("invalid", "Invalid historical input");
-    return { promptId: input.request_id, status: "running" };
+    return { promptId: "preserved_paused_turn", status: "running" };
   });
-  while (await queue.reconcileOne(new AbortController().signal)) await queue.drain();
-  expect(sent).toEqual([ids[1]!, ids[2]!]);
+  for (const _id of ids) await dispatch();
+  expect(sent.toSorted()).toEqual([ids[1]!, ids[2]!]);
+  expect(await queue.status(caller, ids[0]!, requests[0])).toMatchObject({ failed: true });
+  expect(await queue.status(caller, ids[1]!, requests[0])).toMatchObject({ nativePromptId: "preserved_paused_turn" });
   expect(await queue.status(caller, ids[2]!, requests[0])).toMatchObject({ failed: true });
 });
 

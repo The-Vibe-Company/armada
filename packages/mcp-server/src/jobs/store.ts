@@ -8,6 +8,7 @@ import {
   DISPATCHING_TURN_CANCELLED,
   DOCKER_RESUME_WITHOUT_DISPATCH_DEADLINE,
   ENROLLED_PENDING_RUNTIME_WAKE,
+  FAILED_DOCKER_WAKE,
   failTurnReceipt,
   NATIVE_DISPATCH_UNCERTAIN,
   PENDING_READY_DOCKER_RESUME_ACK,
@@ -147,6 +148,7 @@ export function createJobsStore(sql: Sql, encryptionKey?: string) {
           cancelled: boolean;
           queued_with_evidence: boolean;
           native_uncertain: boolean;
+          failed_docker_wake: boolean;
           abandoned: boolean;
           unrecoverable_dispatch: boolean;
           defer_dispatch_until: string | null;
@@ -157,6 +159,7 @@ export function createJobsStore(sql: Sql, encryptionKey?: string) {
                   (q.state = 'queued' and ${QUEUED_DISPATCH_EVIDENCE}) as queued_with_evidence,
                   (q.state = 'dispatching' and (q.dispatch_until is null or q.dispatch_until <= clock_timestamp())
                     and ${NATIVE_DISPATCH_UNCERTAIN}) as native_uncertain,
+                  (q.state = 'dispatching' and ${FAILED_DOCKER_WAKE}) as failed_docker_wake,
                   (q.state = 'dispatching' and ${DISPATCH_ABANDONED}
                     and (s.lifecycle_generation = $3 or s.status in ('ready','running'))) as abandoned,
                   (q.state = 'dispatching' and (q.dispatch_generation is null
@@ -178,14 +181,26 @@ export function createJobsStore(sql: Sql, encryptionKey?: string) {
            where s.id = $1 and q.request_id = $2`,
           [sandboxId, requestId, job.generation],
         );
-        if (sandbox?.cancelled || sandbox?.queued_with_evidence || sandbox?.native_uncertain) {
+        if (
+          sandbox?.cancelled ||
+          sandbox?.queued_with_evidence ||
+          sandbox?.native_uncertain ||
+          sandbox?.failed_docker_wake
+        ) {
           const reason = sandbox.cancelled
             ? "cancelled_receipt"
             : sandbox.queued_with_evidence
               ? "queued_dispatch_evidence"
-              : "native_dispatch_uncertain";
+              : sandbox.native_uncertain
+                ? "native_dispatch_uncertain"
+                : "docker_wake_failed";
           if (await retireClaim(tx, job, owner, sandbox.generation, reason))
-            await failTurnReceipt(tx, sandboxId, requestId, reason === "native_dispatch_uncertain");
+            await failTurnReceipt(
+              tx,
+              sandboxId,
+              requestId,
+              reason === "native_dispatch_uncertain" || reason === "docker_wake_failed",
+            );
           return job;
         }
         let reset = false;
@@ -273,6 +288,7 @@ export function createJobsStore(sql: Sql, encryptionKey?: string) {
       | "stale_generation"
       | "cancelled_receipt"
       | "queued_dispatch_evidence"
+      | "docker_wake_failed"
       | "native_dispatch_uncertain" = "stale_generation",
   ) {
     const { rows } = await tx.query(

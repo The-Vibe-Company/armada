@@ -119,11 +119,19 @@ test("the shared jobs lane claims only configured job kinds", async () => {
     },
   ]) {
     const claimed = new Set<string>();
+    const errors: string[] = [];
+    let backfillAttempts = 0;
     const lane = createLane({
       githubApp,
       control: {},
-      options: {},
+      options: { logError: (message: string) => errors.push(message) },
       config: { encryptionKey },
+      accountTurns: {
+        async backfillDispatchJobs() {
+          backfillAttempts++;
+          throw new Error("Backfill unavailable");
+        },
+      },
       modal: modalCleanup,
       modalLaunchJob: modalRuntime ? { concurrency: 1, run: neverCalled } : undefined,
       sql: { query: async () => ({ rows: [] }) },
@@ -144,5 +152,7 @@ test("the shared jobs lane claims only configured job kinds", async () => {
     expect(claimed).toEqual(
       new Set(["delete", ...(encryptionKey ? ["launch_initial_turn"] : []), ...expected, "snapshot_retirement"]),
     );
+    expect(backfillAttempts).toBe(encryptionKey ? 1 : 0);
+    expect(errors).toEqual(encryptionKey ? ["armada: queued turn job backfill unavailable."] : []);
   }
 });
