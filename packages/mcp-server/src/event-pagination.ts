@@ -3,6 +3,8 @@ import { type Provider, ProviderError, VaultError } from "@armada/core";
 import { MAX_LOG_PAGES } from "@armada/core/contract";
 
 type Page = Awaited<ReturnType<Provider["events"]>>;
+export const persistedNativePages = new WeakSet<Page>();
+
 type ReadPage = (cursor: string | undefined) => Promise<Page>;
 
 export class NativeOutputPending extends ProviderError {
@@ -43,6 +45,7 @@ export async function readEventPages(
       paused = true;
       break;
     }
+    paused ||= persistedNativePages.has(page);
     if (page.source) source = page.source;
     runtimeFailure = page.runtimeFailure ?? runtimeFailure;
     olderCursor = page.olderCursor;
