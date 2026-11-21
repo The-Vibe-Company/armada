@@ -271,7 +271,7 @@ export function createRuntimeCheckpoint(
       if (!current) {
         if (parent) {
           const locked = await tx.query(
-            "select id from public.armada_access_parents where id=$1 for no key update skip locked",
+            "select id from public.armada_access_parents where id=$1 for update skip locked",
             [parent.id],
           );
           if (!locked.rows.length)

@@ -220,9 +220,6 @@ test("epoch admission rechecks scope, membership, generation, ACK, expiry and ch
     const accounts = { claude: crypto.randomUUID(), codex: crypto.randomUUID() };
     const forwarded: unknown[] = [];
     let accountDenied = false;
-    // PGlite has one backend, so check the concurrency contract at the SQL
-    // boundary. The competing lifecycle writer already owns the sandbox;
-    // taking its parent before waiting for the sandbox would close the cycle.
     const launchLocks: string[] = [];
     const launchSql: Sql = {
       ...sql,

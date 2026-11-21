@@ -54,8 +54,7 @@ export interface DelegatedAuthorityTransport {
 type AuthorityParent = { id: string; sandbox_id: string; owner_id: string; org_id: string };
 
 async function lockAuthorityParent(tx: Sql, parent: AuthorityParent) {
-  // Runtime account admission takes membership before the sandbox. Lifecycle
-  // writes take the sandbox before advancing the access-parent fence.
+  // WARNING: Keep membership before sandbox and sandbox before access parent to match runtime and lifecycle writers.
   if (
     !(
       await tx.query("select 1 from public.members where org_id=$1 and user_id=$2 for share", [
@@ -69,8 +68,7 @@ async function lockAuthorityParent(tx: Sql, parent: AuthorityParent) {
     !(await tx.query("select 1 from public.sandboxes where id=$1 for no key update", [parent.sandbox_id])).rows.length
   )
     return deny();
-  // Child ownership writes hold the child sandbox before checking their FK to
-  // this parent. Permit their KEY SHARE lock while serializing authority writes.
+  // WARNING: A stronger parent lock deadlocks with the child sandbox and its ownership foreign key.
   if (
     !(
       await tx.query("select 1 from public.armada_access_parents where id=$1 and sandbox_id=$2 for no key update", [
@@ -82,6 +80,7 @@ async function lockAuthorityParent(tx: Sql, parent: AuthorityParent) {
     return deny();
 }
 
+/** Epoch-bound authority shared by native and runtime scoped access. */
 export class DelegatedAuthority {
   constructor(
     private readonly sql: Sql,
