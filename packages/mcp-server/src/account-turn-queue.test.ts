@@ -843,6 +843,7 @@ test("a shared successor cancelling an in-flight dispatch keeps the model charge
     throw Error("uncertain");
   });
   await original();
+  if (!beforeReply) throw new Error("The successor did not settle while the original dispatch was in flight.");
   expect(beforeReply).toMatchObject({
     jobs: [{ state: "failed", lease_epoch: "2", reason: "cancelled_receipt" }],
     receipt: { failed: true },
