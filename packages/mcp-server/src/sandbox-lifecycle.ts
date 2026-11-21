@@ -20,6 +20,7 @@ import { mergedWorkProof } from "./merged-work.ts";
 import { nativeIdleDue, nativeQuiescent } from "./native-idle.ts";
 import { LIVE_OUTPUT_CANDIDATE } from "./output-transfers.ts";
 import { recordNativeIdleTurn } from "./runtime-idle-evidence.ts";
+import { StartingModalStopChanged } from "./runtime-reconciliation-conflict.ts";
 import { SANDBOX_VISIBLE } from "./sandbox-visibility.ts";
 import { INTERRUPTED_LAUNCH_REASON, isFailedModalLaunch, MODAL_LAUNCH_FAILURE } from "./turns.ts";
 import { deferTransactionWake, eventFeedWakeKey, runtimeWakes } from "./wake-bus.ts";
@@ -833,7 +834,7 @@ export async function requestStartingModalStop(sql: Sql, scope: readonly [string
     );
     if (target?.status === "failed" && target.status_reason === MODAL_LAUNCH_FAILURE)
       return { id: sandboxId, status: target.status };
-    if (target?.status !== "starting") throw new VaultError("conflict", "Modal launch changed before stop admission.");
+    if (target?.status !== "starting") throw new StartingModalStopChanged();
     await tx.query(
       `update public.sandboxes set stop_requested_at=coalesce(stop_requested_at, clock_timestamp()) where id=$1`,
       [sandboxId],

@@ -19,6 +19,7 @@ import {
 } from "../src/runtime-reconciliation-conflict.ts";
 import { createSandboxArmadaAccess } from "../src/sandbox-armada-access.ts";
 import { callSharedTool } from "../src/tool-api.ts";
+import { runtimeWakes, SANDBOX_ADMISSION_WAKE } from "../src/wake-bus.ts";
 import { runtimeFixture, runtimeFixtureGolden, scopedRuntimeFixture } from "./runtime.fixture.ts";
 import { ENCRYPTION_KEY, fakeBoat, PUBLIC_URL, seedDatabase } from "./support.ts";
 
@@ -402,54 +403,76 @@ test("an unreadable runtime checkpoint acknowledgement never allows compute clea
   }
 });
 
-test.each([
-  ["ready", "sandbox.checkpoint.refused", "activity_lease_present", "conflict"],
-  ["starting", "sandbox.stop.admission", "stop_fence_rejected", "sandbox_not_ready"],
-] as const)("owner stop identifies activity ownership while %s", async (state, phase, refusalCode, code) => {
-  const f = await checkpointFixture("modal", true);
-  try {
-    const activityLeaseId = crypto.randomUUID();
-    await f.db.query("update sandboxes set status=$2,activity_lease_id=$3,activity_until='infinity' where id=$1", [
-      f.row.id,
-      state,
-      activityLeaseId,
-    ]);
-    if (state === "starting")
-      await f.db.query(
-        `insert into runtime_resumes
-          (sandbox_id,request_id,source_epoch,target_epoch,watermark,request_hash,conversation_id,model,reasoning_effort)
-          values($1,$2,$3,$3::bigint+1,0,repeat('0',64),'conversation','model','medium')`,
-        [f.row.id, activityLeaseId, f.active.epoch],
+test.each(["resume", "scoped parent cleanup"] as const)(
+  "owner stop waits for %s and preserves the runtime",
+  async (path) => {
+    const f = await checkpointFixture("modal", true);
+    const cancel = new AbortController();
+    try {
+      const id = f.row.id;
+      if (path === "resume") {
+        await f.db.query(
+          "update sandboxes set status='starting',activity_lease_id=$2,activity_until='infinity' where id=$1",
+          [id, crypto.randomUUID()],
+        );
+      } else {
+        await f.db.query(
+          "update sandboxes set visibility='private',access_owner_id=owner_id,reconcile_lease_until='infinity' where id=$1",
+          [id],
+        );
+        await f.db.query(
+          `insert into armada_access_parents(id,kind,org_id,owner_id,sandbox_id,state)
+         values($1,'sandbox',$2,$3,$1,'ready')`,
+          [id, f.people.org, f.people.owner],
+        );
+      }
+      const stop = stopPort(f);
+      const store = stop.context.data.sandboxes;
+      const read = Promise.withResolvers<void>();
+      const stopping = callSharedTool(
+        {
+          ...stop.context,
+          stopSignal: cancel.signal,
+          data: {
+            ...stop.context.data,
+            sandboxes: {
+              ...store,
+              async getForStop(id) {
+                const target = await store.getForStop!(id);
+                read.resolve();
+                return target;
+              },
+            },
+          },
+        },
+        "stop",
+        { id },
       );
-    const stop = stopPort(f);
-    const records: unknown[] = [];
-    const response = await observeRequest(
-      async () => {
-        await expect(callSharedTool(stop.context, "stop", { id: f.row.id })).rejects.toMatchObject({ code });
-        return new Response(null, { status: 409 });
-      },
-      (line) => records.push(JSON.parse(line)),
-    );
-    expect(records).toContainEqual(
-      expect.objectContaining({
-        event: "operator_failure",
-        requestId: response.headers.get("x-request-id"),
-        sandboxId: f.row.id,
-        phase,
-        refusalCode,
-        stopEvidence: expect.objectContaining({
-          state,
-          activityLeaseId,
-          activityLeaseHeld: true,
-          resumeDispatched: state === "starting",
-        }),
-      }),
-    );
-    expect(stop.calls()).toBe(0);
-  } finally {
-    await f.close();
-  }
-});
+      try {
+        await Promise.race([read.promise, stopping]);
+        expect(stop.calls()).toBe(0);
+        expect((await f.db.query("select 1 from runtime_checkpoints where sandbox_id=$1", [id])).rows).toEqual([]);
+        await f.db.query(
+          `update sandboxes set status='ready',activity_lease_id=null,activity_until=null,reconcile_lease_until=null
+         where id=$1`,
+          [id],
+        );
+        runtimeWakes.notify(SANDBOX_ADMISSION_WAKE);
+        expect(await stopping).toMatchObject({ id, status: "stopped" });
+        expect(stop.calls()).toBe(1);
+        expect(
+          (await f.db.query("select 1 from runtime_checkpoints where sandbox_id=$1 and completed_at is not null", [id]))
+            .rows,
+        ).toHaveLength(1);
+      } finally {
+        cancel.abort();
+        await stopping.catch(() => {});
+      }
+    } finally {
+      await f.close();
+    }
+  },
+);
 
 test("retained stop identifies a journal append after checkpoint publication", async () => {
   const f = await checkpointFixture("modal", true);

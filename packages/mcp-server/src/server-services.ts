@@ -613,6 +613,10 @@ export async function createServerServices(env: Record<string, string | undefine
     ...(dockerControls ? { dockerControls } : {}),
     runtimeSend,
     runtimeStopCheckpoint,
+    configureStopRequest: (request) => control.configureStopRequest?.(request),
+    get stopAdmissionShutdown() {
+      return control.stopAdmissionShutdown;
+    },
     accountTurns,
     ...(control.sandboxBillingAccount ? { sandboxBillingAccount: control.sandboxBillingAccount } : {}),
     ready: createDatabaseReadiness(sql),

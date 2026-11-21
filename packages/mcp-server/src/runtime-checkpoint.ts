@@ -8,7 +8,11 @@ import { recordOperatorDiagnostic } from "./request-observability.ts";
 import type { createRuntimeCommands } from "./runtime-commands.ts";
 import { createRuntimeEnrolments } from "./runtime-enrolment.ts";
 import { unsettledRuntimeCommands } from "./runtime-idle-evidence.ts";
-import { RuntimeCheckpointActivityConflict, RuntimeReconciliationConflict } from "./runtime-reconciliation-conflict.ts";
+import {
+  RuntimeCheckpointActivityConflict,
+  RuntimeCheckpointParentConflict,
+  RuntimeReconciliationConflict,
+} from "./runtime-reconciliation-conflict.ts";
 import { recordStoppedCheckpointNote } from "./sandbox-lifecycle.ts";
 import { type StopRefusalEvidence, stopRefusalEvidence } from "./stop-refusal-evidence.ts";
 
@@ -333,6 +337,8 @@ export function createRuntimeCheckpoint(
               sandbox.id,
               "scoped_parent_locked",
               "Scoped parent authority is busy. Retry checkpoint.",
+              undefined,
+              new RuntimeCheckpointParentConflict(),
             );
           await new DelegatedAuthority(tx, async () => {}).revoke(parent.id);
         }

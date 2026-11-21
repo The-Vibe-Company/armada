@@ -48,7 +48,7 @@ import { bindNativePromptRequest } from "./native-webhook-prompts.ts";
 import { recordOperatorDiagnostic } from "./request-observability.ts";
 import { createResourceStore, type ResourceStore } from "./resource-store.ts";
 import { unsettledRuntimeCommands } from "./runtime-idle-evidence.ts";
-import { RuntimeReconciliationConflict } from "./runtime-reconciliation-conflict.ts";
+import { RuntimeCheckpointActivityConflict, RuntimeReconciliationConflict } from "./runtime-reconciliation-conflict.ts";
 import {
   carryNativePreservationAcrossStop,
   completeSandboxDeletion,
@@ -68,6 +68,9 @@ import { type StopRefusalEvidence, stopRefusalEvidence } from "./stop-refusal-ev
 import { admittedTurnContexts, stampTurnPricing, withServerCost } from "./turn-pricing.ts";
 import { MODAL_LAUNCH_FAILURE } from "./turns.ts";
 import { preserveBeforeStop, readWorkRecovery, type StopAuthority } from "./work-preservation.ts";
+
+const currentNativeExec = `exists(select 1 from public.sandbox_native_exec_attempts e
+  where e.sandbox_id=s.id and e.generation=s.lifecycle_generation)`;
 
 /** A sandbox with what the caller needs to know about its golden. */
 export interface SandboxView extends SandboxRecord {
@@ -133,6 +136,7 @@ export interface ServerSandboxStore extends SandboxStore {
   launchTiming?(id: string): Promise<LaunchTiming | null>;
   assertExtensionAllowed?(id: string): Promise<void>;
   assertDeletionAllowed?(id: string): Promise<void>;
+  getForStop?(id: string): Promise<{ sandbox: SandboxView; busy: boolean } | null>;
   requestStartingModalStop?(sandbox: SandboxRecord): ReturnType<typeof requestStartingModalStop>;
   /** Refuse taint and stop intent before exec; native Boat and Modal exec also claim the activity lease. */
   assertExecAllowed?(id: string): Promise<void>;
@@ -380,6 +384,27 @@ export function createSqlData(
         return result.rows.length === 1;
       },
     };
+
+    async function readSandbox(id: string, forStop: boolean) {
+      if (!UUID.test(id)) return null;
+      const result = await sql.query<SandboxViewRow & { stop_busy: boolean }>(
+        `select ${SANDBOX_COLUMNS}${
+          forStop
+            ? `, (
+          coalesce(s.reconcile_lease_until > clock_timestamp(), false)
+          or coalesce(s.activity_until > clock_timestamp(), false)
+          or ((s.boat_runtime or s.runtime_transport is not distinct from 'dialout')
+            and s.status in ('ready','running') and s.activity_lease_id is not null)
+        ) and not ${currentNativeExec} as stop_busy`
+            : ""
+        }
+        from public.sandboxes s join public.goldens g on g.id = s.golden_id
+        where ${SANDBOX_VISIBLE} and s.id = $3`,
+        [...scope, id],
+      );
+      const row = result.rows[0];
+      return row ? { sandbox: mapView(row), busy: row.stop_busy === true } : null;
+    }
 
     const sandboxes: ServerSandboxStore = {
       activityOwnership: true,
@@ -1160,7 +1185,7 @@ export function createSqlData(
             status?: SandboxStatus;
             generation?: string;
             observed?: Record<string, unknown> | null;
-            stop_evidence?: StopRefusalEvidence | null;
+            stop_evidence?: (StopRefusalEvidence & { nativeExecPending: boolean }) | null;
           }>(
             observeRefusal
               ? `with observed as (select s.status::text as status,
@@ -1177,7 +1202,7 @@ export function createSqlData(
                 ? `with updated as (${update})${effects}
                    select u.id,u.status,u.generation,
                      case when u.id is null then (select row_to_json(e) from
-                       (select ${stopRefusalEvidence}, $${generationParam}::bigint::text as "requestGeneration",
+                       (select ${stopRefusalEvidence}, ${currentNativeExec} as "nativeExecPending", $${generationParam}::bigint::text as "requestGeneration",
                          ${retainedProof ?? "null"} as "retainedCheckpointCurrent"
                          from public.sandboxes s
                          where s.id=$3::uuid and ${SANDBOX_VISIBLE}) e) end as stop_evidence
@@ -1408,10 +1433,19 @@ export function createSqlData(
                 observed: result.rows[0]?.observed ?? null,
               }),
             );
+          const evidence = result.rows[0]?.stop_evidence;
+          const blockedStop =
+            stopStatus !== undefined && admission && !patch.onlyIfIdle && evidence && !evidence.nativeExecPending;
+          const cause =
+            result.observationBlocked || (blockedStop && evidence.reconcileLeaseHeld)
+              ? new RuntimeReconciliationConflict()
+              : blockedStop && evidence.activityLeaseHeld
+                ? new RuntimeCheckpointActivityConflict()
+                : undefined;
           const error = new DataError(
             "The sandbox is busy or its lifecycle changed; retry after refreshing status.",
             "sandbox_not_ready",
-            result.observationBlocked ? { cause: new RuntimeReconciliationConflict() } : undefined,
+            cause ? { cause } : undefined,
           );
           if (stopStatus !== undefined)
             recordOperatorDiagnostic(
@@ -1484,15 +1518,9 @@ export function createSqlData(
         );
         return result.rows[0] ?? null;
       },
+      getForStop: (id) => readSandbox(id, true),
       async get(id) {
-        if (!UUID.test(id)) return null;
-        const result = await sql.query<SandboxViewRow>(
-          `select ${SANDBOX_COLUMNS} from public.sandboxes s join public.goldens g on g.id = s.golden_id
-           where ${SANDBOX_VISIBLE} and s.id = $3`,
-          [...scope, id],
-        );
-        const row = result.rows[0];
-        return row ? mapView(row) : null;
+        return (await readSandbox(id, false))?.sandbox ?? null;
       },
       async list(filter) {
         if (namedList) return namedSandboxPage(sql, scope, filter, namedList);
