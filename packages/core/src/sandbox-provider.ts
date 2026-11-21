@@ -62,6 +62,8 @@ export const PROVIDER_LIMITS: Readonly<Record<SandboxPlacementProviderId, Provid
  */
 export interface HostCapabilities {
   readonly requiresPinnedGoldenBinding: boolean;
+  /** Install the baseline on the live builder or verify the preinstalled baseline as the image user. */
+  readonly goldenBuilderBaseline: "install-at-build" | "preinstalled-as-user";
   /** Re-resolve pinned management authority inside the golden build admission transaction. */
   readonly revalidateGoldenManagementAtAdmission: boolean;
   readonly goldenRestore: "fresh-fork" | "shared-source";
@@ -96,6 +98,7 @@ export interface HostCapabilities {
 export const HOST_CAPABILITIES: Readonly<Record<SandboxProviderId, HostCapabilities>> = {
   boat: {
     requiresPinnedGoldenBinding: false,
+    goldenBuilderBaseline: "install-at-build",
     revalidateGoldenManagementAtAdmission: false,
     goldenRestore: "fresh-fork",
     retainSourceOnSnapshotUncertainty: false,
@@ -109,6 +112,7 @@ export const HOST_CAPABILITIES: Readonly<Record<SandboxProviderId, HostCapabilit
   },
   modal: {
     requiresPinnedGoldenBinding: true,
+    goldenBuilderBaseline: "preinstalled-as-user",
     revalidateGoldenManagementAtAdmission: true,
     goldenRestore: "shared-source",
     retainSourceOnSnapshotUncertainty: true,

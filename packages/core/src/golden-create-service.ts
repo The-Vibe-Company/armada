@@ -215,7 +215,7 @@ export class GoldenCreateService {
         ...(this.deps.execution ? { idempotencyKey: this.deps.execution.id } : {}),
       });
       await this.deps.execution?.builder(builder.id);
-      if (providerId === "boat" && this.deps.installBaseline) {
+      if (HOST_CAPABILITIES[providerId].goldenBuilderBaseline === "install-at-build" && this.deps.installBaseline) {
         if (builder.state !== "ready") await waitReady(provider, builder.id, limits);
         await this.deps.installBaseline(provider, builder.id);
       }
