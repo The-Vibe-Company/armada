@@ -994,11 +994,16 @@ test.each(["prompt", "steer", "queued", "dispatching"] as const)(
 );
 
 test.each([
-  ["Dispatch outcome uncertain; inspect sandbox history before resending.", false, "ineligible"],
-  ["Queued receipt already has dispatch evidence; inspect sandbox history before resending.", false, "ineligible"],
-  ["Dispatch cancelled by confirmed stop.", false, "ineligible"],
-  ["Dispatch refused by owner stop.", true, "ineligible"],
-  ["Dispatch refused by owner stop.", false, "archived"],
+  ["Dispatch outcome uncertain; inspect sandbox history before resending.", false, "ineligible", false],
+  [
+    "Queued receipt already has dispatch evidence; inspect sandbox history before resending.",
+    false,
+    "ineligible",
+    false,
+  ],
+  ["Dispatch cancelled by confirmed stop.", false, "ineligible", false],
+  ["Dispatch refused by owner stop.", true, "ineligible", false],
+  ["Dispatch refused by owner stop.", false, "archived", false],
   ["Queued prompt was cancelled.", false, "ineligible", true],
 ] as const)(
   "native handoff classifies failed receipt %s with retained claim %p",
