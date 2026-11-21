@@ -101,10 +101,13 @@ export type StopFence = [
   token: string | null,
   generation: number | null,
   kind: string | null,
+  provider: string | null,
 ];
 
-export const RUNTIME_STOP_OWNER = `stop_requested_at is not null and deleted_at is null
-  and provider='modal' and runtime_transport='dialout' and provider_sandbox_id=$2::text
+export const WORK_STOP_OWNER = `stop_requested_at is not null and deleted_at is null
+  and provider in ('boat','modal') and not boat_runtime
+  and (provider='modal' or runtime_transport is distinct from 'dialout')
+  and provider_sandbox_id=$2::text and provider::text=$6::text
   and lifecycle_generation=$4::bigint
   and (($5::text='activity' and activity_lease_id=$3::uuid and activity_until>clock_timestamp())
     or ($5::text='reconcile' and reconcile_lease=$3::uuid and reconcile_lease_until>clock_timestamp()
@@ -112,10 +115,10 @@ export const RUNTIME_STOP_OWNER = `stop_requested_at is not null and deleted_at 
   and exists(select 1 from public.members m where m.org_id=sandboxes.org_id and m.user_id=sandboxes.owner_id)`;
 
 export const STOP_EPOCH = `id=$1::uuid
-  and (case when stop_requested_at is null then null else stop_generation end) is not distinct from $6::bigint
-  and ($2::text is null or (${RUNTIME_STOP_OWNER}))`;
+  and (case when stop_requested_at is null then null else stop_generation end) is not distinct from $7::bigint
+  and ($2::text is null or (${WORK_STOP_OWNER}))`;
 export const NOTE_FENCE = `${STOP_EPOCH}
-  and ($6::bigint is null or preservation_stop_generation is distinct from $6::bigint)`;
+  and ($7::bigint is null or preservation_stop_generation is distinct from $7::bigint)`;
 
 export function writePreservationNote(
   sql: Sql,
@@ -124,7 +127,7 @@ export function writePreservationNote(
   stopToken: string | null,
   fence: StopFence,
 ) {
-  return sql.query(`update public.sandboxes set preservation_note=$7 where ${NOTE_FENCE}`, [
+  return sql.query(`update public.sandboxes set preservation_note=$8 where ${NOTE_FENCE}`, [
     id,
     ...fence,
     stopToken,
@@ -143,10 +146,10 @@ export function recordWorkRecovery(
 ) {
   return sql.query<{ id: string }>(
     `with accepted as (
-    update public.sandboxes set preservation_note=$7,preservation_stop_generation=$6::bigint
+    update public.sandboxes set preservation_note=$8,preservation_stop_generation=$7::bigint
     where ${NOTE_FENCE} and not application_secret_tainted returning id
   ) insert into public.sandbox_work_recovery(id,sandbox_id,archive_enc)
-    select $8::uuid,id,$9::bytea from accepted returning id`,
+    select $9::uuid,id,$10::bytea from accepted returning id`,
     [id, ...fence, stopToken, note, recoveryId, encrypted],
   );
 }
@@ -154,7 +157,7 @@ export function recordWorkRecovery(
 export function recordCleanWork(sql: Sql, id: string, fence: StopFence, stopToken: string | null) {
   return sql.query<{ id: string }>(
     `update public.sandboxes set preservation_note=null,
-    preservation_stop_generation=$6::bigint where ${NOTE_FENCE} and not application_secret_tainted returning id`,
+    preservation_stop_generation=$7::bigint where ${NOTE_FENCE} and not application_secret_tainted returning id`,
     [id, ...fence, stopToken],
   );
 }
