@@ -1,4 +1,4 @@
-import type { MemberRole, ModalBinding, SandboxStatus } from "@armada/core";
+import { HARNESS_KINDS, MACHINE_SIZES, type MemberRole, type ModalBinding, type SandboxStatus } from "@armada/core";
 import {
   GoldenError,
   LaunchError,
@@ -8,11 +8,12 @@ import {
   type Sql,
   VaultError,
 } from "@armada/core/server";
-import { createModalMachine, type ModalMachineOptions } from "@armada/provider-modal";
+import { createModalMachine, type ModalMachineOptions, scopeKey } from "@armada/provider-modal";
 import { z } from "zod";
 import type { AccountTurnQueue } from "../account-turn-queue.ts";
 import { type OrdinaryLaunchFailure, replayOrdinaryLaunchFailure } from "../ordinary-launch-receipts.ts";
-import { createRuntimeEnrolments } from "../runtime-enrolment.ts";
+import type { RuntimeConfigurationTarget } from "../runtime-configuration.ts";
+import { createRuntimeEnrolments, type RuntimeTicketGuard } from "../runtime-enrolment.ts";
 import {
   bindModalLaunchMachine,
   insertStartingModalSandbox,
@@ -71,18 +72,32 @@ export async function admitModalLaunch(sql: Sql, encryptionKey: string, input: M
       );
       if (!golden) throw new GoldenError("not_found", "Modal golden not found.");
 
+      const snapshot = allocation.source.ref;
+      const modal = {
+        workspace: golden.modal_workspace,
+        environment: golden.modal_environment,
+        appId: golden.modal_app_id,
+      };
+      if (golden.provider_snapshot_id === snapshot)
+        await tx.query("select public.lock_golden_snapshot('modal', $1)", [snapshot]);
+      const sourceScope = scopeKey({ orgId, userId: ownerId, visibility: golden.visibility, binding: modal });
+      const {
+        rows: [image],
+      } = await tx.query<{ image_id: string }>(
+        `select record->>'imageId' as image_id from public.modal_images
+         where scope=$1 and name=$2 and record #>> '{info,status}'='ready'
+           and record->>'deleted' is distinct from 'true' and nullif(record->>'imageId','') is not null`,
+        [sourceScope, snapshot],
+      );
       const jobId = await store.enqueue(
         "launch",
         sandboxId,
         generation,
         key,
         {
-          allocation,
-          modal: {
-            workspace: golden.modal_workspace,
-            environment: golden.modal_environment,
-            appId: golden.modal_app_id,
-          },
+          allocation: { ...allocation, source: { kind: "snapshot", ref: image?.image_id } },
+          snapshot,
+          modal,
         },
         {
           orgId,
@@ -118,15 +133,14 @@ export async function admitModalLaunch(sql: Sql, encryptionKey: string, input: M
         return { sandbox: { id: receipt.sandbox_id, status: receipt.status ?? "deleted" } };
       }
 
-      const snapshot = allocation.source.ref;
       if (golden.provider_snapshot_id !== snapshot)
         throw new GoldenError("conflict", "Golden snapshot changed during launch preparation.");
-      await tx.query("select public.lock_golden_snapshot('modal', $1)", [snapshot]);
       const { rows: sealed } = await tx.query(
         "select 1 from public.golden_snapshot_retirements where provider='modal' and old_snapshot=$1 and sealed",
         [snapshot],
       );
       if (sealed.length) throw new GoldenError("conflict", "Golden snapshot is being retired.");
+      if (!image) throw new GoldenError("conflict", "Modal golden snapshot image is unavailable.");
 
       await insertStartingModalSandbox(
         tx,
@@ -227,12 +241,128 @@ interface ModalLaunchPlan {
   allocation: ModalLaunchAllocation;
   bindingRef: string;
   machine: Omit<ModalMachineRuntime, "resolveRuntimeTicket">;
+  canUseModalCredential(tx: Sql): Promise<boolean>;
   prepareRuntimeTicket(
     request: Parameters<PrepareModalTicket>[0],
   ): Promise<
     Omit<ModalTicket, "enrolmentToken"> &
-      Pick<IssueRuntimeTicket, "ownerId" | "configuration" | "commandGrantExpiresAt">
+      Pick<IssueRuntimeTicket, "ownerId" | "configuration" | "commandGrantExpiresAt"> &
+      Pick<RuntimeTicketGuard, "lockPrerequisites"> & { checkAccountPin(tx: Sql): Promise<void> }
   >;
+}
+
+type OpenModalMachine = (
+  app: { binding: ModalBinding; appName: string; credentialScope: "org" | "user"; credentialOwnerId: string },
+  signal: AbortSignal,
+) => Promise<ModalMachineRuntime & { close(): void }>;
+
+export function modalLaunchTicketGuard(sandbox: RuntimeConfigurationTarget) {
+  return {
+    async lockPrerequisites(tx: Sql) {
+      const member = await tx.query("select 1 from public.members where org_id=$1 and user_id=$2 for update", [
+        sandbox.orgId,
+        sandbox.ownerId,
+      ]);
+      if (!member.rows.length) throw new Error("Modal launch owner membership is unavailable.");
+      const credential = await tx.query(
+        `select 1 from public.credentials where id=$1 and version=$2 and kind=any($5::public.credential_kind[])
+             and status='active' and (expires_at is null or expires_at>clock_timestamp())
+             and ((scope='user' and owner_id=$3) or (scope='org' and owner_id=$4)) for share`,
+        [
+          sandbox.credentialId,
+          sandbox.credentialVersion,
+          sandbox.ownerId,
+          sandbox.orgId,
+          HARNESS_KINDS[sandbox.harness],
+        ],
+      );
+      if (!credential.rows.length) throw new Error("Modal launch account is unavailable.");
+    },
+    async checkAccountPin(tx: Sql) {
+      const current = await tx.query(
+        "select 1 from public.sandboxes where id=$1 and credential_id=$2 and credential_version=$3",
+        [sandbox.id, sandbox.credentialId, sandbox.credentialVersion],
+      );
+      if (!current.rows.length) throw new Error("Modal launch account pin changed.");
+    },
+  };
+}
+
+const launchPayload = z.object({
+  allocation: z.object({
+    source: z.object({ kind: z.literal("snapshot"), ref: z.string().min(1) }),
+    size: z.enum(MACHINE_SIZES).nullable(),
+    computeTtlSeconds: z.number().int().positive(),
+  }),
+  snapshot: z.string().min(1),
+  modal: z.object({ workspace: z.string().min(1), environment: z.string().min(1), appId: z.string().min(1) }),
+});
+
+export function createModalLaunchJob(
+  sql: Sql,
+  encryptionKey: string,
+  openMachine: (
+    ...args: Parameters<OpenModalMachine>
+  ) => Promise<Awaited<ReturnType<OpenModalMachine>> & Pick<ModalLaunchPlan, "canUseModalCredential">>,
+  prepareRuntimeTicket: (sandbox: RuntimeConfigurationTarget) => ReturnType<ModalLaunchPlan["prepareRuntimeTicket"]>,
+) {
+  return {
+    concurrency: 4,
+    async run(job, context) {
+      let machine: Awaited<ReturnType<typeof openMachine>> | undefined;
+      try {
+        return await runModalLaunch(sql, encryptionKey, job, context, async () => {
+          const payload = launchPayload.safeParse(job.payload);
+          if (!payload.success) throw new Error("Invalid Modal launch payload.");
+          const { allocation, snapshot, modal: binding } = payload.data;
+          const target = await withJobLease(sql, job, async (tx) => {
+            const {
+              rows: [row],
+            } = await tx.query<
+              RuntimeConfigurationTarget & {
+                appName: string;
+                credentialScope: "org" | "user";
+                credentialOwnerId: string;
+              }
+            >(
+              `select s.id, s.org_id as "orgId", s.owner_id as "ownerId", s.provider, s.harness, s.status,
+                      s.deleted_at as "deletedAt", s.stop_requested_at as "stopRequestedAt",
+                      s.expires_at as "expiresAt", s.credential_id as "credentialId",
+                      s.credential_version as "credentialVersion", s.repository_dir as "repositoryDir",
+                      s.visibility, a.app_name as "appName", a.authority_scope as "credentialScope",
+                      a.authority_owner_id as "credentialOwnerId"
+               from public.sandboxes s
+               join public.jobs j on j.id=$2 and j.sandbox_id=s.id and j.generation=s.lifecycle_generation
+                 and j.org_id=s.org_id and j.request_owner_id=s.owner_id
+               join public.sandbox_source_snapshots snap on snap.sandbox_id=s.id and snap.snapshot_id=$3
+               join public.modal_server_apps a on a.org_id=s.org_id and a.environment=$4 and a.app_id=$5
+               join public.goldens g on g.id=s.golden_id and g.org_id=s.org_id
+                 and g.modal_workspace=$6 and g.modal_environment=a.environment and g.modal_app_id=a.app_id
+               where s.id=$1 and s.provider='modal' and s.runtime_transport='dialout'
+                 and ((a.authority_scope='org' and a.authority_owner_id=s.org_id)
+                   or (a.authority_scope='user' and a.authority_owner_id=s.owner_id))`,
+              [job.sandbox_id, job.id, snapshot, binding.environment, binding.appId, binding.workspace],
+            );
+            if (!row) throw new Error("Modal launch App or snapshot authority is unavailable.");
+            return row;
+          });
+          if (!target) return;
+          context.signal.throwIfAborted();
+          const { appName, credentialScope, credentialOwnerId, ...sandbox } = target;
+          machine = await openMachine({ binding, appName, credentialScope, credentialOwnerId }, context.signal);
+          return {
+            allocation,
+            bindingRef: job.id,
+            machine,
+            canUseModalCredential: machine.canUseModalCredential,
+            prepareRuntimeTicket: () => prepareRuntimeTicket(sandbox),
+          };
+        });
+      } finally {
+        machine?.close();
+      }
+    },
+  } satisfies JobKind;
 }
 
 const LAUNCH_FAILURE = "modal_launch_failed";
@@ -246,7 +376,7 @@ export async function runModalLaunch(
   encryptionKey: string,
   job: Job,
   context: DispatchContext,
-  plan: ModalLaunchPlan,
+  preparePlan: () => ModalLaunchPlan | undefined | Promise<ModalLaunchPlan | undefined>,
 ) {
   const sandboxId = job.sandbox_id;
   const generation = Number(job.generation);
@@ -281,47 +411,6 @@ export async function runModalLaunch(
     return { status: "retry", after: new Date(beforeDispatch.check_after), unattempted: true } satisfies JobResult;
   }
 
-  const enrolmentInProgress = new Error("Modal launch enrolment already issued.");
-  const enrolments = createRuntimeEnrolments(sql, encryptionKey);
-  const dispatch = await dispatchModalLaunch(sql, job, context, plan, { sandboxId, generation }, async (request) => {
-    const { ownerId, configuration, commandGrantExpiresAt, ...prepared } = await plan.prepareRuntimeTicket(request);
-    try {
-      const ticket = await enrolments.issue({
-        sandboxId,
-        ownerId,
-        configuration,
-        ...(commandGrantExpiresAt === undefined ? {} : { commandGrantExpiresAt }),
-        expectedGeneration: generation,
-        expectedProviderSandboxId: request.machineId,
-        async assertClaim(tx) {
-          if (!(await context.canDispatch(tx))) throw new Error("Modal bootstrap dispatch is no longer authorized.");
-        },
-        ticketGuard: {
-          async lockPrerequisites() {},
-          async check(tx) {
-            const receipt = await readEnrolment(tx);
-            if (receipt.enrolled || receipt.check_after) throw enrolmentInProgress;
-          },
-        },
-      });
-      return { ...prepared, enrolmentToken: ticket.enrolmentToken };
-    } catch (error) {
-      if (error === enrolmentInProgress) return null;
-      throw error;
-    }
-  });
-  const afterDispatch = await withJobLease(sql, job, readEnrolment);
-  context.signal.throwIfAborted();
-  if (!afterDispatch || afterDispatch.enrolled) return done;
-  if (dispatch.kind === "bootstrapped") {
-    return {
-      status: "retry",
-      after: afterDispatch.check_after
-        ? new Date(afterDispatch.check_after)
-        : new Date(Date.now() + ENROLMENT_RETRY_DELAY_MS),
-    } satisfies JobResult;
-  }
-
   const startingTarget = async (tx: Sql) => {
     const {
       rows: [row],
@@ -342,11 +431,75 @@ export async function runModalLaunch(
     );
     return row;
   };
+  const hasJournal = typeof job.outcome === "object" && job.outcome !== null && "modal_machine" in job.outcome;
+  let skipProvider = !hasJournal && !(await context.canDispatch());
+  let plan: ModalLaunchPlan | undefined;
+  if (!skipProvider) {
+    try {
+      plan = await preparePlan();
+    } catch (error) {
+      context.signal.throwIfAborted();
+      if (await context.canDispatch()) throw error;
+      const target = await withJobLease(sql, job, startingTarget);
+      if (!target) return done;
+      if (target.has_intent && !target.provider_sandbox_id && !target.journaled_id) throw error;
+      skipProvider = true;
+    }
+  }
+  context.signal.throwIfAborted();
+  if (!plan && !skipProvider) return done;
+
+  const enrolmentInProgress = new Error("Modal launch enrolment already issued.");
+  const enrolments = createRuntimeEnrolments(sql, encryptionKey);
+  const dispatch = plan
+    ? await dispatchModalLaunch(sql, job, context, plan, { sandboxId, generation }, async (request) => {
+        const { ownerId, configuration, commandGrantExpiresAt, lockPrerequisites, checkAccountPin, ...prepared } =
+          await plan.prepareRuntimeTicket(request);
+        try {
+          const ticket = await enrolments.issue({
+            sandboxId,
+            ownerId,
+            configuration,
+            ...(commandGrantExpiresAt === undefined ? {} : { commandGrantExpiresAt }),
+            expectedGeneration: generation,
+            expectedProviderSandboxId: request.machineId,
+            async assertClaim(tx) {
+              if (!(await context.canDispatch(tx)))
+                throw new Error("Modal bootstrap dispatch is no longer authorized.");
+            },
+            ticketGuard: {
+              lockPrerequisites,
+              async check(tx) {
+                await checkAccountPin(tx);
+                const receipt = await readEnrolment(tx);
+                if (receipt.enrolled || receipt.check_after) throw enrolmentInProgress;
+              },
+            },
+          });
+          return { ...prepared, enrolmentToken: ticket.enrolmentToken };
+        } catch (error) {
+          if (error === enrolmentInProgress) return null;
+          throw error;
+        }
+      })
+    : undefined;
+  const afterDispatch = await withJobLease(sql, job, readEnrolment);
+  context.signal.throwIfAborted();
+  if (!afterDispatch || afterDispatch.enrolled) return done;
+  if (dispatch?.kind === "bootstrapped") {
+    return {
+      status: "retry",
+      after: afterDispatch.check_after
+        ? new Date(afterDispatch.check_after)
+        : new Date(Date.now() + ENROLMENT_RETRY_DELAY_MS),
+    } satisfies JobResult;
+  }
+
   const target = await withJobLease(sql, job, startingTarget);
   context.signal.throwIfAborted();
   if (!target) return { status: "done" } satisfies JobResult;
 
-  const observed = dispatch.observation.kind === "present" ? dispatch.observation.machine.machineId : null;
+  const observed = dispatch?.observation.kind === "present" ? dispatch.observation.machine.machineId : null;
   const known = target.provider_sandbox_id ?? target.journaled_id;
   if (
     (target.provider_sandbox_id && target.journaled_id && target.provider_sandbox_id !== target.journaled_id) ||
@@ -421,7 +574,7 @@ async function dispatchModalLaunch(
          for share of m`,
       [sandboxId, job.id],
     );
-    if (row && (await canDispatch(tx))) return row;
+    if (row && (await plan.canUseModalCredential(tx)) && (await canDispatch(tx))) return row;
   };
   const target = () => withJobLease(sql, job, dispatchTarget);
   const machine = createModalMachine({
@@ -470,13 +623,7 @@ async function dispatchModalLaunch(
   return { kind: "bootstrapped" } as const;
 }
 
-export function createModalLaunchCleanupJob(
-  sql: Sql,
-  openMachine: (
-    app: { binding: ModalBinding; appName: string; credentialScope: "org" | "user"; credentialOwnerId: string },
-    signal: AbortSignal,
-  ) => Promise<ModalMachineRuntime & { close(): void }>,
-) {
+export function createModalLaunchCleanupJob(sql: Sql, openMachine: OpenModalMachine) {
   return {
     concurrency: 4,
     async run(job, context) {

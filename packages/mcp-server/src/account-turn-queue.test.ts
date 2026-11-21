@@ -796,33 +796,59 @@ test.each(["after settlement", "before settlement"])(
   },
 );
 
-// Cancellation can win the race against the dispatch error handler. The receipt is
-// terminalized by the sweep while the handler still owns the claim, so the handler's
-// update matches zero rows. Uncertainty must not depend on which path wrote last.
-test("cancellation during dispatch keeps the uncertain model charge until physical stop", async () => {
+test("a shared successor cancelling an in-flight dispatch keeps the model charge until physical stop", async () => {
   const first = { id: ids[1]!, request_id: requests[0]!, prompt: "uncertain instruction", model: "gpt-5.4" };
   const second = { id: ids[2]!, request_id: requests[1]!, prompt: "next instruction", model: "gpt-5.4" };
   await database().exec("update credentials set max_agents=null,model_limits='{\"gpt-5.4\":1}'::jsonb");
   await queue.accept(caller, first);
   await queue.accept(caller, second);
-  queue.setDispatch(async () => {
-    // Admission advances the generation, then ordinary cleanup releases the reservation.
-    await database().query(
-      "update sandboxes set lifecycle_generation=lifecycle_generation+1,model='default_model',activity_lease_id=id where id=$1",
-      [ids[1]],
-    );
-    await database().query("delete from account_agent_reservations where sandbox_id=$1", [ids[1]]);
-    // A stop becomes pending while the dispatch handler is still running.
+  await sql.query("update jobs set run_after='-infinity' where sandbox_id=$1", [first.id]);
+  const dispatched: Array<string | undefined> = [];
+  const successor = sharedDispatcher(async (_caller, input) => {
+    dispatched.push(input.request_id);
+    return { promptId: "actual_next", conversationId: "history", status: "running" };
+  });
+  const readRetirement = () =>
+    sql.query("select state, lease_epoch::text, outcome->>'reason' as reason from jobs where sandbox_id=$1", [
+      first.id,
+    ]);
+  const readFirstReceipt = () => queue.status(caller, first.id, first.request_id);
+  let beforeReply:
+    | {
+        jobs: Awaited<ReturnType<typeof readRetirement>>["rows"];
+        receipt: Awaited<ReturnType<typeof readFirstReceipt>>;
+      }
+    | undefined;
+  const original = sharedDispatcher(async (_caller, input, claim) => {
+    dispatched.push(input.request_id);
+    if (!claim) throw new Error("Shared dispatch lost the job authority.");
+    await claim.handoffGeneration({
+      async lockPrerequisites() {},
+      async advance(tx) {
+        await tx.query(
+          "update sandboxes set lifecycle_generation=lifecycle_generation+1,model='default_model',activity_lease_id=id where id=$1",
+          [first.id],
+        );
+      },
+    });
+    // Ordinary dispatch cleanup releases the transient reservation.
+    await database().query("delete from account_agent_reservations where sandbox_id=$1", [first.id]);
     await database().query(
       "update sandboxes set status='stopping',stop_requested_at=now(),activity_lease_id=null where id=$1",
-      [ids[1]],
+      [first.id],
     );
-    // A concurrent reconciliation terminalizes the receipt before the handler completes.
-    await queue.reconcileOne(new AbortController().signal);
+    await sql.query("update jobs set lease_until='-infinity' where sandbox_id=$1", [first.id]);
+    await successor();
+    beforeReply = { jobs: (await readRetirement()).rows, receipt: await readFirstReceipt() };
     throw Error("uncertain");
   });
-  expect(await queue.reconcileOne(new AbortController().signal)).toBe(true);
-  await queue.drain();
+  await original();
+  if (!beforeReply) throw new Error("The successor did not settle while the original dispatch was in flight.");
+  expect(beforeReply).toMatchObject({
+    jobs: [{ state: "failed", lease_epoch: "2", reason: "cancelled_receipt" }],
+    receipt: { failed: true },
+  });
+  expect({ jobs: (await readRetirement()).rows, receipt: await readFirstReceipt() }).toEqual(beforeReply);
   const usage = await database().query<{ total: number; default_model: number; override_model: number }>(
     `select ${accountWorkingCountSql("$1")} as total,
       ${accountWorkingCountSql("$1", "null::uuid", "'default_model'")} as default_model,
@@ -832,20 +858,19 @@ test("cancellation during dispatch keeps the uncertain model charge until physic
   expect(usage.rows.map((row) => [Number(row.total), Number(row.default_model), Number(row.override_model)])).toEqual([
     [1, 0, 1],
   ]);
-  // The second request must stay blocked while physical stop is unconfirmed.
-  let calls = 0;
-  queue.setDispatch(async () => {
-    calls++;
-    throw Error("must not dispatch");
+  await sql.query("update jobs set run_after='-infinity' where sandbox_id=$1", [second.id]);
+  await successor();
+  expect(dispatched).toEqual([first.request_id]);
+  expect(await queue.status(caller, second.id, second.request_id)).toMatchObject({
+    failed: false,
+    message: expect.stringContaining("Waiting for a free agent slot for model gpt-5.4"),
   });
-  expect(await queue.reconcileOne(new AbortController().signal)).toBe(false);
-  await queue.drain();
-  expect(calls).toBe(0);
-  // Confirmed physical stop releases the charge.
-  await database().query("update sandboxes set status='stopped',stopped_at=now() where id=$1", [ids[1]]);
-  expect(await queue.reconcileOne(new AbortController().signal)).toBe(true);
-  await queue.drain();
-  expect(calls).toBe(1);
+
+  await database().query("update sandboxes set status='stopped',stopped_at=now() where id=$1", [first.id]);
+  await sql.query("update jobs set run_after='-infinity' where sandbox_id=$1", [second.id]);
+  await successor();
+  expect(dispatched).toEqual([first.request_id, second.request_id]);
+  expect(await queue.status(caller, second.id, second.request_id)).toEqual({ nativePromptId: "actual_next" });
 });
 
 test("queued public receipts remain usable across server reads, evidence, outcome and conversation controls", async () => {
