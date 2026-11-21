@@ -211,7 +211,7 @@ export async function runModalLaunch(
         sandboxId,
         ownerId,
         configuration,
-        commandGrantExpiresAt,
+        ...(commandGrantExpiresAt === undefined ? {} : { commandGrantExpiresAt }),
         expectedGeneration: generation,
         expectedProviderSandboxId: request.machineId,
         async assertClaim(tx) {
