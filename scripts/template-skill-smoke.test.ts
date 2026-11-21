@@ -226,6 +226,7 @@ function fixture(
       }
       throw new Error("poll limit");
     },
+    measuredStep: (name, action) => io.step(name, action),
     async step<T>(step: string, action: () => Promise<T>) {
       try {
         const result = await action();
