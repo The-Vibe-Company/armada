@@ -46,6 +46,7 @@ import { scopedOrg } from "./control-caller.ts";
 import { createResourceStore, type ResourceStore } from "./resource-store.ts";
 import { unsettledRuntimeCommands } from "./runtime-idle-evidence.ts";
 import {
+  carryNativePreservationAcrossStop,
   completeSandboxDeletion,
   expireAfterExtension,
   finishLaunchFailure,
@@ -1136,6 +1137,12 @@ export function createSqlData(
             const row = updated.rows[0];
             if (stopStatus !== undefined && row?.id) {
               if (!row.status || !row.generation) throw new Error("Owner stop update did not return its fence.");
+              if (
+                patch.finishActivity &&
+                (patch.stopRequested === true ||
+                  (patch.stopRequested === false && stopStatus !== "stopping" && patch.stoppedAt))
+              )
+                await carryNativePreservationAcrossStop(tx, id, row.generation);
               await publishOwnerStop(tx, {
                 sandboxId: id,
                 generation: row.generation,

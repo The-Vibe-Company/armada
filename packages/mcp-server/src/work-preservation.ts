@@ -12,6 +12,8 @@ import {
 } from "@armada/core/server";
 import type { RuntimeWorkProvider } from "./runtime-provider.ts";
 import {
+  COMPLETE_PRESERVATION,
+  lockedNativePreservationWriter,
   NOTE_FENCE,
   recordCleanWork,
   recordWorkRecovery,
@@ -109,6 +111,7 @@ export async function preserveBeforeStop(
 ): Promise<"pending" | void> {
   const started = Date.now();
   const progress: CaptureProgress = {
+    receiptWriter: sql,
     stage: "observe",
     workAtRisk: false,
     checkedClean: false,
@@ -213,7 +216,7 @@ async function preserveGitWork(
             return;
           }
           void writePreservationNote(
-            sql,
+            progress.receiptWriter,
             id,
             progress.workAtRisk
               ? failureNote(`${progress.stage}_timeout`)
@@ -238,6 +241,7 @@ function pendingOnFailure(progress: CaptureProgress) {
 }
 
 type CaptureProgress = {
+  receiptWriter: Sql;
   stage: string;
   workAtRisk: boolean;
   checkedClean: boolean;
@@ -297,7 +301,7 @@ async function captureAndStore(
         `select boat_runtime,application_secret_tainted,
         (provider='modal' and runtime_transport='dialout') as modal_runtime,
         (${WORK_STOP_OWNER}) as work_stop_owned, case when stop_requested_at is null then null else stop_generation::text end as stop_token,
-        (stop_requested_at is not null and preservation_stop_generation is not distinct from stop_generation) as complete
+        (${COMPLETE_PRESERVATION}) as complete
        from public.sandboxes where id=$1::uuid`,
         [id, providerId, authority?.token ?? null, authority?.generation ?? null, authority?.kind ?? null, provider.id],
       )
@@ -308,12 +312,13 @@ async function captureAndStore(
     if (stop.modal_runtime || (!stop.boat_runtime && (authority || stop.stop_token !== null))) {
       if (!stop.work_stop_owned || !authority) return "pending";
       progress.deferOnFailure = stop.modal_runtime;
+      if (!stop.modal_runtime) progress.receiptWriter = lockedNativePreservationWriter(sql, id);
       progress.fence = [providerId, authority.token, authority.generation ?? null, authority.kind, provider.id];
     }
     progress.stopToken = stop.stop_token;
     if (stop.application_secret_tainted) {
       await writePreservationNote(
-        sql,
+        progress.receiptWriter,
         id,
         "Unpushed work was not preserved: application-secret exposure forbids archives and disk reuse; resume and recovery are unavailable.",
         stop.stop_token,
@@ -401,7 +406,15 @@ async function captureAndStore(
       // Receipt and encrypted archive commit atomically. A competing successful
       // pass or a changed stop epoch cannot create/replace a recovery receipt.
       progress.writingReceipt = true;
-      const saved = await recordWorkRecovery(sql, id, progress.fence, progress.stopToken, note, recoveryId, encrypted);
+      const saved = await recordWorkRecovery(
+        progress.receiptWriter,
+        id,
+        progress.fence,
+        progress.stopToken,
+        note,
+        recoveryId,
+        encrypted,
+      );
       if (!saved.rows.length) return "pending";
       observed("capture_committed");
       return;
@@ -410,7 +423,7 @@ async function captureAndStore(
       stage = progress.stage = "storage";
       reason = "failed";
       // Clean success is also durable: NULL note alone is not a receipt.
-      const saved = await recordCleanWork(sql, id, progress.fence, progress.stopToken);
+      const saved = await recordCleanWork(progress.receiptWriter, id, progress.fence, progress.stopToken);
       if (!saved.rows.length) return "pending";
       observed("capture_committed");
       return;
@@ -472,7 +485,7 @@ async function captureAndStore(
       }),
     );
   try {
-    await writePreservationNote(sql, id, note, progress.stopToken, progress.fence);
+    await writePreservationNote(progress.receiptWriter, id, note, progress.stopToken, progress.fence);
   } catch (error) {
     defer ||= progress.deferOnFailure;
     if (!expired() && note?.startsWith("unpushed work preserved"))
