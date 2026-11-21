@@ -251,7 +251,6 @@ export async function runTemplateSkillCase(item: TemplateSkillCase, io: Template
                 const left = until - io.now();
                 if (!requirePrompt) return { id: sandbox.id, provider: sandbox.provider, promptId: undefined };
                 if (left <= 0) return;
-                // The launch was the only operation that could submit a turn to this new sandbox.
                 const status = await api<{
                   id: string;
                   externalRef?: string;
@@ -312,12 +311,13 @@ export async function runTemplateSkillCase(item: TemplateSkillCase, io: Template
       );
       if (pin)
         await io.measuredStep(`${kind}_skill_receipt`, async () => {
-          if (!recovered) verifyReceipts(result.manifest?.skillReceipts, [pin]);
+          const manifestSkills = result.manifest?.skillReceipts;
           const status = await api<{ skills?: unknown }>("sandbox/status", { id: record.sandboxId });
           verifyReceipts(status.skills, [pin]);
           if (recovered) return;
+          verifyReceipts(manifestSkills, [pin]);
           for (const field of ["reference", "version", "skillId", "checksum", "origin"] as const)
-            if (result.manifest!.skillReceipts[0]?.[field] !== status.skills[0]?.[field]) fail("invalid_receipt");
+            if (manifestSkills[0]?.[field] !== status.skills[0]?.[field]) fail("invalid_receipt");
         });
       await io.step(`${label}_wait`, () =>
         io.poll(
