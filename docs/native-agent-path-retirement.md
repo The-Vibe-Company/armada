@@ -86,10 +86,11 @@ Then run `bun scripts/ops/drain-native.ts --provider modal` (or `--provider boat
 The real command reports the selected, deleted and failed counts. A nonzero
 failed count leaves the drain incomplete and returns a failing exit status.
 The command handles rows with current preservation proof. Active rows and rows
-with missing or uncertain proof require reconciliation before deletion. Scoped
-Modal parents are also refused until a terminal provider delete can be reconciled
-through scoped cleanup. Verify the result with a fresh inventory. A complete
-rerun reports zero candidates.
+with missing or uncertain proof require reconciliation before deletion. For a
+scoped Modal parent, the drain records scoped cleanup before provider deletion.
+If the delete response is lost, a later pass can use the pinned Modal journal
+after the activity lease expires. Verify the result with a fresh inventory. A
+complete rerun reports zero candidates.
 
 ### Coordinator ledger
 

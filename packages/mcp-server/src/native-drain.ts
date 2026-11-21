@@ -29,8 +29,10 @@ export function configureNativeDrain(
       scopedAccess.wrap(createObservedBoatProvider({ apiKey, ...(deploymentId ? { deploymentId } : {}) })),
     modalTokensFor: async (target, caller) => (await modalIntegration()).modalTokensFor(target, caller),
     modalProviderFor: async (tokens, binding, context) => {
+      const sandboxId = context.target.id;
+      if (!sandboxId) throw new Error("Native drain requires a persisted Modal sandbox.");
       const ports = await (await modalIntegration()).modalProviderFor(tokens, binding, context);
-      return { ...ports, provider: scopedAccess.wrap(ports.provider) };
+      return { ...ports, provider: scopedAccess.wrap(ports.provider, sandboxId) };
     },
   });
   const data = createSqlData(sql);
@@ -43,12 +45,6 @@ export function configureNativeDrain(
         async resolve(target, caller) {
           if (target.provider !== provider || target.boatRuntime || target.runtimeTransport === "dialout")
             throw new Error("The sandbox route changed after inventory.");
-          const scopedModal = await sql.query(
-            `select p.id from public.armada_access_parents p
-             where p.sandbox_id=$1::uuid and p.kind='sandbox' and $2::text='modal'`,
-            [row.id, provider],
-          );
-          if (scopedModal.rows.length) throw new Error("Scoped Modal deletion cannot be verified on replay.");
           return providers.resolve(target, caller);
         },
       },
