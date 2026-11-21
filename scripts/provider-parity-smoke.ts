@@ -2021,7 +2021,12 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
                             [408, 425, 500, 502, 503, 504].includes(detail.httpStatus ?? 0))
                         ) {
                           uncertain = true;
-                          if (detail.httpStatus !== undefined || lastDiagnostic === undefined) lastDiagnostic = detail;
+                          if (
+                            detail.requestId ||
+                            lastDiagnostic === undefined ||
+                            (!lastDiagnostic.requestId && detail.httpStatus !== undefined)
+                          )
+                            lastDiagnostic = detail;
                           return;
                         }
                         const refusedBeforeAdmission =

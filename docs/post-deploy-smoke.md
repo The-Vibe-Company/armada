@@ -2008,4 +2008,5 @@ receipts that include time spent observing the launch after a timeout. The same
 step names select the generated deadlines, capped by the lane budget. Parity
 uses the original template request key to read the stored launch receipt
 through the template API. If observation expires, parity reports that key and
-the last available server diagnostic.
+the most recent diagnostic carrying a server request ID, or the last HTTP
+diagnostic if no response carried an ID.
