@@ -62,6 +62,8 @@ export type SandboxDetail = Omit<
   | "pull_request_check_after"
   | "pull_request_merge_proof"
   | "stop_when_work_merged"
+  | "native_preservation_generation"
+  | "native_preservation_stop_generation"
   | "transition_context"
 > & { harness: Harness };
 

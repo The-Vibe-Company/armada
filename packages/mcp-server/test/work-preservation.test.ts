@@ -92,6 +92,15 @@ test("recovery receipts retain encrypted versions and only current interior owne
     expect(await owner.readWorkRecovery?.(id, historicalId)).toBe(historicalArchive);
     expect((await owner.get(id))?.preservationNote).toContain("capture_collector_failed");
 
+    const token = crypto.randomUUID();
+    const {
+      rows: [stop],
+    } = await db.query<{ lifecycle_generation: number }>(
+      `update sandboxes set status='stopping', stop_requested_at=now(), stop_generation=1,
+       activity_lease_id=$2, activity_until=now()+interval '2 minutes' where id=$1 returning lifecycle_generation`,
+      [id, token],
+    );
+    const authority = { kind: "activity" as const, token, generation: stop!.lifecycle_generation };
     boat.setExecOutput({
       stdout: JSON.stringify({
         status: "preserved",
@@ -99,7 +108,9 @@ test("recovery receipts retain encrypted versions and only current interior owne
         sha256: createHash("sha256").update(Buffer.from(archive, "base64")).digest("hex"),
       }),
     });
-    await preserveBeforeStop(sql, provider, id, "bx_recovery");
+    await preserveBeforeStop(sql, provider, id, "bx_recovery", "user_stop", authority);
+    await preserveBeforeStop(sql, provider, id, "bx_recovery", "user_stop", authority);
+    expect((await db.query("select id from sandbox_work_recovery where sandbox_id=$1", [id])).rows).toHaveLength(2);
     const captured = (
       await db.query<{ id: string; archive_enc: Uint8Array<ArrayBuffer> }>(
         "select id,archive_enc from sandbox_work_recovery where sandbox_id=$1 and id<>$2",
@@ -115,12 +126,31 @@ test("recovery receipts retain encrypted versions and only current interior owne
     expect(await owner.readWorkRecovery?.(id)).toBe(archive);
 
     // A clean retry clears the current banner without losing recovery data.
-    await db.query("update sandboxes set preservation_note='old failure' where id=$1", [id]);
+    await db.query("update sandboxes set stop_generation=2, preservation_note='old failure' where id=$1", [id]);
     // Clean stops do not create archives; historical archives remain retrievable.
     boat.setExecOutput({ stdout: JSON.stringify({ status: "clean" }) });
-    await preserveBeforeStop(sql, provider, id, "bx_recovery");
+    await preserveBeforeStop(sql, provider, id, "bx_recovery", "user_stop", authority);
     expect((await db.query("select id from sandbox_work_recovery where sandbox_id=$1", [id])).rows).toHaveLength(2);
     expect((await owner.get(id))?.preservationNote).toBeNull();
+
+    await owner.update(id, {
+      ownerStop: true,
+      status: "stopped",
+      stoppedAt: new Date(0).toISOString(),
+      stopRequested: false,
+      finishActivity: true,
+      expectedGeneration: authority.generation,
+      activityToken: token,
+    });
+    const receipt = (
+      await db.query(
+        `select status, native_preservation_generation = lifecycle_generation
+           and native_preservation_stop_generation = stop_generation as current
+         from sandboxes where id=$1`,
+        [id],
+      )
+    ).rows[0];
+    expect(receipt).toEqual({ status: "stopped", current: true });
 
     expect(await owner.readWorkRecovery?.(id)).toBe(archive);
     expect(await owner.readWorkRecovery?.(id, historicalId)).toBe(historicalArchive);
@@ -477,25 +507,33 @@ test("a late failed pass cannot overwrite a concurrent successful stop receipt",
   });
 });
 
-test("a fresh stop epoch does not reuse an earlier clean capture", async () => {
+test("native stop recaptures an unbound or superseded receipt before reusing current evidence", async () => {
   await withPreservationRow(async ({ db, id, physical, sql, boat, provider, generation }) => {
-    boat.setExecOutput({ stdout: '{"status":"clean"}' });
     const token = crypto.randomUUID();
-    await db.query("update sandboxes set activity_lease_id=$2, activity_until=now()+interval '2 minutes' where id=$1", [
-      id,
-      token,
-    ]);
-    const authority = { kind: "activity", token, generation } as const;
     await db.query(
-      `update sandboxes set stop_requested_at='2026-11-11T08:00:00Z',stop_generation=1,
-        preservation_stop_generation=1 where id=$1`,
-      [id],
+      `update sandboxes set status='stopping', stop_requested_at=now(), stop_generation=1,
+       preservation_stop_generation=1, activity_lease_id=$2, activity_until=now()+interval '2 minutes' where id=$1`,
+      [id, token],
     );
-    await preserveBeforeStop(sql, provider, id, physical, "user_stop", authority);
-    expect(boat.execs).toHaveLength(0);
-    await db.query("update sandboxes set stop_requested_at='2026-11-11T09:00:00Z',stop_generation=2 where id=$1", [id]);
-    await preserveBeforeStop(sql, provider, id, physical, "user_stop", authority);
+    boat.setExecOutput({ stdout: '{"status":"clean"}' });
+    const capture = (currentGeneration: number) =>
+      preserveBeforeStop(sql, provider, id, physical, "user_stop", {
+        kind: "activity",
+        token,
+        generation: currentGeneration,
+      });
+    expect(await capture(generation)).toBeUndefined();
     expect(boat.execs).toHaveLength(1);
+    expect(await capture(generation)).toBeUndefined();
+    expect(boat.execs).toHaveLength(1);
+
+    await db.query("update sandboxes set lifecycle_generation=lifecycle_generation+1 where id=$1", [id]);
+    expect(await capture(Number(generation) + 1)).toBeUndefined();
+    expect(boat.execs).toHaveLength(2);
+
+    await db.query("update sandboxes set stop_generation=2, preservation_stop_generation=2 where id=$1", [id]);
+    expect(await capture(Number(generation) + 1)).toBeUndefined();
+    expect(boat.execs).toHaveLength(3);
   });
 });
 

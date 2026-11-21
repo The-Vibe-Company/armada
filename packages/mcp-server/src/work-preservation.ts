@@ -12,6 +12,7 @@ import {
 } from "@armada/core/server";
 import type { RuntimeWorkProvider } from "./runtime-provider.ts";
 import {
+  COMPLETE_PRESERVATION,
   NOTE_FENCE,
   recordCleanWork,
   recordWorkRecovery,
@@ -297,7 +298,7 @@ async function captureAndStore(
         `select boat_runtime,application_secret_tainted,
         (provider='modal' and runtime_transport='dialout') as modal_runtime,
         (${WORK_STOP_OWNER}) as work_stop_owned, case when stop_requested_at is null then null else stop_generation::text end as stop_token,
-        (stop_requested_at is not null and preservation_stop_generation is not distinct from stop_generation) as complete
+        (${COMPLETE_PRESERVATION}) as complete
        from public.sandboxes where id=$1::uuid`,
         [id, providerId, authority?.token ?? null, authority?.generation ?? null, authority?.kind ?? null, provider.id],
       )

@@ -945,6 +945,18 @@ export function createSqlData(
               "stop_generation = case when s.stop_requested_at is null then s.stop_generation + 1 else s.stop_generation end",
             );
         }
+        if (
+          patch.finishActivity &&
+          (stopStatus === "stopped" || stopStatus === "failed") &&
+          patch.stopRequested === false &&
+          patch.stoppedAt
+        )
+          sets.push(`native_preservation_generation = case
+            when s.stop_requested_at is not null and not s.application_secret_tainted
+              and s.native_preservation_generation = s.lifecycle_generation
+              and s.native_preservation_stop_generation = s.stop_generation
+              and s.preservation_stop_generation = s.stop_generation
+            then s.lifecycle_generation + 1 else s.native_preservation_generation end`);
         if (patch.renewActivity) sets.push("activity_until = now() + interval '2 minutes'");
         if (
           (patch.finishActivity || patch.turnActivity === "finish") &&

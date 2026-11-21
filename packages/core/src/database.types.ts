@@ -5188,6 +5188,8 @@ export type Database = {
           transition_context: Json | null;
           outputs_retained_generation: number | null;
           outputs_attempt_count: number;
+          native_preservation_generation: number | null;
+          native_preservation_stop_generation: number | null;
         };
         Insert: {
           id?: string;
@@ -5265,6 +5267,8 @@ export type Database = {
           transition_context?: Json | null;
           outputs_retained_generation?: number | null;
           outputs_attempt_count?: number;
+          native_preservation_generation?: number | null;
+          native_preservation_stop_generation?: number | null;
         };
         Update: {
           id?: string;
@@ -5342,6 +5346,8 @@ export type Database = {
           transition_context?: Json | null;
           outputs_retained_generation?: number | null;
           outputs_attempt_count?: number;
+          native_preservation_generation?: number | null;
+          native_preservation_stop_generation?: number | null;
         };
         Relationships: [
           {
