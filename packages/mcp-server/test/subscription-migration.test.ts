@@ -7,12 +7,13 @@ import {
   type GoldenActor,
   launchSandbox,
   ProviderError,
+  type Sql,
 } from "@armada/core/server";
 import { type Machine, type Scope, scopeKey } from "@armada/provider-modal";
 import { launchCredentials } from "../src/launch-credentials.ts";
 import { modalLaunchEnvironment } from "../src/modal-launch-environment.ts";
 import { createModelAuthOwnership } from "../src/model-auth.ts";
-import { requestNativeDrainStop } from "../src/sandbox-lifecycle.ts";
+import { createSandboxLifecycle, requestNativeDrainStop } from "../src/sandbox-lifecycle.ts";
 import { createSubscriptionMigration, type SubscriptionMigrationTransports } from "../src/subscription-migration.ts";
 import { rowOnlyDatabase } from "./row-only-database.ts";
 import { ENCRYPTION_KEY, fakeBoat } from "./support.ts";
@@ -205,6 +206,16 @@ test("first shared launch drains known writers, keeps their latest auth and upgr
     auth.broker!,
     transports,
   );
+  await expect(auth.broker!.enroll(actor, account.id, 1)).rejects.toMatchObject({ code: "unavailable" });
+  await db.query("update sandboxes set reconcile_after='infinity' where id<>$1", [
+    "33333333-3333-4333-8333-333333333333",
+  ]);
+  const worker = createSandboxLifecycle(db, async (id) => {
+    expect(id).toBe("33333333-3333-4333-8333-333333333333");
+    return boat.provider;
+  });
+  expect(await worker.reconcileOne()).toBe(true);
+  await worker.drain();
   const resolver = launchCredentials(createSqlVaultStore(db), ENCRYPTION_KEY, undefined, auth);
   const ids: string[] = [];
   for (let index = 0; index < 3; index++) {
@@ -722,4 +733,116 @@ test("subscription preparation leaves provider stop to a strict drain admitted d
   }
   expect(admitted).toBe(true);
   expect(boat.stops).toEqual([]);
+});
+
+test.each([
+  "worker handoff",
+  "rolled-back transition",
+  "lost commit response",
+  "managed source",
+  "operator-deferred stop",
+])("Boat subscription stop uses durable admission: %s", async (mode) => {
+  const { db, people } = await database();
+  const actor: GoldenActor = { userId: people.owner, orgId: people.org, role: "member" };
+  const account = (
+    await db.query<{ id: string }>(
+      "insert into credentials(scope,owner_id,kind,value_enc) values('user',$1,'codex_auth',$2) returning id",
+      [people.owner, await encryptSecret(native(0), ENCRYPTION_KEY)],
+    )
+  ).rows[0]!;
+  const golden = (await createSqlGoldenStore(db).findByName(people.org, "shared"))[0]!;
+  const boat = fakeBoat();
+  const physical = await boat.provider.fork({ from: "legacy", noEnv: true, env: {}, labels: {}, ttlSeconds: 3600 });
+  const store = createSqlSandboxStore(db);
+  const sandbox = await store.insert({
+    id: crypto.randomUUID(),
+    provider: "boat",
+    providerSandboxId: physical.id,
+    goldenId: golden.id,
+    orgId: actor.orgId,
+    ownerId: actor.userId,
+    harness: "codex",
+    status: "ready",
+    visibility: "private",
+    model: "gpt-6.1-sol",
+    reasoningEffort: "high",
+    credentialId: account.id,
+    expiresAt: new Date(Date.now() + 60_000).toISOString(),
+  });
+  if (mode === "managed source") {
+    await db.query("insert into orchestrators(org_id,owner_id,sandbox_id) values($1,$2,$3)", [
+      actor.orgId,
+      actor.userId,
+      sandbox.id,
+    ]);
+  }
+  let faultInjected = false;
+  const sql: Sql = {
+    query: db.query.bind(db),
+    async transaction(run) {
+      let attemptedTransition = false;
+      const result = await db.transaction!((tx) =>
+        run({
+          ...tx,
+          query: (statement, params) => {
+            if (statement.includes("public.sandbox_transition(")) {
+              attemptedTransition = true;
+              if (mode === "rolled-back transition") {
+                faultInjected = true;
+                throw Error("Synthetic transition failure");
+              }
+            }
+            return tx.query(statement, params);
+          },
+        }),
+      );
+      if (attemptedTransition && mode === "lost commit response") {
+        faultInjected = true;
+        throw Error("Synthetic lost commit response");
+      }
+      return result;
+    },
+  };
+  const unexpected = () => {
+    throw Error("an unversioned source must not transfer native auth");
+  };
+  const migration = createSubscriptionMigration(
+    sql,
+    async () => ({ provider: boat.provider, providerSandboxId: physical.id }),
+    unexpected,
+    { configuration: unexpected, transferLegacy: unexpected },
+  );
+  const preparing = migration.prepareAccount(actor, account.id, 1);
+  if (mode === "managed source") await preparing;
+  else await expect(preparing).rejects.toMatchObject({ code: "unavailable" });
+  expect(boat.stops).toEqual([]);
+
+  const [row] = (
+    await db.query<{ status: string; stop_requested_at: string | null; generation: number }>(
+      "select status, stop_requested_at, lifecycle_generation::int as generation from sandboxes where id=$1",
+      [sandbox.id],
+    )
+  ).rows;
+  expect(faultInjected).toBe(mode === "rolled-back transition" || mode === "lost commit response");
+  if (mode === "rolled-back transition" || mode === "managed source") {
+    expect(row).toEqual({ status: "ready", stop_requested_at: null, generation: sandbox.lifecycleGeneration! });
+    return;
+  }
+  expect(row!.status).toBe("stopping");
+  expect(row!.stop_requested_at).toBeTruthy();
+  if (mode === "operator-deferred stop") {
+    await db.query("update sandboxes set reconcile_after='infinity' where id=$1", [sandbox.id]);
+    await migration.prepareAccount(actor, account.id, 1);
+    expect(boat.stops).toEqual([]);
+    return;
+  }
+  await expect(migration.prepareAccount(actor, account.id, 1)).rejects.toMatchObject({ code: "unavailable" });
+  expect(
+    await requestNativeDrainStop(db, { ...sandbox, lifecycleGeneration: row!.generation }, "boat", actor.userId),
+  ).toBe(false);
+  const worker = createSandboxLifecycle(db, async () => boat.provider);
+  expect(await worker.reconcileOne()).toBe(true);
+  await worker.drain();
+  expect(boat.stops).toEqual([physical.id]);
+  await migration.prepareAccount(actor, account.id, 1);
 });

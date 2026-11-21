@@ -7,7 +7,11 @@ import {
   sshPrivateAuthState,
   VaultError,
 } from "@armada/core/server";
-import { hasStrictNativeDrainStop } from "./sandbox-lifecycle.ts";
+import {
+  hasStrictNativeDrainStop,
+  requestBoatSubscriptionStop,
+  STRICT_NATIVE_DRAIN_STOP,
+} from "./sandbox-lifecycle.ts";
 import { captureFinalOutputs } from "./sandbox-outputs.ts";
 import { configureBoatSubscription } from "./subscription-boat.ts";
 import { type SubscriptionConfiguration, SubscriptionTemporaryError } from "./subscription-broker.ts";
@@ -153,6 +157,50 @@ export function createSubscriptionMigration(
       await new Promise((resolve) => setTimeout(resolve, Math.min(100, Math.max(0, deadline - Date.now()))));
     }
   }
+  function isBoatSource(source: Source) {
+    return source.provider === "boat";
+  }
+  async function boatStopPending(tx: Sql, source: Source) {
+    const pending = await tx.query(
+      `select s.id from public.sandboxes s where s.id=$1 and s.status='stopping' and s.stop_requested_at is not null
+       and s.reconcile_after < 'infinity'::timestamptz
+       and s.provider='boat' and s.provider_sandbox_id=$2 and s.credential_id=$3
+       and s.credential_version is not distinct from $4::integer
+       and s.org_id=$5 and s.owner_id=$6 and s.deleted_at is null and not s.native_drain_pending
+       and not s.boat_runtime and s.runtime_transport is distinct from 'dialout'
+       and not ${STRICT_NATIVE_DRAIN_STOP}
+       and exists(select 1 from public.members m where m.org_id=s.org_id and m.user_id=s.owner_id)
+       and not exists(select 1 from public.orchestrators o where o.sandbox_id=s.id)`,
+      [
+        source.id,
+        source.provider_sandbox_id,
+        source.credential_id,
+        source.credential_version,
+        source.org_id,
+        source.owner_id,
+      ],
+    );
+    return pending.rows.length > 0;
+  }
+  async function handOffBoatStop(source: Source) {
+    if (!sql.transaction) throw new VaultError("unavailable", "Subscription native upgrade requires transactions.");
+    let verified = false;
+    let retry: boolean;
+    try {
+      retry = await sql.transaction(async (tx) => {
+        await recheckLocked(source, tx);
+        verified = true;
+        return (
+          (await requestBoatSubscriptionStop(tx, source.id, source.lifecycle_generation)) ||
+          (await boatStopPending(tx, source))
+        );
+      });
+    } catch (error) {
+      if (!verified) throw error;
+      throw new SubscriptionTemporaryError();
+    }
+    if (retry) throw new SubscriptionTemporaryError();
+  }
   async function upgrade(source: Source, target: Target, version: number) {
     if (target.provider.id !== source.provider || target.providerSandboxId !== source.provider_sandbox_id)
       throw new VaultError("conflict", "Subscription provider binding changed.");
@@ -162,20 +210,26 @@ export function createSubscriptionMigration(
       throw new VaultError("conflict", "Subscription provider identity changed.");
     if (physical.state === "stopped") return;
     await recheck(source);
-    if (source.credential_version !== version || target.provider.id === "modal") {
-      // Older/unknown pins are not repointed. Stopping prevents future native
-      // rotations when possible; Modal stop publishes its private checkpoint.
-      // This stop bypasses preserveBeforeStop; stopped workspaces are never read for outputs.
+    const modal = target.provider.id === "modal";
+    const boat = isBoatSource(source);
+    if (source.credential_version !== version || modal) {
+      // Stop old/unversioned writers without repointing their pins. Modal
+      // publishes its own private checkpoint. Take the final output sample
+      // while compute is accessible.
       await captureFinalOutputs(sql, target.provider, source.id, { signal: AbortSignal.timeout(10_000) }).catch(
         () => {},
       );
+      if (boat) {
+        await handOffBoatStop(source);
+        return;
+      }
       await recheck(source);
       try {
         await target.provider.stop({ sandboxId: target.providerSandboxId });
       } catch (error) {
         if (
           !(
-            target.provider.id === "modal" &&
+            modal &&
             error instanceof ProviderError &&
             error.provider === "modal" &&
             error.providerCode === "lifecycle_lease_busy"
@@ -183,7 +237,7 @@ export function createSubscriptionMigration(
         )
           throw error;
       }
-      if (target.provider.id === "modal") await waitStopped(target);
+      if (modal) await waitStopped(target);
       else {
         const stopped = await target.provider.get(target.providerSandboxId, { signal: AbortSignal.timeout(10_000) });
         if (stopped.id !== target.providerSandboxId || stopped.state !== "stopped")
@@ -191,7 +245,7 @@ export function createSubscriptionMigration(
       }
       return;
     }
-    if (target.provider.id === "boat") await upgradeBoat(source, target, version);
+    if (boat) await upgradeBoat(source, target, version);
   }
   async function once(source: Source, resolve: () => Target | Promise<Target>, version: number) {
     await recheck(source);
@@ -230,6 +284,9 @@ export function createSubscriptionMigration(
           await once(source, () => resolveStoredSandbox(sql, source.id), version);
         } catch (error) {
           if (error instanceof SubscriptionTemporaryError) throw error;
+          // WARNING: A competing admission can advance the generation before this replica rechecks its source.
+          if (isBoatSource(source) && source.credential_version !== version && (await boatStopPending(sql, source)))
+            throw new SubscriptionTemporaryError();
         }
       }
     },
