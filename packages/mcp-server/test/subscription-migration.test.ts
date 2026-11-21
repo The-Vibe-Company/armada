@@ -624,7 +624,7 @@ test.each(["boat", "modal"] as const)("subscription preparation leaves a strict 
     name: "strict-source",
     visibility: "org",
     provider: kind,
-    ...(kind === "modal" ? { modal: { workspace: "ws", environment: "main", appId: "app" } } : { boatId: "base" }),
+    modal: kind === "modal" ? { workspace: "ws", environment: "main", appId: "app" } : null,
     config: { repos: [{ url: "https://github.com/example/web.git", branch: "main", dir: "web" }], init: [] },
   });
   const id = crypto.randomUUID();
