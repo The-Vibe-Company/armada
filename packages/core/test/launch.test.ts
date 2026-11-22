@@ -3,6 +3,7 @@ import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { prepareGoldenLaunch } from "@armada/core/server";
 import helperManifest from "../helper/manifest.json";
 import {
   type AgentEvent,
@@ -851,6 +852,47 @@ describe("launch", () => {
       });
       expect(world.rows.get(result.sandbox.id)?.model).toBe(explicit ? "claude-opus-5-5" : "claude-sonnet-5-5");
     }
+  });
+
+  test("Modal golden preparation returns the resolved inputs before placement", async () => {
+    const source = { ...golden("org"), provider: "modal" as const, providerSnapshotId: "modal-image" };
+    const world = setup({ golden: source, boundCredentials: true });
+    world.stores.credentials.defaults = async () => ({ credentialId: OWNER, model: "claude-sonnet-5-5" });
+    const resolve = world.stores.credentials.resolve;
+    world.stores.credentials.resolve = async (actor, harness, credentialId, version) => {
+      expect(credentialId).toBe(OWNER);
+      return resolve(actor, harness, credentialId, version);
+    };
+    world.stores.credentials.admit = async () => {
+      throw Error("Account admission must wait for placement.");
+    };
+    world.stores.goldens.beginSnapshotLaunch = async () => {
+      throw Error("Snapshot reservation must wait for placement.");
+    };
+
+    const { plan } = await prepareGoldenLaunch(
+      { ...world.provider, id: "modal" },
+      world.stores,
+      owner,
+      { golden: "web", provider: "modal", harness: "claude", ttlSeconds: 900 },
+      {
+        runtime: {
+          async start() {
+            throw Error("Runtime startup must wait for placement.");
+          },
+        },
+      },
+    );
+
+    expect(plan).toMatchObject({
+      golden: { id: source.id },
+      snapshot: "modal-image",
+      choice: { model: "claude-sonnet-5-5" },
+      credentials: { binding: { credentialId: OWNER, credentialVersion: 1 } },
+      ttlSeconds: 900,
+    });
+    expect(world.forks).toEqual([]);
+    expect(world.rows.size).toBe(0);
   });
 
   test.each(["ready", "prompted", "failed"] as const)(

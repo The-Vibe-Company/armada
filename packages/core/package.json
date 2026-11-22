@@ -16,7 +16,7 @@
     "./contract/sandbox-viewer": "./src/contract/sandbox-viewer.ts",
     "./contract/tokens": "./src/contract/tokens.ts",
     "./docker": "./src/docker-api.ts",
-    "./launch": "./src/launch.ts",
+    "./launch": "./src/launch-exports.ts",
     "./launch-workdir": "./src/launch-workdir.ts",
     "./runtime": "./src/runtime-startup-failure.ts",
     "./server": "./src/server.ts"
