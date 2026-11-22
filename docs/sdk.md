@@ -20,12 +20,14 @@ The client defaults to the Armada dashboard origin. It sends its service token o
 
 `launch` accepts `DockerLaunchInput` with `provider: "docker"`, `harness`, and either `hostId` (with optional `repos`) or `snapshotId` (which selects its host and workspace). Supply an `idempotencyKey` of 16–128 characters and keep it for retries. An optional `externalRef` lets you find the sandbox later. With a service token, omit `org` or set it to the token's organization UUID. Discover Docker availability with `launch/options`.
 
-Read the Armada ID from `result.sandbox.id`. Ordinary Modal callers should support the minimal `ModalLaunchReceipt` variant of `LaunchResult`, which contains just `sandbox.id` and `sandbox.status`. The job-based producer will answer `starting` at admission and can return a later status on replay. Narrow with `"golden" in result` before using the full envelope's fields. In the full envelope, Docker returns `golden: null`, and `promptId` and `conversationId` are null when their IDs are unavailable. Read the provider ID from the full envelope's `sandbox.providerSandboxId` or from a later sandbox list response, where it is nullable.
+Read the Armada ID from `result.sandbox.id`. Ordinary and explicit golden Modal launches return the minimal `ModalLaunchReceipt` variant of `LaunchResult`, which contains just `sandbox.id` and `sandbox.status`. The launch answers `starting` at admission and can return a later status on replay. Narrow with `"golden" in result` before using the full envelope's fields. In the full envelope, Docker returns `golden: null`, and `promptId` and `conversationId` are null when their IDs are unavailable. Read the provider ID from the full envelope's `sandbox.providerSandboxId` or from a later sandbox list response, where it is nullable.
 
 For a pinned Modal template, pass `PinnedModalLaunchInput` to `launch` with
 `provider: "modal"`, `runtimeVersion: 1`, `runtimeTransport: "dialout"`, the template
 `id`, its `revision` and `harness`, and an `idempotencyKey`. Keep the key for
-identical retries and use `externalRef` to correlate the sandbox.
+identical retries and use `externalRef` to correlate the sandbox. The starting receipt
+includes the frozen template manifest at `sandbox.templateManifest`. Read the first
+prompt ID from sandbox status or logs after enrolment.
 
 `send` opens or continues the conversation of the sandbox identified by `id`. Launch another sandbox for a separate conversation.
 

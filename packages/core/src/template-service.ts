@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { parseApplicationSecretBindings } from "./application-secret-bindings.ts";
 import type { ApplicationVaultActor } from "./application-vault.ts";
-import type { LaunchEnvelope } from "./contract/launch-response.ts";
+import type { ModalLaunchReceipt } from "./contract/launch-response.ts";
 import { launchTemplateOperation } from "./contract/resources.ts";
 import { HARNESS_KINDS } from "./credentials.ts";
 import type { DockerLaunchResult } from "./docker-api.ts";
@@ -9,7 +9,7 @@ import type { GoldenActor, GoldenRecord } from "./golden.ts";
 import { GoldenError } from "./golden-config.ts";
 import { GOLDEN_SELECT, type GoldenRow, mapGoldenRow, type Sql } from "./golden-store.ts";
 import { isHarness } from "./harnesses.ts";
-import { type LaunchOptions, type LaunchResult, type LaunchStores, launchSandbox } from "./launch.ts";
+import { type LaunchOptions, type LaunchRequest, type LaunchStores, launchSandbox } from "./launch.ts";
 import { LaunchError } from "./launch-error.ts";
 import {
   assertLaunchSecretBindings,
@@ -44,7 +44,13 @@ export interface TemplateRuntime {
   provider(golden: GoldenRecord): Promise<Provider>;
   /** Validate the selected definition at admission and the frozen definition on replay. */
   validateDefinition?(definition: TemplateDefinition): void | Promise<void>;
-  pinnedLaunch?: (result: LaunchResult, manifest: Manifest) => LaunchEnvelope;
+  explicitModal?: true;
+  admitModal?(
+    actor: GoldenActor,
+    golden: GoldenRecord,
+    request: LaunchRequest,
+    pin: { id: string; credentialVersion: number; revalidate(tx: Sql): Promise<void> },
+  ): Promise<ModalLaunchReceipt>;
   options?: LaunchOptions;
   launchDocker?(
     body: Record<string, unknown>,
@@ -464,7 +470,7 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
         // Pre-claim golden admission has no durable request yet, but its public
         // refusal must use the same outcome contract as post-claim refusals.
         if (error instanceof GoldenError) {
-          if (runtime?.pinnedLaunch) throw error;
+          if (runtime?.explicitModal) throw error;
           return { state: "failed", reason: error.code, message: error.message };
         }
         const reason = refusalReason(error);
@@ -530,7 +536,7 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
     id(input.id);
     const key = input.requestKey;
     if (typeof key !== "string") invalid();
-    const validKey = runtime.pinnedLaunch
+    const validKey = runtime.explicitModal
       ? /^pinned-modal\/[a-f0-9]{64}$/.test(key)
       : templateLaunchFields.requestKey.safeParse(key).success;
     if (!validKey) invalid();
@@ -550,7 +556,9 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
     // An explicit enrolled-runtime request must not adopt a native template
     // request key (or vice versa). Preserve historical/native digests unchanged.
     const bodyDigest = digest(
-      runtime.options?.runtime || runtime.options?.boatRuntime ? { input, runtime: "armada" } : input,
+      runtime.explicitModal || runtime.options?.runtime || runtime.options?.boatRuntime
+        ? { input, runtime: "armada" }
+        : input,
     );
     // Resolve a model account before the claim, then revalidate that binding inside admission.
     const existing = await transaction(async (tx) => {
@@ -562,7 +570,7 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
         )
       ).rows[0];
     });
-    if (existing) return replay(existing, bodyDigest, runtime);
+    if (existing) return resume(existing);
     const selection = await transaction(async (tx) => {
       const a = await member(tx, actor, org);
       const h = await header(tx, a, id(input.id));
@@ -667,7 +675,52 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
       claimed = true;
       return result;
     });
-    if (!claimed) return replay(request, bodyDigest, runtime);
+    async function resume(row: RequestRow, admittedActor?: GoldenActor): Promise<Record<string, unknown>> {
+      const active = runtime!;
+      const previous = await replay(row, bodyDigest, active);
+      const m = row.manifest;
+      if (m.golden?.provider !== "modal" || row.state !== "claimed" || row.result) return previous;
+      if (!active.admitModal) unavailable("environment_admission_unavailable");
+      const a = admittedActor ?? (await transaction((tx) => member(tx, actor, org)));
+      const receipt = await active.admitModal(
+        a,
+        m.golden,
+        {
+          golden: m.golden.name,
+          provider: m.golden.provider,
+          credentialId: m.account.id,
+          harness: m.definition.harness,
+          model: m.definition.model,
+          reasoningEffort: m.definition.reasoningEffort,
+          connections: m.definition.connections,
+          skills: m.resolvedSkills ?? m.definition.skills,
+          skipSkillDefaults: true,
+          ...(size === undefined ? {} : { size }),
+          ...(input.repo === undefined ? {} : { repo: input.repo as string }),
+          ...(input.prompt === undefined ? {} : { prompt: input.prompt as string }),
+          ...(input.ttlSeconds === undefined ? {} : { ttlSeconds: input.ttlSeconds as number }),
+          ...(input.stopWhenWorkMerged === false ? { stopWhenWorkMerged: false } : {}),
+          ...(input.externalRef === undefined ? {} : { externalRef: input.externalRef as string }),
+        },
+        {
+          id: row.id,
+          credentialVersion: m.account.version,
+          revalidate: async (tx) => {
+            await revalidateInTransaction(tx, actor, org, m);
+          },
+        },
+      );
+      return {
+        requestId: row.id,
+        envelope: receipt,
+        state: "succeeded",
+        id: receipt.sandbox.id,
+        provider: "modal",
+        status: receipt.sandbox.status,
+        manifest: m,
+      };
+    }
+    if (!claimed || request.manifest.golden?.provider === "modal") return resume(request, selection.a);
     const m = request.manifest;
     let allocating = false;
     try {
@@ -803,7 +856,6 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
         : undefined;
       const output = {
         requestId: request.id,
-        ...(runtime.pinnedLaunch && result.golden !== null ? { envelope: runtime.pinnedLaunch(result, m) } : {}),
         ...("runtime" in result && result.runtime ? { runtime: result.runtime } : {}),
         state: "succeeded",
         id: result.sandbox.id,
@@ -869,7 +921,7 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
         reason: safeReason,
         ...(message ? { message } : {}),
         ...(secretRefusal ? { code: secretRefusal.code } : {}),
-        ...(runtime.pinnedLaunch && state === "failed" && failureCode ? { failureCode } : {}),
+        ...(runtime.explicitModal && state === "failed" && failureCode ? { failureCode } : {}),
         manifest: m,
       };
       await sql.query(
@@ -885,11 +937,7 @@ export function createTemplateService(sql: Sql, encryptionKey?: string) {
       return output;
     }
   }
-  async function replay(
-    row: RequestRow,
-    bodyDigest: string,
-    runtime: TemplateRuntime,
-  ): Promise<Record<string, unknown>> {
+  async function replay(row: RequestRow, bodyDigest: string, runtime: TemplateRuntime) {
     if (row.digest !== bodyDigest)
       throw new VaultError("conflict", "Request key already used with a different request.");
     // Validate explicit selectors against the frozen definition without reading a live template

@@ -116,6 +116,7 @@ export interface HandlerOptions {
   sleep?: (ms: number) => Promise<void>;
   launch?: LaunchOptions;
   launchDiscovery?: LaunchDiscoveryOptions;
+  admitModalLaunch?: import("./modal-launch-admission.ts").AdmitModalLaunch;
   ordinaryLaunchReceipts?: ReturnType<typeof createOrdinaryLaunchReceipts>;
   skillDefaults?: import("@armada/core/server").SkillDefaultsService;
   connections?: LaunchStores["connections"];
@@ -223,6 +224,7 @@ export function createHandler(options: HandlerOptions): (request: Request) => Pr
         now,
         sleep,
         logError: log,
+        ...(options.admitModalLaunch ? { admitModalLaunch: options.admitModalLaunch } : {}),
         ...(options.ordinaryLaunchReceipts ? { ordinaryLaunchReceipts: options.ordinaryLaunchReceipts } : {}),
         ...(options.launch ? { launch: options.launch } : {}),
       },

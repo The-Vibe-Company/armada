@@ -128,7 +128,12 @@ export async function callSharedTool(
       // Organization scope was selected from the original body. Tool handlers never receive it.
       const { org: _org, ...toolInput } = input.data;
       const result = await run(toolInput as Parameters<typeof run>[0]);
-      if (!result.isError && !z.object(config.output).safeParse(result.structuredContent).success)
+      if (
+        !result.isError &&
+        !(config.output instanceof z.ZodObject ? config.output : z.object(config.output)).safeParse(
+          result.structuredContent,
+        ).success
+      )
         throw new ToolApiError("internal", `Output validation error for tool ${name}.`);
       return result;
     };

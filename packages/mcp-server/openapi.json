@@ -1013,97 +1013,243 @@
               "application/json": {
                 "schema": {
                   "$schema": "http://json-schema.org/draft-07/schema#",
-                  "type": "object",
-                  "properties": {
-                    "sandbox": {
+                  "anyOf": [
+                    {
                       "type": "object",
                       "properties": {
-                        "id": {
-                          "type": "string",
-                          "description": "Armada sandbox ID: pass it as `id` to status, send, wait, logs, exec and stop."
-                        },
-                        "provider": {
-                          "type": "string"
-                        },
-                        "providerSandboxId": {
-                          "type": "string"
-                        },
-                        "status": {
-                          "type": "string"
-                        },
-                        "externalRef": {
-                          "description": "Opaque caller reference, when provided.",
-                          "type": "string"
-                        }
-                      },
-                      "required": [
-                        "id",
-                        "provider",
-                        "providerSandboxId",
-                        "status"
-                      ],
-                      "additionalProperties": {}
-                    },
-                    "golden": {
-                      "anyOf": [
-                        {
+                        "sandbox": {
                           "type": "object",
                           "properties": {
                             "id": {
+                              "type": "string",
+                              "format": "uuid",
+                              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$",
+                              "description": "Armada sandbox ID."
+                            },
+                            "status": {
+                              "type": "string",
+                              "enum": [
+                                "starting",
+                                "ready",
+                                "running",
+                                "stopping",
+                                "stopped",
+                                "failed",
+                                "deleted"
+                              ]
+                            }
+                          },
+                          "required": [
+                            "id",
+                            "status"
+                          ],
+                          "additionalProperties": false
+                        }
+                      },
+                      "required": [
+                        "sandbox"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "sandbox": {
+                          "type": "object",
+                          "properties": {
+                            "id": {
+                              "type": "string",
+                              "format": "uuid",
+                              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$",
+                              "description": "Armada sandbox ID."
+                            },
+                            "status": {
+                              "type": "string",
+                              "enum": [
+                                "starting",
+                                "ready",
+                                "running",
+                                "stopping",
+                                "stopped",
+                                "failed",
+                                "deleted"
+                              ]
+                            },
+                            "templateManifest": {
+                              "type": "object",
+                              "properties": {
+                                "templateId": {
+                                  "type": "string"
+                                },
+                                "revision": {
+                                  "type": "number"
+                                },
+                                "revisionId": {
+                                  "type": "string"
+                                },
+                                "golden": {
+                                  "type": "object",
+                                  "properties": {
+                                    "id": {
+                                      "type": "string"
+                                    },
+                                    "orgId": {
+                                      "type": "string"
+                                    },
+                                    "provider": {
+                                      "type": "string",
+                                      "const": "modal"
+                                    }
+                                  },
+                                  "required": [
+                                    "id",
+                                    "orgId",
+                                    "provider"
+                                  ],
+                                  "additionalProperties": false
+                                },
+                                "account": {
+                                  "type": "object",
+                                  "properties": {
+                                    "id": {
+                                      "type": "string"
+                                    },
+                                    "version": {
+                                      "type": "number"
+                                    }
+                                  },
+                                  "required": [
+                                    "id",
+                                    "version"
+                                  ],
+                                  "additionalProperties": false
+                                },
+                                "definition": {
+                                  "type": "object",
+                                  "propertyNames": {
+                                    "type": "string"
+                                  },
+                                  "additionalProperties": {}
+                                },
+                                "variables": {
+                                  "type": "object",
+                                  "propertyNames": {
+                                    "type": "string"
+                                  },
+                                  "additionalProperties": {
+                                    "type": "string"
+                                  }
+                                },
+                                "resolvedSkills": {
+                                  "type": "array",
+                                  "items": {
+                                    "type": "string"
+                                  }
+                                }
+                              },
+                              "required": [
+                                "templateId",
+                                "revision",
+                                "revisionId",
+                                "golden",
+                                "account",
+                                "definition",
+                                "variables"
+                              ],
+                              "additionalProperties": false
+                            }
+                          },
+                          "required": [
+                            "id",
+                            "status",
+                            "templateManifest"
+                          ],
+                          "additionalProperties": false
+                        }
+                      },
+                      "required": [
+                        "sandbox"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "sandbox": {
+                          "type": "object",
+                          "properties": {
+                            "id": {
+                              "type": "string",
+                              "description": "Armada sandbox ID: pass it as `id` to status, send, wait, logs, exec and stop."
+                            },
+                            "provider": {
                               "type": "string"
                             },
-                            "name": {
+                            "providerSandboxId": {
+                              "type": "string"
+                            },
+                            "status": {
+                              "type": "string"
+                            },
+                            "externalRef": {
+                              "description": "Opaque caller reference, when provided.",
                               "type": "string"
                             }
                           },
                           "required": [
                             "id",
-                            "name"
+                            "provider",
+                            "providerSandboxId",
+                            "status"
                           ],
                           "additionalProperties": {}
                         },
-                        {
-                          "type": "null"
-                        }
-                      ],
-                      "description": "The selected Boat or Modal launch snapshot. Null for Docker launches."
-                    },
-                    "promptId": {
-                      "type": [
-                        "string",
-                        "null"
-                      ]
-                    },
-                    "conversationId": {
-                      "type": [
-                        "string",
-                        "null"
-                      ]
-                    },
-                    "ttlSeconds": {
-                      "type": "number"
-                    },
-                    "expiresAt": {
-                      "type": [
-                        "string",
-                        "null"
-                      ]
-                    },
-                    "github": {
-                      "type": "object",
-                      "properties": {
-                        "status": {
-                          "type": "string"
-                        }
-                      },
-                      "required": [
-                        "status"
-                      ],
-                      "additionalProperties": {}
-                    },
-                    "helper": {
-                      "anyOf": [
-                        {
+                        "golden": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "properties": {
+                                "id": {
+                                  "type": "string"
+                                },
+                                "name": {
+                                  "type": "string"
+                                }
+                              },
+                              "required": [
+                                "id",
+                                "name"
+                              ],
+                              "additionalProperties": {}
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ],
+                          "description": "The selected Boat or Modal launch snapshot. Null for Docker launches."
+                        },
+                        "promptId": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "conversationId": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "ttlSeconds": {
+                          "type": "number"
+                        },
+                        "expiresAt": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "github": {
                           "type": "object",
                           "properties": {
                             "status": {
@@ -1115,67 +1261,83 @@
                           ],
                           "additionalProperties": {}
                         },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "runtime": {
-                      "anyOf": [
-                        {
+                        "helper": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "properties": {
+                                "status": {
+                                  "type": "string"
+                                }
+                              },
+                              "required": [
+                                "status"
+                              ],
+                              "additionalProperties": {}
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "runtime": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "properties": {
+                                "kind": {
+                                  "type": "string",
+                                  "const": "armada"
+                                },
+                                "epoch": {
+                                  "type": "string"
+                                }
+                              },
+                              "required": [
+                                "kind",
+                                "epoch"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "armadaAccess": {
                           "type": "object",
                           "properties": {
-                            "kind": {
-                              "type": "string",
-                              "const": "armada"
+                            "enabled": {
+                              "type": "boolean",
+                              "const": true
                             },
-                            "epoch": {
-                              "type": "string"
+                            "maxActiveChildren": {
+                              "type": "integer",
+                              "minimum": -9007199254740991,
+                              "maximum": 9007199254740991
                             }
                           },
                           "required": [
-                            "kind",
-                            "epoch"
+                            "enabled",
+                            "maxActiveChildren"
                           ],
                           "additionalProperties": false
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "armadaAccess": {
-                      "type": "object",
-                      "properties": {
-                        "enabled": {
-                          "type": "boolean",
-                          "const": true
-                        },
-                        "maxActiveChildren": {
-                          "type": "integer",
-                          "minimum": -9007199254740991,
-                          "maximum": 9007199254740991
                         }
                       },
                       "required": [
-                        "enabled",
-                        "maxActiveChildren"
+                        "sandbox",
+                        "golden",
+                        "promptId",
+                        "conversationId",
+                        "ttlSeconds",
+                        "expiresAt",
+                        "github",
+                        "helper",
+                        "runtime"
                       ],
                       "additionalProperties": false
                     }
-                  },
-                  "required": [
-                    "sandbox",
-                    "golden",
-                    "promptId",
-                    "conversationId",
-                    "ttlSeconds",
-                    "expiresAt",
-                    "github",
-                    "helper",
-                    "runtime"
-                  ],
-                  "additionalProperties": false
+                  ]
                 }
               }
             }

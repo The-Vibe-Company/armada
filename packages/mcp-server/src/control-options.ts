@@ -100,6 +100,7 @@ export interface ControlOptions {
   data?: DataSource;
   vault?: VaultStore;
   launch?: LaunchOptions;
+  admitModalLaunch?: import("./modal-launch-admission.ts").AdmitModalLaunch;
   ordinaryLaunchReceipts?: ReturnType<typeof createOrdinaryLaunchReceipts>;
   store: VaultStore;
   encryptionKey: string | undefined;

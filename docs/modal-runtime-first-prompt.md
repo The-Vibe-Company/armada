@@ -61,8 +61,8 @@ is not retried; reconcile that same request UUID.
 
 Success requires all of:
 
-1. The launch receipt identifies the Modal sandbox, immutable `dialout` route,
-   `runtime.kind:"armada"`, current epoch and prompt ID.
+1. The launch acknowledges a `starting` sandbox ID. Owner inventory and status
+   establish the `dialout` route, enrolled runtime epoch and first prompt ID.
 2. `logs/read` identifies `source:"armada-runtime"` and contains that prompt's
    non-partial, non-retracted main assistant nonce answer plus a finished event.
    Tool-result text, another prompt, Modal native ingest or selection metadata

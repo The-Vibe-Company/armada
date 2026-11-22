@@ -43,6 +43,23 @@ export const launchEnvelope = z.strictObject({
   armadaAccess: z.object({ enabled: z.literal(true), maxActiveChildren: z.number().int() }).optional(),
 });
 
+export const pinnedModalLaunchReceipt = modalLaunchReceipt.extend({
+  sandbox: modalLaunchReceipt.shape.sandbox.extend({
+    templateManifest: z.object({
+      templateId: z.string(),
+      revision: z.number(),
+      revisionId: z.string(),
+      golden: z.object({ id: z.string(), orgId: z.string(), provider: z.literal("modal") }),
+      account: z.object({ id: z.string(), version: z.number() }),
+      definition: z.record(z.string(), z.unknown()),
+      variables: z.record(z.string(), z.string()),
+      resolvedSkills: z.array(z.string()).optional(),
+    }),
+  }),
+});
+export const launchResponse = z.union([modalLaunchReceipt, pinnedModalLaunchReceipt, launchEnvelope]);
+export type PinnedModalLaunchReceipt = z.infer<typeof pinnedModalLaunchReceipt>;
+
 export type LaunchEnvelope = z.infer<typeof launchEnvelope>;
 
 const TEMPLATE_LAUNCH_STATES = ["claimed", "allocating", "succeeded", "failed", "reconciling"] as const;

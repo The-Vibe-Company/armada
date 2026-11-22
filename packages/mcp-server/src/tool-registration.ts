@@ -14,7 +14,7 @@ import type { ToolContext } from "./tools.ts";
 type ToolInput = z.ZodRawShape | z.ZodObject;
 type ToolArgs<In extends ToolInput> = z.infer<In extends z.ZodRawShape ? z.ZodObject<In> : In>;
 
-type ToolContract<In extends ToolInput, Out extends z.ZodRawShape> = {
+type ToolContract<In extends ToolInput, Out extends ToolInput> = {
   title: string;
   description: string;
   input: In;
@@ -23,20 +23,20 @@ type ToolContract<In extends ToolInput, Out extends z.ZodRawShape> = {
   destructive?: boolean;
 };
 
-export type ToolRegistrar = <In extends ToolInput, Out extends z.ZodRawShape>(
+export type ToolRegistrar = <In extends ToolInput, Out extends ToolInput>(
   name: string,
   config: ToolContract<In, Out>,
-  run: (args: ToolArgs<In>) => Promise<z.infer<z.ZodObject<Out>>>,
+  run: (args: ToolArgs<In>) => Promise<ToolArgs<Out>>,
   restOnly?: boolean,
 ) => ToolContract<In, Out> & { invoke: (args: ToolArgs<In>) => Promise<CallToolResult> };
 
-export type ToolBinding = <In extends ToolInput, Out extends z.ZodRawShape>(
+export type ToolBinding = <In extends ToolInput, Out extends ToolInput>(
   name: string,
   config: ToolContract<In, Out>,
   invoke: (args: ToolArgs<In>) => Promise<CallToolResult>,
 ) => void;
 
-export function registerTool<In extends ToolInput, Out extends z.ZodRawShape>(
+export function registerTool<In extends ToolInput, Out extends ToolInput>(
   server: McpServer,
   name: string,
   config: ToolContract<In, Out>,
@@ -67,7 +67,7 @@ export function createToolRegistration(
   bind?: ToolBinding,
 ) {
   const { caller, data } = context;
-  const register = <In extends ToolInput, Out extends z.ZodRawShape>(
+  const register = <In extends ToolInput, Out extends ToolInput>(
     name: string,
     config: ToolContract<In, Out>,
     invoke: (args: ToolArgs<In>) => Promise<CallToolResult>,
@@ -76,10 +76,10 @@ export function createToolRegistration(
     if (server) registerTool(server, name, config, invoke);
   };
 
-  const tool = <In extends ToolInput, Out extends z.ZodRawShape>(
+  const tool = <In extends ToolInput, Out extends ToolInput>(
     name: string,
     config: ToolContract<In, Out>,
-    run: (args: ToolArgs<In>) => Promise<z.infer<z.ZodObject<Out>>>,
+    run: (args: ToolArgs<In>) => Promise<ToolArgs<Out>>,
     restOnly = false,
   ) => {
     const invoke: (args: ToolArgs<In>) => Promise<CallToolResult> = async (args) => {

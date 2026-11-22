@@ -91,6 +91,7 @@ export interface ModalLaunchAdmission {
   ownerId: string;
   request?: { key: string; payload: unknown };
   templateReceiptId?: string;
+  revalidateTemplate?(tx: Sql): Promise<void>;
   sandbox: ModalLaunchSandbox;
   allocation: Omit<ModalLaunchAllocation, "size"> & { source: { kind: "snapshot" } };
   initialPrompt?: string;
@@ -137,7 +138,6 @@ async function lockPinnedModalReservation(sql: Sql, orgId: string, ownerId: stri
   return reservation;
 }
 
-// WARNING: Activate only after the receipt backfill and launch runner integration.
 export async function admitModalLaunch(
   sql: Sql,
   encryptionKey: string,
@@ -306,6 +306,7 @@ export async function admitModalLaunch(
       const { credentialId, credentialVersion } = sandbox;
       if (credentialId != null && credentialVersion != null)
         await lockAndCheckStartingLaunchAccount(tx, { credentialId, credentialVersion }, sandboxId, sandbox.model);
+      await input.revalidateTemplate?.(tx);
       await insertStartingModalSandbox(
         tx,
         {

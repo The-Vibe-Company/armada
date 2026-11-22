@@ -38,7 +38,7 @@ import { configureBoatGitHub } from "./github-boat.ts";
 import { createSqlGoldenList } from "./golden-list.ts";
 import { type HandlerOptions, providerRegistry, type Route } from "./http.ts";
 import { Invitations } from "./invitations.ts";
-import { modalLaunchTicketGuard } from "./jobs/modal-launch.ts";
+import { admitModalLaunch, modalLaunchTicketGuard } from "./jobs/modal-launch.ts";
 import { createJobsStore } from "./jobs/store.ts";
 import { createLangfuse } from "./langfuse.ts";
 import { launchCredentials } from "./launch-credentials.ts";
@@ -47,6 +47,7 @@ import { bootstrapBoatMcp } from "./mcp-native.ts";
 import { createHistoricalSandboxProviderResolver, createMcpSandboxProviderResolver } from "./mcp-sandbox-provider.ts";
 import { createModalArtifactCache } from "./modal-artifact-cache.ts";
 import { createModalIntegration } from "./modal-integration.ts";
+import { createModalLaunchAdmission } from "./modal-launch-admission.ts";
 import { modalRuntimeLaunch } from "./modal-runtime-launch.ts";
 import { modalRuntimeResume } from "./modal-runtime-resume.ts";
 import { createModelAuthOwnership } from "./model-auth.ts";
@@ -389,6 +390,30 @@ export async function createServerServices(env: Record<string, string | undefine
         },
       ),
   };
+  const admitModal = createModalLaunchAdmission(
+    {
+      ...launch.modalRuntimeDefault,
+      async provider(actor, golden) {
+        if (!golden.modal) throw Error("Modal binding required.");
+        const caller = {
+          userId: actor.userId,
+          orgs: [{ orgId: actor.orgId, role: actor.role }],
+          via: "service" as const,
+        };
+        const tokens = await modal.modalTokensFor(golden, caller);
+        return (
+          await modal.modalProviderFor(
+            tokens,
+            golden.modal,
+            { target: golden, caller, credentialScope: tokens.scope },
+            true,
+          )
+        ).provider;
+      },
+    },
+    launch,
+    (input) => admitModalLaunch(sql, config.encryptionKey, input, runtimeMcp),
+  );
   const boatResume = runtimeLaunch
     ? boatRuntimeResume({ sql, vault: store, key: config.encryptionKey, policy: runtimeLaunch, modelAuth })
     : undefined;
@@ -473,6 +498,7 @@ export async function createServerServices(env: Record<string, string | undefine
   const control: ConfiguredControlOptions = {
     ...(deviceLogin ? { deviceLogin } : {}),
     ordinaryLaunchReceipts,
+    admitModalLaunch: admitModal,
     ...(dockerControls ? { dockerControls } : {}),
     ...(dockerLaunch ? { dockerLaunch } : {}),
     docker: {
@@ -608,6 +634,7 @@ export async function createServerServices(env: Record<string, string | undefine
     ...(commitSha ? { commitSha } : {}),
     runtimeProviderFor,
     ordinaryLaunchReceipts,
+    admitModalLaunch: admitModal,
     launch,
     modelAuth,
     publicUrl: config.publicUrl,

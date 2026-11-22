@@ -17,6 +17,7 @@ import type {
   OutputsListInput,
   OutputsListResult,
   PinnedModalLaunchInput,
+  PinnedModalLaunchReceipt,
   SandboxStatus,
   SendInput,
   SendResult,
@@ -93,6 +94,7 @@ export type {
   OutputsListInput,
   OutputsListResult,
   PinnedModalLaunchInput,
+  PinnedModalLaunchReceipt,
   SandboxStatus,
   SendInput,
   SendResult,
@@ -105,7 +107,7 @@ export type {
   ViewerTokenResult,
   WaitInput,
 };
-export type LaunchResult = LaunchEnvelope | ModalLaunchReceipt;
+export type LaunchResult = LaunchEnvelope | ModalLaunchReceipt | PinnedModalLaunchReceipt;
 export type { ModalLaunchReceipt };
 
 const { listSandboxOutputs, readSandboxOutput } = sandboxOutputOperations;
@@ -184,10 +186,12 @@ export class Armada {
   }
   readonly #sandboxes = sandboxClient(this.request.bind(this));
 
+  launch(input: PinnedModalLaunchInput, options?: RequestOptions): Promise<PinnedModalLaunchReceipt>;
   launch(
-    input: Exclude<LaunchInput, { provider: "modal"; golden: string }>,
+    input: Extract<LaunchInput, { provider: "modal"; golden: string }>,
     options?: RequestOptions,
-  ): Promise<LaunchEnvelope>;
+  ): Promise<ModalLaunchReceipt>;
+  launch(input: Exclude<LaunchInput, { provider: "modal" }>, options?: RequestOptions): Promise<LaunchEnvelope>;
   launch(input: LaunchInput, options?: RequestOptions): Promise<LaunchResult>;
   launch(input: LaunchInput, options?: RequestOptions) {
     return this.#sandboxes.launch<LaunchResult>(input, options);
