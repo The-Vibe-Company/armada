@@ -72,6 +72,7 @@ export interface RuntimeResumePlacement {
     assertDispatch?: (tx?: Sql) => Promise<void>,
     ticket?: { recovery: boolean; guard: RuntimeTicketGuard },
   ): Promise<{ epoch: string }>;
+  checkDispatchCoverage?(signal: AbortSignal): Promise<void>;
   /** Exact previously authorized compute identity; no activation/reissue on failure. */
   stop(): Promise<void>;
 }
@@ -469,6 +470,14 @@ export function createRuntimeResume(
           }
           // #2560: restored, verified and reauthorized; the resume prompt's dispatch is not launch time.
           await recordLaunchStageQuietly(sql, found.id, "harness_ready", admitted.current.lifecycleGeneration);
+          if (found.boatRuntime && existing.state === "missing") {
+            placement ??= await prepare?.(caller, admitted.current);
+            if (!placement?.checkDispatchCoverage)
+              throw new VaultError("unavailable", "Boat resume deadline verification is unavailable.");
+            await assertClaim();
+            signal.throwIfAborted();
+            await placement.checkDispatchCoverage(signal);
+          }
           const accepted = await agent.prompt(
             {
               sandboxId: found.providerSandboxId,
