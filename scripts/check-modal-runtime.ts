@@ -36,6 +36,7 @@ interface Reply {
   id?: string;
   state?: string;
   manifest?: TemplateManifest;
+  envelope?: unknown;
   golden?: { id?: string; orgId?: string; provider?: string };
   provider?: import("../packages/core/src/sandbox-provider.ts").SandboxProviderId;
   runtimeTransport?: "dialout";
@@ -650,7 +651,12 @@ async function observeAdmittedLaunch(sandboxId: string, externalRef: string) {
   const terminal = ["failed", "stopped", "stopping", "deleted"];
   const listed = await api(
     "sandbox/list",
-    { owner: "me", org, externalRef, ...(defaultGoldenId ? { golden: defaultGoldenId } : {}) },
+    {
+      owner: "me",
+      org: templateSource?.org ?? org,
+      externalRef,
+      golden: templateSource?.goldenId ?? defaultGoldenId,
+    },
     remaining(),
   );
   const row = listed.sandboxes?.[0];
@@ -693,7 +699,7 @@ async function observeAdmittedLaunch(sandboxId: string, externalRef: string) {
   throw Error("Timed out waiting for the admitted Modal launch setup or initial turn.");
 }
 try {
-  const templateRequestKey = templateSource ? crypto.randomUUID() : undefined;
+  const launchRef = crypto.randomUUID();
   const ordinaryTemplate = Boolean(templateSource && ordinaryMode);
   if (templateSource)
     console.log(
@@ -701,7 +707,8 @@ try {
         operation: "runtime_template_launch",
         templateId,
         revision: templateSource.revision,
-        ...(ordinaryTemplate ? { requestKey: templateRequestKey } : { idempotencyKey: templateRequestKey }),
+        externalRef: launchRef,
+        ...(ordinaryTemplate ? { requestKey: launchRef } : { idempotencyKey: launchRef }),
       }),
     );
   const initialPrompt =
@@ -709,8 +716,7 @@ try {
       ? `Remember token ${memory}. ${[...(variablesMode ? [variableInstruction] : []), ...(mcpMode ? [mcpInstruction] : [])].join(" ")} After it succeeds, reply exactly ${answer}. Do not change files.`
       : `Remember token ${memory}. Reply exactly ${answer}. Do not use tools or change files.`;
   const route = ordinaryTemplate ? "templates/launch" : "sandbox/launch";
-  const directLaunchRef = !templateSource ? crypto.randomUUID() : undefined;
-  if (directLaunchRef) console.log(JSON.stringify({ operation: "runtime_launch", externalRef: directLaunchRef }));
+  if (!templateSource) console.log(JSON.stringify({ operation: "runtime_launch", externalRef: launchRef }));
   const raw = await api(route, {
     ...(!ordinaryMode
       ? { runtimeVersion: 1, runtimeTransport: "dialout", provider: launchProvider, harness }
@@ -722,15 +728,14 @@ try {
           org: templateSource.org,
           id: templateId,
           revision: templateSource.revision,
-          ...(ordinaryTemplate
-            ? { requestKey: templateRequestKey }
-            : { idempotencyKey: templateRequestKey, externalRef: templateRequestKey }),
+          externalRef: launchRef,
+          ...(ordinaryTemplate ? { requestKey: launchRef } : { idempotencyKey: launchRef }),
         }
       : {
           org,
           golden,
           credentialId,
-          ...(directLaunchRef ? { externalRef: directLaunchRef } : {}),
+          externalRef: launchRef,
           ...(process.env.ARMADA_RUNTIME_MODEL ? { model: process.env.ARMADA_RUNTIME_MODEL } : {}),
           connections: mcpMode ? [mcpConnection] : [],
         }),
@@ -752,54 +757,72 @@ try {
           },
         }
       : raw;
-  const admission = directLaunchRef ? parseLaunchAdmissionReceipt(launchProvider, raw) : undefined;
+  const admission = parseLaunchAdmissionReceipt(
+    launchProvider,
+    ordinaryTemplate ? raw.envelope : templateSource ? undefined : raw,
+  );
   let queuedFirstTurn = false;
-  if (admission && directLaunchRef) {
+  if (
+    ordinaryTemplate &&
+    raw.envelope !== undefined &&
+    (!admission ||
+      raw.provider !== launchProvider ||
+      raw.state !== "succeeded" ||
+      raw.manifest?.requestKey !== launchRef ||
+      raw.id !== admission.sandbox.id)
+  )
+    throw Error("Modal template admission does not match its recorded request.");
+  if (admission) {
     id = admission.sandbox.id;
     shouldStop = true;
-    jobAdmission = true;
-    const turn = await observeAdmittedLaunch(id, directLaunchRef);
-    ({ promptId, conversationId, skills: launchSkills } = turn);
+    if (ordinaryTemplate && (raw.status !== admission.sandbox.status || admission.sandbox.status !== "starting"))
+      throw Error("Modal template admission has inconsistent starting status.");
   } else {
     if (launched.sandbox?.provider !== "modal")
       throw Error("Missing Modal enrolled launch acknowledgement; reconcile existing allocation, never launch again.");
-    if (templateSource && !ordinaryTemplate && launched.sandbox.externalRef !== templateRequestKey)
+    if (templateSource && !ordinaryTemplate && launched.sandbox.externalRef !== launchRef)
       throw Error("Pinned Modal launch response does not match its reference; inspect the original allocation.");
     id = launched.sandbox.id;
     shouldStop = Boolean(id);
-    if (templateSource) {
-      const m = ordinaryTemplate ? raw.manifest : raw.sandbox?.templateManifest;
-      const selectedGolden = ordinaryTemplate ? m?.golden : raw.golden;
-      if (
-        !id ||
-        (ordinaryTemplate &&
-          (raw.state !== "succeeded" || raw.provider !== "modal" || m?.requestKey !== templateRequestKey)) ||
-        !m ||
-        m.templateId !== templateId ||
-        m.revision !== templateSource.revision ||
-        m.revisionId !== templateSource.revisionId ||
-        selectedGolden?.id !== templateSource.goldenId ||
-        selectedGolden.orgId !== templateSource.org ||
-        selectedGolden.provider !== "modal" ||
-        m.account?.id !== templateSource.definition.modelAccount?.id ||
-        m.account?.version !== templateSource.definition.modelAccount?.version ||
-        canonical(m.definition) !== canonical(templateSource.definition)
-      )
-        throw Error(
-          "Modal template launch manifest identity is unavailable; cleanup the known allocation, never launch again.",
-        );
-      let values: Record<string, string>;
-      try {
-        values = validateReadableVariables(m.variables);
-      } catch {
-        throw Error("Modal frozen readable manifest is invalid; no allocation retry.");
-      }
-      if (canonical(Object.keys(values).sort()) !== canonical(variableKeys))
-        throw Error("Modal frozen readable keyset differs from the pinned template; no allocation retry.");
-      expectedVariableDigest = createHash("sha256")
-        .update(JSON.stringify(Object.fromEntries(variableKeys.map((key) => [key, values[key]]))))
-        .digest("hex");
+  }
+  if (templateSource) {
+    const m = ordinaryTemplate ? raw.manifest : raw.sandbox?.templateManifest;
+    const selectedGolden = ordinaryTemplate ? m?.golden : raw.golden;
+    if (
+      !id ||
+      (ordinaryTemplate && (raw.state !== "succeeded" || raw.provider !== "modal" || m?.requestKey !== launchRef)) ||
+      !m ||
+      m.templateId !== templateId ||
+      m.revision !== templateSource.revision ||
+      m.revisionId !== templateSource.revisionId ||
+      selectedGolden?.id !== templateSource.goldenId ||
+      selectedGolden.orgId !== templateSource.org ||
+      selectedGolden.provider !== "modal" ||
+      m.account?.id !== templateSource.definition.modelAccount?.id ||
+      m.account?.version !== templateSource.definition.modelAccount?.version ||
+      canonical(m.definition) !== canonical(templateSource.definition)
+    )
+      throw Error(
+        "Modal template launch manifest identity is unavailable; cleanup the known allocation, never launch again.",
+      );
+    let values: Record<string, string>;
+    try {
+      values = validateReadableVariables(m.variables);
+    } catch {
+      throw Error("Modal frozen readable manifest is invalid; no allocation retry.");
     }
+    if (canonical(Object.keys(values).sort()) !== canonical(variableKeys))
+      throw Error("Modal frozen readable keyset differs from the pinned template; no allocation retry.");
+    expectedVariableDigest = createHash("sha256")
+      .update(JSON.stringify(Object.fromEntries(variableKeys.map((key) => [key, values[key]]))))
+      .digest("hex");
+  }
+  if (admission) {
+    jobAdmission = true;
+    const turn = await observeAdmittedLaunch(admission.sandbox.id, launchRef);
+    ({ promptId, conversationId, skills: launchSkills } = turn);
+  } else {
+    if (!launched.sandbox) throw Error("Missing Modal launch sandbox.");
     conversationId = launched.conversationId ?? undefined;
     epoch = launched.runtime?.epoch;
     promptId = launched.promptId ?? undefined;
@@ -1012,7 +1035,7 @@ async function stopKnown(requireRetained = false) {
       let stopped = false;
       const deadline = Date.now() + 180000;
       while (Date.now() < deadline && !stopped) {
-        const listed = await api("sandbox/list", { owner: "me", org, limit: 200 });
+        const listed = await api("sandbox/list", { owner: "me", org: templateSource?.org ?? org, limit: 200 });
         stopped =
           listed.sandboxes?.some(
             (row) =>

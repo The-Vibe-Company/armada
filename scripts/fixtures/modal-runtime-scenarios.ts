@@ -1914,13 +1914,13 @@ export const scenarios: Scenario[] = [
   {
     label: "ordinary-variables",
     args: ["--ordinary", "--variables"],
-    defects: [],
+    defects: ["job-admission"],
     expected: expected.ordinaryVariables,
   },
   {
     label: "ordinary-idle-variables",
     args: ["--ordinary", "--idle", "--variables"],
-    defects: [],
+    defects: ["job-admission"],
     expected: expected.ordinaryIdleVariables,
   },
   { label: "ordinary-empty", args: ["--ordinary", "--empty-resume"], defects: [], expected: expected.ordinaryEmpty },
@@ -2093,10 +2093,13 @@ export const scenarios: Scenario[] = [
     expected: expected.idleOldVersion,
   },
   {
-    label: "idle-bad-receipt",
-    args: ["--idle"],
-    defects: ["tool-result", "idle-bad-receipt"],
-    expected: expected.idleBadReceipt,
+    label: "idle-template-job-status-mismatch",
+    args: ["--ordinary", "--idle", "--variables"],
+    defects: ["job-admission", "idle-bad-receipt"],
+    expected: {
+      ...expected.idleBadReceipt,
+      stderrContains: ["Modal template admission has inconsistent starting status."],
+    },
   },
   {
     label: "idle-running-history",
@@ -2681,9 +2684,9 @@ export const scenarios: Scenario[] = [
     expected: expected.lostLaunch,
   },
   {
-    label: "variables-receipt-mismatch",
-    args: ["--variables"],
-    defects: ["variables-receipt-mismatch"],
+    label: "ordinary-job-template-manifest-mismatch",
+    args: ["--ordinary", "--variables"],
+    defects: ["job-admission", "variables-receipt-mismatch"],
     expected: expected.opencodeVariablesOldPrompt,
   },
   {
