@@ -732,7 +732,7 @@ for (const evidence of [
     const readSandbox = async () =>
       (
         await db.query(
-          "select status, status_reason, expires_at, stop_requested_at from public.sandboxes where id=$1",
+          "select status, status_reason, expires_at, stop_requested_at, lifecycle_error from public.sandboxes where id=$1",
           [id],
         )
       ).rows[0];
@@ -746,13 +746,18 @@ for (const evidence of [
       ).rows;
     if (evidence === "lost-observation-response") {
       expect(stops).toBe(0);
-      expect(await readSandbox()).toMatchObject({ status: "running", expires_at: binding.expires_at });
+      expect(await readSandbox()).toMatchObject({
+        status: "running",
+        expires_at: binding.expires_at,
+        lifecycle_error: expect.stringContaining("Provider lifecycle observation unavailable"),
+      });
       expect(await readObservation()).toMatchObject([{ pending_job_id: null, observed_expires_at: coveredDeadline }]);
       physicalDeadline = new Date(coveredDeadline.getTime() + 60_000);
       await db.query("update sandboxes set reconcile_after='-infinity' where id=$1", [id]);
       const successor = createSandboxLifecycle(sql, async () => provider);
       expect(await successor.reconcileOne()).toBe(true);
       await successor.drain();
+      expect((await readSandbox()).lifecycle_error).toBeNull();
     }
     if (evidence === "lost-stop-response") {
       expect(await readSandbox()).toMatchObject({
