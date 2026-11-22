@@ -44,13 +44,17 @@ export type ModalLaunchSandbox = Pick<
   | "model"
   | "reasoningEffort"
   | "repositoryDir"
+  | "resourceProject"
   | "requestedTtlSeconds"
   | "credentialId"
   | "credentialVersion"
   | "visibility"
   | "externalRef"
   | "stopWhenWorkMerged"
-> & { effectiveTtlSeconds: number };
+> & {
+  effectiveTtlSeconds: number;
+  machineSize: NonNullable<SandboxRecord["machineSize"]>;
+};
 
 export async function insertStartingModalSandbox(
   tx: Sql,
@@ -69,9 +73,9 @@ export async function insertStartingModalSandbox(
     `insert into public.sandboxes
        (id, org_id, owner_id, access_owner_id, golden_id, provider, status, runtime_transport, lifecycle_generation,
         visibility, harness, model, reasoning_effort, repository_dir, requested_ttl_seconds, effective_ttl_seconds,
-        expires_at, credential_id, credential_version, external_ref, stop_when_work_merged)
+        expires_at, credential_id, credential_version, external_ref, stop_when_work_merged, machine_size, resource_project)
      values ($1,$2,$3,$3,$4,'modal','starting','dialout',$5,$6,$7,$8,$9,$10,$11,$12,
-             now()+$12::integer*interval '1 second',$13,$14,$15,$16)`,
+             now()+$12::integer*interval '1 second',$13,$14,$15,$16,$17::text::jsonb,$18::text::jsonb)`,
     [
       sandboxId,
       orgId,
@@ -89,6 +93,8 @@ export async function insertStartingModalSandbox(
       sandbox.credentialVersion ?? null,
       sandbox.externalRef ?? null,
       sandbox.stopWhenWorkMerged ?? true,
+      JSON.stringify(sandbox.machineSize),
+      sandbox.resourceProject ? JSON.stringify(sandbox.resourceProject) : null,
     ],
   );
   await tx.query("insert into public.sandbox_source_snapshots (sandbox_id,snapshot_id) values ($1,$2)", [

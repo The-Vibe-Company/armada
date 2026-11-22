@@ -91,7 +91,7 @@ export interface ModalLaunchAdmission {
   request?: { key: string; payload: unknown };
   templateReceiptId?: string;
   sandbox: ModalLaunchSandbox;
-  allocation: ModalLaunchAllocation & { source: { kind: "snapshot" } };
+  allocation: Omit<ModalLaunchAllocation, "size"> & { source: { kind: "snapshot" } };
   initialPrompt?: string;
   armadaAccess?: SandboxArmadaAccessOptions;
   connections?: string[];
@@ -238,7 +238,11 @@ export async function admitModalLaunch(
         generation,
         key,
         {
-          allocation: { ...allocation, source: { kind: "snapshot", ref: image?.image_id } },
+          allocation: {
+            ...allocation,
+            size: sandbox.machineSize.effective,
+            source: { kind: "snapshot", ref: image?.image_id },
+          },
           snapshot,
           modal,
         },
