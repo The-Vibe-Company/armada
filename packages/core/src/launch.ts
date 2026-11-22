@@ -18,12 +18,7 @@ import { type HelperNegotiation, negotiateHelper } from "./helper.ts";
 import { LaunchError, type LaunchInitializationStage } from "./launch-error.ts";
 import { nativeLaunch } from "./launch-native.ts";
 import { goldenLaunchPlacements } from "./launch-placement.ts";
-import {
-  applyLaunchAccountDefaults,
-  prepareLaunchPlan,
-  resolveLaunchConnections,
-  resolveLaunchSkills,
-} from "./launch-plan.ts";
+import { applyLaunchAccountDefaults, resolveLaunchConnections, resolveLaunchSkills } from "./launch-plan.ts";
 import { runtimeLaunch } from "./launch-runtime.ts";
 import { LaunchSecretRefusal, RuntimeLaunchSecretRefusal } from "./launch-secrets.ts";
 import type { LaunchStage } from "./launch-stages.ts";
@@ -501,6 +496,20 @@ async function resolveGoldenLaunch(
   };
 }
 
+// WARNING: The prepared plan contains credentials and must stay in server memory.
+export async function prepareGoldenLaunch(
+  provider: Provider,
+  stores: LaunchStores,
+  actor: GoldenActor,
+  request: LaunchRequest,
+  options: LaunchOptions = {},
+) {
+  const validated = validateGoldenLaunch(request);
+  const timing = modalLaunchTiming(validated.acceptedAt);
+  const plan = await resolveGoldenLaunch(provider, stores, actor, validated, options, timing);
+  return { plan, timing };
+}
+
 /**
  * Forks a golden into a sandbox, brings its repos up to date, runs its init commands and, with a
  * prompt, starts the agent.
@@ -518,14 +527,13 @@ export async function launchSandbox(
   initialRequest: LaunchRequest,
   initialOptions: LaunchOptions = {},
 ): Promise<LaunchResult> {
-  const validated = validateGoldenLaunch(initialRequest);
-  const timing = modalLaunchTiming(validated.acceptedAt);
-  const launch = await prepareLaunchPlan(
-    () => validated,
-    (validated) => resolveGoldenLaunch(initialProvider, initialStores, actor, validated, initialOptions, timing),
-    (plan) => goldenLaunchPlacements[plan.golden.provider],
+  const { plan, timing } = await prepareGoldenLaunch(
+    initialProvider,
+    initialStores,
+    actor,
+    initialRequest,
+    initialOptions,
   );
-  const plan = launch.resolved;
   const {
     acceptedAt,
     provider,
@@ -551,7 +559,7 @@ export async function launchSandbox(
   let releaseSnapshotIntent: (() => Promise<void>) | undefined;
   let noAllocation = true;
   try {
-    const forked = await launch.admit({
+    const forked = await goldenLaunchPlacements[golden.provider].admit(plan, {
       actor,
       id,
       forkEnv: () => strategy.forkEnv(plan),
