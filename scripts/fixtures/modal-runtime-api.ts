@@ -286,7 +286,7 @@ const admittedLaunch = (body: RequestBody) => {
     state: "succeeded",
     id: sandboxId,
     provider: "modal",
-    status: "starting",
+    status: defects.includes("idle-bad-receipt") ? "running" : "starting",
     envelope,
     manifest: templateReceipt(body, idle).manifest,
   };
@@ -530,7 +530,7 @@ const fakeFetch = async (url: string | URL | Request, options?: RequestInit): Pr
           id: sandboxId,
           provider: "modal",
           runtimeTransport: "dialout",
-          status: defects.includes("idle-bad-receipt") ? "running" : "ready",
+          status: "ready",
           conversationIds: [],
           goldenId: "golden-id",
           ...(skills ? { skills: receipts } : {}),

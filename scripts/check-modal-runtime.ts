@@ -769,14 +769,14 @@ try {
       raw.provider !== launchProvider ||
       raw.state !== "succeeded" ||
       raw.manifest?.requestKey !== launchRef ||
-      raw.id !== admission.sandbox.id ||
-      raw.status !== admission.sandbox.status ||
-      admission.sandbox.status !== "starting")
+      raw.id !== admission.sandbox.id)
   )
     throw Error("Modal template admission does not match its recorded request.");
   if (admission) {
     id = admission.sandbox.id;
     shouldStop = true;
+    if (ordinaryTemplate && (raw.status !== admission.sandbox.status || admission.sandbox.status !== "starting"))
+      throw Error("Modal template admission has inconsistent starting status.");
   } else {
     if (launched.sandbox?.provider !== "modal")
       throw Error("Missing Modal enrolled launch acknowledgement; reconcile existing allocation, never launch again.");
