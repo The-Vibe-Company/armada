@@ -33,6 +33,10 @@ async function queueExtension(
   return jobId;
 }
 
+const rejectExtensionDetach =
+  "alter table public.boat_runtime_extension_state add constraint reject_detach check (pending_job_id is not null)";
+const allowExtensionDetach = "alter table public.boat_runtime_extension_state drop constraint reject_detach";
+
 test.each([
   { usable: true, runtime: false },
   { usable: false, runtime: false },
@@ -157,6 +161,7 @@ test.each([
   { runtime: true, outcome: "stale", confirmed: true },
   { runtime: true, outcome: "rollback", confirmed: true },
   { runtime: true, outcome: "release_failed", confirmed: true },
+  { runtime: true, outcome: "cleanup_failed", confirmed: true },
   { runtime: false, outcome: "applied", confirmed: true },
   { runtime: false, outcome: "applied", confirmed: false },
   { runtime: false, outcome: "stale", confirmed: true },
@@ -225,11 +230,13 @@ test.each([
       begin raise exception 'Reservation release failed'; end $$;
       create trigger reject_reservation_release before delete on account_agent_reservations
       for each row execute function reject_reservation_release();`);
+    if (outcome === "cleanup_failed") await db.exec(rejectExtensionDetach);
     try {
       const read = readStatus(boat.provider, store, sandbox, { now });
       if (outcome === "rollback") await expect(read).rejects.toThrow("reject_observed_exit");
       else if (outcome === "stopped_source_rollback") await expect(read).rejects.toThrow("Failure journal rejected");
       else if (outcome === "release_failed") await expect(read).rejects.toThrow("Reservation release failed");
+      else if (outcome === "cleanup_failed") await expect(read).rejects.toThrow("reject_detach");
       else expect(await read).toMatchObject({ status: applied ? "failed" : existingStatus });
 
       const journal = await db.query(
@@ -274,6 +281,7 @@ test.each([
         });
       }
     } finally {
+      if (outcome === "cleanup_failed") await db.exec(allowExtensionDetach);
       if (outcome === "rollback") await db.exec("alter table sandboxes drop constraint reject_observed_exit");
       if (outcome === "stopped_source_rollback")
         await db.exec(
@@ -287,39 +295,50 @@ test.each([
   },
 );
 
-test("owner stop detaches extension intent when it confirms exit on an already failed Boat sandbox", async () => {
-  const { db, people, sharedGoldenId } = await failureDatabase();
-  const id = crypto.randomUUID();
-  const activityToken = crypto.randomUUID();
-  await db.query(
-    `insert into public.sandboxes
+test.each([false, true])(
+  "owner stop settles an already failed Boat activation and its extension together (reject detach=%s)",
+  async (rejectDetach) => {
+    const { db, people, sharedGoldenId } = await failureDatabase();
+    const id = crypto.randomUUID();
+    const activityToken = crypto.randomUUID();
+    await db.query(
+      `insert into public.sandboxes
      (id,provider,provider_sandbox_id,golden_id,org_id,owner_id,harness,status,boat_runtime,
       activity_lease_id,activity_until,lifecycle_generation,stop_requested_at)
      values ($1,'boat','bx_23456789',$2,$3,$4,'codex','failed',true,$5,'infinity',2,now())`,
-    [id, sharedGoldenId, people.org, people.owner, activityToken],
-  );
-  await queueExtension(db, id, people.org, 1);
-  const store = createSqlData(db)({
-    userId: people.owner,
-    orgs: [{ orgId: people.org, role: "member" }],
-    via: "service",
-  }).sandboxes;
-  const stoppedAt = "2026-01-01T00:00:00.000Z";
-  await store.update(id, {
-    ownerStop: true,
-    status: "failed",
-    finishActivity: true,
-    stopRequested: false,
-    stoppedAt,
-    activityToken,
-    expectedGeneration: 2,
-  });
-  expect(await store.get(id)).toMatchObject({ status: "failed", stoppedAt });
-  expect(
-    (await db.query("select pending_job_id from public.boat_runtime_extension_state where sandbox_id=$1", [id])).rows,
-  ).toEqual([{ pending_job_id: null }]);
-  expect((await db.query("select id from public.sandbox_transitions where sandbox_id=$1", [id])).rows).toEqual([]);
-});
+      [id, sharedGoldenId, people.org, people.owner, activityToken],
+    );
+    const jobId = await queueExtension(db, id, people.org, 1);
+    const store = createSqlData(db)({
+      userId: people.owner,
+      orgs: [{ orgId: people.org, role: "member" }],
+      via: "service",
+    }).sandboxes;
+    const stoppedAt = "2026-01-01T00:00:00.000Z";
+    if (rejectDetach) await db.exec(rejectExtensionDetach);
+    try {
+      const stop = store.update(id, {
+        ownerStop: true,
+        status: "failed",
+        finishActivity: true,
+        stopRequested: false,
+        stoppedAt,
+        activityToken,
+        expectedGeneration: 2,
+      });
+      if (rejectDetach) await expect(stop).rejects.toThrow("reject_detach");
+      else await stop;
+      expect(await store.get(id)).toMatchObject({ status: "failed", stoppedAt: rejectDetach ? null : stoppedAt });
+      expect(
+        (await db.query("select pending_job_id from public.boat_runtime_extension_state where sandbox_id=$1", [id]))
+          .rows,
+      ).toEqual([{ pending_job_id: rejectDetach ? jobId : null }]);
+      expect((await db.query("select id from public.sandbox_transitions where sandbox_id=$1", [id])).rows).toEqual([]);
+    } finally {
+      if (rejectDetach) await db.exec(allowExtensionDetach);
+    }
+  },
+);
 
 test.each([
   { runtime: true, scenario: "ready" },
