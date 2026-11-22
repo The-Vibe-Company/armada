@@ -488,7 +488,7 @@ export function createModelAuthOwnership(
         return { authRevision: revision, committed: false };
       }
     },
-    async assertSandbox(actor: GoldenActor, sandboxId: string, _resuming: boolean, _userExec = false): Promise<void> {
+    async assertSandbox(actor: GoldenActor, sandboxId: string, _resuming: boolean, _userExec = false) {
       const result = await sql.query<{
         credential_id: string | null;
         credential_version: number | null;
