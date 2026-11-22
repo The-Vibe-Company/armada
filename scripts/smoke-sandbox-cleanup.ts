@@ -10,6 +10,10 @@ export interface SmokeSandboxReceipt {
 }
 const UUID = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i;
 
+export function confirmsCleanupStop(receipt: { id?: string; status?: string } | null, id: string) {
+  return receipt?.id === id && (receipt.status === "stopped" || receipt.status === "deleted");
+}
+
 /** Only explicit smoke receipts, never a fleet/status/golden heuristic. */
 export function smokeReceipts(value: unknown): SmokeSandboxReceipt[] {
   if (!Array.isArray(value) || value.length > 4096) throw new Error("invalid_smoke_receipts");

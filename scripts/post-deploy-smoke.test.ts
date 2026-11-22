@@ -144,7 +144,7 @@ test("requires explicit compute opt-in, HTTPS origin, token and bounded valid ca
   }
 });
 
-test("smokes each configured provider/harness through the real API wire contract, including git and provider stop confirmation", async () => {
+test("smokes each configured provider/harness through the real API wire contract, including git and terminal stop receipts", async () => {
   // Distinct orgs keep each concurrent case lane's fake state apart.
   const cases = ["modal"].flatMap((provider) =>
     ["claude", "codex"].map((harness) => ({ ...selected, provider, harness, org: `org-${harness}` })),
@@ -152,19 +152,12 @@ test("smokes each configured provider/harness through the real API wire contract
   const waited = new Set<unknown>();
   const fake = fixture((call) => {
     const org = call.body.org;
-    const mine = fake.calls.filter((entry) => entry.body.org === org);
     if (call.path === "sandbox/launch") waited.delete(org);
     if (call.path === "sandbox/wait" && !waited.has(org)) {
       waited.add(org);
       return json({ prompt: { promptId: "prompt-id", state: "running" } });
     }
-    if (
-      call.path === "sandbox/status" &&
-      mine.findLastIndex((entry) => entry.path === "sandbox/stop") >
-        mine.findLastIndex((entry) => entry.path === "sandbox/launch")
-    )
-      return json({ status: "stopped", providerState: "stopped" });
-    if (call.path === "sandbox/status") return json({ status: "ready", providerState: "active" });
+    if (call.path === "sandbox/stop") return json({ id: sandboxFixtureId, status: "stopped" });
   });
   expect(await postDeploySmoke({ ...env, ARMADA_SMOKE_CASES: JSON.stringify(cases) }, [], fake.io)).toBe(true);
   const launches = fake.calls.filter((call) => call.path === "sandbox/launch");
@@ -188,6 +181,9 @@ test("smokes each configured provider/harness through the real API wire contract
       prompt_id: "prompt-id",
       timeout_seconds: 0,
     });
+    const stopIndex = mine.findIndex((call) => call.path === "sandbox/stop");
+    expect(stopIndex).toBeGreaterThan(-1);
+    expect(mine.slice(stopIndex + 1).some((call) => call.path === "sandbox/status")).toBe(false);
     expect(
       mine.filter((call) => call.path === "sandbox/exec").map((call) => [call.body.command, call.body.cwd]),
     ).toEqual([
