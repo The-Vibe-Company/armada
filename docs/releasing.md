@@ -167,12 +167,17 @@ had a median of **4h 5m 21s**, above the 20-minute target in
 Publication timestamps come from the [npm registry's version history](https://registry.npmjs.org/@the-vibe-company%2Farmada)
 and are shown to the second. This measures elapsed time for the full train.
 
+In a [4.0.0 release attempt](https://github.com/The-Vibe-Company/armada/actions/runs/44611538082),
+the release check failed at 21:04:41 UTC, before the first binary job
+started at 21:04:56 and pinned staging smoke started at 21:05:04.
+The binaries and staging smoke overlapped on this attempt.
+
 In the [initial 6.0.0 run](https://github.com/The-Vibe-Company/armada/actions/runs/44934011029),
 the release check, binary matrix and pinned staging smoke all started.
 Binaries and staging smoke succeeded, the release check failed, and
 finalization, production and npm publication were skipped. The workflow concluded
 with a failure. [#2989](https://github.com/The-Vibe-Company/armada/pull/2989)
-also records a simulated check failure with the same gate outcomes.
+also records a simulated check failure that skipped production and npm publication.
 
 ## Dry runs and recovery
 
