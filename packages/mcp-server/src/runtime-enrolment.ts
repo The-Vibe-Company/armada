@@ -154,8 +154,9 @@ export function createRuntimeEnrolments(sql: Sql, encryptionKey: string, options
         runtime_transport: string | null;
         boat_runtime: boolean;
         status: string;
+        expires_at: Date;
       }>(
-        `select s.id,s.lifecycle_generation::text,s.provider_sandbox_id,s.runtime_transport,s.boat_runtime,s.status from public.sandboxes s
+        `select s.id,s.lifecycle_generation::text,s.provider_sandbox_id,s.runtime_transport,s.boat_runtime,s.status,s.expires_at from public.sandboxes s
        where s.id=$1 and (s.provider in ('boat','docker') or (s.provider='modal' and s.runtime_transport='dialout'))
        and (s.status in ('starting','ready','running') or ($7 and s.status='failed'))
        and s.stop_requested_at is null and s.deleted_at is null and s.expires_at>now()
@@ -463,12 +464,17 @@ export function createRuntimeEnrolments(sql: Sql, encryptionKey: string, options
         )
       ).rows[0];
       if (!row || !supportsProtocol(row.runtime_protocol_version)) throw new RuntimeEnrolmentDenied();
+      const grantDeadline = row.command_grant_expires_at;
+      const commandGrantExpiresAt =
+        sandbox.boat_runtime && grantDeadline && sandbox.expires_at < grantDeadline
+          ? sandbox.expires_at
+          : grantDeadline;
       return work(tx, {
         sandboxId: sandbox.id,
         epoch: row.epoch,
         lifecycleGeneration: sandbox.lifecycle_generation,
         provider: sandbox.provider as NonNullable<RuntimeOwnerScope["provider"]>,
-        ...(row.command_grant_expires_at ? { commandGrantExpiresAt: row.command_grant_expires_at } : {}),
+        ...(commandGrantExpiresAt ? { commandGrantExpiresAt } : {}),
       });
     });
   }

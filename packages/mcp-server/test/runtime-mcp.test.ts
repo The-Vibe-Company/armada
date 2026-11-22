@@ -108,6 +108,23 @@ async function fixture(provider: "boat" | "modal" = "boat", commandGrantExpiresA
   });
 }
 
+test("Boat runtime MCP leases expire at the committed sandbox deadline", async () => {
+  const x = await fixture("boat", Date.now() + 6 * 60 * 60_000);
+  const { f } = x;
+  try {
+    await x.send(f.caller, f.input());
+    const { hash } = x.configuration();
+    const { expires_at } = (
+      await f.db.query<{ expires_at: Date }>("select expires_at from sandboxes where id=$1", [f.row.id])
+    ).rows[0]!;
+    expect((await f.db.query("select expires_at from mcp_leases where hash=$1", [hash])).rows[0]).toEqual({
+      expires_at,
+    });
+  } finally {
+    await f.close();
+  }
+});
+
 test("Modal runtime MCP lease spans the command ceiling but follows live sandbox admission", async () => {
   const ceiling = new Date(Date.now() + 6 * 60 * 60_000);
   const x = await fixture("modal", ceiling.getTime()),

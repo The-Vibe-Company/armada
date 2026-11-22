@@ -135,6 +135,24 @@ test.each([
   }
 });
 
+test.each([
+  { scenario: "later grant", grantSeconds: 180, expectedSeconds: 40 },
+  { scenario: "earlier grant", grantSeconds: 20, expectedSeconds: 20 },
+  { scenario: "missing grant", grantSeconds: undefined, expectedSeconds: 40 },
+])("Boat runtime GitHub configuration uses the correct expiry for $scenario", async (testCase) => {
+  const now = Date.now();
+  const { f, service, config } = await fixture("boat", {
+    ...(testCase.grantSeconds === undefined ? {} : { commandGrantExpiresAt: now + testCase.grantSeconds * 1000 }),
+  });
+  try {
+    await f.db.query("update sandboxes set expires_at=$2 where id=$1", [f.row.id, new Date(now + 40_000)]);
+    await service.prepare(f.caller, f.row.id);
+    expect(config().expiresAt).toBe(now + testCase.expectedSeconds * 1000);
+  } finally {
+    await f.close();
+  }
+});
+
 test("Modal runtime GitHub credentials still work beyond the original deadline after extension", async () => {
   let clock = Date.now();
   const ceiling = new Date(clock + 20 * 60_000);
