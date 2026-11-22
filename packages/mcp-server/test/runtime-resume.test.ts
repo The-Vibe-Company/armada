@@ -21,7 +21,7 @@ import { modalRuntimeLaunch } from "../src/modal-runtime-launch.ts";
 import { modalRuntimeResume } from "../src/modal-runtime-resume.ts";
 import { createModelAuthOwnership } from "../src/model-auth.ts";
 import { createRuntimeCheckpoint, createRuntimeStopCheckpoint } from "../src/runtime-checkpoint.ts";
-import { RuntimeEnrolmentDenied } from "../src/runtime-enrolment.ts";
+import { createRuntimeEnrolments, RuntimeEnrolmentDenied } from "../src/runtime-enrolment.ts";
 import { createRuntimeFollowup } from "../src/runtime-followup.ts";
 import { createRuntimeHistory } from "../src/runtime-history.ts";
 import { BoatResumeActivationUncertain, createRuntimeResume } from "../src/runtime-resume.ts";
@@ -483,6 +483,7 @@ describe.each(["boat", "modal"] as const)("queued runtime wake admission (%s)", 
     "unenrolled claim loss",
     "restore admission loss",
     "before ticket loss",
+    "before ticket loss with covering Boat deadline",
     "ticket commit loss",
     "heartbeat loss",
     "ambiguous deferral claim loss",
@@ -504,7 +505,8 @@ describe.each(["boat", "modal"] as const)("queued runtime wake admission (%s)", 
       : !["scoped grant loss", "restore admission loss", "ticket commit loss"].includes(scenario),
   );
   test.each(cases)("fences queued wake admission and publication (%s)", async (scenario) => {
-    const boatTicketRecovery = provider === "boat" && scenario === "before ticket loss";
+    const coveringBoatDeadline = scenario === "before ticket loss with covering Boat deadline";
+    const boatTicketRecovery = provider === "boat" && (scenario === "before ticket loss" || coveringBoatDeadline);
     const scoped = scenario === "scoped grant loss";
     const unenrolled = scenario === "unenrolled failure" || scenario === "unenrolled claim loss";
     const ambiguous = scenario === "ambiguous deferral claim loss";
@@ -638,6 +640,15 @@ describe.each(["boat", "modal"] as const)("queued runtime wake admission (%s)", 
             async start(value) {
               if (!value.ticketGuard) throw Error("Expected recovered bootstrap");
               await value.activate?.(value.signal);
+              await f.authority.issue({
+                sandboxId: value.sandbox.id,
+                ownerId: f.caller.userId,
+                configuration: {},
+                expectedProviderSandboxId: value.sandbox.providerSandboxId,
+                expectedGeneration: value.sandbox.lifecycleGeneration!,
+                ticketGuard: value.ticketGuard,
+                ...(value.assertDispatch ? { assertClaim: value.assertDispatch } : {}),
+              });
               bootstraps++;
               throw Error("Fixture ends at ticket issuance");
             },
@@ -804,7 +815,7 @@ describe.each(["boat", "modal"] as const)("queued runtime wake admission (%s)", 
       expect(preparations).toBe(1);
       expect(restores).toBe(0);
       expect(await read()).toMatchObject({ status: "starting", intent: true });
-    } else if (scenario === "before ticket loss") {
+    } else if (scenario === "before ticket loss" || coveringBoatDeadline) {
       await expect(attempt()).rejects.toMatchObject({ code: "conflict" });
       expect(await hasTicket()).toBe(false);
       expect(restores).toBe(1);
@@ -820,17 +831,32 @@ describe.each(["boat", "modal"] as const)("queued runtime wake admission (%s)", 
       };
       expect((await admitClaimedAccountTurn(f.sql, successorClaim))?.entry.request_id).toBe(request.request_id);
       if (boatTicketRecovery) {
+        const deadline = new Date("2099-01-01T00:00:00Z");
         const { requests, restore } = interceptBoatResume(() =>
           Response.json({
             ok: true,
-            sandbox: sdkSandbox({ id: "physical", state: "running", archiveAfter: undefined }),
+            sandbox: sdkSandbox({
+              id: "physical",
+              state: "running",
+              archiveAfter: coveringBoatDeadline ? deadline.toISOString() : undefined,
+            }),
           }),
         );
         try {
           await expect(send(f.caller, request, successorClaim)).rejects.toMatchObject({ code: "conflict" });
           expect(preparations).toBe(2);
-          expect(bootstraps).toBe(0);
-          expect(await hasTicket()).toBe(false);
+          expect(bootstraps).toBe(coveringBoatDeadline ? 1 : 0);
+          if (!coveringBoatDeadline) expect(await hasTicket()).toBe(false);
+          const observation = await f.db.query(
+            `select observed_provider_id, observed_generation::int, observed_expires_at
+             from public.boat_runtime_extension_state where sandbox_id=$1`,
+            [f.row.id],
+          );
+          expect(observation.rows).toEqual(
+            coveringBoatDeadline
+              ? [{ observed_provider_id: "physical", observed_generation: before + 1, observed_expires_at: deadline }]
+              : [],
+          );
           expect(requests).toHaveLength(1);
           expect(await read()).toMatchObject({ status: "stopping" });
         } finally {
@@ -1657,6 +1683,7 @@ const boatResumeRecoveryCases = [
   "short coverage",
   "missing coverage",
   "coverage lease lost",
+  "ticket write failure",
   "response lost",
   "handoff rollback",
   "transition fault",
@@ -1677,6 +1704,18 @@ test.each(boatResumeRecoveryCases)(
     const shortCoverage = condition === "short coverage";
     const missingCoverage = condition === "missing coverage";
     const coverageLeaseLost = condition === "coverage lease lost";
+    const ticketWriteFailure = condition === "ticket write failure";
+    let attemptedTicketWrite = false;
+    const authority = ticketWriteFailure
+      ? createRuntimeEnrolments(
+          bunLikeSql(f.db, (statement) => {
+            if (!statement.startsWith("insert into public.runtime_enrolments as r")) return;
+            attemptedTicketWrite = true;
+            throw Error("Injected ticket write failure");
+          }),
+          ENCRYPTION_KEY,
+        )
+      : f.authority;
     const unsafeCoverage = shortCoverage || missingCoverage;
     const logicalDeadline = new Date("2099-01-01T00:00:00Z");
     const physicalDeadline = new Date(logicalDeadline.getTime() + SANDBOX_STOP_MARGIN_SECONDS * 1000);
@@ -1732,8 +1771,8 @@ test.each(boatResumeRecoveryCases)(
               beforeFailure = rows[0];
             }
             await value.activate?.(value.signal);
-            if (condition === "confirmed" || coverageLeaseLost) {
-              await f.authority.issue({
+            if (condition === "confirmed" || coverageLeaseLost || ticketWriteFailure) {
+              await authority.issue({
                 sandboxId: value.sandbox.id,
                 ownerId: f.caller.userId,
                 configuration: {},
@@ -1781,9 +1820,26 @@ test.each(boatResumeRecoveryCases)(
       await expect(
         createRuntimeResume(requestSql, ENCRYPTION_KEY, f.bridge, prepare)(f.caller, request),
       ).rejects.toThrow();
+      const observation = await f.db.query(
+        `select observed_provider_id, observed_generation::int, observed_expires_at
+         from public.boat_runtime_extension_state where sandbox_id=$1`,
+        [f.row.id],
+      );
+      expect(observation.rows).toEqual(
+        condition === "confirmed"
+          ? [{ observed_provider_id: "physical", observed_generation: 2, observed_expires_at: physicalDeadline }]
+          : [],
+      );
+      expect(attemptedTicketWrite).toBe(ticketWriteFailure);
       expect(handoffRolledBack).toBe(rollbackHandoff || fault);
       expect(canIssueTicket).toBe(
-        !taint && !expired && !unverified && !responseLost && !unsafeCoverage && !coverageLeaseLost,
+        !taint &&
+          !expired &&
+          !unverified &&
+          !responseLost &&
+          !unsafeCoverage &&
+          !coverageLeaseLost &&
+          !ticketWriteFailure,
       );
       const { rows } = await f.db.query(
         `select l.stage, case when l.stage='accepted' then l.at=r.created_at else l.at>=r.created_at end as dated_correctly

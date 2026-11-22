@@ -40,7 +40,7 @@ export function runtimeResumePlacement<H extends Provider>(
       checkpoint: Checkpoint,
       observe: ResumeStageObserver,
     ): Promise<unknown>;
-    verifyRestoredCoverage?(host: H, sandbox: Sandbox, signal: AbortSignal): Promise<void>;
+    verifyRestoredCoverage?(host: H, sandbox: Sandbox, signal: AbortSignal): Promise<(tx: Sql) => Promise<void>>;
     stop(host: H, sandbox: Sandbox): Promise<void>;
   },
 ): RuntimeResumePrepare {
@@ -53,15 +53,17 @@ export function runtimeResumePlacement<H extends Provider>(
       sandbox.credentialVersion ?? undefined,
     );
     const host = await placement.host(caller, sandbox);
-    const verifyRestoredCoverage = async (signal: AbortSignal, assertDispatch?: () => Promise<void>) => {
-      if (!placement.verifyRestoredCoverage) return;
-      await assertDispatch?.();
-      signal.throwIfAborted();
-      await placement.verifyRestoredCoverage(host, sandbox, signal);
-    };
     return {
-      start: (signal, restoreCheckpoint, confirmActivation, assertDispatch, ticket) =>
-        options.policy.start({
+      start: (signal, restoreCheckpoint, confirmActivation, assertDispatch, ticket) => {
+        if (placement.verifyRestoredCoverage && !ticket) throw Error(placement.admissionError);
+        let recordCoverage: ((tx: Sql) => Promise<void>) | undefined;
+        const verifyRestoredCoverage = async (signal: AbortSignal, assertDispatch?: () => Promise<void>) => {
+          if (!placement.verifyRestoredCoverage) return;
+          await assertDispatch?.();
+          signal.throwIfAborted();
+          recordCoverage = await placement.verifyRestoredCoverage(host, sandbox, signal);
+        };
+        return options.policy.start({
           host,
           actor,
           sandbox,
@@ -69,7 +71,19 @@ export function runtimeResumePlacement<H extends Provider>(
           signal,
           restoreCheckpoint,
           ...(assertDispatch ? { assertDispatch } : {}),
-          ...(ticket ? { ticketGuard: ticket.guard } : {}),
+          ...(ticket
+            ? {
+                ticketGuard: {
+                  lockPrerequisites: ticket.guard.lockPrerequisites,
+                  async check(tx: Sql) {
+                    await ticket.guard.check(tx);
+                    if (!placement.verifyRestoredCoverage) return;
+                    if (!recordCoverage) throw Error(placement.admissionError);
+                    await recordCoverage(tx);
+                  },
+                },
+              }
+            : {}),
           ...(ticket?.recovery
             ? {
                 ...(placement.verifyRestoredCoverage
@@ -111,7 +125,8 @@ export function runtimeResumePlacement<H extends Provider>(
                   await observe("machine_started");
                 },
               }),
-        }),
+        });
+      },
       stop: () => placement.stop(host, sandbox),
     };
   };
