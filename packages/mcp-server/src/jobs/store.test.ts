@@ -324,8 +324,22 @@ async function modalAdmissionFixture(visibility: "org" | "private" = "private") 
     orgId: f.people.org,
     ownerId: f.people.owner,
     request: { key: "launch-key", payload: "launch-digest" },
-    sandbox: { goldenId, harness: "codex", model: "gpt-5", reasoningEffort: "medium", effectiveTtlSeconds: 1800 },
-    allocation: { source: { kind: "snapshot", ref: "snapshot" }, size: null, computeTtlSeconds: 3600 },
+    sandbox: {
+      goldenId,
+      harness: "codex",
+      model: "gpt-5",
+      reasoningEffort: "medium",
+      effectiveTtlSeconds: 1800,
+      machineSize: {
+        version: 1,
+        requested: null,
+        effective: null,
+        source: "legacy",
+        repositoryDir: null,
+        capacity: null,
+      },
+    },
+    allocation: { source: { kind: "snapshot", ref: "snapshot" }, computeTtlSeconds: 3600 },
     initialPrompt: "initial instructions",
     deadline: new Date("2100-01-01T00:00:00Z"),
     maxAttempts: 3,
@@ -811,12 +825,31 @@ test.each(["active secret", "revoked secret", "changed snapshot", "changed conne
 
 test("Modal admission commits an unbound sandbox, scoped job and encrypted turn intent before a claim", async () => {
   const { sql, db, input, store } = await modalAdmissionFixture();
+  const machineSize = {
+    version: 1,
+    requested: null,
+    effective: "small",
+    source: "repository",
+    repositoryDir: "workspace",
+    capacity: {
+      provider: "modal",
+      provenance: "requested-provider-resources",
+      vcpus: 2,
+      memoryMiB: 4096,
+      cpuPhysicalCores: 1,
+      cpuLimitPhysicalCores: 1,
+      memoryLimitMiB: 4096,
+      boatType: null,
+    },
+  } as const;
+  const resourceProject = { version: 1, ...workspaceConfig.repos[0]! } as const;
+  input.sandbox = { ...input.sandbox, repositoryDir: "workspace", machineSize, resourceProject };
   const { sandbox } = await admitModalLaunch(sql, launchEncryptionKey, input);
   expect(sandbox).toEqual({ id: expect.any(String), status: "starting" });
   expect(
     (
       await db.query(
-        `select s.provider_sandbox_id, s.lifecycle_generation::text as generation, s.status, p.snapshot_id,
+        `select s.provider_sandbox_id, s.lifecycle_generation::text as generation, s.status, p.snapshot_id, s.machine_size, s.resource_project,
               s.effective_ttl_seconds, extract(epoch from (s.expires_at-s.created_at))::int as expiry_seconds
        from sandboxes s join sandbox_source_snapshots p on p.sandbox_id=s.id where s.id=$1`,
         [sandbox.id],
@@ -828,6 +861,8 @@ test("Modal admission commits an unbound sandbox, scoped job and encrypted turn 
       generation: "1",
       status: "starting",
       snapshot_id: "snapshot",
+      machine_size: machineSize,
+      resource_project: resourceProject,
       effective_ttl_seconds: 1800,
       expiry_seconds: 1800,
     },
@@ -837,7 +872,7 @@ test("Modal admission commits an unbound sandbox, scoped job and encrypted turn 
     sandbox_id: sandbox.id,
     generation: "1",
     payload: {
-      allocation: { ...input.allocation, source: { kind: "snapshot", ref: "im-snapshot" } },
+      allocation: { ...input.allocation, size: "small", source: { kind: "snapshot", ref: "im-snapshot" } },
       snapshot: "snapshot",
       modal: { workspace: "workspace", environment: "main", appId: "ap-test" },
     },
