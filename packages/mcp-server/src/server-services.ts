@@ -49,7 +49,7 @@ import { createModalArtifactCache } from "./modal-artifact-cache.ts";
 import { createModalIntegration } from "./modal-integration.ts";
 import { modalRuntimeLaunch } from "./modal-runtime-launch.ts";
 import { modalRuntimeResume } from "./modal-runtime-resume.ts";
-import { createModelAuthOwnership } from "./model-auth.ts";
+import { createModelAuthOwnership, recordNativeReadFailure } from "./model-auth.ts";
 import { createModelUsageApi } from "./model-usage.ts";
 import type { NamedLaunchCredentials } from "./named-credentials.ts";
 import { withNativeLogJournal } from "./native-log-journal.ts";
@@ -186,13 +186,20 @@ export async function createServerServices(env: Record<string, string | undefine
         ...boatInventory,
         sanitizeEvents: async (provider, id, events) => {
           if (!caller) throw Error("Native events require trusted Armada caller scope.");
-          return modelAuth.redactEvents(provider, id, caller, events);
+          return modelAuth.redactBoatEvents(provider, id, caller, events);
         },
         beforeStop: async (provider, id) => {
           if (caller) await modelAuth.beforeStop(provider, id, caller);
         },
         afterPrompt: async (provider, id) => {
-          if (caller) await modelAuth.capture(provider, id, caller);
+          if (caller) {
+            try {
+              await modelAuth.capture(provider, id, caller);
+            } catch (error) {
+              recordNativeReadFailure("getPrompt", error);
+              throw error;
+            }
+          }
         },
         resumeRefused: (provider, id) => modelAuth.releaseProviderCapacity(provider, id),
         beforeResume: async (provider, id) => {
