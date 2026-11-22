@@ -732,7 +732,9 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
           )
             return;
           if (!id) await claim(row.id);
-          if (row.id !== id || (row.status !== "ready" && !(dockerInput && row.status === "running"))) return;
+          if (row.id !== id) return;
+          if (!dockerInput && row.status === "failed") throw new Error("sandbox_not_ready");
+          if (row.status !== "ready" && !(dockerInput && row.status === "running")) return;
           const readBudget = () => Math.min(5_000, remainingMs - (io.now() - readStarted));
           const statusBudget = readBudget();
           if (statusBudget <= 0) return;
@@ -743,7 +745,7 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
             statusMessage?: string | null;
           }>("sandbox/status", { org: c.org, id: row.id }, statusBudget).catch(() => undefined);
           if (status?.id !== row.id) return;
-          if (provider === "modal") {
+          if (!dockerInput) {
             if (status.settled !== true) return;
             if (status.status !== "ready" || status.statusMessage !== null) throw new Error("sandbox_not_ready");
             return row;
