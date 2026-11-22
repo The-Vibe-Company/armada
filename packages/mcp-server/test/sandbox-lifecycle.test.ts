@@ -652,10 +652,10 @@ for (const evidence of [
     if (!binding) throw Error("Missing Boat sandbox.");
     const sql = bunLikeSql(db);
     const coveredDeadline = new Date(binding.expires_at.getTime() + 600_000);
-    const terminalJob = evidence === "terminal-covered" || evidence === "terminal-short";
-    const hasPendingJob = evidence === "covered" || terminalJob || evidence === "lost-observation-response";
-    let physicalDeadline =
-      evidence === "covered" || evidence === "terminal-covered" ? coveredDeadline : binding.expires_at;
+    const shouldClear = evidence === "terminal-covered" || evidence === "lost-observation-response";
+    const terminalJob = shouldClear || evidence === "terminal-short";
+    const hasPendingJob = evidence === "covered" || terminalJob;
+    let physicalDeadline = evidence === "covered" || shouldClear ? coveredDeadline : binding.expires_at;
     const pendingJobId = hasPendingJob
       ? await createJobsStore(sql, ENCRYPTION_KEY).enqueue(
           "boat_runtime_extend",
@@ -671,8 +671,12 @@ for (const evidence of [
         id,
         pendingJobId,
       ]);
-    if (terminalJob || evidence === "lost-observation-response")
-      await db.query("update public.jobs set state='failed' where id=$1", [pendingJobId]);
+    const failureReceipt = { reason: "deadline" };
+    if (terminalJob)
+      await db.query("update public.jobs set state='failed', outcome=$2::jsonb where id=$1", [
+        pendingJobId,
+        JSON.stringify(failureReceipt),
+      ]);
     if (evidence === "scoped-short")
       await db.query(
         `insert into public.armada_access_parents(id,kind,org_id,owner_id,sandbox_id,state)
@@ -743,10 +747,8 @@ for (const evidence of [
     if (evidence === "lost-observation-response") {
       expect(stops).toBe(0);
       expect(await readSandbox()).toMatchObject({ status: "running", expires_at: binding.expires_at });
-      expect(await readObservation()).toMatchObject([
-        { pending_job_id: pendingJobId, observed_expires_at: binding.expires_at },
-      ]);
-      physicalDeadline = coveredDeadline;
+      expect(await readObservation()).toMatchObject([{ pending_job_id: null, observed_expires_at: coveredDeadline }]);
+      physicalDeadline = new Date(coveredDeadline.getTime() + 60_000);
       await db.query("update sandboxes set reconcile_after='-infinity' where id=$1", [id]);
       const successor = createSandboxLifecycle(sql, async () => provider);
       expect(await successor.reconcileOne()).toBe(true);
@@ -780,8 +782,7 @@ for (const evidence of [
       shouldStop || hasPendingJob
         ? [
             {
-              pending_job_id:
-                evidence === "terminal-covered" || evidence === "lost-observation-response" ? null : pendingJobId,
+              pending_job_id: shouldClear ? null : pendingJobId,
               observed_provider_id: "bx_23456789",
               observed_generation: binding.lifecycle_generation,
               observed_at: expect.any(Date),
@@ -790,6 +791,10 @@ for (const evidence of [
           ]
         : [],
     );
+    if (terminalJob)
+      expect((await db.query("select state,outcome from public.jobs where id=$1", [pendingJobId])).rows).toEqual([
+        { state: "failed", outcome: failureReceipt },
+      ]);
   });
 }
 
