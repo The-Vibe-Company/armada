@@ -65,6 +65,7 @@ const ordinary = args.includes("--ordinary"),
 const admission = defects.includes("job-admission");
 const sandboxId = admission ? "88888888-8888-4888-8888-888888888888" : "worker";
 let launchRef: string | undefined;
+let admissionInventoryRead = false;
 let admissionStatusReads = 0;
 let initialPromptId = "prompt";
 let conversationId = "conversation";
@@ -412,7 +413,7 @@ const fakeFetch = async (url: string | URL | Request, options?: RequestInit): Pr
   }
   if (path.endsWith("/sandbox/status")) {
     if (admission) {
-      if (body.id !== sandboxId || !launchRef || stops) throw Error("wrong admitted sandbox status");
+      if (body.id !== sandboxId || !admissionInventoryRead || stops) throw Error("wrong admitted sandbox status");
       const settled = ++admissionStatusReads > 1;
       return Response.json({
         id: sandboxId,
@@ -1006,6 +1007,7 @@ const fakeFetch = async (url: string | URL | Request, options?: RequestInit): Pr
       (variables && (body.org !== orgId || body.golden !== "golden-id"))
     )
       throw Error("unsafe inventory lookup");
+    admissionInventoryRead = true;
     return Response.json({
       sandboxes: [{ id: sandboxId, provider: "modal", harness: "codex", status: "starting", externalRef: launchRef }],
     });
