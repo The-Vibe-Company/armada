@@ -1384,6 +1384,7 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
         type LaunchReceipt = {
           sandbox: {
             id: string;
+            provider?: string;
             skills?: unknown;
             harness?: string;
             model?: string;
@@ -1470,6 +1471,12 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
         // Retain the cleanup handle even if later response validation fails.
         if (typeof parent?.id === "string" && parent.id) sandboxId = parent.id;
         if (!sandboxId || result.promptId) fail("invalid_response");
+        if (
+          !recovered &&
+          parent?.provider !== item.provider &&
+          !(acceptsAdmission && parseLaunchAdmissionReceipt(item.provider, result))
+        )
+          fail("invalid_response");
         if (requiresLaunchReceipt && result.golden?.id !== item.goldenId) fail("invalid_response");
         if (scope)
           await step("scoped_parent_configuration", async () => {
