@@ -100,11 +100,13 @@ Raw stop still cleans compute but does not claim a checkpoint. Reuse requires a
 same-current-epoch receipt whose final prefix still matches after stop fencing.
 
 Enrolled Boat stop records a checkpoint note. Dirty work recovery relies on
-confirmed retained disk. The stop receipt provides no Git work archive. The
-boot-ID probe identifies the executing machine, while archive collection also
-requires trusted proof that its checkpoint barrier holds on that machine
-through collection. The checkpoint note is the accepted outcome for the
-current Boat host contract. [Archive gate decision](https://github.com/The-Vibe-Company/armada/issues/2741#issuecomment-7081451175)
+confirmed retained disk. The stop receipt provides no Git work archive. The probe
+reads the executing Linux boot ID, which can survive a retained restore. Boat can
+also admit a command after an independent resume, so the preceding liveness read
+cannot bind the command to the same live incarnation. Archive collection needs
+that binding and trusted proof that the checkpoint barrier holds through
+collection. The checkpoint note is the accepted outcome for the current Boat
+host contract. [Archive gate decision](https://github.com/The-Vibe-Company/armada/issues/2741#issuecomment-7081451175)
 
 Owner API `POST /api/v1/sandbox/resume-runtime-v1`:
 
