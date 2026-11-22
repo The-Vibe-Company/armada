@@ -1,5 +1,41 @@
 # Changelog
 
+## [9.0.0](https://github.com/The-Vibe-Company/armada/compare/v8.0.0...v9.0.0) (2026-11-22)
+
+
+### ⚠ BREAKING CHANGES
+
+* **server:** Boat launches use the runtime by default ([#4012](https://github.com/The-Vibe-Company/armada/issues/4012))
+* **server:** delete Modal native integration in the server ([#4009](https://github.com/The-Vibe-Company/armada/issues/4009))
+
+### Features
+
+* **launch:** Modal launch runs as a job and answers `starting` ([#4005](https://github.com/The-Vibe-Company/armada/issues/4005)) ([0b1d3fd](https://github.com/The-Vibe-Company/armada/commit/0b1d3fd05a47f9907ba06df1eb589a3ef5609e79))
+* **server:** Boat launches use the runtime by default ([#3988](https://github.com/The-Vibe-Company/armada/issues/3988)) ([2e4de32](https://github.com/The-Vibe-Company/armada/commit/2e4de3275f27a22c0b3f1c2c3a8e6d02ec672fae))
+* **server:** Boat launches use the runtime by default ([#3996](https://github.com/The-Vibe-Company/armada/issues/3996)) ([e43f94c](https://github.com/The-Vibe-Company/armada/commit/e43f94c4ebc7605138340dfe397447a539d9af24))
+* **server:** Boat launches use the runtime by default ([#3998](https://github.com/The-Vibe-Company/armada/issues/3998)) ([64067a7](https://github.com/The-Vibe-Company/armada/commit/64067a7acbde3c27f73a906915fdb8653f721226))
+* **server:** Boat launches use the runtime by default ([#4000](https://github.com/The-Vibe-Company/armada/issues/4000)) ([d4a12f0](https://github.com/The-Vibe-Company/armada/commit/d4a12f0c2d52fc958147587b9c74648449fe1839))
+* **server:** Boat launches use the runtime by default ([#4004](https://github.com/The-Vibe-Company/armada/issues/4004)) ([96593de](https://github.com/The-Vibe-Company/armada/commit/96593deaa89064bd6163d59c20904e50bb070ac2))
+* **server:** Boat launches use the runtime by default ([#4007](https://github.com/The-Vibe-Company/armada/issues/4007)) ([aed5e16](https://github.com/The-Vibe-Company/armada/commit/aed5e165e60281c67ea320f5adee10296b993b34))
+* **server:** Boat launches use the runtime by default ([#4008](https://github.com/The-Vibe-Company/armada/issues/4008)) ([218b559](https://github.com/The-Vibe-Company/armada/commit/218b5594e477dc72231c7a0736959d212644cc0c))
+* **server:** Boat launches use the runtime by default ([#4012](https://github.com/The-Vibe-Company/armada/issues/4012)) ([1992e75](https://github.com/The-Vibe-Company/armada/commit/1992e753e3a64081fd42cd7b5981e53394253457))
+
+
+### Bug Fixes
+
+* **boat:** owner stop stuck in stopping when snapshot verifiedAt precedes stoppedAt (regression after [#3904](https://github.com/The-Vibe-Company/armada/issues/3904)) ([#3994](https://github.com/The-Vibe-Company/armada/issues/3994)) ([926f37d](https://github.com/The-Vibe-Company/armada/commit/926f37d69f71bf2cf4e085dd8014926be4232660))
+* **boat:** reading events right after a send returns 409 (VaultError, phase events) ([#3997](https://github.com/The-Vibe-Company/armada/issues/3997)) ([ae94686](https://github.com/The-Vibe-Company/armada/commit/ae9468678e6d55e105238a0335b6530eedc30cdf))
+* **boat:** reading events right after a send returns 409 (VaultError, phase events) ([#3999](https://github.com/The-Vibe-Company/armada/issues/3999)) ([cade3b5](https://github.com/The-Vibe-Company/armada/commit/cade3b5d7370419a09ebd9f1cbeaa382bc1fa7e0))
+* **boat:** reading events right after a send returns 409 (VaultError, phase events) ([#4001](https://github.com/The-Vibe-Company/armada/issues/4001)) ([82aade3](https://github.com/The-Vibe-Company/armada/commit/82aade30ee230bc869d773281c0b5e2e718fe2e7))
+* **boat:** reading events right after a send returns 409 (VaultError, phase events) ([#4003](https://github.com/The-Vibe-Company/armada/issues/4003)) ([71cbd2d](https://github.com/The-Vibe-Company/armada/commit/71cbd2de4899d1f0794c5be41c0565dc23410cc0))
+* **boat:** recorded status stays running for minutes after a native turn ends ([#4002](https://github.com/The-Vibe-Company/armada/issues/4002)) ([ff299eb](https://github.com/The-Vibe-Company/armada/commit/ff299ebcffa7db849569a10952fec3babf96eb6b))
+* **server:** successful provider calls and normal events logged at error level ([#3995](https://github.com/The-Vibe-Company/armada/issues/3995)) ([307dd4f](https://github.com/The-Vibe-Company/armada/commit/307dd4f9faeaf2c374a2ab74bd4888b395cfb4d0))
+
+
+### Code Refactoring
+
+* **server:** delete Modal native integration in the server ([#4009](https://github.com/The-Vibe-Company/armada/issues/4009)) ([a920de6](https://github.com/The-Vibe-Company/armada/commit/a920de61c9caade2815f8b2db9dca60b15b9f9ef))
+
 ## [8.0.0](https://github.com/The-Vibe-Company/armada/compare/v7.0.0...v8.0.0) (2026-11-22)
 
 
