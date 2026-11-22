@@ -311,7 +311,7 @@ async function captureAndStore(
     if (expired()) return;
     if (!stop) return "pending";
     stopLoaded = true;
-    const boatCapture = stop.boat_runtime && provider.id === "boat" && !!provider.captureRuntimeWork;
+    const boatCapture = stop.boat_runtime && !!provider.captureRuntimeWork;
     const runtimeCapture = stop.modal_runtime || boatCapture;
     if (runtimeCapture || (!stop.boat_runtime && (authority || stop.stop_token !== null))) {
       if (!stop.work_stop_owned || !authority) return "pending";

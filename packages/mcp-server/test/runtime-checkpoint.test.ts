@@ -275,9 +275,6 @@ function stopPort(f: Awaited<ReturnType<typeof runtimeFixture>>, commands = f.br
         ? { id: physicalId, state: "stopped", stoppedAt: new Date(), retainedSnapshot: "usable" }
         : { id: physicalId, state: "running", physicalGeneration: "2" };
     },
-    async captureRuntimeWork() {
-      return { status: "clean" };
-    },
     async stop() {
       calls++;
       stopped = true;
@@ -299,7 +296,7 @@ function stopPort(f: Awaited<ReturnType<typeof runtimeFixture>>, commands = f.br
             },
           },
           undefined,
-          host.captureRuntimeWork,
+          f.row.provider === "modal" ? async () => ({ status: "clean" }) : undefined,
         ),
     },
     calls: () => calls,

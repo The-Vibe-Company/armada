@@ -21,12 +21,14 @@ export function createRuntimeProvider(
   modalCapture?: ModalRuntimeCapture,
 ): RuntimeWorkProvider {
   let setRuntimeTtl: RuntimeTtlPort["setRuntimeTtl"];
-  const captureRuntimeWork = host.id === "boat" ? host.captureRuntimeWork?.bind(host) : modalCapture;
+  let captureRuntimeWork: RuntimeWorkPort["captureRuntimeWork"];
   switch (host.id) {
     case "boat":
       setRuntimeTtl = host.setRuntimeTtl;
+      captureRuntimeWork = host.captureRuntimeWork?.bind(host);
       break;
     case "modal":
+      captureRuntimeWork = modalCapture;
       break;
     default:
       throw Error("boat_runtime_host_required");
