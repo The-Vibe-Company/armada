@@ -37,6 +37,7 @@ export type Defect =
   | "lost-followup"
   | "job-admission"
   | "idle-setup-failed"
+  | "idle-incomplete-history"
   | "lost-launch"
   | "mcp-error-result"
   | "mcp-no-result"
@@ -2029,6 +2030,15 @@ export const scenarios: Scenario[] = [
     args: ["--idle"],
     defects: ["job-admission", "idle-setup-failed"],
     expected: { ...expected.idleBadReceipt, stderrContains: ["Admitted Modal launch or initial turn failed."] },
+  },
+  {
+    label: "idle-job-admission-incomplete-history",
+    args: ["--idle"],
+    defects: ["job-admission", "idle-incomplete-history"],
+    expected: {
+      ...expected.idleBadReceipt,
+      stderrContains: ["Idle archive already contains inference or lacks complete common-runtime provenance."],
+    },
   },
   { label: "idle", args: ["--idle"], defects: [], expected: expected.idle },
   { label: "idle-resume", args: ["--resume", "--idle"], defects: [], expected: expected.idleResume },

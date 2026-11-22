@@ -90,6 +90,7 @@ interface Reply {
   checkpoint?: { state?: string; watermark?: number; acknowledgedSequence?: number };
   source?: string;
   cursor?: string | null;
+  hasMore?: boolean;
   events?: AgentEvent[];
   runtimeFailure?: unknown;
   sandboxes?: {
@@ -841,11 +842,12 @@ try {
     const history = await api("logs/read", { id, limit: 1000 });
     if (
       history.source !== "armada-runtime" ||
+      history.hasMore !== false ||
       history.runtimeFailure ||
       !Array.isArray(history.events) ||
       history.events.some((event) => event.kind === "prompt" || event.kind === "message")
     )
-      throw Error("Idle archive already contains inference or lacks common-runtime provenance.");
+      throw Error("Idle archive already contains inference or lacks complete common-runtime provenance.");
     let emptySource: { epoch: string; watermark: number; file: string; nonce: string } | undefined;
     if (emptyResumeMode) {
       const file = `/home/user/.retained-${crypto.randomUUID()}`,
@@ -868,11 +870,12 @@ try {
       const history = await api("logs/read", { id, limit: 1000 });
       if (
         history.source !== "armada-runtime" ||
+        history.hasMore !== false ||
         history.runtimeFailure ||
         !Array.isArray(history.events) ||
         history.events.some((event) => event.kind === "prompt" || event.kind === "message")
       )
-        throw Error("Stopped empty checkpoint contains inference or lost archive provenance.");
+        throw Error("Stopped empty checkpoint contains inference or lost complete archive provenance.");
       emptySource = { epoch: sourceEpoch, watermark: sealed.receipt.checkpoint.watermark, file, nonce };
       shouldStop = true; // The known sandbox may activate even if its first-send response is lost.
     }

@@ -652,6 +652,7 @@ const fakeFetch = async (url: string | URL | Request, options?: RequestInit): Pr
     if (idle && !firstSends)
       return Response.json({
         source: "armada-runtime",
+        hasMore: defects.includes("idle-incomplete-history"),
         events:
           defects.includes("idle-running-history") || (defects.includes("empty-hidden-history") && stops > 0)
             ? [{ id: "unexpected", at: 1, kind: "prompt", promptId: "unexpected", status: "finished", text: "" }]
