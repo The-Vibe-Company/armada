@@ -20,6 +20,7 @@ export interface TemplateSkillCase {
 type TemplateSkillCode =
   | "invalid_response"
   | "template_launch_failed"
+  | "launch_observation_timeout"
   | "template_answer_mismatch"
   | "template_exec_inherited"
   | "invalid_receipt"
@@ -228,9 +229,9 @@ export async function runTemplateSkillCase(item: TemplateSkillCase, io: Template
             prompt: `Read the environment variable ${key} using your terminal tool. Reply with only its exact value, with no formatting or other text. Do not modify files.`,
           };
           const timeout = io.launchTimeout(`${label}_launch`);
-          async function observeLaunch(requirePrompt: boolean) {
+          const admissionDeadline = Math.min(io.deadline, io.now() + timeout);
+          async function observeLaunch(requirePrompt: boolean, until = Math.min(io.deadline, io.now() + timeout)) {
             if (item.provider !== "modal") return;
-            const until = Math.min(io.deadline, io.now() + timeout);
             let claimed = admitted;
             return observeSmokeLaunch(until, io, async (remaining) => {
               const inventory = await io
@@ -327,8 +328,8 @@ export async function runTemplateSkillCase(item: TemplateSkillCase, io: Template
             if (!Array.isArray(pins) || pins.length !== (pin ? 1 : 0) || (pin && pins[0] !== pin))
               fail("invalid_receipt");
             admitted = true;
-            const observed = await observeLaunch(true);
-            if (!observed?.promptId) fail("invalid_response");
+            const observed = await observeLaunch(true, admissionDeadline);
+            if (!observed?.promptId) fail("launch_observation_timeout");
             return { ...result, promptId: observed.promptId };
           }
           if (typeof result?.id === "string" && result.id) record.sandboxId = result.id;
@@ -355,12 +356,12 @@ export async function runTemplateSkillCase(item: TemplateSkillCase, io: Template
           return result;
         }),
       );
-      if (pin)
+      if (pin || admitted)
         await io.measuredStep(`${kind}_skill_receipt`, async () => {
           const manifestSkills = result.manifest?.skillReceipts;
           const status = await api<{ skills?: unknown }>("sandbox/status", { id: record.sandboxId });
-          verifyReceipts(status.skills, [pin]);
-          if (recovered || admitted) return;
+          verifyReceipts(status.skills, pin ? [pin] : []);
+          if (!pin || recovered || admitted) return;
           verifyReceipts(manifestSkills, [pin]);
           for (const field of ["reference", "version", "skillId", "checksum", "origin"] as const)
             if (manifestSkills[0]?.[field] !== status.skills[0]?.[field]) fail("invalid_receipt");
