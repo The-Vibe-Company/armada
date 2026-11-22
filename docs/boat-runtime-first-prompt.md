@@ -1,23 +1,21 @@
 # Boat runtime
 
-The repository default for ordinary Boat launches is currently `native`. Runtime-selected launches
-use Armada's compiled runtime for prompts, journal/history and private model
-configuration. Native Boat sessions remain native; Modal retains its existing
-tunnel. There is no native-agent fallback after runtime failure and no migration
-of existing native conversations. See [runtime operations](runtime-startup.md)
+Ordinary new Boat launches default to Armada's compiled runtime for prompts,
+journal/history and private model configuration. Existing native Boat sessions
+keep their recorded launch path and conversations. Runtime launch failures
+are reported on the selected path. See [runtime operations](runtime-startup.md)
 for artifacts, enrolment, transport, secrets and diagnostic checks.
 
-## Enablement and launch
+## Deployment and launch
 
 An authorized operator deploys the merged schema and matching artifact-bearing
 server/runtime image through the normal process. Do not deploy or apply migrations
 from a worker. Set trusted server `ARMADA_BOAT_RUNTIME_MANIFEST` to the matching
 `/opt/armada/runtime-manifests/x64.json` (or arm64 on that architecture).
 The normal image publishes runtime/harness bytes automatically; no manual copy.
-Set `ARMADA_BOAT_AGENT_PATH=runtime` to select Armada runtime for ordinary new
-Boat launches. Server startup with this setting requires valid installed runtime
-artifacts. The startup error names `ARMADA_BOAT_RUNTIME_MANIFEST` and
-`ARMADA_RUNTIME_ARTIFACT_DIR` when artifact validation fails.
+Leave `ARMADA_BOAT_AGENT_PATH` unset to use the runtime default. Server startup
+in runtime mode requires valid installed runtime artifacts. On validation failure,
+the startup error names `ARMADA_BOAT_RUNTIME_MANIFEST` and `ARMADA_RUNTIME_ARTIFACT_DIR`.
 
 `POST /api/v1/launch/options` reports `boatRuntime.defaultPath` and
 `boatRuntime.enabled`, plus capability versions for diagnostics, follow-up,
@@ -309,18 +307,17 @@ assistant assertion is a tool-call pass. Local pinned stdio remains unsupported;
 its production use needs owner inventory, not speculative porting or deletion.
 This procedure is not evidence of deployed acceptance or permission to flip defaults.
 
-## Environment-wide Boat default switch (prepared, not flipped)
+## Environment-wide Boat default
 
 Trusted **server** setting `ARMADA_BOAT_AGENT_PATH=native|runtime` chooses the
-ordinary Boat launch path. Unset means `native`; any other value fails startup.
+ordinary Boat launch path. Unset means `runtime`. Invalid values fail startup.
 The coordinator controls this setting through the server deployment process. The
 smoke client does not select the default. Ordinary API, CLI, dashboard, MCP
 `sandbox_launch`, template and routine launches share the same Core launch
 selection: no client flag/endpoint change. Modal/Docker selection is unchanged.
 Runtime mode uses the image's matching `/opt/armada/runtime-manifests/<arch>.json`
-(or the existing trusted manifest override). When `ARMADA_BOAT_AGENT_PATH=runtime`,
-startup requires the manifest and its published runtime and harness artifacts
-in `ARMADA_RUNTIME_ARTIFACT_DIR`. Each published artifact must be a regular file
+(or the existing trusted manifest override). In runtime mode, startup requires the manifest
+and its published runtime and harness artifacts in `ARMADA_RUNTIME_ARTIFACT_DIR`. Each published artifact must be a regular file
 named by its manifest digest, with the declared byte count. Valid
 image-installed artifacts keep the explicit runtime route/retained sessions
 available during rollback. Missing/corrupt runtime-only metadata does not prevent
@@ -333,7 +330,7 @@ an existing runtime/native session or its conversation, and never retries a
 failed launch on the other path. Existing template request keys retain their
 recorded success/refusal; use the normal new-request policy for new work.
 
-### Refused today / remaining parity (do not call this cutover-ready)
+### Workspace preparation and launch limits
 
 Repository refresh/init is now performed at launch through private runtime
 workspace commands, reusing the native command builders and execution policy:
@@ -346,13 +343,11 @@ GitHub wrappers, not borrowed model keys or native Boat exec/SSH. Background or
 failed setup cannot proceed to inference. General exec remains a separate control
 path; this private operation is launch-only.
 
-Remaining refusals:
-- OpenCode on Boat, private scoped Armada-access launches, and requested helper
-  capabilities. Claude support is merged separately; it is not implemented here.
-- Templates/routines requiring native application-secret
-  environment delivery; plain requests still traverse the runtime default policy.
-- Pinned local stdio MCP; connected remote HTTP/SSE defaults remain supported.
-- Legacy unbound model credentials; runtime requires an authorized bound account.
+Runtime launches require an authorized bound model account and refuse requested
+helper capabilities. The owner `sandbox/extend` operation returns
+`extension_state` for enrolled Boat before provider I/O. Choose the required lifetime at launch. Extension is
+deferred to [#4011](https://github.com/The-Vibe-Company/armada/issues/4011).
+The stop receipt continues to carry the checkpoint note described above.
 
 Boat resume now automatically reauthorizes connected GitHub access after verified
 restore health and before MCP/inference, under the resume activity lease. Failed
@@ -360,18 +355,16 @@ preparation prevents inference; identical-request reconciliation does not activa
 compute again, and an accepted prompt replay does not rotate GitHub authority.
 Modal resume behavior is unchanged. No repository/init steps rerun.
 
-Other follow-on gaps include model changes/arbitrary new conversations and the remaining scoped/binding/helper
-features above. Public steer/interrupt/exec controls merged separately; use their
-own acceptance gates, not this workspace check. Unsupported operations do not
-use native fallback.
+Model changes and arbitrary new conversations remain unsupported. Use the
+dedicated acceptance checks for public steer, interrupt and exec controls.
 Record deployed evidence separately for each required parity row.
 
 ### Ordinary launch path check
 
 For an on-demand check of the runtime default, use the
-[ordinary launch probe](#proving-ordinary-launch-selection-before-cutover)
-below. Record the selected path and the archived runtime source in the owner
-parity table.
+[ordinary launch probe](#verifying-the-ordinary-launch-path)
+below. Record the selected path and the archived runtime source in the
+[coordinator ledger](native-agent-path-retirement.md#coordinator-ledger).
 
 ## Repository/init runtime check
 
@@ -416,13 +409,13 @@ work remains with #1419/#1420.
 
 ## Cutover boundary
 
-The [owner parity table](https://github.com/The-Vibe-Company/armada/issues/1161#issuecomment-6848248708)
-is the live gate: converge production-used MCP/tools, skills, usage/cost,
-subscriptions and Claude parity first. The coordinator runs Boat checks on demand against authorized resources. See the
-[architecture program](https://github.com/The-Vibe-Company/armada/issues/2835)
-for cutover and native retirement requirements. Do not add product
-modes/compatibility layers or automatically port unused native-only features;
-ask the owner which features are actually used. Modal keeps its existing tunnel.
+The [owner cutover decision](https://github.com/The-Vibe-Company/armada/issues/2741#issuecomment-7082117919)
+sets the Boat runtime default with lifetime extension deferred and stop preservation
+limited to the checkpoint note. After release, the coordinator runs the
+[production checklist](native-agent-path-retirement.md#production-checklist)
+on authorized resources. The Boat drain and native removal follow that evidence
+and the release cycle required by the
+[architecture program](https://github.com/The-Vibe-Company/armada/issues/2835).
 
 ## Claude acceptance (#1419)
 
@@ -588,9 +581,8 @@ call was made, and Boat must never be added to staging/release acceptance.
 
 ### Frozen readable variables on Boat templates/routines
 
-With the existing server setting `ARMADA_BOAT_AGENT_PATH=runtime`, ordinary
-Boat template/routine launches now deliver their frozen readable-variable map
-through encrypted runtime enrolment. Codex and Claude receive the values in their
+On the default runtime path, Boat template and routine launches deliver their
+frozen readable-variable map through encrypted runtime enrolment. Codex and Claude receive the values in their
 selected harness environment; the runtime also receives `readableVariables` for
 its existing model-credential-free execution environment. No native variable
 installation, new public flag or mutable-source lookup is used. Resume uses the
@@ -641,7 +633,7 @@ without the two redundant fields: require the same receipt and no extra turn.
 A different model/effort must refuse without starting work. Do not allocate a
 sandbox just for this check; Boat is never included in staging acceptance.
 
-### Proving ordinary launch selection before cutover
+### Verifying the ordinary launch path
 
 The existing coordinator checker accepts `--ordinary`. This requires
 `launch/options.boatRuntime.defaultPath:runtime` **before allocation**, then calls
@@ -666,8 +658,10 @@ same-conversation recall under the new epoch and stopped history. The lifecycle
 still uses one allocation and one retained-machine activation, no automatic
 allocation retry. Add existing MCP/skills flags only with their real prerequisites.
 Boat is coordinator-only/on-demand in production, never staging/release acceptance.
-This checker mode is evidence tooling, not permission to flip defaults or remove
-the native runner; complete parity and the owner's cutover decision remain gates.
+Record the release, deployment SHA, UTC date and evidence for ordinary launch,
+follow-up, Git, stop and account counters in the
+[coordinator ledger](native-agent-path-retirement.md#coordinator-ledger).
+The release cycle, production checklist and drain gate native retirement.
 
 ### OpenCode on the shared Boat runtime (#2052)
 

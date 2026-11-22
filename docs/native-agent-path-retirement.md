@@ -8,8 +8,8 @@ Modal sandbox launches use the Armada runtime and require `ARMADA_MODAL_DIALOUT=
 
 | Provider | Harness | With repository defaults | Enrolled replacement and harness-specific evidence still required |
 | --- | --- | --- | --- |
-| Boat | Claude Code | Native Boat API for ordinary launches. Eligible custom endpoints can select enrolled runtime when installed. | Prove API key, subscription and supported custom endpoints under enrolled Claude, including in-turn steer, MCP tool provenance, usage across resume and restored session continuity. Apply the Boat/Modal gaps below. |
-| Boat | Codex | Native Boat API for ordinary launches. Eligible custom endpoints can select enrolled runtime when installed. | Prove API key and imported subscription, refresh, account-capacity settlement, reasoning/model selection, restart-style steer, usage and session continuity across a retained stop. Apply the Boat/Modal gaps below. |
+| Boat | Claude Code | Enrolled runtime by default. Explicit server selection of `native` remains available until retirement. | Prove API key, subscription and supported custom endpoints under enrolled Claude, including in-turn steer, MCP tool provenance, usage across resume and restored session continuity. Apply the Boat/Modal gaps below. |
+| Boat | Codex | Enrolled runtime by default. Explicit server selection of `native` remains available until retirement. | Prove API key and imported subscription, refresh, account-capacity settlement, reasoning/model selection, restart-style steer, usage and session continuity across a retained stop. Apply the Boat/Modal gaps below. |
 | Boat | OpenCode | No native support. Ordinary launch selects enrolled runtime with artifacts, otherwise refuses. Explicit versioned runtime is also available when configured. Dashboard discovery has its own readiness checks. | Prove ordinary and explicit launch with supported accounts, ACP follow-up, resume and dashboard discoverability. Preserve it during Boat cutover. |
 | Modal | Claude Code | Enrolled runtime over dial-out. | Prove enrolled dial-out for supported API-key and subscription accounts, in-turn steer, tool provenance, usage and remembered context after wake. Apply the Boat/Modal gaps below. |
 | Modal | Codex | Enrolled runtime over dial-out. | Prove enrolled dial-out for API key, custom endpoint where offered and imported subscription, refresh, capacity settlement, model/reasoning controls, restart-style steer, usage and retained session continuity. Apply the Boat/Modal gaps below. |
@@ -127,7 +127,7 @@ complete rerun reports zero candidates.
 
 | Environment | Boat effective default | Modal effective default | Runtime artifact / dial-out | SHA / UTC / evidence |
 | --- | --- | --- | --- | --- |
-| Repository defaults | Native | Runtime | See server config and assembly above | Code-derived |
+| Repository defaults | Runtime | Runtime | See server config and assembly above | Code-derived |
 | Staging | Unverified | Unverified | Unverified | Pending coordinator record |
 | Production | Unverified | Runtime | `/opt/armada/runtime-manifests/x64.json`, dial-out enabled | `dbdd1ec9bac0d040aca762f608913c61eae50e51` · 2026-11-21 08:23 UTC · Railway deployment `19d40232` ([coordinator record](https://github.com/The-Vibe-Company/armada/issues/2740#issuecomment-7059904959)) |
 

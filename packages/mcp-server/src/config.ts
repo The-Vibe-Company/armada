@@ -125,7 +125,7 @@ export function configFromEnv(env: Record<string, string | undefined>): ServerCo
     throw new ServerConfigError(
       "ARMADA_SANDBOX_EXTENSION_HEADROOM_SECONDS must be a non-negative whole number within the Modal lifetime limit minus stop margin.",
     );
-  const boatAgentPath = env.ARMADA_BOAT_AGENT_PATH ?? "native";
+  const boatAgentPath = env.ARMADA_BOAT_AGENT_PATH ?? "runtime";
   if (boatAgentPath !== "native" && boatAgentPath !== "runtime")
     throw new ServerConfigError("ARMADA_BOAT_AGENT_PATH must be native or runtime.");
   if (env.ARMADA_MODAL_DIALOUT !== "1" || !env.ARMADA_MODAL_RUNTIME_MANIFEST?.trim())

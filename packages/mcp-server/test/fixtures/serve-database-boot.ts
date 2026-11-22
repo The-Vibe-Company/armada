@@ -119,6 +119,7 @@ try {
   let listenerStarted = false;
   const warmingEnv = {
     ...env,
+    ARMADA_BOAT_AGENT_PATH: "native",
     ARMADA_MODAL_DIALOUT: "1",
     ARMADA_MODAL_RUNTIME_MANIFEST: manifestPath,
     ARMADA_RUNTIME_ARTIFACT_DIR: artifactDir,
