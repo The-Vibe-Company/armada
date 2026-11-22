@@ -5,14 +5,18 @@ import type { Sql } from "../../packages/core/src/golden-store.ts";
 import { SANDBOX_STATES, type SandboxState } from "../../packages/core/src/provider.ts";
 import { bunSql } from "../../packages/mcp-server/src/sql.ts";
 
-const nativeProviders = ["modal", "boat"] as const;
-type NativeProvider = (typeof nativeProviders)[number];
+const historicalModalFlag = "--allow-unpreserved-historical-modal";
+const nativeProviders = [
+  { provider: "modal", historicalDrainFlag: historicalModalFlag },
+  { provider: "boat", historicalDrainFlag: null },
+] as const;
+type NativeProvider = (typeof nativeProviders)[number]["provider"];
 type StatusCount = { status: SandboxState; count: number };
 type NativeRow = { id: string; org_id: string; role: MemberRole | null };
 type DeleteNativeRow = (row: NativeRow) => Promise<"with-proof" | "without-proof" | undefined>;
 type NativeDrainRequest = { provider: NativeProvider; dryRun: boolean; allowHistoricalModal: boolean };
 
-const usage = `Usage: bun scripts/ops/drain-native.ts --provider ${nativeProviders.join("|")} [--dry-run | --allow-unpreserved-historical-modal]`;
+const usage = `Usage: bun scripts/ops/drain-native.ts --provider ${nativeProviders.map(({ provider }) => provider).join("|")} [--dry-run | ${historicalModalFlag}]`;
 const nativeCohort = `
   where s.provider = $1
     and not s.boat_runtime
@@ -36,16 +40,16 @@ const candidatesQuery = `
 
 export function parseNativeDrainArgs(args: readonly string[]) {
   const [flag, requestedProvider, mode] = args;
-  const provider = nativeProviders.find((candidate) => candidate === requestedProvider);
-  const allowHistoricalModal = mode === "--allow-unpreserved-historical-modal" && provider === "modal";
+  const config = nativeProviders.find(({ provider }) => provider === requestedProvider);
+  const allowHistoricalModal = mode === config?.historicalDrainFlag && mode !== undefined;
   if (
     flag !== "--provider" ||
-    !provider ||
+    !config ||
     args.length > 3 ||
     (mode !== undefined && mode !== "--dry-run" && !allowHistoricalModal)
   )
     throw new Error(usage);
-  return { provider, dryRun: mode === "--dry-run", allowHistoricalModal };
+  return { provider: config.provider, dryRun: mode === "--dry-run", allowHistoricalModal };
 }
 
 async function inventory<Row>(sql: Sql, statement: string, params: string[]) {
