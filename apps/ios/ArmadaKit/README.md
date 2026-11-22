@@ -92,7 +92,11 @@ hardcoded: an unknown harness or model is offered with its raw id.
 the dashboard use); omitted optionals keep the server defaults.
 
 `launchSandbox(_:)` has no idempotency key: it is sent once with a ten-minute timeout and
-never retried. `SandboxLaunchFailure.classify` maps pre-start codes to `refused` (the
+never retried. Use `SandboxLaunchReceipt.sandboxID` with either receipt. An
+`.admitted` Modal receipt carries the sandbox ID and status. Read sandbox metadata
+and follow the first turn separately. An `.allocated` receipt carries the full
+launch envelope, including any prompt and conversation IDs.
+`SandboxLaunchFailure.classify` maps pre-start codes to `refused` (the
 form keeps every field), `start_failed`/`init_failed`/`prompt_failed` to
 `failedAfterStart` (a failed sandbox may be listed), a provider's non-allocating fork
 refusals (503 `unauthorized`, `payment_required`, `provider_not_configured`,

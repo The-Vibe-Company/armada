@@ -230,12 +230,65 @@ private func json(_ request: URLRequest) throws -> [String: Any] {
     var draft = SandboxLaunchDraft(catalog: catalog)
     draft.prompt = "Go"
     let result = try await client.launchSandbox(try draft.request(catalog: catalog).get())
-    #expect(result.sandbox.id == newSandbox)
-    #expect(result.promptId == "p1")
+    guard case .allocated(let allocation) = result else {
+        Issue.record("Expected a full launch envelope")
+        return
+    }
+    #expect(result.sandboxID == newSandbox)
+    #expect(allocation.promptId == "p1")
     let request = try #require(await transport.requests.last)
     #expect(request.url?.path == "/api/v1/sandbox/launch")
     #expect(request.timeoutInterval == 600)
     #expect(request.value(forHTTPHeaderField: "Authorization") == "Bearer fixture-access")
+}
+
+@Test(arguments: ["starting", "ready"])
+func modalAdmissionReturnsTheAcknowledgedSandbox(status: String) async throws {
+    let body = #"{"sandbox":{"id":"\#(newSandbox)","status":"\#(status)"}}"#
+    let (client, transport) = try await signedIn([.init(status: 202, body: body)])
+    let catalog = try catalog()
+    var draft = SandboxLaunchDraft(catalog: catalog)
+    draft.goldenID = "g-web-modal"
+    draft.prompt = "Go"
+
+    let result = try await client.launchSandbox(try draft.request(catalog: catalog).get())
+
+    guard case .admitted(let admission) = result else {
+        Issue.record("Expected a Modal admission receipt")
+        return
+    }
+    #expect(result.sandboxID == newSandbox)
+    #expect(admission.status.rawValue == status)
+    #expect(await transport.requests.count == 3)
+}
+
+@Test(arguments: [
+    #"{"sandbox":{"id":"\#(newSandbox)","status":"starting"},"promptId":null}"#,
+    #"{"sandbox":{"id":"\#(newSandbox)","status":"starting","provider":"modal"}}"#,
+    #"{"sandbox":{"id":"\#(newSandbox)","status":"unknown"}}"#,
+    #"{"sandbox":{"id":"not-a-uuid","status":"starting"}}"#,
+    #"{"sandbox":{"id":"7d1c2b4a-5d6e-0f70-1a9b-0c1d2e3f4a5b","status":"starting"}}"#,
+])
+func malformedModalAdmissionRemainsUnconfirmed(body: String) async throws {
+    let (client, _) = try await signedIn([.init(status: 200, body: body)])
+    let catalog = try catalog()
+    var draft = SandboxLaunchDraft(catalog: catalog)
+    draft.goldenID = "g-web-modal"
+    draft.prompt = "Go"
+    let request = try draft.request(catalog: catalog).get()
+
+    await #expect(throws: SandboxLaunchFailure.unconfirmed) { _ = try await client.launchSandbox(request) }
+}
+
+@Test func aBoatLaunchDoesNotAcceptTheModalAdmissionReceipt() async throws {
+    let body = #"{"sandbox":{"id":"\#(newSandbox)","status":"starting"}}"#
+    let (client, _) = try await signedIn([.init(status: 200, body: body)])
+    let catalog = try catalog()
+    var draft = SandboxLaunchDraft(catalog: catalog)
+    draft.prompt = "Go"
+    let request = try draft.request(catalog: catalog).get()
+
+    await #expect(throws: SandboxLaunchFailure.unconfirmed) { _ = try await client.launchSandbox(request) }
 }
 
 @Test func aLostAnswerIsUnconfirmedAndNeverResent() async throws {
