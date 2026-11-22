@@ -84,6 +84,7 @@ test("a multi-repository refresh recovers when another runtime rotates its in-fl
   });
   // oxlint-disable-next-line landmines-testing/no-test-doubles -- Route private socket requests in-process to the real broker.
   const brokerSocket = spyOn(globalThis, "fetch").mockImplementation((async (url, options) => {
+    if (url === "http://private/register") return new Response(null, { status: 204 });
     if (url === "http://private/redact") return new Response(options?.body);
     expect(url).toBe("http://private/");
     expect(options && "unix" in options && options.unix).toBe(gitSocket);
