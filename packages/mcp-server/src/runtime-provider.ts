@@ -2,20 +2,33 @@ import { mapHarnesses, type Provider, ProviderError } from "@armada/core";
 import type { ModalRuntimeCapture } from "@armada/provider-modal";
 import { runtimeHarnessSupported } from "./provider-runtime-admission.ts";
 
-export type RuntimeWorkProvider = Provider & { captureRuntimeWork?: ModalRuntimeCapture };
+type RuntimeTtlPort = {
+  setRuntimeTtl?(request: { sandboxId: string; ttlSeconds: number; signal: AbortSignal }): Promise<void>;
+};
+
+export type RuntimeWorkProvider = Provider & RuntimeTtlPort & { captureRuntimeWork?: ModalRuntimeCapture };
 
 /** Sandbox-bound adapter. Caller supplies authorized persisted binding and a
  * compute-only host (no native model-auth lifecycle hooks). No spread/fallback
  * to host agent methods, including optional ports added in future.
  */
 export function createRuntimeProvider(
-  host: Provider,
+  host: Provider & RuntimeTtlPort,
   providerSandboxId: string,
   reads: Pick<Provider, "getPrompt" | "events">,
   operations?: Pick<Provider, "interrupt" | "steer" | "exec" | "testModelConnection">,
   captureRuntimeWork?: ModalRuntimeCapture,
 ): RuntimeWorkProvider {
-  if (host.id !== "boat" && host.id !== "modal") throw Error("boat_runtime_host_required");
+  let setRuntimeTtl: RuntimeTtlPort["setRuntimeTtl"];
+  switch (host.id) {
+    case "boat":
+      setRuntimeTtl = host.setRuntimeTtl;
+      break;
+    case "modal":
+      break;
+    default:
+      throw Error("boat_runtime_host_required");
+  }
   const unsupported = async (): Promise<never> => {
     throw new ProviderError({
       provider: host.id,
@@ -68,6 +81,15 @@ export function createRuntimeProvider(
       target(request.sandboxId);
       return host.delete(request);
     },
+    ...(setRuntimeTtl
+      ? {
+          async setRuntimeTtl(request: Parameters<typeof setRuntimeTtl>[0]) {
+            target(request.sandboxId);
+            request.signal.throwIfAborted();
+            await setRuntimeTtl.call(host, request);
+          },
+        }
+      : {}),
     ...(operations?.testModelConnection
       ? {
           async testModelConnection(request: Parameters<NonNullable<Provider["testModelConnection"]>>[0]) {
