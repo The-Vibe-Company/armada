@@ -6,6 +6,7 @@ import {
   decryptSecret,
   encryptSecret,
   type Provider,
+  SANDBOX_STOP_MARGIN_SECONDS,
   type Sql,
 } from "@armada/core/server";
 import { fakeBoat, retainedSandbox, sandbox as sdkSandbox } from "../../provider-boat/test/support.ts";
@@ -1504,6 +1505,8 @@ const boatResumeRecoveryCases = [
   "tainted",
   "lease expired",
   "archive unverified",
+  "short coverage",
+  "missing coverage",
   "response lost",
   "handoff rollback",
   "transition fault",
@@ -1521,8 +1524,14 @@ test.each(boatResumeRecoveryCases)(
     const fault = condition.endsWith(" fault");
     const responseLost = condition === "response lost" || rollbackHandoff;
     const f = await stopped();
+    const shortCoverage = condition === "short coverage";
+    const missingCoverage = condition === "missing coverage";
+    const unsafeCoverage = shortCoverage || missingCoverage;
+    const logicalDeadline = new Date("2099-01-01T00:00:00Z");
+    const physicalDeadline = new Date(logicalDeadline.getTime() + SANDBOX_STOP_MARGIN_SECONDS * 1000);
     const requests: string[] = [];
     let activated = false;
+    let activeReads = 0;
     let canIssueTicket = false;
     let beforeFailure: { generation: number; stop_generation: number } | undefined;
     const network = spyOn(globalThis, "fetch").mockImplementation((async (value: Parameters<typeof fetch>[0]) => {
@@ -1535,14 +1544,23 @@ test.each(boatResumeRecoveryCases)(
           await f.db.query("update sandboxes set activity_until=now()-interval '1 second' where id=$1", [f.row.id]);
       }
       if (url.endsWith("/stop")) activated = false;
+      const afterRestore = activated && !url.endsWith("/resume") && ++activeReads > 1;
       return Response.json({
         ok: true,
         sandbox: activated
-          ? sdkSandbox({ id: "physical", state: "running" })
+          ? sdkSandbox({
+              id: "physical",
+              state: "running",
+              archiveAfter:
+                afterRestore && missingCoverage
+                  ? undefined
+                  : new Date(physicalDeadline.getTime() - (afterRestore && shortCoverage ? 1_000 : 0)).toISOString(),
+            })
           : retainedSandbox({ id: "physical", snapshotAvailable: !unverified }),
       });
     }) as typeof fetch);
     try {
+      await f.db.query("update sandboxes set expires_at=$2 where id=$1", [f.row.id, logicalDeadline.toISOString()]);
       const prepare = boatRuntimeResume({
         sql: f.sql,
         vault: createSqlVaultStore(f.sql),
@@ -1600,7 +1618,7 @@ test.each(boatResumeRecoveryCases)(
         createRuntimeResume(requestSql, ENCRYPTION_KEY, f.bridge, prepare)(f.caller, request),
       ).rejects.toThrow();
       expect(handoffRolledBack).toBe(rollbackHandoff || fault);
-      expect(canIssueTicket).toBe(!taint && !expired && !unverified && !responseLost);
+      expect(canIssueTicket).toBe(!taint && !expired && !unverified && !responseLost && !unsafeCoverage);
       const { rows } = await f.db.query(
         `select l.stage, case when l.stage='accepted' then l.at=r.created_at else l.at>=r.created_at end as dated_correctly
            from public.sandbox_launch_stages l
@@ -1613,7 +1631,7 @@ test.each(boatResumeRecoveryCases)(
         ...(taint || unverified || responseLost
           ? []
           : [
-              ...(expired ? [] : [{ stage: "machine_started", dated_correctly: true }]),
+              ...(expired || unsafeCoverage ? [] : [{ stage: "machine_started", dated_correctly: true }]),
               { stage: "provider_claimed", dated_correctly: true },
             ]),
       ]);

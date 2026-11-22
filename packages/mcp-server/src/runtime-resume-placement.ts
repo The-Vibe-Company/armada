@@ -40,6 +40,7 @@ export function runtimeResumePlacement<H extends Provider>(
       checkpoint: Checkpoint,
       observe: ResumeStageObserver,
     ): Promise<unknown>;
+    verifyRestoredCoverage?(host: H, sandbox: Sandbox, signal: AbortSignal): Promise<void>;
     stop(host: H, sandbox: Sandbox): Promise<void>;
   },
 ): RuntimeResumePrepare {
@@ -52,6 +53,12 @@ export function runtimeResumePlacement<H extends Provider>(
       sandbox.credentialVersion ?? undefined,
     );
     const host = await placement.host(caller, sandbox);
+    const verifyRestoredCoverage = async (signal: AbortSignal, assertDispatch?: () => Promise<void>) => {
+      if (!placement.verifyRestoredCoverage) return;
+      await assertDispatch?.();
+      signal.throwIfAborted();
+      await placement.verifyRestoredCoverage(host, sandbox, signal);
+    };
     return {
       start: (signal, restoreCheckpoint, confirmActivation, assertDispatch, ticketGuard) =>
         options.policy.start({
@@ -63,7 +70,12 @@ export function runtimeResumePlacement<H extends Provider>(
           restoreCheckpoint,
           ...(assertDispatch ? { assertDispatch } : {}),
           ...(ticketGuard
-            ? { ticketGuard }
+            ? {
+                ticketGuard,
+                ...(placement.verifyRestoredCoverage
+                  ? { activate: (admission: AbortSignal) => verifyRestoredCoverage(admission, assertDispatch) }
+                  : {}),
+              }
             : {
                 activate: async (admission: AbortSignal) => {
                   placement.retained(await host.get(sandbox.providerSandboxId, { signal: admission }));
@@ -94,6 +106,7 @@ export function runtimeResumePlacement<H extends Provider>(
                   admission.throwIfAborted();
                   await placement.restore(host, sandbox, ttlSeconds, admission, restoreCheckpoint, observe);
                   await confirmActivation?.();
+                  await verifyRestoredCoverage(admission, assertDispatch);
                   // The provider restored the machine; the runtime ticket is issued only after this.
                   await observe("machine_started");
                 },
