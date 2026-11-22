@@ -419,7 +419,7 @@ const verifyPrompt = async (
   expectedPromptId: string,
   expectedAnswer: string,
   expectedConversationId?: string,
-  queued = false,
+  waitForPublicPrompt = false,
 ) => {
   let cursor: string | undefined;
   let foundAnswer = false;
@@ -429,8 +429,7 @@ const verifyPrompt = async (
   const claudeCalls = new Map<string, ToolCall>();
   const claudeResults = new Map<string, NonNullable<ToolCall["result"]>>();
   const deadline = Date.now() + 300_000;
-  if (queued) {
-    // Read the archive only after the public prompt alias is published. Earlier pages can contain native IDs.
+  if (waitForPublicPrompt) {
     while (Date.now() < deadline) {
       const turn = await api("sandbox/status", { id, prompt_id: expectedPromptId }, Math.max(1, deadline - Date.now()));
       if (turn.id !== id || turn.prompt?.promptId !== expectedPromptId)
