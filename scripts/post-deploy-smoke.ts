@@ -1470,7 +1470,7 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
           (id) => {
             sandboxId = id;
           },
-          { recover: recoverLaunch, receipt: acceptsAdmission ? "admission" : undefined },
+          recoverLaunch ? { recover: recoverLaunch } : acceptsAdmission ? { receipt: "admission" } : undefined,
         );
         const parent = result?.sandbox;
         // Retain the cleanup handle even if later response validation fails.
