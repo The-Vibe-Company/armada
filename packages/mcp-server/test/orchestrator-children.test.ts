@@ -563,6 +563,48 @@ test("an uncertain scoped message records a correlated operator diagnostic", asy
   }
 });
 
+test("scoped enrolled Boat extension fails before recording dispatch", async () => {
+  const { close, db, sql, id, p, golden, authority, token } = await fixture();
+  try {
+    const child = await createSqlSandboxStore(sql).insert({
+      id: crypto.randomUUID(),
+      provider: "boat",
+      providerSandboxId: "enrolled-child",
+      boatRuntime: true,
+      goldenId: golden.id,
+      orgId: p.org,
+      ownerId: p.owner,
+      harness: "codex",
+      model: "m",
+      reasoningEffort: "high",
+      status: "ready",
+    });
+    await db.query("insert into orchestrator_children values($1,$2,$3,$4)", [child.id, id, p.org, p.owner]);
+    const unexpected = async () => {
+      throw Error("Unexpected child executor call");
+    };
+    const extend = mock(unexpected);
+    const children = createSandboxChildren(sql, authority, {
+      launch: unexpected,
+      message: unexpected,
+      stop: unexpected,
+      extend,
+      read: unexpected,
+      reconcile: unexpected,
+    });
+
+    const receipt = await children.extend(token, "extend-enrolled", child.id, 1_200);
+    expect(receipt.state).toBe("failed");
+    expect(extend).not.toHaveBeenCalled();
+    expect(
+      (await db.query("select dispatched_at,error_code from orchestrator_child_operations where id=$1", [receipt.id]))
+        .rows,
+    ).toEqual([{ dispatched_at: null, error_code: "child_dispatch_not_admitted" }]);
+  } finally {
+    await close();
+  }
+});
+
 test.each([
   "message",
   "stop",

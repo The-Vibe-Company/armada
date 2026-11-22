@@ -30,9 +30,8 @@ export async function extendSandbox(
   const requested = new Date(Date.now() + ttlSeconds * 1000);
   if (sandbox.expiresAt && requested.getTime() <= new Date(sandbox.expiresAt).getTime())
     throw new ToolError("extension_state", "The requested deadline must extend the existing lifetime.");
-  const isModal = sandbox.provider === "modal";
-  if (!isModal && (sandbox.boatRuntime || sandbox.runtimeTransport === "dialout"))
-    throw new ToolError("extension_state", "Enrolled runtime does not support lifetime extension for this provider.");
+  if (sandbox.boatRuntime)
+    throw new ToolError("extension_state", "Enrolled Boat sandboxes do not support lifetime extension.");
   if (sandbox.runtimeTransport === "dialout") {
     // Modal's compute deadline is fixed. Observe it, then publish only the logical
     // deadline, since advancing the lifecycle generation would revoke the enrolled epoch.
@@ -73,7 +72,7 @@ export async function extendSandbox(
           if (error.code === "not_found") return new ToolError("extension_not_found", "Sandbox not found.");
           if (error.code === "forbidden")
             return new ToolError("extension_not_allowed", "You are not allowed to extend this sandbox.");
-          if (error.code === "invalid_request" && isModal)
+          if (error.code === "invalid_request" && provider.id === "modal")
             return new ToolError("extension_maximum", "Requested lifetime exceeds the physical provider deadline.");
           if (["invalid_request", "sandbox_not_ready"].includes(error.code))
             return new ToolError("extension_state", "Sandbox cannot be extended in this state.");
