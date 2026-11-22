@@ -935,6 +935,155 @@ async function seedNativeDrainReceipt(
 }
 
 test.each([
+  "stopped",
+  "stop-requested tombstone",
+  "stop-requested mismatched tombstone",
+  "stop-requested live journal",
+  "tombstone with live lease",
+  "no opt-in",
+  "cutoff",
+  "receipt from another generation",
+  "dialout",
+  "unmarked pending intent",
+  "admission rollback",
+  "lost provider reply",
+  "journal replacement before dispatch",
+  "journal replacement before settlement",
+] as const)("historical Modal drain handles %s", async (scenario) => {
+  const { db, people, modalGoldenId } = sharedDatabase();
+  const sandboxId = crypto.randomUUID();
+  const placement = `bx_${sandboxId}`;
+  const stopRequested = scenario.startsWith("stop-requested") || scenario === "tombstone with live lease";
+  const tombstone = scenario.endsWith("tombstone") || scenario === "tombstone with live lease";
+  await db.query(
+    `insert into sandboxes(id,golden_id,org_id,owner_id,provider,provider_sandbox_id,harness,status,
+       created_at,stopped_at,stop_requested_at,lifecycle_generation,stop_generation,preservation_stop_generation,
+       native_drain_pending,runtime_transport)
+     values($1,$2,$3,$4,'modal',$5,'codex','stopped',$6,now(),case when $7::boolean then now() end,
+       4,2,2,$8,case when $9::boolean then 'dialout' end)`,
+    [
+      sandboxId,
+      modalGoldenId,
+      people.org,
+      people.owner,
+      placement,
+      scenario === "cutoff" ? "2026-11-22T00:00:00Z" : "2026-11-21T23:59:59Z",
+      stopRequested,
+      scenario === "unmarked pending intent",
+      scenario === "dialout",
+    ],
+  );
+  await db.query(
+    `insert into modal_machines(scope,org_id,owner_id,visibility,id,request_key,record,lease_id,lease_until)
+     values('drain-fixture',$1,$2,'private',$3,$3,$4::jsonb,$5,
+       case when $5::uuid is not null then '2099-01-01'::timestamptz end)`,
+    [
+      people.org,
+      people.owner,
+      placement,
+      JSON.stringify({
+        phase: tombstone ? "deleted" : "stopped",
+        generation: 1,
+        ...(scenario === "stop-requested mismatched tombstone" ? { deletePhysicalExitGeneration: 2 } : {}),
+      }),
+      scenario === "tombstone with live lease" ? crypto.randomUUID() : null,
+    ],
+  );
+  if (scenario === "receipt from another generation") {
+    await db.query(
+      `insert into sandbox_native_preservation_receipts
+        (sandbox_id,generation,stop_generation,capture_generation,capture_stop_generation,capture_acknowledgements)
+       values($1,2,2,2,2,'{"physicalGeneration":"1"}')`,
+      [sandboxId],
+    );
+  }
+  let injectRollback = scenario === "admission rollback";
+  const sql = bunLikeSql(db, (statement) => {
+    if (injectRollback && statement.includes("activity_lease_id =")) throw new Error("Admission interrupted");
+  });
+  const { sandboxes } = createSqlData(sql)({
+    via: "service",
+    userId: people.owner,
+    orgs: [{ orgId: people.org, role: "member" }],
+  });
+  const replaceJournal = () =>
+    db.query(`update modal_machines set record=jsonb_set(record,'{generation}','2') where id=$1`, [placement]);
+  const remove = mock(async () => {
+    await db.query(
+      `update modal_machines set record=record || '{"phase":"deleted","deletePhysicalExitGeneration":1}'
+       where id=$1`,
+      [placement],
+    );
+    if (scenario === "lost provider reply") throw new Error("Provider reply lost");
+    if (scenario === "journal replacement before settlement") await replaceJournal();
+    return { status: "deleted" as const };
+  });
+  const resolve = mock(async () => ({ ...fakeBoat().provider, id: "modal" as const, delete: remove }));
+  const providers = {
+    resolve,
+    async beforeNativeDrainDelete() {
+      if (scenario === "journal replacement before dispatch") await replaceJournal();
+    },
+  };
+  const drain = () =>
+    deleteSandboxWithActivity(sandboxes, providers, sandboxId, "native-drain", scenario !== "no opt-in");
+
+  if (scenario === "admission rollback") {
+    await expect(drain()).rejects.toThrow("Admission interrupted");
+    expect(
+      (
+        await db.query("select record->'historicalDrainAdmission' as stamp from modal_machines where id=$1", [
+          placement,
+        ])
+      ).rows,
+    ).toEqual([{ stamp: null }]);
+    expect(remove).not.toHaveBeenCalled();
+    injectRollback = false;
+  } else if (scenario === "lost provider reply") {
+    await expect(drain()).rejects.toThrow("Provider reply lost");
+    await db.query("update sandboxes set activity_until='2000-01-01' where id=$1", [sandboxId]);
+    resolve.mockClear();
+  } else if (scenario.startsWith("journal replacement")) {
+    await expect(drain()).rejects.toMatchObject({ code: "sandbox_not_ready" });
+    expect(remove).toHaveBeenCalledTimes(scenario === "journal replacement before dispatch" ? 0 : 1);
+    expect((await sandboxes.get(sandboxId))?.status).toBe("stopped");
+    return;
+  } else if (scenario !== "stopped" && scenario !== "stop-requested tombstone") {
+    await expect(drain()).rejects.toMatchObject({ code: "sandbox_not_ready" });
+    expect(remove).not.toHaveBeenCalled();
+    if (stopRequested) expect(resolve).not.toHaveBeenCalled();
+    expect((await sandboxes.get(sandboxId))?.status).toBe("stopped");
+    return;
+  }
+
+  await expect(drain()).resolves.toMatchObject({ status: "deleted", drainProof: "without-proof" });
+  expect(resolve).toHaveBeenCalledTimes(tombstone || scenario === "lost provider reply" ? 0 : 1);
+  expect(remove).toHaveBeenCalledTimes(tombstone ? 0 : 1);
+  expect((await sandboxes.get(sandboxId))?.status).toBe("deleted");
+  await expect(drain()).resolves.toEqual({ id: sandboxId, status: "deleted" });
+});
+
+test("historical opt-in keeps provider resolution before strict admission for a row with proof", async () => {
+  const { db, people, sandboxId } = await seedNativeDrainReceipt(undefined, "modal", "clean");
+  const { sandboxes } = createSqlData(bunLikeSql(db))({
+    via: "service",
+    userId: people.owner,
+    orgs: [{ orgId: people.org, role: "member" }],
+  });
+  const providers = {
+    resolve: async () => {
+      throw new Error("Provider credentials unavailable");
+    },
+  };
+  await expect(deleteSandboxWithActivity(sandboxes, providers, sandboxId, "native-drain", true)).rejects.toThrow(
+    "Provider credentials unavailable",
+  );
+  expect((await db.query("select native_drain_pending from sandboxes where id=$1", [sandboxId])).rows).toEqual([
+    { native_drain_pending: false },
+  ]);
+});
+
+test.each([
   "live restore lease",
   "incomplete restore lease",
   "replacement",
@@ -1150,7 +1299,7 @@ test.each(unstampedDrainScenarios)(
     const drain = () => deleteSandboxWithActivity(sandboxes, providers, sandboxId, "native-drain");
 
     if (scenario === "archived" || scenario === "clean" || scenario === "expired journal lease" || matchingExit) {
-      await expect(drain()).resolves.toEqual({ id: sandboxId, status: "deleted" });
+      await expect(drain()).resolves.toMatchObject({ id: sandboxId, status: "deleted" });
       expect(remove).toHaveBeenCalledTimes(1);
       return;
     }
@@ -1165,7 +1314,7 @@ test.each(unstampedDrainScenarios)(
       expect(await journalLease()).toEqual([{ lease_id: null, cleared: true }]);
       inject = false;
       await db.query("update sandboxes set activity_until='2000-01-01' where id=$1", [sandboxId]);
-      await expect(drain()).resolves.toEqual({ id: sandboxId, status: "deleted" });
+      await expect(drain()).resolves.toMatchObject({ id: sandboxId, status: "deleted" });
       expect(remove).toHaveBeenCalledTimes(1);
     }
   },
@@ -1871,7 +2020,7 @@ test.each(drainAdmissionScenarios)(
         "native-drain",
       );
       if (scenario === "verified proof" || scenario === "expired Modal journal lease") {
-        expect(await deletion).toEqual({ id: sandboxId, status: "deleted" });
+        expect(await deletion).toMatchObject({ id: sandboxId, status: "deleted" });
         expect(remove).toHaveBeenCalledTimes(1);
         expect(await state()).toEqual({ status: "deleted", generation: 6, drain_operation_id: null });
         expect((await detached()).rows).toEqual([{ archive_id: archiveId }]);
@@ -2101,8 +2250,8 @@ test.each([
     scenario === "Boat lost evidence acknowledgement";
   if (providerId === "boat") {
     if (dispatchUnclaimed) {
-      await expect(drain()).resolves.toEqual({ id: sandboxId, status: "deleted" });
-      await expect(drain()).resolves.toEqual({ id: sandboxId, status: "deleted" });
+      await expect(drain()).resolves.toMatchObject({ id: sandboxId, status: "deleted" });
+      await expect(drain()).resolves.toMatchObject({ id: sandboxId, status: "deleted" });
     } else if (!hasBoatEvidence) await expect(drain()).rejects.toMatchObject({ code: "sandbox_not_ready" });
     else if (scenario === "Boat pending") await expect(drain()).rejects.toThrow("Provider deletion is pending");
     else if (scenario === "Boat lookup unavailable") await expect(drain()).rejects.toThrow("Operation unavailable");
@@ -2124,8 +2273,8 @@ test.each([
         allowEvidenceRead = true;
         await db.query("update sandboxes set activity_until=now()-interval '1 second' where id=$1", [sandboxId]);
       }
-      await expect(drain()).resolves.toEqual({ id: sandboxId, status: "deleted" });
-      await expect(drain()).resolves.toEqual({ id: sandboxId, status: "deleted" });
+      await expect(drain()).resolves.toMatchObject({ id: sandboxId, status: "deleted" });
+      await expect(drain()).resolves.toMatchObject({ id: sandboxId, status: "deleted" });
     }
     expect(provider.delete).toHaveBeenCalledTimes(callsBeforeRetry + Number(dispatchUnclaimed));
     expect(observeSandboxDeletion).toHaveBeenCalledTimes(hasBoatEvidence ? 1 : 0);
@@ -2139,8 +2288,8 @@ test.each([
   } else if (scenario === "unavailable provider") {
     await expect(drain()).rejects.toThrow("App unavailable");
   } else {
-    await expect(drain()).resolves.toEqual({ id: sandboxId, status: "deleted" });
-    await expect(drain()).resolves.toEqual({ id: sandboxId, status: "deleted" });
+    await expect(drain()).resolves.toMatchObject({ id: sandboxId, status: "deleted" });
+    await expect(drain()).resolves.toMatchObject({ id: sandboxId, status: "deleted" });
   }
   if (providerId !== "boat") {
     expect(provider.delete).toHaveBeenCalledTimes(callsBeforeRetry + 1);
@@ -2264,7 +2413,7 @@ test.each([
   expect(provider.delete).toHaveBeenCalledTimes(lostReply ? 1 : 0);
   firstPass = false;
   await db.query("update sandboxes set activity_until=now()-interval '1 second' where id=$1", [sandboxId]);
-  await expect(drain()).resolves.toEqual({ id: sandboxId, status: "deleted" });
+  await expect(drain()).resolves.toMatchObject({ id: sandboxId, status: "deleted" });
   expect(provider.get).toHaveBeenCalledTimes(lostReply || scenario === "lost cleanup commit reply" ? 1 : 2);
   expect(provider.delete).toHaveBeenLastCalledWith({ sandboxId: `bx_${sandboxId}`, generation: 6 });
   expect(
@@ -2344,7 +2493,7 @@ test("a late Modal delete receipt cannot settle the retry owner's generation", a
       ]);
     } finally {
       retryReceipt.resolve();
-      await expect(retry).resolves.toEqual({ id: sandboxId, status: "deleted" });
+      await expect(retry).resolves.toMatchObject({ id: sandboxId, status: "deleted" });
     }
   } finally {
     firstReceipt.resolve();
@@ -3014,7 +3163,7 @@ test.each(["unavailable cleanup", "lease expiry during cleanup", "acknowledged d
 
     firstPass = false;
     await expireLease();
-    await expect(drain()).resolves.toEqual({ id: sandboxId, status: "deleted" });
+    await expect(drain()).resolves.toMatchObject({ id: sandboxId, status: "deleted" });
     expect(provider.get).toHaveBeenCalledTimes(scenario === "acknowledged delete" ? 1 : 2);
     expect(provider.delete).toHaveBeenCalledTimes(1);
     expect(provider.delete).toHaveBeenCalledWith({

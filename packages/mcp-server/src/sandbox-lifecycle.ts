@@ -18,7 +18,11 @@ import { releaseAccountCapacity } from "./account-capacity.ts";
 import { isDockerPromptRefusal } from "./docker-prompt-refusal.ts";
 import type { Job } from "./jobs/runner.ts";
 import { mergedWorkProof } from "./merged-work.ts";
-import { strictNativeDrainJournals, withdrawExpiredModalDrainLease } from "./modal-drain-journal.ts";
+import {
+  historicalModalDrainPhase,
+  strictNativeDrainJournals,
+  withdrawExpiredModalDrainLease,
+} from "./modal-drain-journal.ts";
 import { installModalLaunchHandoff, type ModalLaunchHandoff, unresolvedModalLaunch } from "./modal-launch-handoff.ts";
 import { nativeIdleDue, nativeQuiescent } from "./native-idle.ts";
 import { LIVE_OUTPUT_CANDIDATE } from "./output-transfers.ts";
@@ -1148,10 +1152,11 @@ export async function nativeDrainDispatch(
   generation: number,
   activityToken: string,
   action: "inspect" | "claim",
+  allowHistoricalModal: boolean,
 ) {
   const {
     rows: [owned],
-  } = await sql.query<{ operation_id: string | null }>(
+  } = await sql.query<{ operation_id: string | null; historical_phase: string | null }>(
     `with locked as materialized (
        select s.*
        from public.sandboxes s
@@ -1160,15 +1165,19 @@ export async function nativeDrainDispatch(
          and s.native_drain_pending and not s.boat_runtime and s.runtime_transport is distinct from 'dialout'
          and s.deleted_at is null
        for update of s
-     ), preserved as materialized (
-       select s.id,s.provider,s.activity_until from locked s where ${NATIVE_DRAIN_PENDING_PROOF}
+     ), evidence as materialized (
+       select s.id,s.provider,s.activity_until,${NATIVE_DRAIN_PENDING_PROOF} as preserved,
+         ${historicalModalDrainPhase("$8::boolean")} as historical_phase
+       from locked s
      ), owned as materialized (
-       select id,provider from preserved where activity_until>clock_timestamp()
+       select id,provider,historical_phase from evidence
+       where (case when $8::boolean then historical_phase is not null else preserved end)
+         and activity_until>clock_timestamp()
      ), claimed as (
        delete from public.native_drain_unclaimed_dispatches d using owned
        where d.sandbox_id=owned.id and $7 returning d.sandbox_id
      )
-     select o.operation_id from owned s
+     select o.operation_id,s.historical_phase from owned s
      left join claimed on claimed.sandbox_id=s.id
      left join public.native_drain_delete_operations o on o.sandbox_id=s.id
      where (claimed.sandbox_id is not null or s.provider='modal' or o.sandbox_id is not null
@@ -1176,7 +1185,7 @@ export async function nativeDrainDispatch(
          select 1 from public.native_drain_unclaimed_dispatches d where d.sandbox_id=s.id
        )))
        and (o.sandbox_id is null or (o.provider=s.provider and o.placement=$4))`,
-    [...scope, id, placement, generation, activityToken, action === "claim"],
+    [...scope, id, placement, generation, activityToken, action === "claim", allowHistoricalModal],
   );
   return owned;
 }
@@ -1216,6 +1225,7 @@ export async function completeSandboxDeletion(
   generation: number,
   activityToken: string,
   nativeDrain: boolean,
+  historicalModalPlacement?: string,
 ) {
   const { rows } = await tx.query<{ generation: string }>(
     `with locked as materialized (
@@ -1225,7 +1235,9 @@ export async function completeSandboxDeletion(
        for update of s
      ), owned as materialized (
        select s.id,s.activity_until from locked s where
-         case when $6::boolean then ${NATIVE_DRAIN_PENDING_PROOF} else true end
+         case when $7::text is not null then
+           s.provider_sandbox_id=$7 and ${historicalModalDrainPhase("$6::boolean")}='deleted'
+         when $6::boolean then ${NATIVE_DRAIN_PENDING_PROOF} else true end
      ), settled as (update public.sandboxes s set
        lifecycle_generation=s.lifecycle_generation+1, native_drain_pending=false,
        activity_lease_id=null, activity_until=null, preservation_note=null,
@@ -1240,7 +1252,7 @@ export async function completeSandboxDeletion(
        where $6::boolean and o.sandbox_id=settled.id
      )
      select generation from settled`,
-    [...scope, sandboxId, generation, activityToken, nativeDrain],
+    [...scope, sandboxId, generation, activityToken, nativeDrain, historicalModalPlacement ?? null],
   );
   const receipt = rows[0];
   if (!receipt) return false;

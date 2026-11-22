@@ -9,10 +9,10 @@ const nativeProviders = ["modal", "boat"] as const;
 type NativeProvider = (typeof nativeProviders)[number];
 type StatusCount = { status: SandboxState; count: number };
 type NativeRow = { id: string; org_id: string; role: MemberRole | null };
-type DeleteNativeRow = (row: NativeRow) => Promise<void>;
-type NativeDrainRequest = { provider: NativeProvider; dryRun: boolean };
+type DeleteNativeRow = (row: NativeRow) => Promise<"with-proof" | "without-proof" | undefined>;
+type NativeDrainRequest = { provider: NativeProvider; dryRun: boolean; allowHistoricalModal: boolean };
 
-const usage = `Usage: bun scripts/ops/drain-native.ts --provider ${nativeProviders.join("|")} [--dry-run]`;
+const usage = `Usage: bun scripts/ops/drain-native.ts --provider ${nativeProviders.join("|")} [--dry-run | --allow-unpreserved-historical-modal]`;
 const nativeCohort = `
   where s.provider = $1
     and not s.boat_runtime
@@ -37,9 +37,15 @@ const candidatesQuery = `
 export function parseNativeDrainArgs(args: readonly string[]) {
   const [flag, requestedProvider, mode] = args;
   const provider = nativeProviders.find((candidate) => candidate === requestedProvider);
-  if (flag !== "--provider" || !provider || args.length > 3 || (mode !== undefined && mode !== "--dry-run"))
+  const allowHistoricalModal = mode === "--allow-unpreserved-historical-modal" && provider === "modal";
+  if (
+    flag !== "--provider" ||
+    !provider ||
+    args.length > 3 ||
+    (mode !== undefined && mode !== "--dry-run" && !allowHistoricalModal)
+  )
     throw new Error(usage);
-  return { provider, dryRun: mode === "--dry-run" };
+  return { provider, dryRun: mode === "--dry-run", allowHistoricalModal };
 }
 
 async function inventory<Row>(sql: Sql, statement: string, params: string[]) {
@@ -70,20 +76,34 @@ export async function runNativeDrain(
   }
   if (!operation) throw new Error("Native drain deletion requires a configured operator.");
   const rows = await inventory<NativeRow>(sql, candidatesQuery, [provider, operation.actorId]);
-  let deleted = 0;
+  let deletedWithProof = 0;
+  let deletedWithoutProof = 0;
+  let alreadyDeleted = 0;
   let failed = 0;
   for (const row of rows) {
     try {
-      await operation.remove(row);
-      deleted++;
+      const proof = await operation.remove(row);
+      if (proof === "with-proof") deletedWithProof++;
+      else if (proof === "without-proof") deletedWithoutProof++;
+      else alreadyDeleted++;
     } catch {
       failed++;
     }
   }
-  return { provider, mode: "drain" as const, total: rows.length, deleted, failed };
+  return {
+    provider,
+    mode: "drain" as const,
+    total: rows.length,
+    deleted: deletedWithProof + deletedWithoutProof,
+    deletedWithProof,
+    deletedWithoutProof,
+    alreadyDeleted,
+    failed,
+  };
 }
 
-async function execute({ provider, dryRun }: NativeDrainRequest) {
+async function execute(request: NativeDrainRequest) {
+  const { dryRun } = request;
   const variable = dryRun ? "ARMADA_DRAIN_READ_ONLY_DATABASE_URL" : "ARMADA_DATABASE_URL";
   const url = Bun.env[variable];
   if (!url || !/^postgres(?:ql)?:\/\//.test(url)) {
@@ -103,7 +123,6 @@ async function execute({ provider, dryRun }: NativeDrainRequest) {
   }
   const sql = bunSql(url, 1);
   try {
-    const request = { provider, dryRun };
     const report =
       dryRun || !actorId ? await runNativeDrain(request, sql) : await executeDeletion(request, sql, actorId);
     process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
@@ -115,7 +134,13 @@ async function execute({ provider, dryRun }: NativeDrainRequest) {
 
 async function executeDeletion(request: NativeDrainRequest, sql: Sql, actorId: string) {
   const { configureNativeDrain } = await import("../../packages/mcp-server/src/native-drain.ts");
-  const { remove, settle } = configureNativeDrain(sql, request.provider, actorId, Bun.env);
+  const { remove, settle } = configureNativeDrain(
+    sql,
+    request.provider,
+    actorId,
+    Bun.env,
+    request.allowHistoricalModal,
+  );
   try {
     return await runNativeDrain(request, sql, { actorId, remove });
   } finally {
