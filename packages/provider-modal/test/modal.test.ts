@@ -1496,6 +1496,17 @@ function admissionBarrier() {
     },
   };
 }
+function runtimeComposition(f: ReturnType<typeof fixture>) {
+  return createRuntimeModalProvider({
+    scope,
+    client: f.client,
+    sql: fixtureSql,
+    appName: "pinned",
+    image: MODAL_IMAGE_LOCK,
+    publicUrl: "https://armada.example",
+  });
+}
+
 function compositionOptions(
   f: ReturnType<typeof fixture>,
   target: Scope = scope,
@@ -2980,14 +2991,7 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
   });
   test("runtime-only composition builds, snapshots, retains and restores a golden without runner bootstrap", async () => {
     const f = fixture();
-    const { provider, close } = await createRuntimeModalProvider({
-      scope,
-      client: f.client,
-      sql: fixtureSql,
-      appName: "pinned",
-      image: MODAL_IMAGE_LOCK,
-      publicUrl: "https://armada.example",
-    });
+    const { provider, close } = await runtimeComposition(f);
     try {
       const builder = await provider.createGolden({});
       expect(builder.state).toBe("ready");
@@ -3008,6 +3012,32 @@ describe("Modal lifecycle at SDK + durable SQL boundaries", () => {
       const fork = await provider.fork({ from: name });
       expect(await f.store.get(fork.id)).toMatchObject({ commonRuntime: true, phase: "active" });
       expect(f.bootstraps.size).toBe(0);
+    } finally {
+      close();
+    }
+  });
+  test("runtime-only composition restores a golden checkpoint recorded before cutover", async () => {
+    const f = fixture();
+    const { builder, name } = await savedGolden(f);
+    const snapshot = await f.store.image(name);
+    const { provider, close } = await runtimeComposition(f);
+    try {
+      const restored = await provider.restoreGoldenMaster({ snapshotId: name });
+      expect(restored).toMatchObject({ id: builder.id, physicalGeneration: "2", state: "ready" });
+      expect(await f.store.get(restored.id)).toMatchObject({ imageId: snapshot.imageId, phase: "active" });
+      expect(f.bootstraps.size).toBe(0);
+    } finally {
+      close();
+    }
+  });
+  test("runtime-only stop refuses an unenrolled fork before recording a stop attempt", async () => {
+    const f = fixture();
+    const worker = await f.seedMachine(workerTemplate);
+    const before = await f.store.get(worker.id);
+    const { provider, close } = await runtimeComposition(f);
+    try {
+      await expect(provider.stop({ sandboxId: worker.id })).rejects.toMatchObject({ code: "invalid_request" });
+      expect(await f.store.get(worker.id)).toEqual(before);
     } finally {
       close();
     }

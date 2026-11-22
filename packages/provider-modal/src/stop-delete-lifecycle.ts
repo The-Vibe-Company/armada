@@ -154,6 +154,7 @@ export function createStopDeleteLifecycle(deps: {
       let observed: Machine | undefined;
       try {
         await store.lease(sandboxId, async (row, save) => {
+          assertMachineSource(row);
           observed = row;
           if (
             requireRetention &&
