@@ -17,7 +17,9 @@ const evidence = z.discriminatedUnion("kind", [
     kind: z.literal("original-receipt"),
     reference: z.string().trim().min(1),
     journalVersion: version,
-    receipt: templateLaunchResponse,
+    receipt: templateLaunchResponse.and(
+      z.object({ requestId: z.uuid(), id: z.uuid(), state: z.literal("succeeded"), provider: z.literal("modal") }),
+    ),
   }),
 ]);
 const reviewedRows = z
@@ -141,11 +143,8 @@ async function inspect(tx: Sql, row: ReviewedRow, dryRun: boolean) {
   if (proof.kind === "original-receipt") {
     const original = proof.receipt;
     if (
-      !("requestId" in original) ||
       original.requestId !== row.requestId ||
       original.id !== row.sandboxId ||
-      original.state !== "succeeded" ||
-      original.provider !== "modal" ||
       !receipt.original_manifest_matches ||
       !receipt.has_sandbox ||
       !receipt.provider_id ||
