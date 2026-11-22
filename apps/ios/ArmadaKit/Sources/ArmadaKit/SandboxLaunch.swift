@@ -391,9 +391,20 @@ public struct SandboxLaunchRequest: Encodable, Sendable, Equatable {
     }
 }
 
-/// What the app needs from a launch's answer: the new sandbox, to open its conversation and follow
-/// the first turn.
-public struct SandboxLaunchReceipt: Decodable, Sendable, Equatable {
+/// The synchronous launch envelope or the acknowledgement from Modal's launch job.
+public enum SandboxLaunchReceipt: Decodable, Sendable, Equatable {
+    case allocated(Allocation)
+    case admitted(Admission)
+
+    public struct Admission: Decodable, Sendable, Equatable {
+        public enum Status: String, Decodable, Sendable {
+            case starting, ready, running, stopping, stopped, failed, deleted
+        }
+
+        public let id: String
+        public let status: Status
+    }
+
     public struct Sandbox: Decodable, Sendable, Equatable {
         public let id: String
         public let provider: String
@@ -409,10 +420,39 @@ public struct SandboxLaunchReceipt: Decodable, Sendable, Equatable {
         public let effectiveTtlSeconds: Int?
     }
 
-    public let sandbox: Sandbox
-    public let promptId: String?
-    public let conversationId: String?
-    public let ttlSeconds: Int?
+    public struct Allocation: Decodable, Sendable, Equatable {
+        public let sandbox: Sandbox
+        public let promptId: String?
+        public let conversationId: String?
+        public let ttlSeconds: Int?
+    }
+
+    public var sandboxID: String {
+        switch self {
+        case .allocated(let allocation): allocation.sandbox.id
+        case .admitted(let admission): admission.id
+        }
+    }
+
+    private struct Key: CodingKey {
+        let stringValue: String
+        var intValue: Int? { nil }
+        init(stringValue: String) { self.stringValue = stringValue }
+        init?(intValue: Int) { return nil }
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let envelope = try decoder.container(keyedBy: Key.self)
+        let sandbox = Key(stringValue: "sandbox")
+        if envelope.allKeys.map(\.stringValue) == ["sandbox"] {
+            let fields = try envelope.nestedContainer(keyedBy: Key.self, forKey: sandbox)
+            if Set(fields.allKeys.map(\.stringValue)) == ["id", "status"] {
+                self = .admitted(try envelope.decode(Admission.self, forKey: sandbox))
+                return
+            }
+        }
+        self = .allocated(try Allocation(from: decoder))
+    }
 }
 
 // MARK: Refusals
@@ -602,7 +642,15 @@ extension ArmadaClient {
         } catch {
             throw SandboxLaunchFailure.classify(error)
         }
-        guard UUID(uuidString: receipt.sandbox.id) != nil, receipt.sandbox.orgId == request.org else { throw .unconfirmed }
+        guard UUID(uuidString: receipt.sandboxID) != nil else { throw .unconfirmed }
+        switch receipt {
+        case .allocated(let allocation):
+            guard allocation.sandbox.orgId == request.org, allocation.sandbox.provider == request.provider else {
+                throw .unconfirmed
+            }
+        case .admitted:
+            guard request.provider == "modal" else { throw .unconfirmed }
+        }
         return receipt
     }
 
