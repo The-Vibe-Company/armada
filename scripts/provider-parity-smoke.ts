@@ -1517,7 +1517,6 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
     async function submitStagingDelete(sandboxId: string) {
       if (!stopped && !stopRequested) {
         stopRequested = true;
-        // Docker requires stop before delete. The DELETE receipt determines cleanup success.
         await api("sandbox/stop", { id: sandboxId, request_id: crypto.randomUUID() }, 120_000).catch(() => {});
       }
       const query = new URLSearchParams({ org: c.org, requestId: crypto.randomUUID() });
@@ -1908,6 +1907,15 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
       blocked = "discovery_failed";
       blockedDiagnostic = diagnostic(error);
     }
+    const resumePrerequisites = [
+      "resume",
+      "resume-recall",
+      "usage",
+      "exact-cost",
+      "subscription-account",
+      "skills-resume",
+      "mcp-resume",
+    ].includes(feature ?? "");
     for (const [step, capability] of Object.entries(steps) as [
       keyof typeof steps,
       (typeof steps)[keyof typeof steps],
@@ -1917,7 +1925,8 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
         !feature ||
         step === feature ||
         step === "launch" ||
-        (step === "stop" && !["steer", "interrupt"].includes(feature ?? "")) ||
+        (step === "stop" && resumePrerequisites) ||
+        (step === "stop" && productionBoat && !["steer", "interrupt"].includes(feature ?? "")) ||
         step === "delete" ||
         ((feature === "client-send" ||
           feature === "client-stop" ||
@@ -1934,16 +1943,7 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
           requestedHarness) &&
           step === "send") ||
         (feature === "wake-on-send" && step === "idle-pause") ||
-        ([
-          "resume",
-          "resume-recall",
-          "usage",
-          "exact-cost",
-          "subscription-account",
-          "skills-resume",
-          "mcp-resume",
-        ].includes(feature ?? "") &&
-          ["send", "resume"].includes(step));
+        (resumePrerequisites && ["send", "resume"].includes(step));
       if (!needed) continue;
       const selected = !feature || step === feature;
       if (idleUnavailable && (step === "idle-pause" || step === "wake-on-send")) continue;
@@ -1970,7 +1970,7 @@ export async function providerParitySmoke(env: NodeJS.ProcessEnv, io: Io, args: 
         blockedDiagnostic = { code: "poll_limit_exceeded", message: "Template resume proof budget exhausted." };
       }
       // Cleanup operations still run after an earlier probe failed.
-      if (blocked && !((step === "stop" || step === "delete") && id)) {
+      if (blocked && !(id && (step === "delete" || (step === "stop" && productionBoat)))) {
         record(
           selected ? step : `prerequisite:${step}`,
           c.provider,

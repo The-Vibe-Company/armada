@@ -1652,7 +1652,11 @@ for (const mode of [
         expect(report.features.exec.boat).toEqual(boatNotRun);
         expect(calls.filter((call) => call.endsWith(":sandbox/launch"))).toEqual(["docker:sandbox/launch"]);
         expect(calls).not.toContain("docker:sandbox/send");
-        expect(calls).toContain(`docker:${sandboxDeletePath}`);
+        const stop = calls.indexOf("docker:sandbox/stop");
+        const deletion = calls.indexOf(`docker:${sandboxDeletePath}`);
+        expect(stop).toBeGreaterThan(-1);
+        expect(deletion).toBeGreaterThan(stop);
+        expect(calls.slice(stop + 1, deletion)).not.toContain("docker:sandbox/status");
       }
       return;
     }
@@ -1779,7 +1783,9 @@ for (const mode of [
         expect(calls.filter((call) => call === `${provider}:sandbox/launch`)).toHaveLength(1);
         expect(calls).not.toContain(`${provider}:sandbox/resume`);
         const firstDetail = calls.indexOf(`${provider}:sandbox/status`);
-        expect(calls.indexOf(`${provider}:sandbox/stop`)).toBeGreaterThan(firstDetail);
+        const stop = calls.indexOf(`${provider}:sandbox/stop`);
+        if (mode === "idle_pause") expect(stop).toBe(-1);
+        else expect(stop).toBeGreaterThan(firstDetail);
       }
       return;
     }
