@@ -1072,7 +1072,7 @@
     "packages/cli/test/skill-hint.test.ts": 1,
     "packages/core/test/golden-create.test.ts": 4,
     "packages/core/test/golden-scan.probe.ts": 1,
-    "packages/core/test/launch.test.ts": 5,
+    "packages/core/test/launch.test.ts": 4,
     "packages/core/test/ssh-github-token.test.ts": 2,
     "packages/core/test/ssh-readable-variables.test.ts": 1,
     "packages/core/test/work-preservation.test.ts": 2,
