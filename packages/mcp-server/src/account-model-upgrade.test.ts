@@ -22,9 +22,9 @@ const sql = {
 } as Sql;
 beforeAll(async () => {
   connection = new PGlite();
-  await database().exec(`create role authenticated;
+  await database().exec(`create role anon; create role authenticated; create role service_role;
     create table credentials(id uuid primary key,name text,max_agents integer);
-    create table sandboxes(id uuid primary key,credential_id uuid,model text,status text,
+    create table sandboxes(id uuid primary key,org_id uuid,credential_id uuid,model text,status text,
       deleted_at timestamptz,stopped_at timestamptz,activity_lease_id uuid,task_prompt_id text,lifecycle_generation bigint default 1);
     create table runtime_idle_turns(sandbox_id uuid,prompt_id text,settled boolean);
     create table account_turn_queue(sandbox_id uuid,request_id uuid,input_enc bytea,state text,sequence bigint,dispatch_generation bigint,account_id uuid,dispatch_until timestamptz);
@@ -46,6 +46,7 @@ beforeAll(async () => {
     );
   await query("insert into account_agent_reservations values($1,$2)", [ids[0], account]);
   await database().exec(readFileSync("supabase/migrations/20261116180000_account_model_limits.sql", "utf8"));
+  await database().exec(readFileSync("supabase/migrations/20261119024017_jobs.sql", "utf8"));
 });
 afterAll(async () => {
   const db = connection;

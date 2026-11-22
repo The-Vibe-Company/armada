@@ -1,5 +1,5 @@
 import {
-  ACCOUNT_WORKING_PREDICATE,
+  ACCOUNT_ACTIVE_WORK_PREDICATE,
   accountWorkingCountSql,
   type CredentialBinding,
   type Sql,
@@ -76,7 +76,7 @@ async function reserveAccountCapacity(
     model ??= (await tx.query<{ model: string }>("select model from public.sandboxes where id=$1", [sandboxId])).rows[0]
       ?.model;
   const current = await tx.query(
-    `select s.id from public.sandboxes s where s.id=$1 and s.credential_id=$2 and ${ACCOUNT_WORKING_PREDICATE}
+    `select s.id from public.sandboxes s where s.id=$1 and s.credential_id=$2 and ${ACCOUNT_ACTIVE_WORK_PREDICATE}
      union select r.sandbox_id from public.account_agent_reservations r where r.sandbox_id=$1 and r.account_id=$2
        and not exists(select 1 from public.sandboxes ended where ended.id=r.sandbox_id
          and (ended.deleted_at is not null or ended.stopped_at is not null)

@@ -1,8 +1,15 @@
-import { ProviderError, retainFailureDiagnostic, type Sql, sandboxActivity, VaultError } from "@armada/core/server";
+import {
+  modalLaunchSetupKeySql,
+  ProviderError,
+  retainFailureDiagnostic,
+  type Sql,
+  sandboxActivity,
+  VaultError,
+} from "@armada/core/server";
 import type { Caller } from "./caller.ts";
 import { createSqlData } from "./data.ts";
 import { createGoldenRuntimeEnvironment } from "./golden-runtime-environment.ts";
-import { assertModalLaunchSetup, MODAL_LAUNCH_SETUP_KEY, ModalLaunchSetupConflict } from "./jobs/modal-launch-setup.ts";
+import { assertModalLaunchSetup, ModalLaunchSetupConflict } from "./jobs/modal-launch-setup.ts";
 import { runtimeBridgeTarget } from "./provider-runtime-admission.ts";
 import { lockRuntimeAccount } from "./runtime-account-admission.ts";
 import { runtimeAgentFor } from "./runtime-agent.ts";
@@ -79,7 +86,7 @@ export function createRuntimeFollowup(
            select 1 from public.account_turn_queue q
            where q.sandbox_id=s.id and q.request_id=j.id and q.state in ('queued','dispatching')
          ) as prompt_pending
-         from public.sandboxes s left join public.jobs j on j.idem_key=${MODAL_LAUNCH_SETUP_KEY}
+         from public.sandboxes s left join public.jobs j on j.idem_key=${modalLaunchSetupKeySql()}
          where s.id=$1 and s.owner_id=$2 and s.org_id=$3 and s.lifecycle_generation=$4`,
         [found.id, caller.userId, found.orgId, found.lifecycleGeneration],
       );

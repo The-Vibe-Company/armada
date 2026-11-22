@@ -1,12 +1,30 @@
-/** SQL fragments for the server-only account admission/list boundary. `s` is the sandbox alias.
- * Unknown accepted work stays occupied; a machine merely being alive does not.
- */
-export const ACCOUNT_WORKING_PREDICATE = `s.deleted_at is null and s.stopped_at is null
-  and s.status in ('starting','ready','running','stopping')
-  and (s.status='starting' or s.activity_lease_id is not null
-    or (s.task_prompt_id is not null and not exists(
+export function modalLaunchSetupKeySql(sandbox = "s") {
+  return `format('["internal","%s","launch_initial_turn","%s",%s,"%s"]',
+    ${sandbox}.org_id,${sandbox}.id,${sandbox}.lifecycle_generation,${sandbox}.id)`;
+}
+
+function eligibleSandbox(sandbox: string) {
+  return `${sandbox}.deleted_at is null and ${sandbox}.stopped_at is null
+    and ${sandbox}.status in ('starting','ready','running','stopping')`;
+}
+
+function activeSandboxWork(sandbox: string) {
+  return `${sandbox}.status='starting' or ${sandbox}.activity_lease_id is not null
+    or (${sandbox}.task_prompt_id is not null and not exists(
       select 1 from public.runtime_idle_turns t
-      where t.sandbox_id=s.id and t.prompt_id=s.task_prompt_id and t.settled)))`;
+      where t.sandbox_id=${sandbox}.id and t.prompt_id=${sandbox}.task_prompt_id and t.settled))`;
+}
+
+/** Pending setup counts toward quota but cannot substitute for a turn's dispatch reservation. */
+export const ACCOUNT_ACTIVE_WORK_PREDICATE = `${eligibleSandbox("s")} and (${activeSandboxWork("s")})`;
+
+function accountWorkingPredicate(sandbox: string) {
+  return `${eligibleSandbox(sandbox)} and (${activeSandboxWork(sandbox)}
+    or exists(select 1 from public.jobs setup
+      where setup.idem_key=${modalLaunchSetupKeySql(sandbox)} and setup.state in ('queued','leased')))`;
+}
+
+export const ACCOUNT_WORKING_PREDICATE = accountWorkingPredicate("s");
 
 /** Expressions are static trusted SQL supplied by server code, never user input. */
 export function accountWorkingCountSql(account: string, exclude = "null::uuid", model?: string): string {
@@ -43,7 +61,7 @@ export function accountWaitingCountSql(account: string, limit: string, model?: s
       or (select (c.model_limits->>q.model)::integer from public.credentials c where c.id=q.account_id)<=${accountWorkingCountSql(account, "null::uuid", "q.model")})
     and waiting.credential_id=q.account_id and waiting.credential_version=q.credential_version
     and not exists(select 1 from public.account_agent_reservations own_slot where own_slot.sandbox_id=waiting.id and own_slot.account_id=q.account_id)
-    and not (${ACCOUNT_WORKING_PREDICATE.replaceAll("s.", "waiting.")})
+    and not (${accountWorkingPredicate("waiting")})
     and not exists(select 1 from public.account_turn_queue active where active.sandbox_id=waiting.id and active.state='dispatching')
     and waiting.deleted_at is null and waiting.expires_at>now() and waiting.stop_requested_at is null
     and waiting.status in ('ready','running','stopped')
