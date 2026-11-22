@@ -60,7 +60,7 @@ export function runtimeResumePlacement<H extends Provider>(
       await placement.verifyRestoredCoverage(host, sandbox, signal);
     };
     return {
-      start: (signal, restoreCheckpoint, confirmActivation, assertDispatch, ticketGuard) =>
+      start: (signal, restoreCheckpoint, confirmActivation, assertDispatch, ticket) =>
         options.policy.start({
           host,
           actor,
@@ -69,9 +69,9 @@ export function runtimeResumePlacement<H extends Provider>(
           signal,
           restoreCheckpoint,
           ...(assertDispatch ? { assertDispatch } : {}),
-          ...(ticketGuard
+          ...(ticket ? { ticketGuard: ticket.guard } : {}),
+          ...(ticket?.recovery
             ? {
-                ticketGuard,
                 ...(placement.verifyRestoredCoverage
                   ? { activate: (admission: AbortSignal) => verifyRestoredCoverage(admission, assertDispatch) }
                   : {}),
