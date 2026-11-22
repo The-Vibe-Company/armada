@@ -27,6 +27,10 @@ export interface ConfigureMcpRequest {
 export interface ConfigureMcpResult {
   revision: string;
 }
+export interface ExtendCommandAuthorityResult {
+  epoch: string;
+  expiresAt: number;
+}
 /** Trusted private control only; never a model tool or a public owner DTO. */
 export interface OrchestratorEpochBinding {
   epoch: string;
@@ -66,6 +70,7 @@ export interface ExecEnvironment {
   GIT_TERMINAL_PROMPT?: "0";
 }
 export interface RunnerExecutionOptions {
+  enrolled?: boolean;
   workspaceHost?: import("./workspace-exec.ts").WorkspaceExecutionHost;
   prepareWorkspace?: () => Promise<void>;
   reportHarnessFailure?: (
@@ -142,6 +147,7 @@ export type RunnerRequest = { version: 1; requestId: string; sandboxId: string }
   | { op: "workspaceExec"; input: import("./workspace-exec.ts").WorkspaceExec }
   | { op: "installSkills"; input: import("./skills.ts").SkillInstallInput }
   | { op: "configureGitHub"; configuration: GitHubBrokerConfiguration | null }
+  | { op: "extendCommandAuthority"; epoch: string; expiresAt: number }
   | { op: "resourceObservation" }
   | { op: "readOutputs"; part?: OutputChunkRequest | null }
   | ConfigureMcpRequest
