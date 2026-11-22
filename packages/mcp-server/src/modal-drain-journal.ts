@@ -52,3 +52,78 @@ export const strictNativeDrainJournals: Partial<Record<"boat" | "modal", StrictN
     },
   },
 };
+
+const historicalModalCohort = `s.provider='modal' and not s.boat_runtime
+  and s.runtime_transport is distinct from 'dialout'
+  and s.status in ('stopped','failed') and s.stopped_at is not null and s.deleted_at is null
+  and not s.application_secret_tainted and s.created_at < timestamptz '2026-11-22 00:00:00+00'
+  and not exists(select 1 from public.sandbox_native_preservation_receipts r where r.sandbox_id=s.id)`;
+
+const historicalJournalMatch = `m.org_id=s.org_id and m.owner_id=s.owner_id and m.id=s.provider_sandbox_id
+  and m.record->>'commonRuntime' is distinct from 'true'
+  and jsonb_typeof(m.record->'generation')='number'
+  and 1=(select count(*) from public.modal_machines placement
+    where placement.org_id=s.org_id and placement.id=s.provider_sandbox_id)`;
+const historicalAdmissionStamp = `jsonb_build_object('sandboxId',s.id,'physicalGeneration',m.record->'generation')`;
+const availableJournal = `((m.lease_id is null and m.lease_until is null)
+  or (m.lease_id is not null and m.lease_until<=clock_timestamp()))`;
+const historicalTombstone = `m.record->>'phase'='deleted' and (
+  m.record->'deletePhysicalExitGeneration'=m.record->'generation'
+  or (s.stop_requested_at is not null and m.record->'deletePhysicalExitGeneration' is null)
+)`;
+
+const historicalReplay = `m.record->'historicalDrainAdmission'=${historicalAdmissionStamp}
+  and (
+    (${historicalTombstone}) or (s.stop_requested_at is null and (
+      m.record->>'phase'='stopped' or (m.record->>'phase'='deleting'
+        and m.record->'deletePhysicalExitGeneration'=m.record->'generation')
+    ))
+  )`;
+
+const historicalAdmission = `case when s.native_drain_pending then ${historicalReplay}
+  else m.record->'historicalDrainAdmission' is null and (
+    (s.stop_requested_at is null and m.record->>'phase'='stopped')
+    or (s.stop_requested_at is not null and ${historicalTombstone})
+  ) end`;
+
+export const historicalModalDrainCandidate = `${historicalModalCohort} and exists (
+  select 1 from public.modal_machines m
+  where ${historicalJournalMatch} and ${availableJournal} and ${historicalAdmission}
+)`;
+
+export function historicalModalDrainPhase(allow: string) {
+  return `case when ${allow} and ${historicalModalCohort} then (
+    select m.record->>'phase' from public.modal_machines m
+    where ${historicalJournalMatch} and ${availableJournal} and ${historicalReplay}
+    for update of m nowait
+  ) end`;
+}
+
+export async function admitHistoricalModalDrain(tx: Sql, id: string, pending: boolean) {
+  // WARNING: Modal ingest can lock the journal before the sandbox. Refuse contention without waiting.
+  const {
+    rows: [journal],
+  } = await tx.query<{
+    scope: string;
+    id: string;
+    lease_id: string | null;
+    stamp: Record<string, unknown>;
+  }>(
+    `select m.scope,m.id,m.lease_id,${historicalAdmissionStamp} as stamp
+     from public.sandboxes s join public.modal_machines m on ${historicalJournalMatch}
+     where s.id=$1 and ${historicalModalCohort} and ${availableJournal}
+       and ${historicalAdmission}
+     for update of m nowait`,
+    [id],
+  );
+  if (!journal) return false;
+  if (journal.lease_id && !(await withdrawExpiredModalDrainLease(tx, journal, journal.lease_id))) return false;
+  if (!pending) {
+    await tx.query(
+      `update public.modal_machines set record=jsonb_set(record,'{historicalDrainAdmission}',$3::jsonb)
+       where scope=$1 and id=$2`,
+      [journal.scope, journal.id, JSON.stringify(journal.stamp)],
+    );
+  }
+  return true;
+}

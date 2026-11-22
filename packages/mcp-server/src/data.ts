@@ -44,6 +44,7 @@ import { recordNativeAccountExhaustion } from "./account-exhaustion.ts";
 import { publishAccountSpend, unmeasuredUsage } from "./account-spend.ts";
 import type { Caller } from "./caller.ts";
 import { scopedOrg } from "./control-caller.ts";
+import { admitHistoricalModalDrain, historicalModalDrainCandidate } from "./modal-drain-journal.ts";
 import { unresolvedModalLaunch } from "./modal-launch-handoff.ts";
 import { bindNativePromptRequest } from "./native-webhook-prompts.ts";
 import { recordOperatorDiagnostic } from "./request-observability.ts";
@@ -124,8 +125,9 @@ export interface SandboxView extends SandboxRecord {
 export interface ServerSandboxPatch extends SandboxPatch {
   deleteCompleted?: true;
   nativeDrain?: true;
+  historicalModalDrainPlacement?: string;
   nativeDrainDeleteOperation?: { provider: SandboxRecord["provider"]; placement: string; id: string };
-  nativeDrainAdmission?: { provider: SandboxRecord["provider"]; placement: string };
+  nativeDrainAdmission?: { provider: SandboxRecord["provider"]; placement: string; allowHistoricalModal?: boolean };
   expireAfterExtension?: true;
   nativeExecAdmission?: { provider: SandboxRecord["provider"]; placement: string };
   nativeExecCompleted?: true;
@@ -177,13 +179,15 @@ export interface ServerSandboxStore extends SandboxStore {
   launchTiming?(id: string): Promise<LaunchTiming | null>;
   assertExtensionAllowed?(id: string): Promise<void>;
   assertDeletionAllowed?(id: string): Promise<void>;
+  historicalModalDrainCandidate?(id: string): Promise<boolean>;
   nativeDrainDispatch?(
     id: string,
     placement: string,
     generation: number,
     activityToken: string,
     action: "inspect" | "claim",
-  ): Promise<string | null>;
+    allowHistoricalModal: boolean,
+  ): Promise<{ operation_id: string | null; historical_phase: string | null }>;
   getForStop?(id: string): Promise<{ sandbox: SandboxView; busy: boolean } | null>;
   requestStartingModalStop?(sandbox: SandboxRecord, signal?: AbortSignal): ReturnType<typeof requestStartingModalStop>;
   /** Refuse taint and stop intent before exec; native Boat and Modal exec also claim the activity lease. */
@@ -643,10 +647,27 @@ export function createSqlData(
         if (!["stopped", "failed", "deleted"].includes(row.status))
           throw new GoldenError("conflict", "Stop the sandbox before deleting it.");
       },
-      async nativeDrainDispatch(id, placement, generation, activityToken, action) {
-        const owned = await nativeDrainDispatch(sql, scope, id, placement, generation, activityToken, action);
+      async historicalModalDrainCandidate(id) {
+        const candidate = await sql.query(
+          `select 1 from public.sandboxes s where s.id=$3::uuid and ${SANDBOX_VISIBLE}
+           and ${historicalModalDrainCandidate}`,
+          [...scope, id],
+        );
+        return candidate.rows.length === 1;
+      },
+      async nativeDrainDispatch(id, placement, generation, activityToken, action, allowHistoricalModal) {
+        const owned = await nativeDrainDispatch(
+          sql,
+          scope,
+          id,
+          placement,
+          generation,
+          activityToken,
+          action,
+          allowHistoricalModal,
+        );
         if (!owned) throw new DataError("Native drain no longer owns this placement.", "sandbox_not_ready");
-        return owned.operation_id;
+        return owned;
       },
       async recordUsage(id, usage, options) {
         const mergeNative = async (target: Sql, unpriced: boolean) =>
@@ -923,7 +944,15 @@ export function createSqlData(
           if (!sql.transaction || expectedGeneration === undefined || !activityToken || !patch.finishActivity)
             throw new DataError("Sandbox deletion completion requires its activity generation and token.");
           const applied = await sql.transaction((tx) =>
-            completeSandboxDeletion(tx, scope, id, expectedGeneration, activityToken, patch.nativeDrain === true),
+            completeSandboxDeletion(
+              tx,
+              scope,
+              id,
+              expectedGeneration,
+              activityToken,
+              patch.nativeDrain === true,
+              patch.historicalModalDrainPlacement,
+            ),
           );
           if (!applied) throw new DataError("Sandbox deletion receipt is stale.", "sandbox_not_ready");
           return;
@@ -1299,26 +1328,36 @@ export function createSqlData(
         };
         let result: Awaited<ReturnType<typeof applyUpdate>> & { observationBlocked?: boolean };
         if (patch.nativeDrainAdmission) {
-          const { provider, placement } = patch.nativeDrainAdmission;
+          const { provider, placement, allowHistoricalModal } = patch.nativeDrainAdmission;
           const { expectedGeneration } = patch;
           if (!sql.transaction || !patch.deleteRequested || !admission || expectedGeneration === undefined)
             throw new DataError("Native drain requires its delete admission fence.");
           result = await sql.transaction(async (tx) => {
             const {
               rows: [locked],
-            } = await tx.query<{ native_drain_pending: boolean; requires_incarnation_proof: boolean }>(
+            } = await tx.query<{
+              native_drain_pending: boolean;
+              requires_incarnation_proof: boolean;
+            }>(
               `select s.native_drain_pending, s.provider='modal' as requires_incarnation_proof
                from public.sandboxes s where s.id=$3::uuid and ${SANDBOX_VISIBLE}
                  and s.provider=$4::public.sandbox_provider and s.provider_sandbox_id=$5
                  and s.provider in ('boat','modal') and not s.boat_runtime and s.runtime_transport is distinct from 'dialout'
-                 and s.stopped_at is not null and s.stop_requested_at is null
+                 and s.stopped_at is not null and (s.stop_requested_at is null or $6::boolean)
                  and s.deleted_at is null and not s.application_secret_tainted
                  and exists(select 1 from public.members m where m.org_id=s.org_id and m.user_id=$2::uuid
                    and (s.owner_id=$2::uuid or m.role='admin')) for update of s`,
-              [...scope, id, provider, placement],
+              [...scope, id, provider, placement, allowHistoricalModal === true],
             );
             if (!locked) throw new DataError("Sandbox is not eligible for native drain deletion.", "sandbox_not_ready");
+            const historical =
+              allowHistoricalModal === true &&
+              locked.requires_incarnation_proof &&
+              (await admitHistoricalModalDrain(tx, id, locked.native_drain_pending));
+            if (allowHistoricalModal && !historical)
+              throw new DataError("Historical Modal drain eligibility changed before admission.", "sandbox_not_ready");
             if (
+              !historical &&
               locked.requires_incarnation_proof &&
               !(await fencePreservedModalDrainIncarnation(tx, id, locked.native_drain_pending))
             )
@@ -1339,7 +1378,7 @@ export function createSqlData(
               );
               if (!retry?.allowed)
                 throw new DataError("Native drain deletion outcome is unknown.", "sandbox_not_ready");
-            } else {
+            } else if (!historical) {
               const {
                 rows: [recovery],
               } = await tx.query<{ outcome: string }>(

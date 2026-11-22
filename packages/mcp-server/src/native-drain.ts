@@ -14,6 +14,7 @@ export function configureNativeDrain(
   provider: "modal" | "boat",
   actorId: string,
   env: Record<string, string | undefined>,
+  allowHistoricalModal = false,
 ) {
   const encryptionKey = env.ARMADA_ENCRYPTION_KEY;
   const publicUrl = env.ARMADA_PUBLIC_URL;
@@ -48,9 +49,9 @@ export function configureNativeDrain(
         throw new Error("Native drain could not admit strict preservation.");
       throw new Error("Native drain cannot delete before preservation and stop are confirmed.");
     }
-    if (target?.stopRequestedAt || target?.status === "stopping")
+    if ((target?.stopRequestedAt && !allowHistoricalModal) || target?.status === "stopping")
       throw new Error("Native drain is waiting for the stop to settle.");
-    await deleteSandboxWithActivity(
+    const result = await deleteSandboxWithActivity(
       sandboxes,
       {
         ...deletionPreparation,
@@ -62,7 +63,9 @@ export function configureNativeDrain(
       },
       row.id,
       "native-drain",
+      allowHistoricalModal,
     );
+    return result.drainProof;
   };
   return { remove, settle: settleDetachedModalCollections };
 }
