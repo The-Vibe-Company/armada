@@ -2,14 +2,18 @@ import { mapHarnesses, type Provider, ProviderError } from "@armada/core";
 import type { ModalRuntimeCapture } from "@armada/provider-modal";
 import { runtimeHarnessSupported } from "./provider-runtime-admission.ts";
 
-export type RuntimeWorkProvider = Provider & { captureRuntimeWork?: ModalRuntimeCapture };
+type RuntimeTtlPort = {
+  setRuntimeTtl?(request: { sandboxId: string; ttlSeconds: number; signal: AbortSignal }): Promise<void>;
+};
+
+export type RuntimeWorkProvider = Provider & RuntimeTtlPort & { captureRuntimeWork?: ModalRuntimeCapture };
 
 /** Sandbox-bound adapter. Caller supplies authorized persisted binding and a
  * compute-only host (no native model-auth lifecycle hooks). No spread/fallback
  * to host agent methods, including optional ports added in future.
  */
 export function createRuntimeProvider(
-  host: Provider,
+  host: Provider & RuntimeTtlPort,
   providerSandboxId: string,
   reads: Pick<Provider, "getPrompt" | "events">,
   operations?: Pick<Provider, "interrupt" | "steer" | "exec" | "testModelConnection">,
@@ -40,6 +44,7 @@ export function createRuntimeProvider(
     resume: false,
     parallelConversations: false,
   }));
+  const setRuntimeTtl = host.id === "boat" ? host.setRuntimeTtl : undefined;
   return {
     id: host.id,
     harnesses: (["codex", "claude", "opencode"] as const).filter((harness) =>
@@ -68,6 +73,15 @@ export function createRuntimeProvider(
       target(request.sandboxId);
       return host.delete(request);
     },
+    ...(setRuntimeTtl
+      ? {
+          async setRuntimeTtl(request: Parameters<typeof setRuntimeTtl>[0]) {
+            target(request.sandboxId);
+            request.signal.throwIfAborted();
+            await setRuntimeTtl.call(host, request);
+          },
+        }
+      : {}),
     ...(operations?.testModelConnection
       ? {
           async testModelConnection(request: Parameters<NonNullable<Provider["testModelConnection"]>>[0]) {
