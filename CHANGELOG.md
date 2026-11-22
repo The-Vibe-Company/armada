@@ -1,5 +1,12 @@
 # Changelog
 
+## [9.0.1](https://github.com/The-Vibe-Company/armada/compare/v9.0.0...v9.0.1) (2026-11-22)
+
+
+### Bug Fixes
+
+* **boat:** runtime launch fails no_credentials refreshing a golden repository (9.0.0 regression) ([#4016](https://github.com/The-Vibe-Company/armada/issues/4016)) ([8fb1cc1](https://github.com/The-Vibe-Company/armada/commit/8fb1cc16720df310b86921ebb48e46b94b7399f3))
+
 ## [9.0.0](https://github.com/The-Vibe-Company/armada/compare/v8.0.0...v9.0.0) (2026-11-22)
 
 
