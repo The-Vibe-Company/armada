@@ -70,6 +70,9 @@ test.each([
             dockerAllocation = { id: id(7), externalRef: body.externalRef };
             return Response.json({ sandbox: { id: id(6), provider: "docker", externalRef: "different-launch" } });
           }
+          if (body.provider === "modal" && scenario === "finished with complete text") {
+            return Response.json({ sandbox: { id: id(5), status: "starting" } });
+          }
           return Response.json({
             sandbox: {
               id: body.provider === "docker" ? id(7) : id(5),
@@ -148,7 +151,7 @@ test.each([
     { provider: "modal", credentialId: modal.modelAccountId },
     { provider: "docker", credentialId: docker.modelAccountId },
   ]);
-  expect(sent).toHaveLength(2);
+  expect([...sent].sort()).toEqual([id(5), id(7)]);
   if (dockerAllocation) {
     expect(stopped.has(dockerAllocation.id)).toBe(true);
     expect(stopped.has(id(6))).toBe(false);

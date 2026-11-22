@@ -1712,6 +1712,8 @@ test.each(["canary echo", "late create"] as const)("vault rejects %s and cleans 
 });
 
 type LifecycleFault =
+  | "admission_receipt"
+  | "missing_nested_provider"
   | "none"
   | "steer_admitted"
   | "wrong_steer_status"
@@ -1761,6 +1763,8 @@ function lifecycleFixture(
         fake.advance(600_000);
         throw new DOMException("secret launch outcome", "TimeoutError");
       }
+      if (fault === "admission_receipt") return json({ sandbox: { id: life.id, status: "starting" } });
+      if (fault === "missing_nested_provider") return json({ provider: life.provider, sandbox: { id: life.id } });
       return json({ sandbox: { id: life.id, provider: life.provider } });
     }
     if (call.path === "sandbox/list" && call.body.externalRef) {
@@ -1863,8 +1867,8 @@ test("an ordinary lifecycle case never reads goldenId, which only scoped Codex c
   expect(fake.calls.filter((call) => call.path === "sandbox/launch")).toHaveLength(1);
 });
 
-test("lifecycle records readiness and confirms extend/list, closed idle steer refusal and send-after-stop on every selected pair", async () => {
-  const fake = lifecycleFixture();
+test("lifecycle follows Modal admission through extend/list, closed idle steer refusal and send-after-stop", async () => {
+  const fake = lifecycleFixture("admission_receipt");
   const cases = ["modal"].flatMap((provider) =>
     ["claude", "codex"].map((harness) => ({ ...selected, provider, harness })),
   );
@@ -1910,6 +1914,14 @@ test("lifecycle records readiness and confirms extend/list, closed idle steer re
       .every((line) => line.pass && !line.leftoverSandboxIds.length && !line.launchOutcomeUnknown),
   ).toBe(true);
   expect(fake.lines.join("")).not.toContain("secret");
+});
+
+test("lifecycle rejects a provider found only outside the sandbox receipt and cleans up by ID", async () => {
+  const fake = lifecycleFixture("missing_nested_provider");
+  expect(await fake.run()).toBe(false);
+  expect(fake.receipts()).toContainEqual({ case: 0, step: "launch", pass: false, code: "invalid_response" });
+  expect(fake.calls.some((call) => call.path === "sandbox/send")).toBe(false);
+  expect(fake.calls.find((call) => call.path === "sandbox/stop")?.body.id).toBe(lifecycleId(1));
 });
 
 test.each(["fetch", "error body"])(

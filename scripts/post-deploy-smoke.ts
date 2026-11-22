@@ -1127,6 +1127,7 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
           (handle) => {
             id = handle;
           },
+          { receipt: "admission" },
         ).catch(refuseModelCredentials);
         id = result.sandbox.id;
       });
@@ -1383,7 +1384,7 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
         type LaunchReceipt = {
           sandbox: {
             id: string;
-            provider: string;
+            provider?: string;
             skills?: unknown;
             harness?: string;
             model?: string;
@@ -1418,6 +1419,7 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
           ttlSeconds: 1800,
         };
         const requiresLaunchReceipt = defaultSkills || scope !== undefined;
+        const acceptsAdmission = lifecycle && !dirty && !requiresLaunchReceipt && !goldenRuntime && !githubRefresh;
         const recoverLaunch = requiresLaunchReceipt
           ? async (id: string, requestKey: string, until: number) => {
               const inventoryRemaining = until - io.now();
@@ -1437,7 +1439,7 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
               const remaining = until - io.now();
               if (remaining <= 0) return;
               const status = await sandbox<
-                Omit<LaunchReceipt["sandbox"], "provider"> & {
+                LaunchReceipt["sandbox"] & {
                   externalRef?: string;
                   status: string;
                   prompt: unknown;
@@ -1450,10 +1452,9 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
                 status.prompt !== null
               )
                 return;
-              const observed = { ...status, provider: item.provider };
-              if (scope && !matchesParentConfiguration(observed)) return;
+              if (scope && !matchesParentConfiguration(status)) return;
               if (defaultSkills && !scope) verifyReceipts(status.skills, dirty ? [] : defaultPins.get(index)!);
-              return { sandbox: observed, golden: { id: goldenId } };
+              return { sandbox: status, golden: { id: goldenId } };
             }
           : undefined;
         const { result, recovered } = await launchWithObservation<LaunchReceipt>(
@@ -1464,12 +1465,18 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
           (id) => {
             sandboxId = id;
           },
-          recoverLaunch ? { recover: recoverLaunch } : undefined,
+          recoverLaunch ? { recover: recoverLaunch } : acceptsAdmission ? { receipt: "admission" } : undefined,
         );
         const parent = result?.sandbox;
         // Retain the cleanup handle even if later response validation fails.
         if (typeof parent?.id === "string" && parent.id) sandboxId = parent.id;
-        if (!sandboxId || parent?.provider !== item.provider || result.promptId) fail("invalid_response");
+        if (!sandboxId || result.promptId) fail("invalid_response");
+        if (
+          !recovered &&
+          parent?.provider !== item.provider &&
+          !(acceptsAdmission && parseLaunchAdmissionReceipt(item.provider, result))
+        )
+          fail("invalid_response");
         if (requiresLaunchReceipt && result.golden?.id !== item.goldenId) fail("invalid_response");
         if (scope)
           await step("scoped_parent_configuration", async () => {
