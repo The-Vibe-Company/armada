@@ -38,7 +38,7 @@ export function createOrdinaryLaunchReceipts(sql: Sql) {
       dispatch: (id: string) => Promise<T>,
       authority: { target: ProviderTarget; backendId: string; management: { scope: "org" | "user"; ownerId: string } },
     ): Promise<T> {
-      const fingerprint = createHash("sha256").update(canonical(payload)).digest("hex");
+      const fingerprint = ordinaryLaunchFingerprint(payload);
       const id = crypto.randomUUID();
       let inserted: { rows: Receipt[] };
       try {
@@ -99,6 +99,11 @@ export function createOrdinaryLaunchReceipts(sql: Sql) {
       }
     },
   };
+}
+
+/** Preserve the original request encoding for replay across launch producers. */
+export function ordinaryLaunchFingerprint(payload: unknown): string {
+  return createHash("sha256").update(canonical(payload)).digest("hex");
 }
 
 function canonical(value: unknown): string {

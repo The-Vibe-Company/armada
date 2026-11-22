@@ -39,7 +39,11 @@ import {
   type ModalLaunchPlacement,
   prepareModalLaunchHandoff,
 } from "../modal-launch-handoff.ts";
-import { type OrdinaryLaunchFailure, replayOrdinaryLaunchFailure } from "../ordinary-launch-receipts.ts";
+import {
+  type OrdinaryLaunchFailure,
+  ordinaryLaunchFingerprint,
+  replayOrdinaryLaunchFailure,
+} from "../ordinary-launch-receipts.ts";
 import { runtimeAgentFor, workspaceCommandId } from "../runtime-agent.ts";
 import { RuntimeCommandRefused } from "../runtime-commands.ts";
 import type { RuntimeConfigurationTarget } from "../runtime-configuration.ts";
@@ -84,7 +88,7 @@ export type ModalLaunchAllocation = Omit<Parameters<Machine["create"]>[0], "sand
 export interface ModalLaunchAdmission {
   orgId: string;
   ownerId: string;
-  request?: { key: string; digest: string };
+  request?: { key: string; payload: unknown };
   templateReceiptId?: string;
   sandbox: ModalLaunchSandbox;
   allocation: ModalLaunchAllocation & { source: { kind: "snapshot" } };
@@ -142,6 +146,7 @@ export async function admitModalLaunch(
   if (!sql.transaction) throw new Error("Modal admission requires a transaction.");
   const { orgId, ownerId, sandbox, allocation, request, templateReceiptId, armadaAccess } = input;
   if (request && templateReceiptId) throw new Error("Modal launch admission requires one receipt identity.");
+  const fingerprint = request && ordinaryLaunchFingerprint(request.payload);
   const generation = 1;
   const store = createJobsStore(sql, encryptionKey);
 
@@ -156,7 +161,7 @@ export async function admitModalLaunch(
         : request
           ? JSON.stringify(["ordinary", Buffer.from(request.key, "utf8").toString("utf8")])
           : JSON.stringify(["unkeyed", sandboxId]);
-      const digest = reservation?.digest ?? request?.digest ?? sandboxId;
+      const digest = reservation?.digest ?? fingerprint ?? sandboxId;
       if (reservation) {
         const {
           rows: [existing],
