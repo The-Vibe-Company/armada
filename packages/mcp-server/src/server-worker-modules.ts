@@ -114,6 +114,7 @@ const jobsLane: LaneFactory = ({
               runtimeCommands,
               runtimeMcp.prepare,
               runtimeGitHub,
+              control.sandboxArmadaAccess?.restoreEnrolled,
             ),
           }
         : {}),

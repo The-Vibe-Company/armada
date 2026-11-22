@@ -25,6 +25,7 @@ import { createRuntimeGitHub } from "../runtime-github.ts";
 import { createModalJobReader, createModalLogReader } from "../runtime-history.ts";
 import { createRuntimeMcp, type RuntimeMcp } from "../runtime-mcp.ts";
 import { createRuntimeServing } from "../runtime-serving.ts";
+import { createSandboxArmadaAccess } from "../sandbox-armada-access.ts";
 import { createSandboxLifecycle } from "../sandbox-lifecycle.ts";
 import { deleteSandboxWithActivity } from "../sandbox-rest-controls.ts";
 import type { LaneFactory } from "../server-worker-modules.ts";
@@ -148,25 +149,25 @@ const workspaceConfig = {
   init: ["printf initialized"],
 };
 
-async function modalAdmissionFixture() {
+async function modalAdmissionFixture(visibility: "org" | "private" = "private") {
   const f = await fixture();
   const goldenId = crypto.randomUUID();
   await f.db.query(
     `insert into goldens
        (id, org_id, owner_id, name, visibility, provider, modal_workspace, modal_environment, modal_app_id, provider_snapshot_id, config)
-     values ($1,$2,$3,'modal-admission','private','modal','workspace','main','ap-test','snapshot',$4)`,
-    [goldenId, f.people.org, f.people.owner, workspaceConfig],
+     values ($1,$2,$3,'modal-admission',$5,'modal','workspace','main','ap-test','snapshot',$4)`,
+    [goldenId, f.people.org, f.people.owner, workspaceConfig, visibility],
   );
   const scope = scopeKey({
     orgId: f.people.org,
     userId: f.people.owner,
-    visibility: "private",
+    visibility,
     binding: { workspace: "workspace", environment: "main", appId: "ap-test" },
   });
   await f.db.query(
     `insert into modal_machines(scope,org_id,owner_id,visibility,id,request_key,record)
-     values($1,$2,$3,'private','builder','builder','{}')`,
-    [scope, f.people.org, f.people.owner],
+     values($1,$2,$3,$4,'builder','builder','{}')`,
+    [scope, f.people.org, f.people.owner, visibility],
   );
   await f.db.query(
     `insert into modal_images(scope,name,source_id,record)
@@ -366,6 +367,55 @@ function admitModalLaunch(sql: Sql, key: string, input: ModalLaunchAdmission) {
   const mcp = createRuntimeMcp({ sql, key, origin: "https://armada.example", commands });
   return admitModalLaunchWithMcp(sql, key, input, mcp);
 }
+
+test("Modal scoped admission atomically reserves one private parent across receipt replay", async () => {
+  const { db, sql, input, openaiCredentialId, people } = await modalAdmissionFixture("org");
+  const scoped = {
+    ...input,
+    armadaAccess: { maxActiveChildren: 2 },
+    sandbox: { ...input.sandbox, credentialId: openaiCredentialId, credentialVersion: 1 },
+  };
+  const interrupted: Sql = {
+    ...sql,
+    transaction: (work) =>
+      sql.transaction!((tx) =>
+        work({
+          ...tx,
+          query: (statement, params) => {
+            if (statement.includes("insert into public.orchestrator_lifecycle"))
+              throw new Error("Interrupted scoped parent registration.");
+            return tx.query(statement, params);
+          },
+        }),
+      ),
+  };
+  await expect(admitModalLaunch(interrupted, launchEncryptionKey, scoped)).rejects.toThrow(
+    "Interrupted scoped parent registration.",
+  );
+  expect((await db.query("select id from armada_access_parents where kind='sandbox'")).rows).toEqual([]);
+  expect((await db.query("select id from jobs where kind='launch'")).rows).toEqual([]);
+  expect((await db.query("select id from sandboxes where golden_id=$1", [input.sandbox.goldenId])).rows).toEqual([]);
+  const admitted = await admitModalLaunch(sql, launchEncryptionKey, scoped);
+  expect(await admitModalLaunch(sql, launchEncryptionKey, scoped)).toEqual(admitted);
+  expect(
+    (
+      await db.query(
+        `select p.golden_ids, p.credential_ids, s.visibility, l.max_active_children
+         from armada_access_parents p join sandboxes s on s.id=p.sandbox_id
+         join orchestrator_lifecycle l on l.orchestrator_id=p.id
+         where p.sandbox_id=$1 and p.org_id=$2 and p.owner_id=$3`,
+        [admitted.sandbox.id, people.org, people.owner],
+      )
+    ).rows,
+  ).toEqual([
+    {
+      golden_ids: [input.sandbox.goldenId],
+      credential_ids: [openaiCredentialId],
+      visibility: "private",
+      max_active_children: 2,
+    },
+  ]);
+});
 
 async function launchConnection(
   db: Awaited<ReturnType<typeof fixture>>["db"],
@@ -1065,6 +1115,7 @@ async function modalFirstTurnLane(
   runtimeCommands = fixtureWorkspaceCommands,
   runtimeGitHub?: ReturnType<typeof createRuntimeGitHub>,
   runtimeMcp: Pick<RuntimeMcp, "prepare"> = { prepare: async () => undefined },
+  sandboxArmadaAccess?: ReturnType<typeof createSandboxArmadaAccess>,
 ) {
   const factory = await registeredJobsLane();
   return factory({
@@ -1076,13 +1127,105 @@ async function modalFirstTurnLane(
     runtimeMcp,
     config: { encryptionKey: launchEncryptionKey },
     options: { logError: () => {} },
-    control: {},
+    control: { sandboxArmadaAccess },
     langfuse: { exportJob: { concurrency: 1 } },
     webhooks: {},
     outputs: { drain: async () => {}, captureJob: { concurrency: 1 } },
     modal: { launchCleanupJob: { concurrency: 1 } },
   } as unknown as Parameters<LaneFactory>[0])!;
 }
+
+test.each(["first turn", "promptless setup"] as const)(
+  "Modal scoped access is acknowledged before %s completes after a lost reference reply",
+  async (mode) => {
+    const fixture = await modalAdmissionFixture();
+    const admission = { ...fixture, input: { ...fixture.input, armadaAccess: {} } };
+    if (mode === "promptless setup") delete admission.input.initialPrompt;
+    const { f, id, makeRunner, activeRuntime } = await modalLaunchFixture(admission);
+    const launch = makeRunner();
+    expect(await launch.reconcileOne(signal)).toBe(true);
+    await launch.drain();
+
+    const { runtimeToken, epoch } = activeRuntime();
+    const enrolments = createRuntimeEnrolments(f.sql, launchEncryptionKey);
+    const queue = createAccountTurnQueue(f.sql, launchEncryptionKey);
+    const turns = async () =>
+      (await f.db.query("select request_id from account_turn_queue where sandbox_id=$1", [id])).rows;
+    const referenceCommands: string[] = [];
+    let grants = 0;
+    const runSetup = async (interrupt: boolean) => {
+      const commands = createRuntimeCommands(enrolments, launchEncryptionKey, {
+        now: () => 0,
+        async wait() {
+          const { command } = await commands.next(runtimeToken, epoch);
+          if (!command) throw new Error("Expected a runtime setup command.");
+          expect(await turns()).toEqual([]);
+          let result: unknown;
+          switch (command.op) {
+            case "health":
+              result = { ready: true, generation: epoch, workspaceVersion: 1 };
+              break;
+            case "workspaceExec":
+              result = { detached: false, exitCode: 0, stdout: "", stderr: "" };
+              break;
+            case "exec":
+              expect(command.input.command).toContain(".agents/skills/armada-tools/SKILL.md");
+              referenceCommands.push(command.requestId);
+              if (interrupt) throw new Error("Worker lost while waiting for the reference command.");
+              result = { detached: false, exitCode: 0, stdout: "", stderr: "", timedOut: false, truncated: false };
+              break;
+            case "installOrchestratorEpoch":
+              grants++;
+              result = { acknowledged: true };
+              break;
+            default:
+              throw new Error("Unexpected runtime setup command.");
+          }
+          await commands.complete(runtimeToken, epoch, {
+            epoch,
+            requestId: command.requestId,
+            status: 200,
+            body: { version: 1, requestId: command.requestId, result },
+          });
+        },
+      });
+      const access = createSandboxArmadaAccess({
+        sql: f.sql,
+        encryptionKey: launchEncryptionKey,
+        publicUrl: "https://armada.test",
+        commands,
+      });
+      const lane = await modalFirstTurnLane(f, queue, commands, undefined, undefined, access);
+      expect(await lane.reconcileOne(signal)).toBe(true);
+      await lane.drain();
+    };
+
+    await runSetup(true);
+    expect(referenceCommands).toHaveLength(1);
+    expect(grants).toBe(0);
+    expect(await turns()).toEqual([]);
+    await f.db.query("update jobs set lease_until='-infinity' where sandbox_id=$1 and kind=$2", [
+      id,
+      MODAL_INITIAL_TURN,
+    ]);
+
+    await runSetup(false);
+    expect(referenceCommands).toEqual([referenceCommands[0]!, referenceCommands[0]!]);
+    expect(grants).toBe(1);
+    expect(await turns()).toHaveLength(mode === "first turn" ? 1 : 0);
+    expect(
+      (await f.db.query("select state from jobs where sandbox_id=$1 and kind=$2", [id, MODAL_INITIAL_TURN])).rows,
+    ).toEqual([{ state: "done" }]);
+    expect(
+      (
+        await f.db.query(
+          "select acknowledged_at is not null as acknowledged from orchestrator_delegations where orchestrator_id=$1",
+          [id],
+        )
+      ).rows,
+    ).toEqual([{ acknowledged: true }]);
+  },
+);
 
 test.each(["before", "after"] as const)(
   "the registered Modal first-turn job recovers a crash %s queue commit",
