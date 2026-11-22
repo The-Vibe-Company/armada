@@ -292,6 +292,7 @@ test.each(["boat", "modal"] as const)(
         f.bridge,
         async () => ({
           start: async (_signal, restore) => f.reboot(restore),
+          async checkDispatchCoverage() {},
           stop: async () => {
             throw Error("Healthy resume must not stop");
           },
