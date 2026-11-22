@@ -658,6 +658,7 @@ const fakeFetch = async (url: string | URL | Request, options?: RequestInit): Pr
     });
   }
   if (path.endsWith("/logs/read")) {
+    if (admission && variables && admissionStatusReads < 2) throw Error("template archive read before settlement");
     const archivedFollowup = admission && !followupAliasPublished ? "native-followup" : followupId;
     if (idle && !firstSends)
       return Response.json({
