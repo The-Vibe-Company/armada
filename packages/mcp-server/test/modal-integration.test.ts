@@ -37,7 +37,7 @@ test("private image org-fallback provenance survives adding a personal key, rota
       people.owner,
       await encryptSecret(JSON.stringify({ token_id: "ak-personal", token_secret: "as-personal" }), ENCRYPTION_KEY),
     ]);
-    const integration = await createModalIntegration({
+    const integration = createModalIntegration({
       sql: db,
       vault: createSqlVaultStore(db),
       encryptionKey: ENCRYPTION_KEY,
@@ -57,6 +57,7 @@ test("private image org-fallback provenance survives adding a personal key, rota
       phase: "active",
       generation: 1,
       golden: false,
+      commonRuntime: true,
       ttlSeconds: 60,
       physicalName: "private",
       managementAuthority: { credentialScope: "org", credentialOwnerId: people.org },

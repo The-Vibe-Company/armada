@@ -110,7 +110,7 @@ test("Modal stored observations route stopped dial-out answers through the archi
       ],
     });
     await db.query("update sandboxes set status='stopped',stopped_at=now() where id=$1", [sandbox.id]);
-    const integration = await createModalIntegration({
+    const integration = createModalIntegration({
       sql,
       vault: createSqlVaultStore(sql),
       encryptionKey: ENCRYPTION_KEY,
