@@ -264,6 +264,52 @@ describe("sandboxes", () => {
     expect(await boat.provider.get(ID)).toMatchObject({ state: "stopped", retainedSnapshot: expected });
   });
 
+  test("get identifies a by-ID stop completion mismatch in the retention diagnostic", async () => {
+    const stop = {
+      id: "stop-1",
+      status: StopOperationStatusEnum.Completed,
+      endedAt: "2026-11-22T09:03:40Z",
+    };
+    const verifiedAt = "2026-11-22T09:03:35.500Z";
+    const observedEndedAt = "2026-11-22T09:03:41Z";
+    const boat = fakeBoat(
+      {
+        body: {
+          sandbox: retainedSandbox({
+            stoppedAt: stop.endedAt,
+            snapshotVerifiedAt: verifiedAt,
+            lastSnapshotStatus: SandboxLastSnapshotStatusEnum.Completed,
+            stop,
+          }),
+        },
+      },
+      {
+        body: {
+          ok: true,
+          type: "stop.status",
+          id: ID,
+          stop: { ...stop, endedAt: observedEndedAt, requestedAt: "2026-11-22T09:03:30Z", error: "PRIVATE_ERROR" },
+        },
+      },
+    );
+    const log = spyOn(console, "info");
+    try {
+      expect(await boat.provider.get(ID)).toMatchObject({ state: "stopped", retainedSnapshot: "unconfirmed" });
+      const events = log.mock.calls.map(([line]) => JSON.parse(String(line)));
+      expect(events.find((event) => event.event === "boat_retention_unconfirmed")).toMatchObject({
+        providerSandboxId: ID,
+        retention: "unconfirmed",
+        reason: "stop_end_mismatch",
+        verifiedAt: Date.parse(verifiedAt),
+        stopEndedAt: Date.parse(stop.endedAt),
+        observedStopEndedAt: Date.parse(observedEndedAt),
+      });
+      expect(JSON.stringify(log.mock.calls)).not.toContain("PRIVATE_ERROR");
+    } finally {
+      log.mockRestore();
+    }
+  });
+
   test.each([
     {
       name: "a completed stop with a recently verified snapshot",
