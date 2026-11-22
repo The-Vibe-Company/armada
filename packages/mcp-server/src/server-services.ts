@@ -228,7 +228,7 @@ export async function createServerServices(env: Record<string, string | undefine
     encryptionKey: config.encryptionKey,
     providerFor: (apiKey) => createObservedBoatProvider({ apiKey }),
   });
-  const modal = await createModalIntegration({
+  const modal = createModalIntegration({
     sql,
     vault: store,
     encryptionKey: config.encryptionKey,

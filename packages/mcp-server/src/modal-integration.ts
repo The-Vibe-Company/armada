@@ -1,10 +1,8 @@
 import { AsyncLocalStorage } from "node:async_hooks";
-import { hkdfSync } from "node:crypto";
 import {
   type CredentialReader,
   createSqlVaultStore,
   decryptSecret,
-  EncryptionKeyError,
   type ModalBinding,
   type ProviderTarget,
   parseModalTokenPair,
@@ -13,17 +11,16 @@ import {
   VaultError,
 } from "@armada/core/server";
 import {
-  type ComposedModalOptions,
-  createComposedModalProvider,
   createModalMachineInventory,
+  createRuntimeModalProvider,
   MODAL_IMAGE_LOCK,
   type ModalManagementAuthority,
   modalDeploymentId,
   type ResolvedModalManagementCredentials,
+  type RuntimeModalOptions,
   type Scope,
   scopeKey,
 } from "@armada/provider-modal";
-import { loadEmbeddedRunnerArtifact } from "@armada/provider-modal/embedded";
 import { ModalClient } from "modal";
 import type { HandlerOptions } from "./http.ts";
 import { createModalLaunchCleanupJob, createModalLaunchJob } from "./jobs/modal-launch.ts";
@@ -40,21 +37,12 @@ import { createRuntimeServing } from "./runtime-serving.ts";
 
 export type { ModalManagementAuthority } from "@armada/provider-modal";
 
-/** Stable across deployments; distinct from encryption and every other signing purpose. */
-function runnerKey(value: string | undefined): Uint8Array {
-  const raw = Buffer.from(value ?? "", "base64");
-  if (raw.length !== 32) throw new EncryptionKeyError("Modal requires ARMADA_ENCRYPTION_KEY (32 bytes, base64).");
-  return new Uint8Array(hkdfSync("sha256", raw, "armada/modal/v1", "runner-generation-grants", 32));
-}
-
-export async function createModalIntegration(options: {
+export function createModalIntegration(options: {
   sql: Sql;
   vault: CredentialReader;
-  encryptionKey: string | undefined;
+  encryptionKey: string;
   publicUrl: string;
 }) {
-  const key = runnerKey(options.encryptionKey);
-  const artifact = { ...MODAL_IMAGE_LOCK, ...(await loadEmbeddedRunnerArtifact()) };
   async function managementAuthority(
     target: ProviderTarget,
     caller: { userId: string },
@@ -189,8 +177,7 @@ export async function createModalIntegration(options: {
       );
     const provenance = await managementAuthority(context.target, context.caller);
     const sourceScope: Scope = { ...scope, visibility: provenance.sourceGoldenVisibility };
-    const composed: ComposedModalOptions = {
-      commonRuntime: true,
+    const composed: RuntimeModalOptions = {
       measure: measureProviderPhase,
       storedReads,
       sql: options.sql,
@@ -203,20 +190,16 @@ export async function createModalIntegration(options: {
       resolveManagementCredentials,
       ...tokens,
       appName,
-      signingKey: key,
-      ingestUrl: options.publicUrl,
-      artifact,
-      async resolveHarnessEnvironment() {
-        throw new VaultError("forbidden", "Modal sandboxes require Armada runtime enrolment.");
-      },
+      publicUrl: options.publicUrl,
+      image: MODAL_IMAGE_LOCK,
     };
     // Stored reads skip the App lookup and every live Modal call: they read Armada's database, so no provider record.
-    if (storedReads) return createComposedModalProvider(composed);
+    if (storedReads) return createRuntimeModalProvider(composed);
     const sandbox = { sandboxId: () => diagnosticSandboxId(context.target) };
     const { provider, captureRuntimeWork } = await observeProviderCall(
       "modal",
       "initialize",
-      () => createComposedModalProvider(composed),
+      () => createRuntimeModalProvider(composed),
       undefined,
       sandbox,
     );
@@ -400,14 +383,14 @@ export async function createModalIntegration(options: {
   return {
     launchCleanupJob: createModalLaunchCleanupJob(options.sql, openMachine),
     launchJob: (prepare: Parameters<typeof createModalLaunchJob>[3]) =>
-      createModalLaunchJob(options.sql, options.encryptionKey!, openMachine, prepare),
+      createModalLaunchJob(options.sql, options.encryptionKey, openMachine, prepare),
     inventoryReaper,
     warmRegisteredArtifactCaches,
     modalProviderFor,
     launchProviderFor,
     storedProviderFor: async (target: ProviderTarget, caller: { userId: string }) => {
       const host = await launchProviderFor(target, caller);
-      const provider = await createRuntimeServing(options.sql, options.encryptionKey!)(host, target, caller);
+      const provider = await createRuntimeServing(options.sql, options.encryptionKey)(host, target, caller);
       // Do not let a stored observation adapter accidentally drive admission.
       const reads = new Set<PropertyKey>(["get", "getPrompt", "events"]);
       return new Proxy(provider, {

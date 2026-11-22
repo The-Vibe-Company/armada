@@ -94,9 +94,8 @@ export function controlOptionsFromEnv(env: Record<string, string | undefined>): 
     vault: store,
     encryptionKey,
     providerFor,
-    modalTokensFor: async (target, caller) => (await modalIntegration()).modalTokensFor(target, caller),
-    modalProviderFor: async (tokens, binding, context) =>
-      (await modalIntegration()).modalProviderFor(tokens, binding, context),
+    modalTokensFor: async (target, caller) => modalIntegration().modalTokensFor(target, caller),
+    modalProviderFor: async (tokens, binding, context) => modalIntegration().modalProviderFor(tokens, binding, context),
   });
   let subscriptionMigration: ReturnType<typeof createSubscriptionMigration>;
   const modelAuth = createModelAuthOwnership(
@@ -153,11 +152,11 @@ export function controlOptionsFromEnv(env: Record<string, string | undefined>): 
     modelUsage: createModelUsageApi(sql),
     goldenAdoption: createGoldenAdoption(sql),
     providers,
-    storedProviderFor: async (target, caller) => (await modalIntegration()).storedProviderFor(target, caller),
+    storedProviderFor: async (target, caller) => modalIntegration().storedProviderFor(target, caller),
     data: createSqlData(sql),
     providerMetadata: createProviderMetadata({ sql, vault: store, encryptionKey, providerFor }),
     goldenTarget: async (target, caller) =>
-      target.provider === "boat" ? { ...target, modal: null } : (await modalIntegration()).goldenTarget(target, caller),
+      target.provider === "boat" ? { ...target, modal: null } : modalIntegration().goldenTarget(target, caller),
     goldenBuilds: new GoldenBuildJobs({
       sql,
       encryptionKey,
