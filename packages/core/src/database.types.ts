@@ -491,6 +491,48 @@ export type Database = {
           },
         ];
       };
+      boat_runtime_extension_state: {
+        Row: {
+          sandbox_id: string;
+          pending_job_id: string | null;
+          observed_provider_id: string | null;
+          observed_generation: number | null;
+          observed_at: string | null;
+          observed_expires_at: string | null;
+        };
+        Insert: {
+          sandbox_id: string;
+          pending_job_id?: string | null;
+          observed_provider_id?: string | null;
+          observed_generation?: number | null;
+          observed_at?: string | null;
+          observed_expires_at?: string | null;
+        };
+        Update: {
+          sandbox_id?: string;
+          pending_job_id?: string | null;
+          observed_provider_id?: string | null;
+          observed_generation?: number | null;
+          observed_at?: string | null;
+          observed_expires_at?: string | null;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "boat_runtime_extension_state_pending_job_id_fkey";
+            columns: ["pending_job_id"];
+            isOneToOne: false;
+            referencedRelation: "jobs";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "boat_runtime_extension_state_sandbox_id_fkey";
+            columns: ["sandbox_id"];
+            isOneToOne: true;
+            referencedRelation: "sandboxes";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
       credentials: {
         Row: {
           id: string;
