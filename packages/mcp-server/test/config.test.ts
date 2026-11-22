@@ -18,8 +18,8 @@ const ENV = {
 };
 
 describe("config", () => {
-  test("Boat launch selection is one strict server setting, native by default and explicit for rollback", () => {
-    expect(configFromEnv(ENV).boatAgentPath).toBe("native");
+  test("Boat launch selection is one strict server setting, runtime by default and native for explicit rollback", () => {
+    expect(configFromEnv(ENV).boatAgentPath).toBe("runtime");
     for (const mode of ["native", "runtime"] as const)
       expect(configFromEnv({ ...ENV, ARMADA_BOAT_AGENT_PATH: mode }).boatAgentPath).toBe(mode);
     for (const mode of ["", "TRUE", " runtime ", "auto", "fallback"])
@@ -151,8 +151,8 @@ test.each([
 });
 
 test.each([
-  ["ARMADA_BOAT_RUNTIME_MANIFEST", { ARMADA_BOAT_AGENT_PATH: "runtime" }],
-  ["ARMADA_MODAL_RUNTIME_MANIFEST", { ARMADA_MODAL_DIALOUT: "1" }],
+  ["ARMADA_BOAT_RUNTIME_MANIFEST", {}],
+  ["ARMADA_MODAL_RUNTIME_MANIFEST", { ARMADA_BOAT_AGENT_PATH: "native" }],
 ] as const)("rejects an unusable %s when startup needs it", async (name, settings) => {
   await expect(
     readStartupConfiguration({
@@ -181,6 +181,7 @@ describe("startup with a valid Modal manifest", () => {
       );
       return await readStartupConfiguration({
         ...ENV,
+        ARMADA_BOAT_AGENT_PATH: "native",
         ARMADA_RUNTIME_ARTIFACT_DIR: dir,
         ARMADA_MODAL_RUNTIME_MANIFEST: path,
         ...overrides,
