@@ -1,6 +1,7 @@
 import { expect, spyOn, test } from "bun:test";
 import type { RunnerRequest } from "@armada/agent-runtime";
 import { createSqlAuthStore } from "@armada/auth";
+import { isRecord } from "@armada/core";
 import {
   createApplicationVault,
   createSqlVaultStore,
@@ -441,9 +442,14 @@ function fakeBoatRuntimeSink(f: Awaited<ReturnType<typeof fixture>>, acknowledge
   const handled: RunnerRequest["op"][] = [];
   let unsubscribe = () => {};
   let work = Promise.resolve();
+  let bootstrapDeadline: number | undefined;
   // oxlint-disable-next-line landmines-testing/no-test-doubles -- Replace only external Boat SSH bootstrap to exercise the real launch adapter without a provider or process.
   const bootstrap = spyOn(boatProvider, "startBoatRuntime").mockImplementation(async (_host, request) => {
     const active = await f.authority.enrol(request.enrolmentToken);
+    const configuration = active.configuration;
+    const grant = isRecord(configuration) ? configuration.grant : undefined;
+    if (!isRecord(grant) || typeof grant.expiresAt !== "number") throw Error("Missing bootstrap command deadline.");
+    bootstrapDeadline = grant.expiresAt;
     expect(JSON.stringify(active.configuration).includes("APP_TOKEN")).toBe(false);
     unsubscribe = runtimeWakes.subscribe(`socket:${active.sandboxId}`, () => {
       work = work.then(async () => {
@@ -483,6 +489,9 @@ function fakeBoatRuntimeSink(f: Awaited<ReturnType<typeof fixture>>, acknowledge
   return {
     policy,
     handled,
+    get bootstrapDeadline() {
+      return bootstrapDeadline;
+    },
     async close() {
       bootstrap.mockRestore();
       unsubscribe();
@@ -490,6 +499,24 @@ function fakeBoatRuntimeSink(f: Awaited<ReturnType<typeof fixture>>, acknowledge
     },
   };
 }
+
+test("Boat launch publishes the bootstrap command deadline for the live runtime epoch", async () => {
+  const f = await fixture("codex", "boat");
+  const template = await f.create();
+  const boat = fakeBoatRuntimeSink(f);
+  try {
+    const response = await f.api(f.request(template.id));
+    expect(response.status).toBe(200);
+    const { id } = (await response.json()) as { id: string };
+    const deadline = await f.authority.withOwner(id, f.people.owner, async (_tx, scope) =>
+      scope.commandGrantExpiresAt?.getTime(),
+    );
+    expect(boat.bootstrapDeadline).toBeGreaterThan(0);
+    expect(deadline).toBe(boat.bootstrapDeadline!);
+  } finally {
+    await boat.close();
+  }
+});
 
 test.each(["health", "configureReadableVariables"] as const)(
   "queued startup rolls back %s when the dispatch claim expires before command commit",
