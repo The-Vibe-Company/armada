@@ -1,5 +1,6 @@
 import { type Harness, isHarness } from "../packages/core/src/harnesses.ts";
 import { describeNativeFailure, promptFailureReason } from "../packages/core/src/native-failure.ts";
+import { isSandboxPlacementProvider } from "../packages/core/src/sandbox-provider.ts";
 import { shellQuote as quote } from "../packages/core/src/shell-quote.ts";
 import { providerParitySmoke } from "./provider-parity-smoke.ts";
 import {
@@ -139,7 +140,7 @@ const smokeLaunch = {
   docker: { ready: ["ready", "running"] },
 };
 interface SmokeIo {
-  fetch: (url: string, init: RequestInit) => Promise<Response>;
+  fetch: (url: string, init: RequestInit, receipt?: "admission") => Promise<Response>;
   sleep: (ms: number) => Promise<void>;
   now: () => number;
   out: (line: string) => void;
@@ -622,6 +623,7 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
     record: (receipt: unknown) => void,
     requireSandboxUuid = false,
     usageRead?: UsageRead,
+    receipt?: "admission",
   ): Promise<T> {
     const outerDeadline = cleaning ? cleanupDeadline : deadline;
     const remaining = Math.min(outerDeadline, usageRead?.deadline ?? outerDeadline) - io.now();
@@ -635,18 +637,22 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
     let receivedResponse: Response | undefined;
     try {
       usageRead?.onDispatch();
-      const response = await io.fetch(`${origin}/api/v1/${path}`, {
-        method: body === undefined ? "GET" : "POST",
-        headers: {
-          authorization: `Bearer ${env.ARMADA_TOKEN}`,
-          accept: "application/json",
-          "content-type": "application/json",
-          ...(key ? { "idempotency-key": key } : {}),
+      const response = await io.fetch(
+        `${origin}/api/v1/${path}`,
+        {
+          method: body === undefined ? "GET" : "POST",
+          headers: {
+            authorization: `Bearer ${env.ARMADA_TOKEN}`,
+            accept: "application/json",
+            "content-type": "application/json",
+            ...(key ? { "idempotency-key": key } : {}),
+          },
+          ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+          redirect: "error",
+          signal,
         },
-        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-        redirect: "error",
-        signal,
-      });
+        receipt,
+      );
       receivedResponse = response;
       const sandboxStatus = path === "sandbox/status";
       const requestId = sandboxLaunch || sandboxStatus ? response.headers.get("x-request-id") : null;
@@ -720,7 +726,7 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
       if (sandboxLaunch) {
         const provider = smokeReceiptProvider(result);
         if (provider === "boat") fail("invalid_response");
-        const admission = expiry && input.provider && parseLaunchAdmissionReceipt(input.provider, result);
+        const admission = receipt && input.provider && parseLaunchAdmissionReceipt(input.provider, result);
         if (!admission && provider !== input.provider)
           throw new SmokeFailure("invalid_response", response.status, undefined, launchResponse);
         if (typeof result?.sandbox?.id !== "string" || !result.sandbox.id)
@@ -909,9 +915,13 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
     timeoutMs: number,
     request: ReturnType<typeof createLane>["request"],
     keepHandle: (id: string) => void,
-    recover?: (id: string, requestKey: string, until: number) => Promise<T | undefined>,
+    options?: {
+      receipt?: "admission";
+      recover?: (id: string, requestKey: string, until: number) => Promise<T | undefined>;
+    },
   ) {
     const path = "sandbox/launch";
+    const recover = options?.recover;
     const requestKey = `post-deploy-smoke:${crypto.randomUUID()}`;
     const launch = smokeLaunch[item.provider];
     return launches.track(path, async (record) => {
@@ -923,7 +933,17 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
       };
       try {
         return {
-          result: await transport<T>(false, path, launchBody, undefined, timeoutMs, record, true),
+          result: await transport<T>(
+            false,
+            path,
+            launchBody,
+            undefined,
+            timeoutMs,
+            record,
+            true,
+            undefined,
+            options?.receipt,
+          ),
           recovered: false,
         };
       } catch (error) {
@@ -986,7 +1006,9 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
     return accountSlot(item.modelAccountId.toLowerCase(), (release) =>
       runExpiryCase(item, {
         launch: async <T>(body: object, keepHandle: (id: string) => void) => {
-          const { result } = await launchWithObservation<T>(item, body, timeoutMs, request, keepHandle);
+          const { result } = await launchWithObservation<T>(item, body, timeoutMs, request, keepHandle, {
+            receipt: "admission",
+          });
           return result;
         },
         request: (path, body, remaining = 120_000) => request(path, body, undefined, Math.min(120_000, remaining)),
@@ -1442,7 +1464,7 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
           (id) => {
             sandboxId = id;
           },
-          recoverLaunch,
+          recoverLaunch ? { recover: recoverLaunch } : undefined,
         );
         const parent = result?.sandbox;
         // Retain the cleanup handle even if later response validation fails.
@@ -2128,7 +2150,7 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
       await saveSmokeJournal(path, [...deferred, ...earlierRows, ...rows]);
       unacknowledgedLaunches.delete(requestKey);
     },
-    fetch: async (url, init) => {
+    fetch: async (url, init, receipt) => {
       const launch = /\/api\/v1\/(sandbox\/launch|templates\/launch)$/.test(url);
       if (!launch) return io.fetch(url, init);
       const body = JSON.parse(String(init.body));
@@ -2162,11 +2184,11 @@ export async function postDeploySmoke(env: NodeJS.ProcessEnv, args: readonly str
       const keyedLaunch = keyedModalLaunch || keyedDockerLaunch;
       const id = keyedLaunch ? result?.sandbox?.id : (result?.sandbox?.id ?? result?.id);
       const admissionProvider =
-        args.includes("--expiry") &&
+        receipt &&
         url.endsWith("/sandbox/launch") &&
         requestKey === key &&
         response.ok &&
-        body.provider === "modal" &&
+        isSandboxPlacementProvider(body.provider) &&
         parseLaunchAdmissionReceipt(body.provider, result)
           ? body.provider
           : undefined;
