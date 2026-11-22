@@ -135,14 +135,19 @@ test.each([
   }
 });
 
-test("Boat runtime GitHub configuration expires at the committed sandbox deadline", async () => {
-  const { f, service, config } = await fixture("boat", { commandGrantExpiresAt: Date.now() + 20 * 60_000 });
+test.each([
+  { scenario: "later grant", grantSeconds: 180, expectedSeconds: 40 },
+  { scenario: "earlier grant", grantSeconds: 20, expectedSeconds: 20 },
+  { scenario: "missing grant", grantSeconds: undefined, expectedSeconds: 40 },
+])("Boat runtime GitHub configuration uses the correct expiry for $scenario", async (testCase) => {
+  const now = Date.now();
+  const { f, service, config } = await fixture("boat", {
+    ...(testCase.grantSeconds === undefined ? {} : { commandGrantExpiresAt: now + testCase.grantSeconds * 1000 }),
+  });
   try {
+    await f.db.query("update sandboxes set expires_at=$2 where id=$1", [f.row.id, new Date(now + 40_000)]);
     await service.prepare(f.caller, f.row.id);
-    const { expires_at } = (
-      await f.db.query<{ expires_at: Date }>("select expires_at from sandboxes where id=$1", [f.row.id])
-    ).rows[0]!;
-    expect(config().expiresAt).toBe(expires_at.getTime());
+    expect(config().expiresAt).toBe(now + testCase.expectedSeconds * 1000);
   } finally {
     await f.close();
   }
