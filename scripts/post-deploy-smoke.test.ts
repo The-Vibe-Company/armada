@@ -1000,6 +1000,7 @@ describe("preservation checks", () => {
                 { status: 503, headers: { "x-request-id": recoveryId } },
               );
             }
+            if (fault === "none") return json({ sandbox: { id: sandboxId, status: "starting" } });
             return json({
               sandbox: {
                 id: sandboxId,
@@ -1019,6 +1020,12 @@ describe("preservation checks", () => {
               ...(defaults ? { golden: { id: fault === "default_wrong_golden" ? otherId : defaultGolden } } : {}),
             });
           }
+          if (fault === "none" && call.path === "sandbox/list" && call.body.owner === "me")
+            return json({
+              sandboxes: [{ id: sandboxId, provider, harness: selected.harness, status: "ready", expiresAt: null }],
+              page: 1,
+              hasMore: false,
+            });
           if (call.path === "sandbox/stop") stopping = true;
           if (call.path === "sandbox/status" && call.body.id === recoverySandboxId && !statusReady && !stopping) {
             statusReady = true;
@@ -1028,6 +1035,8 @@ describe("preservation checks", () => {
             return json({
               status: stopping ? "stopped" : "ready",
               id: sandboxId,
+              harness: selected.harness,
+              expiresAt: null,
               externalRef: recoveryKey,
               prompt: null,
               ...(defaults
@@ -2715,7 +2724,7 @@ test("vault/template failures remain failures without bypassing the combined lif
 });
 
 test("GitHub refresh accepts the runtime receipt after proving launch access", async () => {
-  const fake = lifecycleFixture("none", (call) =>
+  const fake = lifecycleFixture("admission_receipt", (call) =>
     call.path === "github/refresh"
       ? json({
           id: call.body.id,
@@ -2872,12 +2881,30 @@ test("the advertised smoke workflow invocation admits ordinary staging checks", 
 test("golden runtime integrity probes are staging-only, fail closed, and retain stopped cleanup on Modal", async () => {
   const staging = "https://armada-mcp-staging.up.railway.app";
   for (const provider of ["modal"]) {
-    for (const broken of [undefined, "helper", "skillpack"] as const) {
+    for (const broken of [undefined, "provider", "helper", "skillpack"] as const) {
       let stopped = false;
       const fake = fixture((call) => {
+        if (call.path === "sandbox/launch") return json({ sandbox: { id: sandboxFixtureId, status: "starting" } });
+        if (call.path === "sandbox/list" && call.body.owner === "me")
+          return json({
+            sandboxes: [
+              {
+                id: sandboxFixtureId,
+                provider: broken === "provider" ? "docker" : provider,
+                harness: selected.harness,
+                status: "ready",
+                expiresAt: null,
+              },
+            ],
+            page: 1,
+            hasMore: false,
+          });
         if (call.path === "sandbox/stop") stopped = true;
         if (call.path === "sandbox/status")
           return json({
+            id: sandboxFixtureId,
+            harness: selected.harness,
+            expiresAt: null,
             status: stopped ? "stopped" : "ready",
             providerState: stopped ? "stopped" : "active",
           });
@@ -2903,8 +2930,12 @@ test("golden runtime integrity probes are staging-only, fail closed, and retain 
         ),
       ).toBe(broken === undefined);
       const reports = fake.receipts();
-      expect(reports.some((line) => line.step === "golden_helper_integrity")).toBe(true);
-      expect(reports.some((line) => line.step === "golden_skillpack_integrity")).toBe(broken !== "helper");
+      expect(reports.some((line) => line.step === "golden_helper_integrity")).toBe(broken !== "provider");
+      expect(reports.some((line) => line.step === "golden_skillpack_integrity")).toBe(
+        broken !== "provider" && broken !== "helper",
+      );
+      if (broken === "provider")
+        expect(reports).toContainEqual({ case: 0, step: "list_ready", pass: false, code: "list_status_mismatch" });
       expect(fake.calls.filter((call) => call.path === "sandbox/launch")).toHaveLength(1);
       expect(stopped).toBe(true);
       expect(fake.lines.join("\n")).not.toContain("private-output");

@@ -1330,6 +1330,7 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
     let launchAttempted = false;
     let verifiedRecoveryId: string | undefined;
     let launchSkills: unknown;
+    let hasAdmissionReceipt = false;
     let sandboxId: string | undefined;
     let commit: string | undefined;
     const preservationMarker = crypto.randomUUID();
@@ -1419,7 +1420,7 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
           ttlSeconds: 1800,
         };
         const requiresLaunchReceipt = defaultSkills || scope !== undefined;
-        const acceptsAdmission = lifecycle && !dirty && !requiresLaunchReceipt && !goldenRuntime && !githubRefresh;
+        const acceptsAdmission = !requiresLaunchReceipt && (lifecycle || preservation || goldenRuntime);
         const recoverLaunch = requiresLaunchReceipt
           ? async (id: string, requestKey: string, until: number) => {
               const inventoryRemaining = until - io.now();
@@ -1471,12 +1472,8 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
         // Retain the cleanup handle even if later response validation fails.
         if (typeof parent?.id === "string" && parent.id) sandboxId = parent.id;
         if (!sandboxId || result.promptId) fail("invalid_response");
-        if (
-          !recovered &&
-          parent?.provider !== item.provider &&
-          !(acceptsAdmission && parseLaunchAdmissionReceipt(item.provider, result))
-        )
-          fail("invalid_response");
+        hasAdmissionReceipt = acceptsAdmission && !!parseLaunchAdmissionReceipt(item.provider, result);
+        if (!recovered && parent?.provider !== item.provider && !hasAdmissionReceipt) fail("invalid_response");
         if (requiresLaunchReceipt && result.golden?.id !== item.goldenId) fail("invalid_response");
         if (scope)
           await step("scoped_parent_configuration", async () => {
@@ -1553,6 +1550,7 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
             elapsedMs: io.now() - startedAt,
           }),
         );
+      if (hasAdmissionReceipt) await measuredStep("list_ready", () => consistent("ready"));
       if (goldenRuntime && !dirty) {
         await measuredStep("golden_helper_integrity", () => checkedExec(helperProbe));
         await measuredStep("golden_skillpack_integrity", () => checkedExec(skillpackProbe));
@@ -1823,7 +1821,7 @@ async function runPostDeploySmoke(env: NodeJS.ProcessEnv, args: readonly string[
         );
       await nativeTurn(false);
       if (lifecycle && !dirty) {
-        await measuredStep("list_ready", () => consistent("ready"));
+        if (!hasAdmissionReceipt) await measuredStep("list_ready", () => consistent("ready"));
         await measuredStep("steer_refused", async () => {
           try {
             await sandbox("steer", { id: sandboxId, text: "Smoke: no turn should be running." });
