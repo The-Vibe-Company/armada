@@ -155,6 +155,31 @@ test.each(["activity", "reconcile"] as const)("a live %s lease defers a Boat ext
   expect((await f.store.claim(kind, owner, 30, 1))?.id).toBe(extend);
 });
 
+test.each(["activity", "reconcile"] as const)("a live Boat extension excludes a legacy %s claim", async (legacy) => {
+  const f = await fixture();
+  const id = await sandbox(f, true);
+  const owner = crypto.randomUUID();
+  const kind = "boat_runtime_extend";
+  const jobId = await f.store.enqueue(kind, id, 2, id, null, {
+    orgId: f.people.org,
+    maxAttempts: 3,
+    deadline: new Date("2100-01-01T00:00:00Z"),
+  });
+  expect((await f.store.claim(kind, owner, 30, 1))?.id).toBe(jobId);
+
+  const [lease, deadline] =
+    legacy === "activity" ? ["activity_lease_id", "activity_until"] : ["reconcile_lease", "reconcile_lease_until"];
+  const claimLegacy = () =>
+    f.db.query(`update sandboxes set ${lease}=$2, ${deadline}='infinity' where id=$1 returning id`, [
+      id,
+      crypto.randomUUID(),
+    ]);
+  expect((await claimLegacy()).rows).toEqual([]);
+
+  await f.db.query("update jobs set lease_until='-infinity' where id=$1", [jobId]);
+  expect((await claimLegacy()).rows).toEqual([{ id }]);
+});
+
 test("a replacement launch claimant reads Modal create intent and fences the previous writer", async () => {
   const f = await fixture();
   const id = await sandbox(f);
