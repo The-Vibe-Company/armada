@@ -131,6 +131,32 @@ test("real native state publication seals rotation without replacing binding, fe
   await expect(auth.state.read({ ...actor, userId: PEER }, account.id, 1, SANDBOX)).rejects.toMatchObject({
     code: "not_found",
   });
+  const promptStatus = { promptId: "finished-turn", status: "finished", done: true } as const;
+  const promptProvider = createBoatProvider({
+    apiKey: "fixture",
+    fetch: (async () => Response.json({ ok: true, promptRun: promptStatus })) as unknown as typeof fetch,
+    afterPrompt: (_provider, target) => auth.captureAfterBoatPrompt(provider, target, actor),
+  });
+  authJson = native(6);
+  let winningRevision = 2;
+  onRead = async () => {
+    winningRevision = await auth.state.publish({
+      actor,
+      accountId: account.id,
+      version: 1,
+      sandboxId: SANDBOX,
+      generation: "boat:1",
+      expectedRevision: winningRevision,
+      authJson: native(winningRevision + 1),
+      verifySource: async () => {},
+    });
+  };
+  expect(await promptProvider.getPrompt({ sandboxId: "native", promptId: promptStatus.promptId })).toEqual(
+    promptStatus,
+  );
+  onRead = undefined;
+  expect(await auth.state.read(actor, account.id, 1, SANDBOX)).toMatchObject({ authJson: native(5), revision: 5 });
+  authJson = native(2);
   let eventRevision = 2;
   const publicProvider = createBoatProvider({
     apiKey: "synthetic-boat-key",
